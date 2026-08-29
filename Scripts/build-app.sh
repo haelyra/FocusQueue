@@ -26,13 +26,16 @@ info_plist="$bundle_path/Contents/Info.plist"
 /usr/bin/plutil -insert CFBundleInfoDictionaryVersion -string 6.0 "$info_plist"
 /usr/bin/plutil -insert CFBundleName -string "$product_name" "$info_plist"
 /usr/bin/plutil -insert CFBundlePackageType -string APPL "$info_plist"
-/usr/bin/plutil -insert CFBundleShortVersionString -string 0.1.0 "$info_plist"
-/usr/bin/plutil -insert CFBundleVersion -string 1 "$info_plist"
+/usr/bin/plutil -insert CFBundleShortVersionString -string 0.2.0 "$info_plist"
+/usr/bin/plutil -insert CFBundleVersion -string 2 "$info_plist"
 /usr/bin/plutil -insert LSMinimumSystemVersion -string 14.0 "$info_plist"
 /usr/bin/plutil -insert LSUIElement -bool true "$info_plist"
 /usr/bin/plutil -insert NSHighResolutionCapable -bool true "$info_plist"
+/usr/bin/plutil -insert NSDocumentsFolderUsageDescription -string \
+  "ECC Focus Queue reads your local task dashboard from the Documents folder." "$info_plist"
 
-/usr/bin/codesign --force --deep --sign - "$bundle_path"
+designated_requirement='=designated => identifier "com.haelyra.ecc-focus-queue"'
+/usr/bin/codesign --force --deep --sign - --requirements "$designated_requirement" "$bundle_path"
 /usr/bin/codesign --verify --deep --strict "$bundle_path"
 
 print -r -- "$bundle_path"

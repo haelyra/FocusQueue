@@ -13,6 +13,8 @@ import SwiftUI
   private let model = QueueViewModel()
   private var panel: FocusPanel?
   private var statusItem: NSStatusItem?
+  private var exitTerminalFocusItem: NSMenuItem?
+  private var terminalFocusController: TerminalFocusModeController?
   private var currentPlacement: QueueWindowPlacement = .upperRight
 
   func applicationDidFinishLaunching(_ notification: Notification) {
@@ -21,6 +23,15 @@ import SwiftUI
       self?.positionPanel(placement, animated: true)
     }
     model.collapseHandler = { [weak self] collapsed in self?.setPanelCollapsed(collapsed) }
+    model.terminalFocusHandler = { [weak self] applicationName in
+      guard let self, let terminalFocusController else {
+        throw TerminalFocusModeError.applicationUnavailable(applicationName)
+      }
+      try await terminalFocusController.begin(
+        applicationName: applicationName,
+        targetScreen: panel?.screen
+      )
+    }
     model.quitHandler = { NSApplication.shared.terminate(nil) }
 
     createPanel()
@@ -58,6 +69,7 @@ import SwiftUI
   func windowDidResize(_ notification: Notification) { saveWindowFrame() }
 
   @objc private func showPanel() {
+    terminalFocusController?.dismiss()
     guard let panel else { return }
     if !panel.frame.intersects(activeScreen().visibleFrame) {
       positionPanel(currentPlacement, animated: false)
@@ -81,6 +93,8 @@ import SwiftUI
   }
 
   @objc private func hidePanel() { panel?.orderOut(nil) }
+
+  @objc private func exitTerminalFocus() { terminalFocusController?.dismiss() }
 
   @objc private func openConfiguration() { model.openConfiguration() }
 
@@ -130,6 +144,11 @@ import SwiftUI
     hostingView.layer?.backgroundColor = NSColor.clear.cgColor
     panel.contentView = hostingView
     self.panel = panel
+    let terminalFocusController = TerminalFocusModeController(queuePanel: panel)
+    terminalFocusController.stateDidChange = { [weak self] isActive in
+      self?.exitTerminalFocusItem?.isHidden = !isActive
+    }
+    self.terminalFocusController = terminalFocusController
   }
 
   private func createStatusItem() {
@@ -147,6 +166,12 @@ import SwiftUI
       title: "Hide ECC Focus Queue", action: #selector(hidePanel), keyEquivalent: "")
     hideItem.target = self
     menu.addItem(hideItem)
+    let exitFocusItem = NSMenuItem(
+      title: "Exit Terminal Focus", action: #selector(exitTerminalFocus), keyEquivalent: "")
+    exitFocusItem.target = self
+    exitFocusItem.isHidden = true
+    menu.addItem(exitFocusItem)
+    exitTerminalFocusItem = exitFocusItem
     let restartItem = NSMenuItem(
       title: "Restart ECC Focus Queue", action: #selector(restartApplication), keyEquivalent: "")
     restartItem.target = self

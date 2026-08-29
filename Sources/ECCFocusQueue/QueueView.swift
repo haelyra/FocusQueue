@@ -160,7 +160,7 @@ struct QueueView: View {
           .system(size: 12, weight: .semibold).monospacedDigit()
         ).foregroundStyle(
           .secondary)
-      }.padding(.horizontal, 15).frame(height: 46).contentShape(Rectangle())
+      }.padding(.horizontal, 15).frame(height: 52).contentShape(Rectangle())
     }.buttonStyle(.plain).notificationSurface(radius: 16).accessibilityLabel(
       showsMoreTasks ? "Show only top five tasks" : "View more tasks")
   }
@@ -351,10 +351,11 @@ private struct TicketCard: View {
           toggleExpansion()
         } label: {
           Image(systemName: model.isExpanded(ticket.id) ? "chevron.up" : "chevron.down").font(
-            .system(size: 11, weight: .bold)
+            .system(size: 12, weight: .bold)
           ).foregroundStyle(
-            .secondary)
-        }.buttonStyle(.plain).frame(width: 40, height: 32).accessibilityLabel(
+            .secondary
+          ).frame(width: 44, height: 40).contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityLabel(
           model.isExpanded(ticket.id)
             ? "Hide details for \(ticket.id)" : "Show details for \(ticket.id)")
       }

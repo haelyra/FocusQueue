@@ -5,12 +5,26 @@ public struct WezTermPane: Codable, Equatable, Sendable {
     public let paneID: Int
     public let cwd: String
     public let isActive: Bool?
+    public let title: String?
+    public let tabTitle: String?
+    public let windowTitle: String?
 
-    public init(windowID: Int, paneID: Int, cwd: String, isActive: Bool? = nil) {
+    public init(
+        windowID: Int,
+        paneID: Int,
+        cwd: String,
+        isActive: Bool? = nil,
+        title: String? = nil,
+        tabTitle: String? = nil,
+        windowTitle: String? = nil
+    ) {
         self.windowID = windowID
         self.paneID = paneID
         self.cwd = cwd
         self.isActive = isActive
+        self.title = title
+        self.tabTitle = tabTitle
+        self.windowTitle = windowTitle
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -18,6 +32,9 @@ public struct WezTermPane: Codable, Equatable, Sendable {
         case paneID = "pane_id"
         case cwd
         case isActive = "is_active"
+        case title
+        case tabTitle = "tab_title"
+        case windowTitle = "window_title"
     }
 }
 
@@ -30,13 +47,17 @@ public enum TerminalActionResult: Equatable, Sendable {
         case .focused:
             "Focused the matching WezTerm pane."
         case .spawned:
-            "Opened a WezTerm tab in the task directory."
+            "Opened a new WezTerm window in the task directory."
         }
     }
 }
 
 public protocol WezTermControlling: Sendable {
-    func focusOrSpawn(directory: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult
+    func focusOrSpawn(
+        directory: String,
+        taskID: String,
+        configuration: WezTermConfiguration
+    ) async throws -> TerminalActionResult
 }
 
 public enum WezTermError: Error, LocalizedError {
@@ -62,6 +83,7 @@ public actor WezTermController: WezTermControlling {
 
     public func focusOrSpawn(
         directory: String,
+        taskID: String,
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult {
         let listResult = try await runner.run(ProcessSpecification(
@@ -84,7 +106,7 @@ public actor WezTermController: WezTermControlling {
             panes = []
         }
 
-        if let pane = Self.bestMatchingPane(in: panes, directory: directory) {
+        if let pane = Self.bestMatchingPane(in: panes, directory: directory, taskID: taskID) {
             let activation = try await runner.run(ProcessSpecification(
                 executable: configuration.executable,
                 arguments: ["cli", "activate-pane", "--pane-id", String(pane.paneID)],
@@ -97,44 +119,92 @@ public actor WezTermController: WezTermControlling {
             return .focused(paneID: pane.paneID)
         }
 
-        var spawnArguments = ["cli", "spawn"]
-        if let windowID = panes.first?.windowID {
-            spawnArguments += ["--window-id", String(windowID)]
-        } else {
-            spawnArguments += ["--new-window"]
+        if listResult.succeeded {
+            let spawn = try await runner.run(ProcessSpecification(
+                executable: configuration.executable,
+                arguments: ["cli", "spawn", "--new-window", "--cwd", directory],
+                timeoutSeconds: 15
+            ))
+            if spawn.succeeded {
+                let paneID = Int(spawn.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines))
+                if let paneID {
+                    _ = try? await runner.run(ProcessSpecification(
+                        executable: configuration.executable,
+                        arguments: ["cli", "set-tab-title", "--pane-id", String(paneID), taskID],
+                        timeoutSeconds: 10
+                    ))
+                    _ = try? await runner.run(ProcessSpecification(
+                        executable: configuration.executable,
+                        arguments: ["cli", "activate-pane", "--pane-id", String(paneID)],
+                        timeoutSeconds: 10
+                    ))
+                }
+                _ = try? await bringApplicationForward(named: configuration.applicationName)
+                return .spawned(paneID: paneID)
+            }
         }
-        spawnArguments += ["--cwd", directory]
 
-        let spawn = try await runner.run(ProcessSpecification(
-            executable: configuration.executable,
-            arguments: spawnArguments,
+        let fallback = try await runner.run(ProcessSpecification(
+            executable: "/usr/bin/open",
+            arguments: [
+                "-na", configuration.applicationName, "--args", "start", "--always-new-process",
+                "--cwd", directory,
+            ],
             timeoutSeconds: 15
         ))
-        guard spawn.succeeded else {
-            throw WezTermError.actionFailed(Self.failureDetail(spawn))
+        guard fallback.succeeded else {
+            throw WezTermError.actionFailed(Self.failureDetail(fallback))
         }
-
-        let paneID = Int(spawn.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines))
-        if let paneID {
-            _ = try? await runner.run(ProcessSpecification(
-                executable: configuration.executable,
-                arguments: ["cli", "activate-pane", "--pane-id", String(paneID)],
-                timeoutSeconds: 10
-            ))
-        }
-        _ = try? await bringApplicationForward(named: configuration.applicationName)
-        return .spawned(paneID: paneID)
+        return .spawned(paneID: nil)
     }
 
-    public static func bestMatchingPane(in panes: [WezTermPane], directory: String) -> WezTermPane? {
+    public static func bestMatchingPane(
+        in panes: [WezTermPane],
+        directory: String,
+        taskID: String? = nil
+    ) -> WezTermPane? {
         let target = standardizedPath(directory)
-        return panes
-            .filter { pane in
-                let panePath = standardizedPath(pathFromWezTermCWD(pane.cwd))
-                return panePath == target || panePath.hasPrefix(target + "/")
+        let candidates = panes.filter { pane in
+            let panePath = standardizedPath(pathFromWezTermCWD(pane.cwd))
+            return panePath == target || panePath.hasPrefix(target + "/")
+        }
+        guard !candidates.isEmpty else { return nil }
+
+        if let taskID, !taskID.isEmpty {
+            let label = taskID.lowercased()
+            let labeled = candidates.filter { pane in
+                [pane.tabTitle, pane.windowTitle, pane.title]
+                    .compactMap { $0?.lowercased() }
+                    .contains { $0.contains(label) }
             }
-            .sorted { ($0.isActive == true ? 0 : 1, $0.paneID) < ($1.isActive == true ? 0 : 1, $1.paneID) }
-            .first
+            if let pane = bestCandidate(in: labeled, target: target) { return pane }
+        }
+
+        let exact = candidates.filter {
+            standardizedPath(pathFromWezTermCWD($0.cwd)) == target
+        }
+        if Set(exact.map(\.windowID)).count == 1,
+           let pane = bestCandidate(in: exact, target: target) {
+            return pane
+        }
+        guard Set(candidates.map(\.windowID)).count == 1 else { return nil }
+        return bestCandidate(in: candidates, target: target)
+    }
+
+    private static func bestCandidate(in panes: [WezTermPane], target: String) -> WezTermPane? {
+        panes.sorted {
+            let leftPath = standardizedPath(pathFromWezTermCWD($0.cwd))
+            let rightPath = standardizedPath(pathFromWezTermCWD($1.cwd))
+            return (
+                leftPath == target ? 0 : 1,
+                $0.isActive == true ? 0 : 1,
+                $0.paneID
+            ) < (
+                rightPath == target ? 0 : 1,
+                $1.isActive == true ? 0 : 1,
+                $1.paneID
+            )
+        }.first
     }
 
     private func bringApplicationForward(named applicationName: String) async throws -> ProcessResult {

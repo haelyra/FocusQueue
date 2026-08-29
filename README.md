@@ -30,7 +30,14 @@ dashboard, but the app is a standalone personal tool and is not part of ECC.
   evidence links, next action, and definition of done.
 - Local `vscode://file` links are normalized before opening, with PDFs sent to
   Preview and Safari or the system default used as fallbacks.
-- WezTerm lookup by worktree, pane focus, and tab creation when no pane matches.
+- WezTerm lookup by ticket label and exact worktree, with ambiguous matches
+  rejected instead of focusing an unrelated pane.
+- **Focus terminal** raises and glides the selected WezTerm window to the center
+  of the queue's display, hides the queue, and dims every region outside the
+  terminal. Clicking the backdrop or choosing **Exit Terminal Focus** from the
+  menu bar returns to the queue.
+- When no pane is associated, Focus terminal creates a new WezTerm window in
+  the exact task directory and labels its tab with the ticket ID.
 - Restart-safe completion requests. A checkbox asks a bounded named Hermes
   session to verify evidence and never directly edits the ticket status.
 - Atomic local state and bounded verifier logs under Application Support.
@@ -47,12 +54,18 @@ item is `/Users/hira/Library/LaunchAgents/com.haelyra.ecc-focus-queue.plist`.
 Runtime files live under
 `/Users/hira/Library/Application Support/ECC Focus Queue/`.
 
+The first launch requests Documents-folder access so the app can read the local
+dashboard. The first use of **Focus terminal** requests Accessibility access so
+the app can center and raise the selected WezTerm window. The local build uses
+a stable designated requirement so both permissions survive later app rebuilds.
+
 ## Desktop and menu-bar management
 
 Installation also creates `/Users/hira/Desktop/ECC Focus Queue.app`, a Desktop
 launcher that points to the installed app. Double-click it to launch the queue
 after quitting or to reveal the existing panel. The checklist icon in the macOS
 menu bar provides Show, Hide, Restart, placement, Open Config, and Quit actions.
+While terminal focus is active, it also provides **Exit Terminal Focus**.
 The Desktop item is a launcher, so the installed app and its login service keep
 one canonical location under the user's Applications and LaunchAgents folders.
 

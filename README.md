@@ -8,9 +8,16 @@ dashboard, but the app is a standalone personal tool and is not part of ECC.
 
 - Native SwiftUI and AppKit floating panel with upper-left, upper-right, and
   active-display center placement.
-- Layered translucent surfaces with a lightly frosted outer panel, more opaque
-  notification cards, a fixed top-five focus list, and one bottom control for
-  the daily checklist and remaining queue.
+- A highly translucent outer panel with fully opaque notification cards, a
+  fixed top-five focus list, and one bottom control for the daily checklist and
+  remaining queue.
+- Persisted Light and WezTerm-matched Dark appearances, plus Muted, Pastel, No
+  Color, and Vibrant accent palettes for status, priority, sync, and review
+  indicators.
+- A quick settings screen for appearance, accent palette, and left, center, or
+  right placement.
+- A collapse control that shrinks the real window to the ECC Focus Queue title
+  and restores the full-height panel from the same screen edge.
 - A stationary panel with placement controlled from the menu bar rather than by
   accidental background dragging.
 - A full-height screen-edge layout with scrolling for expanded details and the
@@ -21,6 +28,8 @@ dashboard, but the app is a standalone personal tool and is not part of ECC.
 - Daily routines stored locally and reset by local calendar day.
 - Priority-sorted, expandable ticket cards with source-backed steps, PR state,
   evidence links, next action, and definition of done.
+- Local `vscode://file` links are normalized before opening, with PDFs sent to
+  Preview and Safari or the system default used as fallbacks.
 - WezTerm lookup by worktree, pane focus, and tab creation when no pane matches.
 - Restart-safe completion requests. A checkbox asks a bounded named Hermes
   session to verify evidence and never directly edits the ticket status.

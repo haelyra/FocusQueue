@@ -42,6 +42,15 @@ public enum TerminalActionResult: Equatable, Sendable {
     case focused(paneID: Int)
     case spawned(paneID: Int?)
 
+    public var paneID: Int? {
+        switch self {
+        case .focused(let paneID):
+            paneID
+        case .spawned(let paneID):
+            paneID
+        }
+    }
+
     public var message: String {
         switch self {
         case .focused:
@@ -107,6 +116,13 @@ public actor WezTermController: WezTermControlling {
         }
 
         if let pane = Self.bestMatchingPane(in: panes, directory: directory, taskID: taskID) {
+            _ = try? await runner.run(ProcessSpecification(
+                executable: configuration.executable,
+                arguments: [
+                    "cli", "set-window-title", "--pane-id", String(pane.paneID), taskID,
+                ],
+                timeoutSeconds: 10
+            ))
             let activation = try await runner.run(ProcessSpecification(
                 executable: configuration.executable,
                 arguments: ["cli", "activate-pane", "--pane-id", String(pane.paneID)],
@@ -131,6 +147,13 @@ public actor WezTermController: WezTermControlling {
                     _ = try? await runner.run(ProcessSpecification(
                         executable: configuration.executable,
                         arguments: ["cli", "set-tab-title", "--pane-id", String(paneID), taskID],
+                        timeoutSeconds: 10
+                    ))
+                    _ = try? await runner.run(ProcessSpecification(
+                        executable: configuration.executable,
+                        arguments: [
+                            "cli", "set-window-title", "--pane-id", String(paneID), taskID,
+                        ],
                         timeoutSeconds: 10
                     ))
                     _ = try? await runner.run(ProcessSpecification(

@@ -1,6 +1,17 @@
 import CoreGraphics
 
 public enum TerminalFocusGeometry {
+    public static func nextScreenIndex(
+        currentScreenFrame: CGRect,
+        orderedScreenFrames: [CGRect]
+    ) -> Int? {
+        guard orderedScreenFrames.count > 1 else { return nil }
+        guard let currentIndex = orderedScreenFrames.firstIndex(of: currentScreenFrame) else {
+            return 0
+        }
+        return (currentIndex + 1) % orderedScreenFrames.count
+    }
+
     public static func centeredFrame(
         currentFrame: CGRect,
         visibleFrame: CGRect,

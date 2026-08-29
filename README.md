@@ -34,8 +34,10 @@ dashboard, but the app is a standalone personal tool and is not part of ECC.
   rejected instead of focusing an unrelated pane.
 - **Focus terminal** raises and glides the selected WezTerm window to the center
   of the queue's display, hides the queue, and dims every region outside the
-  terminal. Clicking the backdrop or choosing **Exit Terminal Focus** from the
-  menu bar returns to the queue.
+  terminal. A floating **Switch Monitor** button cycles the focused terminal
+  through connected displays and rebuilds the backdrop around it. Clicking the
+  backdrop, the floating close control, or **Exit Terminal Focus** in the menu
+  bar returns to the queue.
 - When no pane is associated, Focus terminal creates a new WezTerm window in
   the exact task directory and labels its tab with the ticket ID.
 - Restart-safe completion requests. A checkbox asks a bounded named Hermes
@@ -58,6 +60,8 @@ The first launch requests Documents-folder access so the app can read the local
 dashboard. The first use of **Focus terminal** requests Accessibility access so
 the app can center and raise the selected WezTerm window. The local build uses
 a stable designated requirement so both permissions survive later app rebuilds.
+The local WezTerm configuration exposes explicit mux window titles to macOS
+Accessibility so the app can select the ticket-labeled native window precisely.
 
 ## Desktop and menu-bar management
 

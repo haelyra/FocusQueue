@@ -23,12 +23,13 @@ import SwiftUI
       self?.positionPanel(placement, animated: true)
     }
     model.collapseHandler = { [weak self] collapsed in self?.setPanelCollapsed(collapsed) }
-    model.terminalFocusHandler = { [weak self] applicationName in
+    model.terminalFocusHandler = { [weak self] applicationName, windowTitleHint in
       guard let self, let terminalFocusController else {
         throw TerminalFocusModeError.applicationUnavailable(applicationName)
       }
       try await terminalFocusController.begin(
         applicationName: applicationName,
+        windowTitleHint: windowTitleHint,
         targetScreen: panel?.screen
       )
     }

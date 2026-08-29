@@ -210,6 +210,7 @@ func wezTermFocusArguments() async throws {
     ProcessResult(exitCode: 0, standardOutput: panes, standardError: "", timedOut: false),
     ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
     ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
+    ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
   ])
   let controller = WezTermController(runner: runner)
 
@@ -221,8 +222,11 @@ func wezTermFocusArguments() async throws {
   let invocations = await runner.specifications
 
   #expect(result == .focused(paneID: 17))
-  #expect(invocations.count == 3)
-  #expect(invocations[1].arguments == ["cli", "activate-pane", "--pane-id", "17"])
+  #expect(invocations.count == 4)
+  #expect(invocations[1].arguments == [
+    "cli", "set-window-title", "--pane-id", "17", "ECC-035",
+  ])
+  #expect(invocations[2].arguments == ["cli", "activate-pane", "--pane-id", "17"])
   #expect(!invocations.flatMap(\.arguments).contains("spawn"))
 }
 
@@ -234,6 +238,7 @@ func wezTermNewWindowArguments() async throws {
   let runner = MockProcessRunner(results: [
     ProcessResult(exitCode: 0, standardOutput: panes, standardError: "", timedOut: false),
     ProcessResult(exitCode: 0, standardOutput: "22\n", standardError: "", timedOut: false),
+    ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
     ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
     ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
     ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
@@ -253,6 +258,9 @@ func wezTermNewWindowArguments() async throws {
   ])
   #expect(invocations[2].arguments == [
     "cli", "set-tab-title", "--pane-id", "22", "ECC-035",
+  ])
+  #expect(invocations[3].arguments == [
+    "cli", "set-window-title", "--pane-id", "22", "ECC-035",
   ])
   #expect(!invocations[1].arguments.contains("--window-id"))
 }
@@ -288,6 +296,27 @@ func terminalFocusCenteredFrame() {
   )
 
   #expect(result == CGRect(x: 180, y: 264, width: 840, height: 672))
+}
+
+@Test("Terminal focus monitor selection cycles through connected screens")
+func terminalFocusNextScreen() {
+  let screens = [
+    CGRect(x: -1_920, y: 0, width: 1_920, height: 1_080),
+    CGRect(x: 0, y: 0, width: 1_512, height: 982),
+  ]
+
+  #expect(TerminalFocusGeometry.nextScreenIndex(
+    currentScreenFrame: screens[0],
+    orderedScreenFrames: screens
+  ) == 1)
+  #expect(TerminalFocusGeometry.nextScreenIndex(
+    currentScreenFrame: screens[1],
+    orderedScreenFrames: screens
+  ) == 0)
+  #expect(TerminalFocusGeometry.nextScreenIndex(
+    currentScreenFrame: screens[0],
+    orderedScreenFrames: [screens[0]]
+  ) == nil)
 }
 
 @Test("Terminal focus backdrop leaves an aperture around the terminal")

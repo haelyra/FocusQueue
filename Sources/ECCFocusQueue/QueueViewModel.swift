@@ -31,7 +31,9 @@ final class QueueViewModel {
 
   @ObservationIgnored var placementHandler: ((QueueWindowPlacement) -> Void)?
   @ObservationIgnored var collapseHandler: ((Bool) -> Void)?
-  @ObservationIgnored var terminalFocusHandler: (@MainActor (String) async throws -> Void)?
+  @ObservationIgnored var terminalFocusHandler: (
+    @MainActor (String, String?) async throws -> Void
+  )?
   @ObservationIgnored var quitHandler: (() -> Void)?
 
   init(
@@ -199,7 +201,10 @@ final class QueueViewModel {
           configuration: config.wezTerm
         )
         if let terminalFocusHandler {
-          try await terminalFocusHandler(config.wezTerm.applicationName)
+          try await terminalFocusHandler(
+            config.wezTerm.applicationName,
+            result.paneID == nil ? nil : ticket.id
+          )
         }
         actionMessages[ticket.id] =
           "\(result.message) Click the dimmed background to return to the queue."

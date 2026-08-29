@@ -1,0 +1,38 @@
+{
+  "appName": "ECC Focus Queue",
+  "dashboardPath": "/Users/hira/Documents/ECC/ecc-dashboard/data/dashboard.json",
+  "workspacePath": "/Users/hira/Documents/ECC",
+  "defaultPlacement": "upper-right",
+  "refreshIntervalSeconds": 2,
+  "dailyRoutines": [
+    {
+      "id": "review-prs",
+      "title": "Review the open pull-request queue",
+      "url": "https://github.com/affaan-m/ECC/pulls"
+    },
+    {
+      "id": "triage-issues",
+      "title": "Triage the open issue queue",
+      "url": "https://github.com/affaan-m/ECC/issues"
+    },
+    {
+      "id": "respond-discord",
+      "title": "Check and respond in Discord"
+    },
+    {
+      "id": "agent-followups",
+      "title": "Review agent and maintainer follow-ups"
+    }
+  ],
+  "wezTerm": {
+    "executable": "/Users/hira/.local/bin/wezterm",
+    "applicationName": "WezTerm"
+  },
+  "verifier": {
+    "enabled": true,
+    "executable": "/Users/hira/.local/bin/hermes",
+    "sessionName": "ecc-focus-queue-verifier",
+    "timeoutSeconds": 120,
+    "maxTurns": 24
+  }
+}

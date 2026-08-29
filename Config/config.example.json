@@ -1,0 +1,25 @@
+{
+  "appName": "My Focus Queue",
+  "dashboardPath": "/absolute/path/to/dashboard.json",
+  "workspacePath": "/absolute/path/to/workspace",
+  "defaultPlacement": "upper-right",
+  "refreshIntervalSeconds": 2,
+  "dailyRoutines": [
+    {
+      "id": "daily-review",
+      "title": "Review today's queue",
+      "url": "https://example.com/tasks"
+    }
+  ],
+  "wezTerm": {
+    "executable": "/absolute/path/to/wezterm",
+    "applicationName": "WezTerm"
+  },
+  "verifier": {
+    "enabled": false,
+    "executable": "/absolute/path/to/hermes",
+    "sessionName": "focus-queue-verifier",
+    "timeoutSeconds": 120,
+    "maxTurns": 24
+  }
+}

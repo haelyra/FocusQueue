@@ -1,20 +1,15 @@
 import AppKit
+import Darwin
 import FocusQueueCore
 import SwiftUI
 
-@main
-struct FocusQueueApp: App {
+@main struct FocusQueueApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
-    var body: some Scene {
-        Settings {
-            EmptyView()
-        }
-    }
+    var body: some Scene { Settings { EmptyView() } }
 }
 
-@MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let model = QueueViewModel()
     private var panel: FocusPanel?
     private var statusItem: NSStatusItem?
@@ -22,12 +17,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        model.placementHandler = { [weak self] placement in
-            self?.positionPanel(placement, animated: true)
-        }
-        model.quitHandler = {
-            NSApplication.shared.terminate(nil)
-        }
+        model.placementHandler = { [weak self] placement in self?.positionPanel(placement, animated: true) }
+        model.quitHandler = { NSApplication.shared.terminate(nil) }
 
         createPanel()
         createStatusItem()
@@ -37,11 +28,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Task { [weak self] in
             guard let self else { return }
             await model.bootstrap()
-            if let snapshot = model.windowSnapshot, frameIsVisible(snapshot) {
+            if let snapshot = model.windowSnapshot, let savedScreen = screen(containing: snapshot) {
                 currentPlacement = snapshot.placement
-                var restoredFrame = Self.rect(from: snapshot)
-                restoredFrame.size.height = max(restoredFrame.height, 760)
-                panel?.setFrame(restoredFrame, display: true)
+                if var restoredFrame = panel?.frame {
+                    restoredFrame.size.width = snapshot.width
+                    panel?.setFrame(restoredFrame, display: false)
+                }
+                positionPanel(snapshot.placement, on: savedScreen, animated: false)
             } else {
                 positionPanel(model.config.defaultPlacement, animated: false)
             }
@@ -49,23 +42,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        false
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showPanel()
+        return true
     }
 
-    func windowDidMove(_ notification: Notification) {
-        saveWindowFrame()
-    }
+    func windowDidMove(_ notification: Notification) { saveWindowFrame() }
 
-    func windowDidResize(_ notification: Notification) {
-        saveWindowFrame()
-    }
+    func windowDidResize(_ notification: Notification) { saveWindowFrame() }
 
     @objc private func showPanel() {
         guard let panel else { return }
-        if !panel.frame.intersects(activeScreen().visibleFrame) {
-            positionPanel(currentPlacement, animated: false)
-        }
+        if !panel.frame.intersects(activeScreen().visibleFrame) { positionPanel(currentPlacement, animated: false) }
         panel.orderFrontRegardless()
     }
 
@@ -84,25 +74,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel?.orderFrontRegardless()
     }
 
-    @objc private func hidePanel() {
-        panel?.orderOut(nil)
+    @objc private func hidePanel() { panel?.orderOut(nil) }
+
+    @objc private func openConfiguration() { model.openConfiguration() }
+
+    @objc private func restartApplication() {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["kickstart", "-k", "gui/\(getuid())/com.haelyra.ecc-focus-queue"]
+        do { try process.run() } catch {
+            let alert = NSAlert()
+            alert.messageText = "Could not restart ECC Focus Queue"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+        }
     }
 
-    @objc private func openConfiguration() {
-        model.openConfiguration()
-    }
-
-    @objc private func quitApplication() {
-        NSApplication.shared.terminate(nil)
-    }
+    @objc private func quitApplication() { NSApplication.shared.terminate(nil) }
 
     private func createPanel() {
         let panel = FocusPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 780),
-            styleMask: [.titled, .resizable, .nonactivatingPanel, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 780), styleMask: [.titled, .resizable, .nonactivatingPanel, .fullSizeContentView],
+            backing: .buffered, defer: false)
         panel.title = "ECC Focus Queue"
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
@@ -119,7 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.isMovable = false
         panel.isMovableByWindowBackground = false
         panel.minSize = NSSize(width: 400, height: 500)
-        panel.maxSize = NSSize(width: 620, height: 1_100)
+        panel.maxSize = NSSize(width: 620, height: 10_000)
         panel.delegate = self
         let hostingView = NSHostingView(rootView: QueueView(model: model))
         hostingView.wantsLayer = true
@@ -130,15 +123,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func createStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = NSImage(systemSymbolName: "checklist", accessibilityDescription: "Focus Queue")
+        item.button?.image = NSImage(systemSymbolName: "checklist", accessibilityDescription: "ECC Focus Queue")
+        item.button?.toolTip = "ECC Focus Queue"
 
         let menu = NSMenu()
-        let showItem = NSMenuItem(title: "Show Focus Queue", action: #selector(showPanel), keyEquivalent: "")
+        let showItem = NSMenuItem(title: "Show ECC Focus Queue", action: #selector(showPanel), keyEquivalent: "")
         showItem.target = self
         menu.addItem(showItem)
-        let hideItem = NSMenuItem(title: "Hide Focus Queue", action: #selector(hidePanel), keyEquivalent: "")
+        let hideItem = NSMenuItem(title: "Hide ECC Focus Queue", action: #selector(hidePanel), keyEquivalent: "")
         hideItem.target = self
         menu.addItem(hideItem)
+        let restartItem = NSMenuItem(title: "Restart ECC Focus Queue", action: #selector(restartApplication), keyEquivalent: "")
+        restartItem.target = self
+        menu.addItem(restartItem)
         menu.addItem(.separator())
         let leftItem = NSMenuItem(title: "Place Upper Left", action: #selector(placeUpperLeft), keyEquivalent: "")
         leftItem.target = self
@@ -154,73 +151,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         configItem.target = self
         menu.addItem(configItem)
         menu.addItem(.separator())
-        let quitItem = NSMenuItem(title: "Quit", action: #selector(quitApplication), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "Quit ECC Focus Queue", action: #selector(quitApplication), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
         item.menu = menu
         statusItem = item
     }
 
-    private func positionPanel(_ placement: QueueWindowPlacement, animated: Bool) {
+    private func positionPanel(_ placement: QueueWindowPlacement, on requestedScreen: NSScreen? = nil, animated: Bool) {
         guard let panel else { return }
-        let screenFrame = activeScreen().visibleFrame
-        let margin: CGFloat = 16
-        var origin = panel.frame.origin
+        let screenFrame = (requestedScreen ?? activeScreen()).visibleFrame
+        let margin: CGFloat = 12
+        let availableWidth = max(400, screenFrame.width - (margin * 2))
+        let width = min(max(panel.frame.width, 400), min(620, availableWidth))
+        let height = max(480, screenFrame.height - (margin * 2))
+        var frame = NSRect(x: screenFrame.minX + margin, y: screenFrame.minY + margin, width: width, height: height)
 
         switch placement {
-        case .upperLeft:
-            origin = NSPoint(
-                x: screenFrame.minX + margin,
-                y: screenFrame.maxY - panel.frame.height - margin
-            )
-        case .upperRight:
-            origin = NSPoint(
-                x: screenFrame.maxX - panel.frame.width - margin,
-                y: screenFrame.maxY - panel.frame.height - margin
-            )
-        case .center:
-            origin = NSPoint(
-                x: screenFrame.midX - panel.frame.width / 2,
-                y: screenFrame.midY - panel.frame.height / 2
-            )
+        case .upperLeft: frame.origin.x = screenFrame.minX + margin
+        case .upperRight: frame.origin.x = screenFrame.maxX - width - margin
+        case .center: frame.origin.x = screenFrame.midX - (width / 2)
         }
 
         currentPlacement = placement
-        if animated {
-            panel.animator().setFrameOrigin(origin)
-        } else {
-            panel.setFrameOrigin(origin)
-        }
+        panel.setFrame(frame, display: true, animate: animated)
         saveWindowFrame()
     }
 
     private func activeScreen() -> NSScreen {
         let pointer = NSEvent.mouseLocation
-        return NSScreen.screens.first(where: { $0.frame.contains(pointer) })
-            ?? panel?.screen
-            ?? NSScreen.main
-            ?? NSScreen.screens[0]
+        return NSScreen.screens.first(where: { $0.frame.contains(pointer) }) ?? panel?.screen ?? NSScreen.main ?? NSScreen.screens[0]
     }
 
     private func saveWindowFrame() {
         guard let frame = panel?.frame else { return }
-        model.saveWindow(WindowSnapshot(
-            x: frame.origin.x,
-            y: frame.origin.y,
-            width: frame.width,
-            height: frame.height,
-            placement: currentPlacement
-        ))
+        model.saveWindow(WindowSnapshot(x: frame.origin.x, y: frame.origin.y, width: frame.width, height: frame.height, placement: currentPlacement))
     }
 
-    private func frameIsVisible(_ snapshot: WindowSnapshot) -> Bool {
+    private func screen(containing snapshot: WindowSnapshot) -> NSScreen? {
         let frame = Self.rect(from: snapshot)
-        return NSScreen.screens.contains { $0.visibleFrame.intersection(frame).width >= 120 }
+        return NSScreen.screens.map { ($0, $0.visibleFrame.intersection(frame).width) }.filter { $0.1 >= 120 }.max { $0.1 < $1.1 }?.0
     }
 
-    private static func rect(from snapshot: WindowSnapshot) -> NSRect {
-        NSRect(x: snapshot.x, y: snapshot.y, width: snapshot.width, height: snapshot.height)
-    }
+    private static func rect(from snapshot: WindowSnapshot) -> NSRect { NSRect(x: snapshot.x, y: snapshot.y, width: snapshot.width, height: snapshot.height) }
 }
 
 final class FocusPanel: NSPanel {

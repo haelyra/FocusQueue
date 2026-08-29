@@ -8,10 +8,13 @@ dashboard, but the app is a standalone personal tool and is not part of ECC.
 
 - Native SwiftUI and AppKit floating panel with upper-left, upper-right, and
   active-display center placement.
-- Notification-style, translucent surfaces with a fixed top-five focus list and
-  one bottom control for the daily checklist and remaining queue.
+- Layered translucent surfaces with a lightly frosted outer panel, more opaque
+  notification cards, a fixed top-five focus list, and one bottom control for
+  the daily checklist and remaining queue.
 - A stationary panel with placement controlled from the menu bar rather than by
   accidental background dragging.
+- A full-height screen-edge layout with scrolling for expanded details and the
+  remaining queue.
 - Login launch through a per-user LaunchAgent, plus a menu-bar recovery menu.
 - Two-second dashboard refresh with source errors shown without discarding the
   last good snapshot.
@@ -34,6 +37,15 @@ The app installs at `/Users/hira/Applications/ECC Focus Queue.app`. Its login
 item is `/Users/hira/Library/LaunchAgents/com.haelyra.ecc-focus-queue.plist`.
 Runtime files live under
 `/Users/hira/Library/Application Support/ECC Focus Queue/`.
+
+## Desktop and menu-bar management
+
+Installation also creates `/Users/hira/Desktop/ECC Focus Queue.app`, a Desktop
+launcher that points to the installed app. Double-click it to launch the queue
+after quitting or to reveal the existing panel. The checklist icon in the macOS
+menu bar provides Show, Hide, Restart, placement, Open Config, and Quit actions.
+The Desktop item is a launcher, so the installed app and its login service keep
+one canonical location under the user's Applications and LaunchAgents folders.
 
 ## Configuration
 

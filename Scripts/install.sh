@@ -7,6 +7,8 @@ product_name="ECC Focus Queue"
 built_app="$project_dir/dist/$product_name.app"
 install_dir="/Users/hira/Applications"
 installed_app="$install_dir/$product_name.app"
+desktop_dir="/Users/hira/Desktop"
+desktop_launcher="$desktop_dir/$product_name.app"
 support_dir="/Users/hira/Library/Application Support/$product_name"
 launch_agent="/Users/hira/Library/LaunchAgents/com.haelyra.ecc-focus-queue.plist"
 service="gui/$(/usr/bin/id -u)/com.haelyra.ecc-focus-queue"
@@ -15,12 +17,18 @@ if [[ "${1:-}" != "--no-build" ]]; then
   "$script_dir/build-app.sh" >/dev/null
 fi
 
-/bin/mkdir -p "$install_dir" "$support_dir" "/Users/hira/Library/LaunchAgents"
+/bin/mkdir -p "$install_dir" "$desktop_dir" "$support_dir" "/Users/hira/Library/LaunchAgents"
 /usr/bin/pkill -x ECCFocusQueue 2>/dev/null || true
 if [[ -e "$installed_app" ]]; then
   /bin/rm -rf "$installed_app"
 fi
 /usr/bin/ditto "$built_app" "$installed_app"
+
+if [[ ! -e "$desktop_launcher" && ! -L "$desktop_launcher" ]]; then
+  /bin/ln -s "$installed_app" "$desktop_launcher"
+elif [[ ! -L "$desktop_launcher" ]]; then
+  print -u2 -r -- "Desktop item already exists and was left unchanged: $desktop_launcher"
+fi
 
 if [[ ! -e "$support_dir/config.json" ]]; then
   /bin/cp "$project_dir/Config/ecc.config.json" "$support_dir/config.json"
@@ -52,3 +60,4 @@ fi
 /bin/launchctl kickstart -k "$service"
 
 print -r -- "$installed_app"
+print -r -- "$desktop_launcher"

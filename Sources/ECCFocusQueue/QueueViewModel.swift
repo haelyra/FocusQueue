@@ -45,6 +45,7 @@ final class QueueViewModel {
   @ObservationIgnored private let stateStore: any LocalStateStoring
   @ObservationIgnored private let reviewArtifacts: ReviewArtifactStore
   @ObservationIgnored private let terminalController: any WezTermControlling
+  @ObservationIgnored private let agentRegistrationInbox: AgentRegistrationInbox
   @ObservationIgnored private let verifier: any CompletionVerifying
   @ObservationIgnored private let queueAgent: any QueueAgentChatting
   @ObservationIgnored private let pullRequestQueueLoader: any PullRequestQueueLoading
@@ -70,6 +71,7 @@ final class QueueViewModel {
     stateStore: (any LocalStateStoring)? = nil,
     reviewArtifacts: ReviewArtifactStore? = nil,
     terminalController: any WezTermControlling = WezTermController(),
+    agentRegistrationInbox: AgentRegistrationInbox? = nil,
     verifier: any CompletionVerifying = CodexCompletionVerifier(),
     queueAgent: any QueueAgentChatting = CodexQueueAgent(),
     pullRequestQueueLoader: any PullRequestQueueLoading = GitHubPullRequestQueueLoader()
@@ -83,6 +85,8 @@ final class QueueViewModel {
     self.stateStore = stateStore ?? JSONLocalStateStore(url: paths.stateFile)
     self.reviewArtifacts = reviewArtifacts ?? ReviewArtifactStore(directory: paths.reviewsDirectory)
     self.terminalController = terminalController
+    self.agentRegistrationInbox =
+      agentRegistrationInbox ?? AgentRegistrationInbox(directory: paths.agentRegistrationsDirectory)
     self.verifier = verifier
     self.queueAgent = queueAgent
     self.pullRequestQueueLoader = pullRequestQueueLoader
@@ -145,6 +149,7 @@ final class QueueViewModel {
     do {
       config = try await configurationRepository.loadOrCreate(default: .eccDefault())
       localState = try await stateStore.load()
+      await importAgentRegistrations()
       resetDailyRoutinesIfNeeded()
       recoverInterruptedReviews()
       try await stateStore.save(localState)
@@ -341,6 +346,20 @@ final class QueueViewModel {
     try await terminalController.listRunningAgents(configuration: config.wezTerm)
   }
 
+  func importAgentRegistrations() async {
+    do {
+      let registrations = try await agentRegistrationInbox.pending()
+      guard !registrations.isEmpty else { return }
+      for registration in registrations {
+        upsertAgentSession(registration)
+      }
+      try await stateStore.save(localState)
+      await agentRegistrationInbox.acknowledge(registrations)
+    } catch {
+      loadError = "Could not import agent registration: \(error.localizedDescription)"
+    }
+  }
+
   func attachAgent(_ agent: RunningAgentSession, to ticket: DashboardTicket) async -> Bool {
     actionMessages[ticket.id] = "Attaching the selected \(agent.provider.displayName) agent…"
     do {
@@ -359,27 +378,7 @@ final class QueueViewModel {
         tabID: agent.pane.tabID,
         paneID: agent.pane.paneID
       )
-      if let index = localState.agentSessions.firstIndex(where: {
-        $0.ticketID == ticket.id
-          && $0.provider == agent.provider
-          && $0.sessionID == agent.sessionID
-      }) {
-        var updated = attached
-        updated = TaskAgentSession(
-          id: localState.agentSessions[index].id,
-          ticketID: updated.ticketID,
-          provider: updated.provider,
-          sessionID: updated.sessionID,
-          tabTitle: updated.tabTitle,
-          workingDirectory: updated.workingDirectory,
-          windowID: updated.windowID,
-          tabID: updated.tabID,
-          paneID: updated.paneID
-        )
-        localState.agentSessions[index] = updated
-      } else {
-        localState.agentSessions.append(attached)
-      }
+      upsertAgentSession(attached)
       persistLocalState()
       actionMessages[ticket.id] =
         "Attached \(agent.provider.displayName) session \(agent.sessionID) to \(ticket.id)."
@@ -423,6 +422,28 @@ final class QueueViewModel {
     persistLocalState()
     actionMessages[ticket.id] =
       "Removed \(session.provider.displayName) session \(session.sessionID) from this task."
+  }
+
+  private func upsertAgentSession(_ session: TaskAgentSession) {
+    if let index = localState.agentSessions.firstIndex(where: {
+      $0.ticketID == session.ticketID
+        && $0.provider == session.provider
+        && $0.sessionID == session.sessionID
+    }) {
+      localState.agentSessions[index] = TaskAgentSession(
+        id: localState.agentSessions[index].id,
+        ticketID: session.ticketID,
+        provider: session.provider,
+        sessionID: session.sessionID,
+        tabTitle: session.tabTitle,
+        workingDirectory: session.workingDirectory,
+        windowID: session.windowID,
+        tabID: session.tabID,
+        paneID: session.paneID
+      )
+    } else {
+      localState.agentSessions.append(session)
+    }
   }
 
   func availableTerminals() async throws -> [WezTermPane] {

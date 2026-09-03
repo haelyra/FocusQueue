@@ -426,6 +426,9 @@ func wezTermAgentDiscovery() async throws {
   #expect(agent.tabTitle == "ECC-035")
   #expect(agent.workingDirectory == "/Users/hira/Documents/Github/ECCFocusQueue")
   #expect(agent.pane.paneID == 33)
+  let invocations = await runner.specifications
+  #expect(invocations.count == 3)
+  #expect(invocations[2].arguments == ["-a", "-p", "30447", "-Fn"])
   #expect(WezTermController.sessionID(
     for: .claude,
     inLsofOutput:
@@ -436,6 +439,58 @@ func wezTermAgentDiscovery() async throws {
     inLsofOutput:
       "n/Users/hira/.codex/thread-writer-locks/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.lock"
   ) == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+}
+
+@Test("Running agent discovery inspects all processes in one batch")
+func wezTermAgentDiscoveryIsBatched() async throws {
+  let panes = """
+    [{"window_id":11,"tab_id":20,"pane_id":33,"cwd":"file:///Users/hira/one",
+      "tab_title":"One","tty_name":"/dev/ttys027"},
+     {"window_id":12,"tab_id":21,"pane_id":34,"cwd":"file:///Users/hira/two",
+      "tab_title":"Two","tty_name":"/dev/ttys029"}]
+    """
+  let processList = "30447 ttys027  codex\n64829 ttys029  codex\n"
+  let lsof = """
+    p30447
+    n/Users/hira/.codex/thread-writer-locks/11111111-2222-3333-4444-555555555555.lock
+    p64829
+    n/Users/hira/.codex/sessions/2026/09/02/rollout-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl
+    """
+  let runner = MockProcessRunner(results: [
+    ProcessResult(exitCode: 0, standardOutput: panes, standardError: "", timedOut: false),
+    ProcessResult(exitCode: 0, standardOutput: processList, standardError: "", timedOut: false),
+    ProcessResult(exitCode: 0, standardOutput: lsof, standardError: "", timedOut: false),
+  ])
+
+  let agents = try await WezTermController(runner: runner).listRunningAgents(
+    configuration: WezTermConfiguration(executable: "/mock/wezterm")
+  )
+  let invocations = await runner.specifications
+
+  #expect(agents.count == 2)
+  #expect(invocations.count == 3)
+  #expect(invocations[2].arguments == ["-a", "-p", "30447,64829", "-Fn"])
+}
+
+@Test("Agent registration inbox persists and acknowledges a session")
+func agentRegistrationInboxRoundTrip() async throws {
+  let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+    "focus-queue-agent-registration-\(UUID().uuidString)", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let inbox = AgentRegistrationInbox(directory: directory)
+  let session = TaskAgentSession(
+    ticketID: "ECC-035",
+    provider: .codex,
+    sessionID: "11111111-2222-3333-4444-555555555555",
+    tabTitle: "ECC-035",
+    workingDirectory: "/Users/test/worktree",
+    paneID: 33
+  )
+
+  try await inbox.submit(session)
+  #expect(try await inbox.pending() == [session])
+  await inbox.acknowledge([session])
+  #expect(try await inbox.pending().isEmpty)
 }
 
 @Test("Agent resume commands use the saved provider, session, and working directory")
@@ -845,11 +900,11 @@ func wezTermFocusesSavedAgentSession() async throws {
   let runner = MockProcessRunner(results: [
     ProcessResult(exitCode: 0, standardOutput: panes, standardError: "", timedOut: false),
     ProcessResult(
-      exitCode: 0, standardOutput: "30447 ttys027 codex\n", standardError: "", timedOut: false),
+      exitCode: 0, standardOutput: "30447 ttys027  codex\n", standardError: "", timedOut: false),
     ProcessResult(
       exitCode: 0,
       standardOutput:
-        "n/Users/test/.codex/sessions/2026/09/02/rollout-2026-09-02T21-17-02-\(sessionID).jsonl\n",
+        "p30447\nn/Users/test/.codex/sessions/2026/09/02/rollout-2026-09-02T21-17-02-\(sessionID).jsonl\n",
       standardError: "", timedOut: false),
     ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
     ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),

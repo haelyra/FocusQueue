@@ -473,22 +473,31 @@ public actor WezTermController: WezTermControlling {
                 return (URL(fileURLWithPath: ttyName).lastPathComponent, pane)
             }
         )
+        let paneProcesses = Self.agentProcesses(in: processResult.standardOutput).filter {
+            panesByTTY[$0.tty] != nil
+        }
+        guard !paneProcesses.isEmpty else { return [] }
+
+        let providersByPID = Dictionary(
+            uniqueKeysWithValues: paneProcesses.map { ($0.pid, $0.provider) }
+        )
+        let processIDs = paneProcesses.map { String($0.pid) }.joined(separator: ",")
+        let lsofResult = try await runner.run(ProcessSpecification(
+            executable: "/usr/sbin/lsof",
+            arguments: ["-a", "-p", processIDs, "-Fn"],
+            timeoutSeconds: 10
+        ))
+        let sessionsByPID = Self.sessionIDsByProcess(
+            inLsofOutput: lsofResult.standardOutput,
+            providersByPID: providersByPID
+        )
+
         var discovered: [RunningAgentSession] = []
         var seenSessions: Set<String> = []
 
-        for process in Self.agentProcesses(in: processResult.standardOutput) {
+        for process in paneProcesses {
             guard let pane = panesByTTY[process.tty] else { continue }
-            let lsofResult = try await runner.run(ProcessSpecification(
-                executable: "/usr/sbin/lsof",
-                arguments: ["-p", String(process.pid), "-Fn"],
-                timeoutSeconds: 10
-            ))
-            guard lsofResult.succeeded,
-                  let sessionID = Self.sessionID(
-                    for: process.provider,
-                    inLsofOutput: lsofResult.standardOutput
-                  )
-            else { continue }
+            guard let sessionID = sessionsByPID[process.pid] else { continue }
             let identity = "\(process.provider.rawValue):\(sessionID)"
             guard seenSessions.insert(identity).inserted else { continue }
 
@@ -521,6 +530,29 @@ public actor WezTermController: WezTermControlling {
             }
             return AgentProcess(pid: pid, tty: String(fields[1]), provider: provider)
         }
+    }
+
+    private static func sessionIDsByProcess(
+        inLsofOutput output: String,
+        providersByPID: [Int32: AgentProvider]
+    ) -> [Int32: String] {
+        var currentPID: Int32?
+        var sessions: [Int32: String] = [:]
+
+        for rawLine in output.split(whereSeparator: \Character.isNewline) {
+            let line = String(rawLine)
+            if line.first == "p" {
+                currentPID = Int32(line.dropFirst())
+                continue
+            }
+            guard let currentPID,
+                  sessions[currentPID] == nil,
+                  let provider = providersByPID[currentPID],
+                  let sessionID = sessionID(for: provider, inLsofOutput: line)
+            else { continue }
+            sessions[currentPID] = sessionID
+        }
+        return sessions
     }
 
     private static func displayTitle(for pane: WezTermPane) -> String {

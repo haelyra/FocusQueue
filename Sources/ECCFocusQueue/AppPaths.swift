@@ -5,6 +5,7 @@ struct AppPaths: Sendable {
     let configurationFile: URL
     let stateFile: URL
     let reviewsDirectory: URL
+    let agentRegistrationsDirectory: URL
 
     static func live(environment: [String: String] = ProcessInfo.processInfo.environment) -> Self {
         if let override = environment["FOCUS_QUEUE_SUPPORT_DIR"], !override.isEmpty {
@@ -13,7 +14,9 @@ struct AppPaths: Sendable {
                 supportDirectory: directory,
                 configurationFile: directory.appendingPathComponent("config.json"),
                 stateFile: directory.appendingPathComponent("state.json"),
-                reviewsDirectory: directory.appendingPathComponent("reviews", isDirectory: true)
+                reviewsDirectory: directory.appendingPathComponent("reviews", isDirectory: true),
+                agentRegistrationsDirectory: directory.appendingPathComponent(
+                    "agent-registrations", isDirectory: true)
             )
         }
 
@@ -23,7 +26,9 @@ struct AppPaths: Sendable {
             supportDirectory: base,
             configurationFile: base.appendingPathComponent("config.json"),
             stateFile: base.appendingPathComponent("state.json"),
-            reviewsDirectory: base.appendingPathComponent("reviews", isDirectory: true)
+            reviewsDirectory: base.appendingPathComponent("reviews", isDirectory: true),
+            agentRegistrationsDirectory: base.appendingPathComponent(
+                "agent-registrations", isDirectory: true)
         )
     }
 }

@@ -9,7 +9,8 @@ let package = Package(
     ],
     products: [
         .library(name: "FocusQueueCore", targets: ["FocusQueueCore"]),
-        .executable(name: "ECCFocusQueue", targets: ["ECCFocusQueue"])
+        .executable(name: "ECCFocusQueue", targets: ["ECCFocusQueue"]),
+        .executable(name: "focus-queue-session", targets: ["FocusQueueSession"])
     ],
     dependencies: [
         .package(url: "https://github.com/JohnSundell/Ink.git", exact: "0.6.0")
@@ -21,6 +22,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "ECCFocusQueue",
+            dependencies: ["FocusQueueCore"]
+        ),
+        .executableTarget(
+            name: "FocusQueueSession",
             dependencies: ["FocusQueueCore"]
         ),
         .testTarget(

@@ -23,6 +23,12 @@ import SwiftUI
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.accessory)
+    DistributedNotificationCenter.default().addObserver(
+      self,
+      selector: #selector(importAgentRegistration(_:)),
+      name: Notification.Name(AgentRegistrationInbox.notificationName),
+      object: nil
+    )
     model.placementHandler = { [weak self] placement in
       self?.positionPanelOnCurrentDisplay(placement, animated: true)
     }
@@ -81,6 +87,10 @@ import SwiftUI
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
+  func applicationWillTerminate(_ notification: Notification) {
+    DistributedNotificationCenter.default().removeObserver(self)
+  }
+
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool
   {
     showPanel()
@@ -110,6 +120,10 @@ import SwiftUI
     guard let panel else { return }
     reconcilePanelWithAvailableScreens(animated: false)
     panel.orderFrontRegardless()
+  }
+
+  @objc private func importAgentRegistration(_ notification: Notification) {
+    Task { await model.importAgentRegistrations() }
   }
 
   @objc private func centerPanel() {

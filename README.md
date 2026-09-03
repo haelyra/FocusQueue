@@ -61,10 +61,16 @@ dashboard, but the app is a standalone personal tool and is not part of ECC.
   in the menu bar exits terminal focus.
 - The queue header's display button moves the queue itself to the next connected
   display. The selected terminal remains on its current display.
-- **Attach Agent** discovers the exact Codex or Claude session in each running
-  WezTerm pane and persists its session UUID, tab title, pane identity, and
-  starting directory. A task can retain multiple agents, and its picker lists
-  each tab title followed by the full session ID.
+- Agents register themselves with
+  `focus-queue-session attach <TICKET-ID>`. The helper reads the provider
+  session ID, WezTerm pane, and working directory directly from the agent
+  environment, labels the tab, and immediately notifies the running app. A
+  task can retain multiple agents, and its picker lists each tab title followed
+  by the full session ID.
+- **Attach Agent** uses a fast process scan as a recovery path for sessions that
+  were started before registration was installed or whose registration was
+  missed. It correlates WezTerm panes and OS processes by TTY, then reads each
+  process's open transcript or session lock to recover the exact session UUID.
 - **View Agent** focuses the pane that owns the saved session UUID. If that
   conversation is no longer running, it opens a new WezTerm window in the saved
   directory and invokes `codex resume <session-id>` or

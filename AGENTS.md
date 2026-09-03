@@ -13,3 +13,12 @@
   checks, process inspection, and persisted-state inspection.
 - Installing or restarting ECC Focus Queue is allowed when needed to deliver a
   requested app change, but do not manipulate the pointer to validate it.
+
+## Task session association
+
+- As soon as the relevant ECC ticket ID is known, run
+  `/Users/hira/.local/bin/focus-queue-session attach <TICKET-ID>` from the
+  agent's WezTerm pane. Repeat this when switching to a different ticket.
+- Registration reads the provider session ID and WezTerm pane directly from
+  the agent environment. Do not search transcript history unless direct
+  registration is unavailable.

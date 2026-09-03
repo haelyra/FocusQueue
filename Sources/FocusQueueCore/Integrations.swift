@@ -975,6 +975,10 @@ public actor CodexQueueAgent: QueueAgentChatting {
         try files.write(Data(prompt.utf8), to: promptURL)
 
         let requestStartedAt = Date()
+        let runTimeoutSeconds = Self.runTimeoutSeconds(
+            for: message,
+            configuredTimeoutSeconds: configuration.timeoutSeconds
+        )
         let result = try await runner.run(ProcessSpecification(
             executable: configuration.executable,
             arguments: [
@@ -982,10 +986,10 @@ public actor CodexQueueAgent: QueueAgentChatting {
                 "--session", Self.sessionName,
                 "--workspace", workspace,
                 "--prompt-file", promptURL.path,
-                "--timeout", String(configuration.timeoutSeconds),
+                "--timeout", String(runTimeoutSeconds),
             ],
             workingDirectory: workspace,
-            timeoutSeconds: configuration.timeoutSeconds + 15
+            timeoutSeconds: runTimeoutSeconds + 15
         ))
 
         let output = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1023,6 +1027,23 @@ public actor CodexQueueAgent: QueueAgentChatting {
             )
         }
         return QueueAgentReply(message: verifiedOutput, log: log)
+    }
+
+    static func runTimeoutSeconds(
+        for message: String,
+        configuredTimeoutSeconds: Int
+    ) -> Int {
+        let normalized = message.lowercased()
+        let bulkInboxPhrases = [
+            "entire inbox", "whole inbox", "all my inbox", "all of my inbox",
+            "catch up", "caught up", "scan my inbox", "scan through my inbox",
+            "inbox backlog", "add relevant tasks", "create tasks from",
+        ]
+        guard requiresMailEvidence(message),
+              bulkInboxPhrases.contains(where: normalized.contains) else {
+            return configuredTimeoutSeconds
+        }
+        return max(configuredTimeoutSeconds, 600)
     }
 
     private static func requiresMailEvidence(_ message: String) -> Bool {

@@ -13,6 +13,8 @@ support_dir="/Users/hira/Library/Application Support/$product_name"
 local_bin_dir="/Users/hira/.local/bin"
 launch_agent="/Users/hira/Library/LaunchAgents/com.haelyra.ecc-focus-queue.plist"
 service="gui/$(/usr/bin/id -u)/com.haelyra.ecc-focus-queue"
+mail_reader_app="/Users/hira/Applications/ECC Focus Mail Reader.app"
+mail_reader_launch_agent="/Users/hira/Library/LaunchAgents/tools.ecc.focus-mail-reader.plist"
 
 if [[ "${1:-}" != "--no-build" ]]; then
   "$script_dir/build-app.sh" >/dev/null
@@ -61,7 +63,9 @@ if [[ "$bootstrapped" -ne 1 ]]; then
 fi
 /bin/launchctl kickstart -k "$service"
 
-"$script_dir/install-mail-reader.sh" >/dev/null
+if [[ ! -d "$mail_reader_app" || ! -f "$mail_reader_launch_agent" ]]; then
+  "$script_dir/install-mail-reader.sh" >/dev/null
+fi
 "$script_dir/install-morning-agent.sh" >/dev/null
 
 print -r -- "$installed_app"

@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,34 @@ def parse_thread_id(stdout: str) -> str | None:
     return None
 
 
+def write_run_diagnostic(
+    runtime: Path,
+    *,
+    started_at: str,
+    timeout: int,
+    sandbox: str,
+    thread_id: str | None,
+    stdout: str,
+    stderr: str,
+    return_code: int | None,
+    timed_out: bool,
+) -> None:
+    """Keep a private, prompt-free record so harness failures are diagnosable."""
+    payload = {
+        "startedAt": started_at,
+        "finishedAt": datetime.now(timezone.utc).isoformat(),
+        "timeoutSeconds": timeout,
+        "sandbox": sandbox,
+        "resumedThread": bool(thread_id),
+        "observedThreadId": parse_thread_id(stdout),
+        "returnCode": return_code,
+        "timedOut": timed_out,
+        "stdoutTail": stdout[-32_000:],
+        "stderrTail": stderr[-16_000:],
+    }
+    morning.write_private_json(runtime / "latest-run.json", payload)
+
+
 def run_codex(
     *,
     prompt: str,
@@ -67,6 +96,7 @@ def run_codex(
 ) -> tuple[str, str | None]:
     runtime.mkdir(parents=True, exist_ok=True)
     runtime.chmod(0o700)
+    started_at = datetime.now(timezone.utc).isoformat()
     with tempfile.TemporaryDirectory(prefix="turn-", dir=runtime) as temporary:
         reply_path = Path(temporary) / "reply.txt"
         command = [
@@ -120,19 +150,44 @@ def run_codex(
             raise SystemExit(143)
 
         previous_handler = signal.signal(signal.SIGTERM, terminate_child)
+        stdout = ""
+        stderr = ""
         try:
             try:
                 stdout, stderr = process.communicate(input=prompt, timeout=timeout)
             except subprocess.TimeoutExpired as error:
                 os.killpg(process.pid, signal.SIGTERM)
                 try:
-                    process.communicate(timeout=2)
+                    stdout, stderr = process.communicate(timeout=2)
                 except subprocess.TimeoutExpired:
                     os.killpg(process.pid, signal.SIGKILL)
-                    process.communicate()
+                    stdout, stderr = process.communicate()
+                write_run_diagnostic(
+                    runtime,
+                    started_at=started_at,
+                    timeout=timeout,
+                    sandbox=sandbox,
+                    thread_id=thread_id,
+                    stdout=stdout,
+                    stderr=stderr,
+                    return_code=process.returncode,
+                    timed_out=True,
+                )
                 raise CodexHarnessError(f"Codex exceeded the {timeout}-second run budget") from error
         finally:
             signal.signal(signal.SIGTERM, previous_handler)
+
+        write_run_diagnostic(
+            runtime,
+            started_at=started_at,
+            timeout=timeout,
+            sandbox=sandbox,
+            thread_id=thread_id,
+            stdout=stdout,
+            stderr=stderr,
+            return_code=process.returncode,
+            timed_out=False,
+        )
 
         if process.returncode != 0:
             detail = (stderr or stdout).strip()

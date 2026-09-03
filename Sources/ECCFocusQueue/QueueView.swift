@@ -1398,6 +1398,7 @@ private struct AgentSessionPicker: View {
 
   private func loadAgents() async {
     isLoading = true
+    defer { isLoading = false }
     loadError = nil
     do {
       runningAgents = try await model.availableAgents()
@@ -1405,7 +1406,6 @@ private struct AgentSessionPicker: View {
       runningAgents = []
       loadError = error.localizedDescription
     }
-    isLoading = false
   }
 
   private func displayPath(_ path: String) -> String {

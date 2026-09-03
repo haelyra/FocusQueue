@@ -343,7 +343,21 @@ final class QueueViewModel {
   }
 
   func availableAgents() async throws -> [RunningAgentSession] {
-    try await terminalController.listRunningAgents(configuration: config.wezTerm)
+    let terminalController = terminalController
+    let configuration = config.wezTerm
+    return try await withThrowingTaskGroup(of: [RunningAgentSession].self) { group in
+      group.addTask {
+        try await terminalController.listRunningAgents(configuration: configuration)
+      }
+      group.addTask {
+        try await Task.sleep(for: .seconds(3))
+        throw WezTermError.actionFailed(
+          "Agent discovery took longer than 3 seconds. Close and reopen the picker to retry."
+        )
+      }
+      defer { group.cancelAll() }
+      return try await group.next() ?? []
+    }
   }
 
   func importAgentRegistrations() async {

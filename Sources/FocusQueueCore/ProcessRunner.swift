@@ -105,20 +105,36 @@ public actor FoundationProcessRunner: ProcessRunning {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(specification.timeoutSeconds))
         var timedOut = false
+        var wasCancelled = false
+        var stopRequestedAt: ContinuousClock.Instant?
+        var sentKill = false
 
         while process.isRunning {
-            if clock.now >= deadline {
-                timedOut = true
+            let now = clock.now
+            if Task.isCancelled, stopRequestedAt == nil {
+                wasCancelled = true
+                stopRequestedAt = now
                 process.terminate()
-                try? await Task.sleep(for: .milliseconds(400))
-                if process.isRunning {
-                    Darwin.kill(process.processIdentifier, SIGKILL)
-                }
-                break
+            } else if now >= deadline, stopRequestedAt == nil {
+                timedOut = true
+                stopRequestedAt = now
+                process.terminate()
             }
-            try await Task.sleep(for: .milliseconds(100))
+            if let stopRequestedAt,
+               now >= stopRequestedAt.advanced(by: .milliseconds(400)),
+               !sentKill,
+               process.isRunning {
+                Darwin.kill(process.processIdentifier, SIGKILL)
+                sentKill = true
+            }
+            // A blocking waitUntilExit here can deadlock after Foundation has already
+            // reported isRunning=false. Polling also lets cancellation tear down the
+            // child before this actor accepts its next command.
+            try? await Task.sleep(for: .milliseconds(25))
         }
-        process.waitUntilExit()
+        if wasCancelled {
+            throw CancellationError()
+        }
         try? outputHandle.synchronize()
         try? errorHandle.synchronize()
 

@@ -4,6 +4,31 @@ import Testing
 
 @testable import FocusQueueCore
 
+@Test("Foundation process runner returns after a short-lived child exits")
+func foundationProcessRunnerReturnsAfterExit() async throws {
+  let result = try await FoundationProcessRunner().run(ProcessSpecification(
+    executable: "/usr/bin/true",
+    arguments: [],
+    timeoutSeconds: 2
+  ))
+
+  #expect(result.succeeded)
+  #expect(!result.timedOut)
+}
+
+@Test("Foundation process runner terminates a child at its deadline")
+func foundationProcessRunnerEnforcesDeadline() async throws {
+  let startedAt = Date()
+  let result = try await FoundationProcessRunner().run(ProcessSpecification(
+    executable: "/bin/sleep",
+    arguments: ["5"],
+    timeoutSeconds: 1
+  ))
+
+  #expect(result.timedOut)
+  #expect(Date().timeIntervalSince(startedAt) < 3)
+}
+
 @Test("Dashboard decoding keeps source-backed progress and open state")
 func dashboardDecoding() throws {
   let json = """
@@ -615,6 +640,18 @@ func codexQueueAgentArguments() async throws {
   #expect(prompt.contains("DISCORD_PROOF: <nonce>"))
   #expect(CodexQueueAgent.sessionName == "ecc-focus-queue-codex-v1")
   #expect(prompt.contains("<queue-user-message>"))
+}
+
+@Test("Whole-inbox Queue chat requests receive the bulk processing budget")
+func codexQueueAgentBulkInboxTimeout() {
+  #expect(CodexQueueAgent.runTimeoutSeconds(
+    for: "Scan through my entire inbox so I can get caught up and add relevant tasks.",
+    configuredTimeoutSeconds: 120
+  ) == 600)
+  #expect(CodexQueueAgent.runTimeoutSeconds(
+    for: "Read my latest email.",
+    configuredTimeoutSeconds: 120
+  ) == 120)
 }
 
 @Test("Queue chat accepts fresh verified mail proof and adds a deterministic receipt")

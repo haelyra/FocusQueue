@@ -964,6 +964,21 @@ func queuePanelFrameIsVisible() {
   #expect(centered.width == 620)
 }
 
+@Test("Every queue placement stays in the supplied display coordinate space")
+func everyQueuePlacementStaysOnCurrentDisplay() {
+  let currentDisplay = CGRect(x: -2_560, y: 180, width: 2_560, height: 1_440)
+
+  for placement in QueueWindowPlacement.allCases {
+    let frame = DisplayGeometry.panelFrame(
+      preferredWidth: 440,
+      visibleFrame: currentDisplay,
+      placement: placement
+    )
+
+    #expect(currentDisplay.contains(frame))
+  }
+}
+
 private actor MockProcessRunner: ProcessRunning {
   private var results: [ProcessResult]
   private(set) var specifications: [ProcessSpecification] = []

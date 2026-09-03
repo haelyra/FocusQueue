@@ -24,7 +24,7 @@ import SwiftUI
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.accessory)
     model.placementHandler = { [weak self] placement in
-      self?.positionPanel(placement, animated: true)
+      self?.positionPanelOnCurrentDisplay(placement, animated: true)
     }
     model.monitorSwitchHandler = { [weak self] in self?.switchPanelMonitor() }
     model.collapseHandler = { [weak self] collapsed in self?.setPanelCollapsed(collapsed) }
@@ -113,17 +113,17 @@ import SwiftUI
   }
 
   @objc private func centerPanel() {
-    positionPanel(.center, animated: true)
+    positionPanelOnCurrentDisplay(.center, animated: true)
     panel?.orderFrontRegardless()
   }
 
   @objc private func placeUpperLeft() {
-    positionPanel(.upperLeft, animated: true)
+    positionPanelOnCurrentDisplay(.upperLeft, animated: true)
     panel?.orderFrontRegardless()
   }
 
   @objc private func placeUpperRight() {
-    positionPanel(.upperRight, animated: true)
+    positionPanelOnCurrentDisplay(.upperRight, animated: true)
     panel?.orderFrontRegardless()
   }
 
@@ -134,7 +134,7 @@ import SwiftUI
       NSSound.beep()
       return
     }
-    let currentScreen = panel.screen ?? activeScreen()
+    let currentScreen = currentPanelScreen()
     guard
       let nextIndex = DisplayGeometry.nextScreenIndex(
         currentScreenFrame: currentScreen.frame,
@@ -242,7 +242,7 @@ import SwiftUI
     rightItem.target = self
     menu.addItem(rightItem)
     let centerItem = NSMenuItem(
-      title: "Center on Active Display", action: #selector(centerPanel), keyEquivalent: "")
+      title: "Center on Current Display", action: #selector(centerPanel), keyEquivalent: "")
     centerItem.target = self
     menu.addItem(centerItem)
     let nextDisplayItem = NSMenuItem(
@@ -265,12 +265,11 @@ import SwiftUI
 
   private func positionPanel(
     _ placement: QueueWindowPlacement,
-    on requestedScreen: NSScreen? = nil,
+    on targetScreen: NSScreen,
     animated: Bool,
     persist: Bool = true
   ) {
     guard let panel else { return }
-    let targetScreen = requestedScreen ?? defaultScreen()
     let frame = DisplayGeometry.panelFrame(
       preferredWidth: panel.frame.width,
       visibleFrame: targetScreen.visibleFrame,
@@ -286,6 +285,13 @@ import SwiftUI
       saveWindowFrame()
     }
     scheduleFocusChromeRefresh()
+  }
+
+  private func positionPanelOnCurrentDisplay(
+    _ placement: QueueWindowPlacement,
+    animated: Bool
+  ) {
+    positionPanel(placement, on: currentPanelScreen(), animated: animated)
   }
 
   private func setPanelCollapsed(_ collapsed: Bool) {
@@ -306,13 +312,16 @@ import SwiftUI
     }
 
     panel.minSize = NSSize(width: 400, height: 500)
-    positionPanel(currentPlacement, on: panel.screen, animated: true)
+    positionPanelOnCurrentDisplay(currentPlacement, animated: true)
   }
 
-  private func activeScreen() -> NSScreen {
-    let pointer = NSEvent.mouseLocation
-    return NSScreen.screens.first(where: { $0.frame.contains(pointer) }) ?? panel?.screen
-      ?? NSScreen.main ?? NSScreen.screens[0]
+  private func currentPanelScreen() -> NSScreen {
+    if let identifier = preferredDisplayIdentifier,
+      let preferredScreen = screen(matching: identifier)
+    {
+      return preferredScreen
+    }
+    return panel?.screen ?? defaultScreen()
   }
 
   private func defaultScreen() -> NSScreen {

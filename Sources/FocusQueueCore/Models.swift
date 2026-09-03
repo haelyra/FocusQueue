@@ -137,8 +137,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
       wezTerm: WezTermConfiguration(executable: "\(home)/.local/bin/wezterm"),
       verifier: VerifierConfiguration(
         enabled: true,
-        executable: "\(home)/.local/bin/hermes",
-        sessionName: "ecc-focus-queue-verifier"
+        executable: "\(home)/.local/bin/focus-queue-codex",
+        sessionName: "ecc-focus-queue-codex-verifier"
       )
     )
   }
@@ -169,7 +169,7 @@ public enum ConfigurationError: Error, LocalizedError, Equatable {
     case .invalidRefreshInterval:
       "Refresh interval must be between 1 and 300 seconds."
     case .invalidVerifierBudget:
-      "Hermes timeout or turn budget is outside the supported range."
+      "Agent timeout or turn budget is outside the supported range."
     }
   }
 }
@@ -243,6 +243,18 @@ public struct DashboardPR: Codable, Identifiable, Equatable, Sendable {
   }
 }
 
+public struct DashboardRecurrence: Codable, Equatable, Sendable {
+  public let kind: String
+  public let cadence: String
+  public let repository: String?
+
+  public init(kind: String, cadence: String, repository: String? = nil) {
+    self.kind = kind
+    self.cadence = cadence
+    self.repository = repository
+  }
+}
+
 public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
   public let id: String
   public let title: String
@@ -253,6 +265,9 @@ public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
   public let next: String?
   public let doneWhen: String?
   public let updatedAt: String?
+  public let completedAt: String?
+  public let taskType: String?
+  public let recurrence: DashboardRecurrence?
   public let worktree: String?
   public let resolutionPrs: [Int]
   public let prs: [DashboardPR]
@@ -269,6 +284,9 @@ public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
     next: String? = nil,
     doneWhen: String? = nil,
     updatedAt: String? = nil,
+    completedAt: String? = nil,
+    taskType: String? = nil,
+    recurrence: DashboardRecurrence? = nil,
     worktree: String? = nil,
     resolutionPrs: [Int] = [],
     prs: [DashboardPR] = [],
@@ -284,6 +302,9 @@ public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
     self.next = next
     self.doneWhen = doneWhen
     self.updatedAt = updatedAt
+    self.completedAt = completedAt
+    self.taskType = taskType
+    self.recurrence = recurrence
     self.worktree = worktree
     self.resolutionPrs = resolutionPrs
     self.prs = prs
@@ -293,7 +314,7 @@ public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
 
   private enum CodingKeys: String, CodingKey {
     case id, title, category, priority, status, summary, next, doneWhen
-    case updatedAt, worktree, resolutionPrs, prs, links, steps
+    case updatedAt, completedAt, taskType, recurrence, worktree, resolutionPrs, prs, links, steps
   }
 
   public init(from decoder: any Decoder) throws {
@@ -307,6 +328,9 @@ public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
     next = try container.decodeIfPresent(String.self, forKey: .next)
     doneWhen = try container.decodeIfPresent(String.self, forKey: .doneWhen)
     updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
+    completedAt = try container.decodeIfPresent(String.self, forKey: .completedAt)
+    taskType = try container.decodeIfPresent(String.self, forKey: .taskType)
+    recurrence = try container.decodeIfPresent(DashboardRecurrence.self, forKey: .recurrence)
     worktree = try container.decodeIfPresent(String.self, forKey: .worktree)
     resolutionPrs = try container.decodeIfPresent([Int].self, forKey: .resolutionPrs) ?? []
     prs = try container.decodeIfPresent([DashboardPR].self, forKey: .prs) ?? []
@@ -316,6 +340,40 @@ public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
 
   public var isOpen: Bool {
     !["resolved", "cancelled"].contains(status.lowercased())
+  }
+
+  public var isCompleted: Bool { !isOpen }
+
+  public var completionTimestamp: String? { completedAt ?? updatedAt }
+
+  public var completionDay: String? {
+    completionTimestamp.map { String($0.prefix(10)) }
+  }
+
+  public var isRecurringPullRequestTask: Bool {
+    if taskType?.lowercased() == "recurring",
+      recurrence?.kind.lowercased() == "pull-request-resolution"
+    {
+      return true
+    }
+    let normalizedTitle = title.lowercased().replacingOccurrences(of: "-", with: " ")
+    return normalizedTitle.contains("weekly")
+      && normalizedTitle.contains("pull request")
+      && (normalizedTitle.contains("resolution") || normalizedTitle.contains("steward"))
+  }
+
+  public var pullRequestRepository: String? {
+    if let repository = recurrence?.repository, !repository.isEmpty { return repository }
+    for link in links {
+      guard let url = URL(string: link.url), url.host?.lowercased() == "github.com" else {
+        continue
+      }
+      let components = url.path.split(separator: "/")
+      if components.count >= 2 {
+        return "\(components[0])/\(components[1])"
+      }
+    }
+    return nil
   }
 
   public var priorityRank: Int {
@@ -337,6 +395,117 @@ public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
       return "\(resolutionPrs.filter { merged.contains($0) }.count)/\(resolutionPrs.count) PRs"
     }
     return status.replacingOccurrences(of: "-", with: " ").capitalized
+  }
+}
+
+public struct PullRequestResolution: Codable, Identifiable, Equatable, Sendable {
+  public var id: Int { number }
+  public let number: Int
+  public let title: String
+  public let url: String
+  public let state: String
+  public let mergedAt: String?
+  public let closedAt: String?
+
+  public init(
+    number: Int,
+    title: String,
+    url: String,
+    state: String,
+    mergedAt: String? = nil,
+    closedAt: String? = nil
+  ) {
+    self.number = number
+    self.title = title
+    self.url = url
+    self.state = state
+    self.mergedAt = mergedAt
+    self.closedAt = closedAt
+  }
+
+  public var resolvedAt: String? { mergedAt ?? closedAt }
+  public var isMerged: Bool { mergedAt != nil || state.uppercased() == "MERGED" }
+}
+
+public struct PullRequestQueueSnapshot: Equatable, Sendable {
+  public let repository: String
+  public let openCount: Int
+  public let resolvedThisWeek: [PullRequestResolution]
+  public let fetchedAt: Date
+
+  public init(
+    repository: String,
+    openCount: Int,
+    resolvedThisWeek: [PullRequestResolution],
+    fetchedAt: Date = Date()
+  ) {
+    self.repository = repository
+    self.openCount = openCount
+    self.resolvedThisWeek = resolvedThisWeek
+    self.fetchedAt = fetchedAt
+  }
+}
+
+public struct RecurringPullRequestProgress: Equatable, Sendable {
+  public let repository: String
+  public let openCount: Int
+  public let dailyTarget: Int
+  public let weeklyTarget: Int
+  public let resolvedToday: [PullRequestResolution]
+  public let resolvedThisWeek: [PullRequestResolution]
+  public let fetchedAt: Date
+
+  public init(
+    snapshot: PullRequestQueueSnapshot,
+    now: Date = Date(),
+    calendar: Calendar = .current
+  ) {
+    repository = snapshot.repository
+    openCount = snapshot.openCount
+    resolvedThisWeek = snapshot.resolvedThisWeek.sorted {
+      ($0.resolvedAt ?? "") > ($1.resolvedAt ?? "")
+    }
+    let parser = ISO8601DateFormatter()
+    resolvedToday = resolvedThisWeek.filter { resolution in
+      guard let rawDate = resolution.resolvedAt, let date = parser.date(from: rawDate) else {
+        return false
+      }
+      return calendar.isDate(date, inSameDayAs: now)
+    }
+    dailyTarget = PullRequestTargetPolicy.dailyTarget(openCount: snapshot.openCount)
+    weeklyTarget = PullRequestTargetPolicy.weeklyTarget(
+      openCount: snapshot.openCount,
+      resolvedThisWeek: resolvedThisWeek.count
+    )
+    fetchedAt = snapshot.fetchedAt
+  }
+
+  public var dailyFraction: Double {
+    guard dailyTarget > 0 else { return 0 }
+    return min(1, Double(resolvedToday.count) / Double(dailyTarget))
+  }
+
+  public var weeklyFraction: Double {
+    guard weeklyTarget > 0 else { return 0 }
+    return min(1, Double(resolvedThisWeek.count) / Double(weeklyTarget))
+  }
+}
+
+public enum PullRequestTargetPolicy {
+  public static func dailyTarget(openCount: Int) -> Int {
+    switch max(0, openCount) {
+    case 0: 0
+    case 1...5: openCount
+    case 6...25: 5
+    case 26...50: 10
+    default: 15
+    }
+  }
+
+  public static func weeklyTarget(openCount: Int, resolvedThisWeek: Int) -> Int {
+    let daily = dailyTarget(openCount: openCount)
+    guard daily > 0 else { return 0 }
+    return min(max(0, openCount) + max(0, resolvedThisWeek), daily * 5)
   }
 }
 
@@ -385,14 +554,82 @@ public struct WindowSnapshot: Codable, Equatable, Sendable {
   public var width: Double
   public var height: Double
   public var placement: QueueWindowPlacement
+  public var displayIdentifier: String?
 
-  public init(x: Double, y: Double, width: Double, height: Double, placement: QueueWindowPlacement)
+  public init(
+    x: Double,
+    y: Double,
+    width: Double,
+    height: Double,
+    placement: QueueWindowPlacement,
+    displayIdentifier: String? = nil
+  )
   {
     self.x = x
     self.y = y
     self.width = width
     self.height = height
     self.placement = placement
+    self.displayIdentifier = displayIdentifier
+  }
+}
+
+public enum AgentProvider: String, Codable, CaseIterable, Equatable, Sendable {
+  case codex
+  case claude
+
+  public var displayName: String {
+    switch self {
+    case .codex: "Codex"
+    case .claude: "Claude"
+    }
+  }
+
+  public var executableName: String { rawValue }
+
+  public func resumeArguments(sessionID: String) -> [String] {
+    switch self {
+    case .codex: ["resume", sessionID]
+    case .claude: ["--resume", sessionID]
+    }
+  }
+}
+
+public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {
+  public let id: UUID
+  public let ticketID: String
+  public let provider: AgentProvider
+  public let sessionID: String
+  public var tabTitle: String
+  public var workingDirectory: String
+  public var windowID: Int?
+  public var tabID: Int?
+  public var paneID: Int?
+
+  public init(
+    id: UUID = UUID(),
+    ticketID: String,
+    provider: AgentProvider,
+    sessionID: String,
+    tabTitle: String,
+    workingDirectory: String,
+    windowID: Int? = nil,
+    tabID: Int? = nil,
+    paneID: Int? = nil
+  ) {
+    self.id = id
+    self.ticketID = ticketID
+    self.provider = provider
+    self.sessionID = sessionID
+    self.tabTitle = tabTitle
+    self.workingDirectory = workingDirectory
+    self.windowID = windowID
+    self.tabID = tabID
+    self.paneID = paneID
+  }
+
+  public var terminalWindowTitle: String {
+    "\(ticketID) · \(provider.displayName) · \(sessionID)"
   }
 }
 
@@ -400,23 +637,99 @@ public struct LocalState: Codable, Equatable, Sendable {
   public var routineDate: String
   public var completedRoutineIDs: Set<String>
   public var completionRequests: [CompletionRequest]
+  public var deferredTicketIDs: [String]
   public var window: WindowSnapshot?
   public var appearance: QueueAppearance?
   public var accentStyle: QueueAccentStyle?
+  public var agentSessions: [TaskAgentSession]
 
   public init(
     routineDate: String = "",
     completedRoutineIDs: Set<String> = [],
     completionRequests: [CompletionRequest] = [],
+    deferredTicketIDs: [String] = [],
     window: WindowSnapshot? = nil,
     appearance: QueueAppearance? = nil,
-    accentStyle: QueueAccentStyle? = nil
+    accentStyle: QueueAccentStyle? = nil,
+    agentSessions: [TaskAgentSession] = []
   ) {
     self.routineDate = routineDate
     self.completedRoutineIDs = completedRoutineIDs
     self.completionRequests = completionRequests
+    self.deferredTicketIDs = deferredTicketIDs
     self.window = window
     self.appearance = appearance
     self.accentStyle = accentStyle
+    self.agentSessions = agentSessions
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case routineDate
+    case completedRoutineIDs
+    case completionRequests
+    case deferredTicketIDs
+    case window
+    case appearance
+    case accentStyle
+    case agentSessions
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    routineDate = try container.decodeIfPresent(String.self, forKey: .routineDate) ?? ""
+    completedRoutineIDs =
+      try container.decodeIfPresent(Set<String>.self, forKey: .completedRoutineIDs) ?? []
+    completionRequests =
+      try container.decodeIfPresent([CompletionRequest].self, forKey: .completionRequests) ?? []
+    deferredTicketIDs =
+      try container.decodeIfPresent([String].self, forKey: .deferredTicketIDs) ?? []
+    window = try container.decodeIfPresent(WindowSnapshot.self, forKey: .window)
+    appearance = try container.decodeIfPresent(QueueAppearance.self, forKey: .appearance)
+    accentStyle = try container.decodeIfPresent(QueueAccentStyle.self, forKey: .accentStyle)
+    agentSessions =
+      try container.decodeIfPresent([TaskAgentSession].self, forKey: .agentSessions) ?? []
+  }
+
+  public func encode(to encoder: any Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(routineDate, forKey: .routineDate)
+    try container.encode(completedRoutineIDs, forKey: .completedRoutineIDs)
+    try container.encode(completionRequests, forKey: .completionRequests)
+    try container.encode(deferredTicketIDs, forKey: .deferredTicketIDs)
+    try container.encodeIfPresent(window, forKey: .window)
+    try container.encodeIfPresent(appearance, forKey: .appearance)
+    try container.encodeIfPresent(accentStyle, forKey: .accentStyle)
+    try container.encode(agentSessions, forKey: .agentSessions)
+  }
+}
+
+public enum DashboardOrdering {
+  public static func openTickets(
+    in tickets: [DashboardTicket],
+    deferredTicketIDs: [String] = []
+  ) -> [DashboardTicket] {
+    let canonical = tickets.filter(\.isOpen).sorted(by: canonicalOrder)
+    let deferredSet = Set(deferredTicketIDs)
+    let regular = canonical.filter { !deferredSet.contains($0.id) }
+    var ticketsByID: [String: DashboardTicket] = [:]
+    for ticket in canonical where ticketsByID[ticket.id] == nil {
+      ticketsByID[ticket.id] = ticket
+    }
+    var emittedDeferredIDs: Set<String> = []
+    let deferred: [DashboardTicket] = deferredTicketIDs.compactMap { ticketID in
+      guard emittedDeferredIDs.insert(ticketID).inserted else { return nil }
+      return ticketsByID[ticketID]
+    }
+    return regular + deferred
+  }
+
+  private static func canonicalOrder(_ left: DashboardTicket, _ right: DashboardTicket) -> Bool {
+    if left.priorityRank != right.priorityRank {
+      return left.priorityRank < right.priorityRank
+    }
+    if left.updatedAt != right.updatedAt {
+      return (left.updatedAt ?? "") > (right.updatedAt ?? "")
+    }
+    return left.id < right.id
   }
 }

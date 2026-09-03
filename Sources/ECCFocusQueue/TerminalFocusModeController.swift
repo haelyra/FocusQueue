@@ -12,7 +12,7 @@ enum TerminalFocusModeError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .accessibilityPermissionRequired:
-            "Confirm ECC Focus Queue is enabled in System Settings > Privacy & Security > Accessibility, then click Focus terminal again."
+            "Confirm ECC Focus Queue is enabled in System Settings > Privacy & Security > Accessibility, then click View Agent again."
         case .applicationUnavailable(let name):
             "\(name) did not become available after the terminal was activated."
         case .focusedWindowUnavailable:
@@ -30,11 +30,6 @@ final class TerminalFocusModeController {
     private weak var queuePanel: NSPanel?
     private var backdropWindows: [FocusBackdropWindow] = []
     private var controlPanel: FocusControlPanel?
-    private var focusedWindow: AXUIElement?
-    private var focusedApplication: NSRunningApplication?
-    private var focusedScreen: NSScreen?
-    private var preferredTerminalSize: CGSize?
-    private var isSwitchingMonitor = false
 
     private(set) var isActive = false
     var stateDidChange: ((Bool) -> Void)?
@@ -73,22 +68,21 @@ final class TerminalFocusModeController {
             visibleFrame: axFrame(fromAppKitFrame: screen.visibleFrame)
         )
 
-        queuePanel?.orderOut(nil)
         do {
             try await animate(window: window, from: currentFrame, to: targetFrame)
-            try raise(window: window, application: application)
-            focusedWindow = window
-            focusedApplication = application
-            focusedScreen = screen
-            preferredTerminalSize = currentFrame.size
-            showFocusChrome(
-                around: appKitFrame(fromAXFrame: targetFrame),
-                targetScreen: screen
+            try raise(window: window, application: application, activateApplication: true)
+            let focusedWindowNumber = windowNumber(
+                ownedBy: application.processIdentifier,
+                matchingAXFrame: try frame(of: window)
             )
+            showFocusChrome(on: screen, belowWindowNumber: focusedWindowNumber)
             isActive = true
             stateDidChange?(true)
-            application.activate(options: [.activateAllWindows])
-            try raise(window: window, application: application)
+            queuePanel?.orderFrontRegardless()
+            if focusedWindowNumber == nil {
+                try raise(window: window, application: application, activateApplication: true)
+                queuePanel?.orderFrontRegardless()
+            }
         } catch {
             clearFocusMode(revealQueue: true)
             throw error
@@ -99,70 +93,9 @@ final class TerminalFocusModeController {
         clearFocusMode(revealQueue: true)
     }
 
-    private func switchMonitor() {
-        guard isActive, !isSwitchingMonitor else { return }
-        isSwitchingMonitor = true
-        Task { @MainActor [weak self] in
-            defer { self?.isSwitchingMonitor = false }
-            await self?.moveFocusedWindowToNextScreen()
-        }
-    }
-
-    private func moveFocusedWindowToNextScreen() async {
-        guard let window = focusedWindow,
-              let application = focusedApplication,
-              let currentScreen = focusedScreen else {
-            NSSound.beep()
-            return
-        }
-
-        let screens = orderedScreens
-        guard let nextIndex = TerminalFocusGeometry.nextScreenIndex(
-            currentScreenFrame: currentScreen.frame,
-            orderedScreenFrames: screens.map(\.frame)
-        ) else {
-            NSSound.beep()
-            return
-        }
-
-        let nextScreen = screens[nextIndex]
-        let currentFrame: CGRect
-        do {
-            currentFrame = try frame(of: window)
-        } catch {
-            NSSound.beep()
-            return
-        }
-
-        let targetFrame = TerminalFocusGeometry.centeredFrame(
-            currentFrame: CGRect(
-                origin: currentFrame.origin,
-                size: preferredTerminalSize ?? currentFrame.size
-            ),
-            visibleFrame: axFrame(fromAppKitFrame: nextScreen.visibleFrame)
-        )
-
-        removeFocusChrome()
-        do {
-            try await animate(window: window, from: currentFrame, to: targetFrame)
-            try raise(window: window, application: application)
-            focusedScreen = nextScreen
-            showFocusChrome(
-                around: appKitFrame(fromAXFrame: targetFrame),
-                targetScreen: nextScreen
-            )
-            application.activate(options: [.activateAllWindows])
-            try raise(window: window, application: application)
-        } catch {
-            let fallbackFrame = (try? frame(of: window)) ?? currentFrame
-            let fallbackScreen = screen(containingAXFrame: fallbackFrame) ?? currentScreen
-            focusedScreen = fallbackScreen
-            showFocusChrome(
-                around: appKitFrame(fromAXFrame: fallbackFrame),
-                targetScreen: fallbackScreen
-            )
-            NSSound.beep()
-        }
+    func queuePanelFrameDidChange() {
+        guard isActive else { return }
+        queuePanel?.orderFrontRegardless()
     }
 
     private func requestAccessibilityPermission() -> Bool {
@@ -207,26 +140,35 @@ final class TerminalFocusModeController {
         titleHint: String?
     ) async -> AXUIElement? {
         let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
-        for _ in 0..<30 {
+        for attempt in 0..<30 {
             if let titleHint {
                 if let titledWindow = window(in: applicationElement, matching: titleHint) {
                     return titledWindow
                 }
+                if attempt >= 5, let focusedWindow = focusedWindow(in: applicationElement) {
+                    return focusedWindow
+                }
                 try? await Task.sleep(for: .milliseconds(100))
                 continue
             }
-            var value: CFTypeRef?
-            let result = AXUIElementCopyAttributeValue(
-                applicationElement,
-                kAXFocusedWindowAttribute as CFString,
-                &value
-            )
-            if result == .success, let value {
-                return (value as! AXUIElement)
-            }
+            if let focusedWindow = focusedWindow(in: applicationElement) { return focusedWindow }
             try? await Task.sleep(for: .milliseconds(100))
         }
         return nil
+    }
+
+    private func focusedWindow(in application: AXUIElement) -> AXUIElement? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            application,
+            kAXFocusedWindowAttribute as CFString,
+            &value
+        ) == .success,
+            let value
+        else {
+            return nil
+        }
+        return (value as! AXUIElement)
     }
 
     private func window(in application: AXUIElement, matching titleHint: String) -> AXUIElement? {
@@ -320,32 +262,36 @@ final class TerminalFocusModeController {
         }
     }
 
-    private func raise(window: AXUIElement, application: NSRunningApplication) throws {
-        let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
-        AXUIElementSetAttributeValue(
-            applicationElement,
-            kAXFrontmostAttribute as CFString,
-            kCFBooleanTrue
-        )
+    private func raise(
+        window: AXUIElement,
+        application: NSRunningApplication,
+        activateApplication: Bool
+    ) throws {
+        if activateApplication {
+            let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
+            AXUIElementSetAttributeValue(
+                applicationElement,
+                kAXFrontmostAttribute as CFString,
+                kCFBooleanTrue
+            )
+        }
         guard AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success else {
             throw TerminalFocusModeError.windowMoveFailed
         }
     }
 
-    private func showBackdrops(around focusedFrame: CGRect, targetScreen: NSScreen) {
+    private func showBackdrops(belowWindowNumber focusedWindowNumber: Int?) {
         for screen in NSScreen.screens {
-            let aperture = screen.frame == targetScreen.frame ? focusedFrame : nil
-            for region in TerminalFocusGeometry.backdropRegions(
-                screenFrame: screen.frame,
-                focusedFrame: aperture
-            ) {
-                let window = FocusBackdropWindow(frame: region) { [weak self] in
-                    self?.dismiss()
-                }
-                window.alphaValue = 0
-                window.orderFrontRegardless()
-                backdropWindows.append(window)
+            let window = FocusBackdropWindow(frame: screen.frame) { [weak self] in
+                self?.dismiss()
             }
+            window.alphaValue = 0
+            if let focusedWindowNumber {
+                window.order(.below, relativeTo: focusedWindowNumber)
+            } else {
+                window.orderFrontRegardless()
+            }
+            backdropWindows.append(window)
         }
 
         NSAnimationContext.runAnimationGroup { context in
@@ -357,13 +303,45 @@ final class TerminalFocusModeController {
         }
     }
 
-    private func showFocusChrome(around focusedFrame: CGRect, targetScreen: NSScreen) {
-        showBackdrops(around: focusedFrame, targetScreen: targetScreen)
-        showControls(on: targetScreen)
+    private func showFocusChrome(on screen: NSScreen, belowWindowNumber focusedWindowNumber: Int?) {
+        showBackdrops(belowWindowNumber: focusedWindowNumber)
+        showControls(on: screen)
+    }
+
+    private func windowNumber(ownedBy processIdentifier: pid_t, matchingAXFrame target: CGRect) -> Int? {
+        guard let windowInfo = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else {
+            return nil
+        }
+
+        return windowInfo.compactMap { info -> (number: Int, distance: CGFloat)? in
+            guard (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
+                    == processIdentifier,
+                (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                let number = (info[kCGWindowNumber as String] as? NSNumber)?.intValue,
+                let boundsDictionary = info[kCGWindowBounds as String] as? [String: Any],
+                let bounds = CGRect(
+                    dictionaryRepresentation: boundsDictionary as CFDictionary
+                )
+            else {
+                return nil
+            }
+
+            let distance = abs(bounds.minX - target.minX)
+                + abs(bounds.minY - target.minY)
+                + abs(bounds.width - target.width)
+                + abs(bounds.height - target.height)
+            return (number, distance)
+        }
+        .filter { $0.distance <= 12 }
+        .min { $0.distance < $1.distance }?
+        .number
     }
 
     private func showControls(on screen: NSScreen) {
-        let size = CGSize(width: 206, height: 44)
+        let size = CGSize(width: 44, height: 44)
         let frame = CGRect(
             x: screen.visibleFrame.midX - (size.width / 2),
             y: screen.visibleFrame.maxY - size.height - 12,
@@ -372,8 +350,6 @@ final class TerminalFocusModeController {
         ).integral
         let panel = FocusControlPanel(
             frame: frame,
-            canSwitchMonitor: NSScreen.screens.count > 1,
-            onSwitchMonitor: { [weak self] in self?.switchMonitor() },
             onDismiss: { [weak self] in self?.dismiss() }
         )
         panel.alphaValue = 0
@@ -398,25 +374,11 @@ final class TerminalFocusModeController {
 
     private func clearFocusMode(revealQueue: Bool) {
         removeFocusChrome()
-        focusedWindow = nil
-        focusedApplication = nil
-        focusedScreen = nil
-        preferredTerminalSize = nil
-        isSwitchingMonitor = false
         isActive = false
         stateDidChange?(false)
 
         if revealQueue {
             queuePanel?.orderFrontRegardless()
-        }
-    }
-
-    private var orderedScreens: [NSScreen] {
-        NSScreen.screens.sorted { left, right in
-            if left.frame.minX == right.frame.minX {
-                return left.frame.minY < right.frame.minY
-            }
-            return left.frame.minX < right.frame.minX
         }
     }
 
@@ -469,7 +431,7 @@ private final class FocusBackdropWindow: NSWindow {
         isOpaque = false
         backgroundColor = NSColor(calibratedWhite: 0.015, alpha: 0.64)
         hasShadow = false
-        level = .floating
+        level = .normal
         hidesOnDeactivate = false
         ignoresMouseEvents = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
@@ -483,8 +445,6 @@ private final class FocusBackdropWindow: NSWindow {
 private final class FocusControlPanel: NSPanel {
     init(
         frame: CGRect,
-        canSwitchMonitor: Bool,
-        onSwitchMonitor: @escaping @MainActor () -> Void,
         onDismiss: @escaping @MainActor () -> Void
     ) {
         super.init(
@@ -503,8 +463,6 @@ private final class FocusControlPanel: NSPanel {
         becomesKeyOnlyIfNeeded = true
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         contentView = FocusControlView(
-            canSwitchMonitor: canSwitchMonitor,
-            onSwitchMonitor: onSwitchMonitor,
             onDismiss: onDismiss
         )
     }
@@ -514,15 +472,11 @@ private final class FocusControlPanel: NSPanel {
 }
 
 private final class FocusControlView: NSVisualEffectView {
-    private let onSwitchMonitor: @MainActor () -> Void
     private let onDismiss: @MainActor () -> Void
 
     init(
-        canSwitchMonitor: Bool,
-        onSwitchMonitor: @escaping @MainActor () -> Void,
         onDismiss: @escaping @MainActor () -> Void
     ) {
-        self.onSwitchMonitor = onSwitchMonitor
         self.onDismiss = onDismiss
         super.init(frame: .zero)
 
@@ -533,23 +487,6 @@ private final class FocusControlView: NSVisualEffectView {
         layer?.cornerRadius = 14
         layer?.borderWidth = 1
         layer?.borderColor = NSColor.white.withAlphaComponent(0.22).cgColor
-
-        let switchButton = NSButton(
-            title: canSwitchMonitor ? "Switch Monitor" : "One Monitor",
-            target: self,
-            action: #selector(didChooseSwitchMonitor)
-        )
-        switchButton.image = NSImage(systemSymbolName: "display.2", accessibilityDescription: nil)
-        switchButton.imagePosition = .imageLeading
-        switchButton.bezelStyle = .rounded
-        switchButton.controlSize = .regular
-        switchButton.font = .systemFont(ofSize: 13, weight: .semibold)
-        switchButton.contentTintColor = .white
-        switchButton.isEnabled = canSwitchMonitor
-        switchButton.toolTip = canSwitchMonitor
-            ? "Move the focused terminal to the next monitor"
-            : "Connect another monitor to enable switching"
-        switchButton.setAccessibilityLabel("Switch focused terminal monitor")
 
         let closeButton = NSButton(
             image: NSImage(
@@ -565,12 +502,12 @@ private final class FocusControlView: NSVisualEffectView {
         closeButton.toolTip = "Exit terminal focus"
         closeButton.setAccessibilityLabel("Exit terminal focus")
 
-        let stack = NSStackView(views: [switchButton, closeButton])
+        let stack = NSStackView(views: [closeButton])
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.distribution = .fill
         stack.spacing = 8
-        stack.edgeInsets = NSEdgeInsets(top: 5, left: 8, bottom: 5, right: 8)
+        stack.edgeInsets = NSEdgeInsets(top: 5, left: 6, bottom: 5, right: 6)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
 
@@ -587,10 +524,6 @@ private final class FocusControlView: NSVisualEffectView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { nil }
 
-    @objc private func didChooseSwitchMonitor() {
-        onSwitchMonitor()
-    }
-
     @objc private func didChooseDismiss() {
         onDismiss()
     }
@@ -598,6 +531,7 @@ private final class FocusControlView: NSVisualEffectView {
 
 private final class FocusBackdropView: NSView {
     private let onDismiss: @MainActor () -> Void
+    private let acceptsDismissalAfter = ProcessInfo.processInfo.systemUptime + 0.5
 
     init(onDismiss: @escaping @MainActor () -> Void) {
         self.onDismiss = onDismiss
@@ -610,6 +544,7 @@ private final class FocusBackdropView: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func mouseDown(with event: NSEvent) {
+        guard ProcessInfo.processInfo.systemUptime >= acceptsDismissalAfter else { return }
         Task { @MainActor in onDismiss() }
     }
 

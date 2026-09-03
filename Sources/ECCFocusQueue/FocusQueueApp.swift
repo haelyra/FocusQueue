@@ -15,13 +15,18 @@ import SwiftUI
   private var statusItem: NSStatusItem?
   private var exitTerminalFocusItem: NSMenuItem?
   private var terminalFocusController: TerminalFocusModeController?
+  private var focusChromeRefreshTask: Task<Void, Never>?
+  private var screenReconciliationTask: Task<Void, Never>?
   private var currentPlacement: QueueWindowPlacement = .upperRight
+  private var preferredDisplayIdentifier: String?
+  private var isApplyingPanelFrame = false
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.accessory)
     model.placementHandler = { [weak self] placement in
       self?.positionPanel(placement, animated: true)
     }
+    model.monitorSwitchHandler = { [weak self] in self?.switchPanelMonitor() }
     model.collapseHandler = { [weak self] collapsed in self?.setPanelCollapsed(collapsed) }
     model.terminalFocusHandler = { [weak self] applicationName, windowTitleHint in
       guard let self, let terminalFocusController else {
@@ -34,24 +39,41 @@ import SwiftUI
       )
     }
     model.quitHandler = { NSApplication.shared.terminate(nil) }
+    model.setCanSwitchMonitor(NSScreen.screens.count > 1)
 
     createPanel()
     createStatusItem()
-    positionPanel(.upperRight, animated: false)
+    positionPanel(.upperRight, on: defaultScreen(), animated: false, persist: false)
     panel?.orderFrontRegardless()
 
     Task { [weak self] in
       guard let self else { return }
       await model.bootstrap()
-      if let snapshot = model.windowSnapshot, let savedScreen = screen(containing: snapshot) {
+      if let snapshot = model.windowSnapshot {
         currentPlacement = snapshot.placement
+        preferredDisplayIdentifier = snapshot.displayIdentifier
         if var restoredFrame = panel?.frame {
           restoredFrame.size.width = snapshot.width
+          isApplyingPanelFrame = true
           panel?.setFrame(restoredFrame, display: false)
+          isApplyingPanelFrame = false
         }
-        positionPanel(snapshot.placement, on: savedScreen, animated: false)
+        let savedScreen = restoredScreen(for: snapshot)
+        let targetScreen = savedScreen ?? defaultScreen()
+        let shouldPersistFallback = snapshot.displayIdentifier == nil
+        positionPanel(
+          snapshot.placement,
+          on: targetScreen,
+          animated: false,
+          persist: savedScreen != nil || shouldPersistFallback
+        )
       } else {
-        positionPanel(model.config.defaultPlacement, animated: false)
+        positionPanel(
+          model.config.defaultPlacement,
+          on: defaultScreen(),
+          animated: false,
+          persist: true
+        )
       }
       panel?.orderFrontRegardless()
     }
@@ -65,16 +87,28 @@ import SwiftUI
     return true
   }
 
-  func windowDidMove(_ notification: Notification) { saveWindowFrame() }
+  func applicationDidChangeScreenParameters(_ notification: Notification) {
+    model.setCanSwitchMonitor(NSScreen.screens.count > 1)
+    screenReconciliationTask?.cancel()
+    screenReconciliationTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: .milliseconds(350))
+      guard !Task.isCancelled else { return }
+      self?.reconcilePanelWithAvailableScreens(animated: false)
+    }
+  }
 
-  func windowDidResize(_ notification: Notification) { saveWindowFrame() }
+  func windowDidMove(_ notification: Notification) {
+    scheduleFocusChromeRefresh()
+  }
+
+  func windowDidResize(_ notification: Notification) {
+    saveWindowFrame()
+    scheduleFocusChromeRefresh()
+  }
 
   @objc private func showPanel() {
-    terminalFocusController?.dismiss()
     guard let panel else { return }
-    if !panel.frame.intersects(activeScreen().visibleFrame) {
-      positionPanel(currentPlacement, animated: false)
-    }
+    reconcilePanelWithAvailableScreens(animated: false)
     panel.orderFrontRegardless()
   }
 
@@ -91,6 +125,27 @@ import SwiftUI
   @objc private func placeUpperRight() {
     positionPanel(.upperRight, animated: true)
     panel?.orderFrontRegardless()
+  }
+
+  @objc private func switchPanelMonitor() {
+    guard let panel else { return }
+    let screens = orderedScreens
+    guard screens.count > 1 else {
+      NSSound.beep()
+      return
+    }
+    let currentScreen = panel.screen ?? activeScreen()
+    guard
+      let nextIndex = DisplayGeometry.nextScreenIndex(
+        currentScreenFrame: currentScreen.frame,
+        orderedScreenFrames: screens.map(\.frame)
+      )
+    else {
+      NSSound.beep()
+      return
+    }
+    positionPanel(currentPlacement, on: screens[nextIndex], animated: true)
+    panel.orderFrontRegardless()
   }
 
   @objc private func hidePanel() { panel?.orderOut(nil) }
@@ -190,6 +245,10 @@ import SwiftUI
       title: "Center on Active Display", action: #selector(centerPanel), keyEquivalent: "")
     centerItem.target = self
     menu.addItem(centerItem)
+    let nextDisplayItem = NSMenuItem(
+      title: "Move Queue to Next Display", action: #selector(switchPanelMonitor), keyEquivalent: "")
+    nextDisplayItem.target = self
+    menu.addItem(nextDisplayItem)
     menu.addItem(.separator())
     let configItem = NSMenuItem(
       title: "Open Config", action: #selector(openConfiguration), keyEquivalent: "")
@@ -205,26 +264,28 @@ import SwiftUI
   }
 
   private func positionPanel(
-    _ placement: QueueWindowPlacement, on requestedScreen: NSScreen? = nil, animated: Bool
+    _ placement: QueueWindowPlacement,
+    on requestedScreen: NSScreen? = nil,
+    animated: Bool,
+    persist: Bool = true
   ) {
     guard let panel else { return }
-    let screenFrame = (requestedScreen ?? activeScreen()).visibleFrame
-    let margin: CGFloat = 12
-    let availableWidth = max(400, screenFrame.width - (margin * 2))
-    let width = min(max(panel.frame.width, 400), min(620, availableWidth))
-    let height = max(480, screenFrame.height - (margin * 2))
-    var frame = NSRect(
-      x: screenFrame.minX + margin, y: screenFrame.minY + margin, width: width, height: height)
-
-    switch placement {
-    case .upperLeft: frame.origin.x = screenFrame.minX + margin
-    case .upperRight: frame.origin.x = screenFrame.maxX - width - margin
-    case .center: frame.origin.x = screenFrame.midX - (width / 2)
-    }
+    let targetScreen = requestedScreen ?? defaultScreen()
+    let frame = DisplayGeometry.panelFrame(
+      preferredWidth: panel.frame.width,
+      visibleFrame: targetScreen.visibleFrame,
+      placement: placement
+    )
 
     currentPlacement = placement
+    isApplyingPanelFrame = true
     panel.setFrame(frame, display: true, animate: animated)
-    saveWindowFrame()
+    isApplyingPanelFrame = false
+    if persist {
+      preferredDisplayIdentifier = displayIdentifier(for: targetScreen)
+      saveWindowFrame()
+    }
+    scheduleFocusChromeRefresh()
   }
 
   private func setPanelCollapsed(_ collapsed: Bool) {
@@ -236,8 +297,11 @@ import SwiftUI
       var compactFrame = panel.frameRect(forContentRect: compactContent)
       compactFrame.origin.x = panel.frame.origin.x
       compactFrame.origin.y = topEdge - compactFrame.height
+      isApplyingPanelFrame = true
       panel.setFrame(compactFrame, display: true, animate: true)
+      isApplyingPanelFrame = false
       saveWindowFrame()
+      scheduleFocusChromeRefresh()
       return
     }
 
@@ -251,19 +315,90 @@ import SwiftUI
       ?? NSScreen.main ?? NSScreen.screens[0]
   }
 
+  private func defaultScreen() -> NSScreen {
+    NSScreen.main ?? NSScreen.screens.first(where: { $0.frame.origin == .zero })
+      ?? NSScreen.screens[0]
+  }
+
+  private var orderedScreens: [NSScreen] {
+    NSScreen.screens.sorted { left, right in
+      if left.frame.minX == right.frame.minX {
+        return left.frame.minY < right.frame.minY
+      }
+      return left.frame.minX < right.frame.minX
+    }
+  }
+
+  private func scheduleFocusChromeRefresh() {
+    focusChromeRefreshTask?.cancel()
+    focusChromeRefreshTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: .milliseconds(100))
+      guard !Task.isCancelled else { return }
+      self?.terminalFocusController?.queuePanelFrameDidChange()
+    }
+  }
+
   private func saveWindowFrame() {
-    guard let frame = panel?.frame else { return }
+    guard !isApplyingPanelFrame, let panel else { return }
+    let frame = panel.frame
+    if preferredDisplayIdentifier == nil {
+      preferredDisplayIdentifier = displayIdentifier(for: panel.screen)
+    }
     model.saveWindow(
       WindowSnapshot(
         x: frame.origin.x, y: frame.origin.y, width: frame.width, height: frame.height,
-        placement: currentPlacement))
+        placement: currentPlacement,
+        displayIdentifier: preferredDisplayIdentifier))
+  }
+
+  private func restoredScreen(for snapshot: WindowSnapshot) -> NSScreen? {
+    if let identifier = snapshot.displayIdentifier {
+      return screen(matching: identifier)
+    }
+    return screen(containing: snapshot)
   }
 
   private func screen(containing snapshot: WindowSnapshot) -> NSScreen? {
     let frame = Self.rect(from: snapshot)
-    return NSScreen.screens.map { ($0, $0.visibleFrame.intersection(frame).width) }.filter {
-      $0.1 >= 120
-    }.max { $0.1 < $1.1 }?.0
+    var bestMatch: NSScreen?
+    var bestArea: CGFloat = 0
+    for screen in NSScreen.screens {
+      let intersection = screen.visibleFrame.intersection(frame)
+      guard !intersection.isNull else { continue }
+      let area: CGFloat = intersection.width * intersection.height
+      if area > bestArea {
+        bestArea = area
+        bestMatch = screen
+      }
+    }
+    return bestMatch
+  }
+
+  private func reconcilePanelWithAvailableScreens(animated: Bool) {
+    let preferredScreen = preferredDisplayIdentifier.flatMap(screen(matching:))
+    let targetScreen = preferredScreen ?? defaultScreen()
+    positionPanel(
+      currentPlacement,
+      on: targetScreen,
+      animated: animated,
+      persist: preferredScreen != nil || preferredDisplayIdentifier == nil
+    )
+  }
+
+  private func screen(matching identifier: String) -> NSScreen? {
+    NSScreen.screens.first { displayIdentifier(for: $0) == identifier }
+  }
+
+  private func displayIdentifier(for screen: NSScreen?) -> String? {
+    guard let screen else { return nil }
+    let screenNumberKey = NSDeviceDescriptionKey("NSScreenNumber")
+    guard let number = screen.deviceDescription[screenNumberKey] as? NSNumber,
+      let unmanagedUUID = CGDisplayCreateUUIDFromDisplayID(number.uint32Value)
+    else {
+      return "name:\(screen.localizedName)"
+    }
+    let uuid = unmanagedUUID.takeRetainedValue()
+    return CFUUIDCreateString(nil, uuid) as String
   }
 
   private static func rect(from snapshot: WindowSnapshot) -> NSRect {

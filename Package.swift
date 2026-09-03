@@ -11,8 +11,14 @@ let package = Package(
         .library(name: "FocusQueueCore", targets: ["FocusQueueCore"]),
         .executable(name: "ECCFocusQueue", targets: ["ECCFocusQueue"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/JohnSundell/Ink.git", exact: "0.6.0")
+    ],
     targets: [
-        .target(name: "FocusQueueCore"),
+        .target(
+            name: "FocusQueueCore",
+            dependencies: [.product(name: "Ink", package: "Ink")]
+        ),
         .executableTarget(
             name: "ECCFocusQueue",
             dependencies: ["FocusQueueCore"]

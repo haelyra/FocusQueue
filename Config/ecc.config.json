@@ -30,8 +30,8 @@
   },
   "verifier": {
     "enabled": true,
-    "executable": "/Users/hira/.local/bin/hermes",
-    "sessionName": "ecc-focus-queue-verifier",
+    "executable": "/Users/hira/.local/bin/focus-queue-codex",
+    "sessionName": "ecc-focus-queue-codex-verifier",
     "timeoutSeconds": 120,
     "maxTurns": 24
   }

@@ -17,8 +17,8 @@
   },
   "verifier": {
     "enabled": false,
-    "executable": "/absolute/path/to/hermes",
-    "sessionName": "focus-queue-verifier",
+    "executable": "/absolute/path/to/focus-queue-codex",
+    "sessionName": "focus-queue-codex-verifier",
     "timeoutSeconds": 120,
     "maxTurns": 24
   }

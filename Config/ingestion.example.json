@@ -1,0 +1,25 @@
+{
+  "dashboardPath": "/absolute/path/to/ecc-dashboard/data/dashboard.json",
+  "dashboardDirectory": "/absolute/path/to/ecc-dashboard",
+  "emailAddress": "agent@example.com",
+  "appleMailDirectory": "/Users/your-account/Library/Mail",
+  "mailReaderApplication": "/Users/your-account/Applications/ECC Focus Mail Reader.app",
+  "mailSnapshotPath": "/Users/your-account/Library/Application Support/ECC Focus Queue/ingestion/mail-snapshot.json",
+  "emailMailboxes": [
+    "INBOX",
+    "Junk",
+    "Archive",
+    "Deleted Messages"
+  ],
+  "discordGuildId": "123456789012345678",
+  "discordCredentialPath": "/absolute/path/to/private-ecc-credentials.json",
+  "githubRepositories": [
+    "owner/repository"
+  ],
+  "lookbackHours": 168,
+  "maxDiscordMessagesPerChannel": 100,
+  "maxEmailMessages": 200,
+  "maxNewTasksPerRun": 20,
+  "agentExecutable": "/absolute/path/to/focus-queue-codex",
+  "telegramBotUsername": "your_bot"
+}

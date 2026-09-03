@@ -3,6 +3,17 @@ import FocusQueueCore
 import Foundation
 import Observation
 
+enum QueueChatRole: Sendable {
+  case user
+  case agent
+}
+
+struct QueueChatMessage: Identifiable, Sendable {
+  let id = UUID()
+  let role: QueueChatRole
+  let text: String
+}
+
 @MainActor
 @Observable
 final class QueueViewModel {
@@ -14,7 +25,18 @@ final class QueueViewModel {
   private(set) var loadError: String?
   private(set) var isRefreshing = false
   private(set) var isPanelCollapsed = false
+  private(set) var canSwitchMonitor = false
   private(set) var actionMessages: [String: String] = [:]
+  private(set) var recurringPRProgressByTicketID: [String: RecurringPullRequestProgress] = [:]
+  private(set) var recurringPRProgressErrors: [String: String] = [:]
+  private(set) var queueChatMessages: [QueueChatMessage] = [
+    QueueChatMessage(
+      role: .agent,
+      text:
+        "I’m the Codex Queue agent. The app orders tasks by priority and recency, plus your local drag overrides. I can search and read the ECC Discord server and search, read, and explicitly open haley@ecc.tools through verified read-only connectors. Source answers are withheld unless the app validates fresh retrieval evidence. Ask why something is ordered, give explicit canonical instructions, clarify wording, or request link and task-field changes."
+    )
+  ]
+  private(set) var isQueueAgentResponding = false
   var expandedTicketIDs: Set<String> = []
 
   @ObservationIgnored private let paths: AppPaths
@@ -24,12 +46,17 @@ final class QueueViewModel {
   @ObservationIgnored private let reviewArtifacts: ReviewArtifactStore
   @ObservationIgnored private let terminalController: any WezTermControlling
   @ObservationIgnored private let verifier: any CompletionVerifying
+  @ObservationIgnored private let queueAgent: any QueueAgentChatting
+  @ObservationIgnored private let pullRequestQueueLoader: any PullRequestQueueLoading
   @ObservationIgnored private var refreshTask: Task<Void, Never>?
   @ObservationIgnored private var reviewTasks: [UUID: Task<Void, Never>] = [:]
   @ObservationIgnored private var windowSaveTask: Task<Void, Never>?
+  @ObservationIgnored private var queueChatTask: Task<Void, Never>?
+  @ObservationIgnored private var lastRecurringPRRefresh: Date?
   @ObservationIgnored private var bootstrapped = false
 
   @ObservationIgnored var placementHandler: ((QueueWindowPlacement) -> Void)?
+  @ObservationIgnored var monitorSwitchHandler: (() -> Void)?
   @ObservationIgnored var collapseHandler: ((Bool) -> Void)?
   @ObservationIgnored var terminalFocusHandler: (
     @MainActor (String, String?) async throws -> Void
@@ -43,7 +70,9 @@ final class QueueViewModel {
     stateStore: (any LocalStateStoring)? = nil,
     reviewArtifacts: ReviewArtifactStore? = nil,
     terminalController: any WezTermControlling = WezTermController(),
-    verifier: any CompletionVerifying = HermesCompletionVerifier()
+    verifier: any CompletionVerifying = CodexCompletionVerifier(),
+    queueAgent: any QueueAgentChatting = CodexQueueAgent(),
+    pullRequestQueueLoader: any PullRequestQueueLoading = GitHubPullRequestQueueLoader()
   ) {
     self.paths = paths
     self.config = .eccDefault()
@@ -55,20 +84,43 @@ final class QueueViewModel {
     self.reviewArtifacts = reviewArtifacts ?? ReviewArtifactStore(directory: paths.reviewsDirectory)
     self.terminalController = terminalController
     self.verifier = verifier
+    self.queueAgent = queueAgent
+    self.pullRequestQueueLoader = pullRequestQueueLoader
   }
 
   var openTickets: [DashboardTicket] {
-    dashboard.tickets
-      .filter(\.isOpen)
-      .sorted {
-        if $0.priorityRank != $1.priorityRank {
-          return $0.priorityRank < $1.priorityRank
-        }
-        if $0.updatedAt != $1.updatedAt {
-          return ($0.updatedAt ?? "") > ($1.updatedAt ?? "")
-        }
-        return $0.id < $1.id
+    let ordered = DashboardOrdering.openTickets(
+      in: dashboard.tickets,
+      deferredTicketIDs: localState.deferredTicketIDs
+    )
+    let noBacklogIDs = Set(
+      recurringPRProgressByTicketID.compactMap { ticketID, progress in
+        progress.openCount == 0 ? ticketID : nil
       }
+    )
+    return ordered.filter { !noBacklogIDs.contains($0.id) }
+      + ordered.filter { noBacklogIDs.contains($0.id) }
+  }
+
+  var completedTickets: [DashboardTicket] {
+    dashboard.tickets
+      .filter(\.isCompleted)
+      .sorted {
+        if $0.completionTimestamp != $1.completionTimestamp {
+          return ($0.completionTimestamp ?? "") > ($1.completionTimestamp ?? "")
+        }
+        return $0.id > $1.id
+      }
+  }
+
+  var completedTodayTickets: [DashboardTicket] {
+    let today = Self.dayFormatter.string(from: Date())
+    return completedTickets.filter { $0.completionDay == today }
+  }
+
+  var pastCompletedTickets: [DashboardTicket] {
+    let today = Self.dayFormatter.string(from: Date())
+    return completedTickets.filter { $0.completionDay != today }
   }
 
   var blockedTicketCount: Int {
@@ -96,7 +148,7 @@ final class QueueViewModel {
       resetDailyRoutinesIfNeeded()
       recoverInterruptedReviews()
       try await stateStore.save(localState)
-      await refresh()
+      await refresh(forceRecurringPRProgress: true)
       startRefreshLoop()
       resumePendingReviews()
     } catch {
@@ -104,7 +156,7 @@ final class QueueViewModel {
     }
   }
 
-  func refresh() async {
+  func refresh(forceRecurringPRProgress: Bool = false) async {
     guard !isRefreshing else { return }
     isRefreshing = true
     defer { isRefreshing = false }
@@ -113,9 +165,11 @@ final class QueueViewModel {
       async let document = dashboardRepository.load(from: dashboardURL)
       async let modificationDate = dashboardRepository.modificationDate(at: dashboardURL)
       dashboard = try await document
+      pruneDeferredTickets()
       sourceModificationDate = try await modificationDate
       lastSync = Date()
       loadError = nil
+      await refreshRecurringPRProgressIfNeeded(force: forceRecurringPRProgress)
     } catch {
       loadError = error.localizedDescription
     }
@@ -130,6 +184,65 @@ final class QueueViewModel {
       expandedTicketIDs.insert(ticketID)
     } else {
       expandedTicketIDs.remove(ticketID)
+    }
+  }
+
+  func recurringPRProgress(for ticketID: String) -> RecurringPullRequestProgress? {
+    recurringPRProgressByTicketID[ticketID]
+  }
+
+  func recurringPRProgressError(for ticketID: String) -> String? {
+    recurringPRProgressErrors[ticketID]
+  }
+
+  @discardableResult
+  func moveTicketToRest(_ ticketID: String) -> Bool {
+    guard dashboard.tickets.contains(where: { $0.id == ticketID && $0.isOpen }) else {
+      return false
+    }
+    localState.deferredTicketIDs.removeAll { $0 == ticketID }
+    localState.deferredTicketIDs.append(ticketID)
+    actionMessages[ticketID] = "Moved to Rest of queue on this Mac."
+    persistLocalState()
+    return true
+  }
+
+  @discardableResult
+  func moveTicketToToday(_ ticketID: String) -> Bool {
+    guard localState.deferredTicketIDs.contains(ticketID) else { return false }
+    localState.deferredTicketIDs.removeAll { $0 == ticketID }
+    actionMessages[ticketID] = "Restored to Today's focus using canonical priority."
+    persistLocalState()
+    return true
+  }
+
+  func sendQueueAgentMessage(_ rawMessage: String) {
+    let message = rawMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !message.isEmpty, !isQueueAgentResponding else { return }
+
+    queueChatMessages.append(QueueChatMessage(role: .user, text: message))
+    isQueueAgentResponding = true
+    let visibleOrder = openTickets.map(\.id)
+    let deferredTicketIDs = localState.deferredTicketIDs
+    queueChatTask = Task { [weak self] in
+      guard let self else { return }
+      defer { self.isQueueAgentResponding = false }
+      do {
+        let reply = try await self.queueAgent.send(
+          message: message,
+          dashboardPath: self.config.dashboardPath,
+          workspace: self.config.workspacePath,
+          visibleOrder: visibleOrder,
+          deferredTicketIDs: deferredTicketIDs,
+          configuration: self.config.verifier
+        )
+        self.queueChatMessages.append(QueueChatMessage(role: .agent, text: reply.message))
+        await self.refresh()
+      } catch {
+        self.queueChatMessages.append(
+          QueueChatMessage(role: .agent, text: error.localizedDescription)
+        )
+      }
     }
   }
 
@@ -207,18 +320,149 @@ final class QueueViewModel {
           )
         }
         actionMessages[ticket.id] =
-          "\(result.message) Click the dimmed background to return to the queue."
+          "\(result.message) The queue stays available beside the terminal."
       } catch {
         actionMessages[ticket.id] = error.localizedDescription
       }
     }
   }
 
+  func agentSessions(for ticketID: String) -> [TaskAgentSession] {
+    localState.agentSessions
+      .filter { $0.ticketID == ticketID }
+      .sorted {
+        ($0.tabTitle.localizedCaseInsensitiveCompare($1.tabTitle) == .orderedAscending)
+          || ($0.tabTitle.caseInsensitiveCompare($1.tabTitle) == .orderedSame
+            && $0.sessionID < $1.sessionID)
+      }
+  }
+
+  func availableAgents() async throws -> [RunningAgentSession] {
+    try await terminalController.listRunningAgents(configuration: config.wezTerm)
+  }
+
+  func attachAgent(_ agent: RunningAgentSession, to ticket: DashboardTicket) async -> Bool {
+    actionMessages[ticket.id] = "Attaching the selected \(agent.provider.displayName) agent…"
+    do {
+      try await terminalController.attach(
+        paneID: agent.pane.paneID,
+        taskID: ticket.id,
+        configuration: config.wezTerm
+      )
+      let attached = TaskAgentSession(
+        ticketID: ticket.id,
+        provider: agent.provider,
+        sessionID: agent.sessionID,
+        tabTitle: agent.tabTitle,
+        workingDirectory: agent.workingDirectory,
+        windowID: agent.pane.windowID,
+        tabID: agent.pane.tabID,
+        paneID: agent.pane.paneID
+      )
+      if let index = localState.agentSessions.firstIndex(where: {
+        $0.ticketID == ticket.id
+          && $0.provider == agent.provider
+          && $0.sessionID == agent.sessionID
+      }) {
+        var updated = attached
+        updated = TaskAgentSession(
+          id: localState.agentSessions[index].id,
+          ticketID: updated.ticketID,
+          provider: updated.provider,
+          sessionID: updated.sessionID,
+          tabTitle: updated.tabTitle,
+          workingDirectory: updated.workingDirectory,
+          windowID: updated.windowID,
+          tabID: updated.tabID,
+          paneID: updated.paneID
+        )
+        localState.agentSessions[index] = updated
+      } else {
+        localState.agentSessions.append(attached)
+      }
+      persistLocalState()
+      actionMessages[ticket.id] =
+        "Attached \(agent.provider.displayName) session \(agent.sessionID) to \(ticket.id)."
+      return true
+    } catch {
+      actionMessages[ticket.id] = error.localizedDescription
+      return false
+    }
+  }
+
+  func viewAgent(_ session: TaskAgentSession, for ticket: DashboardTicket) {
+    actionMessages[ticket.id] = "Finding \(session.provider.displayName) session \(session.sessionID)…"
+    Task {
+      do {
+        let result = try await terminalController.focusOrResume(
+          session: session,
+          taskID: ticket.id,
+          configuration: config.wezTerm
+        )
+        if let index = localState.agentSessions.firstIndex(where: { $0.id == session.id }) {
+          localState.agentSessions[index].paneID = result.paneID
+          persistLocalState()
+        }
+        if let terminalFocusHandler {
+          try await terminalFocusHandler(
+            config.wezTerm.applicationName,
+            result.paneID == nil ? nil : session.terminalWindowTitle
+          )
+        }
+        actionMessages[ticket.id] =
+          "\(result.message) The queue stays available beside the terminal."
+      } catch {
+        actionMessages[ticket.id] = error.localizedDescription
+      }
+    }
+  }
+
+  func removeAgent(_ session: TaskAgentSession, from ticket: DashboardTicket) {
+    guard localState.agentSessions.contains(where: { $0.id == session.id }) else { return }
+    localState.agentSessions.removeAll { $0.id == session.id }
+    persistLocalState()
+    actionMessages[ticket.id] =
+      "Removed \(session.provider.displayName) session \(session.sessionID) from this task."
+  }
+
+  func availableTerminals() async throws -> [WezTermPane] {
+    try await terminalController.listAttachablePanes(configuration: config.wezTerm)
+  }
+
+  func attachTerminal(_ pane: WezTermPane, to ticket: DashboardTicket) async -> Bool {
+    actionMessages[ticket.id] = "Attaching the selected WezTerm tab…"
+    do {
+      try await terminalController.attach(
+        paneID: pane.paneID,
+        taskID: ticket.id,
+        configuration: config.wezTerm
+      )
+      actionMessages[ticket.id] =
+        "Attached \(pane.attachmentDisplayName) to \(ticket.id). Focus terminal will reuse it."
+      return true
+    } catch {
+      actionMessages[ticket.id] = error.localizedDescription
+      return false
+    }
+  }
+
   func open(_ rawValue: String) {
     guard let url = ResourceLocator.url(for: rawValue) else { return }
-    if url.isFileURL, url.pathExtension.lowercased() == "pdf" {
-      Self.openPDF(url)
-      return
+    if url.isFileURL {
+      switch url.pathExtension.lowercased() {
+      case "md", "markdown":
+        do {
+          try MarkdownBrowser.open(url)
+        } catch {
+          loadError = "Could not open Markdown file: \(error.localizedDescription)"
+        }
+        return
+      case "pdf":
+        Self.openPDF(url)
+        return
+      default:
+        break
+      }
     }
     NSWorkspace.shared.open(url)
   }
@@ -229,6 +473,14 @@ final class QueueViewModel {
 
   func placeWindow(_ placement: QueueWindowPlacement) {
     placementHandler?(placement)
+  }
+
+  func switchMonitor() {
+    monitorSwitchHandler?()
+  }
+
+  func setCanSwitchMonitor(_ canSwitchMonitor: Bool) {
+    self.canSwitchMonitor = canSwitchMonitor
   }
 
   func setAppearance(_ appearance: QueueAppearance) {
@@ -282,6 +534,55 @@ final class QueueViewModel {
       localState.routineDate = today
       localState.completedRoutineIDs = []
     }
+  }
+
+  private func refreshRecurringPRProgressIfNeeded(force: Bool) async {
+    let tickets = dashboard.tickets.filter { $0.isOpen && $0.isRecurringPullRequestTask }
+    let activeIDs = Set(tickets.map(\.id))
+    recurringPRProgressByTicketID = recurringPRProgressByTicketID.filter {
+      activeIDs.contains($0.key)
+    }
+    recurringPRProgressErrors = recurringPRProgressErrors.filter { activeIDs.contains($0.key) }
+    guard !tickets.isEmpty else { return }
+
+    if !force, let lastRecurringPRRefresh,
+      Date().timeIntervalSince(lastRecurringPRRefresh) < 300
+    {
+      return
+    }
+    lastRecurringPRRefresh = Date()
+    let closedSince = Self.dayFormatter.string(from: Self.startOfCurrentWeek)
+
+    for ticket in tickets {
+      guard let repository = ticket.pullRequestRepository else {
+        recurringPRProgressErrors[ticket.id] =
+          "Add a GitHub repository link to load recurring PR progress."
+        continue
+      }
+      do {
+        let snapshot = try await pullRequestQueueLoader.load(
+          repository: repository,
+          closedSince: closedSince
+        )
+        recurringPRProgressByTicketID[ticket.id] = RecurringPullRequestProgress(
+          snapshot: snapshot
+        )
+        recurringPRProgressErrors[ticket.id] = nil
+      } catch {
+        recurringPRProgressErrors[ticket.id] = error.localizedDescription
+      }
+    }
+  }
+
+  private func pruneDeferredTickets() {
+    let openIDs = Set(dashboard.tickets.lazy.filter(\.isOpen).map(\.id))
+    var seen: Set<String> = []
+    let validIDs = localState.deferredTicketIDs.filter {
+      openIDs.contains($0) && seen.insert($0).inserted
+    }
+    guard validIDs != localState.deferredTicketIDs else { return }
+    localState.deferredTicketIDs = validIDs
+    persistLocalState()
   }
 
   private func recoverInterruptedReviews() {
@@ -411,4 +712,20 @@ final class QueueViewModel {
     formatter.dateFormat = "yyyy-MM-dd"
     return formatter
   }()
+
+  private static var startOfCurrentWeek: Date {
+    Calendar.current.dateInterval(of: .weekOfYear, for: Date())?.start
+      ?? Calendar.current.startOfDay(for: Date())
+  }
+}
+
+private extension WezTermPane {
+  var attachmentDisplayName: String {
+    for value in [tabTitle, title, windowTitle] {
+      if let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        return "“\(value)”"
+      }
+    }
+    return "WezTerm pane \(paneID)"
+  }
 }

@@ -59,5 +59,8 @@ if [[ "$bootstrapped" -ne 1 ]]; then
 fi
 /bin/launchctl kickstart -k "$service"
 
+"$script_dir/install-mail-reader.sh" >/dev/null
+"$script_dir/install-morning-agent.sh" >/dev/null
+
 print -r -- "$installed_app"
 print -r -- "$desktop_launcher"

@@ -1,6 +1,6 @@
 import CoreGraphics
 
-public enum TerminalFocusGeometry {
+public enum DisplayGeometry {
     public static func nextScreenIndex(
         currentScreenFrame: CGRect,
         orderedScreenFrames: [CGRect]
@@ -12,6 +12,39 @@ public enum TerminalFocusGeometry {
         return (currentIndex + 1) % orderedScreenFrames.count
     }
 
+    public static func panelFrame(
+        preferredWidth: CGFloat,
+        visibleFrame: CGRect,
+        placement: QueueWindowPlacement,
+        margin: CGFloat = 12,
+        minimumWidth: CGFloat = 400,
+        maximumWidth: CGFloat = 620
+    ) -> CGRect {
+        let availableWidth = max(0, visibleFrame.width - (margin * 2))
+        let availableHeight = max(0, visibleFrame.height - (margin * 2))
+        let effectiveMinimumWidth = min(minimumWidth, availableWidth)
+        let width = min(max(preferredWidth, effectiveMinimumWidth), min(maximumWidth, availableWidth))
+
+        let x: CGFloat
+        switch placement {
+        case .upperLeft:
+            x = visibleFrame.minX + margin
+        case .upperRight:
+            x = visibleFrame.maxX - width - margin
+        case .center:
+            x = visibleFrame.midX - (width / 2)
+        }
+
+        return CGRect(
+            x: x,
+            y: visibleFrame.minY + margin,
+            width: width,
+            height: availableHeight
+        ).integral
+    }
+}
+
+public enum TerminalFocusGeometry {
     public static func centeredFrame(
         currentFrame: CGRect,
         visibleFrame: CGRect,
@@ -28,40 +61,4 @@ public enum TerminalFocusGeometry {
         ).integral
     }
 
-    public static func backdropRegions(
-        screenFrame: CGRect,
-        focusedFrame: CGRect?,
-        gap: CGFloat = 18
-    ) -> [CGRect] {
-        guard let focusedFrame else { return [screenFrame] }
-        let aperture = focusedFrame.insetBy(dx: -gap, dy: -gap).intersection(screenFrame)
-        guard !aperture.isNull, !aperture.isEmpty else { return [screenFrame] }
-
-        return [
-            CGRect(
-                x: screenFrame.minX,
-                y: aperture.maxY,
-                width: screenFrame.width,
-                height: max(0, screenFrame.maxY - aperture.maxY)
-            ),
-            CGRect(
-                x: screenFrame.minX,
-                y: screenFrame.minY,
-                width: screenFrame.width,
-                height: max(0, aperture.minY - screenFrame.minY)
-            ),
-            CGRect(
-                x: screenFrame.minX,
-                y: aperture.minY,
-                width: max(0, aperture.minX - screenFrame.minX),
-                height: aperture.height
-            ),
-            CGRect(
-                x: aperture.maxX,
-                y: aperture.minY,
-                width: max(0, screenFrame.maxX - aperture.maxX),
-                height: aperture.height
-            ),
-        ].filter { $0.width > 0 && $0.height > 0 }
-    }
 }

@@ -1,14 +1,29 @@
+import AppKit
 import FocusQueueCore
+import Foundation
 import SwiftUI
 
 struct QueueView: View {
   let model: QueueViewModel
   @State private var showsMoreTasks = false
+  @State private var showsPastCompletedTasks = false
+  @State private var visiblePastCompletedCount = 0
   @State private var screen: QueueScreen = .queue
+  @State private var selectedTab: QueueTab = .focus
+  @State private var focusDropIsTargeted = false
+  @State private var restButtonDropIsTargeted = false
+  @State private var restSectionDropIsTargeted = false
+  @State private var queueAgentDraft = ""
+
+  private let completedPageSize = 12
 
   private var focusTickets: [DashboardTicket] { Array(model.openTickets.prefix(5)) }
 
   private var remainingTickets: [DashboardTicket] { Array(model.openTickets.dropFirst(5)) }
+
+  private var visiblePastCompletedTickets: [DashboardTicket] {
+    Array(model.pastCompletedTickets.prefix(visiblePastCompletedCount))
+  }
 
   var body: some View {
     Group {
@@ -31,18 +46,23 @@ struct QueueView: View {
   private var queueContent: some View {
     VStack(spacing: 10) {
       header
-      ScrollView {
-        LazyVStack(alignment: .leading, spacing: 10) {
-          SectionHeading(title: "Today's focus", detail: "Top \(focusTickets.count)")
+      queueTabs
+      switch selectedTab {
+      case .focus:
+        activeQueueContent
+      case .completed:
+        completedQueueContent
+      case .agent:
+        QueueAgentChatView(model: model, draft: $queueAgentDraft)
+      }
+    }
+  }
 
-          if focusTickets.isEmpty {
-            ContentUnavailableView(
-              "Queue is clear", systemImage: "checkmark.circle",
-              description: Text("No open tasks are present in the dashboard.")
-            ).frame(maxWidth: .infinity).notificationSurface(radius: 18)
-          } else {
-            ForEach(focusTickets) { ticket in TicketCard(ticket: ticket, model: model) }
-          }
+  private var activeQueueContent: some View {
+    VStack(spacing: 10) {
+      ScrollView {
+        VStack(alignment: .leading, spacing: 10) {
+          todayFocusSection
 
           if showsMoreTasks {
             additionalQueue.transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -54,10 +74,95 @@ struct QueueView: View {
     }
   }
 
+  private var todayFocusSection: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      SectionHeading(
+        title: focusDropIsTargeted ? "Drop to Today's focus" : "Today's focus",
+        detail: "Top \(focusTickets.count)"
+      )
+
+      if focusTickets.isEmpty {
+        ContentUnavailableView(
+          "Queue is clear", systemImage: "checkmark.circle",
+          description: Text("No open tasks are present in the dashboard.")
+        ).frame(maxWidth: .infinity).notificationSurface(radius: 18)
+      } else {
+        ForEach(focusTickets) { ticket in TicketCard(ticket: ticket, model: model) }
+      }
+    }
+    .dropDestination(for: String.self) { ticketIDs, _ in
+      moveTicketsToToday(ticketIDs)
+    } isTargeted: {
+      focusDropIsTargeted = $0
+    }
+    .overlay {
+      if focusDropIsTargeted {
+        RoundedRectangle(cornerRadius: 20)
+          .stroke(.tint, style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
+          .allowsHitTesting(false)
+      }
+    }
+  }
+
+  private var completedQueueContent: some View {
+    VStack(spacing: 10) {
+      ScrollView {
+        LazyVStack(alignment: .leading, spacing: 10) {
+          SectionHeading(
+            title: "Completed today",
+            detail: "\(model.completedTodayTickets.count)"
+          )
+
+          if model.completedTodayTickets.isEmpty {
+            ContentUnavailableView(
+              "Nothing completed today",
+              systemImage: "checkmark.circle",
+              description: Text("Resolved and cancelled dashboard tasks will appear here.")
+            ).frame(maxWidth: .infinity).notificationSurface(radius: 18)
+          } else {
+            ForEach(model.completedTodayTickets) { ticket in
+              CompletedTicketCard(ticket: ticket, open: model.open)
+            }
+          }
+
+          if showsPastCompletedTasks {
+            SectionHeading(
+              title: "Earlier completions",
+              detail: "\(model.pastCompletedTickets.count)"
+            ).padding(.top, 4)
+
+            ForEach(visiblePastCompletedTickets) { ticket in
+              CompletedTicketCard(ticket: ticket, open: model.open)
+            }
+
+            if visiblePastCompletedCount < model.pastCompletedTickets.count {
+              HStack(spacing: 9) {
+                ProgressView().controlSize(.small)
+                Text("Loading more completed tasks…").foregroundStyle(.secondary)
+              }.font(.system(size: 12)).frame(maxWidth: .infinity).padding(.vertical, 10)
+                .onAppear { loadNextCompletedPage() }
+            }
+          }
+        }.padding(.horizontal, 2).padding(.vertical, 2)
+      }.scrollIndicators(.automatic)
+
+      if !model.pastCompletedTickets.isEmpty { completedMoreButton }
+    }
+  }
+
+  private var queueTabs: some View {
+    Picker("Queue section", selection: $selectedTab) {
+      Text("Focus \(model.openTickets.count)").tag(QueueTab.focus)
+      Text("Completed \(model.completedTodayTickets.count)").tag(QueueTab.completed)
+      Text("Queue chat").tag(QueueTab.agent)
+    }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Queue section")
+  }
+
   private var compactHeader: some View {
     HStack(spacing: 10) {
       Text("ECC Focus Queue").font(.system(size: 19, weight: .bold, design: .rounded))
       Spacer()
+      monitorButton
       Button {
         model.setPanelCollapsed(false)
       } label: {
@@ -77,6 +182,7 @@ struct QueueView: View {
         ).frame(width: 7, height: 7)
         syncLabel
         Spacer()
+        monitorButton
         Button {
           withAnimation(.easeInOut(duration: 0.18)) { screen = .settings }
         } label: {
@@ -85,7 +191,7 @@ struct QueueView: View {
           "Open ECC Focus Queue settings"
         ).help("Settings")
         Button {
-          Task { await model.refresh() }
+          Task { await model.refresh(forceRecurringPRProgress: true) }
         } label: {
           Image(systemName: "arrow.clockwise").font(.system(size: 13, weight: .semibold))
         }.buttonStyle(.plain).frame(width: 40, height: 40).disabled(model.isRefreshing)
@@ -102,7 +208,7 @@ struct QueueView: View {
       HStack(alignment: .firstTextBaseline) {
         Text("ECC Focus Queue").font(.system(size: 21, weight: .bold, design: .rounded))
         Spacer()
-        Text("\(model.openTickets.count) active").font(
+        Text(headerCountLabel).font(
           .system(size: 12, weight: .semibold).monospacedDigit()
         ).foregroundStyle(.secondary)
       }
@@ -140,8 +246,25 @@ struct QueueView: View {
       }
 
       if !remainingTickets.isEmpty {
-        SectionHeading(title: "Rest of queue", detail: "\(remainingTickets.count)")
-        ForEach(remainingTickets) { ticket in TicketCard(ticket: ticket, model: model) }
+        VStack(alignment: .leading, spacing: 10) {
+          SectionHeading(
+            title: restSectionDropIsTargeted ? "Drop to Rest of queue" : "Rest of queue",
+            detail: "\(remainingTickets.count)"
+          )
+          ForEach(remainingTickets) { ticket in TicketCard(ticket: ticket, model: model) }
+        }
+        .dropDestination(for: String.self) { ticketIDs, _ in
+          moveTicketsToRest(ticketIDs)
+        } isTargeted: {
+          restSectionDropIsTargeted = $0
+        }
+        .overlay {
+          if restSectionDropIsTargeted {
+            RoundedRectangle(cornerRadius: 20)
+              .stroke(.tint, style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
+              .allowsHitTesting(false)
+          }
+        }
       }
     }
   }
@@ -153,7 +276,11 @@ struct QueueView: View {
       HStack(spacing: 9) {
         Image(systemName: showsMoreTasks ? "chevron.up" : "chevron.down").font(
           .system(size: 12, weight: .bold))
-        Text(showsMoreTasks ? "Show only top five" : moreButtonLabel).font(
+        Text(
+          restButtonDropIsTargeted
+            ? (showsMoreTasks ? "Drop to Today's focus" : "Drop to Rest of queue")
+            : (showsMoreTasks ? "Show only top five" : moreButtonLabel)
+        ).font(
           .system(size: 14, weight: .semibold))
         Spacer()
         Text(showsMoreTasks ? "" : "\(remainingTickets.count) more").font(
@@ -161,18 +288,252 @@ struct QueueView: View {
         ).foregroundStyle(
           .secondary)
       }.padding(.horizontal, 15).frame(height: 52).contentShape(Rectangle())
-    }.buttonStyle(.plain).notificationSurface(radius: 16).accessibilityLabel(
+    }.buttonStyle(.plain).notificationSurface(radius: 16)
+      .dropDestination(for: String.self) { ticketIDs, _ in
+        showsMoreTasks ? moveTicketsToToday(ticketIDs) : moveTicketsToRest(ticketIDs)
+      } isTargeted: {
+        restButtonDropIsTargeted = $0
+      }
+      .overlay {
+        if restButtonDropIsTargeted {
+          RoundedRectangle(cornerRadius: 16)
+            .stroke(.tint, style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
+            .allowsHitTesting(false)
+        }
+      }
+      .accessibilityLabel(
       showsMoreTasks ? "Show only top five tasks" : "View more tasks")
   }
 
   private var moreButtonLabel: String {
     remainingTickets.isEmpty ? "View daily checklist" : "View more tasks"
   }
+
+  private var completedMoreButton: some View {
+    Button {
+      withAnimation(.easeInOut(duration: 0.22)) {
+        showsPastCompletedTasks.toggle()
+        visiblePastCompletedCount = showsPastCompletedTasks
+          ? min(completedPageSize, model.pastCompletedTickets.count)
+          : 0
+      }
+    } label: {
+      HStack(spacing: 9) {
+        Image(systemName: showsPastCompletedTasks ? "chevron.up" : "clock.arrow.circlepath")
+          .font(.system(size: 12, weight: .bold))
+        Text(showsPastCompletedTasks ? "Show today only" : "View past completed")
+          .font(.system(size: 14, weight: .semibold))
+        Spacer()
+        if !showsPastCompletedTasks {
+          Text("\(model.pastCompletedTickets.count) past")
+            .font(.system(size: 12, weight: .semibold).monospacedDigit())
+            .foregroundStyle(.secondary)
+        }
+      }.padding(.horizontal, 15).frame(height: 52).contentShape(Rectangle())
+    }.buttonStyle(.plain).notificationSurface(radius: 16).accessibilityLabel(
+      showsPastCompletedTasks ? "Show only tasks completed today" : "View past completed tasks"
+    )
+  }
+
+  private var headerCountLabel: String {
+    switch selectedTab {
+    case .focus: "\(model.openTickets.count) active"
+    case .completed: "\(model.completedTodayTickets.count) today"
+    case .agent: model.isQueueAgentResponding ? "Codex working" : "Codex ready"
+    }
+  }
+
+  private func loadNextCompletedPage() {
+    guard showsPastCompletedTasks else { return }
+    visiblePastCompletedCount = min(
+      visiblePastCompletedCount + completedPageSize,
+      model.pastCompletedTickets.count
+    )
+  }
+
+  private func moveTicketsToRest(_ ticketIDs: [String]) -> Bool {
+    var handled = false
+    for ticketID in ticketIDs {
+      handled = model.moveTicketToRest(ticketID) || handled
+    }
+    if handled {
+      withAnimation(.easeInOut(duration: 0.22)) { showsMoreTasks = true }
+    }
+    return handled
+  }
+
+  private func moveTicketsToToday(_ ticketIDs: [String]) -> Bool {
+    var handled = false
+    for ticketID in ticketIDs {
+      handled = model.moveTicketToToday(ticketID) || handled
+    }
+    return handled
+  }
+
+  private var monitorButton: some View {
+    Button {
+      model.switchMonitor()
+    } label: {
+      Image(systemName: "display.2").font(.system(size: 13, weight: .semibold))
+    }.buttonStyle(.plain).frame(width: 40, height: 40).disabled(!model.canSwitchMonitor)
+      .accessibilityLabel("Move ECC Focus Queue to the next display")
+      .help(monitorButtonHelp)
+  }
+
+  private var monitorButtonHelp: String {
+    model.canSwitchMonitor
+      ? "Move queue to next display" : "Connect another display to move the queue"
+  }
 }
 
 private enum QueueScreen {
   case queue
   case settings
+}
+
+private enum QueueTab: Hashable {
+  case focus
+  case completed
+  case agent
+}
+
+private struct QueueAgentChatView: View {
+  let model: QueueViewModel
+  @Binding var draft: String
+  @FocusState private var composerIsFocused: Bool
+
+  var body: some View {
+    GeometryReader { geometry in
+      VStack(spacing: 10) {
+        ScrollViewReader { proxy in
+          ScrollView {
+            LazyVStack(spacing: 9) {
+              ForEach(model.queueChatMessages) { message in
+                messageRow(message).id(message.id)
+              }
+              if model.isQueueAgentResponding {
+                HStack(spacing: 9) {
+                  ProgressView().controlSize(.small)
+                  Text("Codex is checking the queue…")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                  Spacer()
+                }
+                .padding(.horizontal, 13).padding(.vertical, 11)
+                .notificationSurface(radius: 16)
+                .id("queue-agent-progress")
+              }
+            }
+            .padding(.horizontal, 2).padding(.vertical, 2)
+          }
+          .scrollIndicators(.automatic)
+          .onChange(of: model.queueChatMessages.count) { _, _ in
+            scrollToBottom(using: proxy)
+          }
+          .onChange(of: model.isQueueAgentResponding) { _, _ in
+            scrollToBottom(using: proxy)
+          }
+        }
+
+        HStack(alignment: .bottom, spacing: 8) {
+          TextField(
+            "Ask about order or request a task change",
+            text: $draft,
+            axis: .vertical
+          )
+          .textFieldStyle(.plain)
+          .font(.system(size: 13))
+          .lineLimit(1...100)
+          .frame(
+            height: composerHeight(
+              availableWidth: geometry.size.width,
+              availableHeight: geometry.size.height
+            ),
+            alignment: .topLeading
+          )
+          .padding(.horizontal, 13).padding(.vertical, 11)
+          .notificationSurface(radius: 16)
+          .overlay {
+            RoundedRectangle(cornerRadius: 16)
+              .stroke(
+                composerIsFocused ? Color.accentColor.opacity(0.8) : Color.clear,
+                lineWidth: 1.5
+              )
+              .allowsHitTesting(false)
+          }
+          .focused($composerIsFocused)
+          .onSubmit(send)
+          .accessibilityLabel("Message the Codex Queue agent")
+
+          Button(action: send) {
+            Image(systemName: "arrow.up.circle.fill")
+              .font(.system(size: 24, weight: .semibold))
+              .frame(width: 42, height: 42)
+          }
+          .buttonStyle(.plain)
+          .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || model.isQueueAgentResponding)
+          .accessibilityLabel("Send message to Codex Queue agent")
+        }
+      }
+    }
+    .task { focusComposer() }
+    .onChange(of: model.isQueueAgentResponding) { _, isResponding in
+      if !isResponding { focusComposer() }
+    }
+  }
+
+  @ViewBuilder
+  private func messageRow(_ message: QueueChatMessage) -> some View {
+    HStack {
+      if message.role == .user { Spacer(minLength: 40) }
+      Text(message.text)
+        .font(.system(size: 13))
+        .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.horizontal, 13).padding(.vertical, 10)
+        .background(message.role == .user ? Color.accentColor.opacity(0.16) : Color.clear)
+        .notificationSurface(radius: 16)
+      if message.role == .agent { Spacer(minLength: 40) }
+    }.accessibilityElement(children: .combine)
+  }
+
+  private func send() {
+    let message = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !message.isEmpty, !model.isQueueAgentResponding else { return }
+    draft = ""
+    model.sendQueueAgentMessage(message)
+  }
+
+  private func composerHeight(availableWidth: CGFloat, availableHeight: CGFloat) -> CGFloat {
+    let textWidth = max(80, availableWidth - 76)
+    let content = draft.isEmpty ? " " : draft
+    let bounds = (content as NSString).boundingRect(
+      with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
+      options: [.usesLineFragmentOrigin, .usesFontLeading],
+      attributes: [.font: NSFont.systemFont(ofSize: 13)]
+    )
+    let contentHeight = ceil(bounds.height) + 22
+    let maximumHeight = max(120, availableHeight * 0.7)
+    return min(max(42, contentHeight), maximumHeight)
+  }
+
+  private func focusComposer() {
+    Task { @MainActor in
+      await Task.yield()
+      composerIsFocused = true
+    }
+  }
+
+  private func scrollToBottom(using proxy: ScrollViewProxy) {
+    Task { @MainActor in
+      await Task.yield()
+      if model.isQueueAgentResponding {
+        proxy.scrollTo("queue-agent-progress", anchor: .bottom)
+      } else if let last = model.queueChatMessages.last {
+        proxy.scrollTo(last.id, anchor: .bottom)
+      }
+    }
+  }
 }
 
 private struct QueueSettingsView: View {
@@ -214,13 +575,25 @@ private struct QueueSettingsView: View {
           }
 
           settingsSection(
-            title: "Screen location", detail: "The panel stays fixed at this horizontal position."
+            title: "Screen location",
+            detail: "Choose the queue's horizontal position or move it to the next display."
           ) {
-            Picker("Screen location", selection: placementBinding) {
-              Text("Left").tag(QueueWindowPlacement.upperLeft)
-              Text("Center").tag(QueueWindowPlacement.center)
-              Text("Right").tag(QueueWindowPlacement.upperRight)
-            }.pickerStyle(.segmented).labelsHidden()
+            VStack(alignment: .leading, spacing: 10) {
+              Picker("Screen location", selection: placementBinding) {
+                Text("Left").tag(QueueWindowPlacement.upperLeft)
+                Text("Center").tag(QueueWindowPlacement.center)
+                Text("Right").tag(QueueWindowPlacement.upperRight)
+              }.pickerStyle(.segmented).labelsHidden()
+
+              Button("Move queue to next display", systemImage: "display.2") {
+                model.switchMonitor()
+              }.buttonStyle(.bordered).disabled(!model.canSwitchMonitor)
+                .help(
+                  model.canSwitchMonitor
+                    ? "Move queue to next display"
+                    : "Connect another display to move the queue"
+                )
+            }
           }
 
           settingsSection(
@@ -314,13 +687,73 @@ private struct RoutineRow: View {
   }
 }
 
+private struct CompletedTicketCard: View {
+  let ticket: DashboardTicket
+  let open: (String) -> Void
+
+  @Environment(\.queueAccentStyle) private var accentStyle
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 11) {
+      Image(systemName: statusIcon)
+        .font(.system(size: 18, weight: .semibold))
+        .foregroundStyle(statusColor)
+        .frame(width: 28, height: 30)
+      VStack(alignment: .leading, spacing: 6) {
+        HStack(alignment: .top, spacing: 8) {
+          Text(ticket.title).font(.system(size: 15, weight: .semibold)).lineLimit(3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+          Text(ticket.id).font(.system(size: 11, weight: .bold, design: .monospaced))
+            .foregroundStyle(.secondary).fixedSize()
+        }
+        if !ticket.summary.isEmpty {
+          Text(ticket.summary).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(2)
+        }
+        HStack(spacing: 7) {
+          StatusPill(text: ticket.status, color: statusColor)
+          Text(ticket.completionDay ?? "Date unavailable")
+            .font(.system(size: 11, weight: .medium).monospacedDigit())
+            .foregroundStyle(.secondary)
+          Spacer()
+          if let destination = ticket.links.first?.url ?? ticket.prs.first?.url {
+            Button {
+              open(destination)
+            } label: {
+              Image(systemName: "arrow.up.right.square")
+            }.buttonStyle(.borderless).accessibilityLabel("Open completion evidence for \(ticket.id)")
+          }
+        }
+      }
+    }.padding(.horizontal, 13).padding(.vertical, 11).notificationSurface(radius: 18)
+      .accessibilityElement(children: .contain)
+  }
+
+  private var statusColor: Color {
+    ticket.status.lowercased() == "cancelled"
+      ? .secondary
+      : QueueAccentPalette.color(.success, style: accentStyle)
+  }
+
+  private var statusIcon: String {
+    ticket.status.lowercased() == "cancelled" ? "xmark.circle.fill" : "checkmark.circle.fill"
+  }
+}
+
 private struct TicketCard: View {
   let ticket: DashboardTicket
   let model: QueueViewModel
+  @State private var showsAgentPicker = false
   @Environment(\.queueAccentStyle) private var accentStyle
 
   private var review: CompletionRequest? { model.latestReview(for: ticket.id) }
   private var isChecked: Bool { model.ticketIsChecked(ticket) }
+  private var recurringProgress: RecurringPullRequestProgress? {
+    model.recurringPRProgress(for: ticket.id)
+  }
+  private var recurringProgressError: String? {
+    model.recurringPRProgressError(for: ticket.id)
+  }
+  private var agentSessions: [TaskAgentSession] { model.agentSessions(for: ticket.id) }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -330,6 +763,8 @@ private struct TicketCard: View {
         details.padding(.top, 11).transition(.opacity.combined(with: .move(edge: .top)))
       }
     }.notificationSurface(radius: 18)
+      .draggable(ticket.id)
+      .accessibilityHint("Drag this task between Today's focus and Rest of queue.")
   }
 
   private var summary: some View {
@@ -344,8 +779,8 @@ private struct TicketCard: View {
         }.buttonStyle(.plain).disabled(review?.status == .running).frame(width: 40, height: 36)
           .accessibilityLabel(
             "Request completion review for \(ticket.id)"
-          ).accessibilityHint("Queues Hermes evidence review without directly closing the task.")
-          .help("Queue an evidence-based Hermes completion review")
+          ).accessibilityHint("Queues Codex evidence review without directly closing the task.")
+          .help("Queue an evidence-based Codex completion review")
 
         Button {
           toggleExpansion()
@@ -366,7 +801,7 @@ private struct TicketCard: View {
             Text(ticket.title).font(.system(size: 16, weight: .semibold)).lineLimit(3).frame(
               maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .trailing, spacing: 3) {
-              Text(ticket.progressLabel).font(
+              Text(summaryProgressLabel).font(
                 .system(size: 12, weight: .semibold).monospacedDigit()
               ).foregroundStyle(.secondary).fixedSize()
               Text(ticket.id).font(.system(size: 12, weight: .bold, design: .monospaced))
@@ -374,13 +809,29 @@ private struct TicketCard: View {
             }
           }
           HStack(spacing: 6) {
-            StatusPill(text: ticket.priority, color: priorityColor)
+            if recurringProgress?.openCount == 0 {
+              StatusPill(text: "No open PRs", color: .secondary)
+            } else {
+              StatusPill(text: ticket.priority, color: priorityColor)
+            }
             StatusPill(text: ticket.status, color: statusColor)
+            if ticket.isRecurringPullRequestTask {
+              StatusPill(
+                text: "Recurring daily",
+                color: QueueAccentPalette.color(.info, style: accentStyle)
+              )
+            }
             if let review { ReviewPill(status: review.status) }
+          }
+          if ticket.isRecurringPullRequestTask {
+            RecurringPRProgressSummary(
+              progress: recurringProgress,
+              error: recurringProgressError
+            )
           }
         }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
       }.buttonStyle(.plain).accessibilityLabel(
-        "\(ticket.title), \(ticket.progressLabel), \(ticket.id)"
+        "\(ticket.title), \(summaryProgressLabel), \(ticket.id)"
       ).accessibilityHint(
         model.isExpanded(ticket.id) ? "Hides task details." : "Shows task details."
       ).help(model.isExpanded(ticket.id) ? "Hide task details" : "Show task details")
@@ -395,6 +846,13 @@ private struct TicketCard: View {
 
   private var details: some View {
     VStack(alignment: .leading, spacing: 10) {
+      if ticket.isRecurringPullRequestTask {
+        RecurringPRResolutionDetails(
+          progress: recurringProgress,
+          error: recurringProgressError,
+          open: model.open
+        )
+      }
       DetailBlock(title: "Summary", text: ticket.summary)
       if let next = ticket.next, !next.isEmpty { DetailBlock(title: "Next", text: next) }
       if let doneWhen = ticket.doneWhen, !doneWhen.isEmpty {
@@ -472,21 +930,47 @@ private struct TicketCard: View {
       }
 
       HStack(spacing: 7) {
-        Button("Focus terminal", systemImage: "terminal") { model.focusTerminal(for: ticket) }
-          .buttonStyle(.bordered).accessibilityLabel(
-            "Focus terminal for \(ticket.id)"
-          ).accessibilityHint(
-            "Focuses a matching WezTerm pane or opens a tab in the task directory."
-          ).accessibilityIdentifier(
-            "focus-terminal-\(ticket.id)")
-        if let firstLink = ticket.links.first {
-          Button("Open first link", systemImage: "arrow.up.right.square") {
-            model.open(firstLink.url)
+        if agentSessions.isEmpty {
+          Button("Attach Agent", systemImage: "link.badge.plus") {
+            showsAgentPicker.toggle()
           }.buttonStyle(.bordered).accessibilityLabel(
-            "Open first link for \(ticket.id)")
+            "Attach an agent to \(ticket.id)"
+          ).accessibilityHint(
+            "Shows running Codex and Claude sessions that can be associated with this task."
+          ).accessibilityIdentifier("attach-agent-\(ticket.id)")
+        } else {
+          Button("View Agent", systemImage: "terminal") {
+            if agentSessions.count == 1, let session = agentSessions.first {
+              model.viewAgent(session, for: ticket)
+            } else {
+              showsAgentPicker.toggle()
+            }
+          }.buttonStyle(.bordered).accessibilityLabel(
+            agentSessions.count == 1
+              ? "View agent for \(ticket.id)"
+              : "Choose from \(agentSessions.count) agents for \(ticket.id)"
+          ).accessibilityHint(
+            "Focuses the agent terminal, or resumes the saved conversation if it is not running."
+          ).accessibilityIdentifier("view-agent-\(ticket.id)")
+
+          Button {
+            showsAgentPicker.toggle()
+          } label: {
+            Image(systemName: showsAgentPicker ? "chevron.up" : "chevron.down")
+          }.buttonStyle(.bordered).accessibilityLabel("Manage agents for \(ticket.id)")
+            .help("Choose, attach, or remove an agent session")
         }
         Spacer()
       }.controlSize(.regular)
+
+      if showsAgentPicker {
+        AgentSessionPicker(
+          ticket: ticket,
+          model: model,
+          onClose: { showsAgentPicker = false }
+        )
+        .transition(.opacity.combined(with: .move(edge: .top)))
+      }
     }.padding(.horizontal, 14).padding(.bottom, 14)
   }
 
@@ -500,12 +984,20 @@ private struct TicketCard: View {
   }
 
   private var priorityColor: Color {
-    switch ticket.priority.lowercased() {
+    if recurringProgress?.openCount == 0 { return .secondary }
+    return switch ticket.priority.lowercased() {
     case "critical": QueueAccentPalette.color(.danger, style: accentStyle)
     case "high": QueueAccentPalette.color(.warning, style: accentStyle)
     case "medium": QueueAccentPalette.color(.info, style: accentStyle)
     default: .secondary
     }
+  }
+
+  private var summaryProgressLabel: String {
+    guard ticket.isRecurringPullRequestTask else { return ticket.progressLabel }
+    guard let recurringProgress else { return "Loading PRs" }
+    guard recurringProgress.dailyTarget > 0 else { return "0 today" }
+    return "\(recurringProgress.resolvedToday.count)/\(recurringProgress.dailyTarget) today"
   }
 
   private var statusColor: Color {
@@ -542,6 +1034,365 @@ private struct TicketCard: View {
     case "file": "folder"
     default: "link"
     }
+  }
+}
+
+private struct RecurringPRProgressSummary: View {
+  let progress: RecurringPullRequestProgress?
+  let error: String?
+
+  @Environment(\.queueAccentStyle) private var accentStyle
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      if let progress {
+        if progress.dailyTarget == 0 {
+          HStack(spacing: 7) {
+            Image(systemName: "pause.circle.fill")
+            Text("No open pull requests. Daily target paused at zero.")
+          }
+          .font(.system(size: 12, weight: .medium))
+          .foregroundStyle(.secondary)
+        } else {
+          progressLine(
+            title: "Today",
+            completed: progress.resolvedToday.count,
+            target: progress.dailyTarget,
+            fraction: progress.dailyFraction,
+            color: QueueAccentPalette.color(.info, style: accentStyle)
+          )
+          progressLine(
+            title: "This week",
+            completed: progress.resolvedThisWeek.count,
+            target: progress.weeklyTarget,
+            fraction: progress.weeklyFraction,
+            color: QueueAccentPalette.color(.success, style: accentStyle)
+          )
+          Text("\(progress.openCount) open PRs · target refreshes every five minutes")
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(.secondary)
+        }
+      } else if let error {
+        Label(error, systemImage: "exclamationmark.triangle.fill")
+          .font(.system(size: 11)).foregroundStyle(.orange).lineLimit(2)
+      } else {
+        HStack(spacing: 7) {
+          ProgressView().controlSize(.small)
+          Text("Loading recurring PR progress…")
+        }.font(.system(size: 11)).foregroundStyle(.secondary)
+      }
+    }
+    .padding(.top, 2)
+  }
+
+  private func progressLine(
+    title: String,
+    completed: Int,
+    target: Int,
+    fraction: Double,
+    color: Color
+  ) -> some View {
+    VStack(alignment: .leading, spacing: 3) {
+      HStack {
+        Text(title).font(.system(size: 11, weight: .semibold))
+        Spacer()
+        Text("\(completed)/\(target)")
+          .font(.system(size: 11, weight: .bold).monospacedDigit())
+      }.foregroundStyle(.secondary)
+      ProgressView(value: fraction)
+        .progressViewStyle(.linear)
+        .tint(color)
+        .accessibilityLabel("\(title) pull request resolution progress")
+        .accessibilityValue("\(completed) of \(target)")
+    }
+  }
+}
+
+private struct RecurringPRResolutionDetails: View {
+  let progress: RecurringPullRequestProgress?
+  let error: String?
+  let open: (String) -> Void
+
+  @State private var showsResolvedToday = false
+  @State private var showsEarlierThisWeek = false
+
+  private var earlierThisWeek: [PullRequestResolution] {
+    guard let progress else { return [] }
+    let todayIDs = Set(progress.resolvedToday.map(\.id))
+    return progress.resolvedThisWeek.filter { !todayIDs.contains($0.id) }
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      DetailLabel(text: "Recurring PR goal")
+      if let progress {
+        DisclosureGroup(isExpanded: $showsResolvedToday) {
+          resolutionList(
+            progress.resolvedToday,
+            emptyMessage: "No pull requests have been resolved today."
+          )
+        } label: {
+          disclosureLabel("Resolved today", count: progress.resolvedToday.count)
+        }
+
+        DisclosureGroup(isExpanded: $showsEarlierThisWeek) {
+          resolutionList(
+            earlierThisWeek,
+            emptyMessage: "No earlier resolutions this week."
+          )
+        } label: {
+          disclosureLabel("Earlier this week", count: earlierThisWeek.count)
+        }
+      } else if let error {
+        Label(error, systemImage: "exclamationmark.triangle.fill")
+          .font(.system(size: 12)).foregroundStyle(.orange)
+      } else {
+        HStack(spacing: 8) {
+          ProgressView().controlSize(.small)
+          Text("Loading GitHub activity…")
+        }.font(.system(size: 12)).foregroundStyle(.secondary)
+      }
+    }
+    .padding(11)
+    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+  }
+
+  private func disclosureLabel(_ title: String, count: Int) -> some View {
+    HStack {
+      Text(title).font(.system(size: 13, weight: .semibold))
+      Spacer()
+      Text("\(count)").font(.system(size: 12, weight: .bold).monospacedDigit())
+        .foregroundStyle(.secondary)
+    }
+  }
+
+  @ViewBuilder
+  private func resolutionList(_ resolutions: [PullRequestResolution], emptyMessage: String)
+    -> some View
+  {
+    if resolutions.isEmpty {
+      Text(emptyMessage).font(.system(size: 12)).foregroundStyle(.secondary)
+        .padding(.top, 7)
+    } else {
+      VStack(spacing: 5) {
+        ForEach(resolutions) { resolution in
+          Button {
+            open(resolution.url)
+          } label: {
+            HStack(alignment: .top, spacing: 8) {
+              Image(
+                systemName: resolution.isMerged
+                  ? "checkmark.arrow.trianglehead.branch" : "xmark.circle"
+              )
+              .foregroundStyle(resolution.isMerged ? Color.green : Color.secondary)
+              VStack(alignment: .leading, spacing: 2) {
+                Text("#\(resolution.number) \(resolution.title)")
+                  .font(.system(size: 12, weight: .medium)).lineLimit(3)
+                Text(resolutionDetail(resolution))
+                  .font(.system(size: 10)).foregroundStyle(.secondary)
+              }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 7)
+            .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
+          .accessibilityLabel("Open pull request \(resolution.number): \(resolution.title)")
+        }
+      }.padding(.top, 6)
+    }
+  }
+
+  private func resolutionDetail(_ resolution: PullRequestResolution) -> String {
+    let disposition = resolution.isMerged ? "Merged" : "Closed"
+    guard let rawDate = resolution.resolvedAt,
+      let date = ISO8601DateFormatter().date(from: rawDate)
+    else {
+      return disposition
+    }
+    return "\(disposition) \(date.formatted(date: .abbreviated, time: .shortened))"
+  }
+}
+
+private struct AgentSessionPicker: View {
+  let ticket: DashboardTicket
+  let model: QueueViewModel
+  let onClose: () -> Void
+
+  @State private var runningAgents: [RunningAgentSession] = []
+  @State private var isLoading = true
+  @State private var attachingAgentID: String?
+  @State private var loadError: String?
+  @State private var removalHintSessionID: String?
+
+  private var attachedAgents: [TaskAgentSession] { model.agentSessions(for: ticket.id) }
+  private var unattachedRunningAgents: [RunningAgentSession] {
+    let attached = Set(attachedAgents.map { "\($0.provider.rawValue):\($0.sessionID)" })
+    return runningAgents.filter { !attached.contains("\($0.provider.rawValue):\($0.sessionID)") }
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack(spacing: 9) {
+        Image(systemName: "person.crop.circle.badge.checkmark").font(
+          .system(size: 16, weight: .semibold))
+        VStack(alignment: .leading, spacing: 2) {
+          Text("Agent sessions").font(.system(size: 16, weight: .bold))
+          Text("View, attach, or remove agents for \(ticket.id)")
+            .font(.system(size: 12)).foregroundStyle(.secondary)
+        }
+        Spacer()
+        Button {
+          Task { await loadAgents() }
+        } label: {
+          Image(systemName: "arrow.clockwise")
+        }.buttonStyle(.plain).frame(width: 32, height: 32)
+          .disabled(isLoading || attachingAgentID != nil)
+          .accessibilityLabel("Refresh running agents")
+          .help("Refresh running agents")
+        Button {
+          onClose()
+        } label: {
+          Image(systemName: "xmark")
+        }.buttonStyle(.plain).frame(width: 32, height: 32)
+          .disabled(attachingAgentID != nil)
+          .accessibilityLabel("Close agent picker")
+          .help("Close agent picker")
+      }
+
+      if !attachedAgents.isEmpty {
+        VStack(alignment: .leading, spacing: 7) {
+          Text("Attached").font(.system(size: 11, weight: .bold)).foregroundStyle(.secondary)
+          ForEach(attachedAgents) { session in
+            attachedAgentRow(session)
+          }
+          if let removalHintSessionID {
+            Text("Double-click the trash button to remove session \(removalHintSessionID).")
+              .font(.system(size: 11)).foregroundStyle(.secondary)
+          }
+        }
+        Divider().opacity(0.5)
+      }
+
+      Text("Attach another running agent")
+        .font(.system(size: 11, weight: .bold)).foregroundStyle(.secondary)
+
+      if isLoading {
+        HStack(spacing: 9) {
+          ProgressView().controlSize(.small)
+          Text("Finding Codex and Claude sessions in WezTerm…").foregroundStyle(.secondary)
+        }.frame(maxWidth: .infinity, minHeight: 70)
+      } else if let loadError {
+        VStack(alignment: .leading, spacing: 9) {
+          Label(loadError, systemImage: "exclamationmark.triangle.fill")
+            .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+          Button("Try again") { Task { await loadAgents() } }.buttonStyle(.bordered)
+        }.font(.system(size: 12)).frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
+      } else if unattachedRunningAgents.isEmpty {
+        ContentUnavailableView(
+          "No unattached agents found",
+          systemImage: "person.crop.circle.badge.questionmark",
+          description: Text("Start Codex or Claude in WezTerm, then refresh this list.")
+        ).frame(maxWidth: .infinity, minHeight: 110)
+      } else {
+        VStack(spacing: 7) {
+          ForEach(unattachedRunningAgents) { agent in
+            runningAgentRow(agent)
+          }
+        }.padding(.vertical, 1)
+      }
+    }.padding(12).frame(maxWidth: .infinity)
+      .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
+      .overlay {
+        RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.08), lineWidth: 1)
+      }
+      .task { await loadAgents() }
+  }
+
+  private func attachedAgentRow(_ session: TaskAgentSession) -> some View {
+    HStack(spacing: 8) {
+      Button {
+        model.viewAgent(session, for: ticket)
+      } label: {
+        HStack(spacing: 10) {
+          Image(systemName: "terminal").font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(.secondary).frame(width: 22)
+          VStack(alignment: .leading, spacing: 3) {
+            Text("\(session.tabTitle) · \(session.sessionID)")
+              .font(.system(size: 12, weight: .semibold, design: .monospaced)).lineLimit(1)
+            Text("\(session.provider.displayName) · \(displayPath(session.workingDirectory))")
+              .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+          }.frame(maxWidth: .infinity, alignment: .leading)
+        }.contentShape(Rectangle())
+      }.buttonStyle(.plain)
+        .accessibilityLabel(
+          "View \(session.provider.displayName) agent, \(session.tabTitle), session \(session.sessionID)"
+        )
+
+      Image(systemName: "trash")
+        .font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
+        .frame(width: 34, height: 34).contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+          removalHintSessionID = nil
+          model.removeAgent(session, from: ticket)
+        }
+        .onTapGesture(count: 1) { removalHintSessionID = session.sessionID }
+        .accessibilityElement()
+        .accessibilityLabel("Remove session \(session.sessionID)")
+        .accessibilityHint("Double-click to remove this agent from the task")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { model.removeAgent(session, from: ticket) }
+        .help("Double-click to remove this agent from the task")
+    }.padding(.horizontal, 10).padding(.vertical, 8)
+      .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 10))
+  }
+
+  private func runningAgentRow(_ agent: RunningAgentSession) -> some View {
+    Button {
+      attachingAgentID = agent.id
+      Task {
+        if await model.attachAgent(agent, to: ticket) {
+          await loadAgents()
+        }
+        attachingAgentID = nil
+      }
+    } label: {
+      HStack(spacing: 10) {
+        Image(systemName: "link.badge.plus").font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(.secondary).frame(width: 22)
+        VStack(alignment: .leading, spacing: 3) {
+          Text("\(agent.tabTitle) · \(agent.sessionID)")
+            .font(.system(size: 12, weight: .semibold, design: .monospaced)).lineLimit(1)
+          Text("\(agent.provider.displayName) · \(displayPath(agent.workingDirectory))")
+            .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+        if attachingAgentID == agent.id {
+          ProgressView().controlSize(.small)
+        } else if agent.pane.isActive == true {
+          Circle().fill(Color.green).frame(width: 7, height: 7).help("Active pane")
+        }
+      }.padding(.horizontal, 11).padding(.vertical, 9).contentShape(Rectangle())
+    }.buttonStyle(.plain).disabled(attachingAgentID != nil)
+      .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 10))
+      .accessibilityLabel(
+        "Attach \(agent.provider.displayName) agent, \(agent.tabTitle), session \(agent.sessionID)"
+      )
+  }
+
+  private func loadAgents() async {
+    isLoading = true
+    loadError = nil
+    do {
+      runningAgents = try await model.availableAgents()
+    } catch {
+      runningAgents = []
+      loadError = error.localizedDescription
+    }
+    isLoading = false
+  }
+
+  private func displayPath(_ path: String) -> String {
+    path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
   }
 }
 
@@ -611,7 +1462,7 @@ private struct ReviewDetail: View {
       } else {
         Text(
           review.status == .running
-            ? "Hermes is reviewing source evidence…" : "Queued for Hermes review."
+            ? "Codex is reviewing source evidence…" : "Queued for Codex review."
         ).font(.system(size: 13)).foregroundStyle(
           .secondary)
       }

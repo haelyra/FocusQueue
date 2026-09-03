@@ -758,6 +758,16 @@ private struct TicketCard: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       summary
+      agentControls
+      if showsAgentPicker {
+        AgentSessionPicker(
+          ticket: ticket,
+          model: model,
+          onClose: { showsAgentPicker = false }
+        )
+        .padding(.horizontal, 14).padding(.bottom, 12)
+        .transition(.opacity.combined(with: .move(edge: .top)))
+      }
       if model.isExpanded(ticket.id) {
         Divider().opacity(0.45).padding(.horizontal, 14)
         details.padding(.top, 11).transition(.opacity.combined(with: .move(edge: .top)))
@@ -842,6 +852,55 @@ private struct TicketCard: View {
     withAnimation(.easeInOut(duration: 0.18)) {
       model.setExpanded(!model.isExpanded(ticket.id), ticketID: ticket.id)
     }
+  }
+
+  private var agentControls: some View {
+    HStack(spacing: 7) {
+      if agentSessions.count > 1 {
+        Menu {
+          ForEach(agentSessions) { session in
+            Button("\(session.tabTitle) · \(session.sessionID)") {
+              model.viewAgent(session, for: ticket)
+            }
+          }
+        } label: {
+          Label("View Agent", systemImage: "terminal")
+        }
+        .menuStyle(.button)
+        .accessibilityLabel("Choose an agent for \(ticket.id)")
+        .accessibilityHint("Lists attached sessions by terminal tab name and session ID.")
+        .accessibilityIdentifier("view-agent-\(ticket.id)")
+      } else {
+        Button("View Agent", systemImage: "terminal") {
+          guard let session = agentSessions.first else { return }
+          model.viewAgent(session, for: ticket)
+        }
+        .buttonStyle(.bordered)
+        .disabled(agentSessions.isEmpty)
+        .accessibilityLabel("View agent for \(ticket.id)")
+        .accessibilityHint(
+          agentSessions.isEmpty
+            ? "Attach an agent before viewing it."
+            : "Focuses the agent terminal, or resumes the saved conversation if it is not running."
+        )
+        .accessibilityIdentifier("view-agent-\(ticket.id)")
+      }
+
+      Button("Attach Agent", systemImage: "person.crop.circle.badge.plus") {
+        withAnimation(.easeInOut(duration: 0.18)) {
+          showsAgentPicker.toggle()
+        }
+      }
+      .buttonStyle(.bordered)
+      .accessibilityLabel("Attach an agent to \(ticket.id)")
+      .accessibilityHint("Shows running Codex and Claude sessions that can be attached to this task.")
+      .accessibilityIdentifier("attach-agent-\(ticket.id)")
+      .help("Choose, attach, or remove an agent session")
+
+      Spacer()
+    }
+    .controlSize(.regular)
+    .padding(.horizontal, 14).padding(.bottom, 10)
   }
 
   private var details: some View {
@@ -929,48 +988,6 @@ private struct TicketCard: View {
           horizontal: false, vertical: true)
       }
 
-      HStack(spacing: 7) {
-        if agentSessions.isEmpty {
-          Button("View Agent", systemImage: "person.crop.circle.badge.plus") {
-            showsAgentPicker.toggle()
-          }.buttonStyle(.bordered).accessibilityLabel(
-            "View or attach an agent for \(ticket.id)"
-          ).accessibilityHint(
-            "Shows running Codex and Claude sessions so one can be associated with this task."
-          ).accessibilityIdentifier("view-agent-\(ticket.id)")
-        } else {
-          Button("View Agent", systemImage: "terminal") {
-            if agentSessions.count == 1, let session = agentSessions.first {
-              model.viewAgent(session, for: ticket)
-            } else {
-              showsAgentPicker.toggle()
-            }
-          }.buttonStyle(.bordered).accessibilityLabel(
-            agentSessions.count == 1
-              ? "View agent for \(ticket.id)"
-              : "Choose from \(agentSessions.count) agents for \(ticket.id)"
-          ).accessibilityHint(
-            "Focuses the agent terminal, or resumes the saved conversation if it is not running."
-          ).accessibilityIdentifier("view-agent-\(ticket.id)")
-
-          Button {
-            showsAgentPicker.toggle()
-          } label: {
-            Image(systemName: showsAgentPicker ? "chevron.up" : "chevron.down")
-          }.buttonStyle(.bordered).accessibilityLabel("Manage agents for \(ticket.id)")
-            .help("Choose, attach, or remove an agent session")
-        }
-        Spacer()
-      }.controlSize(.regular)
-
-      if showsAgentPicker {
-        AgentSessionPicker(
-          ticket: ticket,
-          model: model,
-          onClose: { showsAgentPicker = false }
-        )
-        .transition(.opacity.combined(with: .move(edge: .top)))
-      }
     }.padding(.horizontal, 14).padding(.bottom, 14)
   }
 

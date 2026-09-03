@@ -160,8 +160,9 @@ only after an explicit user request.
 
 The dedicated Codex Queue harness performs a read-first morning reconciliation
 across the ECC Discord server, the configured Telegram archive transport,
-`haley@ecc.tools` through Apple Mail, and new ECC GitHub issues. A macOS
-LaunchAgent starts it every day at 8:00 AM; the old Hermes cron is paused. It
+`haley@ecc.tools` through Apple Mail, and new ECC GitHub issues. The running Focus
+Queue app starts it after 8:00 AM from an installed automation copy; the old
+standalone LaunchAgent and Hermes cron are paused. It
 refreshes deterministic PR facts before a read-only Codex classification step
 and applies only schema-valid, source-linked task proposals. External replies
 and source-system mutations remain disabled. See

@@ -1093,6 +1093,9 @@ public actor CodexQueueAgent: QueueAgentChatting {
         guard let proofLine = lines.last(where: {
             $0.trimmingCharacters(in: .whitespaces).hasPrefix(proofPrefix)
         }) else {
+            if Self.isBlockedMailResponse(output) {
+                throw QueueAgentError.failed(output)
+            }
             throw QueueAgentError.failed(
                 "mail answer withheld because Codex did not provide current-turn verified mail evidence"
             )
@@ -1147,6 +1150,15 @@ public actor CodexQueueAgent: QueueAgentChatting {
             verification = "Verified mail evidence: \(receipt.account) · \(receipt.operation) · retrieved \(receipt.retrievedAt)"
         }
         return "\(answer)\n\n\(verification)"
+    }
+
+    private static func isBlockedMailResponse(_ output: String) -> Bool {
+        let normalized = output.lowercased()
+        return normalized.contains("blocked")
+            && [
+                "focus-mail", "mail reader", "mail connector", "verified connector",
+                "operation not permitted", "timed out",
+            ].contains(where: normalized.contains)
     }
 
     private func verifyDiscordEvidence(

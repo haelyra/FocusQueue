@@ -17,6 +17,9 @@ import SwiftUI
   private var terminalFocusController: TerminalFocusModeController?
   private var focusChromeRefreshTask: Task<Void, Never>?
   private var screenReconciliationTask: Task<Void, Never>?
+  private var morningReconciliationTask: Task<Void, Never>?
+  private var lastMorningAttempt: Date?
+  private let morningRunner = FoundationProcessRunner()
   private var currentPlacement: QueueWindowPlacement = .upperRight
   private var preferredDisplayIdentifier: String?
   private var isApplyingPanelFrame = false
@@ -82,12 +85,14 @@ import SwiftUI
         )
       }
       panel?.orderFrontRegardless()
+      startMorningReconciliationLoop()
     }
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
   func applicationWillTerminate(_ notification: Notification) {
+    morningReconciliationTask?.cancel()
     DistributedNotificationCenter.default().removeObserver(self)
   }
 
@@ -181,6 +186,98 @@ import SwiftUI
   }
 
   @objc private func quitApplication() { NSApplication.shared.terminate(nil) }
+
+  private func startMorningReconciliationLoop() {
+    guard morningReconciliationTask == nil else { return }
+    morningReconciliationTask = Task { @MainActor [weak self] in
+      while !Task.isCancelled {
+        await self?.runMorningReconciliationIfDue()
+        try? await Task.sleep(for: .seconds(300))
+      }
+    }
+  }
+
+  private func runMorningReconciliationIfDue() async {
+    let now = Date()
+    if let lastMorningAttempt, now.timeIntervalSince(lastMorningAttempt) < 3_600 { return }
+
+    let support = URL(
+      fileURLWithPath: "/Users/hira/Library/Application Support/ECC Focus Queue",
+      isDirectory: true
+    )
+    let runtime = support.appendingPathComponent("ingestion", isDirectory: true)
+    let stateURL = runtime.appendingPathComponent("state.json")
+    let lastSuccessfulAt = Self.lastSuccessfulMorningRun(at: stateURL)
+    guard MorningRunPolicy.isDue(now: now, lastSuccessfulAt: lastSuccessfulAt) else { return }
+
+    lastMorningAttempt = now
+    let script = support.appendingPathComponent(
+      "automation/Scripts/focus_queue_morning.py"
+    )
+    guard FileManager.default.isExecutableFile(atPath: script.path) else {
+      appendMorningLog(
+        "Scheduled reconciliation unavailable: \(script.path) is missing.\n",
+        error: true
+      )
+      return
+    }
+
+    do {
+      let result = try await morningRunner.run(ProcessSpecification(
+        executable: "/usr/bin/python3",
+        arguments: [
+          script.path, "run",
+          "--config", support.appendingPathComponent("ingestion.json").path,
+          "--runtime", runtime.path,
+        ],
+        workingDirectory: model.config.workspacePath,
+        environment: [
+          "PATH": [
+            "/Users/hira/.local/bin", "/opt/homebrew/bin", "/usr/local/bin",
+            "/usr/bin", "/bin", "/usr/sbin", "/sbin",
+          ].joined(separator: ":")
+        ],
+        timeoutSeconds: 900,
+        maximumOutputBytes: 512_000
+      ))
+      appendMorningLog(result.standardOutput, error: false)
+      appendMorningLog(result.standardError, error: true)
+      if result.timedOut {
+        appendMorningLog("Scheduled reconciliation exceeded its 900-second budget.\n", error: true)
+      }
+      await model.refresh(forceRecurringPRProgress: true)
+    } catch {
+      appendMorningLog("Scheduled reconciliation failed to launch: \(error.localizedDescription)\n", error: true)
+    }
+  }
+
+  private static func lastSuccessfulMorningRun(at url: URL) -> Date? {
+    guard let data = try? Data(contentsOf: url),
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let value = object["lastSuccessfulAt"] as? String else {
+      return nil
+    }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+  }
+
+  private func appendMorningLog(_ text: String, error: Bool) {
+    guard !text.isEmpty else { return }
+    let name = error ? "morning.stderr.log" : "morning.stdout.log"
+    let url = URL(
+      fileURLWithPath: "/Users/hira/Library/Application Support/ECC Focus Queue"
+    ).appendingPathComponent(name)
+    if !FileManager.default.fileExists(atPath: url.path) {
+      FileManager.default.createFile(atPath: url.path, contents: nil)
+    }
+    guard let handle = try? FileHandle(forWritingTo: url) else { return }
+    defer { try? handle.close() }
+    do {
+      try handle.seekToEnd()
+      try handle.write(contentsOf: Data(text.utf8))
+    } catch {}
+  }
 
   private func createPanel() {
     let panel = FocusPanel(

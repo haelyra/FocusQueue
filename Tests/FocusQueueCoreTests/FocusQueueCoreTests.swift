@@ -4,6 +4,21 @@ import Testing
 
 @testable import FocusQueueCore
 
+@Test("Morning reconciliation is due only after today's scheduled hour")
+func morningRunPolicy() throws {
+  var calendar = Calendar(identifier: .gregorian)
+  calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
+  let before = try Date("2026-09-03T07:59:00Z", strategy: .iso8601)
+  let after = try Date("2026-09-03T08:01:00Z", strategy: .iso8601)
+  let yesterday = try Date("2026-09-02T12:00:00Z", strategy: .iso8601)
+  let today = try Date("2026-09-03T08:00:30Z", strategy: .iso8601)
+
+  #expect(!MorningRunPolicy.isDue(now: before, lastSuccessfulAt: yesterday, calendar: calendar))
+  #expect(MorningRunPolicy.isDue(now: after, lastSuccessfulAt: nil, calendar: calendar))
+  #expect(MorningRunPolicy.isDue(now: after, lastSuccessfulAt: yesterday, calendar: calendar))
+  #expect(!MorningRunPolicy.isDue(now: after, lastSuccessfulAt: today, calendar: calendar))
+}
+
 @Test("Foundation process runner returns after a short-lived child exits")
 func foundationProcessRunnerReturnsAfterExit() async throws {
   let result = try await FoundationProcessRunner().run(ProcessSpecification(
@@ -741,6 +756,40 @@ func codexQueueAgentRejectsUnsupportedMailClaim() async {
     Issue.record("Unsupported mail claim was not withheld")
   } catch {
     #expect(error.localizedDescription.contains("mail answer withheld"))
+  }
+}
+
+@Test("Queue chat preserves a blocked connector error when no mail proof exists")
+func codexQueueAgentPreservesBlockedMailError() async {
+  let runner = MockProcessRunner(results: [
+    ProcessResult(
+      exitCode: 0,
+      standardOutput: "Blocked. focus-mail failed: Operation not permitted.",
+      standardError: "",
+      timedOut: false
+    )
+  ])
+  let agent = CodexQueueAgent(runner: runner)
+
+  do {
+    _ = try await agent.send(
+      message: "Search my inbox.",
+      dashboardPath: "/tmp/dashboard.json",
+      workspace: "/tmp",
+      visibleOrder: [],
+      deferredTicketIDs: [],
+      configuration: VerifierConfiguration(
+        enabled: true,
+        executable: "/mock/focus-queue-codex",
+        sessionName: "unused",
+        timeoutSeconds: 60,
+        maxTurns: 12
+      )
+    )
+    Issue.record("Blocked mail connector error was not surfaced")
+  } catch {
+    #expect(error.localizedDescription.contains("Operation not permitted"))
+    #expect(!error.localizedDescription.contains("did not provide current-turn"))
   }
 }
 

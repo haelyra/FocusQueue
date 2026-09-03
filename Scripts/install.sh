@@ -38,6 +38,11 @@ if [[ ! -e "$support_dir/config.json" ]]; then
   /bin/cp "$project_dir/Config/ecc.config.json" "$support_dir/config.json"
 fi
 
+if [[ ! -d "$mail_reader_app" || ! -f "$mail_reader_launch_agent" ]]; then
+  "$script_dir/install-mail-reader.sh" >/dev/null
+fi
+"$script_dir/install-morning-agent.sh" >/dev/null
+
 /bin/rm -f "$launch_agent"
 /usr/bin/plutil -create xml1 "$launch_agent"
 /usr/bin/plutil -insert Label -string com.haelyra.ecc-focus-queue "$launch_agent"
@@ -62,11 +67,6 @@ if [[ "$bootstrapped" -ne 1 ]]; then
   exit 1
 fi
 /bin/launchctl kickstart -k "$service"
-
-if [[ ! -d "$mail_reader_app" || ! -f "$mail_reader_launch_agent" ]]; then
-  "$script_dir/install-mail-reader.sh" >/dev/null
-fi
-"$script_dir/install-morning-agent.sh" >/dev/null
 
 print -r -- "$installed_app"
 print -r -- "$desktop_launcher"

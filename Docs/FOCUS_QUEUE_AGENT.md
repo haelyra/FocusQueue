@@ -8,9 +8,11 @@ never receives those source credentials in its prompt or connector output.
 
 ## Morning reconciliation
 
-The macOS LaunchAgent `com.haelyra.ecc-focus-queue-morning` runs every day at
-8:00 AM in the computer's local timezone and calls the versioned collector in
-this repository. The former Hermes cron job is paused.
+The always-running `ECC Focus Queue.app` checks every five minutes and runs the
+morning reconciliation after 8:00 AM local time when today's successful
+checkpoint is absent. It launches an installed automation copy from Application
+Support so protected Documents access uses the already-approved Focus Queue app.
+The former standalone morning LaunchAgent and Hermes cron job are paused.
 
 ```text
 Discord + Telegram + Apple Mail + GitHub

@@ -1,5 +1,7 @@
 import importlib.util
+import json
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -111,6 +113,40 @@ class FocusQueueMailTests(unittest.TestCase):
             "The customer outage still blocks private repository activation.",
         )
         self.assertTrue(result["message"]["url"].startswith("message://"))
+
+    def test_reader_falls_back_to_launch_services_when_launchctl_is_denied(self):
+        application = self.root / "ECC Focus Mail Reader.app"
+        application.mkdir()
+        nonce = "11111111-2222-3333-4444-555555555555"
+        response = {
+            "status": "ok",
+            "verified": True,
+            "operation": "status",
+            "nonce": nonce,
+        }
+        (self.root / "mail-response.json").write_text(json.dumps(response))
+        config = {
+            "mailRuntimeDirectory": str(self.root),
+            "mailReaderApplication": str(application),
+            "mailReaderService": "gui/503/tools.ecc.focus-mail-reader",
+        }
+        denied = subprocess.CompletedProcess([], 1, "", "Operation not permitted")
+        opened = subprocess.CompletedProcess([], 0, "", "")
+
+        with mock.patch.object(MODULE.uuid, "uuid4", return_value=nonce), mock.patch.object(
+            MODULE.subprocess, "run", side_effect=[denied, opened]
+        ) as run:
+            result = MODULE.invoke_reader(config, {"operation": "status"})
+
+        self.assertEqual(result["nonce"], nonce)
+        self.assertEqual(
+            run.call_args_list[0].args[0],
+            ["/bin/launchctl", "kickstart", "gui/503/tools.ecc.focus-mail-reader"],
+        )
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            ["/usr/bin/open", "-g", "-n", str(application)],
+        )
 
 
 if __name__ == "__main__":

@@ -442,14 +442,28 @@ def invoke_reader(config: dict[str, Any], request: dict[str, Any]) -> dict[str, 
             )
         )
         launched = subprocess.run(
-            ["/bin/launchctl", "kickstart", "-k", service],
+            ["/bin/launchctl", "kickstart", service],
             capture_output=True,
             text=True,
             check=False,
         )
         if launched.returncode != 0:
-            detail = (launched.stderr or launched.stdout).strip()
-            raise MailAccessError(f"Mail reader service could not start: {detail[:500]}")
+            # Codex's workspace sandbox can deny launchctl process replacement.
+            # LaunchServices can still start this signed, permission-stable app
+            # without granting the Codex process direct access to Mail.
+            opened = subprocess.run(
+                ["/usr/bin/open", "-g", "-n", str(application)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if opened.returncode != 0:
+                launch_detail = (launched.stderr or launched.stdout).strip()
+                open_detail = (opened.stderr or opened.stdout).strip()
+                raise MailAccessError(
+                    "Mail reader could not start through launchd or LaunchServices: "
+                    f"{launch_detail[:250]}; {open_detail[:250]}"
+                )
         deadline = time.monotonic() + 90
         while time.monotonic() < deadline:
             try:

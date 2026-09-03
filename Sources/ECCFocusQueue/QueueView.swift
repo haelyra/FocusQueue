@@ -931,13 +931,13 @@ private struct TicketCard: View {
 
       HStack(spacing: 7) {
         if agentSessions.isEmpty {
-          Button("Attach Agent", systemImage: "link.badge.plus") {
+          Button("View Agent", systemImage: "person.crop.circle.badge.plus") {
             showsAgentPicker.toggle()
           }.buttonStyle(.bordered).accessibilityLabel(
-            "Attach an agent to \(ticket.id)"
+            "View or attach an agent for \(ticket.id)"
           ).accessibilityHint(
-            "Shows running Codex and Claude sessions that can be associated with this task."
-          ).accessibilityIdentifier("attach-agent-\(ticket.id)")
+            "Shows running Codex and Claude sessions so one can be associated with this task."
+          ).accessibilityIdentifier("view-agent-\(ticket.id)")
         } else {
           Button("View Agent", systemImage: "terminal") {
             if agentSessions.count == 1, let session = agentSessions.first {

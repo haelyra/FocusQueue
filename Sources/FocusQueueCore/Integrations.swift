@@ -351,13 +351,21 @@ public actor WezTermController: WezTermControlling {
             let line = String(rawLine)
             guard line.first == "n" else { continue }
             let path = String(line.dropFirst())
-            let isProviderSession = switch provider {
+            if provider == .codex,
+               path.contains("/.codex/thread-writer-locks/"),
+               path.hasSuffix(".lock") {
+                let candidate = URL(fileURLWithPath: path)
+                    .deletingPathExtension().lastPathComponent
+                if UUID(uuidString: candidate) != nil { return candidate.lowercased() }
+            }
+
+            let isProviderTranscript = switch provider {
             case .codex:
                 path.contains("/.codex/sessions/") || path.contains("/.codex/archived_sessions/")
             case .claude:
                 path.contains("/.claude/projects/")
             }
-            guard isProviderSession, path.hasSuffix(".jsonl") else { continue }
+            guard isProviderTranscript, path.hasSuffix(".jsonl") else { continue }
             let stem = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
             let groups = stem.split(separator: "-")
             guard groups.count >= 5 else { continue }
@@ -503,7 +511,8 @@ public actor WezTermController: WezTermControlling {
         output.split(whereSeparator: \Character.isNewline).compactMap { rawLine in
             let fields = rawLine.split(maxSplits: 2, whereSeparator: \Character.isWhitespace)
             guard fields.count == 3, let pid = Int32(fields[0]) else { return nil }
-            let command = URL(fileURLWithPath: String(fields[2])).lastPathComponent.lowercased()
+            let commandPath = String(fields[2]).trimmingCharacters(in: .whitespaces)
+            let command = URL(fileURLWithPath: commandPath).lastPathComponent.lowercased()
             let provider: AgentProvider
             switch command {
             case "codex": provider = .codex

@@ -404,7 +404,7 @@ func wezTermAgentDiscovery() async throws {
       "cwd":"file:///Users/hira/Documents/Github/ECCFocusQueue",
       "is_active":true,"tab_title":"ECC-035","tty_name":"/dev/ttys027"}]
     """
-  let processList = "30447 ttys027 codex\n"
+  let processList = "30447 ttys027  codex\n"
   let lsof = """
     p30447
     n/Users/hira/.codex/sessions/2026/09/02/rollout-2026-09-02T21-17-02-\(sessionID).jsonl
@@ -430,6 +430,11 @@ func wezTermAgentDiscovery() async throws {
     for: .claude,
     inLsofOutput:
       "n/Users/hira/.claude/projects/-Users-hira-project/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl"
+  ) == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+  #expect(WezTermController.sessionID(
+    for: .codex,
+    inLsofOutput:
+      "n/Users/hira/.codex/thread-writer-locks/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.lock"
   ) == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 }
 

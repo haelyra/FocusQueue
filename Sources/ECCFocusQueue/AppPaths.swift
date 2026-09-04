@@ -7,6 +7,26 @@ struct AppPaths: Sendable {
     let reviewsDirectory: URL
     let agentRegistrationsDirectory: URL
 
+    var ingestionConfigurationFile: URL {
+        supportDirectory.appendingPathComponent("ingestion.json")
+    }
+
+    var ingestionRuntimeDirectory: URL {
+        supportDirectory.appendingPathComponent("ingestion", isDirectory: true)
+    }
+
+    var latestDailyReportFile: URL {
+        ingestionRuntimeDirectory.appendingPathComponent("latest-report.json")
+    }
+
+    var dailyReportApprovalFile: URL {
+        ingestionRuntimeDirectory.appendingPathComponent("pending-report-approval.json")
+    }
+
+    var dailyReportScript: URL {
+        supportDirectory.appendingPathComponent("automation/Scripts/focus_queue_morning.py")
+    }
+
     static func live(environment: [String: String] = ProcessInfo.processInfo.environment) -> Self {
         if let override = environment["FOCUS_QUEUE_SUPPORT_DIR"], !override.isEmpty {
             let directory = URL(fileURLWithPath: override, isDirectory: true)

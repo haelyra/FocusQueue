@@ -8,6 +8,7 @@ public struct ProcessSpecification: Sendable, Equatable {
     public let environment: [String: String]?
     public let timeoutSeconds: Int
     public let maximumOutputBytes: Int
+    public let terminationGraceSeconds: Double
 
     public init(
         executable: String,
@@ -15,7 +16,8 @@ public struct ProcessSpecification: Sendable, Equatable {
         workingDirectory: String? = nil,
         environment: [String: String]? = nil,
         timeoutSeconds: Int = 30,
-        maximumOutputBytes: Int = 128_000
+        maximumOutputBytes: Int = 128_000,
+        terminationGraceSeconds: Double = 0.4
     ) {
         self.executable = executable
         self.arguments = arguments
@@ -23,6 +25,7 @@ public struct ProcessSpecification: Sendable, Equatable {
         self.environment = environment
         self.timeoutSeconds = timeoutSeconds
         self.maximumOutputBytes = maximumOutputBytes
+        self.terminationGraceSeconds = terminationGraceSeconds
     }
 }
 
@@ -121,7 +124,9 @@ public actor FoundationProcessRunner: ProcessRunning {
                 process.terminate()
             }
             if let stopRequestedAt,
-               now >= stopRequestedAt.advanced(by: .milliseconds(400)),
+               now >= stopRequestedAt.advanced(
+                by: .seconds(max(0.1, specification.terminationGraceSeconds))
+               ),
                !sentKill,
                process.isRunning {
                 Darwin.kill(process.processIdentifier, SIGKILL)

@@ -6,20 +6,32 @@ local `/Users/hira/.local/bin/focus-queue-codex` harness. Mail and Discord are
 exposed through narrow read-only commands with private evidence receipts. Codex
 never receives those source credentials in its prompt or connector output.
 
-## Morning reconciliation
+## Daily reconciliation and report
 
 The always-running `ECC Focus Queue.app` checks every five minutes and runs the
-morning reconciliation after 8:00 AM local time when today's successful
-checkpoint is absent. It launches an installed automation copy from Application
-Support so protected Documents access uses the already-approved Focus Queue app.
-The former standalone morning LaunchAgent and Hermes cron job are paused.
+reconciliation at the configured local time when no successful or partial
+report exists for the current day. A poll in the first ten minutes runs
+automatically. A later start creates one portable JSON approval request and a
+macOS notification with **Run report** and **Not today** actions. The same
+approval appears inside the queue. It launches an installed automation copy
+from Application Support so protected Documents access uses the already-approved
+Focus Queue app. The former standalone morning LaunchAgent and Hermes cron job
+are paused.
+
+Launching or waking the Mac after the scheduled instant always uses the
+approval path, including when availability resumes during the polling grace.
+
+The current notification bridge is local to macOS. A phone notification requires
+a selected push provider or companion client. The versioned
+`pending-report-approval.json` file is intentionally portable so a future relay
+can deliver and resolve the same request without changing scheduling policy.
 
 ```text
 Discord + Telegram + Apple Mail + GitHub
                   |
           read-only collection
                   |
-        tool-restricted classification
+          no-tools classification
                   |
        schema validation and deduplication
                   |
@@ -28,8 +40,39 @@ Discord + Telegram + Apple Mail + GitHub
 
 The first run scans seven days. After a successful run, a private checkpoint
 reduces subsequent scans to the interval since the prior success with a
-12-hour overlap. Source and proposal artifacts are mode `0600` under
-`~/Library/Application Support/ECC Focus Queue/ingestion/`.
+12-hour overlap. Crash journals are mode `0600` under
+`~/Library/Application Support/ECC Focus Queue/ingestion/` and are deleted
+after commit. Live classification uses an ephemeral Codex turn, so raw message
+bundles are not kept in Codex session history. Curated report history is
+retained for 90 days.
+
+Collection is capped at 5,000 records per source for resource safety. A source
+that reaches the cap is reported as partial and does not advance the success
+checkpoint. Telegram JSONL is stopped while streaming at the same cap so an
+archive cannot fill worker memory first.
+
+`processed-messages.json` is the durable source-key ledger. Normal scheduled,
+manual, and chat runs classify only source keys absent from that ledger. The
+only bypass is an explicit `--recheck`, and scheduled runs reject that flag.
+Each report is written to `reports/YYYY-MM-DD/<run-id>.json`, with
+`latest-report.json` as the UI pointer. Reports contain private-detail-safe
+summaries and links, not raw message bodies.
+
+The configurable token budget reserves capacity for instructions, dashboard
+context, and output, then admits newest unseen messages within the remaining
+conservative byte allowance. Deferred messages stay unseen for the next run.
+The final `codex exec --json` usage event supplies exact input, cached input,
+output, reasoning output, and total token counts. Since that event arrives only
+after the turn completes, any unexpected overage is preserved as a report
+warning.
+
+The classifier runs only with an audited Codex CLI version, an ephemeral turn,
+an empty workspace, read-only sandboxing, and all known tool surfaces disabled.
+An unknown CLI version fails closed until its tool surface is reviewed. Before
+any dashboard write, deterministic filtering redacts common credentials,
+email addresses, phone numbers, SSNs, and payment numbers; automatic tasks from
+untrusted messages are capped at medium priority and keep only host-bound source
+links.
 
 ## Source coverage
 
@@ -156,11 +199,24 @@ python3 Scripts/focus_queue_morning.py dry-run \
   --config "$HOME/Library/Application Support/ECC Focus Queue/ingestion.json"
 ```
 
-Inspect the scheduled job:
+Run an unseen-only daily report for selected platforms through the same command
+available to Queue chat:
 
 ```bash
-launchctl print gui/$(id -u)/com.haelyra.ecc-focus-queue-morning
+focus-queue-report run --trigger chat --platform discord --platform email
+```
+
+Run every enabled platform manually:
+
+```bash
+focus-queue-report run --trigger manual --comprehensive
+```
+
+Inspect app-owned scheduling and report artifacts:
+
+```bash
 tail -100 "$HOME/Library/Application Support/ECC Focus Queue/morning.stdout.log"
+python3 -m json.tool "$HOME/Library/Application Support/ECC Focus Queue/ingestion/latest-report.json"
 ```
 
 Rebuild the permission-stable Mail reader after changing its source:

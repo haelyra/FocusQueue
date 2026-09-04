@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "runSummary", "messageSummaries", "newTasks", "updates", "progressNotes", "ignoredCount"],
+  "properties": {
+    "version": {"type": "integer", "const": 1},
+    "runSummary": {"type": "string", "minLength": 1, "maxLength": 2000},
+    "messageSummaries": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sourceKey", "title", "summary", "disposition"],
+        "properties": {
+          "sourceKey": {"type": "string", "minLength": 1, "maxLength": 500},
+          "title": {"type": "string", "minLength": 1, "maxLength": 300},
+          "summary": {"type": "string", "minLength": 1, "maxLength": 900},
+          "disposition": {"type": "string", "enum": ["actionable", "informational", "ignored"]}
+        }
+      }
+    },
+    "newTasks": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "category", "priority", "summary", "next", "doneWhen", "sourceKeys", "sourceLinks"],
+        "properties": {
+          "title": {"type": "string", "minLength": 1, "maxLength": 180},
+          "category": {"type": "string", "enum": ["Inbox", "Bug", "Feature", "Maintenance", "Community", "Security"]},
+          "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+          "summary": {"type": "string", "minLength": 1, "maxLength": 600},
+          "next": {"type": "string", "minLength": 1, "maxLength": 600},
+          "doneWhen": {"type": "string", "minLength": 1, "maxLength": 600},
+          "sourceKeys": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": {"type": "string", "minLength": 1, "maxLength": 500}
+          },
+          "sourceLinks": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 10,
+            "items": {"$ref": "#/$defs/sourceLink"}
+          }
+        }
+      }
+    },
+    "updates": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ticketId", "next", "sourceKeys", "sourceLinks"],
+        "properties": {
+          "ticketId": {"type": "string", "pattern": "^ECC-[0-9]{3,}$"},
+          "next": {"type": ["string", "null"], "maxLength": 600},
+          "sourceKeys": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": {"type": "string", "minLength": 1, "maxLength": 500}
+          },
+          "sourceLinks": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 10,
+            "items": {"$ref": "#/$defs/sourceLink"}
+          }
+        }
+      }
+    },
+    "progressNotes": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {"type": "string", "maxLength": 300}
+    },
+    "ignoredCount": {"type": "integer", "minimum": 0}
+  },
+  "$defs": {
+    "sourceLink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "url", "type"],
+      "properties": {
+        "label": {"type": "string", "minLength": 1, "maxLength": 180},
+        "url": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "type": {"type": "string", "enum": ["discord", "telegram", "email", "github"]}
+      }
+    }
+  }
+}

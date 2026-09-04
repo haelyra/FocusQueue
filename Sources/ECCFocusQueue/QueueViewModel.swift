@@ -23,7 +23,15 @@ final class QueueViewModel {
   private(set) var lastSync: Date?
   private(set) var sourceModificationDate: Date?
   private(set) var loadError: String?
+  private(set) var configurationIsLoaded = false
   private(set) var isRefreshing = false
+  private(set) var dailyReport: DailyReportDocument?
+  private(set) var dailyReportLoadError: String?
+  private(set) var isDailyReportPresented = false
+  private(set) var isDailyReportRunning = false
+  private(set) var dailyReportRunMessage: String?
+  private(set) var pendingDailyReportApproval: DailyReportApprovalRequest?
+  private(set) var requestedReportTaskID: String?
   private(set) var isPanelCollapsed = false
   private(set) var canSwitchMonitor = false
   private(set) var actionMessages: [String: String] = [:]
@@ -41,6 +49,8 @@ final class QueueViewModel {
 
   @ObservationIgnored private let paths: AppPaths
   @ObservationIgnored private let configurationRepository: any ConfigurationLoading
+  @ObservationIgnored private let dailyReportRepository: any DailyReportStoring
+  @ObservationIgnored private let dailyReportApprovalRepository: any DailyReportApprovalStoring
   @ObservationIgnored private let dashboardRepository: any DashboardLoading
   @ObservationIgnored private let stateStore: any LocalStateStoring
   @ObservationIgnored private let reviewArtifacts: ReviewArtifactStore
@@ -53,12 +63,18 @@ final class QueueViewModel {
   @ObservationIgnored private var reviewTasks: [UUID: Task<Void, Never>] = [:]
   @ObservationIgnored private var windowSaveTask: Task<Void, Never>?
   @ObservationIgnored private var queueChatTask: Task<Void, Never>?
+  @ObservationIgnored private var configurationSaveTask: Task<Void, Never>?
   @ObservationIgnored private var lastRecurringPRRefresh: Date?
   @ObservationIgnored private var bootstrapped = false
 
   @ObservationIgnored var placementHandler: ((QueueWindowPlacement) -> Void)?
   @ObservationIgnored var monitorSwitchHandler: (() -> Void)?
   @ObservationIgnored var collapseHandler: ((Bool) -> Void)?
+  @ObservationIgnored var reportVisibilityHandler: ((Bool) -> Void)?
+  @ObservationIgnored var dailyReportRunHandler: (
+    @MainActor (DailyReportRunRequest) async -> DailyReportDocument?
+  )?
+  @ObservationIgnored var dailyReportApprovalHandler: (@MainActor (Bool) async -> Void)?
   @ObservationIgnored var terminalFocusHandler: (
     @MainActor (String, String?) async throws -> Void
   )?
@@ -67,6 +83,8 @@ final class QueueViewModel {
   init(
     paths: AppPaths = .live(),
     configurationRepository: (any ConfigurationLoading)? = nil,
+    dailyReportRepository: (any DailyReportStoring)? = nil,
+    dailyReportApprovalRepository: (any DailyReportApprovalStoring)? = nil,
     dashboardRepository: any DashboardLoading = JSONDashboardRepository(),
     stateStore: (any LocalStateStoring)? = nil,
     reviewArtifacts: ReviewArtifactStore? = nil,
@@ -81,6 +99,11 @@ final class QueueViewModel {
     self.configurationRepository =
       configurationRepository
       ?? JSONConfigurationRepository(url: paths.configurationFile)
+    self.dailyReportRepository =
+      dailyReportRepository ?? JSONDailyReportRepository(url: paths.latestDailyReportFile)
+    self.dailyReportApprovalRepository =
+      dailyReportApprovalRepository
+      ?? JSONDailyReportApprovalRepository(url: paths.dailyReportApprovalFile)
     self.dashboardRepository = dashboardRepository
     self.stateStore = stateStore ?? JSONLocalStateStore(url: paths.stateFile)
     self.reviewArtifacts = reviewArtifacts ?? ReviewArtifactStore(directory: paths.reviewsDirectory)
@@ -148,7 +171,15 @@ final class QueueViewModel {
     bootstrapped = true
     do {
       config = try await configurationRepository.loadOrCreate(default: .eccDefault())
+      configurationIsLoaded = true
       localState = try await stateStore.load()
+      await reloadDailyReport()
+      if let approval = try await dailyReportApprovalRepository.load(),
+        approval.status == .pending,
+        approval.reportDate == Self.dayFormatter.string(from: Date())
+      {
+        pendingDailyReportApproval = approval
+      }
       await importAgentRegistrations()
       resetDailyRoutinesIfNeeded()
       recoverInterruptedReviews()
@@ -224,9 +255,20 @@ final class QueueViewModel {
   func sendQueueAgentMessage(_ rawMessage: String) {
     let message = rawMessage.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !message.isEmpty, !isQueueAgentResponding else { return }
+    guard !isDailyReportRunning else {
+      dailyReportRunMessage = "Wait for the daily report to finish before editing the queue."
+      return
+    }
 
     queueChatMessages.append(QueueChatMessage(role: .user, text: message))
     isQueueAgentResponding = true
+    if let reportRequest = DailyReportChatCommand.parse(
+      message,
+      enabledPlatforms: config.dailyReport.enabledPlatforms
+    ) {
+      runDailyReportFromChat(reportRequest)
+      return
+    }
     let visibleOrder = openTickets.map(\.id)
     let deferredTicketIDs = localState.deferredTicketIDs
     queueChatTask = Task { [weak self] in
@@ -243,6 +285,9 @@ final class QueueViewModel {
         )
         self.queueChatMessages.append(QueueChatMessage(role: .agent, text: reply.message))
         await self.refresh()
+        if self.dailyReport == nil {
+          await self.reloadDailyReport()
+        }
       } catch {
         self.queueChatMessages.append(
           QueueChatMessage(role: .agent, text: error.localizedDescription)
@@ -506,6 +551,113 @@ final class QueueViewModel {
     NSWorkspace.shared.open(paths.configurationFile)
   }
 
+  func setDailyReportPresented(_ presented: Bool) {
+    guard isDailyReportPresented != presented else { return }
+    isDailyReportPresented = presented
+    reportVisibilityHandler?(presented)
+  }
+
+  func toggleDailyReport() {
+    setDailyReportPresented(!isDailyReportPresented)
+  }
+
+  func reloadDailyReport() async {
+    do {
+      dailyReport = try await dailyReportRepository.load()
+      dailyReportLoadError = nil
+    } catch {
+      dailyReport = nil
+      dailyReportLoadError = "Could not load daily report: \(error.localizedDescription)"
+    }
+  }
+
+  func displayDailyReport(_ report: DailyReportDocument) {
+    dailyReport = report
+    dailyReportLoadError = nil
+  }
+
+  func persistDailyReportConfiguration() async -> Bool {
+    guard configurationIsLoaded else {
+      loadError = "Daily report cannot run until the saved configuration loads successfully."
+      return false
+    }
+    configurationSaveTask?.cancel()
+    do {
+      try await configurationRepository.save(config)
+      return true
+    } catch {
+      loadError = "Could not save settings before the report: \(error.localizedDescription)"
+      return false
+    }
+  }
+
+  func runComprehensiveDailyReport() {
+    guard !isDailyReportRunning else { return }
+    let request = DailyReportRunRequest(
+      trigger: .manual,
+      platforms: config.dailyReport.enabledPlatforms,
+      comprehensive: true,
+      recheck: false
+    )
+    configurationSaveTask?.cancel()
+    Task { [weak self] in
+      guard let self else { return }
+      _ = await self.dispatchDailyReport(request)
+    }
+  }
+
+  func respondToDailyReportApproval(run: Bool) {
+    Task { await dailyReportApprovalHandler?(run) }
+  }
+
+  func setDailyReportRunState(isRunning: Bool, message: String? = nil) {
+    isDailyReportRunning = isRunning
+    dailyReportRunMessage = message
+  }
+
+  func setPendingDailyReportApproval(_ request: DailyReportApprovalRequest?) {
+    pendingDailyReportApproval = request
+  }
+
+  func revealReportTask(_ taskID: String) {
+    requestedReportTaskID = taskID
+    expandedTicketIDs.insert(taskID)
+    setDailyReportPresented(false)
+  }
+
+  func clearRequestedReportTask() {
+    requestedReportTaskID = nil
+  }
+
+  func setDailyReportSchedule(hour: Int, minute: Int) {
+    guard (0...23).contains(hour), (0...59).contains(minute) else { return }
+    config.dailyReport.scheduleHour = hour
+    config.dailyReport.scheduleMinute = minute
+    persistConfiguration()
+  }
+
+  func setDailyReportMaximumTokens(_ maximumTokens: Int) {
+    config.dailyReport.maximumTokens = min(max(maximumTokens, 10_000), 1_000_000)
+    persistConfiguration()
+  }
+
+  func setDailyReportPlatform(_ platform: DailyReportPlatform, enabled: Bool) {
+    var enabledPlatforms = Set(config.dailyReport.enabledPlatforms)
+    if enabled {
+      enabledPlatforms.insert(platform)
+    } else {
+      guard enabledPlatforms.count > 1 else {
+        dailyReportRunMessage = "At least one report platform must stay enabled."
+        return
+      }
+      enabledPlatforms.remove(platform)
+    }
+    config.dailyReport.enabledPlatforms = DailyReportPlatform.allCases.filter(
+      enabledPlatforms.contains
+    )
+    persistConfiguration()
+  }
+
   func placeWindow(_ placement: QueueWindowPlacement) {
     placementHandler?(placement)
   }
@@ -529,6 +681,9 @@ final class QueueViewModel {
   }
 
   func setPanelCollapsed(_ collapsed: Bool) {
+    if collapsed, isDailyReportPresented {
+      setDailyReportPresented(false)
+    }
     isPanelCollapsed = collapsed
     collapseHandler?(collapsed)
   }
@@ -712,6 +867,85 @@ final class QueueViewModel {
     }
   }
 
+  private func persistConfiguration() {
+    let snapshot = config
+    configurationSaveTask?.cancel()
+    configurationSaveTask = Task { [weak self] in
+      try? await Task.sleep(for: .milliseconds(250))
+      guard !Task.isCancelled, let self else { return }
+      do {
+        try await self.configurationRepository.save(snapshot)
+        self.dailyReportRunMessage = "Daily report settings saved."
+      } catch {
+        self.loadError = "Could not save settings: \(error.localizedDescription)"
+      }
+    }
+  }
+
+  private func runDailyReportFromChat(_ request: DailyReportRunRequest) {
+    let priorReportID = dailyReport?.runID
+    queueChatTask = Task { [weak self] in
+      guard let self else { return }
+      defer { self.isQueueAgentResponding = false }
+      guard self.dailyReportRunHandler != nil else {
+        self.queueChatMessages.append(QueueChatMessage(
+          role: .agent,
+          text: "Daily report automation is unavailable in this app session."
+        ))
+        return
+      }
+      guard let report = await self.dispatchDailyReport(request) else {
+        self.queueChatMessages.append(QueueChatMessage(
+          role: .agent,
+          text: self.dailyReportRunMessage ?? "The requested daily report did not complete."
+        ))
+        return
+      }
+      let requiredPlatforms = request.comprehensive
+        ? self.config.dailyReport.enabledPlatforms
+        : request.platforms
+      let requiredPlatformNames = Set(requiredPlatforms.map(\.rawValue))
+      let actualPlatformNames = Set(report.platforms.map { $0.platform.rawValue })
+      guard report.runID != priorReportID,
+        report.trigger == .chat,
+        report.comprehensive == request.comprehensive,
+        report.mode == (request.recheck ? .recheck : .unseenOnly),
+        actualPlatformNames == requiredPlatformNames
+      else {
+        self.queueChatMessages.append(QueueChatMessage(
+          role: .agent,
+          text: self.dailyReportRunMessage ?? "The requested daily report did not complete."
+        ))
+        return
+      }
+      self.queueChatMessages.append(QueueChatMessage(
+        role: .agent,
+        text: Self.dailyReportChatSummary(report)
+      ))
+      await self.refresh()
+    }
+  }
+
+  private func dispatchDailyReport(
+    _ request: DailyReportRunRequest
+  ) async -> DailyReportDocument? {
+    guard await persistDailyReportConfiguration() else { return nil }
+    return await dailyReportRunHandler?(request)
+  }
+
+  private static func dailyReportChatSummary(_ report: DailyReportDocument) -> String {
+    let platformSummary = report.platforms.map {
+      "\($0.platform.displayName): \($0.newCount) new, \($0.checkedCount) checked"
+    }.joined(separator: "; ")
+    let tokenCount = report.usage?.totalTokens.formatted() ?? "unavailable"
+    var response = "\(report.summary)\n\n\(platformSummary). Exact token use: \(tokenCount)."
+    if !report.errors.isEmpty {
+      response += " Coverage was partial: \(report.errors.joined(separator: "; "))"
+    }
+    response += " Open the document button in the queue header for message and task links."
+    return response
+  }
+
   private static func openPDF(_ url: URL) {
     let workspace = NSWorkspace.shared
     guard let preview = workspace.urlForApplication(withBundleIdentifier: "com.apple.Preview")
@@ -743,7 +977,7 @@ final class QueueViewModel {
     let formatter = DateFormatter()
     formatter.calendar = .current
     formatter.locale = .current
-    formatter.timeZone = .current
+    formatter.timeZone = .autoupdatingCurrent
     formatter.dateFormat = "yyyy-MM-dd"
     return formatter
   }()

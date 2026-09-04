@@ -15,8 +15,22 @@ dashboard, but the app is a standalone personal tool and is not part of ECC.
 - Persisted Light and WezTerm-matched Dark appearances, plus Muted, Pastel, No
   Color, and Vibrant accent palettes for status, priority, sync, and review
   indicators.
-- A quick settings screen for appearance, accent palette, and left, center, or
-  right placement.
+- A quick settings screen for appearance, accent palette, left, center, or
+  right placement, and the daily report schedule, platforms, and token budget.
+- An interactive daily message report that expands inward from the queue edge.
+  It shows per-platform new and checked counts, expandable message summaries,
+  source and task links, the overall run summary, and exact observed Codex token
+  use. A processed-message ledger prevents routine runs from classifying the
+  same message twice.
+- Missed schedules create one durable approval request for the day and a macOS
+  notification with **Run report** and **Not today** actions. The approval is
+  also shown inside the queue when the app opens.
+
+The current local build delivers the approval notification to the Mac. Phone
+delivery needs a chosen push provider or companion client, neither of which is
+configured in this repository. The versioned JSON approval file is the portable
+handoff contract for that future relay, so phone support will not require a
+rewrite of the scheduler or report engine.
 - A collapse control that shrinks the real window to the ECC Focus Queue title
   and restores the full-height panel from the same screen edge.
 - A stationary panel with placement controlled from the menu bar rather than by
@@ -96,6 +110,16 @@ not to resolve or cancel tasks or invent completion evidence. Mail questions use
 the ECC `focus-mail` connector, never Himalaya. The app independently verifies
 the current-turn proof before displaying a mail response.
 
+Queue chat can also run the report for selected platforms, for example “Run my
+daily report for Discord and email.” The app recognizes that narrow imperative,
+runs the report worker itself with allowlisted arguments, and displays only the
+exact report ID and date returned by the host process. Message text cannot
+self-attest a successful run. Rechecking a processed message requires an
+explicit, non-negated request.
+Selected-platform chat runs remain in report history, return in chat, and stay
+available in the panel for that app session. They do not replace the persisted
+latest comprehensive report used by the once-a-day scheduler.
+
 ## Build and install
 
 ```bash
@@ -133,6 +157,18 @@ copyable generic template; `Config/ecc.config.json` is the local ECC starter.
 All process arguments are passed directly to `Process`; task content is never
 assembled into a shell command.
 
+The `dailyReport` object sets `scheduleHour`, `scheduleMinute`, `maximumTokens`,
+and `enabledPlatforms`. The report engine is Python plus JSON so its scheduling,
+deduplication, task linkage, and approval contracts can be reused by a future
+Windows host. Swift is limited to the current macOS panel and notification
+bridge. The token budget is enforced conservatively before classification;
+because the Codex CLI reports final usage only after a turn, an unexpected
+overage is recorded prominently in the report rather than hidden.
+Successful report history is retained for 90 days. The deduplication ledger
+keeps only stable source identifiers and report metadata, not message bodies.
+Raw live-run source bundles exist only in a crash-recovery journal and are
+deleted after the report commits.
+
 The expected dashboard object has a top-level `tickets` array. Ticket fields
 consumed by the app are `id`, `title`, `category`, `priority`, `status`,
 `summary`, `next`, `doneWhen`, `updatedAt`, optional `completedAt`, `worktree`,
@@ -158,10 +194,10 @@ only after an explicit user request.
 
 ## Focus Queue agent
 
-The dedicated Codex Queue harness performs a read-first morning reconciliation
+The dedicated Codex Queue harness performs a read-first daily reconciliation
 across the ECC Discord server, the configured Telegram archive transport,
 `haley@ecc.tools` through Apple Mail, and new ECC GitHub issues. The running Focus
-Queue app starts it after 8:00 AM from an installed automation copy; the old
+Queue app starts it at the configured local time from an installed automation copy; the old
 standalone LaunchAgent and Hermes cron are paused. It
 refreshes deterministic PR facts before a read-only Codex classification step
 and applies only schema-valid, source-linked task proposals. External replies

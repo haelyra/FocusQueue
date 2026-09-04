@@ -79,6 +79,43 @@ public struct VerifierConfiguration: Codable, Equatable, Sendable {
   }
 }
 
+public enum DailyReportPlatform: String, Codable, CaseIterable, Identifiable, Sendable {
+  case discord
+  case telegram
+  case email
+  case github
+
+  public var id: String { rawValue }
+
+  public var displayName: String {
+    switch self {
+    case .discord: "Discord"
+    case .telegram: "Telegram"
+    case .email: "Mail"
+    case .github: "GitHub"
+    }
+  }
+}
+
+public struct DailyReportConfiguration: Codable, Equatable, Sendable {
+  public var scheduleHour: Int
+  public var scheduleMinute: Int
+  public var maximumTokens: Int
+  public var enabledPlatforms: [DailyReportPlatform]
+
+  public init(
+    scheduleHour: Int = 8,
+    scheduleMinute: Int = 0,
+    maximumTokens: Int = 75_000,
+    enabledPlatforms: [DailyReportPlatform] = DailyReportPlatform.allCases
+  ) {
+    self.scheduleHour = scheduleHour
+    self.scheduleMinute = scheduleMinute
+    self.maximumTokens = maximumTokens
+    self.enabledPlatforms = enabledPlatforms
+  }
+}
+
 public struct AppConfiguration: Codable, Equatable, Sendable {
   public var appName: String
   public var dashboardPath: String
@@ -88,6 +125,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var dailyRoutines: [DailyRoutine]
   public var wezTerm: WezTermConfiguration
   public var verifier: VerifierConfiguration
+  public var dailyReport: DailyReportConfiguration
 
   public init(
     appName: String,
@@ -97,7 +135,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     refreshIntervalSeconds: Int,
     dailyRoutines: [DailyRoutine],
     wezTerm: WezTermConfiguration,
-    verifier: VerifierConfiguration
+    verifier: VerifierConfiguration,
+    dailyReport: DailyReportConfiguration = DailyReportConfiguration()
   ) {
     self.appName = appName
     self.dashboardPath = dashboardPath
@@ -107,6 +146,27 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.dailyRoutines = dailyRoutines
     self.wezTerm = wezTerm
     self.verifier = verifier
+    self.dailyReport = dailyReport
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case appName, dashboardPath, workspacePath, defaultPlacement, refreshIntervalSeconds
+    case dailyRoutines, wezTerm, verifier, dailyReport
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    appName = try container.decode(String.self, forKey: .appName)
+    dashboardPath = try container.decode(String.self, forKey: .dashboardPath)
+    workspacePath = try container.decode(String.self, forKey: .workspacePath)
+    defaultPlacement = try container.decode(QueueWindowPlacement.self, forKey: .defaultPlacement)
+    refreshIntervalSeconds = try container.decode(Int.self, forKey: .refreshIntervalSeconds)
+    dailyRoutines = try container.decode([DailyRoutine].self, forKey: .dailyRoutines)
+    wezTerm = try container.decode(WezTermConfiguration.self, forKey: .wezTerm)
+    verifier = try container.decode(VerifierConfiguration.self, forKey: .verifier)
+    dailyReport =
+      try container.decodeIfPresent(DailyReportConfiguration.self, forKey: .dailyReport)
+      ?? DailyReportConfiguration()
   }
 
   public static func eccDefault(
@@ -153,6 +213,14 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     guard (10...900).contains(verifier.timeoutSeconds), (1...100).contains(verifier.maxTurns) else {
       throw ConfigurationError.invalidVerifierBudget
     }
+    guard (0...23).contains(dailyReport.scheduleHour),
+      (0...59).contains(dailyReport.scheduleMinute),
+      (10_000...1_000_000).contains(dailyReport.maximumTokens),
+      !dailyReport.enabledPlatforms.isEmpty,
+      Set(dailyReport.enabledPlatforms).count == dailyReport.enabledPlatforms.count
+    else {
+      throw ConfigurationError.invalidDailyReportSettings
+    }
     return self
   }
 }
@@ -161,6 +229,7 @@ public enum ConfigurationError: Error, LocalizedError, Equatable {
   case pathsMustBeAbsolute
   case invalidRefreshInterval
   case invalidVerifierBudget
+  case invalidDailyReportSettings
 
   public var errorDescription: String? {
     switch self {
@@ -170,7 +239,328 @@ public enum ConfigurationError: Error, LocalizedError, Equatable {
       "Refresh interval must be between 1 and 300 seconds."
     case .invalidVerifierBudget:
       "Agent timeout or turn budget is outside the supported range."
+    case .invalidDailyReportSettings:
+      "Daily report time, token target, or enabled platforms are invalid."
     }
+  }
+}
+
+public enum DailyReportTrigger: String, Codable, Equatable, Sendable {
+  case scheduled
+  case manual
+  case chat
+}
+
+public struct DailyReportRunRequest: Equatable, Sendable {
+  public let trigger: DailyReportTrigger
+  public let platforms: [DailyReportPlatform]
+  public let comprehensive: Bool
+  public let recheck: Bool
+
+  public init(
+    trigger: DailyReportTrigger,
+    platforms: [DailyReportPlatform],
+    comprehensive: Bool,
+    recheck: Bool
+  ) {
+    self.trigger = trigger
+    self.platforms = platforms
+    self.comprehensive = comprehensive
+    self.recheck = recheck
+  }
+}
+
+public enum DailyReportChatCommand {
+  public static func parse(
+    _ message: String,
+    enabledPlatforms: [DailyReportPlatform]
+  ) -> DailyReportRunRequest? {
+    var command = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      .replacingOccurrences(of: "’", with: "'")
+    let politePrefixes = ["please ", "can you ", "could you ", "would you "]
+    var removedPrefix = true
+    while removedPrefix {
+      removedPrefix = false
+      for prefix in politePrefixes where command.hasPrefix(prefix) {
+        command.removeFirst(prefix.count)
+        command = command.trimmingCharacters(in: .whitespaces)
+        removedPrefix = true
+        break
+      }
+    }
+
+    let reportPhrases = [
+      "daily report", "daily message report", "daily update report",
+      "daily message and update report", "message report", "focus report", "focus queue report",
+    ]
+    let escapedPhrases = reportPhrases.map(NSRegularExpression.escapedPattern).joined(separator: "|")
+    let directReportAction = command.range(
+      of: "^(?:run|generate|create|update)\\s+(?:(?:the|my|a)\\s+)?(?:comprehensive\\s+)?(?:\(escapedPhrases))\\b",
+      options: .regularExpression
+    ) != nil
+    let directComprehensiveAction = command.range(
+      of: "^(?:run|generate|create|update)\\s+(?:(?:the|my|a)\\s+)?comprehensive\\s+report\\b",
+      options: .regularExpression
+    ) != nil
+    let platformCheckAction = command.range(
+      of: "^(?:check|scan)\\s+.+\\s+for\\s+(?:(?:the|my|a)\\s+)?(?:\(escapedPhrases))\\b",
+      options: .regularExpression
+    ) != nil
+    guard directReportAction || directComprehensiveAction || platformCheckAction else {
+      return nil
+    }
+
+    let requested = DailyReportPlatform.allCases.filter { platform in
+      switch platform {
+      case .email:
+        return containsWord("email", in: command) || containsWord("mail", in: command)
+      default:
+        return containsWord(platform.rawValue, in: command)
+      }
+    }
+    let rejectsAll = command.range(
+      of: "\\b(?:not|without)\\s+(?:all|every|comprehensive)\\b|\\b(?:not|without)\\s+(?:all|every)\\s+platforms?\\b",
+      options: .regularExpression
+    ) != nil
+    let asksForAll = !rejectsAll && command.range(
+      of: "\\b(?:all|every)\\s+platforms?\\b|\\bcomprehensive\\b",
+      options: .regularExpression
+    ) != nil
+    let hasPlatformExclusion = command.range(
+      of: "\\b(?:except|excluding|exclude)\\b[^.!?]{0,80}\\b(?:discord|telegram|email|mail|github)\\b|\\b(?:without|not)\\s+(?:discord|telegram|email|mail|github)\\b|\\b(?:do\\s+not|don't|dont|with\\s+no|no)\\s+(?:(?:check|scan)\\s+)?(?:discord|telegram|email|mail|github)\\b",
+      options: .regularExpression
+    ) != nil
+    guard !hasPlatformExclusion, !(rejectsAll && requested.isEmpty) else { return nil }
+    let hasUnsupportedTarget = command.range(
+      of: "\\b(?:for|on|using|via)\\s+",
+      options: .regularExpression
+    ) != nil
+      && requested.isEmpty
+      && !asksForAll
+      && command.range(
+        of: "\\bfor\\s+(?:today|now|this\\s+(?:morning|afternoon|evening))\\b",
+        options: .regularExpression
+      ) == nil
+    let hasNamedUnsupportedPlatform = command.range(
+      of: "\\b(?:slack|microsoft\\s+teams|teams|whatsapp|signal|imessage|sms|outlook|gmail)\\b",
+      options: .regularExpression
+    ) != nil
+    guard !hasUnsupportedTarget, !hasNamedUnsupportedPlatform else { return nil }
+    let comprehensive = requested.isEmpty || asksForAll
+    let requestsRecheck = command.range(
+      of: "\\brecheck(?:ing)?\\b|\\breprocess(?:ing)?\\b|\\bcheck(?:ing)?(?:\\s+them)?\\s+again\\b|\\binclud(?:e|ing)\\s+(?:already\\s+)?(?:processed|checked)\\b",
+      options: .regularExpression
+    ) != nil
+    let rejectsRecheck = command.range(
+      of: "\\b(?:do\\s+not|don't|dont|without|not)\\b[^.!?]{0,50}\\b(?:recheck(?:ing)?|reprocess(?:ing)?|check(?:ing)?(?:\\s+them)?\\s+(?:again|already)|includ(?:e|ing)\\s+(?:already\\s+)?(?:processed|checked))\\b",
+      options: .regularExpression
+    ) != nil
+    let recheck = requestsRecheck && !rejectsRecheck
+    return DailyReportRunRequest(
+      trigger: .chat,
+      platforms: comprehensive ? enabledPlatforms : requested,
+      comprehensive: comprehensive,
+      recheck: recheck
+    )
+  }
+
+  private static func containsWord(_ word: String, in value: String) -> Bool {
+    value.range(
+      of: "\\b\(NSRegularExpression.escapedPattern(for: word))\\b",
+      options: .regularExpression
+    ) != nil
+  }
+}
+
+public enum DailyReportMode: String, Codable, Equatable, Sendable {
+  case unseenOnly = "unseen-only"
+  case recheck
+}
+
+public enum DailyReportStatus: String, Codable, Equatable, Sendable {
+  case success
+  case partial
+  case failed
+  case skipped
+}
+
+public struct DailyReportTokenUsage: Codable, Equatable, Sendable {
+  public let inputTokens: Int
+  public let cachedInputTokens: Int
+  public let outputTokens: Int
+  public let reasoningOutputTokens: Int
+  public let totalTokens: Int
+
+  public init(
+    inputTokens: Int,
+    cachedInputTokens: Int,
+    outputTokens: Int,
+    reasoningOutputTokens: Int,
+    totalTokens: Int
+  ) {
+    self.inputTokens = inputTokens
+    self.cachedInputTokens = cachedInputTokens
+    self.outputTokens = outputTokens
+    self.reasoningOutputTokens = reasoningOutputTokens
+    self.totalTokens = totalTokens
+  }
+}
+
+public struct DailyReportTaskReference: Codable, Identifiable, Equatable, Sendable {
+  public let id: String
+  public let title: String
+
+  public init(id: String, title: String) {
+    self.id = id
+    self.title = title
+  }
+}
+
+public struct DailyReportMessage: Codable, Identifiable, Equatable, Sendable {
+  public var id: String { sourceKey }
+  public let sourceKey: String
+  public let title: String
+  public let summary: String
+  public let timestamp: String?
+  public let url: String?
+  public let unavailableReason: String?
+  public let tasks: [DailyReportTaskReference]
+
+  public init(
+    sourceKey: String,
+    title: String,
+    summary: String,
+    timestamp: String? = nil,
+    url: String? = nil,
+    unavailableReason: String? = nil,
+    tasks: [DailyReportTaskReference] = []
+  ) {
+    self.sourceKey = sourceKey
+    self.title = title
+    self.summary = summary
+    self.timestamp = timestamp
+    self.url = url
+    self.unavailableReason = unavailableReason
+    self.tasks = tasks
+  }
+}
+
+public struct DailyReportPlatformSection: Codable, Identifiable, Equatable, Sendable {
+  public var id: DailyReportPlatform { platform }
+  public let platform: DailyReportPlatform
+  public let status: String
+  public let collectedCount: Int
+  public let newCount: Int
+  public let alreadyProcessedCount: Int
+  public let checkedCount: Int
+  public let deferredCount: Int
+  public let messages: [DailyReportMessage]
+
+  public init(
+    platform: DailyReportPlatform,
+    status: String,
+    collectedCount: Int,
+    newCount: Int,
+    alreadyProcessedCount: Int,
+    checkedCount: Int,
+    deferredCount: Int,
+    messages: [DailyReportMessage]
+  ) {
+    self.platform = platform
+    self.status = status
+    self.collectedCount = collectedCount
+    self.newCount = newCount
+    self.alreadyProcessedCount = alreadyProcessedCount
+    self.checkedCount = checkedCount
+    self.deferredCount = deferredCount
+    self.messages = messages
+  }
+}
+
+public struct DailyReportDocument: Codable, Identifiable, Equatable, Sendable {
+  public var id: String { runID }
+  public let version: Int
+  public let runID: String
+  public let reportDate: String?
+  public let trigger: DailyReportTrigger
+  public let comprehensive: Bool?
+  public let mode: DailyReportMode
+  public let startedAt: String
+  public let finishedAt: String
+  public let status: DailyReportStatus
+  public let summary: String
+  public let tokenBudget: Int
+  public let usage: DailyReportTokenUsage?
+  public let platforms: [DailyReportPlatformSection]
+  public let errors: [String]
+
+  public init(
+    version: Int = 1,
+    runID: String,
+    reportDate: String? = nil,
+    trigger: DailyReportTrigger,
+    comprehensive: Bool? = nil,
+    mode: DailyReportMode,
+    startedAt: String,
+    finishedAt: String,
+    status: DailyReportStatus,
+    summary: String,
+    tokenBudget: Int,
+    usage: DailyReportTokenUsage?,
+    platforms: [DailyReportPlatformSection],
+    errors: [String]
+  ) {
+    self.version = version
+    self.runID = runID
+    self.reportDate = reportDate
+    self.trigger = trigger
+    self.comprehensive = comprehensive
+    self.mode = mode
+    self.startedAt = startedAt
+    self.finishedAt = finishedAt
+    self.status = status
+    self.summary = summary
+    self.tokenBudget = tokenBudget
+    self.usage = usage
+    self.platforms = platforms
+    self.errors = errors
+  }
+
+  public func covers(_ requiredPlatforms: [DailyReportPlatform]) -> Bool {
+    let reportedPlatforms = Set(platforms.map(\.platform))
+    return Set(requiredPlatforms).isSubset(of: reportedPlatforms)
+  }
+}
+
+public enum DailyReportApprovalStatus: String, Codable, Equatable, Sendable {
+  case pending
+  case approved
+  case declined
+}
+
+public struct DailyReportApprovalRequest: Codable, Identifiable, Equatable, Sendable {
+  public let version: Int
+  public let id: UUID
+  public let reportDate: String
+  public let requestedAt: String
+  public var status: DailyReportApprovalStatus
+
+  public init(
+    version: Int = 1,
+    id: UUID = UUID(),
+    reportDate: String,
+    requestedAt: String,
+    status: DailyReportApprovalStatus = .pending
+  ) {
+    self.version = version
+    self.id = id
+    self.reportDate = reportDate
+    self.requestedAt = requestedAt
+    self.status = status
+  }
+
+  public func isCurrent(reportDate currentReportDate: String) -> Bool {
+    reportDate == currentReportDate
   }
 }
 

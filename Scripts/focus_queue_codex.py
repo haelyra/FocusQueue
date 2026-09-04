@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import os
 import shutil
@@ -17,14 +16,68 @@ from pathlib import Path
 from typing import Any
 
 import focus_queue_morning as morning
+from focus_queue_lock import acquire_exclusive_file_lock
 
 
 DEFAULT_RUNTIME = Path("/Users/hira/Library/Application Support/ECC Focus Queue/agent")
+DEFAULT_PROOF_DIRECTORY = Path(
+    "/Users/hira/Library/Application Support/ECC Focus Queue/connector-proofs"
+)
 DEFAULT_CODEX = Path("/opt/homebrew/bin/codex")
+TOOL_FEATURES = (
+    "shell_tool",
+    "unified_exec",
+    "js_repl",
+    "code_mode",
+    "view_image",
+    "browser_use",
+    "computer_use",
+    "apps",
+    "multi_agent",
+    "image_generation",
+    "web_search_request",
+    "standalone_web_search",
+    "plugins",
+    "remote_plugin",
+    "hooks",
+    "auth_elicitation",
+    "tool_call_mcp_elicitation",
+    "tool_suggest",
+    "skill_search",
+    "skill_mcp_dependency_install",
+    "code_mode_host",
+    "browser_use_external",
+    "browser_use_full_cdp_access",
+    "sleep_tool",
+    "goals",
+    "plugin_sharing",
+    "shell_snapshot",
+    "in_app_browser",
+    "in_app_chat",
+    "in_app_local_automation",
+)
+SUPPORTED_NO_TOOLS_CODEX_VERSIONS = {"codex-cli 0.153.0"}
 
 
 class CodexHarnessError(RuntimeError):
     pass
+
+
+def stop_process_group(process: subprocess.Popen[str], *, grace_seconds: float = 2.0) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        process.terminate()
+    else:
+        os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            process.kill()
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
 
 
 def resolve_codex() -> str:
@@ -34,6 +87,22 @@ def resolve_codex() -> str:
     if executable:
         return executable
     raise CodexHarnessError("Codex CLI is not installed or executable")
+
+
+def assert_supported_no_tools_codex(executable: str) -> None:
+    result = subprocess.run(
+        [executable, "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    version = result.stdout.strip()
+    if result.returncode != 0 or version not in SUPPORTED_NO_TOOLS_CODEX_VERSIONS:
+        raise CodexHarnessError(
+            "No-tools classification is disabled until this Codex CLI version is audited: "
+            f"{version or 'unknown'}"
+        )
 
 
 def load_state(path: Path) -> dict[str, Any]:
@@ -54,6 +123,36 @@ def parse_thread_id(stdout: str) -> str | None:
         if event.get("type") == "thread.started" and event.get("thread_id"):
             return str(event["thread_id"])
     return None
+
+
+def parse_token_usage(stdout: str) -> dict[str, int] | None:
+    usage: dict[str, Any] | None = None
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        candidate = event.get("usage")
+        if event.get("type") == "turn.completed" and isinstance(candidate, dict):
+            usage = candidate
+    if usage is None:
+        return None
+    input_tokens = int(usage.get("input_tokens", 0) or 0)
+    output_tokens = int(usage.get("output_tokens", 0) or 0)
+    return {
+        "inputTokens": input_tokens,
+        "cachedInputTokens": int(usage.get("cached_input_tokens", 0) or 0),
+        "outputTokens": output_tokens,
+        "reasoningOutputTokens": int(usage.get("reasoning_output_tokens", 0) or 0),
+        "totalTokens": input_tokens + output_tokens,
+    }
+
+
+def write_token_usage(path: Path, stdout: str) -> dict[str, int] | None:
+    usage = parse_token_usage(stdout)
+    if usage is not None:
+        morning.write_private_json(path.expanduser(), usage)
+    return usage
 
 
 def write_run_diagnostic(
@@ -78,8 +177,9 @@ def write_run_diagnostic(
         "observedThreadId": parse_thread_id(stdout),
         "returnCode": return_code,
         "timedOut": timed_out,
-        "stdoutTail": stdout[-32_000:],
-        "stderrTail": stderr[-16_000:],
+        "usage": parse_token_usage(stdout),
+        "stdoutBytes": len(stdout.encode("utf-8")),
+        "stderrBytes": len(stderr.encode("utf-8")),
     }
     morning.write_private_json(runtime / "latest-run.json", payload)
 
@@ -93,22 +193,36 @@ def run_codex(
     sandbox: str,
     thread_id: str | None,
     output_schema: Path | None,
+    usage_file: Path | None = None,
+    expose_evidence_directories: bool = False,
+    disable_tools: bool = False,
 ) -> tuple[str, str | None]:
     runtime.mkdir(parents=True, exist_ok=True)
     runtime.chmod(0o700)
     started_at = datetime.now(timezone.utc).isoformat()
+    if usage_file is not None:
+        usage_file = usage_file.expanduser()
+        usage_file.unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(prefix="turn-", dir=runtime) as temporary:
         reply_path = Path(temporary) / "reply.txt"
+        executable = resolve_codex()
+        if disable_tools:
+            assert_supported_no_tools_codex(executable)
         command = [
-            resolve_codex(),
+            executable,
             "--ask-for-approval",
             "never",
         ]
+        if disable_tools:
+            for feature in TOOL_FEATURES:
+                command.extend(["--disable", feature])
         if sandbox == "workspace-write":
             command.extend(["-c", "sandbox_workspace_write.network_access=true"])
+        command.append("exec")
+        if disable_tools:
+            command.append("--ephemeral")
         command.extend(
             [
-                "exec",
                 "--ignore-user-config",
                 "--sandbox",
                 sandbox,
@@ -122,12 +236,15 @@ def run_codex(
                 "app",
                 "-C",
                 str(workspace),
-                "--add-dir",
-                str(runtime),
-                "--add-dir",
-                "/Users/hira/Library/Application Support/ECC Focus Queue/ingestion",
             ]
         )
+        if expose_evidence_directories:
+            command.extend(
+                [
+                    "--add-dir",
+                    str(DEFAULT_PROOF_DIRECTORY),
+                ]
+            )
         if output_schema is not None:
             command.extend(["--output-schema", str(output_schema)])
         if thread_id:
@@ -142,11 +259,14 @@ def run_codex(
             stderr=subprocess.PIPE,
             text=True,
             start_new_session=True,
+            env={
+                **os.environ,
+                "FOCUS_QUEUE_CONNECTOR_PROOF_DIR": str(DEFAULT_PROOF_DIRECTORY),
+            },
         )
 
         def terminate_child(_signum: int, _frame: Any) -> None:
-            if process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
+            stop_process_group(process)
             raise SystemExit(143)
 
         previous_handler = signal.signal(signal.SIGTERM, terminate_child)
@@ -156,12 +276,8 @@ def run_codex(
             try:
                 stdout, stderr = process.communicate(input=prompt, timeout=timeout)
             except subprocess.TimeoutExpired as error:
-                os.killpg(process.pid, signal.SIGTERM)
-                try:
-                    stdout, stderr = process.communicate(timeout=2)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    stdout, stderr = process.communicate()
+                stop_process_group(process)
+                stdout, stderr = process.communicate()
                 write_run_diagnostic(
                     runtime,
                     started_at=started_at,
@@ -173,6 +289,8 @@ def run_codex(
                     return_code=process.returncode,
                     timed_out=True,
                 )
+                if usage_file is not None:
+                    write_token_usage(usage_file, stdout)
                 raise CodexHarnessError(f"Codex exceeded the {timeout}-second run budget") from error
         finally:
             signal.signal(signal.SIGTERM, previous_handler)
@@ -188,6 +306,8 @@ def run_codex(
             return_code=process.returncode,
             timed_out=False,
         )
+        if usage_file is not None:
+            write_token_usage(usage_file, stdout)
 
         if process.returncode != 0:
             detail = (stderr or stdout).strip()
@@ -208,7 +328,7 @@ def chat(arguments: argparse.Namespace) -> int:
     runtime.chmod(0o700)
     with lock_path.open("a+", encoding="utf-8") as lock:
         lock_path.chmod(0o600)
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        acquire_exclusive_file_lock(lock)
         state = load_state(state_path)
         sessions = state.setdefault("sessions", {})
         prior_thread = str(sessions.get(arguments.session, "")) or None
@@ -222,6 +342,7 @@ def chat(arguments: argparse.Namespace) -> int:
                 sandbox="workspace-write",
                 thread_id=prior_thread,
                 output_schema=None,
+                expose_evidence_directories=True,
             )
         except CodexHarnessError as error:
             detail = str(error).casefold()
@@ -241,6 +362,7 @@ def chat(arguments: argparse.Namespace) -> int:
                 sandbox="workspace-write",
                 thread_id=None,
                 output_schema=None,
+                expose_evidence_directories=True,
             )
         thread_id = observed_thread or prior_thread
         if not thread_id:
@@ -261,6 +383,8 @@ def run_once(arguments: argparse.Namespace) -> int:
         sandbox=arguments.sandbox,
         thread_id=None,
         output_schema=arguments.output_schema,
+        usage_file=arguments.usage_file,
+        disable_tools=arguments.disable_tools,
     )
     print(reply)
     return 0
@@ -293,6 +417,8 @@ def main() -> int:
     run_parser.add_argument("--timeout", type=int, default=120)
     run_parser.add_argument("--sandbox", choices=["read-only", "workspace-write"], default="read-only")
     run_parser.add_argument("--output-schema", type=Path)
+    run_parser.add_argument("--usage-file", type=Path)
+    run_parser.add_argument("--disable-tools", action="store_true")
     run_parser.add_argument("--label")
 
     reset_parser = subparsers.add_parser("reset")

@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import email
-import fcntl
 import html
 import json
 import os
@@ -24,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import focus_queue_morning as morning
+from focus_queue_lock import acquire_exclusive_file_lock
 
 
 DEFAULT_CONFIG = Path("/Users/hira/Library/Application Support/ECC Focus Queue/ingestion.json")
@@ -90,7 +90,7 @@ def message_rows(
     mailboxes: dict[int, tuple[str, str]],
     *,
     days: int | None,
-    maximum: int,
+    maximum: int | None,
     local_id: int | None = None,
 ) -> list[sqlite3.Row]:
     predicates = [
@@ -106,7 +106,10 @@ def message_rows(
     if local_id is not None:
         predicates.append("m.ROWID = ?")
         parameters.append(local_id)
-    parameters.append(maximum)
+    limit_clause = ""
+    if maximum is not None:
+        parameters.append(maximum)
+        limit_clause = "LIMIT ?"
     return connection.execute(
         f"""
         SELECT DISTINCT
@@ -130,7 +133,7 @@ def message_rows(
         LEFT JOIN message_global_data ON message_global_data.ROWID = m.global_message_id
         WHERE {' AND '.join(predicates)}
         ORDER BY m.date_received DESC
-        LIMIT ?
+        {limit_clause}
         """,
         parameters,
     ).fetchall()
@@ -204,7 +207,7 @@ def row_metadata(row: sqlite3.Row, mailboxes: dict[int, tuple[str, str]]) -> dic
     received = dt.datetime.fromtimestamp(int(row["date_received"]), tz=dt.timezone.utc)
     return {
         "id": f"mail:{local_id}",
-        "sourceKey": f"email:{message_id or f'local:{local_id}'}",
+        "sourceKey": morning.email_source_key(local_id, message_id),
         "messageId": message_id,
         "mailbox": mailboxes[int(row["mailbox"])][1],
         "sender": sender[:300],
@@ -233,6 +236,7 @@ def search_mail(config: dict[str, Any], request: dict[str, Any]) -> dict[str, An
     query = str(request.get("query", "")).strip()
     days = min(max(int(request.get("days", 30)), 1), 3650)
     limit = min(max(int(request.get("limit", 10)), 1), 50)
+    offset = max(int(request.get("offset", 0)), 0)
     requested_mailboxes = request.get("mailboxes")
     if requested_mailboxes is not None and not isinstance(requested_mailboxes, list):
         raise MailAccessError("mailboxes must be an array")
@@ -247,13 +251,15 @@ def search_mail(config: dict[str, Any], request: dict[str, Any]) -> dict[str, An
             config,
             mailboxes,
             days=days,
-            maximum=MAX_SEARCH_CANDIDATES,
+            maximum=MAX_SEARCH_CANDIDATES + 1,
         )
     finally:
         connection.close()
+    hard_truncated = len(rows) > MAX_SEARCH_CANDIDATES
+    rows = rows[:MAX_SEARCH_CANDIDATES]
     paths = emlx_paths(mail_root, mailboxes, {int(row["local_id"]) for row in rows})
     terms = [term for term in re.split(r"\s+", query.casefold()) if term]
-    results = []
+    matching_results = []
     for row in rows:
         metadata = row_metadata(row, mailboxes)
         body, attachments = parse_emlx(paths[int(row["local_id"])]) if int(row["local_id"]) in paths else ("", [])
@@ -270,9 +276,11 @@ def search_mail(config: dict[str, Any], request: dict[str, Any]) -> dict[str, An
             continue
         metadata["snippet"] = snippet(body or str(row["summary"] or ""), query)
         metadata["attachments"] = attachments
-        results.append(metadata)
-        if len(results) >= limit:
+        matching_results.append(metadata)
+        if len(matching_results) > offset + limit:
             break
+    results = matching_results[offset : offset + limit]
+    more_matches = len(matching_results) > offset + limit
     return {
         "status": "ok",
         "verified": True,
@@ -284,8 +292,10 @@ def search_mail(config: dict[str, Any], request: dict[str, Any]) -> dict[str, An
         "days": days,
         "retrievedAt": utc_now(),
         "resultCount": len(results),
+        "offset": offset,
         "candidateCount": len(rows),
-        "truncated": len(rows) >= MAX_SEARCH_CANDIDATES or len(results) >= limit,
+        "truncated": more_matches,
+        "hardTruncated": hard_truncated,
         "results": results,
     }
 
@@ -386,7 +396,10 @@ def status(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def request_paths(config: dict[str, Any]) -> tuple[Path, Path, Path]:
-    runtime = Path(config.get("mailRuntimeDirectory", DEFAULT_RUNTIME)).expanduser()
+    runtime = Path(
+        os.environ.get("FOCUS_QUEUE_CONNECTOR_PROOF_DIR")
+        or config.get("mailRuntimeDirectory", DEFAULT_RUNTIME)
+    ).expanduser()
     return (
         runtime / "mail-request.json",
         runtime / "mail-response.json",
@@ -428,7 +441,7 @@ def invoke_reader(config: dict[str, Any], request: dict[str, Any]) -> dict[str, 
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+", encoding="utf-8") as lock:
         lock_path.chmod(0o600)
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        acquire_exclusive_file_lock(lock)
         nonce = str(uuid.uuid4())
         payload = {**request, "nonce": nonce, "requestedAt": utc_now()}
         morning.write_private_json(request_path, payload)
@@ -490,6 +503,7 @@ def main() -> int:
     search_parser.add_argument("query")
     search_parser.add_argument("--days", type=int, default=30)
     search_parser.add_argument("--limit", type=int, default=10)
+    search_parser.add_argument("--offset", type=int, default=0)
     search_parser.add_argument("--mailbox", action="append", dest="mailboxes")
     read_parser = subparsers.add_parser("read")
     read_parser.add_argument("identifier")
@@ -515,6 +529,7 @@ def main() -> int:
                         "query": arguments.query,
                         "days": arguments.days,
                         "limit": arguments.limit,
+                        "offset": arguments.offset,
                         "mailboxes": arguments.mailboxes,
                     },
                 )

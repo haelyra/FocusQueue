@@ -26,6 +26,46 @@ struct QueueView: View {
   }
 
   var body: some View {
+    HStack(spacing: 12) {
+      if model.isDailyReportPresented, model.windowPlacement == .upperRight {
+        DailyReportView(model: model)
+        Divider()
+      }
+      queuePane
+        .frame(
+          minWidth: 380,
+          idealWidth: 440,
+          maxWidth: model.isDailyReportPresented ? 440 : .infinity
+        )
+      if model.isDailyReportPresented, model.windowPlacement != .upperRight {
+        Divider()
+        DailyReportView(model: model)
+      }
+    }
+    .padding(12).frame(minWidth: 380, idealWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
+      .panelSurface(radius: 30).preferredColorScheme(
+        model.appearance == .dark ? .dark : .light
+      ).environment(\.queueAccentStyle, model.accentStyle).tint(
+        QueueAccentPalette.color(.info, style: model.accentStyle)
+      )
+      .onChange(of: model.requestedReportTaskID) { _, taskID in
+        guard let taskID else { return }
+        screen = .queue
+        if model.dashboard.tickets.first(where: { $0.id == taskID })?.isCompleted == true {
+          selectedTab = .completed
+          showsPastCompletedTasks = true
+          visiblePastCompletedCount = max(visiblePastCompletedCount, completedPageSize)
+        } else {
+          selectedTab = .focus
+          if model.openTickets.dropFirst(5).contains(where: { $0.id == taskID }) {
+            showsMoreTasks = true
+          }
+        }
+        model.clearRequestedReportTask()
+      }
+  }
+
+  @ViewBuilder private var queuePane: some View {
     Group {
       if model.isPanelCollapsed {
         compactHeader
@@ -36,16 +76,15 @@ struct QueueView: View {
       } else {
         queueContent
       }
-    }.padding(12).frame(minWidth: 380, idealWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
-      .panelSurface(radius: 30).preferredColorScheme(
-        model.appearance == .dark ? .dark : .light
-      ).environment(\.queueAccentStyle, model.accentStyle).tint(
-        QueueAccentPalette.color(.info, style: model.accentStyle))
+    }
   }
 
   private var queueContent: some View {
     VStack(spacing: 10) {
       header
+      if model.pendingDailyReportApproval != nil {
+        missedReportApprovalBanner
+      }
       queueTabs
       switch selectedTab {
       case .focus:
@@ -184,6 +223,17 @@ struct QueueView: View {
         Spacer()
         monitorButton
         Button {
+          if model.dailyReport == nil {
+            Task { await model.reloadDailyReport() }
+          }
+          model.toggleDailyReport()
+        } label: {
+          Image(systemName: model.isDailyReportPresented ? "doc.text.fill" : "doc.text")
+            .font(.system(size: 13, weight: .semibold))
+        }.buttonStyle(.plain).minimumHitTarget(width: 46, height: 46).accessibilityLabel(
+          model.isDailyReportPresented ? "Close daily report" : "Open daily report"
+        ).help("Daily message report")
+        Button {
           withAnimation(.easeInOut(duration: 0.18)) { screen = .settings }
         } label: {
           Image(systemName: "gearshape.fill").font(.system(size: 13, weight: .semibold))
@@ -217,6 +267,22 @@ struct QueueView: View {
           .foregroundStyle(.orange).lineLimit(2)
       }
     }.padding(.horizontal, 15).padding(.vertical, 11).notificationSurface(radius: 18)
+  }
+
+  private var missedReportApprovalBanner: some View {
+    VStack(alignment: .leading, spacing: 9) {
+      Label("Today’s report was missed", systemImage: "clock.badge.exclamationmark")
+        .font(.system(size: 13, weight: .bold))
+      Text("The scheduled time passed while this computer was unavailable. Run it now?")
+        .font(.system(size: 12)).foregroundStyle(.secondary)
+      HStack {
+        Button("Run report") { model.respondToDailyReportApproval(run: true) }
+          .buttonStyle(.borderedProminent)
+        Button("Not today") { model.respondToDailyReportApproval(run: false) }
+          .buttonStyle(.bordered)
+      }
+    }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
+      .notificationSurface(radius: 18)
   }
 
   @ViewBuilder private var syncLabel: some View {
@@ -536,6 +602,201 @@ private struct QueueAgentChatView: View {
   }
 }
 
+private struct DailyReportView: View {
+  let model: QueueViewModel
+
+  var body: some View {
+    VStack(spacing: 10) {
+      HStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 2) {
+          Text("Daily message report")
+            .font(.system(size: 21, weight: .bold, design: .rounded))
+          if let report = model.dailyReport {
+            Text(reportTimestamp(report.finishedAt))
+              .font(.system(size: 12)).foregroundStyle(.secondary)
+          }
+        }
+        Spacer()
+        Button {
+          Task { await model.reloadDailyReport() }
+        } label: {
+          Image(systemName: "arrow.clockwise")
+        }.buttonStyle(.plain).minimumHitTarget(width: 46, height: 46)
+          .disabled(model.isDailyReportRunning).accessibilityLabel("Reload daily report")
+        Button {
+          model.setDailyReportPresented(false)
+        } label: {
+          Image(systemName: "xmark").font(.system(size: 13, weight: .bold))
+        }.buttonStyle(.plain).minimumHitTarget(width: 46, height: 46)
+          .accessibilityLabel("Close daily report")
+      }.padding(.horizontal, 14).padding(.vertical, 10).notificationSurface(radius: 18)
+
+      if model.isDailyReportRunning {
+        HStack(spacing: 9) {
+          ProgressView().controlSize(.small)
+          Text("Checking new messages and creating linked tasks…")
+            .font(.system(size: 12, weight: .medium))
+          Spacer()
+        }.padding(13).notificationSurface(radius: 16)
+      } else if let message = model.dailyReportRunMessage {
+        Label(message, systemImage: model.dailyReportLoadError == nil ? "info.circle" : "exclamationmark.triangle")
+          .font(.system(size: 12, weight: .medium))
+          .foregroundStyle(model.dailyReportLoadError == nil ? Color.secondary : Color.orange)
+          .padding(13).frame(maxWidth: .infinity, alignment: .leading)
+          .notificationSurface(radius: 16)
+      }
+
+      ScrollView {
+        if let report = model.dailyReport {
+          VStack(alignment: .leading, spacing: 12) {
+            summaryCard(report)
+            ForEach(report.platforms) { platform in
+              platformCard(platform)
+            }
+            if !report.errors.isEmpty {
+              VStack(alignment: .leading, spacing: 6) {
+                Label("Incomplete coverage", systemImage: "exclamationmark.triangle.fill")
+                  .font(.system(size: 13, weight: .bold)).foregroundStyle(.orange)
+                ForEach(report.errors, id: \.self) { error in
+                  Text(error).font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+              }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                .notificationSurface(radius: 18)
+            }
+          }.padding(.horizontal, 2).padding(.vertical, 2)
+        } else if let error = model.dailyReportLoadError {
+          ContentUnavailableView(
+            "Report unavailable",
+            systemImage: "exclamationmark.triangle",
+            description: Text(error)
+          ).frame(maxWidth: .infinity).notificationSurface(radius: 18)
+        } else {
+          ContentUnavailableView(
+            "No daily report yet",
+            systemImage: "doc.text.magnifyingglass",
+            description: Text("Run a comprehensive report or wait for the next scheduled time.")
+          ).frame(maxWidth: .infinity).notificationSurface(radius: 18)
+        }
+      }.scrollIndicators(.automatic)
+
+      Button("Run comprehensive report", systemImage: "arrow.triangle.2.circlepath") {
+        model.runComprehensiveDailyReport()
+      }.buttonStyle(.borderedProminent).disabled(model.isDailyReportRunning)
+    }.frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
+  }
+
+  private func summaryCard(_ report: DailyReportDocument) -> some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack {
+        Label(report.status.rawValue.capitalized, systemImage: statusIcon(report.status))
+          .font(.system(size: 12, weight: .bold))
+        Spacer()
+        Text(report.mode == .recheck ? "Recheck" : "Unseen only")
+          .font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+      }
+      Text(report.summary).font(.system(size: 14)).fixedSize(horizontal: false, vertical: true)
+      HStack(spacing: 18) {
+        reportMetric(
+          title: "New",
+          value: report.platforms.reduce(0) { $0 + $1.newCount }.formatted()
+        )
+        reportMetric(
+          title: "Checked",
+          value: report.platforms.reduce(0) { $0 + $1.checkedCount }.formatted()
+        )
+        reportMetric(title: "Tokens", value: report.usage?.totalTokens.formatted() ?? "Unknown")
+        reportMetric(title: "Target", value: report.tokenBudget.formatted())
+      }
+    }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+      .notificationSurface(radius: 18)
+  }
+
+  private func reportMetric(title: String, value: String) -> some View {
+    VStack(alignment: .leading, spacing: 2) {
+      Text(value).font(.system(size: 15, weight: .bold).monospacedDigit())
+      Text(title.uppercased()).font(.system(size: 9, weight: .bold)).tracking(0.5)
+        .foregroundStyle(.secondary)
+    }
+  }
+
+  private func platformCard(_ platform: DailyReportPlatformSection) -> some View {
+    DisclosureGroup {
+      VStack(alignment: .leading, spacing: 9) {
+        if platform.messages.isEmpty {
+          Text("No new messages required review.")
+            .font(.system(size: 12)).foregroundStyle(.secondary).padding(.vertical, 4)
+        } else {
+          ForEach(platform.messages) { message in
+            messageDisclosure(message)
+          }
+        }
+        if platform.alreadyProcessedCount > 0 || platform.deferredCount > 0 {
+          Text(
+            "\(platform.alreadyProcessedCount) previously checked · \(platform.deferredCount) deferred"
+          ).font(.system(size: 11)).foregroundStyle(.secondary)
+        }
+      }.padding(.top, 10)
+    } label: {
+      HStack {
+        Text(platform.platform.displayName).font(.system(size: 14, weight: .bold))
+        Text(platform.status.uppercased()).font(.system(size: 9, weight: .bold))
+          .foregroundStyle(.secondary)
+        Spacer()
+        Text("\(platform.newCount) new · \(platform.checkedCount) checked")
+          .font(.system(size: 11, weight: .semibold).monospacedDigit())
+          .foregroundStyle(.secondary)
+      }
+    }.padding(14).notificationSurface(radius: 18)
+  }
+
+  private func messageDisclosure(_ message: DailyReportMessage) -> some View {
+    DisclosureGroup {
+      VStack(alignment: .leading, spacing: 8) {
+        Text(message.summary).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
+        if let reason = message.unavailableReason {
+          Label(reason, systemImage: "link.badge.plus")
+            .font(.system(size: 11)).foregroundStyle(.secondary)
+        }
+        HStack(spacing: 10) {
+          if let url = message.url {
+            Button("Open message", systemImage: "arrow.up.right.square") {
+              model.open(url)
+            }.buttonStyle(.link)
+          }
+          ForEach(message.tasks) { task in
+            Button(task.id, systemImage: "checklist") {
+              model.revealReportTask(task.id)
+            }.buttonStyle(.link).help(task.title)
+          }
+        }
+      }.padding(.top, 8)
+    } label: {
+      VStack(alignment: .leading, spacing: 3) {
+        Text(message.title).font(.system(size: 12, weight: .semibold)).lineLimit(2)
+        if let timestamp = message.timestamp {
+          Text(reportTimestamp(timestamp)).font(.system(size: 10)).foregroundStyle(.secondary)
+        }
+      }
+    }.padding(10).background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+  }
+
+  private func statusIcon(_ status: DailyReportStatus) -> String {
+    switch status {
+    case .success: "checkmark.circle.fill"
+    case .partial: "exclamationmark.circle.fill"
+    case .failed: "xmark.circle.fill"
+    case .skipped: "minus.circle.fill"
+    }
+  }
+
+  private func reportTimestamp(_ value: String) -> String {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let date = formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+    return date?.formatted(date: .abbreviated, time: .shortened) ?? value
+  }
+}
+
 private struct QueueSettingsView: View {
   let model: QueueViewModel
   let close: () -> Void
@@ -597,6 +858,60 @@ private struct QueueSettingsView: View {
           }
 
           settingsSection(
+            title: "Daily message report",
+            detail:
+              "Runs once per day. The target limits message input conservatively, while the report records exact Codex usage."
+          ) {
+            VStack(alignment: .leading, spacing: 12) {
+              DatePicker(
+                "Run time",
+                selection: dailyReportTimeBinding,
+                displayedComponents: .hourAndMinute
+              )
+
+              Stepper(
+                value: dailyReportTokenBinding,
+                in: 10_000...1_000_000,
+                step: 5_000
+              ) {
+                HStack {
+                  Text("Token consumption target")
+                  Spacer()
+                  Text(model.config.dailyReport.maximumTokens.formatted())
+                    .monospacedDigit().foregroundStyle(.secondary)
+                }
+              }
+
+              VStack(alignment: .leading, spacing: 7) {
+                Text("Platforms").font(.system(size: 12, weight: .semibold))
+                  .foregroundStyle(.secondary)
+                ForEach(DailyReportPlatform.allCases) { platform in
+                  Toggle(
+                    platform.displayName,
+                    isOn: Binding(
+                      get: { model.config.dailyReport.enabledPlatforms.contains(platform) },
+                      set: { model.setDailyReportPlatform(platform, enabled: $0) }
+                    )
+                  )
+                }
+              }
+
+              Button("Run comprehensive report", systemImage: "arrow.triangle.2.circlepath") {
+                model.runComprehensiveDailyReport()
+              }.buttonStyle(.borderedProminent).disabled(model.isDailyReportRunning)
+
+              if model.isDailyReportRunning {
+                HStack(spacing: 8) {
+                  ProgressView().controlSize(.small)
+                  Text("Checking enabled platforms…")
+                }.font(.system(size: 12)).foregroundStyle(.secondary)
+              } else if let message = model.dailyReportRunMessage {
+                Text(message).font(.system(size: 12)).foregroundStyle(.secondary)
+              }
+            }
+          }
+
+          settingsSection(
             title: "Management",
             detail: "The Desktop launcher and menu-bar checklist remain available."
           ) {
@@ -621,6 +936,33 @@ private struct QueueSettingsView: View {
 
   private var accentStyleBinding: Binding<QueueAccentStyle> {
     Binding(get: { model.accentStyle }, set: { model.setAccentStyle($0) })
+  }
+
+  private var dailyReportTimeBinding: Binding<Date> {
+    Binding(
+      get: {
+        Calendar.current.date(
+          bySettingHour: model.config.dailyReport.scheduleHour,
+          minute: model.config.dailyReport.scheduleMinute,
+          second: 0,
+          of: Date()
+        ) ?? Date()
+      },
+      set: { date in
+        let components = Calendar.current.dateComponents([.hour, .minute], from: date)
+        model.setDailyReportSchedule(
+          hour: components.hour ?? 8,
+          minute: components.minute ?? 0
+        )
+      }
+    )
+  }
+
+  private var dailyReportTokenBinding: Binding<Int> {
+    Binding(
+      get: { model.config.dailyReport.maximumTokens },
+      set: { model.setDailyReportMaximumTokens($0) }
+    )
   }
 
   private func settingsSection<Content: View>(
@@ -1514,6 +1856,23 @@ private struct NotificationSurfaceModifier: ViewModifier {
   }
 }
 
+private struct MinimumHitTargetModifier: ViewModifier {
+  @ScaledMetric(relativeTo: .body) private var minimumWidth: CGFloat = 44
+  @ScaledMetric(relativeTo: .body) private var minimumHeight: CGFloat = 44
+
+  init(width: CGFloat = 44, height: CGFloat = 44) {
+    _minimumWidth = ScaledMetric(wrappedValue: width, relativeTo: .body)
+    _minimumHeight = ScaledMetric(wrappedValue: height, relativeTo: .body)
+  }
+
+  func body(content: Content) -> some View {
+    let cornerRadius = min(minimumWidth, minimumHeight) * 0.28
+    content
+      .frame(minWidth: minimumWidth, minHeight: minimumHeight)
+      .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+  }
+}
+
 private struct PanelSurfaceModifier: ViewModifier {
   let radius: CGFloat
   @Environment(\.colorScheme) private var colorScheme
@@ -1557,6 +1916,12 @@ private enum QueueAccentRole {
   case warning
   case info
   case success
+}
+
+private extension View {
+  func minimumHitTarget(width: CGFloat = 44, height: CGFloat = 44) -> some View {
+    modifier(MinimumHitTargetModifier(width: width, height: height))
+  }
 }
 
 private enum QueueAccentPalette {

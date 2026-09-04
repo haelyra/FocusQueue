@@ -34,5 +34,11 @@
     "sessionName": "ecc-focus-queue-codex-verifier",
     "timeoutSeconds": 120,
     "maxTurns": 24
+  },
+  "dailyReport": {
+    "scheduleHour": 8,
+    "scheduleMinute": 0,
+    "maximumTokens": 75000,
+    "enabledPlatforms": ["discord", "telegram", "email", "github"]
   }
 }

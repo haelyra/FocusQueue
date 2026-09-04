@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import sys
 import urllib.error
@@ -236,7 +237,10 @@ def read(config: dict[str, Any], token: str, identifier: str, channel_id: str | 
 
 def emit(config: dict[str, Any], payload: dict[str, Any]) -> int:
     payload["nonce"] = str(uuid.uuid4())
-    runtime = Path(config.get("discordRuntimeDirectory", DEFAULT_RUNTIME)).expanduser()
+    runtime = Path(
+        os.environ.get("FOCUS_QUEUE_CONNECTOR_PROOF_DIR")
+        or config.get("discordRuntimeDirectory", DEFAULT_RUNTIME)
+    ).expanduser()
     morning.write_private_json(runtime / "discord-response.json", payload)
     print(json.dumps(payload, indent=2, ensure_ascii=False))
     return 0 if payload.get("status") in {"ok", "partial"} else 2

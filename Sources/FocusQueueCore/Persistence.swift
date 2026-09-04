@@ -6,6 +6,7 @@ public protocol FileAccessing: Sendable {
     func createDirectory(at url: URL) throws
     func fileExists(at url: URL) -> Bool
     func modificationDate(at url: URL) throws -> Date?
+    func removeItem(at url: URL) throws
 }
 
 public struct SystemFileAccessor: FileAccessing {
@@ -16,15 +17,31 @@ public struct SystemFileAccessor: FileAccessing {
     }
 
     public func write(_ data: Data, to url: URL) throws {
+        let directory = url.deletingLastPathComponent()
+        let directoryAlreadyExisted = FileManager.default.fileExists(atPath: directory.path)
         try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
+            at: directory,
             withIntermediateDirectories: true
         )
+        if !directoryAlreadyExisted {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: directory.path
+            )
+        }
         try data.write(to: url, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: url.path
+        )
     }
 
     public func createDirectory(at url: URL) throws {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: url.path
+        )
     }
 
     public func fileExists(at url: URL) -> Bool {
@@ -35,10 +52,15 @@ public struct SystemFileAccessor: FileAccessing {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         return attributes[.modificationDate] as? Date
     }
+
+    public func removeItem(at url: URL) throws {
+        try FileManager.default.removeItem(at: url)
+    }
 }
 
 public protocol ConfigurationLoading: Sendable {
     func loadOrCreate(default defaultConfiguration: AppConfiguration) async throws -> AppConfiguration
+    func save(_ configuration: AppConfiguration) async throws
 }
 
 public actor JSONConfigurationRepository: ConfigurationLoading {
@@ -61,10 +83,70 @@ public actor JSONConfigurationRepository: ConfigurationLoading {
         return try JSONDecoder().decode(AppConfiguration.self, from: data).validated()
     }
 
+    public func save(_ configuration: AppConfiguration) throws {
+        let validated = try configuration.validated()
+        try files.write(try Self.encoder.encode(validated), to: url)
+    }
+
     private static var encoder: JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         return encoder
+    }
+}
+
+public protocol DailyReportStoring: Sendable {
+    func load() async throws -> DailyReportDocument?
+    func save(_ report: DailyReportDocument) async throws
+}
+
+public actor JSONDailyReportRepository: DailyReportStoring {
+    private let url: URL
+    private let files: any FileAccessing
+
+    public init(url: URL, files: any FileAccessing = SystemFileAccessor()) {
+        self.url = url
+        self.files = files
+    }
+
+    public func load() throws -> DailyReportDocument? {
+        guard files.fileExists(at: url) else { return nil }
+        return try JSONDecoder().decode(DailyReportDocument.self, from: files.read(from: url))
+    }
+
+    public func save(_ report: DailyReportDocument) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        try files.write(try encoder.encode(report), to: url)
+    }
+}
+
+public protocol DailyReportApprovalStoring: Sendable {
+    func load() async throws -> DailyReportApprovalRequest?
+    func save(_ request: DailyReportApprovalRequest) async throws
+}
+
+public actor JSONDailyReportApprovalRepository: DailyReportApprovalStoring {
+    private let url: URL
+    private let files: any FileAccessing
+
+    public init(url: URL, files: any FileAccessing = SystemFileAccessor()) {
+        self.url = url
+        self.files = files
+    }
+
+    public func load() throws -> DailyReportApprovalRequest? {
+        guard files.fileExists(at: url) else { return nil }
+        return try JSONDecoder().decode(
+            DailyReportApprovalRequest.self,
+            from: files.read(from: url)
+        )
+    }
+
+    public func save(_ request: DailyReportApprovalRequest) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        try files.write(try encoder.encode(request), to: url)
     }
 }
 

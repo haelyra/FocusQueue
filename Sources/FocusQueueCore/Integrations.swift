@@ -1,5 +1,33 @@
 import Foundation
 
+public enum DailyReportAutomation {
+    public static func arguments(
+        scriptPath: String,
+        configurationPath: String,
+        runtimePath: String,
+        request: DailyReportRunRequest
+    ) -> [String] {
+        var arguments = [
+            scriptPath,
+            "run",
+            "--config", configurationPath,
+            "--runtime", runtimePath,
+            "--trigger", request.trigger.rawValue,
+        ]
+        if request.comprehensive {
+            arguments.append("--comprehensive")
+        } else {
+            for platform in request.platforms.sorted(by: { $0.rawValue < $1.rawValue }) {
+                arguments.append(contentsOf: ["--platform", platform.rawValue])
+            }
+        }
+        if request.recheck {
+            arguments.append("--recheck")
+        }
+        return arguments
+    }
+}
+
 public struct WezTermPane: Codable, Equatable, Sendable {
     public let windowID: Int
     public let tabID: Int?
@@ -886,10 +914,10 @@ public enum QueueAgentError: Error, LocalizedError {
 public actor CodexQueueAgent: QueueAgentChatting {
     public static let sessionName = "ecc-focus-queue-codex-v1"
     private static let mailEvidenceURL = URL(
-        fileURLWithPath: "/Users/hira/Library/Application Support/ECC Focus Queue/ingestion/mail-response.json"
+        fileURLWithPath: "/Users/hira/Library/Application Support/ECC Focus Queue/connector-proofs/mail-response.json"
     )
     private static let discordEvidenceURL = URL(
-        fileURLWithPath: "/Users/hira/Library/Application Support/ECC Focus Queue/ingestion/discord-response.json"
+        fileURLWithPath: "/Users/hira/Library/Application Support/ECC Focus Queue/connector-proofs/discord-response.json"
     )
 
     private struct MailEvidenceReceipt: Decodable {
@@ -1046,6 +1074,14 @@ public actor CodexQueueAgent: QueueAgentChatting {
         return max(configuredTimeoutSeconds, 600)
     }
 
+    static func isDailyReportRunRequest(_ message: String) -> Bool {
+        DailyReportChatCommand.parse(
+            message,
+            enabledPlatforms: DailyReportPlatform.allCases
+        ) != nil
+    }
+
+
     private static func requiresMailEvidence(_ message: String) -> Bool {
         let normalized = message.lowercased()
         return [
@@ -1088,6 +1124,7 @@ public actor CodexQueueAgent: QueueAgentChatting {
         for message: String,
         requestStartedAt: Date
     ) throws -> String {
+        defer { try? files.removeItem(at: Self.mailEvidenceURL) }
         let proofPrefix = "MAIL_PROOF:"
         let lines = output.components(separatedBy: .newlines)
         guard let proofLine = lines.last(where: {
@@ -1166,6 +1203,7 @@ public actor CodexQueueAgent: QueueAgentChatting {
         for message: String,
         requestStartedAt: Date
     ) throws -> String {
+        defer { try? files.removeItem(at: Self.discordEvidenceURL) }
         let proofPrefix = "DISCORD_PROOF:"
         let lines = output.components(separatedBy: .newlines)
         guard let proofLine = lines.last(where: {

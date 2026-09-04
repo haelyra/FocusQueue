@@ -19,6 +19,362 @@ func morningRunPolicy() throws {
   #expect(!MorningRunPolicy.isDue(now: after, lastSuccessfulAt: today, calendar: calendar))
 }
 
+@Test("A missed daily report asks for approval while an on-time report runs automatically")
+func missedMorningRunPolicy() throws {
+  var calendar = Calendar(identifier: .gregorian)
+  calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
+  let onTime = try Date("2026-09-03T08:35:00Z", strategy: .iso8601)
+  let pollingJitter = try Date("2026-09-03T08:35:01Z", strategy: .iso8601)
+  let missed = try Date("2026-09-03T10:00:00Z", strategy: .iso8601)
+  let completed = try Date("2026-09-03T08:31:00Z", strategy: .iso8601)
+  let wokeAfterSchedule = try Date("2026-09-03T08:34:00Z", strategy: .iso8601)
+
+  #expect(
+    MorningRunPolicy.disposition(
+      now: pollingJitter,
+      lastSuccessfulAt: nil,
+      hour: 8,
+      minute: 30,
+      automaticGraceMinutes: 10,
+      calendar: calendar
+    ) == .runAutomatically
+  )
+  #expect(
+    MorningRunPolicy.disposition(
+      now: onTime,
+      lastSuccessfulAt: nil,
+      hour: 8,
+      minute: 30,
+      automaticGraceMinutes: 10,
+      availabilityResumedAt: wokeAfterSchedule,
+      calendar: calendar
+    ) == .requestApproval
+  )
+  #expect(
+    MorningRunPolicy.disposition(
+      now: onTime,
+      lastSuccessfulAt: nil,
+      hour: 8,
+      minute: 30,
+      automaticGraceMinutes: 15,
+      calendar: calendar
+    ) == .runAutomatically
+  )
+  #expect(
+    MorningRunPolicy.disposition(
+      now: missed,
+      lastSuccessfulAt: nil,
+      hour: 8,
+      minute: 30,
+      automaticGraceMinutes: 15,
+      calendar: calendar
+    ) == .requestApproval
+  )
+  #expect(
+    MorningRunPolicy.disposition(
+      now: missed,
+      lastSuccessfulAt: completed,
+      hour: 8,
+      minute: 30,
+      automaticGraceMinutes: 15,
+      calendar: calendar
+    ) == .notDue
+  )
+}
+
+@Test("Legacy application configuration receives safe daily-report defaults")
+func legacyDailyReportConfiguration() throws {
+  let data = Data(
+    """
+    {
+      "appName": "ECC Focus Queue",
+      "dashboardPath": "/tmp/dashboard.json",
+      "workspacePath": "/tmp/workspace",
+      "defaultPlacement": "upper-right",
+      "refreshIntervalSeconds": 2,
+      "dailyRoutines": [],
+      "wezTerm": {"executable": "/tmp/wezterm", "applicationName": "WezTerm"},
+      "verifier": {
+        "enabled": true,
+        "executable": "/tmp/focus-queue-codex",
+        "sessionName": "queue",
+        "timeoutSeconds": 120,
+        "maxTurns": 24
+      }
+    }
+    """.utf8
+  )
+
+  let config = try JSONDecoder().decode(AppConfiguration.self, from: data)
+
+  #expect(config.dailyReport.scheduleHour == 8)
+  #expect(config.dailyReport.scheduleMinute == 0)
+  #expect(config.dailyReport.maximumTokens == 75_000)
+  #expect(Set(config.dailyReport.enabledPlatforms) == Set(DailyReportPlatform.allCases))
+}
+
+@Test("Daily report documents retain platform counts, messages, tasks, and exact usage")
+func dailyReportDecoding() throws {
+  let data = Data(
+    """
+    {
+      "version": 1,
+      "runID": "run-123",
+      "trigger": "scheduled",
+      "mode": "unseen-only",
+      "startedAt": "2026-09-03T12:00:00Z",
+      "finishedAt": "2026-09-03T12:01:00Z",
+      "status": "success",
+      "summary": "Two customer requests created one high-priority task.",
+      "tokenBudget": 75000,
+      "usage": {
+        "inputTokens": 1200,
+        "cachedInputTokens": 200,
+        "outputTokens": 300,
+        "reasoningOutputTokens": 100,
+        "totalTokens": 1500
+      },
+      "platforms": [{
+        "platform": "email",
+        "status": "ok",
+        "collectedCount": 3,
+        "newCount": 2,
+        "alreadyProcessedCount": 1,
+        "checkedCount": 2,
+        "deferredCount": 0,
+        "messages": [{
+          "sourceKey": "email:<one@example.test>",
+          "title": "Release request",
+          "summary": "A customer requested the next release. The request needs maintainer review.",
+          "timestamp": "2026-09-03T11:00:00Z",
+          "url": "message://one",
+          "tasks": [{"id": "ECC-100", "title": "Review release request"}]
+        }]
+      }],
+      "errors": []
+    }
+    """.utf8
+  )
+
+  let report = try JSONDecoder().decode(DailyReportDocument.self, from: data)
+  let platform = try #require(report.platforms.first)
+  let message = try #require(platform.messages.first)
+
+  #expect(report.usage?.totalTokens == 1_500)
+  #expect(platform.newCount == 2)
+  #expect(message.tasks.first?.id == "ECC-100")
+  #expect(message.url == "message://one")
+  #expect(report.covers([.email]))
+  #expect(!report.covers([.email, .discord]))
+}
+
+@Test("Configuration updates and latest reports persist atomically")
+func dailyReportPersistence() async throws {
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent("focus-queue-report-test-\(UUID().uuidString)", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  let configurationURL = root.appendingPathComponent("config.json")
+  let reportURL = root.appendingPathComponent("latest-report.json")
+  let configurationRepository = JSONConfigurationRepository(url: configurationURL)
+  var configuration = AppConfiguration.eccDefault(homeDirectory: root)
+  configuration.dailyReport.maximumTokens = 60_000
+
+  try await configurationRepository.save(configuration)
+  let reloaded = try await configurationRepository.loadOrCreate(default: .eccDefault(homeDirectory: root))
+
+  let report = DailyReportDocument(
+    runID: "run-persisted",
+    trigger: .manual,
+    mode: .unseenOnly,
+    startedAt: "2026-09-03T12:00:00Z",
+    finishedAt: "2026-09-03T12:01:00Z",
+    status: .success,
+    summary: "Report persisted.",
+    tokenBudget: 60_000,
+    usage: DailyReportTokenUsage(
+      inputTokens: 10,
+      cachedInputTokens: 0,
+      outputTokens: 5,
+      reasoningOutputTokens: 0,
+      totalTokens: 15
+    ),
+    platforms: [],
+    errors: []
+  )
+  let reportRepository = JSONDailyReportRepository(url: reportURL)
+  try await reportRepository.save(report)
+
+  #expect(reloaded.dailyReport.maximumTokens == 60_000)
+  #expect(try await reportRepository.load()?.runID == "run-persisted")
+  #expect((try FileManager.default.attributesOfItem(
+    atPath: configurationURL.path
+  )[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+  #expect((try FileManager.default.attributesOfItem(
+    atPath: reportURL.path
+  )[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+}
+
+@Test("Missed-run approval is a portable persisted contract")
+func dailyReportApprovalPersistence() async throws {
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent("focus-queue-approval-test-\(UUID().uuidString)", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  let repository = JSONDailyReportApprovalRepository(
+    url: root.appendingPathComponent("pending-approval.json")
+  )
+  let request = DailyReportApprovalRequest(
+    id: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+    reportDate: "2026-09-03",
+    requestedAt: "2026-09-03T14:00:00Z"
+  )
+
+  try await repository.save(request)
+  let reloaded = try #require(try await repository.load())
+
+  #expect(reloaded == request)
+  #expect(reloaded.status == .pending)
+  #expect(reloaded.isCurrent(reportDate: "2026-09-03"))
+  #expect(!reloaded.isCurrent(reportDate: "2026-09-04"))
+}
+
+@Test("Daily report automation arguments are allowlisted and explicit")
+func dailyReportAutomationArguments() {
+  let request = DailyReportRunRequest(
+    trigger: .chat,
+    platforms: [.email, .discord],
+    comprehensive: false,
+    recheck: true
+  )
+
+  let arguments = DailyReportAutomation.arguments(
+    scriptPath: "/support/focus_queue_morning.py",
+    configurationPath: "/support/ingestion.json",
+    runtimePath: "/support/ingestion",
+    request: request
+  )
+
+  #expect(arguments.contains("--trigger"))
+  #expect(arguments.contains("chat"))
+  #expect(arguments.filter { $0 == "--platform" }.count == 2)
+  #expect(arguments.contains("email"))
+  #expect(arguments.contains("discord"))
+  #expect(arguments.contains("--recheck"))
+}
+
+@Test("Queue chat distinguishes report runs from exact message reads")
+func dailyReportChatIntent() {
+  #expect(CodexQueueAgent.isDailyReportRunRequest(
+    "Run my daily report for Discord and email"
+  ))
+  #expect(CodexQueueAgent.isDailyReportRunRequest(
+    "Check GitHub and Telegram for the focus report"
+  ))
+  #expect(!CodexQueueAgent.isDailyReportRunRequest(
+    "What did the latest Discord message say?"
+  ))
+  #expect(!CodexQueueAgent.isDailyReportRunRequest(
+    "How many messages did the daily report check?"
+  ))
+  #expect(!CodexQueueAgent.isDailyReportRunRequest(
+    "Did the daily report update this morning?"
+  ))
+  #expect(!CodexQueueAgent.isDailyReportRunRequest(
+    "Update me on the daily report"
+  ))
+  #expect(!CodexQueueAgent.isDailyReportRunRequest(
+    "Check whether the daily report ran"
+  ))
+  let parsed = DailyReportChatCommand.parse(
+    "Please run the daily report for email and Discord and recheck already processed messages.",
+    enabledPlatforms: DailyReportPlatform.allCases
+  )
+  #expect(parsed?.platforms == [.discord, .email])
+  #expect(parsed?.comprehensive == false)
+  #expect(parsed?.recheck == true)
+  let disabledOverride = DailyReportChatCommand.parse(
+    "Run the daily report for Telegram.",
+    enabledPlatforms: [.email]
+  )
+  #expect(disabledOverride?.platforms == [.telegram])
+  #expect(disabledOverride?.comprehensive == false)
+  let wordBoundary = DailyReportChatCommand.parse(
+    "Run the daily report mainly for today.",
+    enabledPlatforms: [.discord, .email]
+  )
+  #expect(wordBoundary?.comprehensive == true)
+  let noRecheck = DailyReportChatCommand.parse(
+    "Run the daily report but do not recheck already checked messages.",
+    enabledPlatforms: [.discord, .email]
+  )
+  #expect(noRecheck?.recheck == false)
+  #expect(DailyReportChatCommand.parse(
+    "Run the daily report without checking already processed messages.",
+    enabledPlatforms: [.discord, .email]
+  )?.recheck == false)
+  let narrowed = DailyReportChatCommand.parse(
+    "Run the daily report for email, not all platforms.",
+    enabledPlatforms: [.discord, .email]
+  )
+  #expect(narrowed?.comprehensive == false)
+  #expect(narrowed?.platforms == [.email])
+  #expect(DailyReportChatCommand.parse(
+    "Run the daily report, not all platforms.",
+    enabledPlatforms: [.discord, .email]
+  ) == nil)
+  #expect(DailyReportChatCommand.parse(
+    "Run the daily report for all platforms except email.",
+    enabledPlatforms: [.discord, .email]
+  ) == nil)
+  #expect(DailyReportChatCommand.parse(
+    "Run the daily report excluding email.",
+    enabledPlatforms: [.discord, .email]
+  ) == nil)
+  #expect(DailyReportChatCommand.parse(
+    "Run the daily report including already processed messages.",
+    enabledPlatforms: [.discord, .email]
+  )?.recheck == true)
+  #expect(DailyReportChatCommand.parse(
+    "Generate the daily message and update report",
+    enabledPlatforms: [.discord, .email]
+  )?.comprehensive == true)
+  #expect(DailyReportChatCommand.parse(
+    "Run the daily report for Slack",
+    enabledPlatforms: [.discord, .email]
+  ) == nil)
+  #expect(DailyReportChatCommand.parse(
+    "Run the daily report on Slack",
+    enabledPlatforms: [.discord, .email]
+  ) == nil)
+  #expect(DailyReportChatCommand.parse(
+    "Run the daily report for Slack and email",
+    enabledPlatforms: [.discord, .email]
+  ) == nil)
+  #expect(DailyReportChatCommand.parse(
+    "Run the daily report, don't check email",
+    enabledPlatforms: [.discord, .email]
+  ) == nil)
+  #expect(DailyReportChatCommand.parse(
+    "Run the daily report, with no email",
+    enabledPlatforms: [.discord, .email]
+  ) == nil)
+  #expect(DailyReportChatCommand.parse(
+    "Run the daily report, don’t recheck messages",
+    enabledPlatforms: [.discord, .email]
+  )?.recheck == false)
+  #expect(DailyReportChatCommand.parse(
+    "Run the daily report, not rechecking messages",
+    enabledPlatforms: [.discord, .email]
+  )?.recheck == false)
+  #expect(DailyReportChatCommand.parse(
+    "Run a comprehensive report",
+    enabledPlatforms: [.discord, .email]
+  )?.comprehensive == true)
+  #expect(CodexQueueAgent.runTimeoutSeconds(
+    for: "Generate the daily message report",
+    configuredTimeoutSeconds: 120
+  ) == 120)
+}
+
 @Test("Foundation process runner returns after a short-lived child exits")
 func foundationProcessRunnerReturnsAfterExit() async throws {
   let result = try await FoundationProcessRunner().run(ProcessSpecification(
@@ -42,6 +398,27 @@ func foundationProcessRunnerEnforcesDeadline() async throws {
 
   #expect(result.timedOut)
   #expect(Date().timeIntervalSince(startedAt) < 3)
+}
+
+@Test("Foundation process runner allows a bounded graceful timeout cleanup")
+func foundationProcessRunnerAllowsGracefulCleanup() async throws {
+  let marker = FileManager.default.temporaryDirectory
+    .appendingPathComponent("focus-queue-grace-\(UUID().uuidString)")
+  defer { try? FileManager.default.removeItem(at: marker) }
+  let result = try await FoundationProcessRunner().run(ProcessSpecification(
+    executable: "/bin/sh",
+    arguments: [
+      "-c",
+      "trap 'printf done > \"$1\"; exit 0' TERM; while :; do sleep 0.05; done",
+      "focus-queue-grace-test",
+      marker.path,
+    ],
+    timeoutSeconds: 1,
+    terminationGraceSeconds: 2
+  ))
+
+  #expect(result.timedOut)
+  #expect(FileManager.default.fileExists(atPath: marker.path))
 }
 
 @Test("Dashboard decoding keeps source-backed progress and open state")
@@ -1110,6 +1487,36 @@ func queuePanelFrameIsVisible() {
   #expect(centered.width == 620)
 }
 
+@Test("Expanded report panels stay anchored to their queue edge")
+func expandedDailyReportPanelAnchoring() {
+  let display = CGRect(x: 0, y: 0, width: 1_440, height: 900)
+  let left = DisplayGeometry.panelFrame(
+    preferredWidth: 1_000,
+    visibleFrame: display,
+    placement: .upperLeft,
+    maximumWidth: 1_200
+  )
+  let narrow = DisplayGeometry.panelFrame(
+    preferredWidth: 600,
+    visibleFrame: CGRect(x: 0, y: 0, width: 760, height: 900),
+    placement: .upperRight,
+    minimumWidth: 790,
+    maximumWidth: 1_200
+  )
+  let right = DisplayGeometry.panelFrame(
+    preferredWidth: 1_000,
+    visibleFrame: display,
+    placement: .upperRight,
+    maximumWidth: 1_200
+  )
+
+  #expect(left.minX == 12)
+  #expect(right.maxX == display.maxX - 12)
+  #expect(left.width == 1_000)
+  #expect(right.width == 1_000)
+  #expect(narrow.width == 736)
+}
+
 @Test("Every queue placement stays in the supplied display coordinate space")
 func everyQueuePlacementStaysOnCurrentDisplay() {
   let currentDisplay = CGRect(x: -2_560, y: 180, width: 2_560, height: 1_440)
@@ -1151,4 +1558,5 @@ private struct MockFileAccessor: FileAccessing {
   func createDirectory(at url: URL) throws {}
   func fileExists(at url: URL) -> Bool { true }
   func modificationDate(at url: URL) throws -> Date? { modificationDate }
+  func removeItem(at url: URL) throws {}
 }

@@ -138,7 +138,12 @@ import UserNotifications
 
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool
   {
-    showPanel()
+    revealPanelOnPointerDisplay()
+    return true
+  }
+
+  func applicationOpenUntitledFile(_ sender: NSApplication) -> Bool {
+    revealPanelOnPointerDisplay()
     return true
   }
 
@@ -165,9 +170,27 @@ import UserNotifications
   }
 
   @objc private func showPanel() {
+    revealPanelOnPointerDisplay()
+  }
+
+  private func revealPanelOnPointerDisplay() {
     guard let panel else { return }
-    reconcilePanelWithAvailableScreens(animated: false)
+    let screens = NSScreen.screens
+    let frames = screens.map(\.frame)
+    let pointer = NSEvent.mouseLocation
+    let pointerScreen = DisplayGeometry.screenIndex(
+      containing: pointer,
+      screenFrames: frames
+    ).map { screens[$0] }
+    positionPanel(
+      currentPlacement,
+      on: pointerScreen ?? defaultScreen(),
+      animated: false
+    )
+    NSApp.unhide(nil)
+    panel.deminiaturize(nil)
     panel.orderFrontRegardless()
+    NSApp.activate(ignoringOtherApps: true)
   }
 
   @objc private func importAgentRegistration(_ notification: Notification) {

@@ -1,6 +1,13 @@
 import CoreGraphics
 
 public enum DisplayGeometry {
+    public static func screenIndex(
+        containing point: CGPoint,
+        screenFrames: [CGRect]
+    ) -> Int? {
+        screenFrames.firstIndex { $0.contains(point) }
+    }
+
     public static func nextScreenIndex(
         currentScreenFrame: CGRect,
         orderedScreenFrames: [CGRect]

@@ -21,6 +21,7 @@ if [[ "${1:-}" != "--no-build" ]]; then
 fi
 
 /bin/mkdir -p "$install_dir" "$desktop_dir" "$support_dir" "$local_bin_dir" "/Users/hira/Library/LaunchAgents"
+/bin/launchctl bootout "$service" 2>/dev/null || true
 /usr/bin/pkill -x ECCFocusQueue 2>/dev/null || true
 if [[ -e "$installed_app" ]]; then
   /bin/rm -rf "$installed_app"
@@ -48,11 +49,12 @@ fi
 /usr/bin/plutil -insert Label -string com.haelyra.ecc-focus-queue "$launch_agent"
 /usr/bin/plutil -insert ProgramArguments -json "[\"$installed_app/Contents/MacOS/ECCFocusQueue\"]" "$launch_agent"
 /usr/bin/plutil -insert RunAtLoad -bool true "$launch_agent"
+/usr/bin/plutil -insert KeepAlive -json '{"SuccessfulExit":false}' "$launch_agent"
+/usr/bin/plutil -insert ThrottleInterval -integer 5 "$launch_agent"
 /usr/bin/plutil -insert ProcessType -string Interactive "$launch_agent"
 /usr/bin/plutil -insert StandardOutPath -string "$support_dir/launch.stdout.log" "$launch_agent"
 /usr/bin/plutil -insert StandardErrorPath -string "$support_dir/launch.stderr.log" "$launch_agent"
 
-/bin/launchctl bootout "$service" 2>/dev/null || true
 /bin/sleep 1
 bootstrapped=0
 for attempt in 1 2 3 4 5; do

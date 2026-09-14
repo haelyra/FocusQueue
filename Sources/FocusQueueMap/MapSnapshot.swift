@@ -58,11 +58,25 @@ public struct MapSnapshot: Codable, Equatable, Sendable {
     public var nodes: [MapNode]
     public var warnings: [String]
     public var omittedPaths: Int
+    public var relations: [MapRelation] = []
 
     public init(taskID: String, generatedAt: Date, nodes: [MapNode],
-                warnings: [String] = [], omittedPaths: Int = 0) {
+                warnings: [String] = [], omittedPaths: Int = 0, relations: [MapRelation] = []) {
         self.taskID = taskID; self.generatedAt = generatedAt; self.nodes = nodes
         self.warnings = warnings; self.omittedPaths = omittedPaths
+        self.relations = relations
+    }
+
+    private enum CodingKeys: String, CodingKey { case schemaVersion, taskID, generatedAt, nodes, warnings, omittedPaths, relations }
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        taskID = try values.decode(String.self, forKey: .taskID)
+        generatedAt = try values.decode(Date.self, forKey: .generatedAt)
+        nodes = try values.decode([MapNode].self, forKey: .nodes)
+        warnings = try values.decode([String].self, forKey: .warnings)
+        omittedPaths = try values.decode(Int.self, forKey: .omittedPaths)
+        relations = try values.decodeIfPresent([MapRelation].self, forKey: .relations) ?? []
     }
 
     public func validated() throws -> Self {
@@ -73,6 +87,11 @@ public struct MapSnapshot: Codable, Equatable, Sendable {
             throw MapError.invalidSnapshot("Duplicate nodes or missing queue root.")
         }
         let index = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0) })
+        guard Set(relations.map(\.id)).count == relations.count,
+              relations.allSatisfy({ ids.contains($0.from) && ids.contains($0.to) &&
+                  ($0.kind == .input ? index[$0.to]?.kind == .agent : index[$0.from]?.kind == .agent) }) else {
+            throw MapError.invalidSnapshot("Invalid input/output relationship.")
+        }
         for node in nodes {
             if node.kind != .queue, node.parentID == nil {
                 throw MapError.invalidSnapshot("An item is disconnected from the queue.")

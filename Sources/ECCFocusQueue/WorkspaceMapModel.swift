@@ -13,6 +13,7 @@ final class WorkspaceMapModel {
     var search = ""
     var attentionOnly = false
     var changesOnly = false
+    var showOtherFiles = false
     var zoom = 1.0
     var message: String?
     var isRefreshing = false
@@ -63,6 +64,8 @@ final class WorkspaceMapModel {
         }
     }
 
+    /// Retained for a future explicit external-editor action. Map file activation
+    /// now opens the side document pane and does not call this method.
     func openCode(_ url: URL, viewer: String, configuration: WezTermConfiguration) async throws {
         let runner = FoundationProcessRunner()
         if viewer == "vscode" {

@@ -112,6 +112,7 @@ final class QueueViewModel {
   @ObservationIgnored private var reviewTasks: [UUID: Task<Void, Never>] = [:]
   @ObservationIgnored private var windowSaveTask: Task<Void, Never>?
   @ObservationIgnored private var queueChatTask: Task<Void, Never>?
+  @ObservationIgnored private var documentConversations: [String: DocumentConversation] = [:]
   @ObservationIgnored private var configurationSaveTask: Task<Void, Never>?
   @ObservationIgnored private var lastRecurringPRRefresh: Date?
   @ObservationIgnored private var bootstrapped = false
@@ -567,6 +568,16 @@ final class QueueViewModel {
         await reloadReportHistory()
       } catch { reportHistoryError = error.localizedDescription }
     }
+  }
+
+  func documentConversation(for url: URL, ticketID: String) -> DocumentConversation? {
+    guard let document = DocumentPaneLocation.normalized(url), let context = taskContexts[ticketID] else { return nil }
+    let key = DocumentConversation.key(document: document, taskID: ticketID)
+    if let existing = documentConversations[key] { return existing }
+    let conversation = DocumentConversation(document: document, context: context, support: paths.supportDirectory,
+      agent: queueAgent, configuration: config.verifier, dashboardPath: config.dashboardPath, workspace: config.workspacePath)
+    documentConversations[key] = conversation
+    return conversation
   }
 
   func chatMessages(ticketID: String?) -> [QueueChatMessage] {

@@ -253,13 +253,13 @@ enum PlanCanvasWebRuntime {
               theme: dark ? 'dark' : 'base',
               fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
               themeVariables: dark ? {
-                primaryColor: '#151b2e', primaryBorderColor: '#7c8cff', primaryTextColor: '#edf0ff',
-                lineColor: '#9aa5ca', secondaryColor: '#191f35', tertiaryColor: '#101521',
-                background: '#0c1019', mainBkg: '#151b2e', clusterBkg: '#101521'
+                primaryColor: '#303030', primaryBorderColor: '#929292', primaryTextColor: '#eeeeee',
+                lineColor: '#a8a8a8', secondaryColor: '#383838', tertiaryColor: '#282828',
+                background: '#242424', mainBkg: '#303030', clusterBkg: '#282828'
               } : {
-                primaryColor: '#eef1ff', primaryBorderColor: '#5367d8', primaryTextColor: '#17203f',
-                lineColor: '#66709a', secondaryColor: '#f5edff', tertiaryColor: '#f7f8fc',
-                background: '#ffffff', mainBkg: '#eef1ff', clusterBkg: '#f7f8fc'
+                primaryColor: '#eeeeee', primaryBorderColor: '#777777', primaryTextColor: '#252525',
+                lineColor: '#777777', secondaryColor: '#e8e8e8', tertiaryColor: '#f3f3f3',
+                background: '#ffffff', mainBkg: '#eeeeee', clusterBkg: '#f3f3f3'
               }
             });
             await mermaid.run({ nodes: diagrams });

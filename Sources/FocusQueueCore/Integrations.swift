@@ -1360,6 +1360,15 @@ public enum QueueAgentError: Error, LocalizedError {
 
 public actor CodexQueueAgent: QueueAgentChatting {
     public static let sessionName = "ecc-focus-queue-codex-v1"
+    /// Document requests use separate harness lock/state directories, so a
+    /// hidden central conversation cannot serialize or time out a document chat.
+    public static func documentRuntimeArguments(_ configuration: VerifierConfiguration) -> [String] {
+        guard configuration.sessionName.range(of: #"^ecc-focus-queue-task-[A-Za-z0-9_-]+-document-[a-f0-9]{16}$"#, options: .regularExpression) != nil,
+              let context = configuration.contextDirectory else { return [] }
+        let directory = URL(fileURLWithPath: context).appendingPathComponent("document-agents")
+            .appendingPathComponent(String(configuration.sessionName.suffix(16)))
+        return ["--runtime", directory.path]
+    }
     private static let errorLogURL = URL(
         fileURLWithPath: "/Users/hira/Library/Application Support/ECC Focus Queue/queue-chat.last-error.log"
     )
@@ -1459,7 +1468,7 @@ public actor CodexQueueAgent: QueueAgentChatting {
         )
         let result = try await runner.run(ProcessSpecification(
             executable: configuration.executable,
-            arguments: [
+            arguments: Self.documentRuntimeArguments(configuration) + [
                 "chat",
                 "--session", configuration.sessionName.hasPrefix("ecc-focus-queue-task-")
                     ? configuration.sessionName : Self.sessionName,

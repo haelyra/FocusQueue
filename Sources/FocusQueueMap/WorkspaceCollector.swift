@@ -183,8 +183,91 @@ public actor WorkspaceCollector {
                 summary: "Task context retained outside the worktree", evidence: "Registered central plan",
                 observedAt: context.updatedAt))
         }
+        var relations: [MapRelation] = []
+        let scopes: [MapScope]
+        do { scopes = try MapScope.load(context: context) }
+        catch { scopes = []; warnings.append("Input/output scope unavailable: \(error.localizedDescription)") }
+        var canonicalCache: [String: String] = [:]
+        func canonical(_ path: String) -> String {
+            if let cached = canonicalCache[path] { return cached }
+            let resolved = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
+            canonicalCache[path] = resolved
+            return resolved
+        }
+        var fileIDs = Dictionary(nodes.filter { [.file, .document].contains($0.kind) }.compactMap { node in
+            node.path.map { (canonical($0), node.id) }
+        }, uniquingKeysWith: { _, latest in latest })
+        func includeFile(_ path: String) -> String {
+            if let id = fileIDs[canonical(path)] { return id }
+            let file = URL(fileURLWithPath: path).standardizedFileURL
+            if let workspace = nodes.first(where: { $0.kind == .workspace && $0.path.map { Self.contains(canonical(path), in: canonical($0)) } == true }), let root = workspace.path {
+                let relative = String(canonical(path).dropFirst(canonical(root).count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                let parts = relative.split(separator: "/").map(String.init)
+                var parent = workspace.id
+                for depth in parts.indices {
+                    let relativePath = parts.prefix(depth + 1).joined(separator: "/")
+                    let id = MapNode.identity(workspace.id, relativePath)
+                    if !nodes.contains(where: { $0.id == id }) {
+                        nodes.append(MapNode(id: id, parentID: parent, kind: depth == parts.count - 1 ? .file : .folder,
+                            label: parts[depth], path: URL(fileURLWithPath: root).appendingPathComponent(relativePath).path,
+                            allowedRoot: root, summary: "Referenced task context or declared output", evidence: "Task context / agent scope"))
+                    }
+                    parent = id
+                }
+                fileIDs[canonical(path)] = parent
+                return parent
+            }
+            let directory = file.deletingLastPathComponent()
+            let parent = MapNode.identity("context-folder", directory.path)
+            if !nodes.contains(where: { $0.id == parent }) {
+                nodes.append(MapNode(id: parent, parentID: "queue", kind: .folder, label: directory.lastPathComponent,
+                    path: directory.path, allowedRoot: directory.path, summary: "External context", evidence: "Referenced context directory"))
+            }
+            let id = MapNode.identity("context-file", file.path)
+            nodes.append(MapNode(id: id, parentID: parent, kind: .document, label: file.lastPathComponent,
+                path: file.path, allowedRoot: file.path, summary: "Task context", evidence: "Provided / declared input"))
+            fileIDs[canonical(path)] = id
+            return id
+        }
+        // Keep the central plan under its real context directory, rather than
+        // presenting miscellaneous files as direct children of the queue.
+        if let planIndex = nodes.firstIndex(where: { $0.kind == .document && $0.path == context.planPath }) {
+            let directory = context.contextDirectory
+            let folderID = MapNode.identity("context-folder", directory.path)
+            if !nodes.contains(where: { $0.id == folderID }) {
+                nodes.append(MapNode(id: folderID, parentID: "queue", kind: .folder, label: "Task context · \(context.ticketID)",
+                    path: directory.path, allowedRoot: directory.path, summary: "Central plan and supporting context", evidence: "Registered context directory"))
+            }
+            nodes[planIndex].parentID = folderID
+        }
+        let agents = nodes.filter { $0.kind == .agent }
+        var instructions: [String: [String]] = [:]
+        for agent in agents {
+            let scope = scopes.first { $0.subtaskID == agent.subtaskID && $0.provider == agent.provider &&
+                $0.sessionID?.lowercased() == agent.sessionID?.lowercased() }
+            let relevantPaths = (scope?.inputs ?? []) + (scope?.outputs ?? []) +
+                [agent.path.map { URL(fileURLWithPath: $0).appendingPathComponent("scope-anchor").path }].compactMap { $0 }
+            var inputs = Set(scope?.inputs ?? [])
+            if context.planPath.hasPrefix("/") { inputs.insert(context.planPath) }
+            for path in relevantPaths {
+                if instructions[path] == nil { instructions[path] = MapInstructionFiles.ancestors(of: path) }
+                inputs.formUnion(instructions[path] ?? [])
+            }
+            for path in inputs.sorted() {
+                let id = includeFile(path)
+                relations.append(MapRelation(from: id, to: agent.id, kind: .input,
+                    evidence: scope?.inputs.contains(path) == true ? "Declared input" : "Provided task context", observedAt: scope?.updatedAt ?? context.updatedAt))
+            }
+            for path in (scope?.outputs ?? []) {
+                relations.append(MapRelation(from: agent.id, to: includeFile(path), kind: .output,
+                    evidence: "Declared output", observedAt: scope?.updatedAt))
+            }
+        }
+        // A file may appear as both an input and an output. The layout projects
+        // it on both sides of the agent while retaining one physical identity.
+        relations = Array(Dictionary(relations.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values).sorted { $0.id < $1.id }
         return try MapSnapshot(taskID: context.ticketID, generatedAt: now, nodes: nodes,
-                               warnings: warnings, omittedPaths: omitted).validated()
+                               warnings: warnings, omittedPaths: omitted, relations: relations).validated()
     }
 
     private func observe(directory: String, now: Date) async throws -> Observation {

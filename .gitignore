@@ -1,4 +1,5 @@
 .build/
+.build-launch/
 dist/
 .DS_Store
 *.xcuserstate

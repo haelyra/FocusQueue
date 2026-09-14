@@ -12,9 +12,9 @@ Until the dashboard emits a dedicated completion timestamp, the app uses
 it takes precedence. The app does not copy completed tickets into its local
 state or mutate their source records.
 
-## Proposed canonical fields
+## Supported canonical completion fields
 
-Future dashboard producers should retain completed tickets and add:
+Dashboard producers can retain completed tickets and include:
 
 ```json
 {
@@ -33,6 +33,10 @@ Future dashboard producers should retain completed tickets and add:
 `cancelled` tasks should use the same timestamp and completion object, with a
 clear cancellation reason. Reopened tasks should clear `completedAt` and append
 the prior completion event to a durable history rather than overwriting it.
+
+The Completed tab keeps the source-backed task details expandable, including
+steps, PRs, links, and any supplied completion facts. It does not infer a reason,
+outcome, evidence, or PR relationship when the dashboard omits one.
 
 ## Archive and pagination direction
 

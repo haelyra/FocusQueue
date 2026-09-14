@@ -3,15 +3,26 @@ import FocusQueueCore
 import Foundation
 import Observation
 
-enum QueueChatRole: Sendable {
+enum QueueChatRole: String, Codable, Sendable {
   case user
   case agent
 }
 
-struct QueueChatMessage: Identifiable, Sendable {
-  let id = UUID()
+struct QueueChatMessage: Identifiable, Codable, Sendable {
+  var id = UUID()
   let role: QueueChatRole
   let text: String
+  let canvasSelection: PlanCanvasSelection?
+
+  init(
+    id: UUID = UUID(), role: QueueChatRole, text: String,
+    canvasSelection: PlanCanvasSelection? = nil
+  ) {
+    self.id = id
+    self.role = role
+    self.text = text
+    self.canvasSelection = canvasSelection
+  }
 }
 
 @MainActor
@@ -23,13 +34,18 @@ final class QueueViewModel {
   private(set) var lastSync: Date?
   private(set) var sourceModificationDate: Date?
   private(set) var loadError: String?
+  private(set) var durableHistoryError: String?
   private(set) var configurationIsLoaded = false
+  var isSetupPresented = false
+  private(set) var setupError: String?
   private(set) var isRefreshing = false
   private(set) var dailyReport: DailyReportDocument?
+  private(set) var latestDailyReport: DailyReportDocument?
   private(set) var dailyReportLoadError: String?
   private(set) var isDailyReportPresented = false
   private(set) var isDailyReportRunning = false
   private(set) var dailyReportRunMessage: String?
+  private(set) var dailyReportRunFailed = false
   private(set) var pendingDailyReportApproval: DailyReportApprovalRequest?
   private(set) var requestedReportTaskID: String?
   private(set) var isPanelCollapsed = false
@@ -41,10 +57,24 @@ final class QueueViewModel {
     QueueChatMessage(
       role: .agent,
       text:
-        "I’m the Codex Queue agent. The app orders tasks by priority and recency, plus your local drag overrides. I can search and read the ECC Discord server and search, read, and explicitly open haley@ecc.tools through verified read-only connectors. Source answers are withheld unless the app validates fresh retrieval evidence. Ask why something is ordered, give explicit canonical instructions, clarify wording, or request link and task-field changes."
+        "The Queue agent can explain your task order and help with explicitly requested task changes when configured. The app orders tasks by priority and recency, plus your local drag overrides. Optional message sources need separate account setup and verified retrieval evidence. Basic queue viewing and terminal setup work independently of this agent."
     )
   ]
   private(set) var isQueueAgentResponding = false
+  private(set) var respondingTicketID: String?
+  private(set) var taskChatMessages: [String: [QueueChatMessage]] = [:]
+  private(set) var taskContexts: [String: TaskContext] = [:]
+  private(set) var subtaskActivityRevision = 0
+  private(set) var presentedAgentUpdate: QueueAgentUpdate?
+  private(set) var presentedPlanTicketID: String?
+  private(set) var presentedPlanURL: URL?
+  private(set) var presentedPlanMarkdown = ""
+  private(set) var planError: String?
+  private(set) var planEditDrafts: [String: PlanEditDraft] = [:]
+  private(set) var launchingTaskIDs: Set<String> = []
+  private(set) var closureMessages: [String: String] = [:]
+  private(set) var reportHistory = DailyReportHistorySnapshot()
+  private(set) var reportHistoryError: String?
   var expandedTicketIDs: Set<String> = []
 
   @ObservationIgnored private let paths: AppPaths
@@ -59,6 +89,23 @@ final class QueueViewModel {
   @ObservationIgnored private let verifier: any CompletionVerifying
   @ObservationIgnored private let queueAgent: any QueueAgentChatting
   @ObservationIgnored private let pullRequestQueueLoader: any PullRequestQueueLoading
+  @ObservationIgnored private let taskContextStore: TaskContextStore
+  @ObservationIgnored private let taskWorktreeManager = TaskWorktreeManager()
+  @ObservationIgnored private let taskAgentLauncher = TaskAgentLauncher()
+  @ObservationIgnored private let reportHistoryRepository: JSONDailyReportHistoryRepository
+  @ObservationIgnored private let conversationStore: QueueConversationStore
+  @ObservationIgnored private let durableLibrary: DurableLibraryStore
+  @ObservationIgnored private var durableErrors: [String: String] = [:]
+  @ObservationIgnored private var durableRetryAfter: [String: Date] = [:]
+  @ObservationIgnored private var lastDurableState: LocalState?
+  @ObservationIgnored private var lastDurableDashboard: DashboardDocument?
+  @ObservationIgnored private var lastDurableReports: [String: DailyReportDocument] = [:]
+  @ObservationIgnored private var lastDurableContexts: [String: TaskContext] = [:]
+  @ObservationIgnored private var durableDocumentStamps: [String: DurableDocumentStamp] = [:]
+  @ObservationIgnored private var lastContextRefresh: Date?
+  @ObservationIgnored private var reportStateSaveTask: Task<Void, Never>?
+  @ObservationIgnored private var cleanupSignatures: [String: Date] = [:]
+  @ObservationIgnored private var lastReportRefresh: Date?
   @ObservationIgnored private var refreshTask: Task<Void, Never>?
   @ObservationIgnored private var reviewTasks: [UUID: Task<Void, Never>] = [:]
   @ObservationIgnored private var windowSaveTask: Task<Void, Never>?
@@ -66,9 +113,12 @@ final class QueueViewModel {
   @ObservationIgnored private var configurationSaveTask: Task<Void, Never>?
   @ObservationIgnored private var lastRecurringPRRefresh: Date?
   @ObservationIgnored private var bootstrapped = false
+  @ObservationIgnored private var refreshInFlight = false
+  @ObservationIgnored private var lastActivityCheck = Date()
 
   @ObservationIgnored var placementHandler: ((QueueWindowPlacement) -> Void)?
   @ObservationIgnored var monitorSwitchHandler: (() -> Void)?
+  @ObservationIgnored var minimizeHandler: (() -> Void)?
   @ObservationIgnored var collapseHandler: ((Bool) -> Void)?
   @ObservationIgnored var reportVisibilityHandler: ((Bool) -> Void)?
   @ObservationIgnored var dailyReportRunHandler: (
@@ -95,7 +145,11 @@ final class QueueViewModel {
     pullRequestQueueLoader: any PullRequestQueueLoading = GitHubPullRequestQueueLoader()
   ) {
     self.paths = paths
-    self.config = .eccDefault()
+    self.taskContextStore = TaskContextStore(root: paths.supportDirectory)
+    self.reportHistoryRepository = JSONDailyReportHistoryRepository(runtimeDirectory: paths.ingestionRuntimeDirectory)
+    self.conversationStore = QueueConversationStore(root: paths.supportDirectory)
+    self.durableLibrary = DurableLibraryStore(root: paths.supportDirectory)
+    self.config = SetupEnvironment.starter(supportDirectory: paths.supportDirectory)
     self.configurationRepository =
       configurationRepository
       ?? JSONConfigurationRepository(url: paths.configurationFile)
@@ -125,13 +179,14 @@ final class QueueViewModel {
         progress.openCount == 0 ? ticketID : nil
       }
     )
-    return ordered.filter { !noBacklogIDs.contains($0.id) }
+    let closurePending = dashboard.tickets.filter { $0.isCompleted && closureMessages[$0.id] != nil }
+    return closurePending + ordered.filter { !noBacklogIDs.contains($0.id) }
       + ordered.filter { noBacklogIDs.contains($0.id) }
   }
 
   var completedTickets: [DashboardTicket] {
     dashboard.tickets
-      .filter(\.isCompleted)
+      .filter { $0.isCompleted && closureMessages[$0.id] == nil }
       .sorted {
         if $0.completionTimestamp != $1.completionTimestamp {
           return ($0.completionTimestamp ?? "") > ($1.completionTimestamp ?? "")
@@ -170,9 +225,24 @@ final class QueueViewModel {
     guard !bootstrapped else { return }
     bootstrapped = true
     do {
-      config = try await configurationRepository.loadOrCreate(default: .eccDefault())
+      let firstRun = !FileManager.default.fileExists(atPath: paths.configurationFile.path)
+      if firstRun { try SetupEnvironment.createStarterWorkspace(supportDirectory: paths.supportDirectory) }
+      config = try await configurationRepository.loadOrCreate(default: SetupEnvironment.starter(supportDirectory: paths.supportDirectory))
+      if let tmux = SetupEnvironment.executable("tmux"),
+        config.tmuxExecutable != tmux
+      {
+        config.tmuxExecutable = tmux
+        try await configurationRepository.save(config)
+      }
+      isSetupPresented = firstRun || config.setupCompleted == false
       configurationIsLoaded = true
       localState = try await stateStore.load()
+      // Preserve the prior task associations before registration can move them.
+      await captureDurableState(localState)
+      if let saved = try await conversationStore.load(ticketID: nil), !saved.isEmpty {
+        queueChatMessages = saved
+      }
+      _ = try await reportHistoryRepository.reconcileInactiveRuns()
       await reloadDailyReport()
       if let approval = try await dailyReportApprovalRepository.load(),
         approval.status == .pending,
@@ -185,29 +255,90 @@ final class QueueViewModel {
       recoverInterruptedReviews()
       try await stateStore.save(localState)
       await refresh(forceRecurringPRProgress: true)
+      await reconcileDurableLibrary()
       startRefreshLoop()
       resumePendingReviews()
     } catch {
       loadError = error.localizedDescription
+      if !configurationIsLoaded { isSetupPresented = true }
     }
   }
 
-  func refresh(forceRecurringPRProgress: Bool = false) async {
-    guard !isRefreshing else { return }
-    isRefreshing = true
-    defer { isRefreshing = false }
+  func finishSetup(_ configuration: AppConfiguration) async -> Bool {
+    configurationSaveTask?.cancel()
+    await configurationSaveTask?.value
+    do {
+      try SetupEnvironment.prepareWorkspace(configuration: configuration)
+      var updated = configuration
+      updated.setupCompleted = true
+      if updated.tmuxExecutable?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+        updated.tmuxExecutable = nil
+        updated.persistentTerminals = false
+      }
+      if let executable = updated.tmuxExecutable,
+        !FileManager.default.isExecutableFile(atPath: executable) {
+        throw ProcessRunnerError.executableMissing(executable)
+      }
+      if FileManager.default.fileExists(atPath: paths.configurationFile.path) {
+        let backup = paths.supportDirectory.appendingPathComponent("backups/setup-\(UUID().uuidString).json")
+        try SystemFileAccessor().write(Data(contentsOf: paths.configurationFile), to: backup)
+      }
+      try await configurationRepository.save(updated)
+      config = updated
+      setupError = nil
+      isSetupPresented = false
+      if !configurationIsLoaded {
+        bootstrapped = false
+        await bootstrap()
+      } else {
+        await refresh()
+      }
+      return true
+    } catch {
+      setupError = error.localizedDescription
+      return false
+    }
+  }
+
+  func refresh(forceRecurringPRProgress: Bool = false, userInitiated: Bool = false) async {
+    guard !refreshInFlight else { return }
+    refreshInFlight = true
+    let showsActivity = userInitiated || lastSync == nil
+    if showsActivity { isRefreshing = true }
+    defer {
+      refreshInFlight = false
+      if showsActivity { isRefreshing = false }
+    }
     do {
       let dashboardURL = URL(fileURLWithPath: config.dashboardPath)
       async let document = dashboardRepository.load(from: dashboardURL)
       async let modificationDate = dashboardRepository.modificationDate(at: dashboardURL)
-      dashboard = try await document
+      let updatedDashboard = try await document
+      if dashboard != updatedDashboard { dashboard = updatedDashboard }
+      await captureDurableDashboard(updatedDashboard)
       pruneDeferredTickets()
-      sourceModificationDate = try await modificationDate
-      lastSync = Date()
-      loadError = nil
+      let updatedModificationDate = try await modificationDate
+      if sourceModificationDate != updatedModificationDate { sourceModificationDate = updatedModificationDate }
+      let now = Date()
+      // The footer displays minute precision. Polling every two seconds does
+      // not require republishing that unchanged label through the queue view.
+      if lastSync == nil || Int(now.timeIntervalSince1970 / 60) != Int(lastSync!.timeIntervalSince1970 / 60) {
+        lastSync = now
+      }
+      if loadError != nil { loadError = nil }
+      resetDailyRoutinesIfNeeded()
+      await importAgentRegistrations()
+      await refreshTaskContexts()
+      if lastReportRefresh == nil || Date().timeIntervalSince(lastReportRefresh!) >= 10 {
+        lastReportRefresh = Date()
+        if !isDailyReportRunning {
+          _ = try await reportHistoryRepository.reconcileInactiveRuns()
+        }
+        await reloadDailyReport(preservingSelection: true)
+      }
       await refreshRecurringPRProgressIfNeeded(force: forceRecurringPRProgress)
     } catch {
-      loadError = error.localizedDescription
+      if loadError != error.localizedDescription { loadError = error.localizedDescription }
     }
   }
 
@@ -252,7 +383,10 @@ final class QueueViewModel {
     return true
   }
 
-  func sendQueueAgentMessage(_ rawMessage: String) {
+  func sendQueueAgentMessage(
+    _ rawMessage: String, ticketID: String? = nil,
+    canvasSelection: PlanCanvasSelection? = nil
+  ) {
     let message = rawMessage.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !message.isEmpty, !isQueueAgentResponding else { return }
     guard !isDailyReportRunning else {
@@ -260,40 +394,541 @@ final class QueueViewModel {
       return
     }
 
-    queueChatMessages.append(QueueChatMessage(role: .user, text: message))
+    appendChat(
+      QueueChatMessage(role: .user, text: message, canvasSelection: canvasSelection),
+      ticketID: ticketID)
     isQueueAgentResponding = true
-    if let reportRequest = DailyReportChatCommand.parse(
-      message,
-      enabledPlatforms: config.dailyReport.enabledPlatforms
-    ) {
+    respondingTicketID = ticketID
+    if ticketID == nil,
+      let reportRequest = DailyReportChatCommand.parse(
+        message,
+        enabledPlatforms: config.dailyReport.enabledPlatforms
+      )
+    {
       runDailyReportFromChat(reportRequest)
       return
     }
     let visibleOrder = openTickets.map(\.id)
     let deferredTicketIDs = localState.deferredTicketIDs
+    let scopedMessage: String
+    var agentConfiguration = config.verifier
+    agentConfiguration.supportDirectory = paths.supportDirectory.path
+    agentConfiguration.contextDirectory =
+      paths.supportDirectory.appendingPathComponent("tasks").path
+    let contextualMessage =
+      canvasSelection?.orchestratorMessage(userRequest: message) ?? message
+    if let ticketID, let context = taskContexts[ticketID] {
+      agentConfiguration.sessionName = "ecc-focus-queue-task-\(ticketID.lowercased())"
+      agentConfiguration.contextDirectory = context.contextDirectory.path
+      let taskScope = "Task scope: \(ticketID). Read its central plan at \(context.planPath). "
+      let contextScope = """
+        Context folder: \(context.contextDirectory.path).
+        Apply changes only when requested.
+
+        """
+      scopedMessage = taskScope + contextScope + contextualMessage
+    } else {
+      scopedMessage = contextualMessage
+    }
     queueChatTask = Task { [weak self] in
       guard let self else { return }
-      defer { self.isQueueAgentResponding = false }
+      defer {
+        self.isQueueAgentResponding = false
+        self.respondingTicketID = nil
+      }
       do {
         let reply = try await self.queueAgent.send(
-          message: message,
+          message: scopedMessage,
           dashboardPath: self.config.dashboardPath,
           workspace: self.config.workspacePath,
           visibleOrder: visibleOrder,
           deferredTicketIDs: deferredTicketIDs,
-          configuration: self.config.verifier
+          configuration: agentConfiguration
         )
-        self.queueChatMessages.append(QueueChatMessage(role: .agent, text: reply.message))
+        self.appendChat(QueueChatMessage(role: .agent, text: reply.message), ticketID: ticketID)
         await self.refresh()
+        await self.reloadPresentedPlan()
         if self.dailyReport == nil {
           await self.reloadDailyReport()
         }
       } catch {
-        self.queueChatMessages.append(
-          QueueChatMessage(role: .agent, text: error.localizedDescription)
-        )
+        self.appendChat(
+          QueueChatMessage(role: .agent, text: error.localizedDescription), ticketID: ticketID)
       }
     }
+  }
+
+  var isInspectorPresented: Bool { isDailyReportPresented || presentedPlanTicketID != nil || presentedAgentUpdate != nil }
+
+  var presentedPlanTicket: DashboardTicket? {
+    dashboard.tickets.first { $0.id == presentedPlanTicketID }
+  }
+
+  var reportNeedsAttention: Bool {
+    reportIsRunning || reportHasFailure || dailyReportLoadError != nil || reportHistoryError != nil
+      || reportAttentionDocument == nil || reportAttentionDocument.map { reportHistory.isUnread($0) } == true
+      || reportAttentionDocument.map {
+        ($0.reportDate ?? Self.dayFormatter.string(from: Self.reportDate($0.finishedAt)))
+          != Self.dayFormatter.string(from: Date())
+      } == true
+  }
+
+  var reportAttentionDocument: DailyReportDocument? {
+    [latestDailyReport, reportHistory.reports.first].compactMap { $0 }.max {
+      Self.reportDate($0.finishedAt) < Self.reportDate($1.finishedAt)
+    }
+  }
+
+  var reportIsRunning: Bool {
+    isDailyReportRunning || reportHistory.runs.first?.phase == .running
+  }
+
+  var relevantFailedReportRun: DailyReportRunReceipt? {
+    guard let run = reportHistory.runs.first, [.failed, .interrupted].contains(run.phase) else { return nil }
+    if let report = reportAttentionDocument, Self.reportDate(report.finishedAt) > run.updatedAt { return nil }
+    return run
+  }
+
+  var reportHasFailure: Bool { dailyReportRunFailed || relevantFailedReportRun != nil }
+
+  var reportAttentionMessage: String {
+    if isDailyReportRunning { return dailyReportRunMessage ?? "Checking enabled platforms…" }
+    return relevantFailedReportRun?.message ?? dailyReportLoadError ?? reportHistoryError
+      ?? (reportAttentionDocument.map { "\($0.summary) Open to read report and logs." })
+      ?? "Open report, run details, and logs"
+  }
+
+  var reportAttentionTitle: String {
+    if reportIsRunning { return "Daily report is running" }
+    if reportHasFailure, let latest = relevantFailedReportRun {
+      return "Daily report \(latest.phase.rawValue)"
+    }
+    if dailyReportRunFailed { return "Daily report needs attention" }
+    if dailyReportLoadError != nil || reportHistoryError != nil { return "Report could not be loaded" }
+    if let dailyReport = reportAttentionDocument, reportHistory.isUnread(dailyReport) {
+      return dailyReport.status == .success ? "Your daily report is ready" : "Daily report has incomplete coverage"
+    }
+    return "Daily report has not run today"
+  }
+
+  func reloadReportHistory() async {
+    do {
+      let updatedHistory = try await reportHistoryRepository.load()
+      if reportHistory != updatedHistory { reportHistory = updatedHistory }
+      if reportHistoryError != nil { reportHistoryError = nil }
+      for report in updatedHistory.reports where lastDurableReports[report.runID] != report {
+        let scope = "report-\(report.runID)"
+        guard durableRetryAfter[scope].map({ $0 <= Date() }) ?? true else { continue }
+        do {
+          let encoder = JSONEncoder()
+          encoder.outputFormatting = [.sortedKeys]
+          try await durableLibrary.captureReport(data: encoder.encode(report), runID: report.runID)
+          lastDurableReports[report.runID] = report
+          recordDurableError(nil, scope: scope)
+        } catch { recordDurableError(error, scope: scope) }
+      }
+    } catch {
+      let message = "Could not load report history: \(error.localizedDescription)"
+      if reportHistoryError != message { reportHistoryError = message }
+    }
+  }
+
+  func selectHistoricalReport(_ report: DailyReportDocument) {
+    dailyReport = report
+    setDailyReportPresented(true)
+  }
+
+  func showLatestDailyReport() {
+    if let report = reportAttentionDocument { dailyReport = report }
+    setDailyReportPresented(true)
+  }
+
+  private static func reportDate(_ value: String) -> Date {
+    let parser = ISO8601DateFormatter()
+    parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = parser.date(from: value) { return date }
+    parser.formatOptions = [.withInternetDateTime]
+    return parser.date(from: value) ?? .distantPast
+  }
+
+  private func markReportViewed() {
+    guard let report = dailyReport, !reportHistory.viewedReportIDs.contains(report.runID) else { return }
+    reportHistory.viewedReportIDs.insert(report.runID)
+    Task {
+      do {
+        try await reportHistoryRepository.markViewed(runID: report.runID)
+        await reloadReportHistory()
+      } catch { reportHistoryError = error.localizedDescription }
+    }
+  }
+
+  func chatMessages(ticketID: String?) -> [QueueChatMessage] {
+    guard let ticketID else { return queueChatMessages }
+    return taskChatMessages[ticketID] ?? []
+  }
+
+  private func appendChat(_ message: QueueChatMessage, ticketID: String?) {
+    if let ticketID { taskChatMessages[ticketID, default: []].append(message) }
+    else { queueChatMessages.append(message) }
+    let snapshot = chatMessages(ticketID: ticketID)
+    Task {
+      do {
+        try await conversationStore.save(snapshot, ticketID: ticketID)
+        recordDurableError(nil, scope: "conversation-\(ticketID ?? "queue")")
+      } catch let error as ConversationArchiveError {
+        recordDurableError(error, scope: "conversation-\(ticketID ?? "queue")")
+      } catch { loadError = "Could not save conversation: \(error.localizedDescription)" }
+    }
+  }
+
+  private func refreshTaskContexts() async {
+    guard lastContextRefresh == nil || Date().timeIntervalSince(lastContextRefresh!) >= 2 else { return }
+    lastContextRefresh = Date()
+    let tickets = dashboard.tickets
+    let baseline = taskContexts
+    let snapshot = await taskContextStore.refreshContexts(tickets: tickets)
+    var merged = taskContexts
+    for (ticketID, context) in snapshot.contexts where merged[ticketID] == baseline[ticketID] {
+      merged[ticketID] = context
+    }
+    // Foreground actions can change a context while the actor is polling. Keep
+    // those newer values, and publish the remaining batch in one observation.
+    if taskContexts != merged { taskContexts = merged }
+    for (ticketID, error) in snapshot.errors {
+      let message = "Task context: \(error)"
+      if actionMessages[ticketID] != message { actionMessages[ticketID] = message }
+    }
+    for ticketID in snapshot.contexts.keys where actionMessages[ticketID]?.hasPrefix("Task context:") == true {
+      actionMessages[ticketID] = nil
+    }
+    for ticket in tickets {
+      guard snapshot.errors[ticket.id] == nil, let context = taskContexts[ticket.id] else { continue }
+      if ticket.isCompleted, cleanupSignatures[ticket.id] != context.updatedAt {
+        cleanupSignatures[ticket.id] = context.updatedAt
+        await finalizeCompletedTask(ticket)
+      } else if ticket.isOpen, ticket.queueTaskKind != .customerConcern,
+                !context.subtasks.isEmpty, context.subtasks.allSatisfy({ $0.status == .completed }),
+                !localState.completionRequests.contains(where: {
+                  $0.ticketID == ticket.id && [.pending, .running].contains($0.status)
+                }) {
+        let lastCompletion = context.subtasks.compactMap(\.lastHeartbeatAt).max() ?? context.updatedAt
+        if latestReview(for: ticket.id).map({ $0.requestedAt < lastCompletion }) ?? true {
+          requestCompletion(for: ticket)
+        }
+      }
+    }
+    for session in localState.agentSessions { await bindSubtask(to: session) }
+    let now = Date()
+    if taskContexts.values.contains(where: { context in
+      context.subtasks.contains { $0.effectiveStatus(now: lastActivityCheck) != $0.effectiveStatus(now: now) }
+    }) { subtaskActivityRevision &+= 1 }
+    lastActivityCheck = now
+    await reloadPresentedPlan()
+    await captureDurableContexts(Array(taskContexts.values))
+    await captureDurableState(localState)
+  }
+
+  func openPlan(for ticket: DashboardTicket, sourceURL: URL? = nil) {
+    presentedAgentUpdate = nil
+    isDailyReportPresented = false
+    presentedPlanTicketID = ticket.id
+    presentedPlanURL = sourceURL
+    presentedPlanMarkdown = ""
+    planError = nil
+    reportVisibilityHandler?(true)
+    Task {
+      do {
+        taskContexts[ticket.id] = try await taskContextStore.ensureContext(ticket: ticket)
+        if taskChatMessages[ticket.id] == nil {
+          taskChatMessages[ticket.id] = try await conversationStore.load(ticketID: ticket.id) ?? []
+        }
+        if planEditDrafts[ticket.id] == nil {
+          planEditDrafts[ticket.id] = try await conversationStore.loadPlanDraft(ticketID: ticket.id)
+        }
+        guard presentedPlanTicketID == ticket.id else { return }
+        await reloadPresentedPlan()
+      } catch { planError = error.localizedDescription }
+    }
+  }
+
+  var agentUpdates: [QueueAgentUpdate] {
+    var updates: [QueueAgentUpdate] = []
+    for ticket in dashboard.tickets {
+      if let message = closureMessages[ticket.id] {
+        updates.append(QueueAgentUpdate(id: "cleanup-\(ticket.id)", ticketID: ticket.id,
+          title: "Task closure needs attention", summary: message, isCleanup: true))
+      }
+      let groups = Dictionary(grouping: localState.completionRequests.filter { $0.ticketID == ticket.id }) {
+        $0.subtaskID ?? ""
+      }
+      for reviews in groups.values {
+        guard let review = reviews.max(by: { $0.requestedAt < $1.requestedAt }),
+              [.failed, .needsWork].contains(review.status) else { continue }
+        if let subtaskID = review.subtaskID,
+           subtasks(for: ticket.id).first(where: { $0.id == subtaskID })?.status == .completed { continue }
+        if ticket.isCompleted && review.subtaskID == nil { continue }
+        updates.append(QueueAgentUpdate(id: review.id.uuidString, ticketID: ticket.id,
+          title: review.status == .failed ? "Completion review failed" : "Completion needs more work",
+          summary: review.summary ?? "Completion evidence is incomplete. Review the agent output for details.",
+          review: review, subtaskID: review.subtaskID, date: review.updatedAt))
+      }
+      for subtask in subtasks(for: ticket.id) where subtask.completionUnread {
+        updates.append(QueueAgentUpdate(id: "subtask-\(ticket.id)-\(subtask.id)", ticketID: ticket.id,
+          title: "\(subtask.title) completed", summary: subtask.progressSummary,
+          subtaskID: subtask.id, date: subtask.lastHeartbeatAt ?? .distantPast))
+      }
+    }
+    return updates.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
+  }
+
+  func openAgentUpdate(_ update: QueueAgentUpdate) {
+    presentedPlanTicketID = nil
+    presentedPlanURL = nil
+    isDailyReportPresented = false
+    presentedAgentUpdate = update
+    reportVisibilityHandler?(true)
+    Task {
+      do {
+        // Only load once; a late disk read must not replace a newly arriving reply.
+        if taskChatMessages[update.ticketID] == nil {
+          let saved = try await conversationStore.load(ticketID: update.ticketID) ?? []
+          if taskChatMessages[update.ticketID] == nil { taskChatMessages[update.ticketID] = saved }
+        }
+      } catch { actionMessages[update.ticketID] = error.localizedDescription }
+    }
+  }
+
+  func closeAgentUpdate() {
+    guard presentedAgentUpdate != nil else { return }
+    presentedAgentUpdate = nil
+    reportVisibilityHandler?(isInspectorPresented)
+  }
+
+  func acknowledgeAgentUpdate(_ update: QueueAgentUpdate) async {
+    guard update.review == nil, let subtaskID = update.subtaskID else { return }
+    do {
+      taskContexts[update.ticketID] = try await taskContextStore.acknowledgeCompletion(
+        ticketID: update.ticketID, subtaskID: subtaskID)
+    } catch { actionMessages[update.ticketID] = error.localizedDescription }
+  }
+
+  func focusTerminalPane(_ pane: WezTermPane) async throws {
+    try await terminalController.focusPane(pane, configuration: config.wezTerm)
+  }
+
+  func closePlan() {
+    guard presentedPlanTicketID != nil else { return }
+    presentedPlanTicketID = nil
+    presentedPlanURL = nil
+    reportVisibilityHandler?(isInspectorPresented)
+  }
+
+  func reloadPresentedPlan() async {
+    guard let ticketID = presentedPlanTicketID else { return }
+    let sourceURL = presentedPlanURL
+    do {
+      let markdown: String
+      if let sourceURL {
+        markdown = try await Task.detached {
+          try String(contentsOf: sourceURL, encoding: .utf8)
+        }.value
+      } else { markdown = try await taskContextStore.readPlan(ticketID: ticketID) }
+      guard presentedPlanTicketID == ticketID, presentedPlanURL == sourceURL else { return }
+      if presentedPlanMarkdown != markdown { presentedPlanMarkdown = markdown }
+      if planError != nil { planError = nil }
+    } catch {
+      if presentedPlanTicketID == ticketID, planError != error.localizedDescription {
+        planError = error.localizedDescription
+      }
+    }
+  }
+
+  func savePlan(_ markdown: String, expectedMarkdown: String, ticketID: String) async -> Bool {
+    do {
+      try await taskContextStore.savePlan(ticketID: ticketID, markdown: markdown, expectedMarkdown: expectedMarkdown)
+      planEditDrafts[ticketID] = nil
+      try await conversationStore.savePlanDraft(nil, ticketID: ticketID)
+      await reloadPresentedPlan()
+      if let context = taskContexts[ticketID] { await captureDurableContexts([context]) }
+      return true
+    } catch { planError = error.localizedDescription; return false }
+  }
+
+  func updatePlanDraft(_ markdown: String, baseline: String, ticketID: String) {
+    let draft = PlanEditDraft(markdown: markdown, baseline: baseline)
+    planEditDrafts[ticketID] = draft
+    Task {
+      do { try await conversationStore.savePlanDraft(draft, ticketID: ticketID) }
+      catch { planError = "Could not save your draft: \(error.localizedDescription)" }
+    }
+  }
+
+  func discardPlanDraft(ticketID: String) {
+    planEditDrafts[ticketID] = nil
+    Task {
+      do { try await conversationStore.savePlanDraft(nil, ticketID: ticketID) }
+      catch { planError = error.localizedDescription }
+    }
+  }
+
+  func renameSubtask(_ subtask: TaskSubtask, for ticket: DashboardTicket, title: String) {
+    Task {
+      do { taskContexts[ticket.id] = try await taskContextStore.renameSubtask(ticketID: ticket.id, subtaskID: subtask.id, title: title) }
+      catch { actionMessages[ticket.id] = error.localizedDescription }
+    }
+  }
+
+  func changeTaskKind(_ kind: QueueTaskKind, for ticket: DashboardTicket) {
+    guard kind != ticket.queueTaskKind else { return }
+    guard !isQueueAgentResponding, !isDailyReportRunning else {
+      actionMessages[ticket.id] = "Wait for the current agent or daily report to finish, then change the task type."
+      return
+    }
+    openAgentUpdate(QueueAgentUpdate(id: "type-\(ticket.id)", ticketID: ticket.id,
+      title: "Task type change", summary: "Requested type: \(kind.title). The agent response and resulting task type appear here."))
+    let raw: String
+    switch kind {
+    case .task: raw = "task"
+    case .longRunning: raw = "long-running"
+    case .subtask: raw = "subtask"
+    case .customerConcern: raw = "customer-concern"
+    }
+    sendQueueAgentMessage("Set the taskType field of \(ticket.id) to \(raw). Preserve its other fields.", ticketID: ticket.id)
+  }
+
+  func subtasks(for ticketID: String) -> [TaskSubtask] { taskContexts[ticketID]?.subtasks ?? [] }
+
+  func effectiveStatus(for subtask: TaskSubtask) -> TaskSubtaskStatus {
+    _ = subtaskActivityRevision
+    return subtask.effectiveStatus()
+  }
+
+  func session(for subtask: TaskSubtask, ticketID: String) -> TaskAgentSession? {
+    if let registered = agentSessions(for: ticketID).first(where: {
+      $0.provider == subtask.provider && $0.sessionID.caseInsensitiveCompare(subtask.sessionID ?? "") == .orderedSame
+    }) { return registered }
+    // CLI-created subtasks can record a session before pane registration reaches the app.
+    guard let sessionID = subtask.sessionID, let uuid = UUID(uuidString: sessionID),
+          let context = taskContexts[ticketID],
+          context.subtasks.contains(where: { $0.id == subtask.id && $0.provider == subtask.provider
+            && $0.sessionID?.caseInsensitiveCompare(sessionID) == .orderedSame }) else { return nil }
+    return TaskAgentSession(id: uuid, ticketID: ticketID, provider: subtask.provider,
+      sessionID: sessionID, tabTitle: subtask.title,
+      workingDirectory: context.worktreePath ?? context.repositoryPath ?? config.workspacePath,
+      subtaskID: subtask.id, tmux: subtask.tmux)
+      .withContext(context, subtask: subtask, supportDirectory: paths.supportDirectory)
+  }
+
+  func openSubtask(_ subtask: TaskSubtask, for ticket: DashboardTicket) {
+    if let session = session(for: subtask, ticketID: ticket.id) { viewAgent(session, for: ticket) }
+    else if subtask.runtimeMode == .terminal, let paneID = subtask.terminalPaneID {
+      actionMessages[ticket.id] = "Opening \(subtask.title)…"
+      Task {
+        do {
+          let result = try await terminalController.openDirectRuntime(
+            paneID: paneID, socketPath: subtask.terminalSocketPath,
+            taskID: ticket.id, provider: subtask.provider, configuration: config.wezTerm)
+          actionMessages[ticket.id] = "\(result.message) Direct session: \(subtask.title)."
+        } catch { actionMessages[ticket.id] = error.localizedDescription }
+      }
+    }
+    else if let tmux = subtask.tmux {
+      actionMessages[ticket.id] = "Opening \(subtask.title)…"
+      Task {
+        do {
+          let result = try await terminalController.openManagedRuntime(
+            tmux, taskID: ticket.id, provider: subtask.provider, configuration: config.wezTerm)
+          actionMessages[ticket.id] = "\(result.message) Managed session: \(subtask.title)."
+        } catch { actionMessages[ticket.id] = error.localizedDescription }
+      }
+    }
+    else {
+      actionMessages[ticket.id] =
+        "This entry has no saved Focus Queue runtime. Start a new, clearly named agent from the task."
+    }
+    if subtask.completionUnread {
+      Task {
+        do {
+          taskContexts[ticket.id] = try await taskContextStore.acknowledgeCompletion(ticketID: ticket.id, subtaskID: subtask.id)
+        } catch { actionMessages[ticket.id] = error.localizedDescription }
+      }
+    }
+  }
+
+  func launchAgent(
+    for ticket: DashboardTicket, title: String, provider: AgentProvider,
+    repositoryPath: String, includePrompt: Bool = true, useTmux: Bool = true
+  ) {
+    let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !title.isEmpty, launchingTaskIDs.insert(ticket.id).inserted else { return }
+    actionMessages[ticket.id] = "Preparing task worktree and agent context…"
+    Task {
+      var assignment: TaskSubtask?
+      var runtimeStarted = false
+      defer { launchingTaskIDs.remove(ticket.id) }
+      do {
+        let context = try await taskWorktreeManager.provision(ticket: ticket, repositoryPath: repositoryPath, store: taskContextStore)
+        let subtask = TaskSubtask(
+          title: title, provider: provider, includeInitializationPrompt: includePrompt,
+          runtimeMode: useTmux ? .tmux : .terminal)
+        assignment = subtask
+        taskContexts[ticket.id] = try await taskContextStore.upsertSubtask(ticketID: ticket.id, subtask: subtask)
+        if useTmux {
+          guard let tmuxExecutable = config.tmuxExecutable ?? SetupEnvironment.executable("tmux") else {
+            throw TmuxError.unavailable("tmux is unavailable. Uncheck Keep running in tmux to launch directly.")
+          }
+          let tmux = try await taskAgentLauncher.startManagedSession(
+            context: context, subtask: subtask, supportDirectory: paths.supportDirectory,
+            includePrompt: includePrompt, tmuxExecutable: tmuxExecutable)
+          runtimeStarted = true
+          taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
+            ticketID: ticket.id, subtaskID: subtask.id, tmux: tmux)
+          _ = try await terminalController.openManagedRuntime(
+            tmux, taskID: ticket.id, provider: provider, configuration: config.wezTerm)
+        } else {
+          let receipt = try await taskAgentLauncher.launchDirect(
+            context: context, subtask: subtask, configuration: config.wezTerm,
+            supportDirectory: paths.supportDirectory, includePrompt: includePrompt)
+          runtimeStarted = true
+          taskContexts[ticket.id] = try await taskContextStore.setDirectRuntime(
+            ticketID: ticket.id, subtaskID: subtask.id, paneID: receipt.paneID,
+            socketPath: receipt.socketPath)
+        }
+        actionMessages[ticket.id] = includePrompt
+          ? "Opened \(provider.displayName) for \(title)\(useTmux ? " in tmux" : " directly"). Waiting for its first progress update."
+          : "Opened \(provider.displayName) for \(title)\(useTmux ? " in tmux" : " directly"). Ready for your instructions; no message was submitted."
+      } catch {
+        if let assignment {
+          taskContexts[ticket.id] = try? await taskContextStore.updateProgress(ticketID: ticket.id,
+            subtaskID: assignment.id, status: runtimeStarted ? .working : .blocked,
+            summary: !runtimeStarted
+              ? "Launch failed: \(error.localizedDescription)"
+              : "Agent is running; its terminal view did not open: \(error.localizedDescription)")
+        }
+        actionMessages[ticket.id] = !runtimeStarted
+          ? error.localizedDescription
+          : "The agent started, but its terminal view needs attention. Click its descriptive title to reopen it. \(error.localizedDescription)"
+      }
+    }
+  }
+
+  private func finalizeCompletedTask(_ ticket: DashboardTicket) async {
+    do {
+      try await taskContextStore.archive(ticketID: ticket.id)
+      if subtasks(for: ticket.id).contains(where: { $0.status != .completed }) {
+        closureMessages[ticket.id] = "Completion needs review: some subtasks remain open."
+        return
+      }
+      let wasManaged = taskContexts[ticket.id]?.managedWorktree == true
+      let result = try await taskWorktreeManager.cleanup(ticketID: ticket.id, store: taskContextStore)
+      closureMessages[ticket.id] = wasManaged && !result.removed ? result.message : nil
+      actionMessages[ticket.id] = result.message
+      taskContexts[ticket.id] = try await taskContextStore.load(ticketID: ticket.id)
+    } catch { closureMessages[ticket.id] = "Cleanup needs attention: \(error.localizedDescription)" }
+  }
+
+  func retryCleanup(for ticket: DashboardTicket) {
+    Task { await finalizeCompletedTask(ticket) }
   }
 
   func routineIsComplete(_ id: String) -> Bool {
@@ -311,7 +946,7 @@ final class QueueViewModel {
 
   func latestReview(for ticketID: String) -> CompletionRequest? {
     localState.completionRequests
-      .filter { $0.ticketID == ticketID }
+      .filter { $0.ticketID == ticketID && $0.subtaskID == nil }
       .max { $0.requestedAt < $1.requestedAt }
   }
 
@@ -330,11 +965,27 @@ final class QueueViewModel {
 
     let id = UUID()
     let requestURL = reviewArtifacts.requestURL(for: id)
-    let request = CompletionRequest(ticketID: ticket.id, requestFilePath: requestURL.path)
+    let request = CompletionRequest(id: id, ticketID: ticket.id, requestFilePath: requestURL.path,
+      contextPath: taskContexts[ticket.id]?.contextDirectory.path)
     localState.completionRequests.append(request)
     actionMessages[ticket.id] = "Completion review queued. The dashboard is unchanged."
     persistLocalState()
     scheduleReview(requestID: request.id)
+  }
+
+  func requestSubtaskCompletion(_ subtask: TaskSubtask, for ticket: DashboardTicket) {
+    guard subtask.status != .completed else { return }
+    guard !localState.completionRequests.contains(where: {
+      $0.ticketID == ticket.id && $0.subtaskID == subtask.id && [.pending, .running].contains($0.status)
+    }) else { return }
+    let id = UUID()
+    let request = CompletionRequest(id: id, ticketID: ticket.id,
+      requestFilePath: reviewArtifacts.requestURL(for: id).path, subtaskID: subtask.id,
+      contextPath: taskContexts[ticket.id]?.contextDirectory.path)
+    localState.completionRequests.append(request)
+    actionMessages[ticket.id] = "Reviewing \(subtask.title) before recording completion."
+    persistLocalState()
+    scheduleReview(requestID: id)
   }
 
   func retryReview(for ticket: DashboardTicket) {
@@ -387,88 +1038,68 @@ final class QueueViewModel {
       }
   }
 
-  func availableAgents() async throws -> [RunningAgentSession] {
-    let terminalController = terminalController
-    let configuration = config.wezTerm
-    return try await withThrowingTaskGroup(of: [RunningAgentSession].self) { group in
-      group.addTask {
-        try await terminalController.listRunningAgents(configuration: configuration)
-      }
-      group.addTask {
-        try await Task.sleep(for: .seconds(3))
-        throw WezTermError.actionFailed(
-          "Agent discovery took longer than 3 seconds. Close and reopen the picker to retry."
-        )
-      }
-      defer { group.cancelAll() }
-      return try await group.next() ?? []
-    }
-  }
-
   func importAgentRegistrations() async {
     do {
       let registrations = try await agentRegistrationInbox.pending()
       guard !registrations.isEmpty else { return }
+      await captureDurableState(localState)
       for registration in registrations {
+        guard let subtaskID = registration.subtaskID,
+          let subtask = taskContexts[registration.ticketID]?.subtasks.first(where: {
+            $0.id == subtaskID && $0.provider == registration.provider
+          }),
+          (subtask.runtimeMode == .tmux
+            && registration.tmux == subtask.tmux
+            && registration.tmux?.name == (try? TmuxController.sessionName(subtaskID: subtaskID))
+            || subtask.runtimeMode == .terminal
+            && registration.tmux == nil
+            && registration.paneID == subtask.terminalPaneID)
+        else { continue }
         upsertAgentSession(registration)
+        await bindSubtask(to: registration)
       }
       try await stateStore.save(localState)
+      await captureDurableState(localState)
       await agentRegistrationInbox.acknowledge(registrations)
     } catch {
       loadError = "Could not import agent registration: \(error.localizedDescription)"
     }
   }
 
-  func attachAgent(_ agent: RunningAgentSession, to ticket: DashboardTicket) async -> Bool {
-    actionMessages[ticket.id] = "Attaching the selected \(agent.provider.displayName) agent…"
-    do {
-      try await terminalController.attach(
-        paneID: agent.pane.paneID,
-        taskID: ticket.id,
-        configuration: config.wezTerm
-      )
-      let attached = TaskAgentSession(
-        ticketID: ticket.id,
-        provider: agent.provider,
-        sessionID: agent.sessionID,
-        tabTitle: agent.tabTitle,
-        workingDirectory: agent.workingDirectory,
-        windowID: agent.pane.windowID,
-        tabID: agent.pane.tabID,
-        paneID: agent.pane.paneID
-      )
-      upsertAgentSession(attached)
-      persistLocalState()
-      actionMessages[ticket.id] =
-        "Attached \(agent.provider.displayName) session \(agent.sessionID) to \(ticket.id)."
-      return true
-    } catch {
-      actionMessages[ticket.id] = error.localizedDescription
-      return false
-    }
-  }
-
   func viewAgent(_ session: TaskAgentSession, for ticket: DashboardTicket) {
-    actionMessages[ticket.id] = "Finding \(session.provider.displayName) session \(session.sessionID)…"
+    let context = taskContexts[ticket.id]
+    let subtask = subtasks(for: ticket.id).first { $0.provider == session.provider && $0.sessionID?.lowercased() == session.sessionID.lowercased() }
+    var session = context.map { session.withContext($0, subtask: subtask, supportDirectory: paths.supportDirectory) } ?? session
+    if session.tmux == nil { session.tmux = subtask?.tmux }
+    let wasRegistered = agentSessions(for: ticket.id).contains {
+      $0.provider == session.provider && $0.sessionID.caseInsensitiveCompare(session.sessionID) == .orderedSame
+    }
+    actionMessages[ticket.id] = "Opening \(subtask?.title ?? session.provider.displayName)…"
     Task {
       do {
-        let result = try await terminalController.focusOrResume(
-          session: session,
-          taskID: ticket.id,
-          configuration: config.wezTerm
-        )
-        if let index = localState.agentSessions.firstIndex(where: { $0.id == session.id }) {
-          localState.agentSessions[index].paneID = result.paneID
-          persistLocalState()
+        let result: TerminalActionResult
+        if subtask?.runtimeMode == .terminal, let paneID = subtask?.terminalPaneID {
+          result = try await terminalController.openDirectRuntime(
+            paneID: paneID, socketPath: subtask?.terminalSocketPath,
+            taskID: ticket.id, provider: session.provider, configuration: config.wezTerm)
+        } else {
+          result = try await terminalController.focusOrResume(
+            session: session, taskID: ticket.id, configuration: config.wezTerm)
         }
-        if let terminalFocusHandler {
-          try await terminalFocusHandler(
-            config.wezTerm.applicationName,
-            result.paneID == nil ? nil : session.terminalWindowTitle
-          )
-        }
+        if wasRegistered && !agentSessions(for: ticket.id).contains(where: {
+          $0.provider == session.provider && $0.sessionID.caseInsensitiveCompare(session.sessionID) == .orderedSame
+        }) { return }
+        if !wasRegistered, let subtask, !subtasks(for: ticket.id).contains(where: {
+          $0.id == subtask.id && $0.provider == session.provider
+            && $0.sessionID?.caseInsensitiveCompare(session.sessionID) == .orderedSame
+        }) { return }
+        var updatedSession = session.canonicalizedForTerminal()
+        updatedSession.paneID = result.paneID
+        upsertAgentSession(updatedSession)
+        persistLocalState()
+        let runtimeLabel = subtask?.runtimeMode == .terminal ? "Direct session" : "Managed session"
         actionMessages[ticket.id] =
-          "\(result.message) The queue stays available beside the terminal."
+          "\(result.message) \(runtimeLabel): \(subtask?.title ?? session.provider.displayName)."
       } catch {
         actionMessages[ticket.id] = error.localizedDescription
       }
@@ -476,32 +1107,64 @@ final class QueueViewModel {
   }
 
   func removeAgent(_ session: TaskAgentSession, from ticket: DashboardTicket) {
-    guard localState.agentSessions.contains(where: { $0.id == session.id }) else { return }
-    localState.agentSessions.removeAll { $0.id == session.id }
-    persistLocalState()
-    actionMessages[ticket.id] =
-      "Removed \(session.provider.displayName) session \(session.sessionID) from this task."
+    guard session.ticketID == ticket.id else { return }
+    Task {
+      do {
+        await captureDurableState(localState)
+        if let context = taskContexts[ticket.id] { await captureDurableContexts([context]) }
+        if taskContexts[ticket.id] != nil {
+          taskContexts[ticket.id] = try await taskContextStore.detachSession(
+            ticketID: ticket.id, provider: session.provider, sessionID: session.sessionID)
+        }
+        localState.agentSessions.removeAll {
+          $0.ticketID == ticket.id && $0.provider == session.provider
+            && $0.sessionID.caseInsensitiveCompare(session.sessionID) == .orderedSame
+        }
+        persistLocalState()
+        actionMessages[ticket.id] = "Removed \(session.provider.displayName) session \(session.sessionID) from this task."
+      } catch { actionMessages[ticket.id] = "Could not remove agent association: \(error.localizedDescription)" }
+    }
   }
 
   private func upsertAgentSession(_ session: TaskAgentSession) {
-    if let index = localState.agentSessions.firstIndex(where: {
-      $0.ticketID == session.ticketID
-        && $0.provider == session.provider
-        && $0.sessionID == session.sessionID
-    }) {
-      localState.agentSessions[index] = TaskAgentSession(
-        id: localState.agentSessions[index].id,
-        ticketID: session.ticketID,
-        provider: session.provider,
-        sessionID: session.sessionID,
-        tabTitle: session.tabTitle,
-        workingDirectory: session.workingDirectory,
-        windowID: session.windowID,
-        tabID: session.tabID,
-        paneID: session.paneID
-      )
-    } else {
-      localState.agentSessions.append(session)
+    localState.upsertAgentSession(session)
+  }
+
+  private func bindSubtask(to session: TaskAgentSession) async {
+    guard let ticket = dashboard.tickets.first(where: { $0.id == session.ticketID }) else { return }
+    if taskContexts[ticket.id]?.subtasks.contains(where: {
+      $0.sessionID?.lowercased() == session.sessionID.lowercased()
+    }) == true { return }
+    do {
+      let context = try await taskContextStore.ensureContext(ticket: ticket)
+      if context.subtasks.contains(where: { $0.sessionID?.lowercased() == session.sessionID.lowercased() }) {
+        if taskContexts[ticket.id] != context { taskContexts[ticket.id] = context }
+        return
+      }
+      // Managed agents are created with a descriptive title before launch.
+      // Registrations without that assignment stay out of the queue.
+      return
+    } catch { actionMessages[ticket.id] = error.localizedDescription }
+  }
+
+  func clearAgentQueue() {
+    Task {
+      do {
+        await captureDurableState(localState)
+        await captureDurableContexts(Array(taskContexts.values))
+        let registrations = try await agentRegistrationInbox.pending()
+        for ticketID in taskContexts.keys.sorted() {
+          taskContexts[ticketID] = try await taskContextStore.clearSubtasks(ticketID: ticketID)
+        }
+        localState.agentSessions.removeAll()
+        try await stateStore.save(localState)
+        await agentRegistrationInbox.acknowledge(registrations)
+        await captureDurableState(localState)
+        await captureDurableContexts(Array(taskContexts.values))
+        actionMessages.removeAll()
+      } catch {
+        loadError = "Could not clear the current agent queue: \(error.localizedDescription)"
+      }
     }
   }
 
@@ -512,10 +1175,13 @@ final class QueueViewModel {
   func attachTerminal(_ pane: WezTermPane, to ticket: DashboardTicket) async -> Bool {
     actionMessages[ticket.id] = "Attaching the selected WezTerm tab…"
     do {
+      var terminalConfiguration = config.wezTerm
+      terminalConfiguration.socketPath = pane.socketPath ?? terminalConfiguration.socketPath
       try await terminalController.attach(
         paneID: pane.paneID,
-        taskID: ticket.id,
-        configuration: config.wezTerm
+        tabTitle: AgentTerminalLabels.tabTitle(ticketID: ticket.id, paneID: pane.paneID),
+        windowTitle: ticket.id,
+        configuration: terminalConfiguration
       )
       actionMessages[ticket.id] =
         "Attached \(pane.attachmentDisplayName) to \(ticket.id). Focus terminal will reuse it."
@@ -552,28 +1218,42 @@ final class QueueViewModel {
   }
 
   func setDailyReportPresented(_ presented: Bool) {
-    guard isDailyReportPresented != presented else { return }
+    if presented { presentedAgentUpdate = nil; presentedPlanTicketID = nil; presentedPlanURL = nil }
     isDailyReportPresented = presented
-    reportVisibilityHandler?(presented)
+    reportVisibilityHandler?(isInspectorPresented)
+    if presented { markReportViewed() }
   }
 
   func toggleDailyReport() {
     setDailyReportPresented(!isDailyReportPresented)
   }
 
-  func reloadDailyReport() async {
+  func reloadDailyReport(preservingSelection: Bool = false) async {
     do {
-      dailyReport = try await dailyReportRepository.load()
-      dailyReportLoadError = nil
+      let report = try await dailyReportRepository.load()
+      if let report, latestDailyReport != report {
+        if latestDailyReport == nil || Self.reportDate(report.finishedAt) >= Self.reportDate(latestDailyReport!.finishedAt) {
+          latestDailyReport = report
+        }
+      }
+      if (!preservingSelection || dailyReport == nil), dailyReport != report { dailyReport = report }
+      if dailyReportLoadError != nil { dailyReportLoadError = nil }
+      await reloadReportHistory()
+      if isDailyReportPresented { markReportViewed() }
     } catch {
-      dailyReport = nil
-      dailyReportLoadError = "Could not load daily report: \(error.localizedDescription)"
+      let message = "Could not load daily report: \(error.localizedDescription)"
+      if dailyReportLoadError != message { dailyReportLoadError = message }
     }
   }
 
   func displayDailyReport(_ report: DailyReportDocument) {
     dailyReport = report
+    if latestDailyReport == nil || Self.reportDate(report.finishedAt) >= Self.reportDate(latestDailyReport!.finishedAt) {
+      latestDailyReport = report
+    }
     dailyReportLoadError = nil
+    if isDailyReportPresented { markReportViewed() }
+    Task { await reloadReportHistory() }
   }
 
   func persistDailyReportConfiguration() async -> Bool {
@@ -610,9 +1290,27 @@ final class QueueViewModel {
     Task { await dailyReportApprovalHandler?(run) }
   }
 
-  func setDailyReportRunState(isRunning: Bool, message: String? = nil) {
+  func setDailyReportRunState(
+    isRunning: Bool,
+    message: String? = nil,
+    isError: Bool = false,
+    reportID: String? = nil
+  ) {
+    let wasRunning = isDailyReportRunning
     isDailyReportRunning = isRunning
     dailyReportRunMessage = message
+    dailyReportRunFailed = isError
+    guard isRunning || wasRunning || isError else { return }
+    let priorSave = reportStateSaveTask
+    reportStateSaveTask = Task {
+      await priorSave?.value
+      do {
+        try await reportHistoryRepository.recordRun(isRunning: isRunning,
+          message: message ?? (isRunning ? "Daily report running" : "Daily report finished"),
+          isError: isError, reportID: reportID)
+        await reloadReportHistory()
+      } catch { reportHistoryError = error.localizedDescription }
+    }
   }
 
   func setPendingDailyReportApproval(_ request: DailyReportApprovalRequest?) {
@@ -681,6 +1379,7 @@ final class QueueViewModel {
   }
 
   func setPanelCollapsed(_ collapsed: Bool) {
+    if collapsed { closeAgentUpdate(); closePlan() }
     if collapsed, isDailyReportPresented {
       setDailyReportPresented(false)
     }
@@ -729,10 +1428,12 @@ final class QueueViewModel {
   private func refreshRecurringPRProgressIfNeeded(force: Bool) async {
     let tickets = dashboard.tickets.filter { $0.isOpen && $0.isRecurringPullRequestTask }
     let activeIDs = Set(tickets.map(\.id))
-    recurringPRProgressByTicketID = recurringPRProgressByTicketID.filter {
+    let activeProgress = recurringPRProgressByTicketID.filter {
       activeIDs.contains($0.key)
     }
-    recurringPRProgressErrors = recurringPRProgressErrors.filter { activeIDs.contains($0.key) }
+    if recurringPRProgressByTicketID != activeProgress { recurringPRProgressByTicketID = activeProgress }
+    let activeErrors = recurringPRProgressErrors.filter { activeIDs.contains($0.key) }
+    if recurringPRProgressErrors != activeErrors { recurringPRProgressErrors = activeErrors }
     guard !tickets.isEmpty else { return }
 
     if !force, let lastRecurringPRRefresh,
@@ -745,8 +1446,8 @@ final class QueueViewModel {
 
     for ticket in tickets {
       guard let repository = ticket.pullRequestRepository else {
-        recurringPRProgressErrors[ticket.id] =
-          "Add a GitHub repository link to load recurring PR progress."
+        let message = "Add a GitHub repository link to load recurring PR progress."
+        if recurringPRProgressErrors[ticket.id] != message { recurringPRProgressErrors[ticket.id] = message }
         continue
       }
       do {
@@ -754,12 +1455,13 @@ final class QueueViewModel {
           repository: repository,
           closedSince: closedSince
         )
-        recurringPRProgressByTicketID[ticket.id] = RecurringPullRequestProgress(
-          snapshot: snapshot
-        )
-        recurringPRProgressErrors[ticket.id] = nil
+        let progress = RecurringPullRequestProgress(snapshot: snapshot)
+        if recurringPRProgressByTicketID[ticket.id] != progress { recurringPRProgressByTicketID[ticket.id] = progress }
+        if recurringPRProgressErrors[ticket.id] != nil { recurringPRProgressErrors[ticket.id] = nil }
       } catch {
-        recurringPRProgressErrors[ticket.id] = error.localizedDescription
+        if recurringPRProgressErrors[ticket.id] != error.localizedDescription {
+          recurringPRProgressErrors[ticket.id] = error.localizedDescription
+        }
       }
     }
   }
@@ -809,19 +1511,27 @@ final class QueueViewModel {
     do {
       try await reviewArtifacts.writeRequest(request)
       try await stateStore.save(localState)
+      var reviewConfiguration = config.verifier
+      reviewConfiguration.contextDirectory = request.contextPath
+      reviewConfiguration.supportDirectory = paths.supportDirectory.path
       let result = try await verifier.verify(
         ticketID: request.ticketID,
         requestFile: URL(fileURLWithPath: request.requestFilePath),
         workspace: config.workspacePath,
-        configuration: config.verifier
+        configuration: reviewConfiguration
       )
       let logURL = try await reviewArtifacts.writeLog(result.log, for: request.id)
       await refresh()
       let canonicalTicket = dashboard.tickets.first { $0.id == request.ticketID }
-      request.status =
-        canonicalTicket?.isOpen == false
-        ? .accepted
-        : (result.succeeded ? .needsWork : .failed)
+      if let subtaskID = request.subtaskID {
+        let context = try await taskContextStore.load(ticketID: request.ticketID)
+        taskContexts[request.ticketID] = context
+        request.status = result.succeeded && context?.subtasks.first(where: { $0.id == subtaskID })?.status == .completed
+          ? .accepted : (result.succeeded ? .needsWork : .failed)
+      } else {
+        request.status = canonicalTicket?.isOpen == false && result.succeeded
+          ? .accepted : (result.succeeded ? .needsWork : .failed)
+      }
       request.summary = result.summary
       request.logPath = logURL.path
       request.updatedAt = Date()
@@ -830,8 +1540,15 @@ final class QueueViewModel {
       try await stateStore.save(localState)
       actionMessages[request.ticketID] =
         request.status == .accepted
-        ? "Canonical state confirms completion."
-        : "Review finished; the task remains open in canonical state."
+        ? "Completion evidence accepted."
+        : "Review needs attention: \(result.summary)"
+      if request.status == .accepted, request.subtaskID == nil, let canonicalTicket {
+        await finalizeCompletedTask(canonicalTicket)
+      } else if request.status == .accepted {
+        closureMessages[request.ticketID] = nil
+      } else if request.status != .accepted {
+        closureMessages[request.ticketID] = result.summary
+      }
     } catch {
       request.status = .failed
       request.summary = error.localizedDescription
@@ -861,10 +1578,113 @@ final class QueueViewModel {
     Task {
       do {
         try await stateStore.save(snapshot)
+        await captureDurableState(snapshot)
       } catch {
         loadError = "Could not save local state: \(error.localizedDescription)"
       }
     }
+  }
+
+  func retryDurableHistory() {
+    durableRetryAfter.removeAll()
+    Task { await reconcileDurableLibrary() }
+  }
+
+  private func reconcileDurableLibrary() async {
+    do {
+      let summary = try await durableLibrary.reconcile()
+      lastDurableState = nil
+      lastDurableDashboard = nil
+      lastDurableContexts.removeAll()
+      durableErrors.removeAll()
+      durableRetryAfter.removeAll()
+      recordImportWarnings(summary.warnings)
+      await captureDurableState(localState)
+      await captureDurableContexts(Array(taskContexts.values))
+      await captureDurableDashboard(dashboard)
+    } catch { recordDurableError(error, scope: "migration") }
+  }
+
+  private func captureDurableDashboard(_ snapshot: DashboardDocument) async {
+    guard lastDurableDashboard != snapshot,
+      durableRetryAfter["dashboard"].map({ $0 <= Date() }) ?? true else { return }
+    do {
+      try await durableLibrary.captureDashboard(snapshot)
+      lastDurableDashboard = snapshot
+      recordDurableError(nil, scope: "dashboard")
+    } catch { recordDurableError(error, scope: "dashboard") }
+  }
+
+  private func captureDurableState(_ snapshot: LocalState) async {
+    guard lastDurableState?.agentSessions != snapshot.agentSessions
+      || lastDurableState?.completionRequests != snapshot.completionRequests else { return }
+    guard durableRetryAfter["state"].map({ $0 <= Date() }) ?? true else { return }
+    do {
+      let summary = try await durableLibrary.reconcile(state: snapshot, contexts: [])
+      lastDurableState = snapshot
+      recordDurableError(nil, scope: "state")
+      recordImportWarnings(summary.warnings)
+    } catch { recordDurableError(error, scope: "state") }
+  }
+
+  private func captureDurableContexts(_ contexts: [TaskContext]) async {
+    let changed = contexts.filter { lastDurableContexts[$0.ticketID] != $0 }
+    if !changed.isEmpty, durableRetryAfter["contexts"].map({ $0 <= Date() }) ?? true {
+      do {
+        let summary = try await durableLibrary.reconcile(contexts: changed)
+        for context in changed { lastDurableContexts[context.ticketID] = context }
+        recordDurableError(nil, scope: "contexts")
+        recordImportWarnings(summary.warnings)
+      } catch { recordDurableError(error, scope: "contexts") }
+    }
+    // Only stat known plans; never scan archives or provider history on a poll.
+    for context in contexts {
+      let expected = paths.supportDirectory.appendingPathComponent("tasks")
+        .appendingPathComponent(context.ticketID.uppercased()).appendingPathComponent("plan.md")
+      guard context.ticketID.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil,
+        URL(fileURLWithPath: context.planPath).standardizedFileURL == expected.standardizedFileURL else {
+        recordDurableError(DurableLibraryError.unsafePath(context.planPath),
+          scope: "plan-location-\(context.ticketID)")
+        continue
+      }
+      recordDurableError(nil, scope: "plan-location-\(context.ticketID)")
+      await captureDurableDocument(at: expected,
+        kind: "central-plan", ticketID: context.ticketID)
+    }
+  }
+
+  private func captureDurableDocument(at url: URL, kind: String, ticketID: String? = nil) async {
+    let scope = "document-\(url.path)"
+    guard durableRetryAfter[scope].map({ $0 <= Date() }) ?? true else { return }
+    do {
+      let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+      let stamp = DurableDocumentStamp(
+        modifiedAt: attributes[.modificationDate] as? Date,
+        size: (attributes[.size] as? NSNumber)?.uint64Value,
+        inode: (attributes[.systemFileNumber] as? NSNumber)?.uint64Value)
+      guard durableDocumentStamps[url.path] != stamp else { return }
+      try await durableLibrary.captureDocument(at: url, kind: kind, ticketID: ticketID)
+      durableDocumentStamps[url.path] = stamp
+      recordDurableError(nil, scope: scope)
+    } catch { recordDurableError(error, scope: scope) }
+  }
+
+  private func recordDurableError(_ error: (any Error)?, scope: String) {
+    if let error {
+      durableErrors[scope] = "Durable history needs attention: \(error.localizedDescription)"
+      durableRetryAfter[scope] = Date().addingTimeInterval(30)
+    } else {
+      durableErrors.removeValue(forKey: scope)
+      durableRetryAfter.removeValue(forKey: scope)
+    }
+    let message = durableErrors.sorted { $0.key < $1.key }.first?.value
+    if durableHistoryError != message { durableHistoryError = message }
+  }
+
+  private func recordImportWarnings(_ warnings: [String]) {
+    let warning = warnings.isEmpty ? nil : NSError(domain: "ECCFocusQueue.DurableImport", code: 1,
+      userInfo: [NSLocalizedDescriptionKey: warnings.prefix(3).joined(separator: "\n")])
+    recordDurableError(warning, scope: "import-warnings")
   }
 
   private func persistConfiguration() {
@@ -876,6 +1696,7 @@ final class QueueViewModel {
       do {
         try await self.configurationRepository.save(snapshot)
         self.dailyReportRunMessage = "Daily report settings saved."
+        self.dailyReportRunFailed = false
       } catch {
         self.loadError = "Could not save settings: \(error.localizedDescription)"
       }
@@ -886,7 +1707,15 @@ final class QueueViewModel {
     let priorReportID = dailyReport?.runID
     queueChatTask = Task { [weak self] in
       guard let self else { return }
-      defer { self.isQueueAgentResponding = false }
+      defer {
+        self.isQueueAgentResponding = false
+        self.respondingTicketID = nil
+        let snapshot = self.queueChatMessages
+        Task {
+          do { try await self.conversationStore.save(snapshot, ticketID: nil) }
+          catch { self.loadError = "Could not save report conversation: \(error.localizedDescription)" }
+        }
+      }
       guard self.dailyReportRunHandler != nil else {
         self.queueChatMessages.append(QueueChatMessage(
           role: .agent,
@@ -986,6 +1815,12 @@ final class QueueViewModel {
     Calendar.current.dateInterval(of: .weekOfYear, for: Date())?.start
       ?? Calendar.current.startOfDay(for: Date())
   }
+}
+
+private struct DurableDocumentStamp: Equatable {
+  let modifiedAt: Date?
+  let size: UInt64?
+  let inode: UInt64?
 }
 
 private extension WezTermPane {

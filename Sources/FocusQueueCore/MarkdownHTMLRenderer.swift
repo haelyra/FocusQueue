@@ -2,13 +2,17 @@ import Foundation
 import Ink
 
 public enum MarkdownHTMLRenderer {
-  public static func page(markdown: String, sourceURL: URL) -> String {
-    let body = MarkdownParser().html(from: markdown)
+  public static func page(
+    markdown: String, sourceURL: URL, accentStyle: QueueAccentStyle = .vibrant
+  ) -> String {
+    let parser = MarkdownParser(modifiers: [headingModifier, mermaidModifier])
+    let body = parser.html(from: markdown)
     let title = escapeHTML(sourceURL.lastPathComponent)
     let baseURL = escapeHTML(
       sourceURL.deletingLastPathComponent().appendingPathComponent("", isDirectory: true)
         .absoluteString
     )
+    let accentTokens = accentTokens(for: accentStyle)
 
     return """
       <!doctype html>
@@ -20,37 +24,186 @@ public enum MarkdownHTMLRenderer {
         <base href="\(baseURL)">
         <title>\(title)</title>
         <style>
-          :root { color-scheme: light dark; }
+          :root {
+            color-scheme: light dark;
+            --page: light-dark(#f7f8fc, #0c1019);
+            --surface: light-dark(#ffffff, #121827);
+            --surface-raised: light-dark(#f2f4fa, #171e30);
+            --surface-hover: light-dark(#eceffd, #1c2540);
+            --border: light-dark(#d9deeb, #29324a);
+            --border-strong: light-dark(#bcc5da, #3b4665);
+            --text: light-dark(#17203b, #edf0f8);
+            --text-secondary: light-dark(#5d6883, #9ba6c1);
+            --text-tertiary: light-dark(#8791aa, #6f7a96);
+            \(accentTokens)
+            --radius: 12px;
+            --radius-small: 7px;
+          }
+          * { box-sizing: border-box; }
+          html { min-height: 100%; -webkit-font-smoothing: antialiased; }
           body {
-            box-sizing: border-box;
-            max-width: 980px;
+            min-height: 100vh;
+            max-width: 920px;
             margin: 0 auto;
-            padding: 45px;
-            color: light-dark(#1f2328, #e6edf3);
-            background: light-dark(#ffffff, #0d1117);
-            font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            padding: 48px 52px 90px;
+            color: var(--text);
+            background:
+              radial-gradient(circle at 8% -8%, var(--accent-glow), transparent 34%),
+              var(--page);
+            font: 15.5px/1.66 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
             overflow-wrap: break-word;
           }
-          h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 1.5em 0 0.6em; }
-          h1, h2 { padding-bottom: 0.3em; border-bottom: 1px solid light-dark(#d0d7de, #30363d); }
-          h1:first-child, h2:first-child { margin-top: 0; }
-          a { color: light-dark(#0969da, #58a6ff); }
+          ::selection { color: var(--selection-text); background: var(--selection); }
+          h1, h2, h3, h4, h5, h6 {
+            line-height: 1.24;
+            margin: 1.6em 0 0.62em;
+            letter-spacing: -0.012em;
+            text-wrap: balance;
+            scroll-margin-top: 20px;
+          }
+          h1 { position: relative; margin-top: 0; padding-bottom: 18px; font-size: 29px; }
+          h1::after {
+            content: "";
+            position: absolute;
+            left: 0;
+            bottom: 0;
+            width: 62px;
+            height: 4px;
+            border-radius: 99px;
+            background: linear-gradient(90deg, var(--accent), var(--accent-companion));
+          }
+          h2 { padding-bottom: 0.42em; border-bottom: 1px solid var(--border); font-size: 21px; }
+          h3 { font-size: 17px; }
+          h4, h5, h6 {
+            color: var(--text-secondary);
+            font-size: 13px;
+            letter-spacing: 0.055em;
+            text-transform: uppercase;
+          }
+          p, li, blockquote { text-wrap: pretty; }
+          ul, ol { padding-left: 1.45em; }
+          li { margin: 0.28em 0; }
+          a {
+            color: var(--accent);
+            font-weight: 520;
+            text-decoration-color: var(--accent-border);
+            text-underline-offset: 0.18em;
+            transition-property: color, text-decoration-color;
+            transition-duration: 140ms;
+            transition-timing-function: ease-out;
+          }
+          a:hover { color: var(--accent-strong); text-decoration-color: currentColor; }
+          a:focus-visible { outline: 3px solid var(--accent-glow-strong); outline-offset: 3px; }
           blockquote {
-            margin-left: 0;
-            padding-left: 1em;
-            color: light-dark(#59636e, #9198a1);
-            border-left: 0.25em solid light-dark(#d0d7de, #3d444d);
+            margin: 1em 0;
+            padding: 10px 15px;
+            color: var(--text-secondary);
+            background: var(--accent-glow);
+            border-left: 3px solid var(--accent);
+            border-radius: 0 var(--radius-small) var(--radius-small) 0;
           }
           code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-          code { padding: 0.15em 0.35em; border-radius: 6px; background: light-dark(#eff1f3, #252c35); }
-          pre { padding: 16px; overflow: auto; border-radius: 8px; background: light-dark(#f6f8fa, #151b23); }
+          code { padding: 0.15em 0.38em; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-raised); }
+          pre { padding: 16px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
           pre code { padding: 0; background: transparent; }
-          table { display: block; width: max-content; max-width: 100%; overflow: auto; border-collapse: collapse; }
-          th, td { padding: 6px 13px; border: 1px solid light-dark(#d0d7de, #3d444d); }
-          tr:nth-child(2n) { background: light-dark(#f6f8fa, #151b23); }
-          img { max-width: 100%; height: auto; }
-          hr { height: 1px; margin: 24px 0; border: 0; background: light-dark(#d0d7de, #3d444d); }
-          @media (max-width: 600px) { body { padding: 20px; } }
+          table {
+            display: block;
+            width: max-content;
+            max-width: 100%;
+            margin: 1.15em 0;
+            overflow: auto;
+            border-collapse: separate;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            border-spacing: 0;
+            background: var(--surface);
+          }
+          th, td { padding: 8px 13px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+          th:last-child, td:last-child { border-right: 0; }
+          tr:last-child td { border-bottom: 0; }
+          th {
+            color: var(--text-secondary);
+            background: var(--surface-raised);
+            font-size: 11.5px;
+            letter-spacing: 0.04em;
+          }
+          tbody tr { transition-property: background-color; transition-duration: 120ms; }
+          tbody tr:hover { background: var(--surface-hover); }
+          img {
+            max-width: 100%;
+            height: auto;
+            border-radius: var(--radius-small);
+            outline: 1px solid light-dark(rgba(0, 0, 0, 0.1), rgba(255, 255, 255, 0.1));
+            outline-offset: -1px;
+          }
+          hr { height: 1px; margin: 28px 0; border: 0; background: var(--border); }
+          figure[data-plan-canvas-diagram] {
+            position: relative;
+            margin: 1.25em 0;
+            padding: 18px;
+            cursor: pointer;
+            border: 1px solid var(--border);
+            border-radius: calc(var(--radius) + 6px);
+            background: linear-gradient(145deg, var(--surface), var(--accent-glow));
+            box-shadow: 0 1px 2px light-dark(rgba(27, 35, 64, 0.06), rgba(0, 0, 0, 0.28));
+            transition-property: border-color, box-shadow, transform, background-color;
+            transition-duration: 150ms;
+            transition-timing-function: ease-out;
+          }
+          figure[data-plan-canvas-diagram]:hover {
+            border-color: var(--accent-border);
+            box-shadow: 0 8px 24px light-dark(rgba(49, 63, 117, 0.10), rgba(0, 0, 0, 0.32));
+          }
+          figure[data-plan-canvas-diagram]:active { transform: scale(0.995); }
+          figure[data-plan-canvas-diagram]:focus-visible,
+          figure[data-plan-canvas-diagram].is-selected {
+            outline: 3px solid var(--accent-glow-strong);
+            outline-offset: 2px;
+            border-color: var(--accent);
+          }
+          figure[data-plan-canvas-diagram].is-selected::after {
+            content: "Selected for discussion";
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            padding: 4px 8px;
+            color: var(--selection-text);
+            background: var(--accent);
+            border-radius: 99px;
+            font-size: 10px;
+            font-weight: 650;
+            letter-spacing: 0.02em;
+          }
+          pre.mermaid { margin: 0; white-space: pre-wrap; }
+          figure.is-rendered pre.mermaid { padding: 4px; border: 0; background: transparent; text-align: center; }
+          figure.is-rendered pre.mermaid svg { max-width: 100%; height: auto; }
+          .plan-diagram-source { display: none; }
+          figure[data-plan-canvas-diagram] figcaption {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            min-height: 20px;
+            margin-top: 10px;
+            color: var(--text-tertiary);
+            font-size: 10.5px;
+            letter-spacing: 0.035em;
+            text-transform: uppercase;
+          }
+          figure[data-plan-canvas-diagram] figcaption::before {
+            content: "◇";
+            color: var(--accent);
+            font-size: 14px;
+          }
+          figure.is-loading .diagram-state::before { content: "Rendering diagram"; }
+          figure.is-unrendered .diagram-state::before { content: "Diagram source · renderer unavailable"; }
+          figure:not(.is-loading):not(.is-unrendered) .diagram-state::before { content: "Click diagram to discuss"; }
+          ::-webkit-scrollbar { width: 9px; height: 9px; }
+          ::-webkit-scrollbar-track { background: transparent; }
+          ::-webkit-scrollbar-thumb { background: var(--border-strong); border: 2px solid transparent; border-radius: 99px; background-clip: padding-box; }
+          @media (max-width: 600px) { body { padding: 28px 24px 64px; } }
+          @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
+          }
         </style>
       </head>
       <body>
@@ -66,5 +219,85 @@ public enum MarkdownHTMLRenderer {
       .replacingOccurrences(of: "\"", with: "&quot;")
       .replacingOccurrences(of: "<", with: "&lt;")
       .replacingOccurrences(of: ">", with: "&gt;")
+  }
+
+  private static var headingModifier: Modifier {
+    Modifier(target: .headings) { input in
+      guard let openingEnd = input.html.firstIndex(of: ">") else { return input.html }
+      let rawTitle = input.markdown.drop(while: { $0 == "#" || $0.isWhitespace })
+      let identifier = headingIdentifier(String(rawTitle))
+      guard !identifier.isEmpty else { return input.html }
+      var html = input.html
+      html.insert(contentsOf: " id=\"\(escapeHTML(identifier))\"", at: openingEnd)
+      return html
+    }
+  }
+
+  private static var mermaidModifier: Modifier {
+    Modifier(target: .codeBlocks) { input in
+      guard let firstLine = input.markdown.split(separator: "\n", maxSplits: 1).first else {
+        return input.html
+      }
+      let language = firstLine.drop(while: { $0 == "`" }).trimmingCharacters(in: .whitespaces)
+        .split(whereSeparator: \.isWhitespace).first?.lowercased()
+      guard language == "mermaid" else { return input.html }
+      let prefix = #"<pre><code class="language-mermaid">"#
+      let suffix = "</code></pre>"
+      guard input.html.hasPrefix(prefix), input.html.hasSuffix(suffix) else { return input.html }
+      let sourceStart = input.html.index(input.html.startIndex, offsetBy: prefix.count)
+      let sourceEnd = input.html.index(input.html.endIndex, offsetBy: -suffix.count)
+      let source = String(input.html[sourceStart..<sourceEnd])
+      return """
+        <figure data-plan-canvas-diagram role="button" tabindex="0" aria-label="Select diagram for discussion" aria-pressed="false">
+        <pre class="mermaid">\(source)</pre>
+        <code class="plan-diagram-source" hidden>\(source)</code>
+        <figcaption><span class="diagram-state"></span></figcaption>
+        </figure>
+        """
+    }
+  }
+
+  private static func headingIdentifier(_ value: String) -> String {
+    value.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "# "))
+      .components(separatedBy: CharacterSet.alphanumerics.inverted)
+      .filter { !$0.isEmpty }
+      .joined(separator: "-")
+  }
+
+  private static func accentTokens(for style: QueueAccentStyle) -> String {
+    switch style {
+    case .muted:
+      return """
+        --accent: light-dark(#557a8b, #78a7b8); --accent-strong: light-dark(#395d6c, #9cc3d0);
+        --accent-companion: light-dark(#9b6980, #bd86a0); --accent-border: light-dark(#91aeba, #567d8c);
+        --accent-glow: light-dark(rgba(85, 122, 139, 0.09), rgba(120, 167, 184, 0.12));
+        --accent-glow-strong: light-dark(rgba(85, 122, 139, 0.23), rgba(120, 167, 184, 0.28));
+        --selection: light-dark(#cce0e8, #345767); --selection-text: light-dark(#172b34, #f4fbff);
+        """
+    case .pastel:
+      return """
+        --accent: light-dark(#607bc7, #91adff); --accent-strong: light-dark(#405aa4, #b5c6ff);
+        --accent-companion: light-dark(#c66b94, #f39bc1); --accent-border: light-dark(#a9b8e7, #687dbb);
+        --accent-glow: light-dark(rgba(96, 123, 199, 0.09), rgba(145, 173, 255, 0.13));
+        --accent-glow-strong: light-dark(rgba(96, 123, 199, 0.24), rgba(145, 173, 255, 0.30));
+        --selection: light-dark(#d9e1ff, #3f538f); --selection-text: light-dark(#17203f, #ffffff);
+        """
+    case .monochrome:
+      return """
+        --accent: light-dark(#525866, #b5bdce); --accent-strong: light-dark(#292e38, #dce1eb);
+        --accent-companion: light-dark(#838996, #7e879a); --accent-border: light-dark(#aeb4c0, #677085);
+        --accent-glow: light-dark(rgba(82, 88, 102, 0.08), rgba(181, 189, 206, 0.10));
+        --accent-glow-strong: light-dark(rgba(82, 88, 102, 0.22), rgba(181, 189, 206, 0.25));
+        --selection: light-dark(#d9dce2, #474d5a); --selection-text: light-dark(#1b1e24, #ffffff);
+        """
+    case .vibrant:
+      return """
+        --accent: light-dark(#5068d8, #8294ff); --accent-strong: light-dark(#324ab8, #aab6ff);
+        --accent-companion: light-dark(#ca3d7c, #ef79ad); --accent-border: light-dark(#9aa8eb, #5f70ca);
+        --accent-glow: light-dark(rgba(80, 104, 216, 0.09), rgba(130, 148, 255, 0.14));
+        --accent-glow-strong: light-dark(rgba(80, 104, 216, 0.25), rgba(130, 148, 255, 0.32));
+        --selection: light-dark(#ccd5ff, #40539d); --selection-text: light-dark(#111a3c, #ffffff);
+        """
+    }
   }
 }

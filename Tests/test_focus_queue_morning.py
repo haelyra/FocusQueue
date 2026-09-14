@@ -19,6 +19,109 @@ SPEC.loader.exec_module(MODULE)
 
 
 class FocusQueueMorningTests(unittest.TestCase):
+    def test_telegram_archive_is_explicitly_partial_and_rejects_anonymous_records(self):
+        lines = [json.dumps(item) for item in [
+            {"session_id": "one", "message_id": 1, "text": "first"},
+            {"session_id": "one", "message_id": 1, "text": "duplicate"},
+            {"session_id": "one", "message_id": None, "index": 2, "text": "second"},
+            {"text": "missing identity"}, [],
+        ]] + ["bad json"]
+        with mock.patch.object(MODULE, "run_jsonl_command_bounded", return_value=(lines, False)):
+            result = MODULE.collect_telegram({"telegramArchiveExecutable": "/archive", "lookbackHours": 24})
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["coverage"], "agent_session_archive")
+        self.assertFalse(result["activeSessionsIncluded"])
+        self.assertEqual(result["invalidRecords"], 3)
+        self.assertEqual([message["sourceKey"] for message in result["messages"]], ["telegram:one:1", "telegram:one:2"])
+        self.assertIn("personal inbox", result["error"])
+
+    def test_telegram_selects_active_recent_sessions_without_reading_other_sources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "archive.db"
+            connection = MODULE.sqlite3.connect(database)
+            connection.executescript("""
+                CREATE TABLE sessions(id TEXT, source TEXT, ended_at REAL);
+                CREATE TABLE messages(session_id TEXT, role TEXT, timestamp REAL);
+                INSERT INTO sessions VALUES('active', 'telegram', NULL), ('ended', 'telegram', 30), ('other', 'cli', NULL), ('old', 'telegram', NULL);
+                INSERT INTO messages VALUES('active', 'user', 50), ('ended', 'user', 45), ('other', 'user', 60), ('old', 'user', 10);
+            """)
+            connection.close()
+            before = database.read_bytes()
+            ids, truncated = MODULE.telegram_archive_session_ids(database, 40)
+            self.assertEqual(ids, ["active", "ended"])
+            self.assertFalse(truncated)
+            self.assertEqual(database.read_bytes(), before)
+
+    def test_telegram_active_export_stays_redacted_and_filters_old_messages(self):
+        now = MODULE.dt.datetime.now(MODULE.dt.timezone.utc).isoformat()
+        lines = [json.dumps({"session_id": "active", "message_id": index, "text": text, "created_at": timestamp})
+                 for index, text, timestamp in [(1, "recent", now), (2, "old", "2000-01-01T00:00:00Z")]]
+        with mock.patch.object(MODULE, "telegram_archive_session_ids", return_value=(["active"], False)), \
+             mock.patch.object(MODULE, "run_jsonl_command_bounded", return_value=(lines, False)) as export:
+            result = MODULE.collect_telegram({"telegramArchiveExecutable": "/archive", "telegramArchiveDatabasePath": "/archive.db", "lookbackHours": 24})
+        arguments = export.call_args.args[0]
+        self.assertIn("--session-id", arguments)
+        self.assertIn("--redact", arguments)
+        self.assertNotIn("--source", arguments)
+        self.assertTrue(result["activeSessionsIncluded"])
+        self.assertEqual([message["text"] for message in result["messages"]], ["recent"])
+        self.assertEqual(result["status"], "partial")
+
+    def test_telegram_archive_schema_failure_does_not_create_database(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "absent.db"
+            with self.assertRaises(MODULE.sqlite3.OperationalError):
+                MODULE.telegram_archive_session_ids(database, 0)
+            self.assertFalse(database.exists())
+
+    def test_telegram_archive_rejects_unknown_schema_and_surfaces_session_cap(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "archive.db"
+            connection = MODULE.sqlite3.connect(database)
+            connection.execute("CREATE TABLE sessions(id TEXT, source TEXT)")
+            connection.commit()
+            with self.assertRaises(MODULE.ReconciliationError):
+                MODULE.telegram_archive_session_ids(database, 0)
+            connection.execute("CREATE TABLE messages(session_id TEXT, role TEXT, timestamp REAL)")
+            connection.executemany("INSERT INTO sessions VALUES(?, 'telegram')", [(str(index),) for index in range(51)])
+            connection.executemany("INSERT INTO messages VALUES(?, 'user', ?)", [(str(index), index) for index in range(51)])
+            connection.commit()
+            connection.close()
+            ids, truncated = MODULE.telegram_archive_session_ids(database, 0)
+            self.assertTrue(truncated)
+            self.assertEqual(len(ids), 50)
+            self.assertEqual(ids[0], "50")
+
+    def test_configured_telegram_archive_failure_never_falls_back_to_partial_export(self):
+        with mock.patch.object(MODULE, "telegram_archive_session_ids", side_effect=MODULE.sqlite3.OperationalError("unreadable")), \
+             mock.patch.object(MODULE, "run_jsonl_command_bounded") as export:
+            with self.assertRaises(MODULE.sqlite3.OperationalError):
+                MODULE.collect_telegram({"telegramArchiveExecutable": "/archive", "telegramArchiveDatabasePath": "/archive.db", "lookbackHours": 24})
+            export.assert_not_called()
+
+    def test_jsonl_deadline_handles_a_child_that_never_finishes_its_first_line(self):
+        started = time.monotonic()
+        with self.assertRaises(MODULE.ReconciliationError):
+            MODULE.run_jsonl_command_bounded(
+                [sys.executable, "-c", "import sys,time; sys.stdout.write('partial'); sys.stdout.flush(); time.sleep(30)"],
+                maximum_records=10, timeout=1,
+            )
+        self.assertLess(time.monotonic() - started, 5)
+
+    def test_scoped_collection_summary_does_not_call_skipped_sources_incomplete(self):
+        bundle = {
+            "discord": {"status": "skipped", "messages": []},
+            "telegram": {"status": "skipped", "messages": []},
+            "email": {"status": "ok", "messages": [{"sourceKey": "email:one"}]},
+            "github": {"status": "skipped", "repositories": []},
+            "collectionErrors": [],
+        }
+
+        summary = MODULE.compact_summary(bundle)
+
+        self.assertIn("mail 1", summary)
+        self.assertNotIn("Incomplete sources", summary)
+
     def test_discord_collection_paginates_back_to_the_cutoff(self):
         with tempfile.TemporaryDirectory() as temporary:
             credential = Path(temporary) / "discord.json"
@@ -89,6 +192,147 @@ class FocusQueueMorningTests(unittest.TestCase):
         self.assertEqual(first, repeated)
         self.assertNotEqual(first, other_local)
         self.assertLess(len(first), 100)
+
+    def test_mail_fallback_timeout_is_not_mislabeled_as_permission_pending(self):
+        code, message = MODULE.mail_collection_failure(
+            PermissionError("Operation not permitted"),
+            MODULE.ReconciliationError("Mail reader timed out after 90 seconds"),
+        )
+
+        self.assertEqual(code, "mail_reader_timeout")
+        self.assertIn("timed out", message.casefold())
+        self.assertIn("reinstall", message.casefold())
+        self.assertNotIn("permission is pending", message.casefold())
+
+    def test_mail_automation_denial_has_specific_recovery_guidance(self):
+        code, message = MODULE.mail_collection_failure(
+            PermissionError("Operation not permitted"),
+            MODULE.ReconciliationError("Not authorized to send Apple events (-1743)"),
+        )
+
+        self.assertEqual(code, "mail_permission_required")
+        self.assertIn("Privacy & Security", message)
+
+    def test_mail_failure_categories_remain_actionable(self):
+        cases = [
+            ("Mail reader app is not installed", "mail_reader_not_installed"),
+            ("Mail reader could not start through launchd", "mail_reader_launch_failed"),
+            ("Unexpected helper response", "mail_reader_failed"),
+        ]
+        for helper_detail, expected_code in cases:
+            with self.subTest(helper_detail=helper_detail):
+                code, message = MODULE.mail_collection_failure(
+                    OSError("local store unavailable"),
+                    MODULE.ReconciliationError(helper_detail),
+                )
+                self.assertEqual(code, expected_code)
+                self.assertTrue(message)
+
+    def test_generic_helper_failure_is_not_overridden_by_local_permission_error(self):
+        for helper_detail in (
+            "No enabled Apple Mail account contains haley@example.com",
+            "Mail reader returned invalid JSON",
+            "database disk image is malformed",
+        ):
+            with self.subTest(helper_detail=helper_detail):
+                code, message = MODULE.mail_collection_failure(
+                    PermissionError("Operation not permitted"),
+                    MODULE.ReconciliationError(helper_detail),
+                )
+                self.assertEqual(code, "mail_reader_failed")
+                self.assertIn(helper_detail, message)
+
+    def test_mail_reader_pagination_rejects_repeated_pages(self):
+        repeated = {
+            "status": "ok",
+            "verified": True,
+            "mailboxes": ["INBOX"],
+            "truncated": True,
+            "hardTruncated": False,
+            "results": [
+                {
+                    "sourceKey": "email:<one@example.com>",
+                    "messageId": "<one@example.com>",
+                    "mailbox": "INBOX",
+                    "receivedAt": "2026-09-09T12:00:00Z",
+                }
+            ],
+        }
+        final = {**repeated, "truncated": False}
+        config = {
+            "lookbackHours": 24,
+            "maxEmailMessages": 1,
+            "_configPath": "/tmp/focus-queue-test-ingestion.json",
+            "emailAddress": "haley@example.com",
+        }
+        completed = [
+            subprocess.CompletedProcess([], 0, json.dumps(repeated), ""),
+            subprocess.CompletedProcess([], 0, json.dumps(final), ""),
+        ]
+
+        with mock.patch.object(MODULE, "run_command", side_effect=completed):
+            with self.assertRaisesRegex(MODULE.ReconciliationError, "repeated|progress"):
+                MODULE.collect_mail_via_reader_app(
+                    config,
+                    PermissionError("Operation not permitted"),
+                )
+
+    def test_mail_reader_structured_error_survives_nonzero_exit(self):
+        payload = {
+            "status": "error",
+            "verified": False,
+            "errorCode": "mail_reader_timeout",
+            "error": "Mail reader timed out after 90 seconds",
+        }
+        config = {
+            "lookbackHours": 24,
+            "maxEmailMessages": 50,
+            "_configPath": "/tmp/focus-queue-test-ingestion.json",
+            "emailAddress": "haley@example.com",
+        }
+        completed = subprocess.CompletedProcess([], 2, json.dumps(payload), "")
+
+        with mock.patch.object(MODULE, "run_command", return_value=completed) as run:
+            with self.assertRaisesRegex(MODULE.ReconciliationError, "mail_reader_timeout"):
+                MODULE.collect_mail_via_reader_app(
+                    config,
+                    PermissionError("Operation not permitted"),
+                )
+
+        self.assertFalse(run.call_args.kwargs["check"])
+
+    def test_mail_reader_pagination_stops_at_the_global_collection_bound(self):
+        page = {
+            "status": "ok",
+            "verified": True,
+            "mailboxes": ["INBOX"],
+            "truncated": True,
+            "hardTruncated": False,
+            "results": [
+                {"sourceKey": "email:one", "messageId": "one"},
+                {"sourceKey": "email:two", "messageId": "two"},
+            ],
+        }
+        config = {
+            "lookbackHours": 24,
+            "maxEmailMessages": 2,
+            "_configPath": "/tmp/focus-queue-test-ingestion.json",
+            "emailAddress": "haley@example.com",
+        }
+
+        with mock.patch.object(MODULE, "MAX_COLLECTED_MESSAGES_PER_SOURCE", 2), mock.patch.object(
+            MODULE,
+            "run_command",
+            return_value=subprocess.CompletedProcess([], 0, json.dumps(page), ""),
+        ) as run:
+            result = MODULE.collect_mail_via_reader_app(
+                config,
+                PermissionError("Operation not permitted"),
+            )
+
+        self.assertEqual(len(result["messages"]), 2)
+        self.assertTrue(result["truncated"])
+        self.assertEqual(run.call_count, 1)
 
     def test_timed_out_command_terminates_its_descendant_process_group(self):
         if os.name == "nt":
@@ -216,6 +460,103 @@ class FocusQueueMorningTests(unittest.TestCase):
             self.assertEqual(report["runID"], "existing")
             self.assertTrue(succeeded)
             reconcile.assert_not_called()
+
+    def test_scheduled_run_retries_a_same_day_partial_report(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary)
+            today = MODULE.dt.datetime.now().astimezone().date().isoformat()
+            existing = {
+                "runID": "partial",
+                "reportDate": today,
+                "comprehensive": True,
+                "status": "partial",
+                "platforms": [{"platform": "email"}],
+            }
+            replacement = {**existing, "runID": "retry", "status": "success"}
+            MODULE.write_private_json(runtime / "latest-report.json", existing)
+
+            with mock.patch.object(
+                MODULE,
+                "_run_reconciliation",
+                return_value=(replacement, True),
+            ) as reconcile:
+                report, succeeded = MODULE.run_reconciliation(
+                    {},
+                    runtime,
+                    platforms={"email"},
+                    trigger="scheduled",
+                    comprehensive=True,
+                )
+
+            self.assertEqual(report["runID"], "retry")
+            self.assertTrue(succeeded)
+            reconcile.assert_called_once()
+
+    def test_classification_retries_once_before_succeeding(self):
+        proposals = {
+            "version": 1,
+            "runSummary": "Recovered after a transient classifier failure.",
+            "messageSummaries": [],
+            "newTasks": [],
+            "updates": [],
+            "progressNotes": [],
+            "ignoredCount": 0,
+        }
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            MODULE,
+            "classify",
+            side_effect=[MODULE.ReconciliationError("temporary failure"), proposals],
+        ) as classify:
+            result = MODULE.classify_with_retry({}, {}, Path(temporary), attempts=2)
+
+        self.assertEqual(result, proposals)
+        self.assertEqual(classify.call_count, 2)
+
+    def test_classification_retry_surfaces_the_final_failure(self):
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            MODULE,
+            "classify",
+            side_effect=MODULE.ReconciliationError("service unavailable"),
+        ) as classify:
+            with self.assertRaisesRegex(
+                MODULE.ReconciliationError,
+                r"failed after 2 attempt\(s\).*service unavailable",
+            ):
+                MODULE.classify_with_retry({}, {}, Path(temporary), attempts=2)
+
+        self.assertEqual(classify.call_count, 2)
+
+    def test_classification_retry_includes_semantic_source_validation(self):
+        message = {
+            "sourceKey": "email:one",
+            "platform": "email",
+            "title": "Source",
+            "url": "message://one",
+        }
+        invalid = {
+            "messageSummaries": [],
+            "newTasks": [],
+            "updates": [],
+            "progressNotes": [],
+        }
+        valid = {
+            **invalid,
+            "messageSummaries": [{"sourceKey": "email:one", "title": "One", "summary": ""}],
+        }
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            MODULE,
+            "classify",
+            side_effect=[invalid, valid],
+        ) as classify:
+            result = MODULE.classify_with_retry(
+                {},
+                {"messages": [message]},
+                Path(temporary),
+                attempts=2,
+            )
+
+        self.assertEqual(classify.call_count, 2)
+        self.assertEqual(result["messageSummaries"][0]["sourceKey"], "email:one")
 
     def test_pending_run_recovery_commits_ledger_before_latest_report(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -403,9 +744,24 @@ class FocusQueueMorningTests(unittest.TestCase):
                 enabled_platforms={"email", "discord"},
                 comprehensive=True,
             )
+            partial_state = json.loads((runtime / "state.json").read_text())
+            self.assertEqual(partial_state["lastComprehensiveAttemptAt"], "2026-09-03T13:00:00Z")
+            self.assertEqual(partial_state["lastComprehensiveAttemptStatus"], "partial")
+            self.assertNotIn("lastComprehensiveReportAt", partial_state)
+
+            MODULE.update_run_state(
+                runtime,
+                finished_at="2026-09-03T13:30:00Z",
+                all_sources_ok=True,
+                has_deferred_messages=False,
+                platforms={"email", "discord"},
+                enabled_platforms={"email", "discord"},
+                comprehensive=True,
+            )
             full_state = json.loads((runtime / "state.json").read_text())
-            self.assertEqual(full_state["lastComprehensiveReportAt"], "2026-09-03T13:00:00Z")
+            self.assertEqual(full_state["lastComprehensiveReportAt"], "2026-09-03T13:30:00Z")
             self.assertEqual(full_state["lastComprehensivePlatforms"], ["discord", "email"])
+            self.assertEqual(full_state["lastComprehensiveStatus"], "success")
 
     def test_task_links_are_derived_from_checked_messages_not_model_output(self):
         checked = [{

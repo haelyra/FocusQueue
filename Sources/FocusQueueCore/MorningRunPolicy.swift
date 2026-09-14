@@ -26,6 +26,7 @@ public enum MorningRunPolicy {
     public static func disposition(
         now: Date,
         lastSuccessfulAt: Date?,
+        lastUnsuccessfulAttemptAt: Date? = nil,
         hour: Int,
         minute: Int,
         automaticGraceMinutes: Int = 15,
@@ -42,6 +43,11 @@ public enum MorningRunPolicy {
         }
         if let lastSuccessfulAt, calendar.isDate(lastSuccessfulAt, inSameDayAs: scheduled) {
             return .notDue
+        }
+        if let lastUnsuccessfulAttemptAt,
+           lastUnsuccessfulAttemptAt >= scheduled,
+           calendar.isDate(lastUnsuccessfulAttemptAt, inSameDayAs: scheduled) {
+            return .runAutomatically
         }
         if let availabilityResumedAt, availabilityResumedAt > scheduled {
             return .requestApproval

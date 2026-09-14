@@ -17,6 +17,7 @@ import html
 import json
 import os
 import re
+import select
 import signal
 import sqlite3
 import stat
@@ -42,6 +43,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 MAIL_SCRIPT = SCRIPT_DIR / "focus-queue-mail.js"
 PROPOSAL_SCHEMA = SCRIPT_DIR.parent / "Config/task-proposals.schema.json"
 CONNECTOR_PROOF_DIRECTORY = Path.home() / "Library/Application Support/ECC Focus Queue/connector-proofs"
+MAIL_COMMAND_DIRECTORY = Path.home() / "Library/Application Support/ECC Focus Queue/connector-commands"
+MAIL_PROOF_DIRECTORY = Path.home() / "Library/Application Support/ECC Focus Queue/mail-proofs"
 VALID_PRIORITIES = {"critical", "high", "medium", "low"}
 VALID_LINK_SCHEMES = {"http", "https", "message", "tg", "vscode"}
 MAX_COLLECTED_MESSAGES_PER_SOURCE = 5_000
@@ -138,21 +141,40 @@ def run_jsonl_command_bounded(
         _ACTIVE_CHILD = process
         try:
             assert process.stdout is not None
+            pending = b""
             while True:
-                if time.monotonic() - started > timeout:
+                remaining = timeout - (time.monotonic() - started)
+                if remaining <= 0:
                     stop_process_group(process)
                     raise ReconciliationError(
                         f"{' '.join(arguments[:3])} exceeded its {timeout}-second timeout"
                     )
-                raw = process.stdout.readline(min(262_144, maximum_bytes - total_bytes + 1))
+                ready, _, _ = select.select([process.stdout], [], [], remaining)
+                if not ready:
+                    continue
+                raw = os.read(process.stdout.fileno(), min(65_536, maximum_bytes - total_bytes + 1))
                 if not raw:
+                    if pending:
+                        if len(records) >= maximum_records:
+                            truncated = True
+                        else:
+                            records.append(pending.decode("utf-8", errors="replace"))
                     break
                 total_bytes += len(raw)
-                if total_bytes > maximum_bytes or len(records) >= maximum_records:
+                if total_bytes > maximum_bytes:
                     truncated = True
                     stop_process_group(process)
                     break
-                records.append(raw.decode("utf-8", errors="replace"))
+                pending += raw
+                while b"\n" in pending:
+                    line, pending = pending.split(b"\n", 1)
+                    if len(records) >= maximum_records:
+                        truncated = True
+                        break
+                    records.append((line + b"\n").decode("utf-8", errors="replace"))
+                if truncated:
+                    stop_process_group(process)
+                    break
             if process.poll() is None:
                 process.wait(timeout=max(1, timeout - int(time.monotonic() - started)))
             stderr_file.seek(0)
@@ -234,7 +256,8 @@ def load_config(path: Path) -> dict[str, Any]:
         "discordCredentialPath",
         str(Path.home() / "Library/Application Support/ECC Focus Queue/credentials.json"),
     )
-    config.setdefault("mailRuntimeDirectory", str(CONNECTOR_PROOF_DIRECTORY))
+    config.setdefault("mailRequestDirectory", str(MAIL_COMMAND_DIRECTORY))
+    config.setdefault("mailResponseDirectory", str(MAIL_PROOF_DIRECTORY))
     config.setdefault("discordRuntimeDirectory", str(CONNECTOR_PROOF_DIRECTORY))
     return config
 
@@ -474,7 +497,8 @@ def message_text_from_emlx(path: Path) -> str:
 def collect_mail_via_reader_app(config: dict[str, Any], local_error: Exception) -> dict[str, Any]:
     days = max(1, (int(config["lookbackHours"]) + 23) // 24)
     page_size = min(max(int(config["maxEmailMessages"]), 1), 50)
-    payloads: list[dict[str, Any]] = []
+    messages: list[dict[str, Any]] = []
+    seen_source_keys: set[str] = set()
     offset = 0
     hard_truncated = False
     while True:
@@ -495,44 +519,64 @@ def collect_mail_via_reader_app(config: dict[str, Any], local_error: Exception) 
             ],
             cwd=SCRIPT_DIR.parent,
             timeout=120,
+            check=False,
         )
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError as error:
-            raise ReconciliationError(
-                f"Mail reader returned invalid JSON after local-store failure ({local_error})"
-            ) from error
+            raise ReconciliationError("Mail reader returned invalid JSON") from error
         if payload.get("status") != "ok" or not payload.get("verified"):
+            error_code = str(payload.get("errorCode") or "mail_reader_failed")
+            detail = str(payload.get("error") or "unverified response")[:500]
             raise ReconciliationError(
-                f"Mail reader could not recover from local-store failure ({local_error}): {payload.get('error', 'unverified response')}"
+                f"{error_code}: {detail}"
             )
-        payloads.append(payload)
-        page_count = len(payload.get("results", []))
+        page = payload.get("results")
+        if not isinstance(page, list):
+            raise ReconciliationError("Mail reader returned an invalid results page")
+        page_count = len(page)
         if payload.get("hardTruncated"):
             hard_truncated = True
-        if not payload.get("truncated") or page_count < page_size:
+        if payload.get("truncated") and page_count == 0:
+            raise ReconciliationError("Mail reader reported truncation without a next page")
+        page_source_keys = [
+            str(item.get("sourceKey") or "")
+            for item in page
+            if isinstance(item, dict)
+        ]
+        if len(page_source_keys) != page_count or any(not value for value in page_source_keys):
+            raise ReconciliationError("Mail reader returned a result without a stable source key")
+        if len(set(page_source_keys)) != len(page_source_keys) or any(
+            value in seen_source_keys for value in page_source_keys
+        ):
+            raise ReconciliationError("Mail reader pagination repeated results without progress")
+        remaining = MAX_COLLECTED_MESSAGES_PER_SOURCE - len(messages)
+        if page_count > remaining:
+            hard_truncated = True
+            page = page[:remaining]
+            page_source_keys = page_source_keys[:remaining]
+        seen_source_keys.update(page_source_keys)
+        messages.extend(
+            {
+                "sourceKey": item.get("sourceKey", ""),
+                "messageId": item.get("messageId", ""),
+                "mailbox": item.get("mailbox", ""),
+                "sender": item.get("sender", ""),
+                "subject": item.get("subject", ""),
+                "receivedAt": item.get("receivedAt", ""),
+                "read": bool(item.get("read")),
+                "flagged": bool(item.get("flagged")),
+                "text": item.get("snippet", ""),
+                "url": item.get("url", ""),
+            }
+            for item in page
+        )
+        if len(messages) >= MAX_COLLECTED_MESSAGES_PER_SOURCE:
+            hard_truncated = hard_truncated or bool(payload.get("truncated"))
+            break
+        if not payload.get("truncated"):
             break
         offset += page_count
-        if page_count == 0:
-            raise ReconciliationError("Mail reader reported truncation without a next page")
-    payload = payloads[-1]
-    messages = [
-        {
-            "sourceKey": item.get("sourceKey", ""),
-            "messageId": item.get("messageId", ""),
-            "mailbox": item.get("mailbox", ""),
-            "sender": item.get("sender", ""),
-            "subject": item.get("subject", ""),
-            "receivedAt": item.get("receivedAt", ""),
-            "read": bool(item.get("read")),
-            "flagged": bool(item.get("flagged")),
-            "text": item.get("snippet", ""),
-            "url": item.get("url", ""),
-        }
-        for page in payloads
-        for item in page.get("results", [])
-        if isinstance(item, dict)
-    ]
     return {
         "status": "ok",
         "account": config["emailAddress"],
@@ -542,6 +586,68 @@ def collect_mail_via_reader_app(config: dict[str, Any], local_error: Exception) 
         "errors": [],
         "reader": "mail-reader-service",
     }
+
+
+def mail_collection_failure(
+    local_error: Exception,
+    helper_error: Exception,
+) -> tuple[str, str]:
+    helper_detail = str(helper_error).strip()
+    helper_normalized = helper_detail.casefold()
+    if "timed out" in helper_normalized or "timeout" in helper_normalized:
+        return (
+            "mail_reader_timeout",
+            "The protected Mail reader timed out. Reinstall ECC Focus Queue to refresh the "
+            "helper, confirm Apple Mail is running, then retry.",
+        )
+    if "not installed" in helper_normalized:
+        return (
+            "mail_reader_not_installed",
+            "The protected Mail reader is not installed. Reinstall ECC Focus Queue, then retry.",
+        )
+    if "could not start" in helper_normalized or "launch" in helper_normalized:
+        return (
+            "mail_reader_launch_failed",
+            "The protected Mail reader could not start. Reinstall ECC Focus Queue, then retry.",
+        )
+    if "mail_account_unavailable" in helper_normalized:
+        return (
+            "mail_account_unavailable",
+            "The configured email account is not enabled in Apple Mail. Confirm the account "
+            "address and enable it in Mail, then retry.",
+        )
+    if "mailbox_unavailable" in helper_normalized:
+        return (
+            "mailbox_unavailable",
+            "None of the configured Apple Mail mailboxes were found. Review the mailbox names "
+            "in the ingestion settings, then retry.",
+        )
+    permission_markers = (
+        "operation not permitted",
+        "not authorized",
+        "permission",
+        "-1743",
+        "apple events",
+    )
+    if any(marker in helper_normalized for marker in permission_markers):
+        return (
+            "mail_permission_required",
+            "Mail access requires approval in System Settings > Privacy & Security > Automation. "
+            "Allow ECC Focus Mail Reader to control Mail, then retry.",
+        )
+    if not helper_detail:
+        local_detail = str(local_error).strip()
+        if any(marker in local_detail.casefold() for marker in permission_markers):
+            return (
+                "mail_permission_required",
+                "Mail access requires approval in System Settings > Privacy & Security > Automation. "
+                "Allow ECC Focus Mail Reader to control Mail, then retry.",
+            )
+    detail = helper_detail or str(local_error).strip() or "unknown Mail reader failure"
+    return (
+        "mail_reader_failed",
+        f"The protected Mail reader failed: {detail[:300]}",
+    )
 
 
 def collect_mail(config: dict[str, Any]) -> dict[str, Any]:
@@ -684,17 +790,43 @@ def collect_mail(config: dict[str, Any]) -> dict[str, Any]:
         try:
             return collect_mail_via_reader_app(config, error)
         except (OSError, subprocess.TimeoutExpired, sqlite3.Error, ReconciliationError) as helper_error:
-            detail = str(helper_error)[:220]
+            error_code, detail = mail_collection_failure(error, helper_error)
         return {
             "status": "error",
             "account": config["emailAddress"],
             "mailboxesScanned": 0,
             "messages": [],
             "truncated": False,
-            "errors": [
-                f"Apple Mail permission is pending. Open ECC Focus Mail Reader once and allow protected Mail data access. {detail}"
-            ],
+            "errorCode": error_code,
+            "error": detail,
+            "errors": [detail],
         }
+
+
+def telegram_archive_session_ids(path: Path, cutoff: float) -> tuple[list[str], bool]:
+    """Inspect only routing metadata, including active sessions, without migrations."""
+    deadline = time.monotonic() + 5
+    connection = sqlite3.connect(path.expanduser().resolve().as_uri() + "?mode=ro", uri=True, timeout=2)
+    try:
+        connection.execute("PRAGMA query_only = ON")
+        connection.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+        for table, required in {
+            "sessions": {"id", "source"},
+            "messages": {"session_id", "role", "timestamp"},
+        }.items():
+            columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+            if not required.issubset(columns):
+                raise ReconciliationError("Telegram archive has an unsupported schema")
+        rows = connection.execute(
+            """SELECT s.id, MAX(m.timestamp) AS latest
+               FROM sessions s JOIN messages m ON m.session_id = s.id
+               WHERE s.source = ? AND m.role = ? AND m.timestamp >= ?
+               GROUP BY s.id ORDER BY latest DESC, s.id LIMIT 51""",
+            ("telegram", "user", cutoff),
+        ).fetchall()
+        return [str(row[0]) for row in rows[:50]], len(rows) > 50
+    finally:
+        connection.close()
 
 
 def collect_telegram(config: dict[str, Any]) -> dict[str, Any]:
@@ -703,6 +835,8 @@ def collect_telegram(config: dict[str, Any]) -> dict[str, Any]:
         return {
             "status": "unavailable",
             "messages": [],
+            "coverage": "unconfigured",
+            "errorCode": "telegram_inbox_connector_missing",
             "error": "Telegram archive transport is not configured",
         }
     command = [
@@ -719,12 +853,43 @@ def collect_telegram(config: dict[str, Any]) -> dict[str, Any]:
         "--redact",
         "--yes",
     ]
-    output_lines, truncated = run_jsonl_command_bounded(
-        command,
-        maximum_records=MAX_COLLECTED_MESSAGES_PER_SOURCE + 1,
-        timeout=120,
-    )
+    archive_path = config.get("telegramArchiveDatabasePath")
+    active_sessions_included = bool(archive_path)
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=int(config["lookbackHours"]))
+    if archive_path:
+        # Hermes' filtered export uses prune candidates, which exclude sessions
+        # still running. Select scoped IDs ourselves, then use its redactor.
+        session_ids, truncated = telegram_archive_session_ids(Path(str(archive_path)), cutoff.timestamp())
+        output_lines = []
+        deadline = time.monotonic() + 120
+        remaining_bytes = 16_000_000
+        for session_id in session_ids:
+            remaining_records = MAX_COLLECTED_MESSAGES_PER_SOURCE + 1 - len(output_lines)
+            remaining_seconds = int(deadline - time.monotonic())
+            if remaining_records <= 0 or remaining_bytes <= 0 or remaining_seconds <= 0:
+                truncated = True
+                break
+            lines, limited = run_jsonl_command_bounded(
+                [str(executable), "sessions", "export", "-", "--session-id", session_id,
+                 "--only", "user-prompts", "--redact", "--yes"],
+                maximum_records=remaining_records,
+                maximum_bytes=remaining_bytes,
+                timeout=remaining_seconds,
+            )
+            output_lines.extend(lines)
+            remaining_bytes -= sum(len(line.encode("utf-8")) for line in lines)
+            truncated = truncated or limited
+            if limited:
+                break
+    else:
+        output_lines, truncated = run_jsonl_command_bounded(
+            command,
+            maximum_records=MAX_COLLECTED_MESSAGES_PER_SOURCE + 1,
+            timeout=120,
+        )
     messages = []
+    invalid_records = 0
+    seen: set[str] = set()
     for line in output_lines:
         line = line.strip()
         if not line:
@@ -732,22 +897,61 @@ def collect_telegram(config: dict[str, Any]) -> dict[str, Any]:
         try:
             item = json.loads(line)
         except json.JSONDecodeError:
+            invalid_records += 1
             continue
+        if not isinstance(item, dict):
+            invalid_records += 1
+            continue
+        if archive_path:
+            try:
+                timestamp = dt.datetime.fromisoformat(str(item.get("created_at") or "").replace("Z", "+00:00"))
+                if timestamp.tzinfo is None:
+                    raise ValueError("missing timezone")
+            except ValueError:
+                invalid_records += 1
+                continue
+            if timestamp < cutoff:
+                continue
         text = str(item.get("text") or "").strip()
         if not text:
             continue
+        session_id = str(item.get("session_id") or "").strip()
+        message_id = item.get("message_id")
+        if message_id is None:
+            message_id = item.get("index")
+        if not session_id or message_id is None or str(message_id).strip() == "":
+            # Anonymous records otherwise all collapse into telegram:: in the
+            # processed-message ledger, silently discarding different messages.
+            invalid_records += 1
+            continue
+        source_key = f"telegram:{session_id}:{message_id}"
+        if source_key in seen:
+            continue
+        seen.add(source_key)
         supplied_url = str(item.get("url") or "")
         exact_url = supplied_url if re.match(r"^https://t\.me/(?:c/)?[^/]+/\d+$", supplied_url) else ""
         messages.append(
             {
-                "sourceKey": f"telegram:{item.get('session_id', '')}:{item.get('message_id', item.get('index', ''))}",
+                "sourceKey": source_key,
                 "timestamp": item.get("created_at", ""),
                 "text": text[:1600],
                 "url": exact_url,
             }
         )
     return {
-        "status": "ok",
+        # This transport reads agent sessions. It cannot establish coverage of
+        # the person's Telegram inbox, even when the export command succeeds.
+        "status": "partial",
+        "coverage": "agent_session_archive",
+        "activeSessionsIncluded": active_sessions_included,
+        "errorCode": "telegram_archive_only",
+        "error": (
+            "Telegram collection covers archived agent/bot conversations only, "
+            "not your personal inbox. "
+            + ("" if active_sessions_included else "Active agent sessions may also be absent. ")
+            + "Connect a Telegram user-account reader to cover personal chats."
+        ),
+        "invalidRecords": invalid_records,
         "messages": messages[:MAX_COLLECTED_MESSAGES_PER_SOURCE],
         "truncated": truncated or len(messages) > MAX_COLLECTED_MESSAGES_PER_SOURCE,
     }
@@ -1192,15 +1396,39 @@ def update_run_state(
         state = {}
     changed = False
     is_full_coverage = comprehensive and platforms == enabled_platforms
-    if is_full_coverage and all_sources_ok and not has_deferred_messages:
-        state["lastSuccessfulAt"] = finished_at
-        changed = True
+    is_successful = is_full_coverage and all_sources_ok and not has_deferred_messages
     if is_full_coverage:
+        state["lastComprehensiveAttemptAt"] = finished_at
+        state["lastComprehensiveAttemptPlatforms"] = sorted(platforms)
+        state["lastComprehensiveAttemptStatus"] = "success" if is_successful else "partial"
+        changed = True
+    if is_successful:
+        state["lastSuccessfulAt"] = finished_at
         state["lastComprehensiveReportAt"] = finished_at
         state["lastComprehensivePlatforms"] = sorted(platforms)
+        state["lastComprehensiveStatus"] = "success"
         changed = True
     if changed:
         write_private_json(state_path, state)
+
+
+def record_failed_comprehensive_attempt(
+    runtime: Path,
+    *,
+    platforms: set[str],
+    enabled_platforms: set[str],
+) -> None:
+    if platforms != enabled_platforms:
+        return
+    state_path = runtime / "state.json"
+    try:
+        state = load_json(state_path) if state_path.exists() else {}
+    except ReconciliationError:
+        state = {}
+    state["lastComprehensiveAttemptAt"] = dt.datetime.now(dt.timezone.utc).isoformat()
+    state["lastComprehensiveAttemptPlatforms"] = sorted(platforms)
+    state["lastComprehensiveAttemptStatus"] = "failed"
+    write_private_json(state_path, state)
 
 
 def record_processed_messages(
@@ -1790,6 +2018,36 @@ def classify(config: dict[str, Any], bundle: dict[str, Any], runtime: Path) -> d
             prompt_path.unlink(missing_ok=True)
 
 
+def classify_with_retry(
+    config: dict[str, Any],
+    bundle: dict[str, Any],
+    runtime: Path,
+    *,
+    attempts: int = 2,
+) -> dict[str, Any]:
+    attempts = max(1, attempts)
+    for attempt in range(1, attempts + 1):
+        try:
+            proposals = classify(config, bundle, runtime)
+            return prepare_proposals(proposals, bundle.get("messages", []))
+        except ReconciliationError as error:
+            if attempt == attempts:
+                raise ReconciliationError(
+                    f"Classification failed after {attempts} attempt(s): {error}"
+                ) from error
+    raise AssertionError("classification retry loop exited unexpectedly")
+
+
+def prepare_proposals(
+    proposals: dict[str, Any],
+    messages: list[dict[str, Any]],
+) -> dict[str, Any]:
+    validate_proposals_for_messages(proposals, messages)
+    sanitize_untrusted_proposals(proposals)
+    bind_trusted_source_links(proposals, messages)
+    return proposals
+
+
 def clipped_text(value: Any, limit: int, *, required: bool = False) -> str | None:
     if value is None:
         return None
@@ -2038,7 +2296,7 @@ def compact_summary(bundle: dict[str, Any], result: dict[str, Any] | None = None
     partial_sources = [
         name
         for name in ["discord", "telegram", "email", "github"]
-        if bundle.get(name, {}).get("status") != "ok"
+        if bundle.get(name, {}).get("status") not in {"ok", "skipped"}
     ]
     if partial_sources:
         parts.append(f"Incomplete sources: {', '.join(partial_sources)}.")
@@ -2093,7 +2351,7 @@ def same_day_comprehensive_report(
     if (
         report.get("reportDate") == dt.datetime.now().astimezone().date().isoformat()
         and report.get("comprehensive") is True
-        and report.get("status") in {"success", "partial"}
+        and report.get("status") == "success"
         and report_platforms == platforms
     ):
         return report
@@ -2192,14 +2450,18 @@ def _run_reconciliation(
             maximum_tasks,
         )
         if cached_classification is None:
-            proposals = classify(config, classification_bundle, runtime)
+            proposals = classify_with_retry(config, classification_bundle, runtime)
             usage_path = runtime / "latest-classification-usage.json"
             observed_usage = load_json(usage_path) if usage_path.exists() else None
         else:
             proposals, observed_usage = cached_classification
-        validate_proposals_for_messages(proposals, checked_messages)
-        sanitize_untrusted_proposals(proposals)
-        bind_trusted_source_links(proposals, checked_messages)
+            try:
+                proposals = prepare_proposals(proposals, checked_messages)
+            except ReconciliationError:
+                pending_classification_path.unlink(missing_ok=True)
+                proposals = classify_with_retry(config, classification_bundle, runtime)
+                usage_path = runtime / "latest-classification-usage.json"
+                observed_usage = load_json(usage_path) if usage_path.exists() else None
         all_sources_ok = not bundle.get("collectionErrors") and all(
             bundle.get(name, {}).get("status") == "ok"
             and not bundle.get(name, {}).get("truncated")
@@ -2329,10 +2591,7 @@ def run_diagnostic_collection(
             "dashboard": bundle.get("dashboard", {}),
             "messages": message_envelopes(bundle, platforms),
         }
-        proposals = classify(config, classification_bundle, runtime)
-        validate_proposals_for_messages(proposals, classification_bundle["messages"])
-        sanitize_untrusted_proposals(proposals)
-        bind_trusted_source_links(proposals, classification_bundle["messages"])
+        proposals = classify_with_retry(config, classification_bundle, runtime)
         write_private_json(runtime / "latest-proposals.json", proposals)
         return bundle, proposals
 
@@ -2385,14 +2644,23 @@ def main() -> int:
             )
             return 0 if mail.get("status") in {"ok", "partial"} else 1
         if arguments.command == "run":
-            report, all_sources_ok = run_reconciliation(
-                config,
-                arguments.runtime,
-                platforms=platforms,
-                trigger=arguments.trigger,
-                comprehensive=arguments.comprehensive,
-                recheck=arguments.recheck,
-            )
+            try:
+                report, all_sources_ok = run_reconciliation(
+                    config,
+                    arguments.runtime,
+                    platforms=platforms,
+                    trigger=arguments.trigger,
+                    comprehensive=arguments.comprehensive,
+                    recheck=arguments.recheck,
+                )
+            except Exception:
+                if arguments.comprehensive:
+                    record_failed_comprehensive_attempt(
+                        arguments.runtime,
+                        platforms=platforms,
+                        enabled_platforms=enabled_platforms,
+                    )
+                raise
             print(f"REPORT_ID: {report['runID']}")
             print(f"REPORT_DATE: {report['reportDate']}")
             print(report["summary"])

@@ -50,10 +50,16 @@ public struct DailyRoutine: Codable, Identifiable, Equatable, Sendable {
 public struct WezTermConfiguration: Codable, Equatable, Sendable {
   public var executable: String
   public var applicationName: String
+  public var socketPath: String?
 
-  public init(executable: String, applicationName: String = "WezTerm") {
+  public var cliEnvironment: [String: String]? {
+    socketPath.map { ["WEZTERM_UNIX_SOCKET": $0] }
+  }
+
+  public init(executable: String, applicationName: String = "WezTerm", socketPath: String? = nil) {
     self.executable = executable
     self.applicationName = applicationName
+    self.socketPath = socketPath
   }
 }
 
@@ -63,19 +69,25 @@ public struct VerifierConfiguration: Codable, Equatable, Sendable {
   public var sessionName: String
   public var timeoutSeconds: Int
   public var maxTurns: Int
+  public var contextDirectory: String?
+  public var supportDirectory: String?
 
   public init(
     enabled: Bool,
     executable: String,
     sessionName: String,
     timeoutSeconds: Int = 120,
-    maxTurns: Int = 24
+    maxTurns: Int = 24,
+    contextDirectory: String? = nil,
+    supportDirectory: String? = nil
   ) {
     self.enabled = enabled
     self.executable = executable
     self.sessionName = sessionName
     self.timeoutSeconds = timeoutSeconds
     self.maxTurns = maxTurns
+    self.contextDirectory = contextDirectory
+    self.supportDirectory = supportDirectory
   }
 }
 
@@ -126,6 +138,9 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var wezTerm: WezTermConfiguration
   public var verifier: VerifierConfiguration
   public var dailyReport: DailyReportConfiguration
+  public var persistentTerminals: Bool?
+  public var tmuxExecutable: String?
+  public var setupCompleted: Bool?
 
   public init(
     appName: String,
@@ -151,7 +166,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
 
   private enum CodingKeys: String, CodingKey {
     case appName, dashboardPath, workspacePath, defaultPlacement, refreshIntervalSeconds
-    case dailyRoutines, wezTerm, verifier, dailyReport
+    case dailyRoutines, wezTerm, verifier, dailyReport, persistentTerminals, tmuxExecutable, setupCompleted
   }
 
   public init(from decoder: any Decoder) throws {
@@ -164,6 +179,9 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     dailyRoutines = try container.decode([DailyRoutine].self, forKey: .dailyRoutines)
     wezTerm = try container.decode(WezTermConfiguration.self, forKey: .wezTerm)
     verifier = try container.decode(VerifierConfiguration.self, forKey: .verifier)
+    persistentTerminals = try container.decodeIfPresent(Bool.self, forKey: .persistentTerminals)
+    tmuxExecutable = try container.decodeIfPresent(String.self, forKey: .tmuxExecutable)
+    setupCompleted = try container.decodeIfPresent(Bool.self, forKey: .setupCompleted)
     dailyReport =
       try container.decodeIfPresent(DailyReportConfiguration.self, forKey: .dailyReport)
       ?? DailyReportConfiguration()
@@ -210,6 +228,9 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     guard (1...300).contains(refreshIntervalSeconds) else {
       throw ConfigurationError.invalidRefreshInterval
     }
+    if persistentTerminals == true, tmuxExecutable?.hasPrefix("/") != true {
+      throw ConfigurationError.invalidTerminalSettings
+    }
     guard (10...900).contains(verifier.timeoutSeconds), (1...100).contains(verifier.maxTurns) else {
       throw ConfigurationError.invalidVerifierBudget
     }
@@ -230,6 +251,7 @@ public enum ConfigurationError: Error, LocalizedError, Equatable {
   case invalidRefreshInterval
   case invalidVerifierBudget
   case invalidDailyReportSettings
+  case invalidTerminalSettings
 
   public var errorDescription: String? {
     switch self {
@@ -241,6 +263,8 @@ public enum ConfigurationError: Error, LocalizedError, Equatable {
       "Agent timeout or turn budget is outside the supported range."
     case .invalidDailyReportSettings:
       "Daily report time, token target, or enabled platforms are invalid."
+    case .invalidTerminalSettings:
+      "Persistent terminals require an absolute path to the tmux executable."
     }
   }
 }
@@ -382,6 +406,8 @@ public enum DailyReportStatus: String, Codable, Equatable, Sendable {
   case partial
   case failed
   case skipped
+
+  public var satisfiesDailySchedule: Bool { self == .success }
 }
 
 public struct DailyReportTokenUsage: Codable, Equatable, Sendable {
@@ -645,6 +671,44 @@ public struct DashboardRecurrence: Codable, Equatable, Sendable {
   }
 }
 
+/// Optional completion facts supplied by the canonical dashboard.
+///
+/// The queue displays these values as-is and never creates them locally.
+public struct DashboardCompletion: Codable, Equatable, Sendable {
+  public let outcome: String?
+  public let reason: String?
+  public let resolutionPrs: [Int]
+  public let evidence: [String]
+  public let completedBy: String?
+
+  public init(
+    outcome: String? = nil,
+    reason: String? = nil,
+    resolutionPrs: [Int] = [],
+    evidence: [String] = [],
+    completedBy: String? = nil
+  ) {
+    self.outcome = outcome
+    self.reason = reason
+    self.resolutionPrs = resolutionPrs
+    self.evidence = evidence
+    self.completedBy = completedBy
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case outcome, reason, resolutionPrs, evidence, completedBy
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    outcome = try container.decodeIfPresent(String.self, forKey: .outcome)
+    reason = try container.decodeIfPresent(String.self, forKey: .reason)
+    resolutionPrs = try container.decodeIfPresent([Int].self, forKey: .resolutionPrs) ?? []
+    evidence = try container.decodeIfPresent([String].self, forKey: .evidence) ?? []
+    completedBy = try container.decodeIfPresent(String.self, forKey: .completedBy)
+  }
+}
+
 public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
   public let id: String
   public let title: String
@@ -656,6 +720,7 @@ public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
   public let doneWhen: String?
   public let updatedAt: String?
   public let completedAt: String?
+  public let completion: DashboardCompletion?
   public let taskType: String?
   public let recurrence: DashboardRecurrence?
   public let worktree: String?
@@ -675,6 +740,7 @@ public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
     doneWhen: String? = nil,
     updatedAt: String? = nil,
     completedAt: String? = nil,
+    completion: DashboardCompletion? = nil,
     taskType: String? = nil,
     recurrence: DashboardRecurrence? = nil,
     worktree: String? = nil,
@@ -693,6 +759,7 @@ public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
     self.doneWhen = doneWhen
     self.updatedAt = updatedAt
     self.completedAt = completedAt
+    self.completion = completion
     self.taskType = taskType
     self.recurrence = recurrence
     self.worktree = worktree
@@ -704,7 +771,7 @@ public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
 
   private enum CodingKeys: String, CodingKey {
     case id, title, category, priority, status, summary, next, doneWhen
-    case updatedAt, completedAt, taskType, recurrence, worktree, resolutionPrs, prs, links, steps
+    case updatedAt, completedAt, completion, taskType, recurrence, worktree, resolutionPrs, prs, links, steps
   }
 
   public init(from decoder: any Decoder) throws {
@@ -719,6 +786,7 @@ public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
     doneWhen = try container.decodeIfPresent(String.self, forKey: .doneWhen)
     updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
     completedAt = try container.decodeIfPresent(String.self, forKey: .completedAt)
+    completion = try container.decodeIfPresent(DashboardCompletion.self, forKey: .completion)
     taskType = try container.decodeIfPresent(String.self, forKey: .taskType)
     recurrence = try container.decodeIfPresent(DashboardRecurrence.self, forKey: .recurrence)
     worktree = try container.decodeIfPresent(String.self, forKey: .worktree)
@@ -916,6 +984,8 @@ public struct CompletionRequest: Codable, Identifiable, Equatable, Sendable {
   public var summary: String?
   public var logPath: String?
   public let requestFilePath: String
+  public let subtaskID: String?
+  public let contextPath: String?
 
   public init(
     id: UUID = UUID(),
@@ -925,7 +995,9 @@ public struct CompletionRequest: Codable, Identifiable, Equatable, Sendable {
     status: CompletionReviewStatus = .pending,
     summary: String? = nil,
     logPath: String? = nil,
-    requestFilePath: String
+    requestFilePath: String,
+    subtaskID: String? = nil,
+    contextPath: String? = nil
   ) {
     self.id = id
     self.ticketID = ticketID
@@ -935,6 +1007,8 @@ public struct CompletionRequest: Codable, Identifiable, Equatable, Sendable {
     self.summary = summary
     self.logPath = logPath
     self.requestFilePath = requestFilePath
+    self.subtaskID = subtaskID
+    self.contextPath = contextPath
   }
 }
 
@@ -985,6 +1059,24 @@ public enum AgentProvider: String, Codable, CaseIterable, Equatable, Sendable {
   }
 }
 
+public enum AgentTerminalLabels {
+  public static func windowTitle(ticketID: String) -> String {
+    ticketID
+  }
+
+  public static func tabTitle(
+    ticketID: String,
+    provider: AgentProvider,
+    sessionID: String
+  ) -> String {
+    "\(ticketID) · \(provider.displayName) · \(sessionID.suffix(6).lowercased())"
+  }
+
+  public static func tabTitle(ticketID: String, paneID: Int) -> String {
+    "\(ticketID) · Tab \(paneID)"
+  }
+}
+
 public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {
   public let id: UUID
   public let ticketID: String
@@ -995,6 +1087,11 @@ public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {
   public var windowID: Int?
   public var tabID: Int?
   public var paneID: Int?
+  public var subtaskID: String?
+  public var contextDirectory: String?
+  public var supportDirectory: String?
+  public var resumePrompt: String?
+  public var tmux: TmuxSessionReference?
 
   public init(
     id: UUID = UUID(),
@@ -1005,7 +1102,12 @@ public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {
     workingDirectory: String,
     windowID: Int? = nil,
     tabID: Int? = nil,
-    paneID: Int? = nil
+    paneID: Int? = nil,
+    subtaskID: String? = nil,
+    contextDirectory: String? = nil,
+    supportDirectory: String? = nil,
+    resumePrompt: String? = nil,
+    tmux: TmuxSessionReference? = nil
   ) {
     self.id = id
     self.ticketID = ticketID
@@ -1016,10 +1118,58 @@ public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {
     self.windowID = windowID
     self.tabID = tabID
     self.paneID = paneID
+    self.subtaskID = subtaskID
+    self.contextDirectory = contextDirectory
+    self.supportDirectory = supportDirectory
+    self.resumePrompt = resumePrompt
+    self.tmux = tmux
   }
 
   public var terminalWindowTitle: String {
-    "\(ticketID) · \(provider.displayName) · \(sessionID)"
+    AgentTerminalLabels.windowTitle(ticketID: ticketID)
+  }
+
+  public var terminalTabTitle: String {
+    AgentTerminalLabels.tabTitle(
+      ticketID: ticketID,
+      provider: provider,
+      sessionID: sessionID
+    )
+  }
+
+  public func canonicalizedForTerminal() -> TaskAgentSession {
+    TaskAgentSession(
+      id: id,
+      ticketID: ticketID,
+      provider: provider,
+      sessionID: sessionID,
+      tabTitle: terminalTabTitle,
+      workingDirectory: workingDirectory,
+      windowID: windowID,
+      tabID: tabID,
+      paneID: paneID,
+      subtaskID: subtaskID,
+      contextDirectory: contextDirectory,
+      supportDirectory: supportDirectory,
+      resumePrompt: nil,
+      tmux: tmux
+    )
+  }
+
+  public func withContext(_ context: TaskContext, subtask: TaskSubtask?, supportDirectory: URL) -> TaskAgentSession {
+    var enriched = self
+    // The session's launch directory is authoritative. Task context can move to
+    // a new worktree without moving an older provider conversation.
+    if workingDirectory.isEmpty {
+      enriched.workingDirectory = context.worktreePath ?? context.repositoryPath ?? workingDirectory
+    }
+    enriched.subtaskID = subtask?.id
+    enriched.contextDirectory = context.contextDirectory.path
+    enriched.supportDirectory = supportDirectory.path
+    // Legacy state can still decode resumePrompt, but managed recall never sends
+    // another provider prompt or reconstructs a provider conversation.
+    enriched.resumePrompt = nil
+    return enriched
   }
 }
 
@@ -1051,6 +1201,33 @@ public struct LocalState: Codable, Equatable, Sendable {
     self.appearance = appearance
     self.accentStyle = accentStyle
     self.agentSessions = agentSessions
+  }
+
+  public mutating func upsertAgentSession(_ session: TaskAgentSession) {
+    let matchesIdentity: (TaskAgentSession) -> Bool = {
+      $0.provider == session.provider
+        && $0.sessionID.caseInsensitiveCompare(session.sessionID) == .orderedSame
+    }
+    let previous = agentSessions.first(where: matchesIdentity)
+    let persistedID = previous?.id ?? session.id
+    let sameTask = previous?.ticketID == session.ticketID ? previous : nil
+    agentSessions.removeAll(where: matchesIdentity)
+    agentSessions.append(TaskAgentSession(
+      id: persistedID,
+      ticketID: session.ticketID,
+      provider: session.provider,
+      sessionID: session.sessionID,
+      tabTitle: session.terminalTabTitle,
+      workingDirectory: session.workingDirectory,
+      windowID: session.windowID,
+      tabID: session.tabID,
+      paneID: session.paneID,
+      subtaskID: session.subtaskID ?? sameTask?.subtaskID,
+      contextDirectory: session.contextDirectory ?? sameTask?.contextDirectory,
+      supportDirectory: session.supportDirectory ?? sameTask?.supportDirectory,
+      resumePrompt: nil,
+      tmux: session.tmux ?? previous?.tmux
+    ))
   }
 
   private enum CodingKeys: String, CodingKey {

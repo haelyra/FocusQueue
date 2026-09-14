@@ -1,9 +1,8 @@
 ObjC.import("Foundation");
 
 const CONFIG_PATH = "/Users/hira/Library/Application Support/ECC Focus Queue/ingestion.json";
-const RUNTIME_PATH = "/Users/hira/Library/Application Support/ECC Focus Queue/ingestion";
-const REQUEST_PATH = `${RUNTIME_PATH}/mail-request.json`;
-const RESPONSE_PATH = `${RUNTIME_PATH}/mail-response.json`;
+const DEFAULT_REQUEST_PATH = "/Users/hira/Library/Application Support/ECC Focus Queue/connector-commands";
+const DEFAULT_RESPONSE_PATH = "/Users/hira/Library/Application Support/ECC Focus Queue/mail-proofs";
 const CONNECTOR = "ecc-focus-mail-reader";
 const MAX_BODY_CHARACTERS = 100000;
 const MAX_SEARCH_CANDIDATES = 5000;
@@ -13,7 +12,10 @@ function safeValue(operation, fallback) {
   try {
     const value = operation();
     return value === undefined || value === null ? fallback : value;
-  } catch (_) {
+  } catch (error) {
+    // Optional message fields can be missing. Authorization and transport
+    // failures must reach the response, rather than look like empty mailboxes.
+    if (["mail_permission_required", "mail_reader_timeout"].includes(errorCode(error))) throw error;
     return fallback;
   }
 }
@@ -48,6 +50,42 @@ function writePrivateJSON(path, payload) {
 
 function isoNow() {
   return new Date().toISOString();
+}
+
+function errorCode(error) {
+  const detail = String(error || "").toLowerCase();
+  if (Number(error && error.number) === -1743 || detail.includes("not authorized to send apple events") || detail.includes("-1743")) {
+    return "mail_permission_required";
+  }
+  if (Number(error && error.number) === -1712 || detail.includes("-1712") || detail.includes("appleevent timed out")) {
+    return "mail_reader_timeout";
+  }
+  if (detail.includes("mailbox is not configured")) return "mailbox_not_configured";
+  if (detail.includes("no enabled apple mail account")) return "mail_account_unavailable";
+  if (detail.includes("mailboxes were found")) return "mailbox_unavailable";
+  if (detail.includes("permission") || detail.includes("operation not permitted")) return "mail_runtime_permission_required";
+  return "mail_reader_failed";
+}
+
+function recoveryHint(code) {
+  if (code === "mail_permission_required") {
+    return "Allow ECC Focus Mail Reader > Mail in System Settings > Privacy & Security > Automation. " +
+      "The signed helper uses tools.ecc.focus-mail-reader; older applet and python entries are separate identities. " +
+      "If the helper is already enabled, run the connector status check and inspect its current error before changing permissions.";
+  }
+  if (code === "mailbox_not_configured") return "Choose a configured mailbox or add the intended mailbox to emailMailboxes in ingestion settings, then retry.";
+  if (code === "mail_runtime_permission_required") return "The helper could not access a local resource. Inspect the error and runtime paths; this is separate from Mail Automation approval.";
+  if (code === "mail_reader_timeout") return "Apple Mail did not respond in time. Retry the connector status check after Mail finishes synchronizing.";
+  return "Review the connector error and ingestion settings, then retry.";
+}
+
+function mailIPCPaths(config) {
+  const requestRuntime = String(config.mailRequestDirectory || DEFAULT_REQUEST_PATH).replace(/\/+$/, "");
+  const responseRuntime = String(config.mailResponseDirectory || DEFAULT_RESPONSE_PATH).replace(/\/+$/, "");
+  return {
+    request: `${requestRuntime}/mail-request.json`,
+    response: `${responseRuntime}/mail-response.json`
+  };
 }
 
 function normalizedMessageId(value) {
@@ -101,7 +139,7 @@ function selectedMailboxes(account, config, requested) {
   if (requested && requested.length) {
     const wanted = requested.map((value) => String(value).toLowerCase());
     const unknown = wanted.filter((value) => !configured.includes(value));
-    if (unknown.length) throw new Error(`Mailbox is not configured for read access: ${unknown.join(", ")}`);
+    if (unknown.length) throw new Error(`Mailbox is not configured for read access: ${unknown.join(", ")}. Configured mailboxes: ${configured.join(", ")}.`);
     configured = wanted;
   }
   const result = [];
@@ -186,6 +224,10 @@ function search(config, request, account) {
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   const days = Math.min(Math.max(Number(request.days || 30), 1), 3650);
   const limit = Math.min(Math.max(Number(request.limit || 10), 1), 50);
+  const offset = Math.min(Math.max(Number(request.offset || 0), 0), MAX_SEARCH_CANDIDATES);
+  // Let the scan guard observe one more position when a page ends at the cap,
+  // so capped mailboxes are reported as incomplete instead of silently done.
+  const requestedCandidateCount = Math.min(offset + limit + 1, MAX_SEARCH_CANDIDATES + 1);
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const mailboxes = selectedMailboxes(account, config, request.mailboxes);
   const candidates = [];
@@ -194,6 +236,7 @@ function search(config, request, account) {
   let scanTruncated = false;
   for (const entry of mailboxes) {
     const index = mailboxIndex(entry);
+    let mailboxMatches = 0;
     for (let position = 0; position < index.ids.length; position += 1) {
       const received = index.dates[position];
       if (received && received < cutoff) break;
@@ -213,12 +256,19 @@ function search(config, request, account) {
         matches = terms.every((term) => combined.includes(term));
       }
       if (!matches) continue;
-      if (!body) body = bodyAt(index, position);
-      candidates.push({...item, snippet: snippet(body, query, 700), attachments: []});
-      if (!query && candidates.length >= limit * mailboxes.length) break;
+      // Keep metadata candidates cheap. Fetch snippets only for the returned
+      // page, rather than rereading every earlier page and every mailbox match.
+      candidates.push({item, index, position, body});
+      mailboxMatches += 1;
+      if (!query && mailboxMatches >= requestedCandidateCount) break;
     }
   }
-  candidates.sort((left, right) => String(right.receivedAt).localeCompare(String(left.receivedAt)));
+  candidates.sort((left, right) => String(right.item.receivedAt).localeCompare(String(left.item.receivedAt)));
+  const pageEnd = offset + limit;
+  const results = candidates.slice(offset, pageEnd).map((candidate) => {
+    const body = candidate.body || bodyAt(candidate.index, candidate.position);
+    return {...candidate.item, snippet: snippet(body, query, 700), attachments: []};
+  });
   return {
     status: "ok",
     verified: true,
@@ -229,11 +279,13 @@ function search(config, request, account) {
     query,
     days,
     retrievedAt: isoNow(),
-    resultCount: Math.min(candidates.length, limit),
+    resultCount: Math.max(0, Math.min(candidates.length, pageEnd) - offset),
+    offset,
     candidateCount: scanned,
     bodyCandidateCount: bodyScanned,
-    truncated: candidates.length > limit || scanTruncated || bodyScanned >= MAX_BODY_SEARCH_CANDIDATES,
-    results: candidates.slice(0, limit)
+    truncated: candidates.length > pageEnd,
+    hardTruncated: scanTruncated || bodyScanned >= MAX_BODY_SEARCH_CANDIDATES,
+    results
   };
 }
 
@@ -278,11 +330,14 @@ function readMessage(config, request, account) {
 }
 
 function run() {
-  const request = readJSON(REQUEST_PATH);
   let config = {};
+  let request = {};
+  let paths = mailIPCPaths(config);
   let response;
   try {
     config = readJSON(CONFIG_PATH);
+    paths = mailIPCPaths(config);
+    request = readJSON(paths.request);
     const Mail = Application("Mail");
     const target = String(config.emailAddress || "").toLowerCase();
     const account = resolveAccount(Mail, target);
@@ -299,10 +354,13 @@ function run() {
       connector: CONNECTOR,
       account: String(config.emailAddress || "unknown"),
       retrievedAt: isoNow(),
+      errorCode: errorCode(error),
+      recoveryHint: recoveryHint(errorCode(error)),
+      helperBundleIdentifier: "tools.ecc.focus-mail-reader",
       error: String(error).slice(0, 800)
     };
   }
   response.nonce = String(request.nonce || "");
-  writePrivateJSON(RESPONSE_PATH, response);
+  writePrivateJSON(paths.response, response);
   return JSON.stringify({status: response.status, operation: response.operation});
 }

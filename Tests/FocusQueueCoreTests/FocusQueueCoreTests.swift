@@ -82,6 +82,26 @@ func missedMorningRunPolicy() throws {
   )
 }
 
+@Test("A failed scheduled report retries automatically after the grace window")
+func failedMorningRunRetriesAutomatically() throws {
+  var calendar = Calendar(identifier: .gregorian)
+  calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
+  let failedAttempt = try Date("2026-09-03T08:35:00Z", strategy: .iso8601)
+  let retryTick = try Date("2026-09-03T10:00:00Z", strategy: .iso8601)
+
+  #expect(
+    MorningRunPolicy.disposition(
+      now: retryTick,
+      lastSuccessfulAt: nil,
+      lastUnsuccessfulAttemptAt: failedAttempt,
+      hour: 8,
+      minute: 30,
+      automaticGraceMinutes: 10,
+      calendar: calendar
+    ) == .runAutomatically
+  )
+}
+
 @Test("Legacy application configuration receives safe daily-report defaults")
 func legacyDailyReportConfiguration() throws {
   let data = Data(
@@ -470,6 +490,59 @@ func pullRequestProgress() {
   #expect(ticket.progressLabel == "1/2 PRs")
 }
 
+@Test("Dashboard decoding retains source-backed completion facts")
+func completedTicketDecoding() throws {
+  let json = """
+    {
+      "tickets": [{
+        "id": "ECC-103",
+        "title": "Completed task",
+        "status": "resolved",
+        "summary": "",
+        "completedAt": "2026-09-03T14:00:00Z",
+        "completion": {
+          "outcome": "Merged the queue card update.",
+          "reason": "All acceptance checks passed.",
+          "resolutionPrs": [1234],
+          "evidence": ["https://example.test/pull/1234"],
+          "completedBy": "agent-42"
+        }
+      }]
+    }
+    """
+
+  let dashboard = try JSONDecoder().decode(DashboardDocument.self, from: Data(json.utf8))
+  let ticket = try #require(dashboard.tickets.first)
+
+  #expect(ticket.completionTimestamp == "2026-09-03T14:00:00Z")
+  #expect(ticket.completion?.reason == "All acceptance checks passed.")
+  #expect(ticket.completion?.resolutionPrs == [1234])
+  #expect(ticket.completion?.evidence == ["https://example.test/pull/1234"])
+}
+
+@Test("Partial completion facts do not require or invent missing details")
+func partialCompletedTicketDecoding() throws {
+  let json = """
+    {
+      "tickets": [{
+        "id": "ECC-104",
+        "title": "Partially described completion",
+        "status": "cancelled",
+        "summary": "",
+        "completion": {"reason": "Superseded by ECC-105."}
+      }]
+    }
+    """
+
+  let dashboard = try JSONDecoder().decode(DashboardDocument.self, from: Data(json.utf8))
+  let ticket = try #require(dashboard.tickets.first)
+
+  #expect(ticket.completion?.reason == "Superseded by ECC-105.")
+  #expect(ticket.completion?.outcome == nil)
+  #expect(ticket.completion?.resolutionPrs.isEmpty == true)
+  #expect(ticket.completion?.evidence.isEmpty == true)
+}
+
 @Test("Weekly PR resolution tasks are typed and linked to their repository")
 func recurringPullRequestTaskTyping() {
   let inferred = DashboardTicket(
@@ -688,18 +761,33 @@ func markdownHTMLRendering() {
 
     - **Ready**
 
+    [Jump to status](#status)
+
+    ## Status
+
     | Item | State |
     | --- | --- |
     | App | Done |
+
+    ```mermaid
+    flowchart LR
+      A[Plan] --> B[Build]
+    ```
     """
 
-  let html = MarkdownHTMLRenderer.page(markdown: markdown, sourceURL: sourceURL)
+  let html = MarkdownHTMLRenderer.page(
+    markdown: markdown, sourceURL: sourceURL, accentStyle: .pastel)
 
   #expect(html.contains("<title>README.md</title>"))
   #expect(html.contains("<base href=\"file:///Users/test/Project%20&amp;%20Notes/\">"))
-  #expect(html.contains("<h1>Release notes</h1>"))
+  #expect(html.contains(#"<h1 id="release-notes">Release notes</h1>"#))
   #expect(html.contains("<strong>Ready</strong>"))
   #expect(html.contains("<table>"))
+  #expect(html.contains(#"<h2 id="status">Status</h2>"#))
+  #expect(html.contains("data-plan-canvas-diagram"))
+  #expect(html.contains(#"<pre class="mermaid">"#))
+  #expect(html.contains("A[Plan] --&gt; B[Build]"))
+  #expect(html.contains("--accent: light-dark(#607bc7, #91adff)"))
   #expect(html.contains("color-scheme: light dark"))
 }
 
@@ -732,6 +820,26 @@ func wezTermTaskLabelMatching() {
     taskID: "ECC-035"
   )
   #expect(result?.paneID == 9)
+}
+
+@Test("WezTerm task matching rejects prefix collisions and incidental text")
+func wezTermTaskLabelMatchingRejectsPartialTitles() {
+  let panes = [
+    WezTermPane(
+      windowID: 1, paneID: 7, cwd: "file:///Users/hira/project", isActive: true,
+      tabTitle: "ECC-0350"),
+    WezTermPane(
+      windowID: 2, paneID: 9, cwd: "file:///Users/hira/project", isActive: false,
+      tabTitle: "working on ECC-035"),
+  ]
+
+  let result = WezTermController.bestMatchingPane(
+    in: panes,
+    directory: "/Users/hira/project",
+    taskID: "ECC-035"
+  )
+
+  #expect(result == nil)
 }
 
 @Test("A manually attached task label overrides directory matching")
@@ -802,13 +910,14 @@ func wezTermAttachArguments() async throws {
 
   try await controller.attach(
     paneID: 17,
-    taskID: "ECC-035",
+    tabTitle: "ECC-035 · Codex · 555555",
+    windowTitle: "ECC-035",
     configuration: WezTermConfiguration(executable: "/mock/wezterm")
   )
   let invocations = await runner.specifications
 
   #expect(invocations.map(\.arguments) == [
-    ["cli", "set-tab-title", "--pane-id", "17", "ECC-035"],
+    ["cli", "set-tab-title", "--pane-id", "17", "ECC-035 · Codex · 555555"],
     ["cli", "set-window-title", "--pane-id", "17", "ECC-035"],
   ])
 }
@@ -871,7 +980,7 @@ func wezTermAgentDiscoveryIsBatched() async throws {
     p30447
     n/Users/hira/.codex/thread-writer-locks/11111111-2222-3333-4444-555555555555.lock
     p64829
-    n/Users/hira/.codex/sessions/2026/09/02/rollout-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl
+    n/Users/hira/.codex/thread-writer-locks/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.lock
     """
   let runner = MockProcessRunner(results: [
     ProcessResult(exitCode: 0, standardOutput: panes, standardError: "", timedOut: false),
@@ -887,6 +996,87 @@ func wezTermAgentDiscoveryIsBatched() async throws {
   #expect(agents.count == 2)
   #expect(invocations.count == 3)
   #expect(invocations[2].arguments == ["-a", "-p", "30447,64829", "-Fn"])
+}
+
+@Test("Running Codex discovery resolves a subagent transcript to its canonical root")
+func wezTermCodexDiscoveryUsesCanonicalRootSession() async throws {
+  let rootSessionID = "01a0696a-6348-79f0-8dbd-0c421c0bea7c"
+  let subagentSessionID = "01a069ab-f291-75e2-836e-e9c47a86f0f6"
+  let fixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
+    "focus-queue-codex-sessions-\(UUID().uuidString)", isDirectory: true)
+  let directory = fixtureRoot.appendingPathComponent(".codex/sessions", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+  try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+  let subagentURL = directory.appendingPathComponent("rollout-\(subagentSessionID).jsonl")
+  let embeddedInstructions = String(repeating: "x", count: 70_000)
+  try Data(
+    """
+    {"type":"session_meta","payload":{"id":"\(subagentSessionID)","session_id":"\(rootSessionID)","parent_thread_id":"\(rootSessionID)","source":{"subagent":{}},"base_instructions":"\(embeddedInstructions)"}}
+    """.utf8
+  ).write(to: subagentURL)
+
+  let panes = """
+    [{"window_id":11,"tab_id":20,"pane_id":33,"cwd":"file:///Users/test/project",
+      "tab_title":"App Defect","tty_name":"/dev/ttys027"}]
+    """
+  let lsof = """
+    p30447
+    n\(fixtureRoot.path)/.codex/thread-writer-locks/\(subagentSessionID).lock
+    n\(subagentURL.path)
+    """
+  let runner = MockProcessRunner(results: [
+    ProcessResult(exitCode: 0, standardOutput: panes, standardError: "", timedOut: false),
+    ProcessResult(
+      exitCode: 0, standardOutput: "30447 ttys027  codex\n", standardError: "", timedOut: false),
+    ProcessResult(exitCode: 0, standardOutput: lsof, standardError: "", timedOut: false),
+  ])
+
+  let agents = try await WezTermController(runner: runner).listRunningAgents(
+    configuration: WezTermConfiguration(executable: "/mock/wezterm")
+  )
+
+  #expect(agents.map(\.sessionID) == [rootSessionID])
+}
+
+@Test("Running Codex discovery rejects multiple unrelated root sessions in one process")
+func wezTermCodexDiscoveryRejectsAmbiguousRoots() async throws {
+  let firstSessionID = "11111111-2222-4333-8444-555555555555"
+  let secondSessionID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+  let fixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
+    "focus-queue-codex-ambiguous-\(UUID().uuidString)", isDirectory: true)
+  let directory = fixtureRoot.appendingPathComponent(".codex/sessions", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+  try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+  let firstURL = directory.appendingPathComponent("rollout-\(firstSessionID).jsonl")
+  let secondURL = directory.appendingPathComponent("rollout-\(secondSessionID).jsonl")
+  for (url, sessionID) in [(firstURL, firstSessionID), (secondURL, secondSessionID)] {
+    try Data(
+      """
+      {"type":"session_meta","payload":{"id":"\(sessionID)","session_id":"\(sessionID)","source":"cli","thread_source":"user"}}
+      """.utf8
+    ).write(to: url)
+  }
+  let panes = """
+    [{"window_id":11,"tab_id":20,"pane_id":33,"cwd":"file:///Users/test/project",
+      "tab_title":"ECC-015","tty_name":"/dev/ttys027"}]
+    """
+  let lsof = """
+    p30447
+    n\(firstURL.path)
+    n\(secondURL.path)
+    """
+  let runner = MockProcessRunner(results: [
+    ProcessResult(exitCode: 0, standardOutput: panes, standardError: "", timedOut: false),
+    ProcessResult(
+      exitCode: 0, standardOutput: "30447 ttys027  codex\n", standardError: "", timedOut: false),
+    ProcessResult(exitCode: 0, standardOutput: lsof, standardError: "", timedOut: false),
+  ])
+
+  let agents = try await WezTermController(runner: runner).listRunningAgents(
+    configuration: WezTermConfiguration(executable: "/mock/wezterm")
+  )
+
+  #expect(agents.isEmpty)
 }
 
 @Test("Agent registration inbox persists and acknowledges a session")
@@ -910,31 +1100,49 @@ func agentRegistrationInboxRoundTrip() async throws {
   #expect(try await inbox.pending().isEmpty)
 }
 
-@Test("Agent resume commands use the saved provider, session, and working directory")
-func wezTermAgentResumeCommands() {
-  let codex = TaskAgentSession(
-    ticketID: "ECC-035",
+@Test("Agent terminal labels keep the task stable and distinguish the session")
+func agentTerminalLabels() {
+  let session = TaskAgentSession(
+    ticketID: "ECC-015",
     provider: .codex,
-    sessionID: "11111111-2222-3333-4444-555555555555",
-    tabTitle: "Focus queue",
-    workingDirectory: "/Users/test/codex-worktree"
-  )
-  let claude = TaskAgentSession(
-    ticketID: "ECC-035",
-    provider: .claude,
-    sessionID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-    tabTitle: "Focus queue review",
-    workingDirectory: "/Users/test/claude-worktree"
+    sessionID: "01a0696a-6348-79f0-8dbd-0c421c0bea7c",
+    tabTitle: "App Defect",
+    workingDirectory: "/Users/test/project"
   )
 
-  #expect(WezTermController.resumeSpawnArguments(for: codex) == [
-    "cli", "spawn", "--new-window", "--cwd", "/Users/test/codex-worktree", "--",
-    "/usr/bin/env", "codex", "resume", "11111111-2222-3333-4444-555555555555",
-  ])
-  #expect(WezTermController.resumeSpawnArguments(for: claude) == [
-    "cli", "spawn", "--new-window", "--cwd", "/Users/test/claude-worktree", "--",
-    "/usr/bin/env", "claude", "--resume", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-  ])
+  #expect(session.terminalWindowTitle == "ECC-015")
+  #expect(session.terminalTabTitle == "ECC-015 · Codex · 0bea7c")
+  #expect(AgentTerminalLabels.tabTitle(ticketID: "ECC-015", paneID: 17) == "ECC-015 · Tab 17")
+}
+
+@Test("One provider session can belong to only one ticket")
+func agentSessionUpsertMovesAssociationAndCanonicalizesLabel() {
+  let originalID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+  let original = TaskAgentSession(
+    id: originalID,
+    ticketID: "ECC-014",
+    provider: .codex,
+    sessionID: "01a0696a-6348-79f0-8dbd-0c421c0bea7c",
+    tabTitle: "Old task",
+    workingDirectory: "/Users/test/project",
+    paneID: 33
+  )
+  let replacement = TaskAgentSession(
+    ticketID: "ECC-015",
+    provider: .codex,
+    sessionID: original.sessionID,
+    tabTitle: "App Defect",
+    workingDirectory: "/Users/test/project",
+    paneID: 33
+  )
+  var state = LocalState(agentSessions: [original])
+
+  state.upsertAgentSession(replacement)
+
+  #expect(state.agentSessions.count == 1)
+  #expect(state.agentSessions.first?.id == originalID)
+  #expect(state.agentSessions.first?.ticketID == "ECC-015")
+  #expect(state.agentSessions.first?.tabTitle == "ECC-015 · Codex · 0bea7c")
 }
 
 @Test("Config rejects relative source paths")
@@ -1043,7 +1251,106 @@ func codexQueueAgentBulkInboxTimeout() {
   #expect(CodexQueueAgent.runTimeoutSeconds(
     for: "Read my latest email.",
     configuredTimeoutSeconds: 120
+  ) == 180)
+  #expect(CodexQueueAgent.runTimeoutSeconds(
+    for: "Why is ECC-002 second?",
+    configuredTimeoutSeconds: 120
   ) == 120)
+}
+
+@Test("Daily report process errors preserve an actionable one-line cause")
+func dailyReportProcessFailurePresentation() {
+  let result = ProcessResult(
+    exitCode: 1,
+    standardOutput: "",
+    standardError: "Focus Queue morning reconciliation failed:\nNo-tools classification rejected codex-cli 0.153.4\n",
+    timedOut: false
+  )
+
+  let presentation = DailyReportAutomation.presentation(
+    for: result,
+    hasMatchingReport: false
+  )
+
+  #expect(presentation.isError)
+  #expect(presentation.message.contains("classifier failed its safety or compatibility check"))
+  #expect(!presentation.message.contains("codex-cli 0.153.4"))
+  #expect(presentation.message.contains("retry automatically"))
+  #expect(!presentation.message.contains("\n"))
+}
+
+@Test("Daily report UI does not expose multiline worker payloads")
+func dailyReportProcessFailureRedactsRawPayload() {
+  let presentation = DailyReportAutomation.presentation(
+    for: ProcessResult(
+      exitCode: 1,
+      standardOutput: "",
+      standardError: """
+      Focus Queue morning reconciliation failed: {
+        "error": "customer@example.com token=private-value"
+      }
+      """,
+      timedOut: false
+    ),
+    hasMatchingReport: false
+  )
+
+  #expect(presentation.isError)
+  #expect(presentation.message.contains("worker exited with code 1"))
+  #expect(!presentation.message.contains("customer@example.com"))
+  #expect(!presentation.message.contains("private-value"))
+  #expect(!presentation.message.hasSuffix("}. It will retry automatically."))
+}
+
+@Test("Partial daily reports are warnings and remain eligible for retry")
+func dailyReportPartialPresentation() {
+  let result = ProcessResult(
+    exitCode: 2,
+    standardOutput: "REPORT_ID: 11111111-2222-3333-4444-555555555555",
+    standardError: "",
+    timedOut: false
+  )
+
+  let presentation = DailyReportAutomation.presentation(
+    for: result,
+    hasMatchingReport: true
+  )
+
+  #expect(presentation.isError)
+  #expect(presentation.message.contains("partial platform coverage"))
+  #expect(DailyReportStatus.partial.satisfiesDailySchedule == false)
+  #expect(DailyReportStatus.success.satisfiesDailySchedule == true)
+}
+
+@Test("Daily report process presentation covers success, receipt, and timeout outcomes")
+func dailyReportProcessOutcomePresentation() {
+  let success = DailyReportAutomation.presentation(
+    for: ProcessResult(
+      exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
+    hasMatchingReport: true
+  )
+  let missingReceipt = DailyReportAutomation.presentation(
+    for: ProcessResult(
+      exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
+    hasMatchingReport: false
+  )
+  let timeout = DailyReportAutomation.presentation(
+    for: ProcessResult(
+      exitCode: -15, standardOutput: "", standardError: "", timedOut: true),
+    hasMatchingReport: false
+  )
+  let emptyFailure = DailyReportAutomation.presentation(
+    for: ProcessResult(
+      exitCode: 7, standardOutput: "", standardError: "", timedOut: false),
+    hasMatchingReport: false
+  )
+
+  #expect(success == .init(message: "Daily report completed.", isError: false))
+  #expect(missingReceipt.message.contains("receipt validation failed"))
+  #expect(missingReceipt.isError)
+  #expect(timeout.message.contains("timed out after 15 minutes"))
+  #expect(timeout.isError)
+  #expect(emptyFailure.message.contains("worker exited with code 7"))
 }
 
 @Test("Queue chat accepts fresh verified mail proof and adds a deterministic receipt")
@@ -1100,6 +1407,55 @@ func codexQueueAgentAcceptsVerifiedMailProof() async throws {
   #expect(reply.message.contains("<message@example.com>"))
 }
 
+@Test("Queue chat requires a search receipt for a generic inbox check")
+func codexQueueAgentRejectsStatusProofForInboxCheck() async {
+  let receipt = Data(
+    """
+    {
+      "status":"ok",
+      "verified":true,
+      "operation":"status",
+      "connector":"ecc-focus-mail-reader",
+      "account":"haley@ecc.tools",
+      "retrievedAt":"2026-09-03T00:50:43Z",
+      "nonce":"proof-status"
+    }
+    """.utf8
+  )
+  let runner = MockProcessRunner(results: [
+    ProcessResult(
+      exitCode: 0,
+      standardOutput: "Your inbox is clear.\nMAIL_PROOF: proof-status",
+      standardError: "",
+      timedOut: false
+    )
+  ])
+  let agent = CodexQueueAgent(
+    runner: runner,
+    files: MockFileAccessor(data: receipt, modificationDate: .distantFuture)
+  )
+
+  do {
+    _ = try await agent.send(
+      message: "Check my inbox for anything new.",
+      dashboardPath: "/tmp/dashboard.json",
+      workspace: "/tmp",
+      visibleOrder: [],
+      deferredTicketIDs: [],
+      configuration: VerifierConfiguration(
+        enabled: true,
+        executable: "/mock/focus-queue-codex",
+        sessionName: "unused",
+        timeoutSeconds: 60,
+        maxTurns: 12
+      )
+    )
+    Issue.record("A status receipt incorrectly proved inbox search claims")
+  } catch {
+    #expect(error.localizedDescription.contains("performed status, not the required search"))
+  }
+}
+
 @Test("Queue chat withholds mail claims that lack a fresh proof receipt")
 func codexQueueAgentRejectsUnsupportedMailClaim() async {
   let runner = MockProcessRunner(results: [
@@ -1136,8 +1492,8 @@ func codexQueueAgentRejectsUnsupportedMailClaim() async {
   }
 }
 
-@Test("Queue chat preserves a blocked connector error when no mail proof exists")
-func codexQueueAgentPreservesBlockedMailError() async {
+@Test("Queue chat safely maps a blocked connector error when no mail proof exists")
+func codexQueueAgentMapsBlockedMailError() async {
   let runner = MockProcessRunner(results: [
     ProcessResult(
       exitCode: 0,
@@ -1165,8 +1521,114 @@ func codexQueueAgentPreservesBlockedMailError() async {
     )
     Issue.record("Blocked mail connector error was not surfaced")
   } catch {
-    #expect(error.localizedDescription.contains("Operation not permitted"))
+    #expect(error.localizedDescription.contains("denied access to a local process or file"))
+    #expect(!error.localizedDescription.contains("Operation not permitted"))
     #expect(!error.localizedDescription.contains("did not provide current-turn"))
+  }
+}
+
+@Test("Queue chat explains a timed-out Mail check with its actual budget")
+func codexQueueAgentExplainsMailTimeout() async {
+  let runner = MockProcessRunner(results: [
+    ProcessResult(
+      exitCode: -15,
+      standardOutput: "",
+      standardError: "",
+      timedOut: true
+    )
+  ])
+  let agent = CodexQueueAgent(runner: runner)
+
+  do {
+    _ = try await agent.send(
+      message: "Check my recent email.",
+      dashboardPath: "/tmp/dashboard.json",
+      workspace: "/tmp",
+      visibleOrder: [],
+      deferredTicketIDs: [],
+      configuration: VerifierConfiguration(
+        enabled: true,
+        executable: "/mock/focus-queue-codex",
+        sessionName: "unused",
+        timeoutSeconds: 120,
+        maxTurns: 12
+      )
+    )
+    Issue.record("Timed-out Mail check did not throw")
+  } catch {
+    #expect(error.localizedDescription.contains("Mail check timed out after 180 seconds"))
+    #expect(error.localizedDescription.contains("retry"))
+  }
+}
+
+@Test("Queue chat process failures expose only allowlisted diagnostics")
+func codexQueueAgentRedactsRawProcessFailure() async {
+  let runner = MockProcessRunner(results: [
+    ProcessResult(
+      exitCode: 7,
+      standardOutput: "",
+      standardError: "provider failed for customer@example.com token=private-value\n{\"secret\":true}",
+      timedOut: false
+    )
+  ])
+  let agent = CodexQueueAgent(runner: runner)
+
+  do {
+    _ = try await agent.send(
+      message: "Why is ECC-002 second?",
+      dashboardPath: "/tmp/dashboard.json",
+      workspace: "/tmp",
+      visibleOrder: [],
+      deferredTicketIDs: [],
+      configuration: VerifierConfiguration(
+        enabled: true,
+        executable: "/mock/focus-queue-codex",
+        sessionName: "unused",
+        timeoutSeconds: 60,
+        maxTurns: 12
+      )
+    )
+    Issue.record("Failed Queue process did not throw")
+  } catch {
+    #expect(error.localizedDescription.contains("worker exited with code 7"))
+    #expect(error.localizedDescription.contains("private Queue chat log"))
+    #expect(!error.localizedDescription.contains("customer@example.com"))
+    #expect(!error.localizedDescription.contains("private-value"))
+    #expect(!error.localizedDescription.contains("secret"))
+  }
+}
+
+@Test("Queue chat maps blocked Mail output without exposing raw content")
+func codexQueueAgentRedactsBlockedMailOutput() async {
+  let runner = MockProcessRunner(results: [
+    ProcessResult(
+      exitCode: 0,
+      standardOutput: "Blocked. focus-mail failed: Operation not permitted. token=private-value",
+      standardError: "",
+      timedOut: false
+    )
+  ])
+  let agent = CodexQueueAgent(runner: runner)
+
+  do {
+    _ = try await agent.send(
+      message: "Search my inbox.",
+      dashboardPath: "/tmp/dashboard.json",
+      workspace: "/tmp",
+      visibleOrder: [],
+      deferredTicketIDs: [],
+      configuration: VerifierConfiguration(
+        enabled: true,
+        executable: "/mock/focus-queue-codex",
+        sessionName: "unused",
+        timeoutSeconds: 60,
+        maxTurns: 12
+      )
+    )
+    Issue.record("Blocked Mail output did not throw")
+  } catch {
+    #expect(error.localizedDescription.contains("denied access to a local process or file"))
+    #expect(!error.localizedDescription.contains("private-value"))
   }
 }
 
@@ -1276,6 +1738,7 @@ func wezTermFocusArguments() async throws {
     ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
     ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
     ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
+    ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
   ])
   let controller = WezTermController(runner: runner)
 
@@ -1287,11 +1750,14 @@ func wezTermFocusArguments() async throws {
   let invocations = await runner.specifications
 
   #expect(result == .focused(paneID: 17))
-  #expect(invocations.count == 4)
+  #expect(invocations.count == 5)
   #expect(invocations[1].arguments == [
+    "cli", "set-tab-title", "--pane-id", "17", "ECC-035 · Tab 17",
+  ])
+  #expect(invocations[2].arguments == [
     "cli", "set-window-title", "--pane-id", "17", "ECC-035",
   ])
-  #expect(invocations[2].arguments == ["cli", "activate-pane", "--pane-id", "17"])
+  #expect(invocations[3].arguments == ["cli", "activate-pane", "--pane-id", "17"])
   #expect(!invocations.flatMap(\.arguments).contains("spawn"))
 }
 
@@ -1322,7 +1788,7 @@ func wezTermNewWindowArguments() async throws {
     "cli", "spawn", "--new-window", "--cwd", "/Users/test/project",
   ])
   #expect(invocations[2].arguments == [
-    "cli", "set-tab-title", "--pane-id", "22", "ECC-035",
+    "cli", "set-tab-title", "--pane-id", "22", "ECC-035 · Tab 22",
   ])
   #expect(invocations[3].arguments == [
     "cli", "set-window-title", "--pane-id", "22", "ECC-035",
@@ -1350,89 +1816,6 @@ func wezTermStandaloneFallback() async throws {
   #expect(invocation.arguments == [
     "-na", "WezTerm", "--args", "start", "--always-new-process", "--cwd",
     "/Users/test/project",
-  ])
-}
-
-@Test("View Agent focuses the pane that owns the saved session ID")
-func wezTermFocusesSavedAgentSession() async throws {
-  let sessionID = "01a064d7-3bc1-7681-8fb5-ca280b1aac96"
-  let panes = """
-    [{"window_id":11,"tab_id":20,"pane_id":33,"cwd":"file:///Users/test/project",
-      "tab_title":"ECC-035","tty_name":"/dev/ttys027"}]
-    """
-  let runner = MockProcessRunner(results: [
-    ProcessResult(exitCode: 0, standardOutput: panes, standardError: "", timedOut: false),
-    ProcessResult(
-      exitCode: 0, standardOutput: "30447 ttys027  codex\n", standardError: "", timedOut: false),
-    ProcessResult(
-      exitCode: 0,
-      standardOutput:
-        "p30447\nn/Users/test/.codex/sessions/2026/09/02/rollout-2026-09-02T21-17-02-\(sessionID).jsonl\n",
-      standardError: "", timedOut: false),
-    ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
-    ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
-    ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
-  ])
-  let controller = WezTermController(runner: runner)
-  let session = TaskAgentSession(
-    ticketID: "ECC-035", provider: .codex, sessionID: sessionID,
-    tabTitle: "ECC-035", workingDirectory: "/Users/test/project", paneID: 99
-  )
-
-  let result = try await controller.focusOrResume(
-    session: session,
-    taskID: "ECC-035",
-    configuration: WezTermConfiguration(executable: "/mock/wezterm")
-  )
-  let invocations = await runner.specifications
-
-  #expect(result == .focused(paneID: 33))
-  #expect(invocations[3].arguments == [
-    "cli", "activate-pane", "--pane-id", "33",
-  ])
-  #expect(invocations[4].arguments == [
-    "cli", "set-window-title", "--pane-id", "33",
-    "ECC-035 · Codex · \(sessionID)",
-  ])
-  #expect(invocations.contains { $0.arguments == [
-    "cli", "activate-pane", "--pane-id", "33",
-  ] })
-  #expect(!invocations.flatMap(\.arguments).contains("spawn"))
-}
-
-@Test("View Agent resumes a missing session in its saved worktree")
-func wezTermResumesMissingAgentSession() async throws {
-  let sessionID = "11111111-2222-3333-4444-555555555555"
-  let runner = MockProcessRunner(results: [
-    ProcessResult(exitCode: 0, standardOutput: "[]", standardError: "", timedOut: false),
-    ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
-    ProcessResult(exitCode: 0, standardOutput: "41\n", standardError: "", timedOut: false),
-    ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
-    ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
-    ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
-    ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
-  ])
-  let controller = WezTermController(runner: runner)
-  let session = TaskAgentSession(
-    ticketID: "ECC-035", provider: .codex, sessionID: sessionID,
-    tabTitle: "ECC-035", workingDirectory: "/Users/test/project", paneID: 33
-  )
-
-  let result = try await controller.focusOrResume(
-    session: session,
-    taskID: "ECC-035",
-    configuration: WezTermConfiguration(executable: "/mock/wezterm")
-  )
-  let invocations = await runner.specifications
-
-  #expect(result == .resumed(provider: .codex, sessionID: sessionID, paneID: 41))
-  #expect(invocations[2].arguments == [
-    "cli", "spawn", "--new-window", "--cwd", "/Users/test/project", "--",
-    "/usr/bin/env", "codex", "resume", sessionID,
-  ])
-  #expect(invocations[5].arguments == [
-    "cli", "set-window-title", "--pane-id", "41",
-    "ECC-035 · Codex · \(sessionID)",
   ])
 }
 
@@ -1530,6 +1913,33 @@ func everyQueuePlacementStaysOnCurrentDisplay() {
 
     #expect(currentDisplay.contains(frame))
   }
+}
+
+@Test("Terminal browsing activates only the selected pane and preserves all labels")
+func browseExactTerminal() async throws {
+  let pane = WezTermPane(windowID: 7, tabID: 8, paneID: 9, cwd: "file:///tmp/work", ttyName: "/dev/ttys010")
+  let json = String(decoding: try JSONEncoder().encode([pane]), as: UTF8.self)
+  let runner = MockProcessRunner(results: [ProcessResult(exitCode: 0, standardOutput: json, standardError: "", timedOut: false)])
+  try await WezTermController(runner: runner).focusPane(pane, configuration: WezTermConfiguration(executable: "/mock/wezterm"))
+  let calls = await runner.specifications
+  #expect(calls.count == 3)
+  #expect(calls[1].arguments == ["cli", "activate-pane", "--pane-id", "9"])
+  #expect(calls[2].executable == "/usr/bin/open")
+  #expect(!calls.flatMap(\.arguments).contains("set-tab-title"))
+  #expect(!calls.flatMap(\.arguments).contains("spawn"))
+  #expect(!calls.flatMap(\.arguments).contains("kill-pane"))
+}
+
+@Test("Terminal browsing rejects a stale pane before any activation")
+func browseRejectsStaleTerminal() async throws {
+  let pane = WezTermPane(windowID: 7, tabID: 8, paneID: 9, cwd: "file:///tmp/work", ttyName: "/dev/ttys010")
+  let changed = WezTermPane(windowID: 7, tabID: 8, paneID: 9, cwd: "file:///tmp/work", ttyName: "/dev/ttys011")
+  let json = String(decoding: try JSONEncoder().encode([changed]), as: UTF8.self)
+  let runner = MockProcessRunner(results: [ProcessResult(exitCode: 0, standardOutput: json, standardError: "", timedOut: false)])
+  await #expect(throws: WezTermError.self) {
+    try await WezTermController(runner: runner).focusPane(pane, configuration: WezTermConfiguration(executable: "/mock/wezterm"))
+  }
+  #expect(await runner.specifications.count == 1)
 }
 
 private actor MockProcessRunner: ProcessRunning {

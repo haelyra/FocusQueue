@@ -52,6 +52,16 @@ public enum DisplayGeometry {
 }
 
 public enum TerminalFocusGeometry {
+    public struct DisplayTarget: Equatable {
+        public let screenIndex: Int
+        public let frame: CGRect
+
+        public init(screenIndex: Int, frame: CGRect) {
+            self.screenIndex = screenIndex
+            self.frame = frame
+        }
+    }
+
     public static func centeredFrame(
         currentFrame: CGRect,
         visibleFrame: CGRect,
@@ -66,6 +76,39 @@ public enum TerminalFocusGeometry {
             width: width,
             height: height
         ).integral
+    }
+
+    public static func nextDisplayTarget(
+        currentWindowFrame: CGRect,
+        preferredWindowFrame: CGRect,
+        screenFrames: [CGRect],
+        visibleScreenFrames: [CGRect]
+    ) -> DisplayTarget? {
+        guard screenFrames.count > 1,
+              screenFrames.count == visibleScreenFrames.count else {
+            return nil
+        }
+
+        let overlaps: [(index: Int, area: CGFloat)] = screenFrames.enumerated()
+            .map { index, frame in
+                let intersection = frame.intersection(currentWindowFrame)
+                let area: CGFloat = intersection.isNull
+                    ? 0
+                    : intersection.width * intersection.height
+                return (index: index, area: area)
+            }
+        let currentIndex = overlaps
+            .filter { $0.area > 0 }
+            .max { $0.area < $1.area }?
+            .index
+        let nextIndex = currentIndex.map { ($0 + 1) % screenFrames.count } ?? 0
+        return DisplayTarget(
+            screenIndex: nextIndex,
+            frame: centeredFrame(
+                currentFrame: preferredWindowFrame,
+                visibleFrame: visibleScreenFrames[nextIndex]
+            )
+        )
     }
 
 }

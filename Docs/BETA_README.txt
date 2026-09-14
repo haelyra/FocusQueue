@@ -1,0 +1,72 @@
+ECC Focus Queue 0.3.0 private beta
+
+Requires macOS 14 or later. This archive is built for the architecture in its filename.
+The local development build uses an ad hoc signature. Public distribution requires
+Developer ID signing, notarization and a downloaded-artifact Gatekeeper check.
+
+INSTALL
+Drag ECC Focus Queue.app to your Applications folder and open it. The native setup
+wizard creates an empty local queue or lets you select an existing JSON dashboard.
+The packaged app does not need Python, Xcode, provider credentials or model calls
+for basic setup. Settings > Open setup wizard reopens setup at any time.
+
+For managed installation, open Install.command. It requires /usr/bin/python3
+(provided with Apple command line developer tools). It installs the app and helper
+under your home directory, preserves your existing configuration, and retains
+backups before replacing a previous version. Use --check for a read-only preflight,
+--login for launch at login, and --desktop for a Desktop shortcut. Existing login
+and shortcut choices are retained. Mail and scheduled agents are separate.
+
+TERMINALS
+WezTerm provides desktop agent launch, pane discovery, labels and recall.
+Other terminal apps use the command-line tmux path; their desktop panes are not
+controlled by this beta. Providers and tmux must be installed separately.
+The wizard's Install command-line helper button installs a missing helper without
+editing your shell profiles. Add $HOME/.local/bin to PATH or use its full path.
+
+PERSISTENT SESSIONS
+In setup, enable Keep new agents running in tmux and select the tmux executable.
+New agents start on a dedicated server named ecc-focus-queue. Existing terminals
+are not moved. Reconnect returns to the running process while the host and server
+remain alive. Reboot or server termination ends that process.
+
+From any local terminal:
+  "$HOME/.local/bin/focus-queue-session" tmux start my-work --cwd /path/to/workspace
+  "$HOME/.local/bin/focus-queue-session" tmux list
+  "$HOME/.local/bin/focus-queue-session" tmux attach my-work
+
+Detach with Ctrl-b, then d. To start a provider directly, append -- codex or
+-- claude to the start command. Explicit task registration still requires the
+provider's session identity, discovered from its process or environment.
+
+REMOTE ACCESS
+Sessions stay on the original Mac. Connect both devices to the same tailnet.
+Configure macOS Remote Login and SSH authentication for your account. Verify the
+Mac's SSH host key from the other device before using generated reconnect commands.
+The standard Tailscale Mac app uses ordinary SSH over Tailscale. The Tailscale SSH
+server feature has different platform requirements. Setup does not change either
+device's SSH configuration, keys, Tailscale enrollment or network access rules.
+
+Run on the host to generate a command for the other device:
+  "$HOME/.local/bin/focus-queue-session" tmux ssh-command user@my-mac my-work
+
+You can also list sessions and copy commands in Setup > Connect from another
+location. Generated commands require a known host key, disable agent forwarding,
+and preserve other attached clients. Remote host enrollment, cross-host process
+migration and automatic recovery after reboot are future work.
+
+RECOVERY AND UNINSTALL
+Managed installation retains prior files and a recovery.json map under
+Library/Application Support/ECC Focus Queue/backups/. Ordinary install failures
+restore prior files automatically. A hard interruption may require restoring the
+paths listed in the retained recovery map before retrying installation.
+Uninstall.command --check previews removal. Uninstall.command moves only verified,
+manifest-owned installation files to a retained backup. Task data, configuration,
+history, tmux sessions and companion services are preserved. For drag installations,
+move the app to Trash; manage any separately installed helper yourself.
+
+QUALIFICATION LIMITS
+Automated checks are headless. Cross-device Tailscale/SSH connectivity, visual setup,
+macOS permission prompts and provider authentication require a manual beta pass.
+Public launch also needs signing/notarization, account setup and permission-boundary
+work for optional agent/connector features, plus privacy, license and support policy.

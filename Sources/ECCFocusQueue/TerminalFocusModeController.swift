@@ -30,6 +30,12 @@ final class TerminalFocusModeController {
     private weak var queuePanel: NSPanel?
     private var backdropWindows: [FocusBackdropWindow] = []
     private var controlPanel: FocusControlPanel?
+    private var focusedWindow: TerminalFocusWindow?
+    private let accessibility = TerminalFocusAccessibility()
+    private var activeOperation: TerminalFocusOperation?
+    private var focusedApplication: NSRunningApplication?
+    private var preferredWindowFrame: CGRect?
+    private var isMovingFocusedWindow = false
 
     private(set) var isActive = false
     var stateDidChange: ((Bool) -> Void)?
@@ -44,47 +50,59 @@ final class TerminalFocusModeController {
         targetScreen: NSScreen?
     ) async throws {
         clearFocusMode(revealQueue: false)
-
-        guard requestAccessibilityPermission() else {
-            throw TerminalFocusModeError.accessibilityPermissionRequired
-        }
-        guard let application = await waitForApplication(named: applicationName) else {
-            throw TerminalFocusModeError.applicationUnavailable(applicationName)
-        }
-
-        application.activate(options: [.activateAllWindows])
-        guard let window = await waitForWindow(
-            of: application,
-            titleHint: windowTitleHint
-        ) else {
-            throw TerminalFocusModeError.focusedWindowUnavailable
-        }
-        let currentFrame = try frame(of: window)
-        let screen = targetScreen ?? screen(containingAXFrame: currentFrame) ?? NSScreen.main
-        guard let screen else { throw TerminalFocusModeError.windowFrameUnavailable }
-
-        let targetFrame = TerminalFocusGeometry.centeredFrame(
-            currentFrame: currentFrame,
-            visibleFrame: axFrame(fromAppKitFrame: screen.visibleFrame)
-        )
+        let operation = TerminalFocusOperation()
+        activeOperation = operation
 
         do {
-            try await animate(window: window, from: currentFrame, to: targetFrame)
-            try raise(window: window, application: application, activateApplication: true)
-            let focusedWindowNumber = windowNumber(
-                ownedBy: application.processIdentifier,
-                matchingAXFrame: try frame(of: window)
+            guard requestAccessibilityPermission() else {
+                throw TerminalFocusModeError.accessibilityPermissionRequired
+            }
+            guard let application = try await waitForApplication(named: applicationName, operation: operation) else {
+                throw TerminalFocusModeError.applicationUnavailable(applicationName)
+            }
+
+            try operation.checkCancellation()
+            application.activate(options: [.activateAllWindows])
+            guard let window = try await accessibility.waitForWindow(
+                processIdentifier: application.processIdentifier,
+                titleHint: windowTitleHint, operation: operation
+            ) else {
+                throw TerminalFocusModeError.focusedWindowUnavailable
+            }
+            let currentFrame = try await accessibility.frame(of: window, operation: operation)
+            try operation.checkCancellation()
+            let screen = targetScreen ?? screen(containingAXFrame: currentFrame) ?? NSScreen.main
+            guard let screen else { throw TerminalFocusModeError.windowFrameUnavailable }
+
+            let targetFrame = TerminalFocusGeometry.centeredFrame(
+                currentFrame: currentFrame,
+                visibleFrame: axFrame(fromAppKitFrame: screen.visibleFrame)
             )
+
+            focusedWindow = window
+            focusedApplication = application
+            preferredWindowFrame = currentFrame
+            try await accessibility.place(window: window, from: currentFrame, to: targetFrame, operation: operation)
+            try await accessibility.raise(window: window, processIdentifier: application.processIdentifier, operation: operation)
+            let placedFrame = try await accessibility.frame(of: window, operation: operation)
+            let focusedWindowNumber = try await accessibility.windowNumber(
+                ownedBy: application.processIdentifier,
+                matchingAXFrame: placedFrame, operation: operation
+            )
+            try operation.checkCancellation()
             showFocusChrome(on: screen, belowWindowNumber: focusedWindowNumber)
             isActive = true
             stateDidChange?(true)
             queuePanel?.orderFrontRegardless()
             if focusedWindowNumber == nil {
-                try raise(window: window, application: application, activateApplication: true)
+                try await accessibility.raise(window: window, processIdentifier: application.processIdentifier, operation: operation)
+                try operation.checkCancellation()
                 queuePanel?.orderFrontRegardless()
             }
+        } catch is CancellationError {
+            if activeOperation === operation { clearFocusMode(revealQueue: false) }
         } catch {
-            clearFocusMode(revealQueue: true)
+            if activeOperation === operation { clearFocusMode(revealQueue: true) }
             throw error
         }
     }
@@ -103,10 +121,13 @@ final class TerminalFocusModeController {
         return AXIsProcessTrustedWithOptions(options)
     }
 
-    private func waitForApplication(named applicationName: String) async -> NSRunningApplication? {
+    private func waitForApplication(
+        named applicationName: String, operation: TerminalFocusOperation
+    ) async throws -> NSRunningApplication? {
         for _ in 0..<40 {
+            try operation.checkCancellation()
             if let application = runningApplication(named: applicationName) { return application }
-            try? await Task.sleep(for: .milliseconds(100))
+            try await Task.sleep(for: .milliseconds(100))
         }
         return nil
     }
@@ -133,151 +154,6 @@ final class TerminalFocusModeController {
             return true
         }
         return application.localizedName?.caseInsensitiveCompare(name) == .orderedSame
-    }
-
-    private func waitForWindow(
-        of application: NSRunningApplication,
-        titleHint: String?
-    ) async -> AXUIElement? {
-        let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
-        for attempt in 0..<30 {
-            if let titleHint {
-                if let titledWindow = window(in: applicationElement, matching: titleHint) {
-                    return titledWindow
-                }
-                if attempt >= 5, let focusedWindow = focusedWindow(in: applicationElement) {
-                    return focusedWindow
-                }
-                try? await Task.sleep(for: .milliseconds(100))
-                continue
-            }
-            if let focusedWindow = focusedWindow(in: applicationElement) { return focusedWindow }
-            try? await Task.sleep(for: .milliseconds(100))
-        }
-        return nil
-    }
-
-    private func focusedWindow(in application: AXUIElement) -> AXUIElement? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            application,
-            kAXFocusedWindowAttribute as CFString,
-            &value
-        ) == .success,
-            let value
-        else {
-            return nil
-        }
-        return (value as! AXUIElement)
-    }
-
-    private func window(in application: AXUIElement, matching titleHint: String) -> AXUIElement? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            application,
-            kAXWindowsAttribute as CFString,
-            &value
-        ) == .success,
-            let windows = value as? [AXUIElement]
-        else {
-            return nil
-        }
-
-        let normalizedHint = titleHint.lowercased()
-        return windows.first { window in
-            var titleValue: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(
-                window,
-                kAXTitleAttribute as CFString,
-                &titleValue
-            ) == .success,
-                let title = titleValue as? String
-            else {
-                return false
-            }
-            return title.lowercased().contains(normalizedHint)
-        }
-    }
-
-    private func frame(of window: AXUIElement) throws -> CGRect {
-        var positionValue: CFTypeRef?
-        var sizeValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            window,
-            kAXPositionAttribute as CFString,
-            &positionValue
-        ) == .success,
-            AXUIElementCopyAttributeValue(
-                window,
-                kAXSizeAttribute as CFString,
-                &sizeValue
-            ) == .success,
-            let positionValue,
-            let sizeValue
-        else {
-            throw TerminalFocusModeError.windowFrameUnavailable
-        }
-
-        var position = CGPoint.zero
-        var size = CGSize.zero
-        guard AXValueGetValue(positionValue as! AXValue, .cgPoint, &position),
-              AXValueGetValue(sizeValue as! AXValue, .cgSize, &size) else {
-            throw TerminalFocusModeError.windowFrameUnavailable
-        }
-        return CGRect(origin: position, size: size)
-    }
-
-    private func animate(window: AXUIElement, from start: CGRect, to end: CGRect) async throws {
-        let steps = 18
-        for step in 1...steps {
-            let progress = CGFloat(step) / CGFloat(steps)
-            let eased = 1 - pow(1 - progress, 3)
-            let frame = CGRect(
-                x: interpolate(start.minX, end.minX, eased),
-                y: interpolate(start.minY, end.minY, eased),
-                width: interpolate(start.width, end.width, eased),
-                height: interpolate(start.height, end.height, eased)
-            )
-            try set(frame: frame, for: window)
-            try? await Task.sleep(for: .milliseconds(16))
-        }
-    }
-
-    private func set(frame: CGRect, for window: AXUIElement) throws {
-        var size = frame.size
-        var position = frame.origin
-        guard let sizeValue = AXValueCreate(.cgSize, &size),
-              let positionValue = AXValueCreate(.cgPoint, &position),
-              AXUIElementSetAttributeValue(
-                  window,
-                  kAXSizeAttribute as CFString,
-                  sizeValue
-              ) == .success,
-              AXUIElementSetAttributeValue(
-                  window,
-                  kAXPositionAttribute as CFString,
-                  positionValue
-              ) == .success else {
-            throw TerminalFocusModeError.windowMoveFailed
-        }
-    }
-
-    private func raise(
-        window: AXUIElement,
-        application: NSRunningApplication,
-        activateApplication: Bool
-    ) throws {
-        if activateApplication {
-            let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
-            AXUIElementSetAttributeValue(
-                applicationElement,
-                kAXFrontmostAttribute as CFString,
-                kCFBooleanTrue
-            )
-        }
-        guard AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success else {
-            throw TerminalFocusModeError.windowMoveFailed
-        }
     }
 
     private func showBackdrops(belowWindowNumber focusedWindowNumber: Int?) {
@@ -308,40 +184,9 @@ final class TerminalFocusModeController {
         showControls(on: screen)
     }
 
-    private func windowNumber(ownedBy processIdentifier: pid_t, matchingAXFrame target: CGRect) -> Int? {
-        guard let windowInfo = CGWindowListCopyWindowInfo(
-            [.optionOnScreenOnly, .excludeDesktopElements],
-            kCGNullWindowID
-        ) as? [[String: Any]] else {
-            return nil
-        }
-
-        return windowInfo.compactMap { info -> (number: Int, distance: CGFloat)? in
-            guard (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
-                    == processIdentifier,
-                (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
-                let number = (info[kCGWindowNumber as String] as? NSNumber)?.intValue,
-                let boundsDictionary = info[kCGWindowBounds as String] as? [String: Any],
-                let bounds = CGRect(
-                    dictionaryRepresentation: boundsDictionary as CFDictionary
-                )
-            else {
-                return nil
-            }
-
-            let distance = abs(bounds.minX - target.minX)
-                + abs(bounds.minY - target.minY)
-                + abs(bounds.width - target.width)
-                + abs(bounds.height - target.height)
-            return (number, distance)
-        }
-        .filter { $0.distance <= 12 }
-        .min { $0.distance < $1.distance }?
-        .number
-    }
-
     private func showControls(on screen: NSScreen) {
-        let size = CGSize(width: 44, height: 44)
+        let canSwitchDisplay = NSScreen.screens.count > 1
+        let size = CGSize(width: canSwitchDisplay ? 84 : 44, height: 44)
         let frame = CGRect(
             x: screen.visibleFrame.midX - (size.width / 2),
             y: screen.visibleFrame.maxY - size.height - 12,
@@ -350,6 +195,8 @@ final class TerminalFocusModeController {
         ).integral
         let panel = FocusControlPanel(
             frame: frame,
+            canSwitchDisplay: canSwitchDisplay,
+            onSwitchDisplay: { [weak self] in self?.moveFocusedWindowToNextDisplay() },
             onDismiss: { [weak self] in self?.dismiss() }
         )
         panel.alphaValue = 0
@@ -363,6 +210,62 @@ final class TerminalFocusModeController {
         }
     }
 
+    private func moveFocusedWindowToNextDisplay() {
+        guard !isMovingFocusedWindow, let operation = activeOperation else { return }
+        isMovingFocusedWindow = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                if activeOperation === operation { isMovingFocusedWindow = false }
+            }
+            do {
+                try await cycleFocusedWindowToNextDisplay(operation: operation)
+            } catch is CancellationError {
+                return
+            } catch {
+                NSSound.beep()
+            }
+        }
+    }
+
+    private func cycleFocusedWindowToNextDisplay(operation: TerminalFocusOperation) async throws {
+        try operation.checkCancellation()
+        guard isActive,
+              let window = focusedWindow,
+              let application = focusedApplication else {
+            throw TerminalFocusModeError.focusedWindowUnavailable
+        }
+        let screens = NSScreen.screens
+        let currentFrame = try await accessibility.frame(of: window, operation: operation)
+        try operation.checkCancellation()
+        guard let target = TerminalFocusGeometry.nextDisplayTarget(
+            currentWindowFrame: currentFrame,
+            preferredWindowFrame: preferredWindowFrame ?? currentFrame,
+            screenFrames: screens.map { axFrame(fromAppKitFrame: $0.frame) },
+            visibleScreenFrames: screens.map { axFrame(fromAppKitFrame: $0.visibleFrame) }
+        ) else {
+            return
+        }
+
+        try await accessibility.place(window: window, from: currentFrame, to: target.frame, operation: operation)
+        try await accessibility.raise(window: window, processIdentifier: application.processIdentifier, operation: operation)
+        try operation.checkCancellation()
+        positionControls(on: screens[target.screenIndex])
+        queuePanel?.orderFrontRegardless()
+    }
+
+    private func positionControls(on screen: NSScreen) {
+        guard let controlPanel else { return }
+        let frame = CGRect(
+            x: screen.visibleFrame.midX - (controlPanel.frame.width / 2),
+            y: screen.visibleFrame.maxY - controlPanel.frame.height - 12,
+            width: controlPanel.frame.width,
+            height: controlPanel.frame.height
+        ).integral
+        controlPanel.setFrame(frame, display: true, animate: true)
+        controlPanel.orderFrontRegardless()
+    }
+
     private func removeFocusChrome() {
         let windows = backdropWindows
         backdropWindows.removeAll()
@@ -373,9 +276,16 @@ final class TerminalFocusModeController {
     }
 
     private func clearFocusMode(revealQueue: Bool) {
+        activeOperation?.cancel()
+        activeOperation = nil
         removeFocusChrome()
+        focusedWindow = nil
+        focusedApplication = nil
+        preferredWindowFrame = nil
+        isMovingFocusedWindow = false
+        let wasActive = isActive
         isActive = false
-        stateDidChange?(false)
+        if wasActive { stateDidChange?(false) }
 
         if revealQueue {
             queuePanel?.orderFrontRegardless()
@@ -413,10 +323,6 @@ final class TerminalFocusModeController {
             ?? NSScreen.main?.frame.maxY
             ?? 0
     }
-
-    private func interpolate(_ start: CGFloat, _ end: CGFloat, _ progress: CGFloat) -> CGFloat {
-        start + ((end - start) * progress)
-    }
 }
 
 private final class FocusBackdropWindow: NSWindow {
@@ -445,6 +351,8 @@ private final class FocusBackdropWindow: NSWindow {
 private final class FocusControlPanel: NSPanel {
     init(
         frame: CGRect,
+        canSwitchDisplay: Bool,
+        onSwitchDisplay: @escaping @MainActor () -> Void,
         onDismiss: @escaping @MainActor () -> Void
     ) {
         super.init(
@@ -463,6 +371,8 @@ private final class FocusControlPanel: NSPanel {
         becomesKeyOnlyIfNeeded = true
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         contentView = FocusControlView(
+            canSwitchDisplay: canSwitchDisplay,
+            onSwitchDisplay: onSwitchDisplay,
             onDismiss: onDismiss
         )
     }
@@ -472,11 +382,15 @@ private final class FocusControlPanel: NSPanel {
 }
 
 private final class FocusControlView: NSVisualEffectView {
+    private let onSwitchDisplay: @MainActor () -> Void
     private let onDismiss: @MainActor () -> Void
 
     init(
+        canSwitchDisplay: Bool,
+        onSwitchDisplay: @escaping @MainActor () -> Void,
         onDismiss: @escaping @MainActor () -> Void
     ) {
+        self.onSwitchDisplay = onSwitchDisplay
         self.onDismiss = onDismiss
         super.init(frame: .zero)
 
@@ -487,6 +401,21 @@ private final class FocusControlView: NSVisualEffectView {
         layer?.cornerRadius = 14
         layer?.borderWidth = 1
         layer?.borderColor = NSColor.white.withAlphaComponent(0.22).cgColor
+
+        let switchDisplayButton = NSButton(
+            image: NSImage(
+                systemSymbolName: "display.2",
+                accessibilityDescription: "Move focused terminal to the next display"
+            ) ?? NSImage(),
+            target: self,
+            action: #selector(didChooseSwitchDisplay)
+        )
+        switchDisplayButton.bezelStyle = .circular
+        switchDisplayButton.controlSize = .regular
+        switchDisplayButton.contentTintColor = .white
+        switchDisplayButton.toolTip = "Move focused terminal to the next display"
+        switchDisplayButton.setAccessibilityLabel("Move focused terminal to the next display")
+        switchDisplayButton.isEnabled = canSwitchDisplay
 
         let closeButton = NSButton(
             image: NSImage(
@@ -502,7 +431,8 @@ private final class FocusControlView: NSVisualEffectView {
         closeButton.toolTip = "Exit terminal focus"
         closeButton.setAccessibilityLabel("Exit terminal focus")
 
-        let stack = NSStackView(views: [closeButton])
+        let buttons = canSwitchDisplay ? [switchDisplayButton, closeButton] : [closeButton]
+        let stack = NSStackView(views: buttons)
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.distribution = .fill
@@ -519,10 +449,20 @@ private final class FocusControlView: NSVisualEffectView {
             closeButton.widthAnchor.constraint(equalToConstant: 32),
             closeButton.heightAnchor.constraint(equalToConstant: 32),
         ])
+        if canSwitchDisplay {
+            NSLayoutConstraint.activate([
+                switchDisplayButton.widthAnchor.constraint(equalToConstant: 32),
+                switchDisplayButton.heightAnchor.constraint(equalToConstant: 32),
+            ])
+        }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { nil }
+
+    @objc private func didChooseSwitchDisplay() {
+        onSwitchDisplay()
+    }
 
     @objc private func didChooseDismiss() {
         onDismiss()

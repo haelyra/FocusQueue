@@ -26,8 +26,10 @@ import UserNotifications
   private var screenReconciliationTask: Task<Void, Never>?
   private var morningReconciliationTask: Task<Void, Never>?
   private var lastMorningAttempt: Date?
+  private var lastFailedDailyReportAttempt: Date?
   private let morningRunner = FoundationProcessRunner()
   private var isDailyReportProcessRunning = false
+  private var expandedPanelFrame: NSRect?
   private var compactPanelWidth: CGFloat = 440
   private var currentPlacement: QueueWindowPlacement = .upperRight
   private var preferredDisplayIdentifier: String?
@@ -38,7 +40,7 @@ import UserNotifications
   private var availabilityResumedAt = Date()
 
   func applicationDidFinishLaunching(_ notification: Notification) {
-    NSApp.setActivationPolicy(.accessory)
+    NSApp.setActivationPolicy(.regular)
     DistributedNotificationCenter.default().addObserver(
       self,
       selector: #selector(importAgentRegistration(_:)),
@@ -50,6 +52,7 @@ import UserNotifications
     }
     model.monitorSwitchHandler = { [weak self] in self?.switchPanelMonitor() }
     model.collapseHandler = { [weak self] collapsed in self?.setPanelCollapsed(collapsed) }
+    model.minimizeHandler = { [weak self] in self?.panel?.miniaturize(nil) }
     model.reportVisibilityHandler = { [weak self] visible in
       self?.setDailyReportVisible(visible)
     }
@@ -162,7 +165,7 @@ import UserNotifications
   }
 
   func windowDidResize(_ notification: Notification) {
-    if !isApplyingPanelFrame, !model.isDailyReportPresented, let panel {
+    if !isApplyingPanelFrame, !model.isPanelCollapsed, !model.isInspectorPresented, let panel {
       compactPanelWidth = min(max(panel.frame.width, 400), 620)
     }
     saveWindowFrame()
@@ -264,8 +267,9 @@ import UserNotifications
   }
 
   private func runMorningReconciliationIfDue() async {
+    guard FileManager.default.fileExists(atPath: paths.ingestionConfigurationFile.path),
+      FileManager.default.isReadableFile(atPath: paths.dailyReportScript.path) else { return }
     let now = Date()
-    if let lastMorningAttempt, now.timeIntervalSince(lastMorningAttempt) < 3_600 { return }
     let stateURL = paths.ingestionRuntimeDirectory.appendingPathComponent("state.json")
     let settings = model.config.dailyReport
     let lastSuccessfulAt = [
@@ -278,9 +282,23 @@ import UserNotifications
         covering: settings.enabledPlatforms
       ),
     ].compactMap { $0 }.max()
+    let lastUnsuccessfulAttemptAt = [
+      Self.lastUnsuccessfulComprehensiveAttempt(
+        at: stateURL,
+        covering: settings.enabledPlatforms
+      ),
+      Self.lastUnsuccessfulGeneratedDailyReport(
+        at: paths.latestDailyReportFile,
+        covering: settings.enabledPlatforms
+      ),
+      lastFailedDailyReportAttempt,
+    ].compactMap { $0 }.max()
+    let retryInterval: TimeInterval = lastUnsuccessfulAttemptAt == nil ? 3_600 : 15 * 60
+    if let lastMorningAttempt, now.timeIntervalSince(lastMorningAttempt) < retryInterval { return }
     let disposition = MorningRunPolicy.disposition(
       now: now,
       lastSuccessfulAt: lastSuccessfulAt,
+      lastUnsuccessfulAttemptAt: lastUnsuccessfulAttemptAt,
       hour: settings.scheduleHour,
       minute: settings.scheduleMinute,
       automaticGraceMinutes: 10,
@@ -294,12 +312,13 @@ import UserNotifications
     case .notDue:
       return
     case .runAutomatically:
-      _ = await runDailyReport(DailyReportRunRequest(
+      let report = await runDailyReport(DailyReportRunRequest(
         trigger: .scheduled,
         platforms: settings.enabledPlatforms,
         comprehensive: true,
         recheck: false
       ))
+      lastFailedDailyReportAttempt = report?.status == .success ? nil : Date()
     case .requestApproval:
       await requestMissedDailyReportApproval(now: now)
     }
@@ -333,7 +352,7 @@ import UserNotifications
     guard FileManager.default.fileExists(atPath: script.path) else {
       let message = "Daily report automation is unavailable because \(script.path) is missing."
       appendMorningLog("\(message)\n", error: true)
-      model.setDailyReportRunState(isRunning: false, message: message)
+      model.setDailyReportRunState(isRunning: false, message: message, isError: true)
       return nil
     }
 
@@ -342,7 +361,8 @@ import UserNotifications
     guard await model.persistDailyReportConfiguration() else {
       model.setDailyReportRunState(
         isRunning: false,
-        message: "Daily report settings could not be saved before the run."
+        message: "Daily report settings could not be saved before the run.",
+        isError: true
       )
       isDailyReportProcessRunning = false
       return nil
@@ -388,19 +408,16 @@ import UserNotifications
       } else if decodedReport != nil {
         appendMorningLog("Daily report receipt did not match the requested scope.\n", error: true)
       }
-      let message: String
-      if result.timedOut {
-        message = "The daily report timed out. Any completed partial report is still available."
-      } else if [0, 2].contains(result.exitCode), report == nil {
-        message = "Daily report receipt validation failed. The prior report remains open."
-      } else if result.exitCode == 0 {
-        message = "Daily report completed."
-      } else if result.exitCode == 2 {
-        message = "Daily report completed with partial platform coverage."
-      } else {
-        message = "Daily report failed with exit code \(result.exitCode)."
-      }
-      model.setDailyReportRunState(isRunning: false, message: message)
+      let presentation = DailyReportAutomation.presentation(
+        for: result,
+        hasMatchingReport: report != nil
+      )
+      model.setDailyReportRunState(
+        isRunning: false,
+        message: presentation.message,
+        isError: presentation.isError,
+        reportID: report?.runID
+      )
       if request.trigger == .manual, [0, 2].contains(result.exitCode) {
         model.setDailyReportPresented(true)
       }
@@ -409,7 +426,7 @@ import UserNotifications
     } catch {
       let message = "Daily report failed to launch: \(error.localizedDescription)"
       appendMorningLog("\(message)\n", error: true)
-      model.setDailyReportRunState(isRunning: false, message: message)
+      model.setDailyReportRunState(isRunning: false, message: message, isError: true)
     }
     isDailyReportProcessRunning = false
     return nil
@@ -544,6 +561,7 @@ import UserNotifications
           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let value = object["lastComprehensiveReportAt"] as? String,
           let platformValues = object["lastComprehensivePlatforms"] as? [String],
+          object["lastComprehensiveStatus"] as? String == "success",
           Set(requiredPlatforms.map(\.rawValue)).isSubset(of: Set(platformValues)) else {
       return nil
     }
@@ -558,12 +576,45 @@ import UserNotifications
   ) -> Date? {
     guard let data = try? Data(contentsOf: url),
       let report = try? JSONDecoder().decode(DailyReportDocument.self, from: data),
-      [.success, .partial].contains(report.status),
+      report.status.satisfiesDailySchedule,
       report.comprehensive == true,
       report.covers(requiredPlatforms)
     else {
       return nil
     }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.date(from: report.finishedAt)
+      ?? ISO8601DateFormatter().date(from: report.finishedAt)
+  }
+
+  private static func lastUnsuccessfulComprehensiveAttempt(
+    at url: URL,
+    covering requiredPlatforms: [DailyReportPlatform]
+  ) -> Date? {
+    guard let data = try? Data(contentsOf: url),
+      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let value = object["lastComprehensiveAttemptAt"] as? String,
+      let status = object["lastComprehensiveAttemptStatus"] as? String,
+      status != "success",
+      let platformValues = object["lastComprehensiveAttemptPlatforms"] as? [String],
+      Set(requiredPlatforms.map(\.rawValue)).isSubset(of: Set(platformValues))
+    else { return nil }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+  }
+
+  private static func lastUnsuccessfulGeneratedDailyReport(
+    at url: URL,
+    covering requiredPlatforms: [DailyReportPlatform]
+  ) -> Date? {
+    guard let data = try? Data(contentsOf: url),
+      let report = try? JSONDecoder().decode(DailyReportDocument.self, from: data),
+      !report.status.satisfiesDailySchedule,
+      report.comprehensive == true,
+      report.covers(requiredPlatforms)
+    else { return nil }
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     return formatter.date(from: report.finishedAt)
@@ -660,7 +711,7 @@ import UserNotifications
   private func createPanel() {
     let panel = FocusPanel(
       contentRect: NSRect(x: 0, y: 0, width: 440, height: 780),
-      styleMask: [.titled, .resizable, .nonactivatingPanel, .fullSizeContentView],
+      styleMask: [.titled, .resizable, .miniaturizable, .nonactivatingPanel, .fullSizeContentView],
       backing: .buffered, defer: false)
     panel.title = "ECC Focus Queue"
     panel.titleVisibility = .hidden
@@ -668,6 +719,7 @@ import UserNotifications
     panel.standardWindowButton(.closeButton)?.isHidden = true
     panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
     panel.standardWindowButton(.zoomButton)?.isHidden = true
+    panel.isExcludedFromWindowsMenu = false
     panel.isReleasedWhenClosed = false
     panel.hidesOnDeactivate = false
     panel.isOpaque = false
@@ -759,21 +811,32 @@ import UserNotifications
     persist: Bool = true
   ) {
     guard let panel else { return }
-    let minimumWidth = model.isDailyReportPresented ? CGFloat(790) : CGFloat(400)
+    if model.isPanelCollapsed {
+      currentPlacement = placement
+      let frame = CollapsedQueueGeometry.frame(
+        visibleFrame: targetScreen.visibleFrame, placement: placement)
+      isApplyingPanelFrame = true
+      panel.setFrame(frame, display: true, animate: animated)
+      isApplyingPanelFrame = false
+      if persist { preferredDisplayIdentifier = displayIdentifier(for: targetScreen) }
+      scheduleFocusChromeRefresh()
+      return
+    }
+    let minimumWidth = inspectorLayout.minimumWidth
     let clampedMinimumWidth = min(
       minimumWidth,
       max(0, targetScreen.visibleFrame.width - 24)
     )
     panel.minSize = NSSize(
       width: clampedMinimumWidth,
-      height: model.isPanelCollapsed ? 112 : 500
+      height: 500
     )
     let frame = DisplayGeometry.panelFrame(
       preferredWidth: panel.frame.width,
       visibleFrame: targetScreen.visibleFrame,
       placement: placement,
       minimumWidth: minimumWidth,
-      maximumWidth: model.isDailyReportPresented ? 1_200 : 620
+      maximumWidth: inspectorLayout.maximumWidth
     )
 
     currentPlacement = placement
@@ -796,23 +859,36 @@ import UserNotifications
 
   private func setPanelCollapsed(_ collapsed: Bool) {
     guard let panel else { return }
+    isApplyingPanelFrame = true
     if collapsed {
-      let topEdge = panel.frame.maxY
-      panel.minSize = NSSize(width: 400, height: 112)
-      let compactContent = NSRect(x: 0, y: 0, width: panel.frame.width, height: 82)
-      var compactFrame = panel.frameRect(forContentRect: compactContent)
-      compactFrame.origin.x = panel.frame.origin.x
-      compactFrame.origin.y = topEdge - compactFrame.height
-      isApplyingPanelFrame = true
-      panel.setFrame(compactFrame, display: true, animate: true)
-      isApplyingPanelFrame = false
-      saveWindowFrame()
-      scheduleFocusChromeRefresh()
-      return
+      expandedPanelFrame = panel.frame
+      panel.styleMask.remove([.titled, .resizable, .fullSizeContentView])
+      panel.minSize = CollapsedQueueGeometry.size
+      panel.maxSize = CollapsedQueueGeometry.size
+      panel.setFrame(
+        CollapsedQueueGeometry.frame(
+          visibleFrame: currentPanelScreen().visibleFrame, placement: currentPlacement),
+        display: true, animate: true)
+    } else {
+      panel.styleMask.insert([.titled, .resizable, .fullSizeContentView])
+      panel.titleVisibility = .hidden
+      panel.titlebarAppearsTransparent = true
+      panel.standardWindowButton(.closeButton)?.isHidden = true
+      panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+      panel.standardWindowButton(.zoomButton)?.isHidden = true
+      panel.minSize = NSSize(width: inspectorLayout.minimumWidth, height: 500)
+      panel.maxSize = NSSize(width: inspectorLayout.maximumWidth, height: 10_000)
+      if let expandedPanelFrame { panel.setFrame(expandedPanelFrame, display: false) }
+      self.expandedPanelFrame = nil
     }
+    isApplyingPanelFrame = false
+    if !collapsed { positionPanelOnCurrentDisplay(currentPlacement, animated: true) }
+    scheduleFocusChromeRefresh()
+  }
 
-    panel.minSize = NSSize(width: 400, height: 500)
-    positionPanelOnCurrentDisplay(currentPlacement, animated: true)
+  private var inspectorLayout: QueueInspectorLayout {
+    if model.presentedPlanTicketID != nil { return .plan }
+    return model.isDailyReportPresented || model.presentedAgentUpdate != nil ? .report : .closed
   }
 
   private func setDailyReportVisible(_ visible: Bool) {
@@ -821,17 +897,18 @@ import UserNotifications
       model.setPanelCollapsed(false)
     }
     let screen = currentPanelScreen()
-    let minimumWidth = visible ? CGFloat(790) : CGFloat(400)
+    let layout = inspectorLayout
+    let minimumWidth = layout.minimumWidth
     let clampedMinimumWidth = min(minimumWidth, max(0, screen.visibleFrame.width - 24))
     panel.minSize = NSSize(width: clampedMinimumWidth, height: 500)
-    let preferredWidth = visible ? min(compactPanelWidth + 580, 1_200) : compactPanelWidth
-    panel.maxSize = NSSize(width: visible ? 1_200 : 620, height: 10_000)
+    let preferredWidth = layout.preferredWidth(compactWidth: compactPanelWidth)
+    panel.maxSize = NSSize(width: layout.maximumWidth, height: 10_000)
     let frame = DisplayGeometry.panelFrame(
       preferredWidth: preferredWidth,
       visibleFrame: screen.visibleFrame,
       placement: currentPlacement,
       minimumWidth: minimumWidth,
-      maximumWidth: visible ? 1_200 : 620
+      maximumWidth: layout.maximumWidth
     )
     isApplyingPanelFrame = true
     panel.setFrame(frame, display: true, animate: true)
@@ -872,7 +949,7 @@ import UserNotifications
   }
 
   private func saveWindowFrame() {
-    guard !isApplyingPanelFrame, let panel else { return }
+    guard !isApplyingPanelFrame, !model.isPanelCollapsed, let panel else { return }
     let frame = panel.frame
     if preferredDisplayIdentifier == nil {
       preferredDisplayIdentifier = displayIdentifier(for: panel.screen)
@@ -880,7 +957,7 @@ import UserNotifications
     model.saveWindow(
       WindowSnapshot(
         x: frame.origin.x, y: frame.origin.y,
-        width: model.isDailyReportPresented ? compactPanelWidth : frame.width,
+        width: model.isInspectorPresented ? compactPanelWidth : frame.width,
         height: frame.height,
         placement: currentPlacement,
         displayIdentifier: preferredDisplayIdentifier))
@@ -945,7 +1022,9 @@ import UserNotifications
         options: []
       )
     ])
-    Task { _ = try? await center.requestAuthorization(options: [.alert, .sound]) }
+    if FileManager.default.fileExists(atPath: paths.ingestionConfigurationFile.path) {
+      Task { _ = try? await center.requestAuthorization(options: [.alert, .sound]) }
+    }
   }
 
   private func postMissedDailyReportNotification(

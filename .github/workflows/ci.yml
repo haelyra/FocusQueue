@@ -1,0 +1,33 @@
+name: macOS beta checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install fixture dependency
+        run: brew install tmux
+      - name: Swift build and headless tests
+        run: swift test
+      - name: Python tests
+        run: python3 -m unittest discover -s Tests -p 'test_*.py'
+      - name: Shell syntax
+        run: zsh -n Scripts/build-app.sh Scripts/install.sh Scripts/uninstall.sh Scripts/package-release.sh
+      - name: Package private beta
+        run: zsh Scripts/package-release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macOS-private-beta
+          path: |
+            dist/*-beta-*.zip
+            dist/*-beta-*.sha256

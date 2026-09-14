@@ -1,6 +1,16 @@
 import Foundation
 
 public enum DailyReportAutomation {
+    public struct Presentation: Equatable, Sendable {
+        public let message: String
+        public let isError: Bool
+
+        public init(message: String, isError: Bool) {
+            self.message = message
+            self.isError = isError
+        }
+    }
+
     public static func arguments(
         scriptPath: String,
         configurationPath: String,
@@ -26,6 +36,73 @@ public enum DailyReportAutomation {
         }
         return arguments
     }
+
+    public static func presentation(
+        for result: ProcessResult,
+        hasMatchingReport: Bool
+    ) -> Presentation {
+        if result.timedOut {
+            return Presentation(
+                message: "The daily report timed out after 15 minutes. It will retry automatically; any completed partial report remains available.",
+                isError: true
+            )
+        }
+        if [0, 2].contains(result.exitCode), !hasMatchingReport {
+            return Presentation(
+                message: "Daily report receipt validation failed. It will retry automatically; the prior report remains available.",
+                isError: true
+            )
+        }
+        if result.exitCode == 0 {
+            return Presentation(message: "Daily report completed.", isError: false)
+        }
+        if result.exitCode == 2 {
+            return Presentation(
+                message: "Daily report completed with partial platform coverage and will retry automatically.",
+                isError: true
+            )
+        }
+        let detail = safeDiagnosticDetail(from: result)
+        return Presentation(
+            message: "Daily report failed: \(detail). It will retry automatically.",
+            isError: true
+        )
+    }
+
+    private static func safeDiagnosticDetail(from result: ProcessResult) -> String {
+        let raw = result.standardError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? result.standardOutput
+            : result.standardError
+        let normalized = raw.lowercased()
+        if normalized.contains("mail_reader_busy") || normalized.contains("mail reader is busy") {
+            return "the Mail reader is busy with another request. The current request will continue; retry after it finishes"
+        }
+        if normalized.contains("mail_reader_timeout") || normalized.contains("mail reader timed out") {
+            return "the protected Mail reader timed out. Confirm Apple Mail is running, then retry"
+        }
+        if normalized.contains("mail_permission_required")
+            || normalized.contains("not authorized to send apple events")
+            || normalized.contains("-1743") {
+            return "Mail access needs approval for ECC Focus Mail Reader > Mail in System Settings > Privacy & Security > Automation. Older applet and python entries are separate identities"
+        }
+        if normalized.contains("mailbox_not_configured") || normalized.contains("mailbox is not configured") {
+            return "the requested mailbox is outside the configured Mail scope. Review emailMailboxes in ingestion settings, then retry"
+        }
+        if normalized.contains("mail_runtime_permission_required") || normalized.contains("operation not permitted") {
+            return "the worker was denied access to a local process or file. Review the private daily report log for the blocked resource"
+        }
+        if normalized.contains("mail_reader_not_installed")
+            || normalized.contains("mail reader app is not installed") {
+            return "the protected Mail reader is missing. Reinstall ECC Focus Queue, then retry"
+        }
+        if normalized.contains("codex") || normalized.contains("classification failed") {
+            return "the message classifier failed its safety or compatibility check. Update ECC Focus Queue or Codex, then retry"
+        }
+        if normalized.contains("missing ingestion settings") || normalized.contains("configuration") {
+            return "the daily report configuration is incomplete or invalid. Review its settings, then retry"
+        }
+        return "the worker exited with code \(result.exitCode). See the private daily report log for details"
+    }
 }
 
 public struct WezTermPane: Codable, Equatable, Sendable {
@@ -38,6 +115,8 @@ public struct WezTermPane: Codable, Equatable, Sendable {
     public let tabTitle: String?
     public let windowTitle: String?
     public let ttyName: String?
+    /// Pane numbers are scoped to a mux, never globally unique on this Mac.
+    public var socketPath: String?
 
     public init(
         windowID: Int,
@@ -48,7 +127,8 @@ public struct WezTermPane: Codable, Equatable, Sendable {
         title: String? = nil,
         tabTitle: String? = nil,
         windowTitle: String? = nil,
-        ttyName: String? = nil
+        ttyName: String? = nil,
+        socketPath: String? = nil
     ) {
         self.windowID = windowID
         self.tabID = tabID
@@ -59,6 +139,7 @@ public struct WezTermPane: Codable, Equatable, Sendable {
         self.tabTitle = tabTitle
         self.windowTitle = windowTitle
         self.ttyName = ttyName
+        self.socketPath = socketPath
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -71,6 +152,7 @@ public struct WezTermPane: Codable, Equatable, Sendable {
         case tabTitle = "tab_title"
         case windowTitle = "window_title"
         case ttyName = "tty_name"
+        case socketPath = "focus_queue_socket_path"
     }
 }
 
@@ -126,6 +208,8 @@ public enum TerminalActionResult: Equatable, Sendable {
 }
 
 public protocol WezTermControlling: Sendable {
+    func focusPane(_ pane: WezTermPane, configuration: WezTermConfiguration) async throws
+
     func listAttachablePanes(
         configuration: WezTermConfiguration
     ) async throws -> [WezTermPane]
@@ -136,7 +220,8 @@ public protocol WezTermControlling: Sendable {
 
     func attach(
         paneID: Int,
-        taskID: String,
+        tabTitle: String,
+        windowTitle: String,
         configuration: WezTermConfiguration
     ) async throws
 
@@ -151,6 +236,46 @@ public protocol WezTermControlling: Sendable {
         taskID: String,
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult
+
+    func openManagedRuntime(
+        _ tmux: TmuxSessionReference,
+        taskID: String,
+        provider: AgentProvider,
+        configuration: WezTermConfiguration
+    ) async throws -> TerminalActionResult
+
+    func openDirectRuntime(
+        paneID: Int,
+        socketPath: String?,
+        taskID: String,
+        provider: AgentProvider,
+        configuration: WezTermConfiguration
+    ) async throws -> TerminalActionResult
+}
+
+public extension WezTermControlling {
+    func focusPane(_ pane: WezTermPane, configuration: WezTermConfiguration) async throws {
+        throw WezTermError.actionFailed("This terminal integration does not support browsing panes.")
+    }
+
+    func openManagedRuntime(
+        _ tmux: TmuxSessionReference,
+        taskID: String,
+        provider: AgentProvider,
+        configuration: WezTermConfiguration
+    ) async throws -> TerminalActionResult {
+        throw TmuxError.unavailable("This terminal integration cannot open managed sessions.")
+    }
+
+    func openDirectRuntime(
+        paneID: Int,
+        socketPath: String?,
+        taskID: String,
+        provider: AgentProvider,
+        configuration: WezTermConfiguration
+    ) async throws -> TerminalActionResult {
+        throw WezTermError.actionFailed("This terminal integration cannot open direct sessions.")
+    }
 }
 
 public enum WezTermError: Error, LocalizedError {
@@ -169,43 +294,83 @@ public enum WezTermError: Error, LocalizedError {
 
 public actor WezTermController: WezTermControlling {
     private let runner: any ProcessRunning
+    private let candidateSockets: [String]?
 
-    public init(runner: any ProcessRunning = FoundationProcessRunner()) {
+    public init(runner: any ProcessRunning = FoundationProcessRunner(), candidateSockets: [String]? = nil,
+                verificationAttempts: Int = 10) {
         self.runner = runner
+        self.candidateSockets = candidateSockets
+        _ = verificationAttempts
+    }
+
+    public func focusPane(_ pane: WezTermPane, configuration: WezTermConfiguration) async throws {
+        var requested = configuration
+        requested.socketPath = pane.socketPath ?? configuration.socketPath
+        let connection = try await WezTermConnection.resolve(configuration: requested,
+            runner: runner, candidateSockets: candidateSockets)
+        guard connection.result.succeeded else { throw WezTermError.actionFailed(Self.failureDetail(connection.result)) }
+        if let socketPath = pane.socketPath, connection.configuration.socketPath != socketPath {
+            throw WezTermError.actionFailed("The selected terminal connection is unavailable. Refresh the browser before choosing another pane.")
+        }
+        let current = try Self.decodePanes(from: connection.result)
+        let configuration = connection.configuration
+        guard current.contains(where: {
+            $0.paneID == pane.paneID && $0.windowID == pane.windowID && $0.tabID == pane.tabID
+                && $0.ttyName == pane.ttyName
+        }) else {
+            throw WezTermError.actionFailed("This terminal has closed or moved. Refresh the terminal browser.")
+        }
+        // Browsing must preserve task-owned labels and must never resume or spawn an agent.
+        let result = try await runner.run(ProcessSpecification(executable: configuration.executable,
+            arguments: ["cli", "activate-pane", "--pane-id", String(pane.paneID)],
+            environment: configuration.cliEnvironment, timeoutSeconds: 10))
+        guard result.succeeded else { throw WezTermError.actionFailed(Self.failureDetail(result)) }
+        let raised = try await bringApplicationForward(named: configuration.applicationName)
+        guard raised.succeeded else { throw WezTermError.actionFailed(Self.failureDetail(raised)) }
     }
 
     public func listAttachablePanes(
         configuration: WezTermConfiguration
     ) async throws -> [WezTermPane] {
-        let result = try await listPanes(using: configuration)
+        let connection = try await WezTermConnection.resolve(configuration: configuration,
+            runner: runner, candidateSockets: candidateSockets)
+        let result = connection.result
         guard result.succeeded else {
             throw WezTermError.actionFailed(Self.failureDetail(result))
         }
-        return Self.attachablePanes(in: try Self.decodePanes(from: result))
+        return Self.attachablePanes(in: try Self.decodePanes(from: result).map { pane in
+            var located = pane; located.socketPath = connection.configuration.socketPath; return located
+        })
     }
 
     public func listRunningAgents(
         configuration: WezTermConfiguration
     ) async throws -> [RunningAgentSession] {
-        let result = try await listPanes(using: configuration)
+        let connection = try await WezTermConnection.resolve(configuration: configuration,
+            runner: runner, candidateSockets: candidateSockets)
+        let result = connection.result
         guard result.succeeded else {
             throw WezTermError.actionFailed(Self.failureDetail(result))
         }
-        return try await discoverAgents(in: Self.decodePanes(from: result))
+        return try await discoverAgents(in: Self.decodePanes(from: result).map { pane in
+            var located = pane; located.socketPath = connection.configuration.socketPath; return located
+        })
     }
 
     public func attach(
         paneID: Int,
-        taskID: String,
+        tabTitle: String,
+        windowTitle: String,
         configuration: WezTermConfiguration
     ) async throws {
         for arguments in [
-            ["cli", "set-tab-title", "--pane-id", String(paneID), taskID],
-            ["cli", "set-window-title", "--pane-id", String(paneID), taskID],
+            ["cli", "set-tab-title", "--pane-id", String(paneID), tabTitle],
+            ["cli", "set-window-title", "--pane-id", String(paneID), windowTitle],
         ] {
             let result = try await runner.run(ProcessSpecification(
                 executable: configuration.executable,
                 arguments: arguments,
+                environment: configuration.cliEnvironment,
                 timeoutSeconds: 10
             ))
             guard result.succeeded else {
@@ -229,6 +394,14 @@ public actor WezTermController: WezTermControlling {
         }
 
         if let pane = Self.bestMatchingPane(in: panes, directory: directory, taskID: taskID) {
+            _ = try? await runner.run(ProcessSpecification(
+                executable: configuration.executable,
+                arguments: [
+                    "cli", "set-tab-title", "--pane-id", String(pane.paneID),
+                    AgentTerminalLabels.tabTitle(ticketID: taskID, paneID: pane.paneID),
+                ],
+                timeoutSeconds: 10
+            ))
             _ = try? await runner.run(ProcessSpecification(
                 executable: configuration.executable,
                 arguments: [
@@ -259,7 +432,10 @@ public actor WezTermController: WezTermControlling {
                 if let paneID {
                     _ = try? await runner.run(ProcessSpecification(
                         executable: configuration.executable,
-                        arguments: ["cli", "set-tab-title", "--pane-id", String(paneID), taskID],
+                        arguments: [
+                            "cli", "set-tab-title", "--pane-id", String(paneID),
+                            AgentTerminalLabels.tabTitle(ticketID: taskID, paneID: paneID),
+                        ],
                         timeoutSeconds: 10
                     ))
                     _ = try? await runner.run(ProcessSpecification(
@@ -294,87 +470,138 @@ public actor WezTermController: WezTermControlling {
         return .spawned(paneID: nil)
     }
 
+    /// Opens only the process that Focus Queue created and still owns in tmux.
+    /// There is deliberately no provider transcript discovery or `resume` fallback.
     public func focusOrResume(
         session: TaskAgentSession,
         taskID: String,
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult {
-        let listResult = try await listPanes(using: configuration)
-        if listResult.succeeded {
-            let panes = try Self.decodePanes(from: listResult)
-            let runningAgents = try await discoverAgents(in: panes)
-            if let running = runningAgents.first(where: {
-                $0.provider == session.provider && $0.sessionID == session.sessionID
-            }) {
-                try await focus(
-                    pane: running.pane,
-                    windowTitle: session.terminalWindowTitle,
-                    configuration: configuration
-                )
-                return .focused(paneID: running.pane.paneID)
-            }
+        guard session.ticketID.caseInsensitiveCompare(taskID) == .orderedSame,
+              let tmux = session.tmux else {
+            throw TmuxError.unavailable(
+                "This entry predates managed sessions and cannot be reopened. Start a new, clearly named agent from Focus Queue.")
+        }
+        return try await openManagedRuntime(
+            tmux, taskID: taskID, provider: session.provider, configuration: configuration)
+    }
 
-            let spawn = try await runner.run(ProcessSpecification(
-                executable: configuration.executable,
-                arguments: Self.resumeSpawnArguments(for: session),
-                timeoutSeconds: 15
-            ))
-            if spawn.succeeded {
-                let paneID = Int(spawn.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines))
-                if let paneID {
-                    try await labelAndActivate(
-                        paneID: paneID,
-                        taskID: taskID,
-                        windowTitle: session.terminalWindowTitle,
-                        configuration: configuration
-                    )
-                }
-                _ = try? await bringApplicationForward(named: configuration.applicationName)
-                return .resumed(
-                    provider: session.provider,
-                    sessionID: session.sessionID,
-                    paneID: paneID
-                )
+    public func openManagedRuntime(
+        _ saved: TmuxSessionReference,
+        taskID: String,
+        provider: AgentProvider,
+        configuration: WezTermConfiguration
+    ) async throws -> TerminalActionResult {
+        let runtime = TmuxController(runner: runner)
+        let live = try await runtime.verify(saved)
+
+        var connection = try await WezTermConnection.resolve(
+            configuration: configuration, runner: runner, candidateSockets: candidateSockets)
+        guard !connection.result.timedOut else {
+            throw WezTermError.actionFailed(
+                "WezTerm lookup timed out. The managed session remains running in tmux.")
+        }
+        if !connection.result.succeeded {
+            let started = try await runner.run(ProcessSpecification(
+                executable: "/usr/bin/open", arguments: ["-a", configuration.applicationName],
+                timeoutSeconds: 15))
+            guard started.succeeded else {
+                throw WezTermError.actionFailed(Self.failureDetail(started))
+            }
+            for _ in 0..<5 {
+                connection = try await WezTermConnection.resolve(
+                    configuration: configuration, runner: runner, candidateSockets: candidateSockets)
+                if connection.result.succeeded || connection.result.timedOut { break }
+                try await Task.sleep(for: .milliseconds(300))
+            }
+            guard connection.result.succeeded else {
+                throw WezTermError.actionFailed(
+                    "WezTerm opened without a usable connection. The managed session remains running in tmux.")
             }
         }
 
-        let fallback = try await runner.run(ProcessSpecification(
-            executable: "/usr/bin/open",
-            arguments: Self.resumeStandaloneArguments(
-                for: session,
-                applicationName: configuration.applicationName
-            ),
-            timeoutSeconds: 15
-        ))
-        guard fallback.succeeded else {
-            throw WezTermError.actionFailed(Self.failureDetail(fallback))
+        let pinned = connection.configuration
+        let panes = try Self.decodePanes(from: connection.result)
+        let clients = try await runtime.clientTTYs(for: live)
+        let tabTitle = "\(taskID.uppercased()) · \(provider.displayName) · managed"
+        if let pane = panes.first(where: { $0.ttyName.map(clients.contains) == true }) {
+            try await focus(
+                pane: pane, tabTitle: tabTitle, windowTitle: taskID.uppercased(),
+                configuration: pinned)
+            return .focused(paneID: pane.paneID)
         }
-        return .resumed(
-            provider: session.provider,
-            sessionID: session.sessionID,
-            paneID: nil
-        )
+
+        let command = try TmuxController.attachCommand(
+            name: live.name, executable: live.executable)
+        let spawn = try await runner.run(ProcessSpecification(
+            executable: pinned.executable,
+            arguments: ["cli", "spawn", "--new-window", "--domain-name", "local", "--"] + command,
+            environment: pinned.cliEnvironment, timeoutSeconds: 15))
+        guard spawn.succeeded,
+              let paneID = Int(spawn.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)),
+              paneID >= 0 else {
+            throw TmuxError.unavailable(
+                "The process is still running, but its terminal view could not be opened. Use focus-queue-session tmux attach \(live.name).")
+        }
+        _ = try await runtime.verify(saved)
+        let snapshot = try await listPanes(using: pinned)
+        guard snapshot.succeeded,
+              let pane = try Self.decodePanes(from: snapshot).first(where: { $0.paneID == paneID }) else {
+            throw TmuxError.unavailable(
+                "The new terminal view closed. The managed session remains running in tmux.")
+        }
+        try await focus(
+            pane: pane, tabTitle: tabTitle, windowTitle: taskID.uppercased(),
+            configuration: pinned)
+        return .focused(paneID: paneID)
     }
 
-    public static func resumeSpawnArguments(for session: TaskAgentSession) -> [String] {
-        ["cli", "spawn", "--new-window", "--cwd", session.workingDirectory, "--", "/usr/bin/env",
-         session.provider.executableName]
-            + session.provider.resumeArguments(sessionID: session.sessionID)
-    }
-
-    public static func resumeStandaloneArguments(
-        for session: TaskAgentSession,
-        applicationName: String
-    ) -> [String] {
-        ["-na", applicationName, "--args", "start", "--always-new-process", "--cwd",
-         session.workingDirectory, "--", "/usr/bin/env", session.provider.executableName]
-            + session.provider.resumeArguments(sessionID: session.sessionID)
+    public func openDirectRuntime(
+        paneID: Int,
+        socketPath: String?,
+        taskID: String,
+        provider: AgentProvider,
+        configuration: WezTermConfiguration
+    ) async throws -> TerminalActionResult {
+        guard paneID >= 0 else {
+            throw WezTermError.actionFailed("The saved direct terminal identity is invalid.")
+        }
+        var requested = configuration
+        requested.socketPath = socketPath ?? requested.socketPath
+        let connection = try await WezTermConnection.resolve(
+            configuration: requested, runner: runner, candidateSockets: candidateSockets)
+        guard connection.result.succeeded else {
+            throw WezTermError.actionFailed(
+                "The direct terminal session is no longer available. Start a new agent or use tmux next time.")
+        }
+        if let socketPath, connection.configuration.socketPath != socketPath {
+            throw WezTermError.actionFailed(
+                "The saved terminal connection is no longer available. Start a new agent or use tmux next time.")
+        }
+        let pane = try Self.decodePanes(from: connection.result).first { $0.paneID == paneID }
+        guard let pane else {
+            throw WezTermError.actionFailed(
+                "The direct terminal session has closed. Start a new agent or use tmux next time.")
+        }
+        try await focus(
+            pane: pane,
+            tabTitle: "\(taskID.uppercased()) · \(provider.displayName) · direct",
+            windowTitle: taskID.uppercased(), configuration: connection.configuration)
+        return .focused(paneID: paneID)
     }
 
     public static func sessionID(
         for provider: AgentProvider,
         inLsofOutput output: String
     ) -> String? {
+        sessionCandidates(for: provider, inLsofOutput: output).first?.sessionID
+    }
+
+    private static func sessionCandidates(
+        for provider: AgentProvider,
+        inLsofOutput output: String
+    ) -> [AgentSessionCandidate] {
+        var candidates: [AgentSessionCandidate] = []
         for rawLine in output.split(whereSeparator: \Character.isNewline) {
             let line = String(rawLine)
             guard line.first == "n" else { continue }
@@ -384,7 +611,17 @@ public actor WezTermController: WezTermControlling {
                path.hasSuffix(".lock") {
                 let candidate = URL(fileURLWithPath: path)
                     .deletingPathExtension().lastPathComponent
-                if UUID(uuidString: candidate) != nil { return candidate.lowercased() }
+                if UUID(uuidString: candidate) != nil {
+                    let sessionID = candidate.lowercased()
+                    if !candidates.contains(where: { $0.sessionID == sessionID && $0.isWriterLock }) {
+                        candidates.append(AgentSessionCandidate(
+                            sessionID: sessionID,
+                            path: path,
+                            isWriterLock: true
+                        ))
+                    }
+                }
+                continue
             }
 
             let isProviderTranscript = switch provider {
@@ -398,9 +635,20 @@ public actor WezTermController: WezTermControlling {
             let groups = stem.split(separator: "-")
             guard groups.count >= 5 else { continue }
             let candidate = groups.suffix(5).joined(separator: "-")
-            if UUID(uuidString: candidate) != nil { return candidate.lowercased() }
+            if UUID(uuidString: candidate) != nil {
+                let sessionID = candidate.lowercased()
+                // Keep the writer lock alongside its transcript. The transcript
+                // supplies root metadata; the lock supplies active ownership.
+                if !candidates.contains(where: { $0.sessionID == sessionID && !$0.isWriterLock }) {
+                    candidates.append(AgentSessionCandidate(
+                        sessionID: sessionID,
+                        path: path,
+                        isWriterLock: false
+                    ))
+                }
+            }
         }
-        return nil
+        return candidates
     }
 
     public static func bestMatchingPane(
@@ -410,17 +658,16 @@ public actor WezTermController: WezTermControlling {
     ) -> WezTermPane? {
         let target = standardizedPath(directory)
 
-        if let taskID, !taskID.isEmpty {
-            let label = taskID.lowercased()
+        if let taskID, let canonicalTaskID = canonicalTaskID(taskID) {
             let tabLabeled = panes.filter {
-                $0.tabTitle?.lowercased().contains(label) == true
+                $0.tabTitle.flatMap(taskID(fromTerminalTitle:)) == canonicalTaskID
             }
             if let pane = bestCandidate(in: tabLabeled, target: target) { return pane }
 
             let windowLabeled = panes.filter { pane in
                 [pane.windowTitle, pane.title]
-                    .compactMap { $0?.lowercased() }
-                    .contains { $0.contains(label) }
+                    .compactMap { $0.flatMap(taskID(fromTerminalTitle:)) }
+                    .contains(canonicalTaskID)
             }
             if let pane = bestCandidate(in: windowLabeled, target: target) { return pane }
         }
@@ -440,6 +687,49 @@ public actor WezTermController: WezTermControlling {
         }
         guard Set(candidates.map(\.windowID)).count == 1 else { return nil }
         return bestCandidate(in: candidates, target: target)
+    }
+
+    private static func taskID(fromTerminalTitle title: String) -> String? {
+        let components = title.split(separator: "·", omittingEmptySubsequences: false).map {
+            String($0).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let first = components.first,
+              let ticketID = canonicalTaskID(first)
+        else { return nil }
+        if components.count == 1 { return ticketID }
+
+        if components.count == 2 {
+            let fields = components[1].split(whereSeparator: \.isWhitespace)
+            guard fields.count == 2,
+                  fields[0].caseInsensitiveCompare("Tab") == .orderedSame,
+                  fields[1].count <= 10,
+                  fields[1].allSatisfy({ $0.isASCII && $0.isNumber }),
+                  Int(fields[1]) != nil
+            else { return nil }
+            return ticketID
+        }
+
+        guard components.count == 3,
+              ["codex", "claude"].contains(components[1].lowercased())
+        else { return nil }
+        let suffix = components[2]
+        let isShortSessionSuffix = suffix.count == 6 && suffix.allSatisfy {
+            $0.isASCII && $0.isHexDigit
+        }
+        return isShortSessionSuffix || UUID(uuidString: suffix) != nil ? ticketID : nil
+    }
+
+    private static func canonicalTaskID(_ value: String) -> String? {
+        let normalized = value.uppercased()
+        let components = normalized.split(
+            separator: "-", maxSplits: 1, omittingEmptySubsequences: false
+        )
+        guard components.count == 2,
+              components[0] == "ECC",
+              (1...8).contains(components[1].count),
+              components[1].allSatisfy({ $0.isASCII && $0.isNumber })
+        else { return nil }
+        return normalized
     }
 
     public static func attachablePanes(in panes: [WezTermPane]) -> [WezTermPane] {
@@ -485,7 +775,27 @@ public actor WezTermController: WezTermControlling {
         }.first
     }
 
-    private func discoverAgents(in panes: [WezTermPane]) async throws -> [RunningAgentSession] {
+    public func agents(onTTY tty: String, preferredSession: TaskAgentSession? = nil) async throws -> [RunningAgentSession] {
+        try await discoverAgents(in: [WezTermPane(windowID: 0, paneID: 0, cwd: "", ttyName: tty)], preferredSession: preferredSession)
+    }
+
+    public func labelTmuxClients(session: TaskAgentSession, configuration: WezTermConfiguration) async throws {
+        guard let reference = session.tmux else { return }
+        let clients = try await TmuxController(runner: runner).clientTTYs(for: reference)
+        guard !clients.isEmpty else { return }
+        let connection = try await WezTermConnection.resolve(configuration: configuration,
+            runner: runner, candidateSockets: candidateSockets)
+        guard connection.result.succeeded else { return }
+        for pane in try Self.decodePanes(from: connection.result) where pane.ttyName.map(clients.contains) == true {
+            try await attach(paneID: pane.paneID, tabTitle: session.terminalTabTitle,
+                windowTitle: session.terminalWindowTitle, configuration: connection.configuration)
+        }
+    }
+
+    private func discoverAgents(
+        in panes: [WezTermPane],
+        preferredSession: TaskAgentSession? = nil
+    ) async throws -> [RunningAgentSession] {
         let processResult = try await runner.run(ProcessSpecification(
             executable: "/bin/ps",
             arguments: ["-axo", "pid=,tty=,comm="],
@@ -515,9 +825,13 @@ public actor WezTermController: WezTermControlling {
             arguments: ["-a", "-p", processIDs, "-Fn"],
             timeoutSeconds: 10
         ))
-        let sessionsByPID = Self.sessionIDsByProcess(
+        guard lsofResult.succeeded else {
+            throw WezTermError.actionFailed("Could not verify agent process ownership. No absence was assumed. \(Self.failureDetail(lsofResult))")
+        }
+        let sessionsByPID = sessionIDsByProcess(
             inLsofOutput: lsofResult.standardOutput,
-            providersByPID: providersByPID
+            providersByPID: providersByPID,
+            preferredSession: preferredSession
         )
 
         var discovered: [RunningAgentSession] = []
@@ -560,12 +874,13 @@ public actor WezTermController: WezTermControlling {
         }
     }
 
-    private static func sessionIDsByProcess(
+    private func sessionIDsByProcess(
         inLsofOutput output: String,
-        providersByPID: [Int32: AgentProvider]
+        providersByPID: [Int32: AgentProvider],
+        preferredSession: TaskAgentSession?
     ) -> [Int32: String] {
         var currentPID: Int32?
-        var sessions: [Int32: String] = [:]
+        var outputByPID: [Int32: [String]] = [:]
 
         for rawLine in output.split(whereSeparator: \Character.isNewline) {
             let line = String(rawLine)
@@ -573,14 +888,131 @@ public actor WezTermController: WezTermControlling {
                 currentPID = Int32(line.dropFirst())
                 continue
             }
-            guard let currentPID,
-                  sessions[currentPID] == nil,
-                  let provider = providersByPID[currentPID],
-                  let sessionID = sessionID(for: provider, inLsofOutput: line)
-            else { continue }
-            sessions[currentPID] = sessionID
+            guard let currentPID else { continue }
+            outputByPID[currentPID, default: []].append(line)
+        }
+
+        var sessions: [Int32: String] = [:]
+        for (pid, lines) in outputByPID {
+            guard let provider = providersByPID[pid] else { continue }
+            let candidates = Self.sessionCandidates(
+                for: provider,
+                inLsofOutput: lines.joined(separator: "\n")
+            )
+            guard let sessionID = resolvedSessionID(
+                provider: provider,
+                candidates: candidates,
+                preferredSession: preferredSession
+            ) else { continue }
+            sessions[pid] = sessionID
         }
         return sessions
+    }
+
+    private func resolvedSessionID(
+        provider: AgentProvider,
+        candidates: [AgentSessionCandidate],
+        preferredSession: TaskAgentSession?
+    ) -> String? {
+        if provider == .codex {
+            let locks = candidates.filter(\.isWriterLock)
+            if !locks.isEmpty {
+                let ownedIDs = Set(locks.map(\.sessionID))
+                let ownedRoots = Set(locks.map { lock in
+                    candidates.first(where: { !$0.isWriterLock && $0.sessionID == lock.sessionID })
+                        .flatMap { canonicalCodexSessionID(from: $0) } ?? lock.sessionID
+                })
+                if let preferredSession, preferredSession.provider == provider {
+                    let preferredID = preferredSession.sessionID.lowercased()
+                    if ownedIDs.contains(preferredID) || ownedRoots.contains(preferredID) {
+                        return preferredID
+                    }
+                }
+                // An open historical transcript is evidence of reading, not
+                // ownership. Only locked threads may identify this process.
+                return ownedRoots.count == 1 ? ownedRoots.first : nil
+            }
+
+            let transcriptRoots = Set(candidates.compactMap { canonicalCodexSessionID(from: $0) })
+            if transcriptRoots.count > 1 { return nil }
+            if let root = transcriptRoots.first { return root }
+        }
+
+        if let preferredSession,
+           preferredSession.provider == provider {
+            let preferredID = preferredSession.sessionID.lowercased()
+            if candidates.contains(where: { $0.sessionID == preferredID }) {
+                return preferredID
+            }
+            if provider == .codex,
+               candidates.contains(where: {
+                   canonicalCodexSessionID(from: $0) == preferredID
+               }) {
+                return preferredID
+            }
+        }
+
+        guard provider == .codex else {
+            let sessionIDs = Set(candidates.map(\.sessionID))
+            return sessionIDs.count == 1 ? sessionIDs.first : nil
+        }
+
+        let transcriptRoots = Set(candidates.compactMap { candidate in
+            candidate.isWriterLock ? nil : canonicalCodexSessionID(from: candidate)
+        })
+        if transcriptRoots.count == 1 { return transcriptRoots.first }
+        if transcriptRoots.count > 1 { return nil }
+
+        let writerLockSessions = Set(
+            candidates.filter(\.isWriterLock).map(\.sessionID)
+        )
+        return writerLockSessions.count == 1 ? writerLockSessions.first : nil
+    }
+
+    private func canonicalCodexSessionID(from candidate: AgentSessionCandidate) -> String? {
+        guard !candidate.isWriterLock,
+              let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: candidate.path))
+        else { return nil }
+        defer { try? handle.close() }
+        guard let line = Self.firstLineData(from: handle),
+              let object = try? JSONSerialization.jsonObject(with: line),
+              let envelope = object as? [String: Any],
+              envelope["type"] as? String == "session_meta",
+              let payload = envelope["payload"] as? [String: Any]
+        else { return nil }
+
+        let sourceIsSubagent = (payload["source"] as? [String: Any])?["subagent"] != nil
+            || payload["thread_source"] as? String == "subagent"
+            || payload["parent_thread_id"] is String
+        let identityKeys = sourceIsSubagent
+            ? ["session_id", "parent_thread_id", "id"]
+            : ["id", "session_id"]
+        for key in identityKeys {
+            guard let value = payload[key] as? String,
+                  UUID(uuidString: value) != nil
+            else { continue }
+            return value.lowercased()
+        }
+        return nil
+    }
+
+    private static func firstLineData(
+        from handle: FileHandle,
+        maximumBytes: Int = 2 * 1_024 * 1_024
+    ) -> Data? {
+        var line = Data()
+        while line.count < maximumBytes {
+            let bytesRemaining = maximumBytes - line.count
+            guard let chunk = try? handle.read(upToCount: min(65_536, bytesRemaining)),
+                  !chunk.isEmpty
+            else { return line.isEmpty ? nil : line }
+            if let newline = chunk.firstIndex(of: 0x0A) {
+                line.append(contentsOf: chunk[..<newline])
+                return line
+            }
+            line.append(chunk)
+        }
+        return nil
     }
 
     private static func displayTitle(for pane: WezTermPane) -> String {
@@ -595,41 +1027,34 @@ public actor WezTermController: WezTermControlling {
 
     private func focus(
         pane: WezTermPane,
+        tabTitle: String,
         windowTitle: String,
         configuration: WezTermConfiguration
     ) async throws {
-        let activation = try await runner.run(ProcessSpecification(
-            executable: configuration.executable,
-            arguments: ["cli", "activate-pane", "--pane-id", String(pane.paneID)],
-            timeoutSeconds: 10
-        ))
-        guard activation.succeeded else {
-            throw WezTermError.actionFailed(Self.failureDetail(activation))
-        }
-        _ = try? await runner.run(ProcessSpecification(
-            executable: configuration.executable,
-            arguments: [
-                "cli", "set-window-title", "--pane-id", String(pane.paneID), windowTitle,
-            ],
-            timeoutSeconds: 10
-        ))
+        try await labelAndActivate(
+            paneID: pane.paneID,
+            tabTitle: tabTitle,
+            windowTitle: windowTitle,
+            configuration: configuration
+        )
         _ = try? await bringApplicationForward(named: configuration.applicationName)
     }
 
     private func labelAndActivate(
         paneID: Int,
-        taskID: String,
+        tabTitle: String,
         windowTitle: String,
         configuration: WezTermConfiguration
     ) async throws {
         for arguments in [
-            ["cli", "set-tab-title", "--pane-id", String(paneID), taskID],
+            ["cli", "set-tab-title", "--pane-id", String(paneID), tabTitle],
             ["cli", "activate-pane", "--pane-id", String(paneID)],
             ["cli", "set-window-title", "--pane-id", String(paneID), windowTitle],
         ] {
             let result = try await runner.run(ProcessSpecification(
                 executable: configuration.executable,
                 arguments: arguments,
+                environment: configuration.cliEnvironment,
                 timeoutSeconds: 10
             ))
             guard result.succeeded else {
@@ -650,6 +1075,7 @@ public actor WezTermController: WezTermControlling {
         try await runner.run(ProcessSpecification(
             executable: configuration.executable,
             arguments: ["cli", "list", "--format", "json"],
+            environment: configuration.cliEnvironment,
             timeoutSeconds: 10
         ))
     }
@@ -689,6 +1115,12 @@ private struct AgentProcess {
     let pid: Int32
     let tty: String
     let provider: AgentProvider
+}
+
+private struct AgentSessionCandidate {
+    let sessionID: String
+    let path: String
+    let isWriterLock: Bool
 }
 
 public struct VerificationRunResult: Equatable, Sendable {
@@ -743,6 +1175,7 @@ public actor CodexCompletionVerifier: CompletionVerifying {
         Review completion intent for ticket \(ticketID).
         The local request record is at \(requestFile.path).
         Re-read the workspace instructions, canonical dashboard, repository evidence, PR state, and the ticket's doneWhen field yourself. Do not trust the checkbox as completion evidence. Update canonical state only if the normal workspace rules permit it, and never mark a ticket resolved while any resolutionPrs entry is unmerged. Return a concise verdict with remaining work or evidence accepted. Do not inspect or transmit unrelated private notes.
+        The request may contain contextPath and subtaskID. Read the central plan and context.json in contextPath when present. If subtaskID is present, review only that named subtask; do not close the parent task. After checks actually pass, run focus-queue-session complete <ticketID> <subtaskID> "concise evidence and checks" using the request's actual identifiers. On disagreement, leave the subtask open and explain the missing evidence. For parent completion, require all subtasks completed. Preserve worktrees and branches: the host archives context and performs guarded cleanup after canonical completion. Never force-remove, reset, or merge branches as part of this review.
         """
         try files.write(Data(prompt.utf8), to: promptURL)
 
@@ -755,8 +1188,9 @@ public actor CodexCompletionVerifier: CompletionVerifying {
                 "--timeout", String(configuration.timeoutSeconds),
                 "--sandbox", "workspace-write",
                 "--label", configuration.sessionName,
-            ],
+            ] + (configuration.contextDirectory.map { ["--context-dir", $0] } ?? []),
             workingDirectory: workspace,
+            environment: Self.agentEnvironment(configuration),
             timeoutSeconds: configuration.timeoutSeconds + 15
         ))
 
@@ -772,6 +1206,13 @@ public actor CodexCompletionVerifier: CompletionVerifying {
             summary: trimmedOutput.isEmpty ? fallback : trimmedOutput,
             log: combinedLog.isEmpty ? fallback : combinedLog
         )
+    }
+
+    public static func agentEnvironment(_ configuration: VerifierConfiguration) -> [String: String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        var environment = ["PATH": "\(home)/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"]
+        if let directory = configuration.supportDirectory { environment["FOCUS_QUEUE_SUPPORT_DIR"] = directory }
+        return environment
     }
 }
 
@@ -913,8 +1354,11 @@ public enum QueueAgentError: Error, LocalizedError {
 
 public actor CodexQueueAgent: QueueAgentChatting {
     public static let sessionName = "ecc-focus-queue-codex-v1"
+    private static let errorLogURL = URL(
+        fileURLWithPath: "/Users/hira/Library/Application Support/ECC Focus Queue/queue-chat.last-error.log"
+    )
     private static let mailEvidenceURL = URL(
-        fileURLWithPath: "/Users/hira/Library/Application Support/ECC Focus Queue/connector-proofs/mail-response.json"
+        fileURLWithPath: "/Users/hira/Library/Application Support/ECC Focus Queue/mail-proofs/mail-response.json"
     )
     private static let discordEvidenceURL = URL(
         fileURLWithPath: "/Users/hira/Library/Application Support/ECC Focus Queue/connector-proofs/discord-response.json"
@@ -1011,36 +1455,40 @@ public actor CodexQueueAgent: QueueAgentChatting {
             executable: configuration.executable,
             arguments: [
                 "chat",
-                "--session", Self.sessionName,
+                "--session", configuration.sessionName.hasPrefix("ecc-focus-queue-task-")
+                    ? configuration.sessionName : Self.sessionName,
                 "--workspace", workspace,
                 "--prompt-file", promptURL.path,
                 "--timeout", String(runTimeoutSeconds),
-            ],
+            ] + (configuration.contextDirectory.map { ["--context-dir", $0] } ?? []),
             workingDirectory: workspace,
+            environment: CodexCompletionVerifier.agentEnvironment(configuration),
             timeoutSeconds: runTimeoutSeconds + 15
         ))
 
         let output = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-        let error = result.standardError.trimmingCharacters(in: .whitespacesAndNewlines)
         let log = [result.standardOutput, result.standardError]
             .filter { !$0.isEmpty }
             .joined(separator: "\n\n")
 
         guard result.succeeded, !output.isEmpty else {
-            let detail: String
-            if result.timedOut {
-                detail = "the request timed out"
-            } else if !error.isEmpty {
-                detail = error
-            } else if !output.isEmpty {
-                detail = output
-            } else {
-                detail = "Codex exited with code \(result.exitCode) without a response"
-            }
-            throw QueueAgentError.failed(detail)
+            preservePrivateFailureLog(log)
+            throw QueueAgentError.failed(Self.safeFailureDetail(
+                from: result,
+                message: message,
+                runTimeoutSeconds: runTimeoutSeconds
+            ))
         }
         var verifiedOutput = output
         if Self.requiresMailEvidence(message) {
+            if Self.isBlockedMailResponse(verifiedOutput) {
+                preservePrivateFailureLog(log)
+                throw QueueAgentError.failed(Self.safeFailureDetail(
+                    from: result,
+                    message: message,
+                    runTimeoutSeconds: runTimeoutSeconds
+                ))
+            }
             verifiedOutput = try verifyMailEvidence(
                 in: verifiedOutput,
                 for: message,
@@ -1057,6 +1505,62 @@ public actor CodexQueueAgent: QueueAgentChatting {
         return QueueAgentReply(message: verifiedOutput, log: log)
     }
 
+    static func safeFailureDetail(
+        from result: ProcessResult,
+        message: String,
+        runTimeoutSeconds: Int
+    ) -> String {
+        if result.timedOut {
+            if requiresMailEvidence(message) {
+                return "Mail check timed out after \(runTimeoutSeconds) seconds. Confirm the Mail helper is available, then retry."
+            }
+            return "the request timed out after \(runTimeoutSeconds) seconds; retry the request"
+        }
+        let raw = result.standardError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? result.standardOutput
+            : result.standardError
+        let normalized = raw.lowercased()
+        if normalized.contains("mail_reader_busy") || normalized.contains("mail reader is busy") {
+            return "the Mail reader is busy with another request. The current request will continue; retry after it finishes"
+        }
+        if normalized.contains("mail_reader_timeout") || normalized.contains("mail reader timed out") {
+            return "the protected Mail reader timed out. Confirm Apple Mail is running, then retry"
+        }
+        if normalized.contains("mail_permission_required")
+            || normalized.contains("not authorized to send apple events")
+            || normalized.contains("-1743") {
+            return "Mail access needs approval for ECC Focus Mail Reader > Mail in System Settings > Privacy & Security > Automation. Older applet and python entries are separate identities"
+        }
+        if normalized.contains("mailbox_not_configured") || normalized.contains("mailbox is not configured") {
+            return "the requested mailbox is outside the configured Mail scope. Choose a configured mailbox or update emailMailboxes in ingestion settings, then retry"
+        }
+        if normalized.contains("mail_account_unavailable") {
+            return "the configured account is unavailable in Apple Mail. Confirm its address and enabled status, then retry"
+        }
+        if normalized.contains("mailbox_unavailable") {
+            return "the configured mailboxes were not found in Apple Mail. Review the mailbox names in ingestion settings, then retry"
+        }
+        if normalized.contains("mail_runtime_permission_required") || normalized.contains("operation not permitted") {
+            return "the worker was denied access to a local process or file. Review the private Queue chat log for the blocked resource and retry the Mail status check"
+        }
+        if normalized.contains("mail_reader_not_installed")
+            || normalized.contains("mail reader app is not installed") {
+            return "the protected Mail reader is missing. Reinstall ECC Focus Queue, then retry"
+        }
+        if normalized.contains("codex") || normalized.contains("classification failed") {
+            return "the Queue assistant failed its safety or compatibility check. Update ECC Focus Queue or Codex, then retry"
+        }
+        if normalized.contains("configuration") {
+            return "the Queue assistant configuration is incomplete or invalid. Review its settings, then retry"
+        }
+        return "the worker exited with code \(result.exitCode). See the private Queue chat log for details"
+    }
+
+    private func preservePrivateFailureLog(_ log: String) {
+        guard !log.isEmpty else { return }
+        try? files.write(Data(log.utf8), to: Self.errorLogURL)
+    }
+
     static func runTimeoutSeconds(
         for message: String,
         configuredTimeoutSeconds: Int
@@ -1067,11 +1571,13 @@ public actor CodexQueueAgent: QueueAgentChatting {
             "catch up", "caught up", "scan my inbox", "scan through my inbox",
             "inbox backlog", "add relevant tasks", "create tasks from",
         ]
-        guard requiresMailEvidence(message),
-              bulkInboxPhrases.contains(where: normalized.contains) else {
+        guard requiresMailEvidence(message) else {
             return configuredTimeoutSeconds
         }
-        return max(configuredTimeoutSeconds, 600)
+        if bulkInboxPhrases.contains(where: normalized.contains) {
+            return max(configuredTimeoutSeconds, 600)
+        }
+        return max(configuredTimeoutSeconds, 180)
     }
 
     static func isDailyReportRunRequest(_ message: String) -> Bool {
@@ -1098,7 +1604,11 @@ public actor CodexQueueAgent: QueueAgentChatting {
             .contains(where: { normalized.contains($0) }) {
             return "read"
         }
-        return nil
+        if ["status", "connected", "connection", "available", "working"]
+            .contains(where: { normalized.contains($0) }) {
+            return "status"
+        }
+        return "search"
     }
 
     private static func requiresDiscordEvidence(_ message: String) -> Bool {
@@ -1130,9 +1640,6 @@ public actor CodexQueueAgent: QueueAgentChatting {
         guard let proofLine = lines.last(where: {
             $0.trimmingCharacters(in: .whitespaces).hasPrefix(proofPrefix)
         }) else {
-            if Self.isBlockedMailResponse(output) {
-                throw QueueAgentError.failed(output)
-            }
             throw QueueAgentError.failed(
                 "mail answer withheld because Codex did not provide current-turn verified mail evidence"
             )
@@ -1292,7 +1799,9 @@ public actor CodexQueueAgent: QueueAgentChatting {
         Current visible open-task order: \(order)
         Current local deferred task IDs: \(deferred)
 
-        Answer clarifying questions from the dashboard and workspace. You may explain ordering, clarify or reword task fields, and add or correct task links. Edit the canonical dashboard only when the user's message directly and unambiguously requests that exact change. Preserve the dashboard schema and ticket IDs. Do not resolve, cancel, or invent completion evidence. Do not turn a disagreement with local order into a canonical priority change unless the user explicitly asks for that canonical change. Keep the response concise and state any file change you made.
+        Answer clarifying questions from the dashboard and workspace. On explicit request, you may create a task with a unique ID using the existing schema, clarify task fields including taskType and doneWhen, add links, or update a task's central plan. Edit the canonical dashboard only when the user's message directly and unambiguously requests that exact change. Preserve the dashboard schema and existing ticket IDs. Do not resolve, cancel, or invent completion evidence. Do not turn a disagreement with local order into a canonical priority change unless the user explicitly asks for that canonical change. Keep the response concise and state any file change you made.
+
+        Every task has durable context under the Focus Queue support directory's tasks/<ticket-id>/ folder. When the user message includes a Task scope and central plan path, restrict the turn to that task and read its plan before proposing changes. Keep one central plan as the source of truth and link supporting canvases from it. Persist decisions, success criteria, progress, checks, and next actions concisely. Use focus-queue-session context <ticket-id> to read context and the helper's add/rename/progress/complete commands for subtask state instead of overwriting context.json. The helper defaults to the standard support directory; use FOCUS_QUEUE_SUPPORT_DIR when provided. Only record completed after evidence has been verified. Task types are task, long-running, subtask, and customer-concern. A customer concern needs the user's response/review before closure. Never send external messages without an explicit request. Worktree merging requires the task's explicit approval terms; leave cleanup to the host.
 
         Truth is a hard operational invariant. Never claim or imply that you checked, searched, found, read, opened, sent, changed, or verified an external source unless a successful tool result in this turn proves that exact action. Earlier chat turns, memory, dashboard text, task links, and plausible inference are not current verification. Name the source actually checked. If a tool fails, state `blocked` and its exact error. If evidence is incomplete, state `unverified`. Never fill a missing fact with a likely answer.
 
@@ -1300,7 +1809,7 @@ public actor CodexQueueAgent: QueueAgentChatting {
 
         <mail-evidence-contract>
         For every question involving email, mail, an inbox, a sender, a customer message, or a message link for haley@ecc.tools, load the `ecc-focus-mail` skill and use `/Users/hira/.local/bin/focus-mail`. Do not use Himalaya for this mailbox. Search results are excerpts only: call `focus-mail read` before describing or quoting a message body. Call `focus-mail open` only when the user explicitly asks to open a message. A mail claim is verified only when the current-turn result contains `status: ok`, `verified: true`, `connector: ecc-focus-mail-reader`, `account: haley@ecc.tools`, and `retrievedAt`; read/open claims also require the stable message `id` and `messageId`, and open requires `opened: true`. Include account, mailbox, received time, and message ID when reporting a message as read.
-        On every successful mail-related request, copy the exact `nonce` from the final successful `focus-mail` result into a standalone final line formatted exactly as `MAIL_PROOF: <nonce>`. Never invent or reuse a nonce. The app will withhold the entire mail answer unless that nonce matches a fresh local proof receipt. If the user asks what a message said, to read it, for its contents, response, reply, or a quote, the final operation must be `read`. If the user asks to open it, the final operation must be `open` with `opened: true`.
+        On every successful mail-related request, copy the exact `nonce` from the final successful `focus-mail` result into a standalone final line formatted exactly as `MAIL_PROOF: <nonce>`. Never invent or reuse a nonce. The app will withhold the entire mail answer unless that nonce matches a fresh local proof receipt. If the user asks what a message said, to read it, for its contents, response, reply, or a quote, the final operation must be `read`. If the user asks to open it, the final operation must be `open` with `opened: true`. If the user asks whether the connector is available or working, the final operation must be `status`. Every other mail or inbox check must end with `search`.
         </mail-evidence-contract>
 
         <discord-evidence-contract>

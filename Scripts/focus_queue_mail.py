@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import email
+import errno
 import html
 import json
 import os
@@ -23,17 +24,19 @@ from pathlib import Path
 from typing import Any
 
 import focus_queue_morning as morning
-from focus_queue_lock import acquire_exclusive_file_lock
 
 
 DEFAULT_CONFIG = Path("/Users/hira/Library/Application Support/ECC Focus Queue/ingestion.json")
-DEFAULT_RUNTIME = Path("/Users/hira/Library/Application Support/ECC Focus Queue/ingestion")
 MAX_BODY_CHARACTERS = 100_000
 MAX_SEARCH_CANDIDATES = 5_000
+MAIL_REQUEST_TIMEOUT_SECONDS = 90
+MAIL_QUEUE_TIMEOUT_SECONDS = 15
 
 
 class MailAccessError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, code: str = "mail_access_failed") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def utc_now() -> str:
@@ -70,7 +73,11 @@ def selected_mailboxes(
         wanted = {item.casefold() for item in requested}
         unknown = wanted - configured
         if unknown:
-            raise MailAccessError(f"Mailbox is not configured for read access: {', '.join(sorted(unknown))}")
+            raise MailAccessError(
+                f"Mailbox is not configured for read access: {', '.join(sorted(unknown))}. "
+                f"Configured mailboxes: {', '.join(sorted(configured))}.",
+                code="mailbox_not_configured",
+            )
         configured = wanted
 
     selected: dict[int, tuple[str, str]] = {}
@@ -396,14 +403,16 @@ def status(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def request_paths(config: dict[str, Any]) -> tuple[Path, Path, Path]:
-    runtime = Path(
-        os.environ.get("FOCUS_QUEUE_CONNECTOR_PROOF_DIR")
-        or config.get("mailRuntimeDirectory", DEFAULT_RUNTIME)
+    request_runtime = Path(
+        config.get("mailRequestDirectory", morning.MAIL_COMMAND_DIRECTORY)
+    ).expanduser()
+    response_runtime = Path(
+        config.get("mailResponseDirectory", morning.MAIL_PROOF_DIRECTORY)
     ).expanduser()
     return (
-        runtime / "mail-request.json",
-        runtime / "mail-response.json",
-        runtime / "mail-command.lock",
+        request_runtime / "mail-request.json",
+        response_runtime / "mail-response.json",
+        request_runtime / "mail-command.lock",
     )
 
 
@@ -431,53 +440,136 @@ def serve(config: dict[str, Any]) -> int:
             "retrievedAt": utc_now(),
             "error": str(error)[:800],
         }
+        if isinstance(error, MailAccessError):
+            response["errorCode"] = error.code
     response["nonce"] = nonce
     morning.write_private_json(response_path, response)
     return 0
 
 
+def stop_mail_reader_instances(application: Path, service: str) -> None:
+    """Best-effort cleanup for both launchd and LaunchServices starts."""
+    try:
+        subprocess.run(
+            ["/bin/launchctl", "kill", "SIGKILL", service],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        # A sandbox may forbid starting the cleanup command itself. Preserve the
+        # original connector failure instead of replacing it with that denial.
+        pass
+    executable = str(application / "Contents" / "MacOS" / "applet")
+    try:
+        processes = subprocess.run(
+            ["/bin/ps", "-axo", "pid=,command="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return
+    if processes.returncode != 0:
+        return
+    for line in processes.stdout.splitlines():
+        parts = line.strip().split(maxsplit=1)
+        if len(parts) != 2 or not parts[0].isdigit():
+            continue
+        command = parts[1]
+        if command != executable and not command.startswith(f"{executable} "):
+            continue
+        try:
+            os.kill(int(parts[0]), signal.SIGKILL)
+        except (OSError, ValueError):
+            continue
+
+
+def acquire_mail_lock(handle: Any, *, request_deadline: float) -> None:
+    """Bound queue waiting without disturbing the request that owns the helper."""
+    queue_deadline = None
+    while True:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write("\0")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except OSError as error:
+            if error.errno not in (errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK):
+                raise
+            if queue_deadline is None:
+                queue_deadline = min(request_deadline, time.monotonic() + MAIL_QUEUE_TIMEOUT_SECONDS)
+            if time.monotonic() >= queue_deadline:
+                raise MailAccessError(
+                    "Mail reader is busy with another request, such as the daily report. "
+                    "The current request was left running. Retry after it finishes.",
+                    code="mail_reader_busy",
+                ) from error
+            time.sleep(0.1)
+
+
 def invoke_reader(config: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+    deadline = time.monotonic() + MAIL_REQUEST_TIMEOUT_SECONDS
     request_path, response_path, lock_path = request_paths(config)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+", encoding="utf-8") as lock:
         lock_path.chmod(0o600)
-        acquire_exclusive_file_lock(lock)
+        acquire_mail_lock(lock, request_deadline=deadline)
         nonce = str(uuid.uuid4())
         payload = {**request, "nonce": nonce, "requestedAt": utc_now()}
         morning.write_private_json(request_path, payload)
         application = Path(config["mailReaderApplication"]).expanduser()
         if not application.exists():
-            raise MailAccessError(f"Mail reader app is not installed at {application}")
+            raise MailAccessError(
+                f"Mail reader app is not installed at {application}. Reinstall ECC Focus Queue and retry.",
+                code="mail_reader_not_installed",
+            )
         service = str(
             config.get(
                 "mailReaderService",
                 f"gui/{os.getuid()}/tools.ecc.focus-mail-reader",
             )
         )
-        launched = subprocess.run(
-            ["/bin/launchctl", "kickstart", service],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if launched.returncode != 0:
-            # Codex's workspace sandbox can deny launchctl process replacement.
-            # LaunchServices can still start this signed, permission-stable app
-            # without granting the Codex process direct access to Mail.
-            opened = subprocess.run(
-                ["/usr/bin/open", "-g", "-n", str(application)],
+        try:
+            launched = subprocess.run(
+                ["/bin/launchctl", "kickstart", "-k", service],
                 capture_output=True,
                 text=True,
                 check=False,
             )
+        except OSError as error:
+            launched = subprocess.CompletedProcess([], 1, "", str(error))
+        if launched.returncode != 0:
+            # Codex's workspace sandbox can deny launchctl process replacement.
+            # LaunchServices can still start this signed, permission-stable app
+            # without granting the Codex process direct access to Mail.
+            try:
+                opened = subprocess.run(
+                    ["/usr/bin/open", "-g", "-n", str(application)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            except OSError as error:
+                opened = subprocess.CompletedProcess([], 1, "", str(error))
             if opened.returncode != 0:
                 launch_detail = (launched.stderr or launched.stdout).strip()
                 open_detail = (opened.stderr or opened.stdout).strip()
                 raise MailAccessError(
                     "Mail reader could not start through launchd or LaunchServices: "
-                    f"{launch_detail[:250]}; {open_detail[:250]}"
+                    f"{launch_detail[:250]}; {open_detail[:250]}",
+                    code="mail_reader_launch_failed",
                 )
-        deadline = time.monotonic() + 90
         while time.monotonic() < deadline:
             try:
                 response = morning.load_json(response_path)
@@ -486,7 +578,13 @@ def invoke_reader(config: dict[str, Any], request: dict[str, Any]) -> dict[str, 
             if response.get("nonce") == nonce:
                 return response
             time.sleep(0.1)
-        raise MailAccessError("Mail reader service timed out")
+        stop_mail_reader_instances(application, service)
+        raise MailAccessError(
+            "Mail reader timed out after 90 seconds including queue wait while waiting for a response in "
+            f"{response_path.parent}. The installed helper may be stale or unresponsive. "
+            "Reinstall ECC Focus Queue to refresh the helper, then retry.",
+            code="mail_reader_timeout",
+        )
 
 
 def emit(payload: dict[str, Any]) -> int:
@@ -561,16 +659,17 @@ def main() -> int:
             morning.write_private_json(response_path, response)
         return emit(response)
     except Exception as error:
-        return emit(
-            {
-                "status": "error",
-                "verified": False,
-                "operation": arguments.command,
-                "connector": "ecc-focus-mail-reader",
-                "error": str(error)[:800],
-                "retrievedAt": utc_now(),
-            }
-        )
+        payload = {
+            "status": "error",
+            "verified": False,
+            "operation": arguments.command,
+            "connector": "ecc-focus-mail-reader",
+            "error": str(error)[:800],
+            "retrievedAt": utc_now(),
+        }
+        if isinstance(error, MailAccessError):
+            payload["errorCode"] = error.code
+        return emit(payload)
 
 
 if __name__ == "__main__":

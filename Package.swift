@@ -31,6 +31,10 @@ let package = Package(
         .testTarget(
             name: "FocusQueueCoreTests",
             dependencies: ["FocusQueueCore"]
+        ),
+        .testTarget(
+            name: "ECCFocusQueueTests",
+            dependencies: ["ECCFocusQueue", "FocusQueueCore"]
         )
     ]
 )

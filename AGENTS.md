@@ -22,3 +22,18 @@
 - Registration reads the provider session ID and WezTerm pane directly from
   the agent environment. Do not search transcript history unless direct
   registration is unavailable.
+- After association, ECC Focus Queue owns the terminal labels. Keep the window
+  title exactly equal to the ticket ID and each agent tab labeled
+  `<TICKET-ID> · <Provider> · <last 6 session UUID characters>`. Do not run
+  `tabname` again or otherwise overwrite those labels after attachment.
+
+## Delivery checkpoints
+
+- After a requested application change passes its appropriate tests, commit the
+  cohesive repository changes before reporting completion. Do not leave verified
+  work only in the working tree.
+- When the user needs to manually assess the change, build and install from that
+  commit, restart ECC Focus Queue, and verify the running executable matches the
+  built artifact by hash and process start time.
+- Push commits only when the user explicitly requests remote delivery or the
+  active task already includes it.

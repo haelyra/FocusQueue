@@ -39,6 +39,18 @@ designated_requirement='=designated => identifier "tools.ecc.focus-mail-reader"'
 /usr/bin/plutil -insert StandardErrorPath -string "$support_dir/mail-reader.stderr.log" "$launch_agent"
 
 /bin/launchctl bootout "$service" 2>/dev/null || true
-/bin/launchctl bootstrap "gui/$(/usr/bin/id -u)" "$launch_agent"
+/bin/sleep 1
+bootstrapped=0
+for attempt in 1 2 3 4 5; do
+  if /bin/launchctl bootstrap "gui/$(/usr/bin/id -u)" "$launch_agent" 2>/dev/null; then
+    bootstrapped=1
+    break
+  fi
+  /bin/sleep 1
+done
+if [[ "$bootstrapped" -ne 1 ]]; then
+  print -u2 -r -- "Could not bootstrap $launch_agent after five attempts."
+  exit 1
+fi
 
 print -r -- "$bundle_path"

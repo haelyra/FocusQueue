@@ -1,4 +1,5 @@
 import Darwin
+import CryptoKit
 import Foundation
 
 /// Finds an existing local mux without launching a GUI or changing its windows.
@@ -11,13 +12,32 @@ public enum WezTermConnection {
     runner: any ProcessRunning,
     candidateSockets: [String]? = nil
   ) async throws -> (configuration: WezTermConfiguration, result: ProcessResult) {
+    // Pin an implicit connection too. A GUI launch has no WEZTERM_UNIX_SOCKET;
+    // the CLI's default can silently select a background mux instead of the GUI.
+    var requested = configuration
+    if requested.socketPath == nil, candidateSockets == nil {
+      if let inherited = ProcessInfo.processInfo.environment["WEZTERM_UNIX_SOCKET"],
+         isOwnedSocket(inherited) {
+        requested.socketPath = inherited
+      } else {
+        requested.socketPath = defaultCandidateSockets().first
+      }
+    }
     let direct = try await runner.run(ProcessSpecification(
-      executable: configuration.executable, arguments: paneArguments,
-      environment: configuration.cliEnvironment, timeoutSeconds: 10))
-    if hasValidPanes(direct) || direct.timedOut { return (configuration, direct) }
+      executable: requested.executable, arguments: paneArguments,
+      environment: requested.cliEnvironment, timeoutSeconds: 10))
+    if hasValidPanes(direct) || direct.timedOut {
+      // The CLI may have created its default mux during the initial probe.
+      if !direct.timedOut, requested.socketPath == nil, candidateSockets == nil,
+         let created = defaultCandidateSockets().first {
+        requested.socketPath = created
+        return try await resolve(configuration: requested, runner: runner)
+      }
+      return (requested, direct)
+    }
 
     var attempted = Set<String>()
-    if let path = configuration.socketPath { attempted.insert(path) }
+    if let path = requested.socketPath { attempted.insert(path) }
     var failures: [String] = []
     var encounteredTimeout = false
     var count = 0
@@ -62,7 +82,10 @@ public enum WezTermConnection {
       }
     }
     return candidates.sorted {
-      $0.modified == $1.modified ? $0.path < $1.path : $0.modified > $1.modified
+      let leftGUI = URL(fileURLWithPath: $0.path).lastPathComponent.hasPrefix("gui-sock-")
+      let rightGUI = URL(fileURLWithPath: $1.path).lastPathComponent.hasPrefix("gui-sock-")
+      if leftGUI != rightGUI { return leftGUI }
+      return $0.modified == $1.modified ? $0.path < $1.path : $0.modified > $1.modified
     }.prefix(maximumCandidates).map(\.path)
   }
 
@@ -71,6 +94,22 @@ public enum WezTermConnection {
     var metadata = stat()
     guard lstat(path, &metadata) == 0 else { return false }
     return metadata.st_uid == getuid() && (metadata.st_mode & S_IFMT) == S_IFSOCK
+  }
+
+  /// A mux daemon can accept panes without any GUI attached. Opening the app
+  /// alone does not reveal those panes; connect a GUI to the exact saved socket.
+  public static func revealArguments(configuration: WezTermConfiguration) -> [String] {
+    guard let socket = configuration.socketPath,
+          !URL(fileURLWithPath: socket).lastPathComponent.hasPrefix("gui-sock-") else {
+      return ["-a", configuration.applicationName]
+    }
+    // Decimal byte escapes are literal Lua data, including quotes and newlines.
+    let literal = "\"" + socket.utf8.map { String(format: "\\%03d", Int($0)) }.joined() + "\""
+    let identity = SHA256.hash(data: Data(socket.utf8)).prefix(8)
+      .map { String(format: "%02x", $0) }.joined()
+    return ["-na", configuration.applicationName, "--args", "--config",
+      "unix_domains={{name='focus-queue',socket_path=\(literal),no_serve_automatically=true}}",
+      "connect", "--class", "com.haelyra.focus-queue-mux.\(identity)", "focus-queue"]
   }
 
   private static func hasValidPanes(_ result: ProcessResult) -> Bool {

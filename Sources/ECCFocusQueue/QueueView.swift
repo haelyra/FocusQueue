@@ -36,6 +36,18 @@ struct QueueView: View {
     .preferredColorScheme(model.appearance == .dark ? .dark : .light)
     .environment(\.queueAccentStyle, model.accentStyle)
     .sheet(isPresented: $showsTerminals) { TerminalBrowserView(model: model) }
+    .sheet(item: Binding(get: { model.launchDiagnostics }, set: { model.launchDiagnostics = $0 })) { log in
+      VStack(alignment: .leading, spacing: 12) {
+        Text("Launch diagnostics").font(.headline)
+        Text(log.title).foregroundStyle(.secondary)
+        ScrollView([.horizontal, .vertical]) {
+          Text(log.text).font(.system(.body, design: .monospaced))
+            .textSelection(.enabled).padding(8)
+        }
+        Button("Done") { model.launchDiagnostics = nil }
+          .keyboardShortcut(.cancelAction)
+      }.padding(20).frame(minWidth: 560, minHeight: 360)
+    }
     .sheet(isPresented: Binding(get: { model.isSetupPresented }, set: { model.isSetupPresented = $0 })) {
       SetupWizardView(model: model)
     }

@@ -1,5 +1,11 @@
 import Foundation
 
+struct LaunchDiagnosticsPresentation: Identifiable {
+  let id = UUID()
+  let title: String
+  let text: String
+}
+
 struct AgentLaunchLogEvent: Codable, Equatable, Sendable {
   let timestamp: Date
   let taskID: String

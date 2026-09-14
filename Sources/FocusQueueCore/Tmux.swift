@@ -31,7 +31,9 @@ public enum TmuxError: Error, LocalizedError {
 /// One dedicated server, with no user tmux configuration or existing sessions modified.
 public actor TmuxController {
   public static let serverName = "ecc-focus-queue"
-  public static let format = "#{session_name}\t#{pid}\t#{session_created}\t#{pane_id}\t#{pane_pid}\t#{pane_tty}\t#{pane_dead}"
+  // Non-UTF-8 tmux clients replace control characters (including tabs) with
+  // underscores. GUI apps often have no locale, so use a printable delimiter.
+  public static let format = "#{session_name}|#{pid}|#{session_created}|#{pane_id}|#{pane_pid}|#{pane_tty}|#{pane_dead}"
   private let runner: any ProcessRunning
   private let serverName: String
   private let confirmationAttempts: Int
@@ -71,7 +73,9 @@ public actor TmuxController {
       throw TmuxError.unavailable("tmux returned no pane record.")
     }
     return try lines.map { line in
-      let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+      // Retain support for older tab-delimited records, with the same identity checks.
+      let separator: Character = line.contains("|") ? "|" : "\t"
+      let fields = line.split(separator: separator, omittingEmptySubsequences: false).map(String.init)
       guard fields.count == 7 else {
         throw TmuxError.unavailable(
           "tmux returned \(fields.count) pane fields; Focus Queue requires 7 to distinguish the exact running process.")

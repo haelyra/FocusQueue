@@ -1037,7 +1037,13 @@ public actor WezTermController: WezTermControlling {
             windowTitle: windowTitle,
             configuration: configuration
         )
-        _ = try? await bringApplicationForward(named: configuration.applicationName)
+        let revealed = try await runner.run(ProcessSpecification(
+            executable: "/usr/bin/open",
+            arguments: WezTermConnection.revealArguments(configuration: configuration),
+            timeoutSeconds: 10))
+        guard revealed.succeeded else {
+            throw WezTermError.actionFailed("The terminal process is running, but its window could not open. \(Self.failureDetail(revealed))")
+        }
     }
 
     private func labelAndActivate(

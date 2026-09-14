@@ -51,6 +51,47 @@ private final class SocketFixtures {
 
 @Suite("WezTerm connection recovery")
 struct WezTermConnectionTests {
+  @Test("Local terminal discovery pins the live GUI connection using read-only probes",
+    .enabled(if: ProcessInfo.processInfo.environment["ECC_FOCUS_QUEUE_LOCAL_TRANSPORT_TESTS"] == "1"))
+  func localConnectionIdentity() async throws {
+    let executable = try #require(SetupEnvironment.executable("wezterm"))
+    let connection = try await WezTermConnection.resolve(
+      configuration: .init(executable: executable), runner: FoundationProcessRunner())
+    #expect(connection.result.succeeded, "\(connection.result.standardError)")
+    let socket = try #require(connection.configuration.socketPath)
+    #expect(socket.hasPrefix("/"))
+    let repeated = try await WezTermConnection.resolve(
+      configuration: connection.configuration, runner: FoundationProcessRunner())
+    #expect(repeated.result.succeeded)
+    #expect(repeated.configuration.socketPath == socket)
+  }
+  @Test("Installed WezTerm accepts the background mux configuration without opening a GUI",
+    .enabled(if: SetupEnvironment.executable("wezterm") != nil))
+  func realConfigurationParser() async throws {
+    let executable = try #require(SetupEnvironment.executable("wezterm"))
+    let arguments = WezTermConnection.revealArguments(configuration:
+      .init(executable: executable, socketPath: "/tmp/a'\"\\\n日本.sock"))
+    let override = try #require(arguments.first { $0.hasPrefix("unix_domains=") })
+    let result = try await FoundationProcessRunner().run(.init(executable: executable,
+      arguments: ["-n", "--config", override, "show-keys"], timeoutSeconds: 10))
+    #expect(result.succeeded, "\(result.standardError)")
+  }
+  @Test("GUI reveal preserves socket paths as literal Lua bytes")
+  func revealArguments() throws {
+    let socket = "/tmp/a'\"\\\n日本.sock"
+    let arguments = WezTermConnection.revealArguments(
+      configuration: .init(executable: "/mock/wezterm", socketPath: socket))
+    let override = try #require(arguments.first { $0.hasPrefix("unix_domains=") })
+    #expect(override.contains("no_serve_automatically=true"))
+    let encoded = socket.utf8.map { String(format: "\\%03d", Int($0)) }.joined()
+    #expect(override.contains("socket_path=\"\(encoded)\""))
+    #expect(!override.contains(socket))
+    #expect(arguments.suffix(4).first == "connect")
+    #expect(WezTermConnection.revealArguments(configuration:
+      .init(executable: "/mock/wezterm", socketPath: "/tmp/gui-sock-123")) == ["-a", "WezTerm"])
+    #expect(arguments != WezTermConnection.revealArguments(configuration:
+      .init(executable: "/mock/wezterm", socketPath: "/tmp/other.sock")))
+  }
   private var valid: ProcessResult { .init(exitCode: 0, standardOutput: "[]", standardError: "", timedOut: false) }
   private var failed: ProcessResult { .init(exitCode: 1, standardOutput: "", standardError: "stale socket", timedOut: false) }
   private var timeout: ProcessResult { .init(exitCode: 1, standardOutput: "", standardError: "deadline", timedOut: true) }

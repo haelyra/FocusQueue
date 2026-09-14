@@ -8,6 +8,54 @@ import FocusQueueCore
 @Suite("Queue app state integration")
 @MainActor
 struct QueueViewModelTests {
+  @Test("Direct launch persists its pane before revealing it and keeps it on reveal failure", arguments: [false, true])
+  func directLaunchRevealsSavedPane(failReveal: Bool) async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let repository = fixture.root.appendingPathComponent("repo")
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    let git = FoundationProcessRunner()
+    for arguments in [["init", "-q"], ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+      "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Fixture", "--allow-empty"]] {
+      let result = try await git.run(.init(executable: "/usr/bin/git", arguments: arguments,
+        workingDirectory: repository.path))
+      #expect(result.succeeded)
+    }
+    let launcherRunner = DirectCreationRunner()
+    let recorder = DirectViewRecorder(root: fixture.root, failReveal: failReveal)
+    let model = await fixture.model(agent: ControlledQueueAgent(), terminalController: recorder,
+      taskAgentLauncher: TaskAgentLauncher(runner: launcherRunner, candidateSockets: []))
+    model.launchAgent(for: fixture.tickets[0], title: "Direct worker", provider: .codex,
+      repositoryPath: repository.path, includePrompt: false, useTmux: false)
+    try await eventually { model.launchingTaskIDs.isEmpty }
+    #expect(await recorder.opened == true)
+    #expect(await launcherRunner.spawnCount == 1)
+    let subtask = try #require(model.subtasks(for: "ECC-101").first)
+    #expect(subtask.terminalPaneID == 42)
+    #expect(subtask.runtimeMode == .terminal)
+    #expect(subtask.status == .working)
+    let message = try #require(model.actionMessages["ECC-101"])
+    #expect(message.contains(failReveal ? "Click the subtask to retry" : "Ready for your instructions"))
+    model.openLaunchDiagnostics(for: subtask)
+    #expect(model.launchDiagnostics?.text.contains(failReveal ? "view-failed" : "\"phase\":\"ready\"") == true)
+  }
+  @Test("Launch diagnostics open inside Focus Queue without a JSONL file association")
+  func inlineLaunchDiagnostics() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let logger = AgentLaunchLogger(supportDirectory: fixture.paths.supportDirectory)
+    let subtask = TaskSubtask(id: "diagnostic-worker", title: "Direct launch")
+    try await logger.record(.init(timestamp: Date(), taskID: "ECC-101", subtaskID: subtask.id,
+      provider: "codex", runtime: "terminal", phase: "direct-confirm", outcome: "succeeded",
+      message: "Saved exact pane", details: ["paneID": "1"]))
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    model.openLaunchDiagnostics(for: subtask)
+    #expect(model.launchDiagnostics?.title == "Direct launch")
+    #expect(model.launchDiagnostics?.text.contains("Saved exact pane") == true)
+    model.launchDiagnostics = nil
+    model.openLaunchDiagnostics(for: TaskSubtask(id: "missing", title: "Missing log"))
+    #expect(model.launchDiagnostics?.text.contains("Could not read launch diagnostics") == true)
+  }
   @Test("An unchanged background poll does not invalidate queue content or rewrite task files")
   func unchangedPollingDoesNotPublishContent() async throws {
     let fixture = try await Fixture()
@@ -626,10 +674,12 @@ private struct Fixture {
   }
 
   func model(agent: ControlledQueueAgent, verifier: (any CompletionVerifying)? = nil,
-             terminalController: (any WezTermControlling)? = nil) async -> QueueViewModel {
+             terminalController: (any WezTermControlling)? = nil,
+             taskAgentLauncher: TaskAgentLauncher = TaskAgentLauncher()) async -> QueueViewModel {
     let boundary = ForbiddenExternalActions()
     let model = QueueViewModel(paths: paths, terminalController: terminalController ?? boundary,
-      verifier: verifier ?? boundary, queueAgent: agent, pullRequestQueueLoader: boundary)
+      verifier: verifier ?? boundary, queueAgent: agent, pullRequestQueueLoader: boundary,
+      taskAgentLauncher: taskAgentLauncher)
     await model.bootstrap()
     #expect(model.loadError == nil)
     return model
@@ -645,6 +695,47 @@ private struct Fixture {
     let directory = paths.ingestionRuntimeDirectory.appendingPathComponent("reports/2026-09-10")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     try JSONEncoder().encode(report).write(to: directory.appendingPathComponent("\(report.runID).json"))
+  }
+}
+
+private actor DirectCreationRunner: ProcessRunning {
+  private(set) var spawnCount = 0
+  func run(_ specification: ProcessSpecification) throws -> ProcessResult {
+    if specification.arguments == ["cli", "list", "--format", "json"] {
+      return .init(exitCode: 0, standardOutput: "[]", standardError: "", timedOut: false)
+    }
+    guard specification.arguments.starts(with: ["cli", "spawn"]) else {
+      throw TestFailure.unexpectedExternalAction
+    }
+    spawnCount += 1
+    return .init(exitCode: 0, standardOutput: "42\n", standardError: "", timedOut: false)
+  }
+}
+
+private actor DirectViewRecorder: WezTermControlling {
+  let root: URL
+  let failReveal: Bool
+  private(set) var opened = false
+  init(root: URL, failReveal: Bool) { self.root = root; self.failReveal = failReveal }
+  func listAttachablePanes(configuration: WezTermConfiguration) async throws -> [WezTermPane] { [] }
+  func listRunningAgents(configuration: WezTermConfiguration) async throws -> [RunningAgentSession] { [] }
+  func attach(paneID: Int, tabTitle: String, windowTitle: String,
+    configuration: WezTermConfiguration) async throws { throw TestFailure.unexpectedExternalAction }
+  func focusOrResume(session: TaskAgentSession, taskID: String,
+    configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    throw TestFailure.unexpectedExternalAction
+  }
+  func openDirectRuntime(paneID: Int, socketPath: String?, taskID: String,
+    provider: AgentProvider, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    let context = try await TaskContextStore(root: root).load(ticketID: taskID)
+    #expect(context?.subtasks.first?.terminalPaneID == paneID)
+    #expect(context?.subtasks.first?.runtimeMode == .terminal)
+    opened = true
+    if failReveal { throw WezTermError.actionFailed("Fixture window failure") }
+    return .focused(paneID: paneID)
+  }
+  func focusOrSpawn(directory: String, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    throw TestFailure.unexpectedExternalAction
   }
 }
 

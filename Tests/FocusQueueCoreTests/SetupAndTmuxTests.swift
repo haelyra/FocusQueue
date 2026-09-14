@@ -4,6 +4,44 @@ import Testing
 
 @Suite("Portable setup and persistent terminals")
 struct SetupAndTmuxTests {
+  @Test("tmux identity is readable in a GUI C locale", .enabled(if: SetupEnvironment.executable("tmux") != nil))
+  func guiLocaleIdentity() async throws {
+    let executable = try #require(SetupEnvironment.executable("tmux"))
+    let server = "fq-locale-\(UUID().uuidString.lowercased())"
+    let runner = CLocaleTmuxRunner()
+    let controller = TmuxController(runner: runner, serverName: server,
+      confirmationAttempts: 3, confirmationDelayMilliseconds: 0, requiredStableObservations: 1)
+    do {
+      let reference = try await controller.start(name: "fq_locale_test",
+        directory: "/tmp", command: ["/bin/sleep", "30"], executable: executable)
+      #expect(reference.name == "fq_locale_test")
+      #expect(try await controller.list(executable: executable) == [reference])
+      #expect(try await controller.verify(reference) == reference)
+      // Confirm the regression environment actually reproduces tmux's tab loss.
+      let legacy = try await runner.run(.init(executable: executable,
+        arguments: ["-L", server, "display-message", "-p", "-t", "=fq_locale_test:0.0",
+          TmuxController.format.replacingOccurrences(of: "|", with: "\t")]))
+      #expect(!legacy.standardOutput.contains("\t"))
+      #expect(throws: TmuxError.self) {
+        try TmuxController.decode(legacy.standardOutput, executable: executable)
+      }
+    } catch {
+      _ = try? await runner.run(.init(executable: executable, arguments: ["-L", server, "kill-server"]))
+      throw error
+    }
+    _ = try await runner.run(.init(executable: executable, arguments: ["-L", server, "kill-server"]))
+  }
+
+  @Test("Printable tmux records retain strict identity validation")
+  func printableRecords() throws {
+    let valid = "fq_under_score|123|1000|%0|124|/dev/ttys099|0\n"
+    #expect(try TmuxController.decode(valid, executable: "/tmux").first?.name == "fq_under_score")
+    for invalid in [valid.replacingOccurrences(of: "|124|", with: "||"),
+                    valid.replacingOccurrences(of: "|0\n", with: "|1\n"),
+                    valid.replacingOccurrences(of: "|", with: "_"), valid + "garbage\n"] {
+      #expect(throws: TmuxError.self) { try TmuxController.decode(invalid, executable: "/tmux") }
+    }
+  }
   @Test("Starter setup is private, portable and preserves an existing dashboard")
   func starterSetup() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("setup test \(UUID().uuidString)")
@@ -191,6 +229,17 @@ struct SetupAndTmuxTests {
     let calls = await runner.calls
     #expect(calls.filter { $0.arguments.contains("new-session") }.count == 1)
     #expect(calls.filter { $0.arguments.contains("display-message") }.count == 2)
+  }
+}
+
+private actor CLocaleTmuxRunner: ProcessRunning {
+  let runner = FoundationProcessRunner()
+  func run(_ specification: ProcessSpecification) async throws -> ProcessResult {
+    try await runner.run(.init(executable: specification.executable,
+      arguments: specification.arguments, workingDirectory: specification.workingDirectory,
+      environment: (specification.environment ?? [:]).merging(
+        ["LC_ALL": "C", "LANG": "C", "LC_CTYPE": "C", "TMUX_TMPDIR": "/tmp"]) { _, value in value },
+      timeoutSeconds: specification.timeoutSeconds))
   }
 }
 

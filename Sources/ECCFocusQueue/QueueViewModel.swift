@@ -72,6 +72,7 @@ final class QueueViewModel {
   private(set) var planError: String?
   private(set) var planEditDrafts: [String: PlanEditDraft] = [:]
   private(set) var launchingTaskIDs: Set<String> = []
+  var launchDiagnostics: LaunchDiagnosticsPresentation?
   private(set) var closureMessages: [String: String] = [:]
   private(set) var reportHistory = DailyReportHistorySnapshot()
   private(set) var reportHistoryError: String?
@@ -811,8 +812,13 @@ final class QueueViewModel {
 
   func openLaunchDiagnostics(for subtask: TaskSubtask) {
     let url = agentLaunchLogger.url(subtaskID: subtask.id)
-    guard FileManager.default.fileExists(atPath: url.path) else { return }
-    NSWorkspace.shared.open(url)
+    do {
+      launchDiagnostics = LaunchDiagnosticsPresentation(
+        title: subtask.title, text: try String(contentsOf: url, encoding: .utf8))
+    } catch {
+      launchDiagnostics = LaunchDiagnosticsPresentation(
+        title: subtask.title, text: "Could not read launch diagnostics: \(error.localizedDescription)")
+    }
   }
 
   private func recordAgentLaunch(
@@ -988,6 +994,10 @@ final class QueueViewModel {
             subtask, ticketID: ticket.id, phase: "direct-confirm", outcome: "succeeded",
             message: "WezTerm returned the exact pane created for the agent.",
             details: ["paneID": String(receipt.paneID), "socket": receipt.socketPath ?? "default"])
+          phase = "opening the direct WezTerm view"
+          _ = try await terminalController.openDirectRuntime(
+            paneID: receipt.paneID, socketPath: receipt.socketPath,
+            taskID: ticket.id, provider: provider, configuration: config.wezTerm)
         }
         await recordAgentLaunch(
           subtask, ticketID: ticket.id, phase: "ready", outcome: "succeeded",

@@ -154,4 +154,31 @@ struct ManagedSessionRecallTests {
     #expect(!calls.flatMap(\.arguments).contains("spawn"))
     #expect(!calls.flatMap(\.arguments).contains("new-session"))
   }
+
+  @Test("Direct recall connects a GUI to the saved background mux")
+  func revealBackgroundMux() async throws {
+    let panes = #"[{"window_id":1,"tab_id":1,"pane_id":41,"cwd":"file:///tmp/worktree"}]"#
+    let runner = ManagedRecallRunner([result(panes), result(), result(), result(), result()])
+    let configuration = WezTermConfiguration(executable: "/mock/wezterm", socketPath: "/tmp/sock")
+    let action = try await WezTermController(runner: runner, candidateSockets: []).openDirectRuntime(
+      paneID: 41, socketPath: "/tmp/sock", taskID: "ECC-1", provider: .codex,
+      configuration: configuration)
+    #expect(action == .focused(paneID: 41))
+    let calls = await runner.calls
+    #expect(calls.last?.arguments == WezTermConnection.revealArguments(configuration: configuration))
+    #expect(calls.last?.arguments.contains("connect") == true)
+    #expect(!calls.flatMap(\.arguments).contains("spawn"))
+  }
+
+  @Test("Window opening failure is reported without restarting the direct agent")
+  func failedReveal() async {
+    let panes = #"[{"window_id":1,"tab_id":1,"pane_id":41,"cwd":"file:///tmp/worktree"}]"#
+    let runner = ManagedRecallRunner([result(panes), result(), result(), result(), result(exit: 1)])
+    await #expect(throws: WezTermError.self) {
+      try await WezTermController(runner: runner, candidateSockets: []).openDirectRuntime(
+        paneID: 41, socketPath: nil, taskID: "ECC-1", provider: .codex,
+        configuration: .init(executable: "/mock/wezterm"))
+    }
+    #expect(await runner.calls.count == 5)
+  }
 }

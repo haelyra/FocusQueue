@@ -82,7 +82,20 @@ struct AgentUpdateView: View {
             if let subtaskID = update.subtaskID,
                let subtask = model.subtasks(for: ticket.id).first(where: { $0.id == subtaskID }),
                let session = model.session(for: subtask, ticketID: ticket.id) {
-              Button("Open agent session", systemImage: "terminal") { model.viewAgent(session, for: ticket) }
+              Button { model.viewAgent(session, for: ticket) } label: {
+                if model.isOpening(session) {
+                  HStack(spacing: 7) {
+                    ProgressView().controlSize(.small)
+                    Text("Opening agent session…")
+                  }
+                } else {
+                  Label("Open agent session", systemImage: "terminal")
+                }
+              }
+              .disabled(model.isOpening(session))
+              .accessibilityLabel(
+                model.isOpening(session) ? "Opening agent session" : "Open agent session"
+              )
             }
             DisclosureGroup("Context, evidence & links") { TaskContextLinksView(ticket: ticket, model: model) }
           }

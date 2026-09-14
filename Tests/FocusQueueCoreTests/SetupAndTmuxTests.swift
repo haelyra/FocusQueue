@@ -157,6 +157,41 @@ struct SetupAndTmuxTests {
       throw error
     }
   }
+
+  @Test("A created session with pending pane fields is not reported as a stopped launch")
+  func createdButPending() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "tmux-pending-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let runner = TmuxSequenceRunner([
+      .init(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
+      .init(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
+      .init(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
+    ])
+    let controller = TmuxController(
+      runner: runner, serverName: "fixture", confirmationAttempts: 2,
+      confirmationDelayMilliseconds: 0, requiredStableObservations: 2)
+    do {
+      _ = try await controller.start(
+        name: "fq-pending", directory: root.path,
+        command: ["/bin/sleep", "30"], executable: "/mock/tmux")
+      Issue.record("A pending runtime must remain distinguishable from a stopped launch")
+    } catch let error as TmuxError {
+      guard case let .startedButUnconfirmed(name, executable, attempts, detail) = error else {
+        Issue.record("Expected created-but-unconfirmed, received \(error)")
+        return
+      }
+      #expect(name == "fq-pending")
+      #expect(executable == "/mock/tmux")
+      #expect(attempts == 2)
+      #expect(detail.contains("no pane record"))
+      #expect(!error.localizedDescription.contains("stopped"))
+    }
+    let calls = await runner.calls
+    #expect(calls.filter { $0.arguments.contains("new-session") }.count == 1)
+    #expect(calls.filter { $0.arguments.contains("display-message") }.count == 2)
+  }
 }
 
 private actor TmuxFixtureRunner: ProcessRunning {
@@ -166,5 +201,15 @@ private actor TmuxFixtureRunner: ProcessRunning {
   func run(_ specification: ProcessSpecification) async throws -> ProcessResult {
     calls.append(specification)
     return .init(exitCode: 0, standardOutput: output, standardError: "", timedOut: false)
+  }
+}
+
+private actor TmuxSequenceRunner: ProcessRunning {
+  var results: [ProcessResult]
+  var calls: [ProcessSpecification] = []
+  init(_ results: [ProcessResult]) { self.results = results }
+  func run(_ specification: ProcessSpecification) throws -> ProcessResult {
+    calls.append(specification)
+    return results.removeFirst()
   }
 }

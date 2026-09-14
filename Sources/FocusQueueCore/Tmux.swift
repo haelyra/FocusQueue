@@ -12,12 +12,18 @@ public struct TmuxSessionReference: Codable, Equatable, Sendable {
 }
 
 public enum TmuxError: Error, LocalizedError {
-  case invalidName, unavailable(String), changed
+  case invalidName
+  case unavailable(String)
+  case startedButUnconfirmed(name: String, executable: String, attempts: Int, lastDetail: String)
+  case changed
   public var errorDescription: String? {
     switch self {
     case .invalidName: "Session names must contain 1 to 80 letters, numbers, hyphens or underscores, starting with a letter or number."
-    case .unavailable(let detail): "tmux session unavailable: \(detail)"
-    case .changed: "The saved tmux execution has ended or changed. Its conversation is retained. Reconnect requires the original running session."
+    case .unavailable(let detail): "tmux could not open the agent session: \(detail)"
+    case .startedButUnconfirmed(let name, _, let attempts, let lastDetail):
+      "tmux created session \(name), but Focus Queue could not confirm its final pane process and terminal device after \(attempts) checks. The agent may still be starting, so Focus Queue will not create a duplicate. Last check: \(lastDetail)"
+    case .changed:
+      "The saved tmux session no longer has the same server, pane process, and terminal device. Focus Queue did not start a replacement."
     }
   }
 }
@@ -28,9 +34,21 @@ public actor TmuxController {
   public static let format = "#{session_name}\t#{pid}\t#{session_created}\t#{pane_id}\t#{pane_pid}\t#{pane_tty}\t#{pane_dead}"
   private let runner: any ProcessRunning
   private let serverName: String
-  public init(runner: any ProcessRunning = FoundationProcessRunner(), serverName: String = TmuxController.serverName) {
+  private let confirmationAttempts: Int
+  private let confirmationDelayMilliseconds: Int
+  private let requiredStableObservations: Int
+  public init(
+    runner: any ProcessRunning = FoundationProcessRunner(),
+    serverName: String = TmuxController.serverName,
+    confirmationAttempts: Int = 120,
+    confirmationDelayMilliseconds: Int = 250,
+    requiredStableObservations: Int = 3
+  ) {
     self.runner = runner
     self.serverName = serverName
+    self.confirmationAttempts = max(1, confirmationAttempts)
+    self.confirmationDelayMilliseconds = max(0, confirmationDelayMilliseconds)
+    self.requiredStableObservations = max(1, requiredStableObservations)
   }
 
   public static func sessionName(subtaskID: String) throws -> String {
@@ -48,13 +66,31 @@ public actor TmuxController {
   }
 
   public static func decode(_ output: String, executable: String) throws -> [TmuxSessionReference] {
-    try output.split(separator: "\n").map { line in
+    let lines = output.split(separator: "\n")
+    guard !lines.isEmpty else {
+      throw TmuxError.unavailable("tmux returned no pane record.")
+    }
+    return try lines.map { line in
       let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
-      guard fields.count == 7, let server = Int(fields[1]), server > 0,
-        let created = Int(fields[2]), let panePID = Int(fields[4]), panePID > 0,
-        fields[3].range(of: "^%[0-9]+$", options: .regularExpression) != nil,
-        fields[5].hasPrefix("/dev/"), fields[6] == "0" else {
-        throw TmuxError.unavailable("The execution is stopped or its identity could not be read.")
+      guard fields.count == 7 else {
+        throw TmuxError.unavailable(
+          "tmux returned \(fields.count) pane fields; Focus Queue requires 7 to distinguish the exact running process.")
+      }
+      var invalid: [String] = []
+      let server = Int(fields[1])
+      let created = Int(fields[2])
+      let panePID = Int(fields[4])
+      if server.map({ $0 > 0 }) != true { invalid.append("server PID") }
+      if created == nil { invalid.append("session creation time") }
+      if fields[3].range(of: "^%[0-9]+$", options: .regularExpression) == nil {
+        invalid.append("pane number")
+      }
+      if panePID.map({ $0 > 0 }) != true { invalid.append("pane process PID") }
+      if !fields[5].hasPrefix("/dev/") { invalid.append("terminal device") }
+      if fields[6] != "0" { invalid.append("running pane state") }
+      guard invalid.isEmpty, let server, let created, let panePID else {
+        throw TmuxError.unavailable(
+          "tmux has not reported a valid \(invalid.joined(separator: ", ")) for this pane yet.")
       }
       try validateName(fields[0])
       return .init(name: fields[0], serverPID: server, createdAt: created, paneID: fields[3],
@@ -114,19 +150,32 @@ public actor TmuxController {
         ? "Launch timed out. Run tmux list before retrying; a process may already exist."
         : String(result.standardError.prefix(800)))
     }
-    // tmux can return from new-session before the detached pane's TTY and PID
-    // are readable in the -P receipt. Resolve the known unique name after
-    // creation instead of treating that short initialization window as death.
+    // User shell aliases can replace the initial pane process while the provider
+    // wrapper starts. Require three identical observations so we persist the
+    // final process rather than an intermediate shell PID.
     var lastError: (any Error)?
-    for attempt in 0..<20 {
-      do { return try await inspect(name: name, executable: executable) }
+    var previous: TmuxSessionReference?
+    var stableObservations = 0
+    let attempts = confirmationAttempts
+    for attempt in 0..<attempts {
+      do {
+        let current = try await inspect(name: name, executable: executable)
+        if current == previous { stableObservations += 1 }
+        else { previous = current; stableObservations = 1 }
+        if stableObservations >= requiredStableObservations { return current }
+      }
       catch {
         lastError = error
-        if attempt < 19 { try await Task.sleep(for: .milliseconds(50)) }
+        previous = nil
+        stableObservations = 0
+      }
+      if attempt < attempts - 1, confirmationDelayMilliseconds > 0 {
+        try await Task.sleep(for: .milliseconds(confirmationDelayMilliseconds))
       }
     }
-    throw TmuxError.unavailable(
-      "The session was created but its stable execution identity was not readable. \(lastError?.localizedDescription ?? "")")
+    throw TmuxError.startedButUnconfirmed(
+      name: name, executable: executable, attempts: attempts,
+      lastDetail: lastError?.localizedDescription ?? "the pane details continued changing")
   }
 
   public static func attachCommand(name: String, executable: String) throws -> [String] {

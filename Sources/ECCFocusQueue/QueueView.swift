@@ -1668,8 +1668,19 @@ private struct TicketCard: View {
       }.buttonStyle(.plain).help("Reopen the managed session for \(subtask.title)")
         .contextMenu {
           Button("Rename subtask") { subtaskName = subtask.title; renamingSubtask = subtask }
+          if model.hasLaunchDiagnostics(for: subtask) {
+            Button("Open launch diagnostics") { model.openLaunchDiagnostics(for: subtask) }
+          }
         }
         .accessibilityLabel("\(subtask.title), \(model.effectiveStatus(for: subtask).rawValue)\(subtask.completionUnread ? ", new completion" : "")")
+      if model.hasLaunchDiagnostics(for: subtask) {
+        Button { model.openLaunchDiagnostics(for: subtask) } label: {
+          Image(systemName: "doc.text.magnifyingglass")
+        }
+        .buttonStyle(.plain).frame(width: 28, height: 32)
+        .help("Open the complete launch log for \(subtask.title)")
+        .accessibilityLabel("Open launch diagnostics for \(subtask.title)")
+      }
       if subtask.status != .completed {
         Button { model.requestSubtaskCompletion(subtask, for: ticket) } label: { Image(systemName: "circle") }
           .buttonStyle(.plain).frame(width: 28, height: 32)

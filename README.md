@@ -23,6 +23,12 @@ reopened. A stopped or replaced runtime identity also fails closed. Provider ses
 IDs remain useful history metadata after the provider reports them, but they do
 not authorize process reconstruction.
 
+New launches write structured phase-by-phase diagnostics under
+`Application Support/ECC Focus Queue/logs/agent-launches`. The document icon beside
+each named subtask opens its launch log. tmux launch confirmation waits for the
+user's shell and provider wrapper to settle, then requires three identical pane
+process observations before saving the runtime.
+
 For read-only diagnostics outside a terminal pane:
 
 ```sh

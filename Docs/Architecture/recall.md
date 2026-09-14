@@ -1,4 +1,4 @@
-<!-- fq-architecture: {"id":"recall","title":"Agent runtime sessions and terminal connections","sources":[{"path":"Sources/FocusQueueCore/Integrations.swift","sha256":"06670c5de801d2ffb5585940309229a2bc6cd5f579438e7bc631d14617575745"},{"path":"Sources/FocusQueueCore/WezTermConnection.swift","sha256":"e72b649ee180c05ec9d5010a382f3d3cd4e7d1b0b8c2981ab465b69bd2bda2a5"},{"path":"Sources/FocusQueueCore/AgentLauncher.swift","sha256":"a6b7716c20d6d5154c8d04e62c80bccc7b9e62069b4b0c22a0fce116be0b7916"},{"path":"Sources/FocusQueueCore/Tmux.swift","sha256":"e277a4ff8dcf317f7f5a73240256cea0f5ec009424c8ff6b848f0117645cbd06"}]} -->
+<!-- fq-architecture: {"id":"recall","title":"Agent runtime sessions and terminal connections","sources":[{"path":"Sources/FocusQueueCore/Integrations.swift","sha256":"06670c5de801d2ffb5585940309229a2bc6cd5f579438e7bc631d14617575745"},{"path":"Sources/FocusQueueCore/WezTermConnection.swift","sha256":"e72b649ee180c05ec9d5010a382f3d3cd4e7d1b0b8c2981ab465b69bd2bda2a5"},{"path":"Sources/FocusQueueCore/AgentLauncher.swift","sha256":"a6b7716c20d6d5154c8d04e62c80bccc7b9e62069b4b0c22a0fce116be0b7916"},{"path":"Sources/FocusQueueCore/Tmux.swift","sha256":"f11418544673ffde22ce111515d2d31e6e14f0de2d5c32f774eb64ffce162816"}]} -->
 
 # Agent runtime sessions and terminal connections
 
@@ -10,7 +10,7 @@ The saved runtime is the current execution identity. In the default tmux mode, a
 - [WezTermConnection.swift](../../Sources/FocusQueueCore/WezTermConnection.swift), `resolve`: tries the configured connection, then bounded same-user socket candidates. Successful JSON is required; deadlines remain visible.
 - [AgentLauncher.swift](../../Sources/FocusQueueCore/AgentLauncher.swift), `startManagedSession`: builds the provider command as positional data and returns the tmux identity without opening a terminal.
 - [AgentLauncher.swift](../../Sources/FocusQueueCore/AgentLauncher.swift), `launchDirect`: starts one provider in WezTerm and returns its exact pane and socket without a retry launch.
-- [Tmux.swift](../../Sources/FocusQueueCore/Tmux.swift), `TmuxController`: creates, decodes, verifies and attaches sessions in the dedicated `ecc-focus-queue` server.
+- [Tmux.swift](../../Sources/FocusQueueCore/Tmux.swift), `TmuxController`: creates sessions in the dedicated `ecc-focus-queue` server, waits for three matching final-process observations, explains incomplete fields, and verifies recall without creating replacements.
 
 ## Boundaries and checks
 

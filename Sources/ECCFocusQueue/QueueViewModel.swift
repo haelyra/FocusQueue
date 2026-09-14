@@ -91,7 +91,8 @@ final class QueueViewModel {
   @ObservationIgnored private let pullRequestQueueLoader: any PullRequestQueueLoading
   @ObservationIgnored private let taskContextStore: TaskContextStore
   @ObservationIgnored private let taskWorktreeManager = TaskWorktreeManager()
-  @ObservationIgnored private let taskAgentLauncher = TaskAgentLauncher()
+  @ObservationIgnored private let taskAgentLauncher: TaskAgentLauncher
+  @ObservationIgnored private let agentLaunchLogger: AgentLaunchLogger
   @ObservationIgnored private let reportHistoryRepository: JSONDailyReportHistoryRepository
   @ObservationIgnored private let conversationStore: QueueConversationStore
   @ObservationIgnored private let durableLibrary: DurableLibraryStore
@@ -142,7 +143,9 @@ final class QueueViewModel {
     agentRegistrationInbox: AgentRegistrationInbox? = nil,
     verifier: any CompletionVerifying = CodexCompletionVerifier(),
     queueAgent: any QueueAgentChatting = CodexQueueAgent(),
-    pullRequestQueueLoader: any PullRequestQueueLoading = GitHubPullRequestQueueLoader()
+    pullRequestQueueLoader: any PullRequestQueueLoading = GitHubPullRequestQueueLoader(),
+    taskAgentLauncher: TaskAgentLauncher = TaskAgentLauncher(),
+    agentLaunchLogger: AgentLaunchLogger? = nil
   ) {
     self.paths = paths
     self.taskContextStore = TaskContextStore(root: paths.supportDirectory)
@@ -167,6 +170,9 @@ final class QueueViewModel {
     self.verifier = verifier
     self.queueAgent = queueAgent
     self.pullRequestQueueLoader = pullRequestQueueLoader
+    self.taskAgentLauncher = taskAgentLauncher
+    self.agentLaunchLogger = agentLaunchLogger
+      ?? AgentLaunchLogger(supportDirectory: paths.supportDirectory)
   }
 
   var openTickets: [DashboardTicket] {
@@ -798,6 +804,33 @@ final class QueueViewModel {
 
   func subtasks(for ticketID: String) -> [TaskSubtask] { taskContexts[ticketID]?.subtasks ?? [] }
 
+  func hasLaunchDiagnostics(for subtask: TaskSubtask) -> Bool {
+    FileManager.default.fileExists(
+      atPath: agentLaunchLogger.url(subtaskID: subtask.id).path)
+  }
+
+  func openLaunchDiagnostics(for subtask: TaskSubtask) {
+    let url = agentLaunchLogger.url(subtaskID: subtask.id)
+    guard FileManager.default.fileExists(atPath: url.path) else { return }
+    NSWorkspace.shared.open(url)
+  }
+
+  private func recordAgentLaunch(
+    _ subtask: TaskSubtask, ticketID: String, phase: String,
+    outcome: String, message: String, details: [String: String] = [:]
+  ) async {
+    do {
+      try await agentLaunchLogger.record(AgentLaunchLogEvent(
+        timestamp: Date(), taskID: ticketID, subtaskID: subtask.id,
+        provider: subtask.provider.rawValue,
+        runtime: subtask.runtimeMode?.rawValue ?? "unknown",
+        phase: phase, outcome: outcome, message: message, details: details))
+    } catch {
+      actionMessages[ticketID] =
+        "\(actionMessages[ticketID] ?? message) Launch diagnostics could not be written: \(error.localizedDescription)"
+    }
+  }
+
   func effectiveStatus(for subtask: TaskSubtask) -> TaskSubtaskStatus {
     _ = subtaskActivityRevision
     return subtask.effectiveStatus()
@@ -842,6 +875,38 @@ final class QueueViewModel {
         } catch { actionMessages[ticket.id] = error.localizedDescription }
       }
     }
+    else if subtask.runtimeMode == .tmux {
+      actionMessages[ticket.id] =
+        "Checking the exact tmux session created for \(subtask.title)…"
+      Task {
+        do {
+          guard let executable = config.tmuxExecutable ?? SetupEnvironment.executable("tmux") else {
+            throw TmuxError.unavailable("No tmux executable is configured on this Mac.")
+          }
+          let name = try TmuxController.sessionName(subtaskID: subtask.id)
+          let tmux = try await TmuxController().inspect(name: name, executable: executable)
+          taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
+            ticketID: ticket.id, subtaskID: subtask.id, tmux: tmux)
+          await recordAgentLaunch(
+            subtask, ticketID: ticket.id, phase: "manual-recovery", outcome: "succeeded",
+            message: "Recovered the running tmux pane from its deterministic session name.",
+            details: [
+              "tmuxName": tmux.name, "pane": tmux.paneID,
+              "panePID": String(tmux.panePID), "terminal": tmux.tty,
+            ])
+          let result = try await terminalController.openManagedRuntime(
+            tmux, taskID: ticket.id, provider: subtask.provider, configuration: config.wezTerm)
+          actionMessages[ticket.id] =
+            "\(result.message) Recovered managed session: \(subtask.title)."
+        } catch {
+          actionMessages[ticket.id] =
+            "Could not recover the tmux session created for this subtask. \(error.localizedDescription) Focus Queue did not start a replacement."
+          await recordAgentLaunch(
+            subtask, ticketID: ticket.id, phase: "manual-recovery", outcome: "failed",
+            message: error.localizedDescription)
+        }
+      }
+    }
     else {
       actionMessages[ticket.id] =
         "This entry has no saved Focus Queue runtime. Start a new, clearly named agent from the task."
@@ -865,6 +930,7 @@ final class QueueViewModel {
     Task {
       var assignment: TaskSubtask?
       var runtimeStarted = false
+      var phase = "preparing the task workspace"
       defer { launchingTaskIDs.remove(ticket.id) }
       do {
         let context = try await taskWorktreeManager.provision(ticket: ticket, repositoryPath: repositoryPath, store: taskContextStore)
@@ -873,41 +939,120 @@ final class QueueViewModel {
           runtimeMode: useTmux ? .tmux : .terminal)
         assignment = subtask
         taskContexts[ticket.id] = try await taskContextStore.upsertSubtask(ticketID: ticket.id, subtask: subtask)
+        await recordAgentLaunch(
+          subtask, ticketID: ticket.id, phase: "request", outcome: "accepted",
+          message: "Focus Queue saved the named subtask and selected runtime mode.",
+          details: ["worktree": context.worktreePath ?? "", "prompt": includePrompt ? "included" : "omitted"])
         if useTmux {
+          phase = "starting the tmux process"
           guard let tmuxExecutable = config.tmuxExecutable ?? SetupEnvironment.executable("tmux") else {
             throw TmuxError.unavailable("tmux is unavailable. Uncheck Keep running in tmux to launch directly.")
           }
+          let expectedName = try TmuxController.sessionName(subtaskID: subtask.id)
+          actionMessages[ticket.id] =
+            "Starting \(provider.displayName) in tmux session \(expectedName). Waiting for the final pane process before opening WezTerm…"
+          await recordAgentLaunch(
+            subtask, ticketID: ticket.id, phase: "tmux-create", outcome: "started",
+            message: "Requested one new tmux session.",
+            details: ["tmuxName": expectedName, "executable": tmuxExecutable])
           let tmux = try await taskAgentLauncher.startManagedSession(
             context: context, subtask: subtask, supportDirectory: paths.supportDirectory,
             includePrompt: includePrompt, tmuxExecutable: tmuxExecutable)
           runtimeStarted = true
+          phase = "saving the confirmed tmux process"
           taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
             ticketID: ticket.id, subtaskID: subtask.id, tmux: tmux)
+          await recordAgentLaunch(
+            subtask, ticketID: ticket.id, phase: "tmux-confirm", outcome: "succeeded",
+            message: "tmux reported the same final pane process three times.",
+            details: [
+              "tmuxName": tmux.name, "serverPID": String(tmux.serverPID),
+              "pane": tmux.paneID, "panePID": String(tmux.panePID), "terminal": tmux.tty,
+            ])
+          phase = "opening the WezTerm view"
           _ = try await terminalController.openManagedRuntime(
             tmux, taskID: ticket.id, provider: provider, configuration: config.wezTerm)
         } else {
+          phase = "starting the direct WezTerm process"
+          actionMessages[ticket.id] =
+            "Starting \(provider.displayName) directly in a new WezTerm window…"
           let receipt = try await taskAgentLauncher.launchDirect(
             context: context, subtask: subtask, configuration: config.wezTerm,
             supportDirectory: paths.supportDirectory, includePrompt: includePrompt)
           runtimeStarted = true
+          phase = "saving the direct WezTerm pane"
           taskContexts[ticket.id] = try await taskContextStore.setDirectRuntime(
             ticketID: ticket.id, subtaskID: subtask.id, paneID: receipt.paneID,
             socketPath: receipt.socketPath)
+          await recordAgentLaunch(
+            subtask, ticketID: ticket.id, phase: "direct-confirm", outcome: "succeeded",
+            message: "WezTerm returned the exact pane created for the agent.",
+            details: ["paneID": String(receipt.paneID), "socket": receipt.socketPath ?? "default"])
         }
+        await recordAgentLaunch(
+          subtask, ticketID: ticket.id, phase: "ready", outcome: "succeeded",
+          message: "The provider process and terminal view are ready.")
         actionMessages[ticket.id] = includePrompt
           ? "Opened \(provider.displayName) for \(title)\(useTmux ? " in tmux" : " directly"). Waiting for its first progress update."
           : "Opened \(provider.displayName) for \(title)\(useTmux ? " in tmux" : " directly"). Ready for your instructions; no message was submitted."
       } catch {
+        if let subtask = assignment,
+          case let TmuxError.startedButUnconfirmed(name, executable, attempts, lastDetail) = error
+        {
+          runtimeStarted = true
+          if let recovered = try? await taskContextStore.load(ticketID: ticket.id),
+            let saved = recovered.subtasks.first(where: { $0.id == subtask.id })?.tmux
+          {
+            taskContexts[ticket.id] = recovered
+            await recordAgentLaunch(
+              subtask, ticketID: ticket.id, phase: "tmux-confirm", outcome: "recovered",
+              message: "The running provider registered and saved its tmux pane while launch confirmation was waiting.",
+              details: [
+                "tmuxName": saved.name, "pane": saved.paneID,
+                "panePID": String(saved.panePID), "terminal": saved.tty,
+              ])
+            do {
+              let result = try await terminalController.openManagedRuntime(
+                saved, taskID: ticket.id, provider: provider, configuration: config.wezTerm)
+              actionMessages[ticket.id] =
+                "\(result.message) The provider process registered while tmux was still confirming its pane."
+            } catch {
+              actionMessages[ticket.id] =
+                "The provider process is running and registered in tmux session \(saved.name), but WezTerm did not open its view. Click the subtask to retry. \(error.localizedDescription)"
+            }
+            return
+          }
+          let detail =
+            "tmux accepted session \(name), but its pane process and terminal device were still changing after \(attempts) checks. The agent may be running. Focus Queue will not create another process. Click this subtask to retry opening the saved session."
+          taskContexts[ticket.id] = try? await taskContextStore.updateProgress(
+            ticketID: ticket.id, subtaskID: subtask.id, status: .working,
+            summary: detail)
+          actionMessages[ticket.id] =
+            "Agent process requested; terminal confirmation is pending. \(detail) Open the document icon beside the subtask for the full launch log."
+          await recordAgentLaunch(
+            subtask, ticketID: ticket.id, phase: "tmux-confirm", outcome: "pending",
+            message: detail,
+            details: [
+              "tmuxName": name, "executable": executable,
+              "checks": String(attempts), "lastCheck": lastDetail,
+            ])
+          return
+        }
         if let assignment {
           taskContexts[ticket.id] = try? await taskContextStore.updateProgress(ticketID: ticket.id,
             subtaskID: assignment.id, status: runtimeStarted ? .working : .blocked,
             summary: !runtimeStarted
-              ? "Launch failed: \(error.localizedDescription)"
+              ? "Agent did not start during \(phase): \(error.localizedDescription)"
               : "Agent is running; its terminal view did not open: \(error.localizedDescription)")
+          await recordAgentLaunch(
+            assignment, ticketID: ticket.id, phase: phase,
+            outcome: runtimeStarted ? "view-failed" : "failed",
+            message: error.localizedDescription,
+            details: ["errorType": String(reflecting: type(of: error))])
         }
         actionMessages[ticket.id] = !runtimeStarted
-          ? error.localizedDescription
-          : "The agent started, but its terminal view needs attention. Click its descriptive title to reopen it. \(error.localizedDescription)"
+          ? "Agent did not start during \(phase). \(error.localizedDescription) No replacement process was started. Open the document icon beside the subtask for the full launch log."
+          : "The agent process started, but WezTerm did not open its view. Click the subtask to retry the exact saved process. \(error.localizedDescription) Open the document icon for the full launch log."
       }
     }
   }
@@ -1057,6 +1202,9 @@ final class QueueViewModel {
         else { continue }
         upsertAgentSession(registration)
         await bindSubtask(to: registration)
+        actionMessages[registration.ticketID] = subtask.runtimeMode == .tmux
+          ? "\(registration.provider.displayName) is running and registered in tmux. Click \(subtask.title) to open its exact terminal session."
+          : "\(registration.provider.displayName) is running in its saved WezTerm pane. Click \(subtask.title) to focus it."
       }
       try await stateStore.save(localState)
       await captureDurableState(localState)

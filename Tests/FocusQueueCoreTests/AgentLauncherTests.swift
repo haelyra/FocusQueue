@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import FocusQueueCore
@@ -92,9 +93,14 @@ private actor AgentLaunchRunner: ProcessRunning {
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
   defer { try? FileManager.default.removeItem(at: root) }
   let output = "fq-implement\t123\t1000\t%0\t124\t/dev/ttys099\t0\n"
+  let transitional = "fq-implement\t123\t1000\t%0\t120\t/dev/ttys099\t0\n"
   let runner = AgentLaunchRunner([
     // tmux may acknowledge new-session before the pane TTY/PID fields settle.
     .init(exitCode: 0, standardOutput: "fq-implement\t123\t1000\t%0\t\t\t0\n", standardError: "", timedOut: false),
+    // A user's shell wrapper can briefly be the pane process before the provider.
+    .init(exitCode: 0, standardOutput: transitional, standardError: "", timedOut: false),
+    .init(exitCode: 0, standardOutput: output, standardError: "", timedOut: false),
+    .init(exitCode: 0, standardOutput: output, standardError: "", timedOut: false),
     .init(exitCode: 0, standardOutput: output, standardError: "", timedOut: false),
   ])
   let context = TaskContext(
@@ -110,10 +116,13 @@ private actor AgentLaunchRunner: ProcessRunning {
   #expect(reference.name == "fq-implement")
   #expect(reference.panePID == 124)
   let calls = await runner.specifications
-  #expect(calls.count == 2)
+  #expect(calls.count == 5)
   #expect(calls[0].executable == "/test/tmux")
   #expect(calls[0].arguments.contains("new-session"))
   #expect(calls[1].arguments.contains("display-message"))
+  #expect(calls[2].arguments.contains("display-message"))
+  #expect(calls[3].arguments.contains("display-message"))
+  #expect(calls[4].arguments.contains("display-message"))
   #expect(!calls[0].arguments.contains("resume"))
   #expect(!calls[0].arguments.contains("spawn"))
 }
@@ -196,4 +205,88 @@ private actor AgentLaunchRunner: ProcessRunning {
   let calls = await runner.specifications
   #expect(calls.count == 2)
   #expect(calls.filter { $0.arguments.contains("spawn") }.count == 1)
+}
+
+@Test(
+  "Live app launcher starts one provider and survives terminal client reopen",
+  .enabled(if: ProcessInfo.processInfo.environment["ECC_FOCUS_QUEUE_LIVE_AGENT_TESTS"] == "1")
+)
+func liveManagedProviderSanity() async throws {
+  let executable = try #require(SetupEnvironment.executable("tmux"))
+  let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+    "live-agent-sanity-\(UUID().uuidString)")
+  try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  let subtask = TaskSubtask(
+    id: "sanity-\(UUID().uuidString.lowercased())", title: "Verify live managed launch",
+    includeInitializationPrompt: false, runtimeMode: .tmux)
+  let name = try TmuxController.sessionName(subtaskID: subtask.id)
+  let runner = FoundationProcessRunner()
+  defer {
+    let cleanup = Process()
+    cleanup.executableURL = URL(fileURLWithPath: executable)
+    cleanup.arguments = ["-f", "/dev/null", "-L", TmuxController.serverName,
+      "kill-session", "-t", "=\(name)"]
+    cleanup.environment = ["PATH": "/usr/bin:/bin", "TMUX_TMPDIR": "/tmp"]
+    try? cleanup.run()
+    for _ in 0..<100 where cleanup.isRunning { usleep(10_000) }
+    if cleanup.isRunning { cleanup.terminate() }
+  }
+  let context = TaskContext(
+    ticketID: "SANITY-1", title: "Live launch", summary: "",
+    successCriteria: "The provider remains in the exact tmux pane.",
+    planPath: root.appendingPathComponent("plan.md").path,
+    worktreePath: root.path, updatedAt: Date())
+  let reference = try await TaskAgentLauncher().startManagedSession(
+    context: context, subtask: subtask, supportDirectory: root,
+    includePrompt: false, tmuxExecutable: executable)
+  #expect(reference.name == name)
+  #expect(kill(pid_t(reference.panePID), 0) == 0)
+
+  func controlClient() throws -> Process {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: executable)
+    process.arguments = ["-f", "/dev/null", "-L", TmuxController.serverName,
+      "-C", "attach-session", "-t", "=\(name)"]
+    process.environment = ["PATH": "/usr/bin:/bin", "TMUX_TMPDIR": "/tmp", "TERM": "xterm-256color"]
+    process.standardInput = Pipe()
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    return process
+  }
+  func waitForClient(_ process: Process, present: Bool) async throws {
+    for _ in 0..<100 {
+      let clients = try await runner.run(.init(
+        executable: executable,
+        arguments: ["-f", "/dev/null", "-L", TmuxController.serverName,
+          "list-clients", "-t", "=\(name)", "-F", "#{client_pid}"],
+        environment: ["TMUX_TMPDIR": "/tmp"]))
+      let found = clients.standardOutput.split(separator: "\n")
+        .contains(Substring(String(process.processIdentifier)))
+      if found == present { return }
+      try await Task.sleep(for: .milliseconds(25))
+    }
+    Issue.record("Control client did not reach expected attachment state")
+  }
+  func stopClient(_ process: Process) async {
+    if process.isRunning { process.terminate() }
+    for _ in 0..<100 {
+      if !process.isRunning { return }
+      try? await Task.sleep(for: .milliseconds(10))
+    }
+    if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+  }
+
+  let first = try controlClient()
+  try await waitForClient(first, present: true)
+  await stopClient(first)
+  try await waitForClient(first, present: false)
+  #expect(try await TmuxController().verify(reference) == reference)
+
+  let second = try controlClient()
+  try await waitForClient(second, present: true)
+  #expect(try await TmuxController().verify(reference) == reference)
+  await stopClient(second)
+  try await waitForClient(second, present: false)
 }

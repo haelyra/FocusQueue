@@ -17,6 +17,8 @@ When the checkbox is off, Focus Queue starts the provider once in a new WezTerm 
 
 Persisting the runtime before opening WezTerm prevents a terminal transport failure from orphaning a live agent. The subtask remains visible and clicking its title retries the client attachment.
 
+Shell aliases and provider wrappers can replace the initial pane process during startup. Focus Queue therefore waits up to 30 seconds and requires three consecutive matching observations of the tmux server, pane process and terminal device. A successful tmux creation is never described as a stopped agent merely because those fields are still settling. Each phase is retained in a structured per-subtask launch log that is available from the document icon beside the subtask.
+
 Recall verifies every saved tmux identity field. If a matching client is already open, Focus Queue activates its exact pane. Otherwise it starts only `tmux attach-session` for the saved session. Closing that client does not stop the provider process.
 
 Recall never scans transcripts, invokes `codex resume` or `claude --resume`, starts another provider process, or substitutes a shell in the home directory. A missing or changed runtime is shown as ended. Entries without an app-created saved runtime cannot be opened from the current queue.
@@ -49,4 +51,4 @@ Restarting an ended provider conversation is outside the current recall contract
 
 ## Verification
 
-The automated suite covers tmux startup receipt races, exact identity persistence, existing-client focus, detached-client reattachment, direct-pane focus, closed direct-pane rejection, task mismatch rejection, and absence of provider resume or replacement commands. A real disposable tmux sanity check attaches one control client, closes it, attaches a second client, and confirms the tmux server and pane process identities remain unchanged.
+The automated suite covers incomplete tmux startup receipts, wrapper process replacement, exact runtime persistence, existing-client focus, detached-client reattachment, direct-pane focus, closed direct-pane rejection, task mismatch rejection, structured diagnostics, and absence of provider resume or replacement commands. A gated live-provider sanity check starts the user's actual Codex command through `TaskAgentLauncher`, closes one headless tmux client, opens a second, confirms the same process, and removes only its unique test session.

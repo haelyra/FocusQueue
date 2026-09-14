@@ -8,6 +8,7 @@ release_bundle="$project_dir/dist/$product_name.app"
 build_dir="${ECC_FOCUS_QUEUE_BUILD_DIR:-$project_dir/.build}"
 executable_path="$build_dir/release/ECCFocusQueue"
 session_helper_path="$build_dir/release/focus-queue-session"
+map_helper_path="$build_dir/release/focus-queue-map"
 
 swift build --package-path "$project_dir" --scratch-path "$build_dir" -c release
 
@@ -17,6 +18,7 @@ bundle_path="$staging_dir/$product_name.app"
 /bin/mkdir -p "$bundle_path/Contents/MacOS" "$bundle_path/Contents/Resources"
 /bin/cp "$executable_path" "$bundle_path/Contents/MacOS/ECCFocusQueue"
 /bin/cp "$session_helper_path" "$bundle_path/Contents/MacOS/focus-queue-session"
+/bin/cp "$map_helper_path" "$bundle_path/Contents/MacOS/focus-queue-map"
 /bin/cp "$project_dir/Config/config.example.json" "$bundle_path/Contents/Resources/config.example.json"
 /bin/cp "$build_dir/checkouts/Ink/LICENSE" "$bundle_path/Contents/Resources/Ink-LICENSE.txt"
 
@@ -48,6 +50,9 @@ fi
 /usr/bin/codesign --force --sign "$sign_identity" "${sign_options[@]}" \
   --identifier "com.haelyra.ecc-focus-queue.session" \
   "$bundle_path/Contents/MacOS/focus-queue-session"
+/usr/bin/codesign --force --sign "$sign_identity" "${sign_options[@]}" \
+  --identifier "com.haelyra.ecc-focus-queue.map" \
+  "$bundle_path/Contents/MacOS/focus-queue-map"
 /usr/bin/codesign --force --sign "$sign_identity" "${sign_options[@]}" "${app_requirements[@]}" "$bundle_path"
 /usr/bin/codesign --verify --deep --strict "$bundle_path"
 

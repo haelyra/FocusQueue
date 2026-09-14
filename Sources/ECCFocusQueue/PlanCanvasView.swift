@@ -14,6 +14,8 @@ struct PlanCanvasView: View {
   @State private var documentTabs = PlanDocumentTabs()
   @State private var canvasSelection: PlanCanvasSelection?
   @State private var composerFocusRequest = 0
+  @State private var showsWorkspaceMap = false
+  @State private var workspaceMap = WorkspaceMapModel()
 
   private var sourceURL: URL {
     model.presentedPlanURL ?? URL(fileURLWithPath: model.taskContexts[ticket.id]?.planPath ?? "/")
@@ -32,7 +34,7 @@ struct PlanCanvasView: View {
               startPoint: .topLeading, endPoint: .bottomTrailing),
             in: RoundedRectangle(cornerRadius: 9))
         VStack(alignment: .leading, spacing: 3) {
-          Text(model.presentedPlanURL == nil ? "Central plan" : "Supporting document")
+          Text(showsWorkspaceMap ? "Workspace map" : (model.presentedPlanURL == nil ? "Central plan" : "Supporting document"))
             .font(.system(size: 20, weight: .bold, design: .rounded))
           Text("\(ticket.id) · \(ticket.title)").font(.caption).foregroundStyle(.secondary)
             .lineLimit(2)
@@ -47,7 +49,7 @@ struct PlanCanvasView: View {
         .padding(.horizontal, 9).padding(.vertical, 6)
         .background(Color.secondary.opacity(0.09), in: Capsule())
         Menu {
-          Button("Central plan") { model.openPlan(for: ticket) }
+          Button("Central plan") { showsWorkspaceMap = false; model.openPlan(for: ticket) }
           ForEach(ticket.planLinks) { link in
             Button(link.label) {
               if let url = ResourceLocator.url(for: link.url), url.isFileURL,
@@ -66,6 +68,7 @@ struct PlanCanvasView: View {
         .help("Choose the central plan or a supporting document").accessibilityLabel("Choose plan")
         if model.presentedPlanURL == nil {
           Button {
+            showsWorkspaceMap = false
             editDraft = model.planEditDrafts[ticket.id]?.markdown ?? model.presentedPlanMarkdown
             editBaseline = model.planEditDrafts[ticket.id]?.baseline ?? model.presentedPlanMarkdown
             isEditing.toggle()
@@ -121,7 +124,16 @@ struct PlanCanvasView: View {
   private var document: some View {
     VStack(spacing: 8) {
       documentTabBar
-      if isEditing {
+      if showsWorkspaceMap {
+        WorkspaceMapView(queue: model, ticket: ticket, model: workspaceMap,
+          openDocument: { url in showsWorkspaceMap = false; openDocument(url) },
+          discuss: { context in
+            if !chatDraft.isEmpty { chatDraft += "\n\n" }
+            chatDraft += context
+            canvasSelection = nil
+            composerFocusRequest &+= 1
+          })
+      } else if isEditing {
         if editBaseline != model.presentedPlanMarkdown {
           VStack(alignment: .leading, spacing: 6) {
             Text(
@@ -209,9 +221,12 @@ struct PlanCanvasView: View {
   private var documentTabBar: some View {
     ScrollView(.horizontal) {
       HStack(spacing: 6) {
-        Button("Central plan") { model.openPlan(for: ticket) }
+        Button("Central plan") { showsWorkspaceMap = false; model.openPlan(for: ticket) }
           .buttonStyle(.bordered)
-          .tint(model.presentedPlanURL == nil ? .accentColor : .secondary)
+          .tint(model.presentedPlanURL == nil && !showsWorkspaceMap ? .accentColor : .secondary)
+        Button("Map") { showsWorkspaceMap = true; canvasSelection = nil }
+          .buttonStyle(.bordered).tint(showsWorkspaceMap ? .accentColor : .secondary)
+          .help("See this task’s workspaces, agents, and files")
         ForEach(documentTabs.urls, id: \.self) { url in
           HStack(spacing: 4) {
             Button(url.lastPathComponent) { openDocument(url) }
@@ -225,7 +240,7 @@ struct PlanCanvasView: View {
           }
           .padding(.horizontal, 9).padding(.vertical, 6)
           .background(
-            model.presentedPlanURL == url
+            model.presentedPlanURL == url && !showsWorkspaceMap
               ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.1),
             in: RoundedRectangle(cornerRadius: 6)
           )
@@ -241,6 +256,7 @@ struct PlanCanvasView: View {
   }
 
   private func openDocument(_ url: URL) {
+    showsWorkspaceMap = false
     guard let documentURL = EmbeddedDocumentLink.documentURL(url) else { return }
     let centralURL = model.taskContexts[ticket.id].map { URL(fileURLWithPath: $0.planPath) }
     if documentURL == centralURL?.standardizedFileURL {

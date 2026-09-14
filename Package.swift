@@ -9,6 +9,8 @@ let package = Package(
     ],
     products: [
         .library(name: "FocusQueueCore", targets: ["FocusQueueCore"]),
+        .library(name: "FocusQueueMap", targets: ["FocusQueueMap"]),
+        .executable(name: "focus-queue-map", targets: ["FocusQueueMapCLI"]),
         .executable(name: "ECCFocusQueue", targets: ["ECCFocusQueue"]),
         .executable(name: "focus-queue-session", targets: ["FocusQueueSession"])
     ],
@@ -22,8 +24,11 @@ let package = Package(
         ),
         .executableTarget(
             name: "ECCFocusQueue",
-            dependencies: ["FocusQueueCore"]
+            dependencies: ["FocusQueueCore", "FocusQueueMap"]
         ),
+        .target(name: "FocusQueueMap", dependencies: ["FocusQueueCore"]),
+        .executableTarget(name: "FocusQueueMapCLI", dependencies: ["FocusQueueMap", "FocusQueueCore"]),
+        .testTarget(name: "FocusQueueMapTests", dependencies: ["FocusQueueMap", "FocusQueueCore"]),
         .executableTarget(
             name: "FocusQueueSession",
             dependencies: ["FocusQueueCore"]
@@ -34,7 +39,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ECCFocusQueueTests",
-            dependencies: ["ECCFocusQueue", "FocusQueueCore"]
+            dependencies: ["ECCFocusQueue", "FocusQueueCore", "FocusQueueMap"]
         )
     ]
 )

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en" data-theme="paper">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Focus Queue · Workspace map design study</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="map.js" defer></script>
+</head>
+<body>
+  <header class="masthead">
+    <a class="brand" href="#prototype"><span class="brand-mark" aria-hidden="true">FQ</span> Focus Queue <span class="muted">/ design study 01</span></a>
+    <div class="header-actions"><span class="demo-label">Illustrative data · interactive proposal</span><button id="theme">Use graphite theme</button></div>
+  </header>
+  <main>
+    <section class="intro" aria-labelledby="title">
+      <div><p class="eyebrow">CENTRAL PLAN / A NEW WAY TO SEE THE WORK</p><h1 id="title">Know where the work is.</h1><p class="lede">One familiar queue. Three ways to see who is working, what they need, and what comes next.</p></div>
+      <a class="text-link" href="#implementation">How we could build it ↗</a>
+    </section>
+
+    <section id="prototype" class="prototype" aria-label="Interactive workspace map prototype">
+      <aside class="queue" aria-label="Task focus queue">
+        <div class="queue-heading"><span class="eyebrow">FOCUS QUEUE</span><span class="count">3</span></div>
+        <p class="queue-caption">Your order of work</p>
+        <div id="task-list"></div>
+        <div class="queue-foot"><span class="status-dot working"></span><strong>Queue orchestrator</strong><p>Keeps priorities and handoffs together.</p><small>One entity, always visible</small></div>
+      </aside>
+      <div class="workspace">
+        <div class="plan-header"><div><p class="eyebrow">CENTRAL PLAN</p><h2 id="task-heading">Workspace map</h2></div><span class="draft-tag">Design draft</span></div>
+        <div class="document-tabs" role="tablist" aria-label="Central plan views">
+          <button id="plan-tab" role="tab" aria-selected="false" aria-controls="plan-panel" tabindex="-1">Plan</button><button id="map-tab" role="tab" aria-selected="true" aria-controls="map-panel">Map <span class="small-tag">NEW</span></button>
+          <span class="tab-hint">Task conversation stays with this plan</span>
+        </div>
+        <section id="plan-panel" role="tabpanel" aria-labelledby="plan-tab" hidden>
+          <p class="eyebrow">SAME TASK, SAME CONTEXT</p><h3 id="plan-title">Make agent work immediately visible.</h3><p id="plan-summary"></p><p>Map selection and scope are retained when you return. The proposed app keeps the existing task conversation beside either view.</p><button id="return-map">Return to map</button>
+        </section>
+        <section id="map-panel" role="tabpanel" aria-labelledby="map-tab">
+          <div class="view-picker" aria-label="Map design options">
+            <button data-view="directory" aria-pressed="true"><span>A</span><strong>Workspace</strong><small>Where is the work?</small></button>
+            <button data-view="flow" aria-pressed="false"><span>B</span><strong>Handoffs</strong><small>What feeds into what?</small></button>
+            <button data-view="fleet" aria-pressed="false"><span>C</span><strong>All agents</strong><small>What needs me?</small></button>
+          </div>
+          <div class="map-toolbar">
+            <label>Scope <select id="scope"><option value="task">This task</option><option value="all">All tasks</option></select></label>
+            <label class="search"><span class="sr-only">Find an agent, folder, or file</span><input id="search" type="search" placeholder="Find agent, folder, file…"></label>
+            <button id="attention" aria-pressed="false">Needs attention</button><button id="changes" aria-pressed="false">Since last visit</button>
+          </div>
+          <div class="map-subhead"><p id="view-description"></p><div class="zoom"><button id="zoom-out" aria-label="Zoom out">−</button><output id="zoom-value">100%</output><button id="zoom-in" aria-label="Zoom in">+</button><button id="reset">Fit</button></div></div>
+          <div class="map-layout">
+            <div class="map-column"><div id="map-scroll" tabindex="0" aria-label="Scrollable map"><div id="diagram"><svg id="edges" aria-hidden="true"></svg><div id="nodes"></div></div></div><p id="empty" hidden>No matches in this scope. Try All tasks or clear the filters.</p>
+              <div class="legend"><span><i class="status-dot working"></i>Working</span><span><i class="status-dot blocked"></i>Blocked</span><span><i class="status-dot stale"></i>Stale</span><span><i class="line solid"></i>Observed / recorded</span><span><i class="line dashed"></i>Declared intent</span><span>+ Changed since visit</span></div>
+            </div>
+            <aside id="details" class="details" aria-label="Selected map item" aria-live="polite"></aside>
+          </div>
+          <div class="map-footer"><span id="snapshot-label">Demo snapshot · no live monitoring</span><span>Click to inspect · double-click to preview opening · Tab / Enter supported</span></div>
+        </section>
+        <div class="conversation-strip"><span class="orchestrator-icon" aria-hidden="true">◎</span><strong>Task orchestrator</strong><span id="conversation-summary">The map and plan share this conversation. Select a node to bring its context.</span><button id="context-chat">Preview context</button></div>
+      </div>
+    </section>
+
+    <section class="design-note"><span class="recommend-label">RECOMMENDED FIRST DRAFT</span><p><strong>A. Workspace, in the Central plan’s Map tab.</strong> Open to the selected task, show active paths, and expand only when asked. Use B when investigating a handoff; grow into C as the agent fleet grows.</p></section>
+
+    <section id="options" class="section"><div class="section-heading"><p class="eyebrow">01 / DESIGN CHOICES</p><h2>Three lenses. One set of facts.</h2><p>Switch the controls above to compare working examples. The same ownership and evidence follow you between views.</p></div>
+      <div class="table-wrap"><table><thead><tr><th>Design</th><th>Visual language</th><th>Best moment</th><th>Tradeoff</th></tr></thead><tbody>
+      <tr><td><strong>A · Workspace</strong><br>Recommended default</td><td>Quiet directory columns, worktree boundaries, named owner strips. Outer directory left, deeper paths right.</td><td>“Which files are these agents touching?”</td><td>Excellent location awareness. Dependencies need the Handoffs view.</td></tr>
+      <tr><td><strong>B · Handoffs</strong></td><td>A restrained transit diagram. Inputs → agents → outputs. Roles and direction carry meaning.</td><td>“Why is this agent waiting, and who unblocks it?”</td><td>Shows causality well. More edges become harder to scan; reveal one neighborhood at a time.</td></tr>
+      <tr><td><strong>C · All agents</strong></td><td>Aligned task lanes. Queue → workspace → owners → latest result. One row per task.</td><td>“I came back after an hour. What needs me?”</td><td>Scales through grouping, but hides individual files until selected.</td></tr>
+      </tbody></table></div>
+      <div class="aesthetic"><div><h3>Paper / calm workspace</h3><p>Warm gray, crisp rules, restrained teal activity. Close to a document and comfortable for long plan reviews.</p></div><div><h3>Graphite / operations desk</h3><p>Charcoal, higher contrast status marks, muted connectors. Designed to sit next to terminals. Try the theme switch above.</p></div><div><h3>Meaning survives color</h3><p>Owner names, status words, line patterns, and update ages stay visible. Stable positions take priority over animation.</p></div></div>
+    </section>
+
+    <section class="section"><div class="section-heading"><p class="eyebrow">02 / THE RETURN-TO-WORK FLOW</p><h2>Catch up before opening a terminal.</h2></div><ol class="journey"><li><strong>Start with the queue.</strong><p>Keep task priority, completion alerts, and the current task where they already live.</p></li><li><strong>Open Central plan → Map.</strong><p>See this task’s worktree, owners, and active paths. Keep the plan and task chat one click away.</p></li><li><strong>Scan what changed.</strong><p>“Since last visit” marks changes in place. “Needs attention” reveals blockers and stale reports with their context.</p></li><li><strong>Inspect, then act.</strong><p>Read the agent’s short summary, evidence, and next dependency. Explicitly open its terminal, folder, or artifact.</p></li></ol>
+      <p class="inline-note">On narrow panels: retain the queue, give the map horizontal scrolling, and move item details below it. The live app can reuse its inspector sizing rules. Avoid forcing a third permanent side column beside the existing conversation.</p>
+    </section>
+
+    <section id="implementation" class="section"><div class="section-heading"><p class="eyebrow">03 / A MODULAR BUILD</p><h2>Agents explain intent. A collector maintains the map.</h2><p>A proposed sidecar keeps new tracking and rendering independent of the app changes already in progress.</p></div>
+      <div class="pipeline"><div><small>EXISTING SIGNALS</small><strong>Task context + sessions</strong><span>Task, subtask, provider, working directory, progress, heartbeat</span></div><span aria-hidden="true">→</span><div><small>NEW, SEPARATE COLLECTOR</small><strong>Normalize + reconcile</strong><span>Worktrees, changed paths, declared inputs, observed tool events</span></div><span aria-hidden="true">→</span><div><small>VERSIONED SNAPSHOT</small><strong>One immutable map</strong><span>Stable IDs, typed edges, evidence, timestamps</span></div><span aria-hidden="true">→</span><div><small>SMALL APP INTEGRATION</small><strong>Map tab + inspector</strong><span>Render snapshot; reuse task selection, conversation, open actions</span></div></div>
+      <div class="table-wrap"><table><thead><tr><th>Signal</th><th>What it establishes</th><th>What the map should say</th></tr></thead><tbody>
+        <tr><td>Registered provider + session + task</td><td>Who is assigned and the reported work location</td><td>“Assigned here.” Show unbound sessions separately.</td></tr>
+        <tr><td>Progress heartbeat</td><td>An agent recently reported a state and summary</td><td>“Reported working · 40s ago.” After 5 minutes: “Stale,” preserving the last report.</td></tr>
+        <tr><td>Git worktrees + status</td><td>Actual workspace boundary and changed / untracked paths</td><td>“Changed in this worktree.” Ownership remains unknown unless supported by another signal.</td></tr>
+        <tr><td>Agent declaration</td><td>Intended scope, input context, output, or dependency</td><td>Dashed “Plans to edit / depends on” edge. A claim can be expired or superseded.</td></tr>
+        <tr><td>Optional tool-event adapter</td><td>A read, write, or command with a path and session identity</td><td>“Read / wrote at this time.” This records tool access; it cannot prove what the model retained or understood.</td></tr>
+      </tbody></table></div>
+      <div class="aesthetic"><div><h3>Small first collector</h3><p>Read registered task metadata and Git once per worktree. Refresh visible tasks about every 5 seconds, hidden ones every 30 seconds. Cache unchanged inputs and debounce path events. These are starting targets to measure.</p></div><div><h3>Stable, bounded diagrams</h3><p>Start with 100 visible nodes, collapse quiet directories, and retain selection through updates. Key nodes by repository + worktree + relative path; agents by provider + session. Avoid rescanning entire directory trees.</p></div><div><h3>Evidence before certainty</h3><p>Preserve the last good snapshot on a collector error, show its age, and expose partial sources. A living process is presence, not proof of active work. Shared files get multiple owner chips and a “Potential overlap” label.</p></div></div>
+    </section>
+
+    <section class="section"><div class="section-heading"><p class="eyebrow">04 / OPEN THE RIGHT THING</p><h2>A map should lead directly to the work.</h2><p>The prototype previews these actions in the inspector. Actual app launching belongs in the later native integration.</p></div><div class="table-wrap"><table><thead><tr><th>Selected entity</th><th>Double-click / explicit Open action</th><th>Preference</th></tr></thead><tbody>
+      <tr><td>Worktree or folder</td><td>Open the directory in Finder</td><td>Reveal exact registered path</td></tr><tr><td>Agent</td><td>Focus its registered terminal session</td><td>Use existing session routing; explain missing sessions</td></tr><tr><td>Markdown</td><td>Open in the embedded plan canvas</td><td>Optional PDF rendering; preserve the source link</td></tr><tr><td>PDF</td><td>Open in the preferred PDF viewer</td><td>Preview or configured viewer</td></tr><tr><td>HTML</td><td>Open in the browser</td><td>Use a trusted local artifact URL</td></tr><tr><td>Code</td><td>Open in read-only Neovim for Hira</td><td>Launch with argument array: <code>nvim -R -M -- &lt;path&gt;</code>; configurable VS Code / other editor</td></tr>
+      </tbody></table></div><p class="inline-note">Single-click only inspects. Keyboard users get the same Open action. Resolve native actions from registered node IDs and allowed roots, check the file exists, and avoid shell-interpolated commands. Neovim’s flags express an inspection preference, not a security boundary.</p></section>
+
+    <section class="section"><div class="section-heading"><p class="eyebrow">05 / IMPLEMENTATION SEQUENCE</p><h2>Ship useful visibility in small pieces.</h2></div><div class="phases"><div><span>NOW</span><h3>Review this study</h3><p>Choose a default view, visual tone, and how much detail should appear on entry. This worktree contains only proposal artifacts.</p></div><div><span>FIRST BUILD</span><h3>Workspace map</h3><p>Versioned snapshot, metadata + Git collector, isolated renderer, Map tab, selection details, freshness, and native file opening. No provider instrumentation required.</p></div><div><span>SECOND BUILD</span><h3>Intent + handoffs</h3><p>Small declaration CLI, optional provider hooks, consumed / produced edges, overlapping claims, and “since last visit” based on saved snapshots.</p></div><div><span>EXPAND</span><h3>All-agent overview</h3><p>Multiple repositories and sessions, unassigned agents, linked artifacts outside worktrees, fleet filters, history, and orchestrator-authored grouping rules.</p></div></div>
+      <p class="inline-note"><strong>Proposed acceptance checks:</strong> identify owner, location, and blocker within 10 seconds in a small usability trial; unchanged refreshes keep the layout still; collector failures show stale data; simultaneous claims survive; filenames with spaces open correctly; a 100-node view targets under 100ms for selection and no main-thread Git work. Performance targets require measurement.</p>
+    </section>
+    <footer class="study-footer"><strong>Discuss the design directly on this canvas.</strong><p>Useful starting points: A as the default? Paper or graphite? Always show file leaves, or expand them on selection?</p><a href="proposal.md">Read the implementation notes and scope</a><span>Study 01 · 13 September 2026 · Fictional activity for comparison</span></footer>
+  </main>
+  <div id="toast" role="status" hidden></div>
+</body>
+</html>

@@ -12,7 +12,7 @@ enum TerminalFocusModeError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .accessibilityPermissionRequired:
-            "Confirm ECC Focus Queue is enabled in System Settings > Privacy & Security > Accessibility, then click Focus again."
+            "Confirm ECC Focus Queue is enabled in System Settings > Privacy & Security > Accessibility, then click View Agent again."
         case .applicationUnavailable(let name):
             "\(name) did not become available after the terminal was activated."
         case .focusedWindowUnavailable:
@@ -23,13 +23,6 @@ enum TerminalFocusModeError: Error, LocalizedError {
             "The active WezTerm window could not be centered."
         }
     }
-}
-
-struct TerminalFocusTarget: Equatable, Sendable {
-    let applicationName: String
-    let windowID: Int
-    let paneID: Int
-    let windowTitle: String
 }
 
 @MainActor
@@ -52,7 +45,8 @@ final class TerminalFocusModeController {
     }
 
     func begin(
-        target: TerminalFocusTarget,
+        applicationName: String,
+        windowTitleHint: String?,
         targetScreen: NSScreen?
     ) async throws {
         clearFocusMode(revealQueue: false)
@@ -63,19 +57,15 @@ final class TerminalFocusModeController {
             guard requestAccessibilityPermission() else {
                 throw TerminalFocusModeError.accessibilityPermissionRequired
             }
-            guard let application = try await waitForFrontmostApplication(
-                named: target.applicationName, operation: operation
-            ) else {
-                throw TerminalFocusModeError.applicationUnavailable(target.applicationName)
+            guard let application = try await waitForApplication(named: applicationName, operation: operation) else {
+                throw TerminalFocusModeError.applicationUnavailable(applicationName)
             }
 
-            // WezTerm has already activated target.paneID in target.windowID. Selecting only
-            // the frontmost app's focused AX window preserves that exact activation; enumerating
-            // windows by the task title can pick a sibling agent window with the same title.
             try operation.checkCancellation()
-            guard let window = try await accessibility.waitForFocusedWindow(
+            application.activate(options: [.activateAllWindows])
+            guard let window = try await accessibility.waitForWindow(
                 processIdentifier: application.processIdentifier,
-                titleHint: target.windowTitle, operation: operation
+                titleHint: windowTitleHint, operation: operation
             ) else {
                 throw TerminalFocusModeError.focusedWindowUnavailable
             }
@@ -131,18 +121,31 @@ final class TerminalFocusModeController {
         return AXIsProcessTrustedWithOptions(options)
     }
 
-    private func waitForFrontmostApplication(
+    private func waitForApplication(
         named applicationName: String, operation: TerminalFocusOperation
     ) async throws -> NSRunningApplication? {
         for _ in 0..<40 {
             try operation.checkCancellation()
-            if let application = NSWorkspace.shared.frontmostApplication,
-               self.application(application, matches: applicationName) {
-                return application
-            }
+            if let application = runningApplication(named: applicationName) { return application }
             try await Task.sleep(for: .milliseconds(100))
         }
         return nil
+    }
+
+    private func runningApplication(named applicationName: String) -> NSRunningApplication? {
+        if let frontmost = NSWorkspace.shared.frontmostApplication,
+           application(frontmost, matches: applicationName) {
+            return frontmost
+        }
+        if applicationName.caseInsensitiveCompare("WezTerm") == .orderedSame,
+           let application = NSRunningApplication.runningApplications(
+               withBundleIdentifier: "com.github.wez.wezterm"
+           ).first {
+            return application
+        }
+        return NSWorkspace.shared.runningApplications.first {
+            application($0, matches: applicationName)
+        }
     }
 
     private func application(_ application: NSRunningApplication, matches name: String) -> Bool {

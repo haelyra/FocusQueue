@@ -88,7 +88,7 @@ struct ManagedSessionRecallTests {
     let action = try await WezTermController(runner: runner, candidateSockets: []).focusOrResume(
       session: session(), taskID: "ECC-1", configuration: .init(executable: "/mock/wezterm"))
 
-    #expect(action == .focused(paneID: 41, windowID: 12))
+    #expect(action == .focused(paneID: 41))
     let calls = await runner.calls
     #expect(calls.contains { $0.arguments == ["cli", "activate-pane", "--pane-id", "41"] })
     #expect(!calls.flatMap(\.arguments).contains("resume"))
@@ -108,7 +108,7 @@ struct ManagedSessionRecallTests {
     let action = try await WezTermController(runner: runner, candidateSockets: []).focusOrResume(
       session: session(), taskID: "ECC-1", configuration: .init(executable: "/mock/wezterm"))
 
-    #expect(action == .focused(paneID: 41, windowID: 12))
+    #expect(action == .focused(paneID: 41))
     let calls = await runner.calls
     let spawn = try #require(calls.first { $0.arguments.starts(with: ["cli", "spawn"]) })
     #expect(spawn.arguments.contains("attach-session"))
@@ -130,7 +130,7 @@ struct ManagedSessionRecallTests {
         paneID: 41, socketPath: nil, taskID: "ECC-1", provider: .codex,
         configuration: .init(executable: "/mock/wezterm"))
 
-    #expect(action == .focused(paneID: 41, windowID: 12))
+    #expect(action == .focused(paneID: 41))
     let calls = await runner.calls
     #expect(calls.contains { $0.arguments == ["cli", "activate-pane", "--pane-id", "41"] })
     #expect(!calls.flatMap(\.arguments).contains("resume"))
@@ -163,7 +163,7 @@ struct ManagedSessionRecallTests {
     let action = try await WezTermController(runner: runner, candidateSockets: []).openDirectRuntime(
       paneID: 41, socketPath: "/tmp/sock", taskID: "ECC-1", provider: .codex,
       configuration: configuration)
-    #expect(action == .focused(paneID: 41, windowID: 1))
+    #expect(action == .focused(paneID: 41))
     let calls = await runner.calls
     #expect(calls.last?.arguments == WezTermConnection.revealArguments(configuration: configuration))
     #expect(calls.last?.arguments.contains("connect") == true)

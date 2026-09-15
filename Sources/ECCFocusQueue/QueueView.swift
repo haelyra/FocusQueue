@@ -1739,19 +1739,6 @@ private struct TicketCard: View {
           }
         }
 
-        Button("Focus", systemImage: "viewfinder") {
-          model.focusSubtask(subtask, for: ticket)
-        }
-        .buttonStyle(.bordered)
-        .disabled(isOpening)
-        .minimumHitTarget()
-        .help("Open this exact saved session in focus mode")
-        .accessibilityLabel(
-          isOpening ? "Finding and focusing \(subtask.title)" : "Focus agent \(subtask.title)"
-        )
-        .accessibilityHint("Centers this agent's exact WezTerm window and shows display controls")
-        .accessibilityIdentifier("focus-agent-\(ticket.id)-\(subtask.id)")
-
         if model.hasLaunchDiagnostics(for: subtask) {
           Button("Diagnostics", systemImage: "doc.text.magnifyingglass") {
             model.openLaunchDiagnostics(for: subtask)

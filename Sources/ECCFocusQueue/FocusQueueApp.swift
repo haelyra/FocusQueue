@@ -62,12 +62,13 @@ import UserNotifications
     model.dailyReportApprovalHandler = { [weak self] shouldRun in
       await self?.respondToDailyReportApproval(shouldRun: shouldRun)
     }
-    model.terminalFocusHandler = { [weak self] target in
+    model.terminalFocusHandler = { [weak self] applicationName, windowTitleHint in
       guard let self, let terminalFocusController else {
-        throw TerminalFocusModeError.applicationUnavailable(target.applicationName)
+        throw TerminalFocusModeError.applicationUnavailable(applicationName)
       }
       try await terminalFocusController.begin(
-        target: target,
+        applicationName: applicationName,
+        windowTitleHint: windowTitleHint,
         targetScreen: panel?.screen
       )
     }

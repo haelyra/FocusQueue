@@ -66,13 +66,17 @@ public actor WorkspaceCollector {
     public func collect(context: TaskContext, sessions: [TaskAgentSession], now: Date = Date()) async throws -> MapSnapshot {
         try Task.checkCancellation()
         let relevant = sessions.filter { $0.ticketID.caseInsensitiveCompare(context.ticketID) == .orderedSame }
+        let activityReports: [MapAgentActivity]
+        var activityWarning: String?
+        do { activityReports = try MapAgentActivity.load(context: context) }
+        catch { activityReports = []; activityWarning = error.localizedDescription }
         let primary = context.worktreePath ?? context.repositoryPath
-        let directories = Set(([primary].compactMap { $0 } + relevant.map(\.workingDirectory))
+        let directories = Set(([primary].compactMap { $0 } + relevant.map(\.workingDirectory) + activityReports.map(\.workingDirectory))
             .filter { $0.hasPrefix("/") }.map { URL(fileURLWithPath: $0).standardizedFileURL.path }).sorted()
         var nodes = [MapNode(id: "queue", parentID: nil, kind: .queue, label: "Focus Queue",
                              summary: "\(context.ticketID) · \(context.title)",
                              evidence: "Recorded task context", observedAt: context.updatedAt)]
-        var warnings: [String] = [], omitted = 0
+        var warnings: [String] = activityWarning.map { ["Agent activity unavailable: " + $0] } ?? [], omitted = 0
         var roots: [String: String] = [:]
         var collectedRoots = Set<String>()
 
@@ -278,18 +282,36 @@ public actor WorkspaceCollector {
                     evidence: "Declared output", observedAt: scope?.updatedAt))
             }
         }
-        // Capture already recorded durable terminal instances without contacting
-        // tmux or treating a stored instance as proof of current availability.
+        // Terminal persistence is an attribute of the agent, not infrastructure.
         for subtask in context.subtasks {
-            guard let runtime = subtask.tmux, let agent = agents.first(where: { $0.subtaskID == subtask.id }) else { continue }
-            let id = MapNode.identity("tmux-instance", runtime.name, String(runtime.serverPID), String(runtime.createdAt))
-            if !nodes.contains(where: { $0.id == id }) {
-                nodes.append(MapNode(id: id, parentID: agent.parentID, kind: .resource,
-                    label: "tmux · " + runtime.name, summary: "Recorded durable terminal · availability unverified",
-                    evidence: "Saved runtime identity", observedAt: Date(timeIntervalSince1970: Double(runtime.createdAt)),
-                    destination: context.contextDirectory.appendingPathComponent("context.json").absoluteString, durable: true))
-            }
-            relations.append(MapRelation(from: id, to: agent.id, kind: .dependency, evidence: "Recorded agent runtime", observedAt: nil))
+            guard let runtime = subtask.tmux, let offset = nodes.firstIndex(where: { $0.kind == .agent && $0.subtaskID == subtask.id }) else { continue }
+            nodes[offset].runtime = "tmux · " + runtime.name
+        }
+        for report in activityReports {
+                let id = MapNode.identity("agent", report.provider, report.sessionID.lowercased())
+                let parentID = report.parentSessionID.map { MapNode.identity("agent", report.parentProvider ?? report.provider, $0.lowercased()) }
+                if let offset = nodes.firstIndex(where: { $0.id == id }) {
+                    nodes[offset].parentAgentID = parentID
+                    // Canonical completion takes precedence over delayed activity reports.
+                    if nodes[offset].reportedState != "completed",
+                       report.updatedAt > (nodes[offset].observedAt ?? .distantPast) {
+                        nodes[offset].observedAt = report.updatedAt; nodes[offset].reportedState = report.state
+                    }
+                } else {
+                    nodes.append(MapNode(id: id, parentID: parent(for: report.workingDirectory), kind: .agent,
+                        label: report.label, path: report.workingDirectory, summary: "Reported agent instance",
+                        evidence: "Activity registration", observedAt: report.updatedAt, reportedState: report.state,
+                        provider: report.provider, sessionID: report.sessionID, parentAgentID: parentID))
+                }
+                for entry in report.entries {
+                    let file = includeFile(entry.path)
+                    var relation = MapRelation(from: entry.operation == .read ? file : id,
+                        to: entry.operation == .read ? id : file, kind: entry.operation == .read ? .input : .output,
+                        evidence: entry.operation == .read ? "Reported read" : "Reported write", observedAt: entry.at)
+                    relation.importance = entry.importance
+                    relations.removeAll { $0.id == relation.id }
+                    relations.append(relation)
+                }
         }
         // A file may appear as both an input and an output. The layout projects
         // it on both sides of the agent while retaining one physical identity.

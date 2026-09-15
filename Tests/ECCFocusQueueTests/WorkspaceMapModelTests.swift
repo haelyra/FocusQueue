@@ -31,7 +31,7 @@ struct WorkspaceMapModelTests {
         #expect(model.snapshot?.generatedAt == date)
         #expect(model.message?.contains("last successful map") == true)
         #expect(model.snapshot?.nodes.contains { $0.label == "Saved workspace" } == true)
-        #expect(model.expanded.contains("workspace"))
+        #expect(model.expanded.isEmpty) // Expansion defaults belong to the bounded layout, not the snapshot cache.
         #expect(!model.isRefreshing)
     }
 
@@ -47,5 +47,30 @@ struct WorkspaceMapModelTests {
         #expect(model.snapshot?.taskID == first.ticketID)
         await model.refresh(context: second, sessions: [])
         #expect(model.snapshot?.taskID == second.ticketID)
+    }
+}
+
+@Suite("Map navigation and collapse controls")
+@MainActor
+struct MapNavigationTests {
+    @Test("Background action exits agent and branch focus without changing the snapshot")
+    func backgroundExit() {
+        let model = WorkspaceMapModel()
+        model.mode = .agent; model.focusedAgentID = "agent"; model.focusedBranchID = "branch"; model.retrospective = true
+        model.normalView()
+        #expect(model.mode == .typical && model.focusedAgentID == nil && model.focusedBranchID == nil && !model.retrospective)
+    }
+    @Test("Parent controls collapse visible children and drill into budget-limited groups")
+    func collapse() {
+        let model = WorkspaceMapModel()
+        var diagram = MapDiagram()
+        let node = MapNode(id: "parent", parentID: nil, kind: .folder, label: "Folder", evidence: "Group")
+        diagram.add(node, x: 0, y: 0, role: "Output", expansion: "parent")
+        var item = diagram.items[0]; item.isExpanded = true
+        model.toggle(item)
+        #expect(model.collapsed.contains("parent"))
+        item.isExpanded = false; item.focusOnExpand = true
+        model.toggle(item)
+        #expect(!model.collapsed.contains("parent") && model.focusedBranchID == "parent")
     }
 }

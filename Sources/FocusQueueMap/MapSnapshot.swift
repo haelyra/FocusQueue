@@ -22,17 +22,20 @@ public struct MapNode: Codable, Equatable, Identifiable, Sendable {
     public var gitStatus: String?
     public var destination: String?
     public var durable: Bool?
+    public var parentAgentID: String?
+    public var runtime: String?
 
     public init(id: String, parentID: String?, kind: MapNodeKind, label: String,
                 path: String? = nil, allowedRoot: String? = nil, summary: String = "",
                 evidence: String, observedAt: Date? = nil, reportedState: String? = nil,
                 provider: String? = nil, sessionID: String? = nil, subtaskID: String? = nil,
-                gitStatus: String? = nil, destination: String? = nil, durable: Bool? = nil) {
+                gitStatus: String? = nil, destination: String? = nil, durable: Bool? = nil, parentAgentID: String? = nil, runtime: String? = nil) {
         self.id = id; self.parentID = parentID; self.kind = kind; self.label = label
         self.path = path; self.allowedRoot = allowedRoot; self.summary = summary
         self.evidence = evidence; self.observedAt = observedAt; self.reportedState = reportedState
         self.provider = provider; self.sessionID = sessionID; self.subtaskID = subtaskID
         self.gitStatus = gitStatus; self.destination = destination; self.durable = durable
+        self.parentAgentID = parentAgentID; self.runtime = runtime
     }
 
     public func state(at now: Date = Date()) -> String? {
@@ -93,6 +96,14 @@ public struct MapSnapshot: Codable, Equatable, Sendable {
               relations.allSatisfy({ ids.contains($0.from) && ids.contains($0.to) &&
                   ($0.kind == .input ? index[$0.to]?.kind == .agent : $0.kind == .output ? index[$0.from]?.kind == .agent : true) }) else {
             throw MapError.invalidSnapshot("Invalid input/output relationship.")
+        }
+        for node in nodes where node.kind == .agent {
+            var seen: Set<String> = [node.id], parent = node.parentAgentID
+            while let id = parent {
+                guard seen.insert(id).inserted else { throw MapError.invalidSnapshot("Cyclic subagent ancestry.") }
+                if let ancestor = index[id], ancestor.kind != .agent { throw MapError.invalidSnapshot("A subagent parent must be an agent.") }
+                parent = index[id]?.parentAgentID
+            }
         }
         for node in nodes {
             if node.kind != .queue, node.parentID == nil {

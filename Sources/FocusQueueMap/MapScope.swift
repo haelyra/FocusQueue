@@ -8,6 +8,7 @@ public struct MapRelation: Codable, Equatable, Identifiable, Sendable {
     public var kind: Kind
     public var evidence: String
     public var observedAt: Date?
+    public var importance: Int? = nil
     public var id: String { MapNode.identity(from, to, kind.rawValue) }
 }
 

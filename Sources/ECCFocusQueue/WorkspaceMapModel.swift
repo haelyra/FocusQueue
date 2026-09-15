@@ -9,6 +9,9 @@ import FocusQueueMap
 final class WorkspaceMapModel {
     var snapshot: MapSnapshot?
     var expanded = Set<String>()
+    var collapsed = Set<String>()
+    var focusedBranchID: String?
+    var retrospective = false
     var selection: String?
     var search = ""
     var attentionOnly = false
@@ -23,6 +26,7 @@ final class WorkspaceMapModel {
     var options: WorkspaceMapOptions {
         var value = WorkspaceMapOptions()
         value.mode = mode; value.agentID = focusedAgentID; value.expanded = expanded
+        value.collapsed = collapsed; value.focusedBranchID = focusedBranchID; value.retrospective = retrospective
         value.expandedView = expandedView; value.includeOlderScope = includeOlderScope
         value.showOtherFiles = showOtherFiles; value.search = search
         value.attentionOnly = attentionOnly; value.changesOnly = changesOnly
@@ -30,8 +34,20 @@ final class WorkspaceMapModel {
     }
     func select(_ node: MapNode) {
         selection = node.id
-        if node.kind == .agent { mode = .agent; focusedAgentID = node.id; zoom = 1 }
-        if node.kind == .queue || node.kind == .context { mode = .context; zoom = 1 }
+        if node.kind == .agent { mode = .agent; focusedAgentID = node.id; focusedBranchID = nil; zoom = 1 }
+        if node.kind == .queue || node.kind == .context { mode = .context; focusedBranchID = nil; zoom = 1 }
+    }
+    func normalView() {
+        mode = .typical; focusedAgentID = nil; focusedBranchID = nil
+        selection = nil; retrospective = false; zoom = 1
+    }
+    func toggle(_ item: MapDiagram.Item) {
+        guard let id = item.expansionID else { return }
+        if item.isExpanded == true { collapsed.insert(id); expanded.remove(id) }
+        else {
+            collapsed.remove(id); expanded.insert(id)
+            if item.focusOnExpand == true { focusedBranchID = id }
+        }
     }
     var message: String?
     var isRefreshing = false
@@ -49,7 +65,7 @@ final class WorkspaceMapModel {
         let cacheURL = context.contextDirectory.appendingPathComponent("workspace-map/snapshot.json")
         if loadedTask != context.ticketID {
             loadedTask = context.ticketID
-            snapshot = nil; expanded = []; selection = nil; mode = .typical
+            snapshot = nil; expanded = []; collapsed = []; focusedBranchID = nil; selection = nil; mode = .typical
             do { snapshot = try await cache.load(from: cacheURL, taskID: context.ticketID) }
             catch { message = "Saved map unavailable. Collecting a fresh map." }
             seedExpansion()
@@ -74,9 +90,6 @@ final class WorkspaceMapModel {
 
     private func seedExpansion() {
         guard let snapshot else { return }
-        if expanded.isEmpty {
-            expanded = Set(snapshot.nodes.filter { $0.kind == .queue || $0.kind == .workspace }.map(\.id))
-        }
         if mode == .agent && !snapshot.nodes.contains(where: { $0.id == focusedAgentID }) { mode = .typical; focusedAgentID = nil }
         if !snapshot.nodes.contains(where: { $0.id == selection }) {
             selection = snapshot.nodes.first(where: { $0.kind == .workspace })?.id ?? "queue"

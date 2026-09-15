@@ -1,5 +1,7 @@
 # Reusable maps and lightweight activity snapshots
 
+> Implementation update: the active map contract is now [spacing rules](spacing-rules.md). The app has a five-column, ten-row presentation budget, four-way grouping, runtime attributes instead of tmux infrastructure cards, and a bounded activity-report import API with subagent ancestry and retrospective writes. The provider adapters discussed below are still planned; earlier geometry and tmux presentation notes in this research document describe the previous revision.
+
 The map now has three projections over one graph: Typical summarizes every workspace, Context expands the task's inputs, and Agent isolates one agent's execution paths. The next tracking step should consume existing machine events and retain only small path records. It should add **zero model calls and zero injected tracking tokens**.
 
 ## Current delivery and the remaining boundary

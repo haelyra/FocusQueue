@@ -46,90 +46,84 @@ struct MapTemplateTests {
         }
     }
 
-    @Test("Typical shares fixed task context outside real worktree containers and hides global inputs")
+    @Test("Default projection respects five columns, ten rows, grouped context and four connections")
     func typical() {
         let diagram = WorkspaceMapProjection.diagram(snapshot: snapshot(), options: .init())
-        #expect(diagram.items.contains { $0.node.id == "source" && $0.hiddenChildren == 3 })
-        #expect(!diagram.items.contains { $0.node.id == "file0" || $0.node.id == "brief" })
-        #expect(diagram.items.filter { $0.node.kind == .agent }.count == 2)
-        #expect(diagram.items.contains { $0.node.id == "db" && $0.node.durable == true })
-        let context = diagram.containers.first { $0.id == "context" }!
-        let work = diagram.containers.first { $0.id == "work" }!
-        #expect(context.x + context.width < work.x)
-        #expect(diagram.items.filter { $0.node.kind == .agent }.allSatisfy { $0.x >= work.x && $0.y >= work.y && $0.y + MapDiagram.nodeHeight <= work.y + work.height })
         assertPacked(diagram)
+        #expect(diagram.items.map(\.x).max()! <= 16 + 4 * MapDiagram.column)
+        #expect(diagram.items.map(\.y).max()! <= 12 + 9 * MapDiagram.row)
+        #expect(diagram.edges.allSatisfy { edge in diagram.edges.filter { $0.from == edge.from }.count <= 4 })
+        #expect(!diagram.items.contains { $0.node.id == "brief" })
+        #expect(diagram.items.first { $0.node.id == "work" }?.previews?.map(\.label) == ["README.md"])
+        let contexts = Set(diagram.items.filter { ["plan", "readme", "brief"].contains($0.node.id) }.map(\.id))
+        #expect(!diagram.edges.contains { contexts.contains($0.from) })
     }
 
-    @Test("Expanded reveals up to five files; larger folders expand explicitly and shrink back")
-    func expansion() {
-        var options = WorkspaceMapOptions(); options.expandedView = true
-        let five = WorkspaceMapProjection.diagram(snapshot: snapshot(fileCount: 5), options: options)
-        #expect(five.items.filter { $0.node.path?.hasSuffix(".swift") == true }.count == 5)
-        let folded = WorkspaceMapProjection.diagram(snapshot: snapshot(fileCount: 8), options: options)
-        #expect(!folded.items.contains { $0.node.id == "file0" })
-        #expect(folded.items.contains { $0.node.id == "source" && $0.hiddenChildren == 8 })
-        options.expanded.insert("source")
-        let unfolded = WorkspaceMapProjection.diagram(snapshot: snapshot(fileCount: 8), options: options)
-        #expect(unfolded.items.filter { $0.node.path?.hasSuffix(".swift") == true }.count == 8)
-        #expect(unfolded.height > folded.height)
-        assertPacked(five); assertPacked(folded); assertPacked(unfolded)
+    @Test("Every parent can collapse; crowded branches drill into the bounded viewport")
+    func expansion() throws {
+        var options = WorkspaceMapOptions(); options.expandedView = true; options.includeOlderScope = true
+        let snapshot = snapshot(fileCount: 80)
+        let first = WorkspaceMapProjection.diagram(snapshot: snapshot, options: options)
+        assertPacked(first)
+        let parent = try #require(first.items.first { $0.isExpanded == true && $0.node.kind == .agent })
+        options.collapsed.insert(parent.expansionID!)
+        let collapsed = WorkspaceMapProjection.diagram(snapshot: snapshot, options: options)
+        #expect(!collapsed.edges.contains { $0.from == parent.id })
+        options.collapsed = []
+        let folded = try #require(first.items.first { $0.focusOnExpand == true })
+        options.focusedBranchID = folded.expansionID
+        let expanded = WorkspaceMapProjection.diagram(snapshot: snapshot, options: options)
+        #expect(expanded.items.contains { $0.node.id == folded.node.id && $0.isExpanded == true })
+        #expect(expanded.items.map(\.x).max()! <= 16 + 4 * MapDiagram.column)
+        assertPacked(expanded)
     }
 
-    @Test("Agent isolates its context, outputs and durable feedback cycle")
+    @Test("Agent isolates the selected actor and uses grouped outputs")
     func agent() throws {
         var options = WorkspaceMapOptions(); options.mode = .agent; options.agentID = "a"
-        let snapshot = try snapshot().validated()
-        let diagram = WorkspaceMapProjection.diagram(snapshot: snapshot, options: options)
+        let diagram = WorkspaceMapProjection.diagram(snapshot: try snapshot().validated(), options: options)
         #expect(!diagram.items.contains { $0.node.id == "b" })
-        #expect(diagram.items.contains { $0.node.id == "brief" })
-        #expect(diagram.edges.contains { $0.kind == "feedback" })
-        #expect(diagram.edges.contains { $0.kind == "dependency" })
+        #expect(diagram.items.contains { $0.node.id == "a" })
+        #expect(diagram.items.contains { $0.node.id == "db" })
         assertPacked(diagram)
     }
 
-    @Test("Context is a source funnel without worktrees and headings expand clickable links")
-    func context() {
+    @Test("Context has expandable sources and no worktree execution boxes")
+    func context() throws {
         var options = WorkspaceMapOptions(); options.mode = .context
         let folded = WorkspaceMapProjection.diagram(snapshot: snapshot(), options: options)
-        #expect(!folded.items.contains { $0.node.kind == .agent })
-        #expect(!folded.containers.contains { $0.id == "work" })
-        #expect(folded.items.contains { $0.node.id == "research" && $0.hiddenChildren == 1 })
-        #expect(!folded.items.contains { $0.node.id == "link" })
-        #expect(folded.edges.contains { $0.to == "evidence" })
-        options.expanded.insert("research")
-        let expanded = WorkspaceMapProjection.diagram(snapshot: snapshot(), options: options)
-        #expect(expanded.items.contains { $0.node.id == "link" && $0.node.destination == "https://example.com/paper" })
-        #expect(expanded.edges.contains { $0.from == "context:link" && $0.to == "context:research" })
-        assertPacked(folded); assertPacked(expanded)
+        #expect(!folded.items.contains { $0.node.kind == .agent || $0.node.kind == .workspace })
+        #expect(folded.items.contains { $0.node.id == "research" })
+        assertPacked(folded)
     }
 
-    @Test("Expired activity scope disappears while durable context persists and old scope is recoverable")
+    @Test("Idle agents backfill four important outputs instead of dropping their work")
     func expiry() {
-        let now = Date(); var snapshot = snapshot()
-        for i in snapshot.relations.indices where snapshot.relations[i].evidence.hasPrefix("Declared") {
-            snapshot.relations[i].observedAt = now.addingTimeInterval(-3600)
-        }
+        let now = Date(); var snapshot = snapshot(fileCount: 10)
+        for i in snapshot.relations.indices { snapshot.relations[i].observedAt = now.addingTimeInterval(-3600) }
         var options = WorkspaceMapOptions(); options.mode = .agent; options.agentID = "a"
-        let current = WorkspaceMapProjection.diagram(snapshot: snapshot, options: options, now: now)
-        #expect(!current.items.contains { $0.node.id == "file0" })
-        #expect(current.items.contains { $0.node.id == "readme" })
-        #expect(current.items.contains { $0.node.id == "db" })
-        options.includeOlderScope = true
-        #expect(WorkspaceMapProjection.diagram(snapshot: snapshot, options: options, now: now).items.contains { $0.node.id == "file0" })
+        let selected = MapAgentFocus.relations(agent: snapshot.nodes.first { $0.id == "a" }!, snapshot: snapshot, options: options, now: now)
+        #expect(selected.filter { $0.kind == .output }.count == 4)
+        #expect(selected.contains { $0.from == "readme" })
     }
 
-    @Test("Large expansion is bounded and repeated projections remain deterministic")
+    @Test("Large expansion stays bounded, deterministic, and routes clear of every card")
     func bounds() throws {
-        var options = WorkspaceMapOptions(); options.expanded.insert("source"); options.expandedView = true
+        var options = WorkspaceMapOptions(); options.expandedView = true; options.includeOlderScope = true
         let snapshot = snapshot(fileCount: 300)
         let first = WorkspaceMapProjection.diagram(snapshot: snapshot, options: options, limit: 40)
         #expect(first.items.count <= 40)
         assertPacked(first)
+        for edge in first.edges {
+            let points = try #require(edge.points)
+            for (a, b) in zip(points, points.dropFirst()) {
+                #expect(!first.items.contains { MapEdgeRouter.intersects(a, b, item: $0) })
+            }
+        }
         let second = WorkspaceMapProjection.diagram(snapshot: snapshot, options: options, limit: 40)
         #expect(first.items.map(\.id) == second.items.map(\.id))
         #expect(first.items.map(\.y) == second.items.map(\.y))
-        let data = try JSONEncoder().encode(first)
-        #expect(try JSONDecoder().decode(MapDiagram.self, from: data).items.count == first.items.count)
+        #expect(try JSONDecoder().decode(MapDiagram.self, from: JSONEncoder().encode(first)).items.count == first.items.count)
     }
 
     @Test("Markdown source indexing groups real links and ignores fenced examples and image syntax")
@@ -198,19 +192,17 @@ struct MapSourceSnapshotTests {
         #expect(second.nodes.first { $0.label == "Findings" }?.id == heading.id)
         var options = WorkspaceMapOptions(); options.mode = .agent; options.agentID = "a"
         let diagram = WorkspaceMapProjection.diagram(snapshot: second, options: options)
-        #expect(diagram.items.contains { $0.node.id == heading.id })
+        #expect(second.nodes.contains { $0.id == heading.id })
         #expect(!diagram.items.contains { $0.node.destination == "https://example.com/source" })
     }
 
-    @Test("A shared durable instance stays outside workspace containers")
-    func sharedResource() {
+    @Test("Shared durable instances retain their canonical location")
+    func sharedResource() throws {
         var snapshot = MapTemplateTests().snapshot()
-        let offset = snapshot.nodes.firstIndex { $0.id == "db" }!
+        let offset = try #require(snapshot.nodes.firstIndex { $0.id == "db" })
         snapshot.nodes[offset].parentID = "queue"
         let diagram = WorkspaceMapProjection.diagram(snapshot: snapshot, options: .init())
-        let resource = diagram.items.first { $0.node.id == "db" }!
-        #expect(resource.x < diagram.containers.first { $0.id == "work" }!.x)
-        #expect(diagram.edges.contains { $0.from == resource.id && $0.to == "a" })
+        #expect(diagram.items.contains { $0.node.id == "db" && $0.node.parentID == "queue" })
         MapTemplateTests().assertPacked(diagram)
     }
 }

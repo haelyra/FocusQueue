@@ -26,7 +26,7 @@ struct WorkspaceMapView: View {
                     Text("Snapshot \(snapshot.generatedAt, style: .relative) ago")
                     Spacer()
                     if model.isRefreshing { ProgressView().controlSize(.mini) }
-                    Text(model.includeOlderScope ? "Including older declared scope" : "Declared scope · last 30 min")
+                    Text(model.retrospective ? "Recorded write history" : "Current reports + important recent changes")
                 }.font(.system(size: 10)).foregroundStyle(.secondary)
             } else if queue.taskContexts[ticket.id] == nil {
                 ContentUnavailableView("Task context unavailable", systemImage: "map",
@@ -82,12 +82,13 @@ struct WorkspaceMapView: View {
         let diagram = WorkspaceMapProjection.diagram(snapshot: snapshot, options: model.options)
         return VStack(spacing: 5) {
             HStack(spacing: 7) {
-                Button("Typical") { model.mode = .typical; model.selection = nil; model.zoom = 1 }
+                Button("Typical") { model.normalView() }
                     .tint(model.mode == .typical ? .accentColor : .secondary)
-                Button("Context") { model.mode = .context; model.zoom = 1 }
+                Button("Context") { model.mode = .context; model.focusedBranchID = nil; model.zoom = 1 }
                     .tint(model.mode == .context ? .accentColor : .secondary)
                 if model.mode == .agent {
-                    Text("Agent focus").foregroundStyle(.secondary)
+                    Toggle("Changed files", isOn: $model.retrospective).toggleStyle(.button)
+                        .help("All recorded writes for this agent, grouped for browsing")
                 }
                 Spacer()
                 Toggle("Expanded", isOn: $model.expandedView).toggleStyle(.switch).controlSize(.mini)
@@ -96,7 +97,7 @@ struct WorkspaceMapView: View {
                     Toggle("Include older scope", isOn: $model.includeOlderScope)
                     Toggle("Fit width", isOn: $model.fitWidth)
                     Button("Reset view") {
-                        model.mode = .typical; model.expanded = []; model.expandedView = false
+                        model.normalView(); model.expanded = []; model.collapsed = []; model.expandedView = false
                         model.search = ""; model.attentionOnly = false; model.changesOnly = false
                         model.zoom = 1; model.includeOlderScope = false; model.showOtherFiles = false
                     }
@@ -104,11 +105,14 @@ struct WorkspaceMapView: View {
             }.font(.system(size: 10)).buttonStyle(.bordered)
             InteractiveMapCanvas(diagram: diagram, zoom: model.zoom, fitWidth: model.fitWidth, card: { item in
                 node(item, snapshot: snapshot)
-            }, selectContainer: { id in
+            }, backgroundAction: { model.normalView() }, selectContainer: { id in
                 if let node = snapshot.nodes.first(where: { $0.id == id }) { model.select(node) }
             })
-            Text("Click an agent to isolate it · + expands a group · dashed: context · green: output · orange: feedback")
+            Text("Click blank space to return · grey + expands groups · green: output · orange: feedback")
                 .font(.system(size: 9)).foregroundStyle(.secondary)
+            if model.focusedBranchID != nil {
+                Button("Back to overview") { model.normalView() }.font(.caption)
+            }
             if diagram.items.count >= diagram.limit {
                 Text("Showing \(diagram.limit) items. Focus an agent or search to narrow the map.").font(.caption2).foregroundStyle(.secondary)
             }
@@ -122,23 +126,49 @@ struct WorkspaceMapView: View {
                 Image(systemName: icon(node.kind)).foregroundStyle(color(node))
                 Text(item.role.uppercased()).font(.system(size: 8, weight: .semibold)).foregroundStyle(.secondary)
                 Spacer()
-                if let expansion = item.expansionID {
-                    Button {
-                        if model.expanded.contains(expansion) { model.expanded.remove(expansion) }
-                        else { model.expanded.insert(expansion) }
-                    } label: { Image(systemName: model.expanded.contains(expansion) ? "minus.circle" : "plus.circle") }
-                        .buttonStyle(.plain).accessibilityLabel("Expand or collapse \(node.label)")
+                if item.expansionID != nil {
+                    Button { model.toggle(item) } label: {
+                        Image(systemName: item.isExpanded == true ? "minus.circle" : "plus.circle")
+                            .foregroundStyle(.secondary)
+                    }.buttonStyle(.plain).accessibilityLabel("Expand or collapse \(node.label)")
                 }
             }
             Text(node.label).font(.system(size: 11, weight: .semibold)).lineLimit(1).truncationMode(.middle)
-            Text(item.hiddenChildren > 0 ? "\(item.hiddenChildren) items · expand +" : node.state().map { $0.capitalized } ?? node.summary)
-                .font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+            if node.kind != .context && node.kind != .queue {
+                Text(node.path ?? node.destination ?? "Location not recorded")
+                    .font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+            } else {
+                Text(node.summary).font(.system(size: 8)).foregroundStyle(.secondary).lineLimit(1)
+            }
+            if !(item.previews ?? []).isEmpty || item.detailID != nil {
+                HStack(spacing: 5) {
+                    ForEach((item.previews ?? []).prefix(3)) { file in
+                        Button {
+                            open(file, snapshot: snapshot)
+                        } label: {
+                            Text(file.label == "Central plan" ? "Plan" : file.label == "Task context and evidence links" ? "Context" : file.label == "Task map" ? "Map" : file.label)
+                                .font(.system(size: 8)).lineLimit(1)
+                        }.buttonStyle(.plain).foregroundStyle(.secondary).help(file.path ?? file.label)
+                    }
+                    if let detail = item.detailID {
+                        Button {
+                            if model.expanded.contains(detail) { model.expanded.remove(detail) }
+                            else { model.expanded.insert(detail) }
+                        } label: { Image(systemName: model.expanded.contains(detail) ? "minus" : "plus").font(.system(size: 8)).foregroundStyle(.secondary) }
+                            .buttonStyle(.plain).help("Expand additional repository context")
+                    }
+                }
+            } else if node.kind != .queue {
+                Text(item.hiddenChildren > 0 ? "\(item.hiddenChildren) groups · expand +" : node.runtime ?? node.state().map { $0.capitalized } ?? node.summary)
+                    .font(.system(size: 8)).foregroundStyle(.secondary).lineLimit(1)
+            }
         }.padding(7).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .background(node.kind == .queue ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(model.selection == node.id ? Color.accentColor : Color.secondary.opacity(0.3), lineWidth: model.selection == node.id ? 2 : 1).allowsHitTesting(false))
             .contentShape(Rectangle())
-            .onTapGesture { activate(node, snapshot: snapshot) }
-            .focusable().onKeyPress(.return) { activate(node, snapshot: snapshot); return .handled }
+            .onTapGesture { activate(item, snapshot: snapshot) }
+            .focusable().onKeyPress(.return) { activate(item, snapshot: snapshot); return .handled }
             .contextMenu {
                 if let location = node.path ?? node.destination {
                     Text(location)
@@ -150,15 +180,14 @@ struct WorkspaceMapView: View {
             .mapPathTooltip(node.path ?? node.destination)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("\(node.label), \(node.kind.rawValue), \(node.summary)")
-            .accessibilityAction(named: "Open") { activate(node, snapshot: snapshot) }
+            .accessibilityAction(named: "Open") { activate(item, snapshot: snapshot) }
     }
 
-    private func activate(_ node: MapNode, snapshot: MapSnapshot) {
+    private func activate(_ item: MapDiagram.Item, snapshot: MapSnapshot) {
+        let node = item.node
         model.select(node)
-        if node.kind == .section || node.kind == .folder {
-            if model.expanded.contains(node.id) { model.expanded.remove(node.id) }
-            else { model.expanded.insert(node.id) }
-        } else if [.file, .document, .link, .resource].contains(node.kind) { open(node, snapshot: snapshot) }
+        if [.folder, .workspace, .section].contains(node.kind) { model.toggle(item) }
+        else if [.file, .document, .link, .resource].contains(node.kind) { open(node, snapshot: snapshot) }
     }
 
     @ViewBuilder private func inspector(_ snapshot: MapSnapshot) -> some View {
@@ -178,7 +207,7 @@ struct WorkspaceMapView: View {
                 if node.kind == .agent {
                     let inputs = snapshot.relations.filter { $0.to == node.id && $0.kind == .input }.count
                     let outputs = snapshot.relations.filter { $0.from == node.id && $0.kind == .output }.count
-                    Text("\(inputs) context files · \(outputs == 0 ? "No output paths reported" : "\(outputs) declared outputs")")
+                    Text("\(inputs) context files · \(outputs == 0 ? "No output paths reported" : "\(outputs) reported / declared outputs")")
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                 }
                 if let path = node.path { Text(path).font(.system(size: 10, design: .monospaced)).lineLimit(2).textSelection(.enabled) }

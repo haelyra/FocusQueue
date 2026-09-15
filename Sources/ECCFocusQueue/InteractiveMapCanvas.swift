@@ -8,61 +8,75 @@ struct InteractiveMapCanvas<Card: View>: View {
     let zoom: Double
     let fitWidth: Bool
     let card: (MapDiagram.Item) -> Card
+    var backgroundAction: () -> Void = {}
     let selectContainer: (String) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         GeometryReader { geometry in
-            let scale = fitWidth ? min(1, max(0.5, (geometry.size.width - 12) / diagram.width)) * zoom : zoom
-            let positions = Dictionary(uniqueKeysWithValues: diagram.items.map { ($0.id, $0) })
+            let scale = fitWidth ? min(1, max(0.45, min((geometry.size.width - 12) / diagram.width, (geometry.size.height - 12) / diagram.height))) * zoom : zoom
+            let signature = diagram.items.map { "\($0.id):\($0.x):\($0.y)" }.joined(separator: "|")
             ScrollView([.horizontal, .vertical]) {
                 ZStack(alignment: .topLeading) {
                     ForEach(diagram.containers) { container in
                         RoundedRectangle(cornerRadius: 9).fill(Color.primary.opacity(0.025))
-                            .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.secondary.opacity(0.25)))
+                            .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.secondary.opacity(0.2)))
                             .frame(width: container.width, height: container.height)
-                            .overlay(alignment: .topLeading) {
-                                Button { selectContainer(container.id) } label: {
-                                    Text(container.label).font(.system(size: 10, weight: .semibold))
-                                        .lineLimit(1).padding(.horizontal, 8).padding(.vertical, 5)
-                                }.buttonStyle(.plain)
-                            }.offset(x: container.x, y: container.y)
+                            .offset(x: container.x, y: container.y).allowsHitTesting(false)
                     }
-                    Canvas { context, _ in
-                        for edge in diagram.edges {
-                            guard let from = positions[edge.from], let to = positions[edge.to] else { continue }
-                            let forward = to.x > from.x
-                            let sameColumn = abs(from.x - to.x) < 10
-                            let start = CGPoint(x: from.x + (forward || sameColumn ? MapDiagram.nodeWidth : 0), y: from.y + MapDiagram.nodeHeight / 2)
-                            let end = CGPoint(x: to.x + (forward ? 0 : MapDiagram.nodeWidth), y: to.y + MapDiagram.nodeHeight / 2)
-                            var path = Path(); path.move(to: start)
-                            if sameColumn || edge.kind == "feedback" {
-                                let gutter = max(start.x, end.x) + 24
-                                path.addCurve(to: end, control1: CGPoint(x: gutter, y: start.y), control2: CGPoint(x: gutter, y: end.y))
-                            } else {
-                                let middle = (start.x + end.x) / 2
-                                path.addCurve(to: end, control1: CGPoint(x: middle, y: start.y), control2: CGPoint(x: middle, y: end.y))
-                            }
-                            let tint: Color = edge.kind == "output" ? .green : edge.kind == "feedback" ? .orange : edge.kind == "hierarchy" ? .secondary : .accentColor
-                            context.stroke(path, with: .color(tint.opacity(0.65)), style: StrokeStyle(lineWidth: 1.3, dash: ["input", "context"].contains(edge.kind) ? [4, 3] : []))
-                            if edge.kind != "hierarchy" {
-                                let direction = forward && !sameColumn && edge.kind != "feedback" ? -1.0 : 1.0
-                                var arrow = Path(); arrow.move(to: end)
-                                arrow.addLine(to: CGPoint(x: end.x + direction * 6, y: end.y - 3))
-                                arrow.addLine(to: CGPoint(x: end.x + direction * 6, y: end.y + 3)); arrow.closeSubpath()
-                                context.fill(arrow, with: .color(tint.opacity(0.9)))
-                            }
+                    ForEach(diagram.edges) { edge in
+                        if let points = edge.points {
+                            let tint: Color = edge.kind == "output" ? .green : edge.kind == "feedback" ? .orange : .secondary
+                            MapConnectionShape(points: points, arrow: edge.kind != "hierarchy")
+                                .stroke(tint.opacity(0.55), style: StrokeStyle(lineWidth: 1.15, lineCap: .round, lineJoin: .round))
+                                .allowsHitTesting(false).accessibilityHidden(true)
                         }
-                    }.allowsHitTesting(false).accessibilityHidden(true)
+                    }
                     ForEach(diagram.items) { item in
                         card(item).frame(width: MapDiagram.nodeWidth, height: MapDiagram.nodeHeight)
                             .offset(x: item.x, y: item.y)
+                            .transition(.asymmetric(insertion: .opacity.combined(with: .offset(x: 12)), removal: .opacity))
                     }
-                }.frame(width: diagram.width + 30, height: diagram.height)
+                }.frame(width: max(diagram.width + 30, geometry.size.width / scale), height: max(diagram.height, geometry.size.height / scale), alignment: .topLeading)
+                    .background(Color.clear.contentShape(Rectangle()).onTapGesture { backgroundAction() })
                     .scaleEffect(scale, anchor: .topLeading)
-                    .frame(width: (diagram.width + 30) * scale, height: diagram.height * scale, alignment: .topLeading)
+                    .frame(width: max((diagram.width + 30) * scale, geometry.size.width), height: max(diagram.height * scale, geometry.size.height), alignment: .topLeading)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: signature)
             }.background(Color(nsColor: .windowBackgroundColor).opacity(0.97), in: RoundedRectangle(cornerRadius: 10))
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.25)).allowsHitTesting(false))
         }.frame(minHeight: 220)
+    }
+}
+
+/// Fixed-size animation vector keeps the route and its endpoints gliding with
+/// the cards. Short routes repeat their last point to retain the same dimension.
+private struct MapRouteVector: VectorArithmetic {
+    var values: [Double]
+    static var zero: Self { .init(values: Array(repeating: 0, count: 16)) }
+    static func + (a: Self, b: Self) -> Self { .init(values: zip(a.values, b.values).map(+)) }
+    static func - (a: Self, b: Self) -> Self { .init(values: zip(a.values, b.values).map(-)) }
+    mutating func scale(by rhs: Double) { values = values.map { $0 * rhs } }
+    var magnitudeSquared: Double { values.reduce(0) { $0 + $1 * $1 } }
+}
+private struct MapConnectionShape: Shape {
+    var vector: MapRouteVector
+    let arrow: Bool
+    init(points: [MapDiagram.Point], arrow: Bool) {
+        let last = points.last ?? .init(x: 0, y: 0)
+        let padded = Array(points.prefix(8)) + Array(repeating: last, count: max(0, 8 - points.count))
+        vector = .init(values: padded.flatMap { [$0.x, $0.y] }); self.arrow = arrow
+    }
+    var animatableData: MapRouteVector { get { vector } set { vector = newValue } }
+    func path(in rect: CGRect) -> Path {
+        let points = stride(from: 0, to: vector.values.count, by: 2).map { CGPoint(x: vector.values[$0], y: vector.values[$0 + 1]) }
+        var path = Path(); path.addLines(points)
+        if arrow, let end = points.last, let before = points.last(where: { $0 != end }) {
+            let dx = end.x - before.x, dy = end.y - before.y, length = max(1, hypot(dx, dy))
+            let ux = dx / length, uy = dy / length
+            path.move(to: CGPoint(x: end.x - ux * 6 - uy * 3, y: end.y - uy * 6 + ux * 3)); path.addLine(to: end)
+            path.addLine(to: CGPoint(x: end.x - ux * 6 + uy * 3, y: end.y - uy * 6 - ux * 3))
+        }
+        return path
     }
 }
 

@@ -6,10 +6,11 @@ import FocusQueueMap
 struct WorkspaceMapCommand {
     static let help = """
     Usage: focus-queue-map snapshot <TASK-ID> [--output <file>]
-           focus-queue-map diagram <TASK-ID> [--view typical|context|agent] [--agent <subtask-id>] [--expanded] [--output <file>]
+           focus-queue-map diagram <TASK-ID> [--view typical|context|agent] [--agent <subtask-or-session-id>] [--expanded] [--retrospective] [--focus <group-id>] [--output <file>]
            focus-queue-map scope <TASK-ID> <SUBTASK-ID> [--input <path>] [--output <path>]
            focus-queue-map scope <TASK-ID> <SUBTASK-ID> --clear
            focus-queue-map resources <TASK-ID> --import <manifest.json>
+           focus-queue-map activity <TASK-ID> --import <report.json>
     Scope replaces the agent's previous declaration. Resource imports replace the task manifest.
     Set FOCUS_QUEUE_SUPPORT_DIR to use another context store. Collection never acknowledges registrations.
     """
@@ -17,7 +18,7 @@ struct WorkspaceMapCommand {
         do {
             let args = Array(CommandLine.arguments.dropFirst())
             if args == ["--help"] { print(help); return }
-            guard args.count >= 2, ["snapshot", "diagram", "scope", "resources"].contains(args[0]) else { throw MapError.unavailable(help) }
+            guard args.count >= 2, ["snapshot", "diagram", "scope", "resources", "activity"].contains(args[0]) else { throw MapError.unavailable(help) }
             let environment = ProcessInfo.processInfo.environment
             let root = environment["FOCUS_QUEUE_SUPPORT_DIR"].map { URL(fileURLWithPath: $0) }
                 ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("ECC Focus Queue")
@@ -37,6 +38,14 @@ struct WorkspaceMapCommand {
             }
             var state = try await JSONLocalStateStore(url: root.appendingPathComponent("state.json")).load()
             for session in try await AgentRegistrationInbox(directory: root.appendingPathComponent("agent-registrations")).pending() { state.upsertAgentSession(session) }
+            if args[0] == "activity" {
+                guard args.count == 4, args[2] == "--import" else { throw MapError.unavailable(help) }
+                let source = URL(fileURLWithPath: args[3])
+                guard (try source.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) <= 256_000 else { throw MapError.invalidSnapshot("Activity report exceeds 256 KB.") }
+                let report = try MapAgentActivity.decode(Data(contentsOf: source), taskID: context.ticketID)
+                try report.save(context: context)
+                print("Saved activity for \(report.label)."); return
+            }
             if args[0] == "resources" {
                 guard args.count == 4, args[2] == "--import" else { throw MapError.unavailable(help) }
                 let source = URL(fileURLWithPath: args[3])
@@ -55,6 +64,7 @@ struct WorkspaceMapCommand {
             }
             var options = WorkspaceMapOptions(), output: String?, subtaskID: String?, i = 2
             while i < args.count {
+                if args[0] == "diagram", args[i] == "--retrospective" { options.retrospective = true; i += 1; continue }
                 if args[0] == "diagram", args[i] == "--expanded" { options.expandedView = true; i += 1; continue }
                 guard i + 1 < args.count else { throw MapError.unavailable(help) }
                 switch args[i] {
@@ -63,6 +73,7 @@ struct WorkspaceMapCommand {
                     guard let mode = WorkspaceMapMode(rawValue: args[i + 1]) else { throw MapError.unavailable("Unknown map view.") }
                     options.mode = mode
                 case "--agent" where args[0] == "diagram": subtaskID = args[i + 1]
+                case "--focus" where args[0] == "diagram": options.focusedBranchID = args[i + 1]
                 default: throw MapError.unavailable(help)
                 }
                 i += 2
@@ -71,7 +82,7 @@ struct WorkspaceMapCommand {
             let data: Data
             if args[0] == "diagram" {
                 if options.mode == .agent {
-                    guard let id = snapshot.nodes.first(where: { $0.kind == .agent && ($0.subtaskID == subtaskID || $0.id == subtaskID) })?.id else { throw MapError.unavailable("Agent view requires --agent <registered subtask ID or map node ID>.") }
+                    guard let requested = subtaskID, let id = snapshot.nodes.first(where: { $0.kind == .agent && ($0.subtaskID == requested || $0.id == requested || $0.sessionID?.lowercased() == requested.lowercased()) })?.id else { throw MapError.unavailable("Agent view requires --agent <registered subtask ID or map node ID>.") }
                     options.agentID = id
                 }
                 let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601; encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

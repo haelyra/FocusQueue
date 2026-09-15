@@ -4,7 +4,7 @@ import Foundation
 /// chooses visible nodes; this value handles packing independently of task UI.
 /// Edges may contain cycles. Only containment passed to forest() must be a tree.
 public struct MapDiagram: Codable, Sendable {
-    public static let nodeWidth = 176.0, nodeHeight = 58.0, column = 208.0, row = 72.0
+    public static let nodeWidth = 196.0, nodeHeight = 84.0, column = 232.0, row = 104.0
     public struct Item: Identifiable, Codable, Sendable {
         public var id: String
         public var node: MapNode
@@ -13,11 +13,22 @@ public struct MapDiagram: Codable, Sendable {
         public var role: String
         public var expansionID: String?
         public var hiddenChildren: Int
+        public var isExpanded: Bool? = nil
+        public var focusOnExpand: Bool? = nil
+        public var previews: [MapNode]? = nil
+        public var detailID: String? = nil
     }
-    public struct Edge: Codable, Sendable {
+    public struct Point: Codable, Equatable, Sendable {
+        public var x: Double
+        public var y: Double
+        public init(x: Double, y: Double) { self.x = x; self.y = y }
+    }
+    public struct Edge: Identifiable, Codable, Sendable {
         public var from: String
         public var to: String
         public var kind: String
+        public var points: [Point]? = nil
+        public var id: String { MapNode.identity(from, to, kind) }
     }
     public struct Container: Identifiable, Codable, Sendable {
         public var id: String
@@ -88,6 +99,9 @@ public struct WorkspaceMapOptions: Sendable {
     public var agentID: String?
     public var expanded = Set<String>()
     public var expandedView = false
+    public var collapsed = Set<String>()
+    public var focusedBranchID: String?
+    public var retrospective = false
     public var includeOlderScope = false
     public var showOtherFiles = false
     public var search = ""

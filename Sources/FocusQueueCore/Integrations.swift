@@ -180,18 +180,32 @@ public struct RunningAgentSession: Identifiable, Equatable, Sendable {
 }
 
 public enum TerminalActionResult: Equatable, Sendable {
-    case focused(paneID: Int)
-    case spawned(paneID: Int?)
-    case resumed(provider: AgentProvider, sessionID: String, paneID: Int?)
+    case focused(paneID: Int, windowID: Int? = nil)
+    case spawned(paneID: Int?, windowID: Int? = nil)
+    case resumed(
+        provider: AgentProvider,
+        sessionID: String,
+        paneID: Int?,
+        windowID: Int? = nil
+    )
 
     public var paneID: Int? {
         switch self {
-        case .focused(let paneID):
+        case .focused(let paneID, _):
             paneID
-        case .spawned(let paneID):
+        case .spawned(let paneID, _):
             paneID
-        case .resumed(_, _, let paneID):
+        case .resumed(_, _, let paneID, _):
             paneID
+        }
+    }
+
+    public var windowID: Int? {
+        switch self {
+        case .focused(_, let windowID), .spawned(_, let windowID):
+            windowID
+        case .resumed(_, _, _, let windowID):
+            windowID
         }
     }
 
@@ -201,7 +215,7 @@ public enum TerminalActionResult: Equatable, Sendable {
             "Focused the matching WezTerm pane."
         case .spawned:
             "Opened a new WezTerm window in the task directory."
-        case .resumed(let provider, _, _):
+        case .resumed(let provider, _, _, _):
             "Resumed the \(provider.displayName) session in a new WezTerm window."
         }
     }
@@ -418,7 +432,7 @@ public actor WezTermController: WezTermControlling {
                 throw WezTermError.actionFailed(Self.failureDetail(activation))
             }
             _ = try? await bringApplicationForward(named: configuration.applicationName)
-            return .focused(paneID: pane.paneID)
+            return .focused(paneID: pane.paneID, windowID: pane.windowID)
         }
 
         if listResult.succeeded {
@@ -528,7 +542,7 @@ public actor WezTermController: WezTermControlling {
             try await focus(
                 pane: pane, tabTitle: tabTitle, windowTitle: taskID.uppercased(),
                 configuration: pinned)
-            return .focused(paneID: pane.paneID)
+            return .focused(paneID: pane.paneID, windowID: pane.windowID)
         }
 
         let command = try TmuxController.attachCommand(
@@ -553,7 +567,7 @@ public actor WezTermController: WezTermControlling {
         try await focus(
             pane: pane, tabTitle: tabTitle, windowTitle: taskID.uppercased(),
             configuration: pinned)
-        return .focused(paneID: paneID)
+        return .focused(paneID: paneID, windowID: pane.windowID)
     }
 
     public func openDirectRuntime(
@@ -587,7 +601,7 @@ public actor WezTermController: WezTermControlling {
             pane: pane,
             tabTitle: "\(taskID.uppercased()) · \(provider.displayName) · direct",
             windowTitle: taskID.uppercased(), configuration: connection.configuration)
-        return .focused(paneID: paneID)
+        return .focused(paneID: paneID, windowID: pane.windowID)
     }
 
     public static func sessionID(

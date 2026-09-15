@@ -725,7 +725,7 @@ struct QueueViewModelTests {
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let recorder = RecallRecorder()
     let model = await fixture.model(agent: ControlledQueueAgent(), terminalController: recorder)
-    model.terminalFocusHandler = { _, _ in Issue.record("Recall attempted ambiguous task-title window focus") }
+    model.terminalFocusHandler = { _ in Issue.record("Open agent unexpectedly entered focus mode") }
     let runtime = try #require(TmuxController.decode(
       "fq-session-recall\t123\t1000\t%0\t124\t/dev/ttys099\t0\n", executable: "/mock/tmux").first)
     let session = TaskAgentSession(ticketID: "ECC-101", provider: .codex,
@@ -741,6 +741,35 @@ struct QueueViewModelTests {
     #expect(recalled.tmux == runtime)
     #expect(model.localState.agentSessions.first?.sessionID == session.sessionID)
     #expect(model.localState.agentSessions.first?.paneID == 42)
+  }
+
+  @Test("Focus agent carries the exact activated pane and window into focus mode")
+  func focusAgentPreservesActivatedWindowIdentity() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    let runtime = try #require(TmuxController.decode(
+      "fq-exact-window\t123\t1000\t%0\t124\t/dev/ttys099\t0\n",
+      executable: "/mock/tmux").first)
+    let subtask = TaskSubtask(
+      id: "exact-window", title: "Focus exact terminal", provider: .codex,
+      sessionID: UUID().uuidString, status: .working, tmux: runtime)
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: subtask)
+    let recorder = RecallRecorder()
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(), terminalController: recorder)
+    var focusedTarget: TerminalFocusTarget?
+    model.terminalFocusHandler = { focusedTarget = $0 }
+
+    let saved = try #require(model.subtasks(for: "ECC-101").first)
+    model.focusSubtask(saved, for: fixture.tickets[0])
+    try await eventually { focusedTarget != nil }
+
+    #expect(focusedTarget == TerminalFocusTarget(
+      applicationName: "WezTerm", windowID: 12, paneID: 42, windowTitle: "ECC-101"))
+    #expect(await recorder.sessions.first?.tmux == runtime)
+    #expect(model.actionMessages["ECC-101"]?.contains("Focus mode is active") == true)
   }
 
   private func eventually(_ condition: @MainActor () async throws -> Bool) async throws {
@@ -918,7 +947,7 @@ private actor RecallRecorder: WezTermControlling {
   }
   func focusOrResume(session: TaskAgentSession, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     sessions.append(session)
-    return .focused(paneID: 42)
+    return .focused(paneID: 42, windowID: 12)
   }
 }
 

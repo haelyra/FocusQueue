@@ -130,9 +130,7 @@ final class QueueViewModel {
     @MainActor (DailyReportRunRequest) async -> DailyReportDocument?
   )?
   @ObservationIgnored var dailyReportApprovalHandler: (@MainActor (Bool) async -> Void)?
-  @ObservationIgnored var terminalFocusHandler: (
-    @MainActor (String, String?) async throws -> Void
-  )?
+  @ObservationIgnored var terminalFocusHandler: (@MainActor (TerminalFocusTarget) async throws -> Void)?
   @ObservationIgnored var quitHandler: (() -> Void)?
 
   init(
@@ -880,7 +878,21 @@ final class QueueViewModel {
   }
 
   func openSubtask(_ subtask: TaskSubtask, for ticket: DashboardTicket) {
-    if let session = session(for: subtask, ticketID: ticket.id) { viewAgent(session, for: ticket) }
+    openSubtask(subtask, for: ticket, enterFocusMode: false)
+  }
+
+  func focusSubtask(_ subtask: TaskSubtask, for ticket: DashboardTicket) {
+    openSubtask(subtask, for: ticket, enterFocusMode: true)
+  }
+
+  private func openSubtask(
+    _ subtask: TaskSubtask,
+    for ticket: DashboardTicket,
+    enterFocusMode: Bool
+  ) {
+    if let session = session(for: subtask, ticketID: ticket.id) {
+      viewAgent(session, for: ticket, enterFocusMode: enterFocusMode)
+    }
     else if subtask.runtimeMode == .terminal, let paneID = subtask.terminalPaneID {
       let subtaskKey = Self.subtaskKey(ticketID: ticket.id, subtaskID: subtask.id)
       guard openingSubtaskIDs.insert(subtaskKey).inserted else { return }
@@ -892,7 +904,8 @@ final class QueueViewModel {
           let result = try await terminalController.openDirectRuntime(
             paneID: paneID, socketPath: subtask.terminalSocketPath,
             taskID: ticket.id, provider: subtask.provider, configuration: config.wezTerm)
-          actionMessages[ticket.id] = "\(result.message) Direct session: \(subtask.title)."
+          if enterFocusMode { try await beginTerminalFocus(for: result, ticket: ticket) }
+          actionMessages[ticket.id] = "\(result.message) Direct session: \(subtask.title).\(enterFocusMode ? " Focus mode is active." : "")"
         } catch {
           agentSessionErrors[subtaskKey] = error.localizedDescription
           actionMessages[ticket.id] = error.localizedDescription
@@ -909,7 +922,9 @@ final class QueueViewModel {
         do {
           let result = try await terminalController.openManagedRuntime(
             tmux, taskID: ticket.id, provider: subtask.provider, configuration: config.wezTerm)
+          if enterFocusMode { try await beginTerminalFocus(for: result, ticket: ticket) }
           actionMessages[ticket.id] = "\(result.message) Managed session: \(subtask.title)."
+            + (enterFocusMode ? " Focus mode is active." : "")
         } catch {
           agentSessionErrors[subtaskKey] = error.localizedDescription
           actionMessages[ticket.id] = error.localizedDescription
@@ -941,8 +956,10 @@ final class QueueViewModel {
             ])
           let result = try await terminalController.openManagedRuntime(
             tmux, taskID: ticket.id, provider: subtask.provider, configuration: config.wezTerm)
+          if enterFocusMode { try await beginTerminalFocus(for: result, ticket: ticket) }
           actionMessages[ticket.id] =
             "\(result.message) Recovered managed session: \(subtask.title)."
+              + (enterFocusMode ? " Focus mode is active." : "")
         } catch {
           agentSessionErrors[subtaskKey] = error.localizedDescription
           actionMessages[ticket.id] =
@@ -1218,12 +1235,7 @@ final class QueueViewModel {
           taskID: ticket.id,
           configuration: config.wezTerm
         )
-        if let terminalFocusHandler {
-          try await terminalFocusHandler(
-            config.wezTerm.applicationName,
-            result.paneID == nil ? nil : ticket.id
-          )
-        }
+        try await beginTerminalFocus(for: result, ticket: ticket)
         actionMessages[ticket.id] =
           "\(result.message) The queue stays available beside the terminal."
       } catch {
@@ -1273,7 +1285,11 @@ final class QueueViewModel {
     }
   }
 
-  func viewAgent(_ session: TaskAgentSession, for ticket: DashboardTicket) {
+  func viewAgent(
+    _ session: TaskAgentSession,
+    for ticket: DashboardTicket,
+    enterFocusMode: Bool = false
+  ) {
     let context = taskContexts[ticket.id]
     let subtask = subtasks(for: ticket.id).first { $0.id == session.subtaskID }
       ?? subtasks(for: ticket.id).first {
@@ -1322,9 +1338,11 @@ final class QueueViewModel {
         updatedSession.paneID = result.paneID
         upsertAgentSession(updatedSession)
         persistLocalState()
+        if enterFocusMode { try await beginTerminalFocus(for: result, ticket: ticket) }
         let runtimeLabel = subtask?.runtimeMode == .terminal ? "Direct session" : "Managed session"
         actionMessages[ticket.id] =
           "\(result.message) \(runtimeLabel): \(subtask?.title ?? session.provider.displayName)."
+            + (enterFocusMode ? " Focus mode is active." : "")
       } catch {
         if let subtask {
           agentSessionErrors[
@@ -1334,6 +1352,24 @@ final class QueueViewModel {
         actionMessages[ticket.id] = error.localizedDescription
       }
     }
+  }
+
+  private func beginTerminalFocus(
+    for result: TerminalActionResult,
+    ticket: DashboardTicket
+  ) async throws {
+    guard let paneID = result.paneID, let windowID = result.windowID else {
+      throw TerminalFocusModeError.focusedWindowUnavailable
+    }
+    guard let terminalFocusHandler else {
+      throw TerminalFocusModeError.applicationUnavailable(config.wezTerm.applicationName)
+    }
+    try await terminalFocusHandler(TerminalFocusTarget(
+      applicationName: config.wezTerm.applicationName,
+      windowID: windowID,
+      paneID: paneID,
+      windowTitle: AgentTerminalLabels.windowTitle(ticketID: ticket.id)
+    ))
   }
 
   func removeSubtask(_ subtask: TaskSubtask, from ticket: DashboardTicket) {

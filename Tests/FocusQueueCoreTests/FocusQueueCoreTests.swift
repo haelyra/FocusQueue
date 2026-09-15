@@ -1749,7 +1749,7 @@ func wezTermFocusArguments() async throws {
   )
   let invocations = await runner.specifications
 
-  #expect(result == .focused(paneID: 17))
+  #expect(result == .focused(paneID: 17, windowID: 4))
   #expect(invocations.count == 5)
   #expect(invocations[1].arguments == [
     "cli", "set-tab-title", "--pane-id", "17", "ECC-035 · Tab 17",

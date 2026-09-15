@@ -40,23 +40,21 @@ struct TerminalFocusPlacement: Equatable, Sendable {
 actor TerminalFocusAccessibility {
     private let messagingTimeout: Float = 0.25
 
-    func waitForWindow(
+    func waitForFocusedWindow(
         processIdentifier: pid_t, titleHint: String?, operation: TerminalFocusOperation
     ) async throws -> TerminalFocusWindow? {
         let application = AXUIElementCreateApplication(processIdentifier)
         AXUIElementSetMessagingTimeout(application, messagingTimeout)
         let deadline = ContinuousClock.now.advanced(by: .seconds(3))
-        for attempt in 0..<30 {
+        for _ in 0..<30 {
             try operation.checkCancellation()
             guard ContinuousClock.now < deadline else { return nil }
-            if let titleHint {
-                if let window = window(in: application, matching: titleHint, operation: operation, deadline: deadline) {
-                    return reference(window)
+            if let window = focusedWindow(in: application) {
+                if let titleHint,
+                   windowTitle(window)?.localizedCaseInsensitiveContains(titleHint) != true {
+                    try await Task.sleep(for: .milliseconds(100))
+                    continue
                 }
-                if attempt >= 5, let window = focusedWindow(in: application) {
-                    return reference(window)
-                }
-            } else if let window = focusedWindow(in: application) {
                 return reference(window)
             }
             try await Task.sleep(for: .milliseconds(100))
@@ -153,23 +151,12 @@ actor TerminalFocusAccessibility {
         return (value as! AXUIElement)
     }
 
-    private func window(
-        in application: AXUIElement, matching titleHint: String, operation: TerminalFocusOperation,
-        deadline: ContinuousClock.Instant
-    ) -> AXUIElement? {
+    private func windowTitle(_ window: AXUIElement) -> String? {
+        AXUIElementSetMessagingTimeout(window, messagingTimeout)
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(application, kAXWindowsAttribute as CFString, &value) == .success,
-              let windows = value as? [AXUIElement] else { return nil }
-        let normalizedHint = titleHint.lowercased()
-        for window in windows {
-            guard ContinuousClock.now < deadline,
-                  (try? operation.checkCancellation()) != nil else { return nil }
-            AXUIElementSetMessagingTimeout(window, messagingTimeout)
-            var titleValue: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleValue) == .success,
-                  let title = titleValue as? String else { continue }
-            if title.lowercased().contains(normalizedHint) { return window }
-        }
-        return nil
+        guard AXUIElementCopyAttributeValue(
+            window, kAXTitleAttribute as CFString, &value
+        ) == .success else { return nil }
+        return value as? String
     }
 }

@@ -143,10 +143,14 @@ struct PlanCanvasView: View {
   private var document: some View {
     VStack(spacing: 8) {
       documentTabBar
+      if !showsWorkspaceMap, let context = model.taskContexts[ticket.id] {
+        DocumentMetadataStrip(url: URL(fileURLWithPath: context.planPath), taskID: ticket.id)
+      }
       if showsWorkspaceMap {
         WorkspaceMapView(queue: model, ticket: ticket, model: workspaceMap,
           openDocument: { url in openDocument(url) },
           discuss: { context in
+            sideDocuments.centralChatCollapsed = false
             if !chatDraft.isEmpty { chatDraft += "\n\n" }
             chatDraft += context
             canvasSelection = nil

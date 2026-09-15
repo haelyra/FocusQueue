@@ -77,7 +77,7 @@ struct WorkspaceMapTests {
         let file = try #require(first.nodes.first { $0.label == "Hello world.swift" })
         #expect(file.sessionID == nil && file.summary.contains("owner unknown"))
         let plan = try #require(first.nodes.first { $0.kind == .document })
-        #expect(first.nodes.first { $0.id == plan.parentID }?.kind == .folder)
+        #expect(first.nodes.first { $0.id == plan.parentID }?.kind == .context)
         #expect(first.nodes.first { $0.kind == .workspace }?.summary.contains("feature/map") == true)
         let second = try await collector.collect(context: context, sessions: sessions, now: mapNow.addingTimeInterval(5))
         #expect(first.nodes.map(\.id) == second.nodes.map(\.id))

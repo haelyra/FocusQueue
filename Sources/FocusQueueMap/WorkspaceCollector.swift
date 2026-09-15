@@ -47,6 +47,7 @@ public enum GitMapParser {
 /// A read-only collector shared by the app and command-line helper. Git processes
 /// run on this actor, away from the main actor. Caches are scoped to workspaces.
 public actor WorkspaceCollector {
+    private let documentSources = MapDocumentSources()
     private struct Observation {
         let root: String
         let identity: String
@@ -240,6 +241,14 @@ public actor WorkspaceCollector {
             }
             nodes[planIndex].parentID = folderID
         }
+        let contextID = MapNode.identity("context-folder", context.contextDirectory.path)
+        if let index = nodes.firstIndex(where: { $0.id == contextID }) { nodes[index].kind = .context }
+        let contextFile = includeFile(context.contextDirectory.appendingPathComponent("context.json").path)
+        if let index = nodes.firstIndex(where: { $0.id == contextFile }) { nodes[index].label = "Task context and evidence links" }
+        let mapFile = includeFile(context.contextDirectory.appendingPathComponent("workspace-map/snapshot.json").path)
+        if let index = nodes.firstIndex(where: { $0.id == mapFile }) {
+            nodes[index].label = "Task map"; nodes[index].parentID = contextID
+        }
         let agents = nodes.filter { $0.kind == .agent }
         var instructions: [String: [String]] = [:]
         for agent in agents {
@@ -248,6 +257,12 @@ public actor WorkspaceCollector {
             let relevantPaths = (scope?.inputs ?? []) + (scope?.outputs ?? []) +
                 [agent.path.map { URL(fileURLWithPath: $0).appendingPathComponent("scope-anchor").path }].compactMap { $0 }
             var inputs = Set(scope?.inputs ?? [])
+            if let root = agent.path {
+                for name in ["README.md", "repo_guide.md"] {
+                    let path = URL(fileURLWithPath: root).appendingPathComponent(name).path
+                    if FileManager.default.fileExists(atPath: path) { inputs.insert(path) }
+                }
+            }
             if context.planPath.hasPrefix("/") { inputs.insert(context.planPath) }
             for path in relevantPaths {
                 if instructions[path] == nil { instructions[path] = MapInstructionFiles.ancestors(of: path) }
@@ -263,11 +278,33 @@ public actor WorkspaceCollector {
                     evidence: "Declared output", observedAt: scope?.updatedAt))
             }
         }
+        // Capture already recorded durable terminal instances without contacting
+        // tmux or treating a stored instance as proof of current availability.
+        for subtask in context.subtasks {
+            guard let runtime = subtask.tmux, let agent = agents.first(where: { $0.subtaskID == subtask.id }) else { continue }
+            let id = MapNode.identity("tmux-instance", runtime.name, String(runtime.serverPID), String(runtime.createdAt))
+            if !nodes.contains(where: { $0.id == id }) {
+                nodes.append(MapNode(id: id, parentID: agent.parentID, kind: .resource,
+                    label: "tmux · " + runtime.name, summary: "Recorded durable terminal · availability unverified",
+                    evidence: "Saved runtime identity", observedAt: Date(timeIntervalSince1970: Double(runtime.createdAt)),
+                    destination: context.contextDirectory.appendingPathComponent("context.json").absoluteString, durable: true))
+            }
+            relations.append(MapRelation(from: id, to: agent.id, kind: .dependency, evidence: "Recorded agent runtime", observedAt: nil))
+        }
         // A file may appear as both an input and an output. The layout projects
         // it on both sides of the agent while retaining one physical identity.
         relations = Array(Dictionary(relations.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values).sorted { $0.id < $1.id }
-        return try MapSnapshot(taskID: context.ticketID, generatedAt: now, nodes: nodes,
-                               warnings: warnings, omittedPaths: omitted, relations: relations).validated()
+        var snapshot = documentSources.enrich(MapSnapshot(taskID: context.ticketID, generatedAt: now, nodes: nodes,
+                               warnings: warnings, omittedPaths: omitted, relations: relations))
+        let resources = MapResources.location(context)
+        if FileManager.default.fileExists(atPath: resources.path) {
+            do {
+                let size = try resources.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                guard size <= 256_000 else { throw MapError.invalidSnapshot("Resource manifest exceeds 256 KB.") }
+                snapshot = try MapResources.decode(Data(contentsOf: resources), taskID: context.ticketID).applying(to: snapshot)
+            } catch { snapshot.warnings.append("Resource declarations: \(error.localizedDescription)") }
+        }
+        return try snapshot.validated()
     }
 
     private func observe(directory: String, now: Date) async throws -> Observation {

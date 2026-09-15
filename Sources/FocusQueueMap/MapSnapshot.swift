@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 public enum MapNodeKind: String, Codable, Sendable {
-    case queue, workspace, folder, file, agent, document
+    case queue, workspace, folder, file, agent, document, context, section, link, resource
 }
 
 public struct MapNode: Codable, Equatable, Identifiable, Sendable {
@@ -20,17 +20,19 @@ public struct MapNode: Codable, Equatable, Identifiable, Sendable {
     public var sessionID: String?
     public var subtaskID: String?
     public var gitStatus: String?
+    public var destination: String?
+    public var durable: Bool?
 
     public init(id: String, parentID: String?, kind: MapNodeKind, label: String,
                 path: String? = nil, allowedRoot: String? = nil, summary: String = "",
                 evidence: String, observedAt: Date? = nil, reportedState: String? = nil,
                 provider: String? = nil, sessionID: String? = nil, subtaskID: String? = nil,
-                gitStatus: String? = nil) {
+                gitStatus: String? = nil, destination: String? = nil, durable: Bool? = nil) {
         self.id = id; self.parentID = parentID; self.kind = kind; self.label = label
         self.path = path; self.allowedRoot = allowedRoot; self.summary = summary
         self.evidence = evidence; self.observedAt = observedAt; self.reportedState = reportedState
         self.provider = provider; self.sessionID = sessionID; self.subtaskID = subtaskID
-        self.gitStatus = gitStatus
+        self.gitStatus = gitStatus; self.destination = destination; self.durable = durable
     }
 
     public func state(at now: Date = Date()) -> String? {
@@ -52,7 +54,7 @@ public struct MapNode: Codable, Equatable, Identifiable, Sendable {
 }
 
 public struct MapSnapshot: Codable, Equatable, Sendable {
-    public var schemaVersion = 1
+    public var schemaVersion = 2
     public var taskID: String
     public var generatedAt: Date
     public var nodes: [MapNode]
@@ -80,7 +82,7 @@ public struct MapSnapshot: Codable, Equatable, Sendable {
     }
 
     public func validated() throws -> Self {
-        guard schemaVersion == 1 else { throw MapError.invalidSnapshot("Unsupported map version.") }
+        guard [1, 2].contains(schemaVersion) else { throw MapError.invalidSnapshot("Unsupported map version.") }
         let ids = Set(nodes.map(\.id))
         guard ids.count == nodes.count, nodes.filter({ $0.kind == .queue }).count == 1,
               nodes.first(where: { $0.kind == .queue })?.parentID == nil else {
@@ -89,7 +91,7 @@ public struct MapSnapshot: Codable, Equatable, Sendable {
         let index = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0) })
         guard Set(relations.map(\.id)).count == relations.count,
               relations.allSatisfy({ ids.contains($0.from) && ids.contains($0.to) &&
-                  ($0.kind == .input ? index[$0.to]?.kind == .agent : index[$0.from]?.kind == .agent) }) else {
+                  ($0.kind == .input ? index[$0.to]?.kind == .agent : $0.kind == .output ? index[$0.from]?.kind == .agent : true) }) else {
             throw MapError.invalidSnapshot("Invalid input/output relationship.")
         }
         for node in nodes {

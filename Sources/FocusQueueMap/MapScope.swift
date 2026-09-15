@@ -2,7 +2,7 @@ import Foundation
 import FocusQueueCore
 
 public struct MapRelation: Codable, Equatable, Identifiable, Sendable {
-    public enum Kind: String, Codable, Sendable { case input, output }
+    public enum Kind: String, Codable, Sendable { case input, output, context, dependency, feedback, handoff }
     public var from: String
     public var to: String
     public var kind: Kind

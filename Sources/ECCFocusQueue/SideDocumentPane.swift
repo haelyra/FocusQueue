@@ -59,6 +59,7 @@ struct SideDocumentPane: View {
                     }
                 }
             }
+            if let url = state.selected { DocumentMetadataStrip(url: url, taskID: ticket.id, revision: revision) }
             GeometryReader { geometry in
                 VStack(spacing: 8) {
                     Group {

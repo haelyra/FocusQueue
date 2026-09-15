@@ -14,7 +14,25 @@ final class WorkspaceMapModel {
     var attentionOnly = false
     var changesOnly = false
     var showOtherFiles = false
+    var mode: WorkspaceMapMode = .typical
+    var focusedAgentID: String?
+    var expandedView = false
+    var includeOlderScope = false
+    var fitWidth = true
     var zoom = 1.0
+    var options: WorkspaceMapOptions {
+        var value = WorkspaceMapOptions()
+        value.mode = mode; value.agentID = focusedAgentID; value.expanded = expanded
+        value.expandedView = expandedView; value.includeOlderScope = includeOlderScope
+        value.showOtherFiles = showOtherFiles; value.search = search
+        value.attentionOnly = attentionOnly; value.changesOnly = changesOnly
+        return value
+    }
+    func select(_ node: MapNode) {
+        selection = node.id
+        if node.kind == .agent { mode = .agent; focusedAgentID = node.id; zoom = 1 }
+        if node.kind == .queue || node.kind == .context { mode = .context; zoom = 1 }
+    }
     var message: String?
     var isRefreshing = false
     var actionError: String?
@@ -31,7 +49,7 @@ final class WorkspaceMapModel {
         let cacheURL = context.contextDirectory.appendingPathComponent("workspace-map/snapshot.json")
         if loadedTask != context.ticketID {
             loadedTask = context.ticketID
-            snapshot = nil; expanded = []; selection = nil
+            snapshot = nil; expanded = []; selection = nil; mode = .typical
             do { snapshot = try await cache.load(from: cacheURL, taskID: context.ticketID) }
             catch { message = "Saved map unavailable. Collecting a fresh map." }
             seedExpansion()
@@ -59,6 +77,7 @@ final class WorkspaceMapModel {
         if expanded.isEmpty {
             expanded = Set(snapshot.nodes.filter { $0.kind == .queue || $0.kind == .workspace }.map(\.id))
         }
+        if mode == .agent && !snapshot.nodes.contains(where: { $0.id == focusedAgentID }) { mode = .typical; focusedAgentID = nil }
         if !snapshot.nodes.contains(where: { $0.id == selection }) {
             selection = snapshot.nodes.first(where: { $0.kind == .workspace })?.id ?? "queue"
         }

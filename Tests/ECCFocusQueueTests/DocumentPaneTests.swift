@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import FocusQueueCore
+import FocusQueueMap
 @testable import ECCFocusQueue
 
 private actor DocumentTestAgent: QueueAgentChatting {
@@ -79,5 +80,33 @@ struct DocumentPaneTests {
         let restored = DocumentConversation(document: a, context: context, support: root, agent: agent, configuration: config, dashboardPath: "/dashboard", workspace: root.path)
         await restored.load()
         #expect(restored.messages.map(\.text) == first.messages.map(\.text))
+    }
+}
+
+@Suite("Map focus and document metadata")
+@MainActor
+struct MapDocumentMetadataTests {
+    @Test("Opening a file keeps the selected agent projection")
+    func agentFocus() {
+        let model = WorkspaceMapModel()
+        let agent = FocusQueueMap.MapNode(id: "agent", parentID: "workspace", kind: .agent, label: "Agent", evidence: "Registration")
+        model.select(agent)
+        model.select(FocusQueueMap.MapNode(id: "file", parentID: "workspace", kind: .file, label: "Code", evidence: "Scope"))
+        #expect(model.mode == .agent && model.options.agentID == "agent")
+        model.select(FocusQueueMap.MapNode(id: "context", parentID: "queue", kind: .context, label: "Context", evidence: "Task"))
+        #expect(model.mode == .context)
+    }
+    @Test("Code is plain text and metadata distinguishes local files from remote links")
+    func metadata() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("preview-\(UUID().uuidString).swift")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data("let title = \"<script>hello</script>\"".utf8).write(to: file)
+        let metadata = DocumentMetadata.read(file)
+        #expect(metadata.exists && metadata.kind == "SWIFT" && metadata.size != nil && metadata.modified != nil)
+        let content = try await SideDocumentLoader().load(file)
+        if case .text(let value) = content { #expect(value.contains("<script>")) }
+        else { Issue.record("Code should be rendered as plain text") }
+        #expect(!DocumentMetadata.read(URL(string: "https://example.com/code.swift")!).exists)
+        #expect(!DocumentMetadata.read(file.appendingPathExtension("missing")).exists)
     }
 }

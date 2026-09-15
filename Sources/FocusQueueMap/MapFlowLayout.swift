@@ -1,5 +1,7 @@
 import Foundation
 
+/// Legacy v1 layout retained for source compatibility. The app uses the reusable
+/// MapDiagram template through WorkspaceMapProjection.
 /// Three compact regions per workspace: context hierarchy, agents, output
 /// hierarchy. Shared context is drawn once; read/write files have two visual
 /// instances backed by the same physical node. Parents share their children's

@@ -1,7 +1,8 @@
 import Foundation
 
-/// Declarative, bounded hierarchy used by the map template. All fan-out, including
-/// overflow groups, stays <= 4. Explicit drill-in reuses the same 5 x 10 viewport.
+/// Declarative hierarchy used by the map template. All fan-out, including
+/// overflow groups, stays <= 4. The normal view uses a 5 x 10 viewport; the
+/// expanded view preserves the five-column depth and grows vertically.
 public struct MapTree: Sendable {
     public var id: String
     public var node: MapNode
@@ -39,8 +40,9 @@ public struct MapTree: Sendable {
 
 public enum MapCompactLayout {
     public static let columns = 5, rows = 10, fanOut = 4
-    public static func diagram(queue: MapNode, root: MapTree, options: WorkspaceMapOptions, limit: Int = 50) -> MapDiagram {
-        var diagram = MapDiagram(limit: min(50, limit))
+    public static func diagram(queue: MapNode, root: MapTree, options: WorkspaceMapOptions, limit: Int = 180) -> MapDiagram {
+        let itemLimit = min(options.expandedView ? 180 : 50, limit)
+        var diagram = MapDiagram(limit: itemLimit)
         diagram.add(queue, x: 16, y: 12, role: "Task")
         let grouped = root.grouped().identified()
         let tree: MapTree
@@ -49,11 +51,17 @@ public enum MapCompactLayout {
             var anchor = grouped; anchor.children = [focused]; anchor.startsCollapsed = false
             tree = anchor
         } else { tree = grouped }
-        var row = 0
+        var cursor = 0.0
+        var occupiedRows = 0
+        var placedWorktree = false
         @discardableResult func visit(_ tree: MapTree, depth: Int, budget: Int, diagram: inout MapDiagram) -> Double {
             let node = tree.node
             let slot = diagram.items.count
-            guard slot < diagram.limit else { return Double(row) }
+            guard slot < diagram.limit else { return cursor }
+            if node.kind == .workspace {
+                if placedWorktree { cursor += 28 }
+                placedWorktree = true
+            }
             let hasChildren = !tree.children.isEmpty
             let requested = options.collapsed.contains(tree.id) || options.collapsed.contains(node.id) || (tree.startsCollapsed && !options.expanded.contains(tree.id) && !options.expanded.contains(node.id) && !options.expandedView && options.focusedBranchID != tree.id && options.focusedBranchID != node.id)
             let budgetCollapsed = depth >= columns - 1 || budget < tree.children.count || slot + tree.children.count >= diagram.limit
@@ -65,22 +73,26 @@ public enum MapCompactLayout {
             diagram.items[slot].previews = tree.previews
             diagram.items[slot].detailID = tree.detailID
             let center: Double
-            if !hasChildren || collapsed { center = Double(row); row += 1 }
+            if !hasChildren || collapsed {
+                center = cursor
+                cursor += MapDiagram.row
+                occupiedRows += 1
+            }
             else {
                 var centers: [Double] = [], remaining = budget
                 for (i, child) in tree.children.enumerated() {
                     let quota = max(1, remaining / (tree.children.count - i))
-                    let before = row
+                    let before = occupiedRows
                     centers.append(visit(child, depth: depth + 1, budget: quota, diagram: &diagram))
-                    remaining -= row - before
+                    remaining -= occupiedRows - before
                     diagram.connect(tree.id, child.id, kind: child.role == "Output" || child.role == "Recent change" ? "output" : child.node.kind == .agent ? "assignment" : "hierarchy")
                 }
                 center = (centers.first! + centers.last!) / 2
             }
-            diagram.items[slot].y = 12 + MapDiagram.row + center * MapDiagram.row
+            diagram.items[slot].y = 12 + MapDiagram.row + center
             return center
         }
-        visit(tree, depth: 0, budget: rows - 1, diagram: &diagram)
+        visit(tree, depth: 0, budget: options.expandedView ? itemLimit - 2 : rows - 1, diagram: &diagram)
         if let rootIndex = diagram.items.firstIndex(where: { $0.id == tree.id }) {
             diagram.items[rootIndex].y = 12 + MapDiagram.row
         }

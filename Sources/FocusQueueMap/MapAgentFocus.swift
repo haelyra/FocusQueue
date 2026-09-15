@@ -16,7 +16,7 @@ public enum MapAgentFocus {
             return a.id < b.id
         }
         if options.retrospective { return all.filter { $0.kind == .output && $0.evidence == "Reported write" }.sorted(by: ranked) }
-        if options.includeOlderScope { return all.sorted(by: ranked) }
+        if options.includeOlderScope || options.expandedView { return all.sorted(by: ranked) }
         let provided = all.filter { $0.evidence.hasPrefix("Provided") }
         var chosen = all.filter { recent($0) && !$0.evidence.hasPrefix("Provided") }.sorted(by: ranked)
         var files = Set(chosen.map { $0.kind == .input ? $0.from : $0.to })

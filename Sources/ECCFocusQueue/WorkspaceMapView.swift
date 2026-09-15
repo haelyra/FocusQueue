@@ -92,6 +92,9 @@ struct WorkspaceMapView: View {
                 }
                 Spacer()
                 Toggle("Expanded", isOn: $model.expandedView).toggleStyle(.switch).controlSize(.mini)
+                    .onChange(of: model.expandedView) { _, expanded in
+                        if expanded { model.collapsed = []; model.focusedBranchID = nil }
+                    }
                 Menu {
                     Toggle("Other files", isOn: $model.showOtherFiles)
                     Toggle("Include older scope", isOn: $model.includeOlderScope)
@@ -141,22 +144,21 @@ struct WorkspaceMapView: View {
             } else {
                 Text(node.summary).font(.system(size: 8)).foregroundStyle(.secondary).lineLimit(1)
             }
-            if !(item.previews ?? []).isEmpty || item.detailID != nil {
+            if let previews = item.previews, !previews.isEmpty {
                 HStack(spacing: 5) {
-                    ForEach((item.previews ?? []).prefix(3)) { file in
+                    ForEach(previews.prefix(3)) { file in
                         Button {
                             open(file, snapshot: snapshot)
                         } label: {
-                            Text(file.label == "Central plan" ? "Plan" : file.label == "Task context and evidence links" ? "Context" : file.label == "Task map" ? "Map" : file.label)
-                                .font(.system(size: 8)).lineLimit(1)
-                        }.buttonStyle(.plain).foregroundStyle(.secondary).help(file.path ?? file.label)
-                    }
-                    if let detail = item.detailID {
-                        Button {
-                            if model.expanded.contains(detail) { model.expanded.remove(detail) }
-                            else { model.expanded.insert(detail) }
-                        } label: { Image(systemName: model.expanded.contains(detail) ? "minus" : "plus").font(.system(size: 8)).foregroundStyle(.secondary) }
-                            .buttonStyle(.plain).help("Expand additional repository context")
+                            Label(previewLabel(file), systemImage: "doc.text")
+                                .font(.system(size: 8, weight: .medium)).lineLimit(1)
+                                .padding(.horizontal, 5).padding(.vertical, 2)
+                                .foregroundStyle(Color.accentColor)
+                                .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+                                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.accentColor.opacity(0.28)))
+                        }
+                        .buttonStyle(.plain).contentShape(Rectangle())
+                        .help("Open \(file.label)\n\(file.path ?? file.label)")
                     }
                 }
             } else if node.kind != .queue {
@@ -181,6 +183,15 @@ struct WorkspaceMapView: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel("\(node.label), \(node.kind.rawValue), \(node.summary)")
             .accessibilityAction(named: "Open") { activate(item, snapshot: snapshot) }
+    }
+
+    private func previewLabel(_ node: MapNode) -> String {
+        switch node.label {
+        case "Central plan": "Plan"
+        case "Task context and evidence links": "Context"
+        case "Task map": "Map"
+        default: node.label
+        }
     }
 
     private func activate(_ item: MapDiagram.Item, snapshot: MapSnapshot) {

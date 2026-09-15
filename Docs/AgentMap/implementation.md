@@ -6,18 +6,18 @@ Central plan includes a reusable task map and side document panes. The map has T
 
 1. Open a task's Central plan, then Map. Typical shows task context, worktree/repo groups, agents, and representative outputs.
 2. Click an agent to focus its current reported work and important previous outputs. Click blank space or Typical to return. Changed files shows recorded writes for that agent.
-3. Use the gray expansion/collapse controls to inspect a representative. Branches that exceed five columns, ten rows, or four outgoing connections are grouped; drill-in reuses the same envelope.
-4. Repo context initially exposes AGENTS.md and README.md as compact clickable entries. Additional repo context has its own expansion control. Group-level lines replace individual context-file-to-agent lines.
+3. Use the gray expansion/collapse controls to inspect a representative. Typical stays within five columns and ten rows. Expanded keeps five columns, opens every available relevant branch up to the item limit, and grows into a vertically scrolling canvas.
+4. Repo context initially exposes AGENTS.md and README.md as bordered clickable entries. Other known context gets a normal collapsible node only when it has contents. Expanded also opens the collected repository hierarchy inside its worktree. Group-level lines replace individual context-file-to-agent lines.
 5. File clicks open side document tabs and their task-aware conversations. The central conversation collapses while its request continues. Hiding the side pane restores it.
 6. The document metadata strip shows location, type, size, modification date, and Show in Finder. Code uses selectable plain text. Markdown uses the neutral plan theme and rendered task checkboxes. Existing static HTML/PDF/image previews remain available.
 
-Hovering for a second or right-clicking a map card reveals its full path. Every root except the task workspace prints its location on the card. View changes use a 0.28-second transition and honor Reduce Motion. Map folder launching remains disconnected; its dormant helper is retained for a possible future explicit action.
+Hovering for a second or right-clicking a map card reveals its full path. Every root except the task workspace prints its location on the card. Worktree outlines are visibly named; multiple worktrees are numbered and stacked vertically. Fit width preserves vertical scrolling. View changes use a 0.28-second transition and honor Reduce Motion. Map folder launching remains disconnected; its dormant helper is retained for a possible future explicit action.
 
 ## Reusable components
 
 - `MapSnapshot`: versioned nodes, physical containment, evidence, and typed relationships. Schema v2 supports context groups, document headings, links, instances, and agent ancestry. The reader accepts v1 snapshots.
 - `WorkspaceCollector`: read-only Git collection plus task context, declared scope, recorded activity, Markdown source grouping, and declared resources. Runs away from the main actor.
-- `MapTree` and `MapCompactLayout`: reusable bounded presentation tree, overflow representatives, collapse state, focused branches, and stable visual identities. Multiple visual copies of a physical file retain distinct presentation identities.
+- `MapTree` and `MapCompactLayout`: reusable presentation tree, bounded normal view, vertically growing expanded view, overflow representatives, collapse state, focused branches, and stable visual identities. Multiple visual copies of a physical file retain distinct presentation identities.
 - `MapDiagram`: Codable cards, containers, connections, and geometry. Its legacy forest helper remains available to older clients.
 - `MapEdgeRouter`: orthogonal routing with card avoidance and crossing penalties. Clear adjacent-rank routes take a fast path; feedback can use outside row channels.
 - `WorkspaceMapProjection`: task-specific grouping, repository previews, activity prioritization, and context/agent selection.

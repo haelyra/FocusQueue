@@ -55,6 +55,9 @@ struct MapTemplateTests {
         #expect(diagram.edges.allSatisfy { edge in diagram.edges.filter { $0.from == edge.from }.count <= 4 })
         #expect(!diagram.items.contains { $0.node.id == "brief" })
         #expect(diagram.items.first { $0.node.id == "work" }?.previews?.map(\.label) == ["README.md"])
+        #expect(diagram.items.first { $0.node.id == "work" }?.detailID == nil)
+        #expect(!diagram.items.contains { $0.node.label == "More repo context" })
+        #expect(diagram.containers.map(\.label) == ["Worktree: Repo"])
         let contexts = Set(diagram.items.filter { ["plan", "readme", "brief"].contains($0.node.id) }.map(\.id))
         #expect(!diagram.edges.contains { contexts.contains($0.from) })
     }
@@ -75,6 +78,39 @@ struct MapTemplateTests {
         let expanded = WorkspaceMapProjection.diagram(snapshot: snapshot, options: options)
         #expect(expanded.items.contains { $0.node.id == folded.node.id && $0.isExpanded == true })
         #expect(expanded.items.map(\.x).max()! <= 16 + 4 * MapDiagram.column)
+        assertPacked(expanded)
+    }
+
+    @Test("Expanded reveals older output branches and grows vertically while worktrees stack")
+    func expandedScrollAndWorktreeStack() {
+        var graph = snapshot(fileCount: 16)
+        graph.nodes.append(MapNode(id: "guide", parentID: "work", kind: .file, label: "repo_guide.md",
+                                   path: "/repo/repo_guide.md", evidence: "Provided"))
+        graph.nodes.append(MapNode(id: "work2", parentID: "queue", kind: .workspace, label: "Second repo",
+                                   path: "/repo-two", evidence: "Git"))
+        graph.nodes.append(MapNode(id: "c", parentID: "work2", kind: .agent, label: "Second agent",
+                                   path: "/repo-two", evidence: "Registration"))
+        for branch in 0..<4 {
+            let folderID = "c-folder-\(branch)"
+            graph.nodes.append(MapNode(id: folderID, parentID: "work2", kind: .folder,
+                                       label: "Branch \(branch)", path: "/repo-two/branch-\(branch)", evidence: "Git"))
+            for leaf in 0..<4 {
+                let id = "c-file-\(branch)-\(leaf)"
+                graph.nodes.append(MapNode(id: id, parentID: folderID, kind: .file, label: "\(leaf).swift",
+                                           path: "/repo-two/branch-\(branch)/\(leaf).swift", evidence: "Scope"))
+                graph.relations.append(.init(from: "c", to: id, kind: .output, evidence: "Declared output", observedAt: nil))
+            }
+        }
+        let normal = WorkspaceMapProjection.diagram(snapshot: graph, options: .init())
+        var options = WorkspaceMapOptions(); options.expandedView = true
+        let expanded = WorkspaceMapProjection.diagram(snapshot: graph, options: options)
+        #expect(expanded.items.count > normal.items.count)
+        #expect(expanded.items.contains { $0.node.id == "guide" })
+        #expect(expanded.items.map(\.y).max()! > 12 + 9 * MapDiagram.row)
+        #expect(expanded.items.map(\.x).max()! <= 16 + 4 * MapDiagram.column)
+        let containers = expanded.containers.sorted { $0.y < $1.y }
+        #expect(containers.map(\.label) == ["Worktree 1 of 2: Repo", "Worktree 2 of 2: Second repo"])
+        #expect(containers[0].y + containers[0].height < containers[1].y)
         assertPacked(expanded)
     }
 

@@ -14,15 +14,27 @@ struct InteractiveMapCanvas<Card: View>: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let scale = fitWidth ? min(1, max(0.45, min((geometry.size.width - 12) / diagram.width, (geometry.size.height - 12) / diagram.height))) * zoom : zoom
+            let scale = fitWidth ? min(1, max(0.45, (geometry.size.width - 12) / diagram.width)) * zoom : zoom
             let signature = diagram.items.map { "\($0.id):\($0.x):\($0.y)" }.joined(separator: "|")
             ScrollView([.horizontal, .vertical]) {
                 ZStack(alignment: .topLeading) {
                     ForEach(diagram.containers) { container in
-                        RoundedRectangle(cornerRadius: 9).fill(Color.primary.opacity(0.025))
-                            .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.secondary.opacity(0.2)))
-                            .frame(width: container.width, height: container.height)
-                            .offset(x: container.x, y: container.y).allowsHitTesting(false)
+                        ZStack(alignment: .topLeading) {
+                            RoundedRectangle(cornerRadius: 9).fill(Color.primary.opacity(0.025))
+                                .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.secondary.opacity(0.24)))
+                                .allowsHitTesting(false)
+                            Button { selectContainer(container.id) } label: {
+                                Label(container.label, systemImage: "square.dashed")
+                                    .font(.system(size: 9, weight: .semibold)).lineLimit(1)
+                                    .padding(.horizontal, 7).padding(.vertical, 3)
+                                    .background(Color(nsColor: .windowBackgroundColor), in: Capsule())
+                                    .overlay(Capsule().stroke(Color.secondary.opacity(0.24)))
+                            }
+                            .buttonStyle(.plain).offset(x: 10, y: -9)
+                            .help(container.label)
+                        }
+                        .frame(width: container.width, height: container.height)
+                        .offset(x: container.x, y: container.y)
                     }
                     ForEach(diagram.edges) { edge in
                         if let points = edge.points {

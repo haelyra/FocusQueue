@@ -1,6 +1,6 @@
 # Map spacing and activity rules
 
-The default map uses a five-column, ten-row envelope. The task card occupies the first row; the graph shares the remaining nine rows. Expansion drills into a representative using the same envelope. It does not turn a small map into an unbounded scroll of file boxes.
+The default map uses a five-column, ten-row envelope. The task card occupies the first row; the graph shares the remaining nine rows. The Expanded toggle keeps the five-column depth and opens relevant branches vertically, up to the safety limit, so the canvas scrolls instead of shrinking the new information away. Individual representative expansion still drills into a branch when another level would exceed the depth limit.
 
 ## Visual contract
 
@@ -8,7 +8,8 @@ The default map uses a five-column, ten-row envelope. The task card occupies the
 - Every structural parent has a collapse control. A branch that exceeds the depth or row budget becomes a representative with an expansion control. That control opens a focused branch, preserving the task workspace. Blank space and the Typical button return to the normal view.
 - Context generally occupies the left, agents the middle, and output paths the right. Physical directory paths are compressed into a single folder card where this saves space. Root cards display their full path as text, with truncation and a hover disclosure for long paths. The Focus Queue workspace is exempt from path display.
 - The workspace and repo context are groups. There is one group-to-agent connection. Individual instruction files do not create parallel agent connections. The task workspace connects to worktree groups; no redundant task-context-to-agent edges are drawn.
-- Repo context initially exposes AGENTS.md and README.md as compact clickable entries. Its additional-context control reveals other known repository context. Other files remain available in the separate browsing option.
+- Repo context initially exposes AGENTS.md and README.md as bordered, clickable entries. Additional known repository context appears as a normal collapsible node only when it has contents. There is no second inline expansion control. Other files remain available in the separate browsing option.
+- Worktree outlines carry a visible name. Multiple worktrees are numbered and stacked vertically with space between their boundaries. Fit width affects horizontal scale only, leaving vertical scrolling available for the expanded map.
 - Orthogonal routes use the gaps between columns and rows. A route through a card is rejected. Crossing or overlapping unrelated routes is penalized; shared branches from the same parent may share a channel. Feedback cycles may still require crossings, so this is a routing preference rather than a claim that every graph is planar.
 - Expansion controls use a subdued gray. View changes animate card positions, route endpoints, and scale with a 0.28-second ease-in/out transition. Reduce Motion disables the animation.
 

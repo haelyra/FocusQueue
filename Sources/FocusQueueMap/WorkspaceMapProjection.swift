@@ -3,7 +3,7 @@ import Foundation
 /// Semantic groups feed the bounded map template. File hierarchy is retained in
 /// expandable representatives; individual context files never fan out to agents.
 public enum WorkspaceMapProjection {
-    public static func diagram(snapshot: MapSnapshot, options: WorkspaceMapOptions, now: Date = Date(), limit: Int = 50) -> MapDiagram {
+    public static func diagram(snapshot: MapSnapshot, options: WorkspaceMapOptions, now: Date = Date(), limit: Int = 180) -> MapDiagram {
         var snapshot = snapshot
         let legacyTerminals = Set(snapshot.nodes.filter { $0.kind == .resource && $0.evidence == "Saved runtime identity" }.map(\.id))
         snapshot.nodes.removeAll { legacyTerminals.contains($0.id) }
@@ -109,10 +109,24 @@ public enum WorkspaceMapProjection {
                     (["AGENTS.md", "README.md", "repo_guide.md"].contains(node.label) || snapshot.relations.contains { $0.to != node.id && $0.from == node.id && $0.kind == .input })
                 }.sorted { ($0.label, $0.id) < ($1.label, $1.id) }
                 tree.previews = ["AGENTS.md", "README.md"].compactMap { name in repoFiles.first { $0.label == name } }
-                tree.detailID = "repo-context:" + workspace.id
-                if options.expanded.contains(tree.detailID!) {
-                    let others = repoFiles.filter { !tree.previews.contains($0) }
-                    tree.children.insert(group(tree.detailID!, "Additional repo context", path: workspace.path, role: "Context", contents: others.map { source($0, role: "Context") }), at: 0)
+                let others = repoFiles.filter { !tree.previews.contains($0) }
+                if !others.isEmpty {
+                    tree.children.insert(group("repo-context:" + workspace.id, "More repo context", path: workspace.path,
+                        role: "Context", contents: others.map { source($0, role: "Context") }, collapsed: true), at: 0)
+                }
+                if (options.expandedView || options.showOtherFiles || options.changesOnly || !options.search.isEmpty),
+                   let rootPath = workspace.path {
+                    let related = Set(snapshot.relations.flatMap { [$0.from, $0.to] })
+                    let files = snapshot.nodes.filter { node in
+                        [.file, .document].contains(node.kind) && matches(node) &&
+                        node.path.map { WorkspaceCollector.contains($0, in: rootPath) } == true &&
+                        !related.contains(node.id) && !tree.previews.contains(node)
+                    }
+                    let contents = fileForest(files.map(\.id), role: "Repository file", shallow: !options.expandedView)
+                    if !contents.isEmpty {
+                        tree.children.insert(group("browse:" + workspace.id, "Repository files", path: rootPath,
+                            role: "Files", contents: contents, collapsed: true), at: 0)
+                    }
                 }
                 let groupAgentIDs = Set(agents.filter { candidate in
                     var current: MapNode? = candidate, seen = Set<String>()
@@ -132,14 +146,11 @@ public enum WorkspaceMapProjection {
             root.children += snapshot.nodes.filter { resource in resource.kind == .resource && resource.parentID == "queue" && (options.mode == .typical || snapshot.relations.contains { relation in (relation.from == resource.id && relation.to == options.agentID) || (relation.to == resource.id && relation.from == options.agentID) }) }
                 .sorted { $0.id < $1.id }.map { MapTree($0, role: "Instance") }
         }
-        if options.showOtherFiles || options.changesOnly || !options.search.isEmpty {
-            root.children.append(group("browse", "Other files", path: snapshot.nodes.first { $0.kind == .workspace }?.path, role: "Files",
-                contents: fileForest(snapshot.nodes.filter { [.file, .document].contains($0.kind) && matches($0) }.map(\.id), role: "Files", shallow: true)))
-        }
         var diagram = MapCompactLayout.diagram(queue: queue, root: root, options: options, limit: limit)
         // Workspace outlines show the physical boundary without another set of
         // context-file edges. Only the group is connected to each agent.
-        for item in diagram.items where item.node.kind == .workspace {
+        let workspaceItems = diagram.items.filter { $0.node.kind == .workspace }.sorted { $0.y < $1.y }
+        for (position, item) in workspaceItems.enumerated() {
             let rootPath = item.node.path
             let members = diagram.items.filter { candidate in
                 candidate.id == item.id || (candidate.node.parentID == item.node.id && candidate.node.kind == .agent) || (candidate.x > item.x && rootPath.map { root in candidate.node.path.map { WorkspaceCollector.contains($0, in: root) } ?? false } == true)
@@ -147,7 +158,10 @@ public enum WorkspaceMapProjection {
             let bottom = members.map { $0.y + MapDiagram.nodeHeight }.max() ?? item.y
             let top = members.map(\.y).min() ?? item.y
             let right = members.map { $0.x + MapDiagram.nodeWidth }.max() ?? item.x
-            diagram.containers.append(.init(id: "outline:" + item.id, label: item.node.path ?? "Location unavailable", x: item.x - 7, y: top - 7, width: right - item.x + 14, height: bottom - top + 14))
+            let count = workspaceItems.count
+            let prefix = count == 1 ? "Worktree" : "Worktree \(position + 1) of \(count)"
+            diagram.containers.append(.init(id: item.node.id, label: "\(prefix): \(item.node.label)",
+                x: item.x - 7, y: top - 25, width: right - item.x + 14, height: bottom - top + 32))
         }
         // Secondary feedback/handoff edges are drawn only between visible cards
         // and only while respecting the four-connection cap.

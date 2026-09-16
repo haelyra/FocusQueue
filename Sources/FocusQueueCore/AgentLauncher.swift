@@ -57,7 +57,7 @@ public actor TaskAgentLauncher {
         throw TaskContextError.commandFailed("The saved provider session ID is invalid.")
       }
       providerArguments = subtask.provider == .codex
-        ? ["resume", sessionID] + providerArguments
+        ? ["resume", sessionID, "--cd", directory] + providerArguments
         : ["--resume", sessionID] + providerArguments
     } else if includePrompt && subtask.includeInitializationPrompt {
       if subtask.provider == .claude { providerArguments.append("--") }
@@ -133,8 +133,8 @@ public actor TaskAgentLauncher {
       executable: tmuxExecutable)
   }
 
-  /// Starts an ordinary terminal-owned provider process. Closing that terminal
-  /// ends the live runtime, so the returned pane is the only recall target.
+  /// Starts a terminal-owned provider process and records its transient pane.
+  /// A later launch can resume the independently saved provider conversation.
   public func launchDirect(
     context: TaskContext, subtask: TaskSubtask,
     configuration: WezTermConfiguration, supportDirectory: URL,

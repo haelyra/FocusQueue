@@ -119,6 +119,34 @@ func taskContextManagedRuntimeAndClear() async throws {
     })
 }
 
+@Test("Removing one subtask preserves its siblings and archives the removed assignment")
+func taskContextSingleSubtaskRemoval() async throws {
+    let root = try contextFixture(); defer { try? FileManager.default.removeItem(at: root) }
+    let store = TaskContextStore(root: root)
+    let initial = try await store.ensureContext(ticket: contextTicket())
+    _ = try await store.upsertSubtask(
+        ticketID: initial.ticketID,
+        subtask: .init(id: "remove-me", title: "Old agent", status: .idle))
+    _ = try await store.upsertSubtask(
+        ticketID: initial.ticketID,
+        subtask: .init(id: "keep-me", title: "Current agent", status: .working))
+
+    let updated = try await store.removeSubtask(
+        ticketID: initial.ticketID, subtaskID: "remove-me")
+
+    #expect(updated.subtasks.map(\.id) == ["keep-me"])
+    let snapshots = try FileManager.default.contentsOfDirectory(
+        at: initial.contextDirectory.appendingPathComponent("archive"),
+        includingPropertiesForKeys: nil)
+    #expect(try snapshots.contains { snapshot in
+        let saved = try JSONDecoder().decode(
+            TaskContext.self,
+            from: Data(contentsOf: snapshot.appendingPathComponent("context.json")))
+        return saved.subtasks.contains { $0.id == "remove-me" }
+            && saved.subtasks.contains { $0.id == "keep-me" }
+    })
+}
+
 @Test("Direct runtime persists only its exact terminal identity")
 func taskContextDirectRuntime() async throws {
     let root = try contextFixture(); defer { try? FileManager.default.removeItem(at: root) }

@@ -318,9 +318,14 @@ struct QueueView: View {
         Button {
           Task { await model.refresh(forceRecurringPRProgress: true, userInitiated: true) }
         } label: {
-          Image(systemName: "arrow.clockwise").font(.system(size: 13, weight: .semibold))
+          if model.isRefreshing {
+            ProgressView().controlSize(.small)
+          } else {
+            Image(systemName: "arrow.clockwise").font(.system(size: 13, weight: .semibold))
+          }
         }.buttonStyle(.plain).minimumHitTarget(width: 32, height: 44).disabled(model.isRefreshing)
-          .accessibilityLabel("Refresh task dashboard").help("Refresh now")
+          .accessibilityLabel(model.isRefreshing ? "Refreshing task dashboard" : "Refresh task dashboard")
+          .help(model.isRefreshing ? "Refreshing" : "Refresh now")
         Button { model.minimizeHandler?() } label: {
           Image(systemName: "minus").font(.system(size: 13, weight: .semibold))
         }.buttonStyle(.plain).minimumHitTarget(width: 32, height: 44)
@@ -1520,53 +1525,47 @@ private struct TicketCard: View {
           Image(systemName: isChecked ? "checkmark.circle.fill" : "circle").font(
             .system(size: 20, weight: .medium)
           ).foregroundStyle(checkColor)
-        }.buttonStyle(.plain).disabled(review?.status == .running).minimumHitTarget()
+        }.buttonStyle(.plain).disabled(isChecked).minimumHitTarget()
           .accessibilityLabel(
-            "Request completion review for \(ticket.id)"
+            isChecked
+              ? "Completion review \(review?.status.rawValue ?? "requested") for \(ticket.id)"
+              : "Request completion review for \(ticket.id)"
           ).accessibilityHint("Queues Codex evidence review without directly closing the task.")
           .help("Queue an evidence-based Codex completion review")
 
       }
 
-      Button(action: toggleSummaryExpansion) {
-        VStack(alignment: .leading, spacing: 7) {
-          HStack(alignment: .top, spacing: 10) {
-            Text(ticket.title).font(.system(size: 16, weight: .semibold)).lineLimit(3).frame(
-              maxWidth: .infinity, alignment: .leading)
-            VStack(alignment: .trailing, spacing: 3) {
-              Text(summaryProgressLabel).font(
-                .system(size: 12, weight: .semibold).monospacedDigit()
-              ).foregroundStyle(.secondary).fixedSize()
-              Text(ticket.id).font(.system(size: 12, weight: .bold, design: .monospaced))
-                .foregroundStyle(priorityColor).fixedSize()
-            }
+      VStack(alignment: .leading, spacing: 7) {
+        HStack(alignment: .top, spacing: 10) {
+          Text(ticket.title).font(.system(size: 16, weight: .semibold)).lineLimit(3).frame(
+            maxWidth: .infinity, alignment: .leading)
+          VStack(alignment: .trailing, spacing: 3) {
+            Text(summaryProgressLabel).font(
+              .system(size: 12, weight: .semibold).monospacedDigit()
+            ).foregroundStyle(.secondary).fixedSize()
+            Text(ticket.id).font(.system(size: 12, weight: .bold, design: .monospaced))
+              .foregroundStyle(priorityColor).fixedSize()
           }
-          HStack(spacing: 6) {
-            if recurringProgress?.openCount == 0 {
-              StatusPill(text: "No open PRs", color: .secondary)
-            } else {
-              StatusPill(text: ticket.priority, color: priorityColor)
-            }
-            StatusPill(text: ticket.status, color: statusColor)
-            if ticket.isRecurringPullRequestTask {
-              StatusPill(
-                text: "Recurring daily",
-                color: QueueAccentPalette.color(.info, style: accentStyle)
-              )
-            }
-            if let review { ReviewPill(status: review.status) }
+        }
+        HStack(spacing: 6) {
+          if recurringProgress?.openCount == 0 {
+            StatusPill(text: "No open PRs", color: .secondary)
+          } else {
+            StatusPill(text: ticket.priority, color: priorityColor)
           }
-        }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-      }.buttonStyle(.plain).accessibilityLabel(
-        "\(ticket.title), \(summaryProgressLabel), \(ticket.id)"
-      ).accessibilityHint(
-        showsAgentPicker ? "Hides the task's agent sessions." : "Shows all agents associated with this task."
-      ).help(showsAgentPicker ? "Hide task agents" : "Show all task agents")
+          StatusPill(text: ticket.status, color: statusColor)
+          if ticket.isRecurringPullRequestTask {
+            StatusPill(
+              text: "Recurring daily",
+              color: QueueAccentPalette.color(.info, style: accentStyle)
+            )
+          }
+          if let review { ReviewPill(status: review.status) }
+        }
+      }.frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(ticket.title), \(summaryProgressLabel), \(ticket.id)")
     }.padding(.horizontal, 13).padding(.vertical, 11)
-  }
-
-  private func toggleSummaryExpansion() {
-    withAnimation(.easeInOut(duration: 0.18)) { showsAgentPicker.toggle() }
   }
 
   private func toggleCardDisclosure() {
@@ -1589,15 +1588,23 @@ private struct TicketCard: View {
           .help("Create a named subtask and launch its agent in the task worktree")
         Button("New blank agent") { newAgentIsBlank = true; showsNewAgent = true }
           .buttonStyle(.bordered).disabled(model.launchingTaskIDs.contains(ticket.id) || ticket.isCompleted)
-        Button("Manage agents", systemImage: "person.crop.circle.badge.checkmark") {
-          withAnimation(.easeInOut(duration: 0.18)) { showsAgentPicker.toggle() }
-        }.buttonStyle(.bordered).help("Review or clear Focus Queue managed agent sessions")
-          .accessibilityIdentifier("attach-agent-\(ticket.id)")
         Spacer()
       }
+      Button("Manage agents", systemImage: "person.crop.circle.badge.checkmark") {
+        withAnimation(.easeInOut(duration: 0.18)) { showsAgentPicker.toggle() }
+      }.buttonStyle(.bordered).help("Review or remove this task's agents")
+        .accessibilityIdentifier("attach-agent-\(ticket.id)")
       if let message = model.actionMessages[ticket.id] {
-        Text(message).font(.system(size: 11)).foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+        if model.agentSessionIssue(for: ticket.id) != nil {
+          Label(message, systemImage: "exclamationmark.triangle.fill")
+            .font(.system(size: 11)).foregroundStyle(
+              QueueAccentPalette.color(.danger, style: accentStyle)
+            )
+            .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+        } else {
+          Text(message).font(.system(size: 11)).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+        }
       }
       if let message = model.closureMessages[ticket.id] {
         Text(message).font(.system(size: 12)).foregroundStyle(.orange)
@@ -1646,7 +1653,7 @@ private struct TicketCard: View {
       }.font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
       if ticket.isRecurringPullRequestTask {
         RecurringPRProgressSummary(progress: recurringProgress, error: recurringProgressError)
-      } else if !model.subtasks(for: ticket.id).isEmpty {
+      } else if !model.subtasks(for: ticket.id).filter(\.tracksCompletion).isEmpty {
         let subtasks = model.subtasks(for: ticket.id).filter(\.tracksCompletion)
         ProgressView(value: Double(subtasks.filter { $0.status == .completed }.count), total: Double(subtasks.count))
           .accessibilityLabel("Subtask completion")
@@ -1662,7 +1669,7 @@ private struct TicketCard: View {
       Button { model.openSubtask(subtask, for: ticket) } label: {
         HStack(alignment: .top, spacing: 8) {
           ZStack(alignment: .topTrailing) {
-            if model.effectiveStatus(for: subtask) == .working { ProgressView().controlSize(.mini).frame(width: 20, height: 20) }
+            if model.isOpening(subtask, ticketID: ticket.id) || model.effectiveStatus(for: subtask) == .working { ProgressView().controlSize(.mini).frame(width: 20, height: 20) }
             else {
               Image(systemName: subtask.status == .completed ? "checkmark.circle" : "terminal")
                 .frame(width: 20, height: 20)
@@ -1675,7 +1682,10 @@ private struct TicketCard: View {
             HStack {
               Text(subtask.title).font(.system(size: 12, weight: .semibold)).lineLimit(2)
               Spacer(minLength: 3)
-              Text(model.effectiveStatus(for: subtask).rawValue.capitalized).font(.system(size: 10)).foregroundStyle(.secondary)
+              AgentStatusIndicator(status: model.effectiveStatus(for: subtask),
+                hasUnreadCompletion: subtask.completionUnread,
+                isOpening: model.isOpening(subtask, ticketID: ticket.id),
+                issue: model.agentSessionError(for: subtask, ticketID: ticket.id))
             }
             Text(subtask.progressSummary.isEmpty ? "\(subtask.provider.displayName) · Awaiting update" : subtask.progressSummary)
               .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
@@ -1686,7 +1696,8 @@ private struct TicketCard: View {
           }
         }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
           .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
-      }.buttonStyle(.plain).help("Reopen the managed session for \(subtask.title)")
+      }.buttonStyle(.plain).disabled(model.isOpening(subtask, ticketID: ticket.id))
+        .help("Focus or resume \(subtask.title) in its saved workspace")
         .contextMenu {
           Button("Rename agent") { subtaskName = subtask.title; renamingSubtask = subtask }
           Button("Review completion") { model.requestSubtaskCompletion(subtask, for: ticket) }
@@ -1820,12 +1831,7 @@ private struct TicketCard: View {
   }
 
   private var checkColor: Color {
-    switch review?.status {
-    case .running: QueueAccentPalette.color(.info, style: accentStyle)
-    case .pending: QueueAccentPalette.color(.warning, style: accentStyle)
-    case .accepted: QueueAccentPalette.color(.success, style: accentStyle)
-    default: .secondary
-    }
+    isChecked ? QueueAccentPalette.color(.success, style: accentStyle) : .secondary
   }
 
   private var priorityColor: Color {
@@ -1878,6 +1884,86 @@ private struct TicketCard: View {
     case "plan": "doc.text"
     case "file": "folder"
     default: "link"
+    }
+  }
+}
+
+private struct AgentStatusIndicator: View {
+  let status: TaskSubtaskStatus
+  let hasUnreadCompletion: Bool
+  let isOpening: Bool
+  let issue: String?
+
+  @Environment(\.queueAccentStyle) private var accentStyle
+
+  var body: some View {
+    HStack(spacing: 5) {
+      if isOpening {
+        ProgressView().controlSize(.mini)
+      } else {
+        Image(systemName: icon)
+      }
+      Text(label)
+    }
+    .font(.system(size: 10, weight: .semibold))
+    .foregroundStyle(color)
+    .padding(.horizontal, 7).padding(.vertical, 4)
+    .background(color.opacity(0.12), in: Capsule())
+    .fixedSize()
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("Agent status: \(label)")
+    .help(issue ?? helpText)
+  }
+
+  private var label: String {
+    if isOpening { return "Opening" }
+    if issue != nil || status == .blocked { return "Issue" }
+    switch status {
+    case .working: return "Working"
+    case .completed: return hasUnreadCompletion ? "Done · New" : "Done · Seen"
+    case .queued: return "Queued"
+    case .idle: return "No recent update"
+    case .blocked: return "Issue"
+    }
+  }
+
+  private var icon: String {
+    if issue != nil || status == .blocked { return "exclamationmark.circle.fill" }
+    switch status {
+    case .working: return "circle.fill"
+    case .completed: return hasUnreadCompletion ? "checkmark.circle.fill" : "checkmark.circle"
+    case .queued: return "clock"
+    case .idle: return "minus.circle"
+    case .blocked: return "exclamationmark.circle.fill"
+    }
+  }
+
+  private var color: Color {
+    if isOpening { return QueueAccentPalette.color(.info, style: accentStyle) }
+    if issue != nil || status == .blocked {
+      return QueueAccentPalette.color(.danger, style: accentStyle)
+    }
+    switch status {
+    case .working: return QueueAccentPalette.color(.warning, style: accentStyle)
+    case .completed:
+      return hasUnreadCompletion
+        ? QueueAccentPalette.color(.success, style: accentStyle)
+        : .secondary
+    case .queued, .idle: return .secondary
+    case .blocked: return QueueAccentPalette.color(.danger, style: accentStyle)
+    }
+  }
+
+  private var helpText: String {
+    switch status {
+    case .working: return "The agent sent a progress update within the last five minutes."
+    case .completed:
+      return hasUnreadCompletion
+        ? "The agent finished and has a new update to review."
+        : "The agent finished and its update has been viewed."
+    case .queued: return "The agent is waiting to start."
+    case .idle: return "The agent has not sent a progress update within five minutes."
+    case .blocked: return "The agent reported a blocker or session problem."
     }
   }
 }
@@ -2080,7 +2166,7 @@ private struct AgentSessionPicker: View {
             .font(.system(size: 12)).foregroundStyle(.secondary)
         }
         Spacer()
-        Button("Clear queue") { confirmingClear = true }
+        Button("Remove all") { confirmingClear = true }
           .buttonStyle(.bordered).controlSize(.small)
           .help("Remove current agents while retaining their subtasks and history")
         Button {
@@ -2112,16 +2198,13 @@ private struct AgentSessionPicker: View {
       .overlay {
         RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.08), lineWidth: 1)
       }
-      .confirmationDialog(
-        "Clear every current agent entry?", isPresented: $confirmingClear,
-        titleVisibility: .visible
-      ) {
-        Button("Clear all agent entries", role: .destructive) {
-          model.clearAgentQueue()
+      .confirmationDialog("Remove every agent from \(ticket.id)?", isPresented: $confirmingClear, titleVisibility: .visible) {
+        Button("Remove all agents from this task", role: .destructive) {
+          model.clearAgentQueue(for: ticket)
           onClose()
         }
       } message: {
-        Text("This removes the current agents and closes verified runtimes. Subtasks, conversations, and workspace history are retained.")
+        Text("This removes current agents and closes verified runtimes. Subtasks, conversations, and workspace history are retained.")
       }
   }
 
@@ -2131,8 +2214,12 @@ private struct AgentSessionPicker: View {
         model.viewAgent(session, for: ticket)
       } label: {
         HStack(spacing: 10) {
-          Image(systemName: "terminal").font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(.secondary).frame(width: 22)
+          if model.isOpening(session) {
+            ProgressView().controlSize(.small).frame(width: 22)
+          } else {
+            Image(systemName: "terminal").font(.system(size: 15, weight: .semibold))
+              .foregroundStyle(.secondary).frame(width: 22)
+          }
           VStack(alignment: .leading, spacing: 3) {
             Text(model.subtasks(for: ticket.id).first { $0.id == session.subtaskID }?.title
               ?? "Managed \(session.provider.displayName) session")
@@ -2146,8 +2233,11 @@ private struct AgentSessionPicker: View {
           }.frame(maxWidth: .infinity, alignment: .leading)
         }.contentShape(Rectangle())
       }.buttonStyle(.plain)
+        .disabled(model.isOpening(session))
         .accessibilityLabel(
-          "View \(session.provider.displayName) agent, \(session.tabTitle), session \(session.sessionID)"
+          model.isOpening(session)
+            ? "Opening \(session.provider.displayName) agent, \(session.tabTitle)"
+            : "View \(session.provider.displayName) agent, \(session.tabTitle), session \(session.sessionID)"
         )
 
       Button { model.removeAgent(session, from: ticket) } label: {
@@ -2162,7 +2252,8 @@ private struct AgentSessionPicker: View {
   private func displayPath(_ path: String) -> String {
     path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
   }
-}
+
+ }
 
 private struct DetailLabel: View {
   let text: String

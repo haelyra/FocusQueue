@@ -1,4 +1,4 @@
-<!-- fq-architecture: {"id":"task-context","title":"Central plans and task context","sources":[{"path":"Sources/FocusQueueCore/TaskContext.swift","sha256":"547d17015f49c2aba49b6b760b8f231be61b1cb1a5f9fe9446aae3e5e19871cc"},{"path":"Sources/FocusQueueCore/TaskWorktreeManager.swift","sha256":"27692b596396c2e8c3649b1b468afa4b5daae112b8da10512a0403314cc0612a"},{"path":"Sources/FocusQueueCore/AgentRegistrationInbox.swift","sha256":"4d1264c19c74ee8ca9bbe73faefe94a0d5c36fbf0f1ff02e94d8065a30056d6e"}]} -->
+<!-- fq-architecture: {"id":"task-context","title":"Central plans and task context","sources":[{"path":"Sources/FocusQueueCore/TaskContext.swift","sha256":"269062641e9e260c153c82756b7d34f5051f8b89e3bb7051c826cc3a341df774"},{"path":"Sources/FocusQueueCore/TaskWorktreeManager.swift","sha256":"5903faf2f5c5dec5f30878a2b69bfcd78483af25dfa0dcca81c1fc24507f1e89"},{"path":"Sources/FocusQueueCore/AgentRegistrationInbox.swift","sha256":"4d1264c19c74ee8ca9bbe73faefe94a0d5c36fbf0f1ff02e94d8065a30056d6e"}]} -->
 
 # Central plans and task context
 
@@ -6,7 +6,7 @@ Each task has a canonical plan and structured context. Worktree references lead 
 
 ## Follow the code
 
-- [TaskContext.swift](../../Sources/FocusQueueCore/TaskContext.swift), `TaskContextStore`: validates task paths, serializes mutations with an advisory lock, saves atomically, and archives snapshots. `savePlan` compares an expected baseline when supplied so concurrent plan edits can be rejected for reconciliation.
+- [TaskContext.swift](../../Sources/FocusQueueCore/TaskContext.swift), `TaskContextStore`: validates task paths, serializes mutations with an advisory lock, saves atomically, and archives snapshots. Agent removal records a timestamp independently of subtask status and retains conversation identity and workspace history. Completion overrides are explicit persisted events. Each agent workspace records its path, branch, base commit, and ownership; guarded cleanup removes only clean, merged app-owned worktrees. `savePlan` compares an expected baseline when supplied so concurrent plan edits can be rejected for reconciliation.
 - `TaskSessionBinding` reads explicit provider/session environment data and prevents a retained subtask environment from silently attaching to a different task.
 - [TaskWorktreeManager.swift](../../Sources/FocusQueueCore/TaskWorktreeManager.swift): handles task worktree selection and lifecycle policy. Inspect its actual checks before any cleanup or reuse change.
 - [AgentRegistrationInbox.swift](../../Sources/FocusQueueCore/AgentRegistrationInbox.swift): carries pane/session association into the app.

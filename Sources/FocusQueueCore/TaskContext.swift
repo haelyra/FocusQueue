@@ -459,8 +459,23 @@ public actor TaskContextStore {
     }
 
     @discardableResult public func clearSubtasks(ticketID: String) throws -> TaskContext {
-        try mutate(ticketID: ticketID, archiveChanges: true) { context in
+        try mutate(
+            ticketID: ticketID, archiveChanges: true, archiveBeforeChanges: true
+        ) { context in
             context.subtasks.removeAll()
+        }
+    }
+
+    @discardableResult public func removeSubtask(
+        ticketID: String, subtaskID: String
+    ) throws -> TaskContext {
+        try mutate(
+            ticketID: ticketID, archiveChanges: true, archiveBeforeChanges: true
+        ) { context in
+            guard context.subtasks.contains(where: { $0.id == subtaskID }) else {
+                throw TaskContextError.missingSubtask(subtaskID)
+            }
+            context.subtasks.removeAll { $0.id == subtaskID }
         }
     }
 
@@ -531,6 +546,13 @@ public actor TaskContextStore {
         }
     }
 
+    @discardableResult public func recordAgentIdentity(ticketID: String, subtaskID: String, sessionID: String) throws -> TaskContext {
+        try mutate(ticketID: ticketID, archiveChanges: true) { context in
+            guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
+            context.subtasks[index].sessionID = sessionID
+        }
+    }
+
     @discardableResult public func attachSubtask(ticketID: String, subtaskID: String, provider: AgentProvider,
                                                  sessionID: String, now: Date = Date()) throws -> TaskContext {
         try mutate(ticketID: ticketID, archiveChanges: true) { context in
@@ -585,9 +607,15 @@ public actor TaskContextStore {
         }
     }
 
-    private func mutate(ticketID: String, archiveChanges: Bool = false, change: (inout TaskContext) throws -> Void) throws -> TaskContext {
+    private func mutate(
+        ticketID: String,
+        archiveChanges: Bool = false,
+        archiveBeforeChanges: Bool = false,
+        change: (inout TaskContext) throws -> Void
+    ) throws -> TaskContext {
         try locked(ticketID: ticketID) {
             guard var context = try load(ticketID: ticketID) else { throw TaskContextError.missingContext(ticketID) }
+            if archiveBeforeChanges { try snapshot(context) }
             try change(&context)
             context.updatedAt = Date()
             try write(context)

@@ -244,6 +244,9 @@ public protocol WezTermControlling: Sendable {
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult
 
+    func openAgentRuntime(_ subtask: TaskSubtask, taskID: String,
+                          configuration: WezTermConfiguration) async throws -> TerminalActionResult
+
     func openDirectRuntime(
         paneID: Int,
         socketPath: String?,
@@ -254,6 +257,16 @@ public protocol WezTermControlling: Sendable {
 }
 
 public extension WezTermControlling {
+    func openAgentRuntime(_ subtask: TaskSubtask, taskID: String,
+                          configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+        if let tmux = subtask.tmux {
+            return try await openManagedRuntime(tmux, taskID: taskID, provider: subtask.provider, configuration: configuration)
+        }
+        guard let paneID = subtask.terminalPaneID else { throw WezTermError.runtimeClosed }
+        return try await openDirectRuntime(paneID: paneID, socketPath: subtask.terminalSocketPath,
+            taskID: taskID, provider: subtask.provider, configuration: configuration)
+    }
+
     func focusPane(_ pane: WezTermPane, configuration: WezTermConfiguration) async throws {
         throw WezTermError.actionFailed("This terminal integration does not support browsing panes.")
     }
@@ -488,12 +501,29 @@ public actor WezTermController: WezTermControlling {
             tmux, taskID: taskID, provider: session.provider, configuration: configuration)
     }
 
+    public func openAgentRuntime(_ subtask: TaskSubtask, taskID: String,
+                                 configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+        let title = subtask.sessionID.map { AgentTerminalLabels.tabTitle(ticketID: taskID, provider: subtask.provider, sessionID: $0) }
+        if let tmux = subtask.tmux {
+            return try await openManagedRuntime(tmux, taskID: taskID, provider: subtask.provider,
+                configuration: configuration, tabTitle: title)
+        }
+        guard let paneID = subtask.terminalPaneID else { throw WezTermError.runtimeClosed }
+        return try await openDirectRuntime(paneID: paneID, socketPath: subtask.terminalSocketPath,
+            taskID: taskID, provider: subtask.provider, configuration: configuration, tabTitle: title)
+    }
+
     public func openManagedRuntime(
         _ saved: TmuxSessionReference,
         taskID: String,
         provider: AgentProvider,
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult {
+        try await openManagedRuntime(saved, taskID: taskID, provider: provider, configuration: configuration, tabTitle: nil)
+    }
+
+    private func openManagedRuntime(_ saved: TmuxSessionReference, taskID: String, provider: AgentProvider,
+                                    configuration: WezTermConfiguration, tabTitle: String?) async throws -> TerminalActionResult {
         let runtime = TmuxController(runner: runner)
         let live = try await runtime.verify(saved)
 
@@ -525,7 +555,7 @@ public actor WezTermController: WezTermControlling {
         let pinned = connection.configuration
         let panes = try Self.decodePanes(from: connection.result)
         let clients = try await runtime.clientTTYs(for: live)
-        let tabTitle = "\(taskID.uppercased()) · \(provider.displayName) · managed"
+        let tabTitle = tabTitle ?? "\(taskID.uppercased()) · \(provider.displayName) · managed"
         if let pane = panes.first(where: { $0.ttyName.map(clients.contains) == true }) {
             try await focus(
                 pane: pane, tabTitle: tabTitle, windowTitle: taskID.uppercased(),
@@ -565,6 +595,12 @@ public actor WezTermController: WezTermControlling {
         provider: AgentProvider,
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult {
+        try await openDirectRuntime(paneID: paneID, socketPath: socketPath, taskID: taskID,
+            provider: provider, configuration: configuration, tabTitle: nil)
+    }
+
+    private func openDirectRuntime(paneID: Int, socketPath: String?, taskID: String, provider: AgentProvider,
+                                   configuration: WezTermConfiguration, tabTitle: String?) async throws -> TerminalActionResult {
         guard paneID >= 0 else {
             throw WezTermError.actionFailed("The saved direct terminal identity is invalid.")
         }
@@ -588,7 +624,7 @@ public actor WezTermController: WezTermControlling {
         }
         try await focus(
             pane: pane,
-            tabTitle: "\(taskID.uppercased()) · \(provider.displayName) · direct",
+            tabTitle: tabTitle ?? "\(taskID.uppercased()) · \(provider.displayName) · direct",
             windowTitle: taskID.uppercased(), configuration: connection.configuration)
         return .focused(paneID: paneID)
     }

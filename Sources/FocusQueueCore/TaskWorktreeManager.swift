@@ -50,7 +50,8 @@ public actor TaskWorktreeManager {
     public func cleanupAgent(ticketID: String, subtask: TaskSubtask, store: TaskContextStore) async throws -> TaskWorktreeCleanupResult {
         let workspaces = (subtask.workspaceHistory + [subtask.workspace].compactMap { $0 }).filter(\.managed)
         var result = TaskWorktreeCleanupResult(removed: false, message: "Existing workspace retained.")
-        for workspace in workspaces {
+        var cleanedPaths = Set<String>()
+        for workspace in workspaces.reversed() where cleanedPaths.insert(workspace.path).inserted {
             var historical = subtask
             historical.workspace = workspace
             result = try await cleanupManagedAgent(ticketID: ticketID, subtask: historical, store: store)

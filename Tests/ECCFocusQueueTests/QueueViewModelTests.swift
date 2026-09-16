@@ -609,6 +609,119 @@ struct QueueViewModelTests {
     #expect(model.subtasks(for: "ECC-101").first?.title == "Review session ownership")
   }
 
+  @Test("Opening an agent publishes progress and retains a session error", arguments: [false, true])
+  func agentOpeningFeedback(fails: Bool) async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    let sessionID = UUID().uuidString
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: TaskSubtask(
+      id: "window-finder", title: "Find the exact agent window", provider: .codex,
+      sessionID: sessionID, status: .working, lastHeartbeatAt: Date(),
+      tmux: try TmuxController.decode("fq-window-finder|123|1000|%0|124|/dev/ttys099|0\n", executable: "/mock/tmux").first))
+    let terminal = HoldingRecallRecorder(fails: fails)
+    let model = await fixture.model(agent: ControlledQueueAgent(), terminalController: terminal)
+    let subtask = try #require(model.subtasks(for: "ECC-101").first)
+
+    model.openSubtask(subtask, for: fixture.tickets[0])
+    try await eventually { model.isOpening(subtask, ticketID: "ECC-101") }
+    let session = try #require(model.session(for: subtask, ticketID: "ECC-101"))
+    #expect(model.isOpening(session))
+    await terminal.release()
+    try await eventually { !model.isOpening(subtask, ticketID: "ECC-101") }
+
+    if fails {
+      #expect(model.agentSessionError(for: subtask, ticketID: "ECC-101")?.contains("Fixture session failure") == true)
+      #expect(model.agentSessionIssue(for: "ECC-101") != nil)
+    } else {
+      #expect(model.agentSessionError(for: subtask, ticketID: "ECC-101") == nil)
+      #expect(model.agentSessionIssue(for: "ECC-101") == nil)
+    }
+  }
+
+  @Test("Opening status stays scoped when two tasks use the same subtask name")
+  func agentOpeningStatusUsesTaskIdentity() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    for ticket in fixture.tickets {
+      _ = try await store.ensureContext(ticket: ticket)
+      _ = try await store.upsertSubtask(ticketID: ticket.id, subtask: TaskSubtask(
+        id: "worker", title: "Worker", sessionID: UUID().uuidString,
+        status: .working, lastHeartbeatAt: Date(),
+        tmux: try TmuxController.decode("fq-worker|123|1000|%0|124|/dev/ttys099|0\n", executable: "/mock/tmux").first))
+    }
+    let terminal = HoldingRecallRecorder(fails: false)
+    let model = await fixture.model(agent: ControlledQueueAgent(), terminalController: terminal)
+    let first = try #require(model.subtasks(for: "ECC-101").first)
+    let second = try #require(model.subtasks(for: "ECC-102").first)
+
+    model.openSubtask(first, for: fixture.tickets[0])
+    try await eventually { model.isOpening(first, ticketID: "ECC-101") }
+
+    #expect(!model.isOpening(second, ticketID: "ECC-102"))
+    await terminal.release()
+    try await eventually { !model.isOpening(first, ticketID: "ECC-101") }
+  }
+
+  @Test("Removing one agent leaves other task agents intact")
+  func removeAgentFromOneTask() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    let first = TaskSubtask(id: "first", title: "First agent", sessionID: UUID().uuidString)
+    let second = TaskSubtask(id: "second", title: "Second agent", sessionID: UUID().uuidString)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    _ = try await store.ensureContext(ticket: fixture.tickets[1])
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: first)
+    _ = try await store.upsertSubtask(ticketID: "ECC-102", subtask: second)
+    let firstSession = TaskAgentSession(
+      ticketID: "ECC-101", provider: .codex, sessionID: try #require(first.sessionID),
+      tabTitle: first.title, workingDirectory: fixture.root.path, subtaskID: first.id)
+    let secondSession = TaskAgentSession(
+      ticketID: "ECC-102", provider: .codex, sessionID: try #require(second.sessionID),
+      tabTitle: second.title, workingDirectory: fixture.root.path, subtaskID: second.id)
+    try await JSONLocalStateStore(url: fixture.paths.stateFile).save(
+      LocalState(agentSessions: [firstSession, secondSession]))
+    let model = await fixture.model(agent: ControlledQueueAgent())
+
+    model.removeAgent(first, from: fixture.tickets[0])
+    try await eventually { model.visibleAgents(for: "ECC-101").isEmpty }
+
+    #expect(model.agentSessions(for: "ECC-101").isEmpty)
+    #expect(model.subtasks(for: "ECC-102").map(\.id) == ["second"])
+    #expect(model.agentSessions(for: "ECC-102").map(\.subtaskID) == ["second"])
+  }
+
+  @Test("Removing all agents is scoped to the selected task")
+  func clearAgentsFromOneTask() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    let first = TaskSubtask(id: "first", title: "First agent", sessionID: UUID().uuidString)
+    let second = TaskSubtask(id: "second", title: "Second agent", sessionID: UUID().uuidString)
+    for (ticket, subtask) in zip(fixture.tickets, [first, second]) {
+      _ = try await store.ensureContext(ticket: ticket)
+      _ = try await store.upsertSubtask(ticketID: ticket.id, subtask: subtask)
+    }
+    let sessions = zip(fixture.tickets, [first, second]).map { ticket, subtask in
+      TaskAgentSession(
+        ticketID: ticket.id, provider: .codex, sessionID: subtask.sessionID!,
+        tabTitle: subtask.title, workingDirectory: fixture.root.path, subtaskID: subtask.id)
+    }
+    try await JSONLocalStateStore(url: fixture.paths.stateFile).save(
+      LocalState(agentSessions: sessions))
+    let model = await fixture.model(agent: ControlledQueueAgent())
+
+    model.clearAgentQueue(for: fixture.tickets[0])
+    try await eventually { model.visibleAgents(for: "ECC-101").isEmpty }
+
+    #expect(model.agentSessions(for: "ECC-101").isEmpty)
+    #expect(model.subtasks(for: "ECC-102").map(\.id) == ["second"])
+    #expect(model.agentSessions(for: "ECC-102").map(\.subtaskID) == ["second"])
+  }
+
   @Test("Managed recall preserves its exact runtime and avoids title-only window focus")
   func managedRecallPreservesIdentity() async throws {
     let fixture = try await Fixture()
@@ -691,8 +804,14 @@ struct QueueViewModelTests {
     let terminal = ClosedDirectRecorder(transportFailure: transportFailure)
     let model = await fixture.model(agent: ControlledQueueAgent(), terminalController: terminal,
       taskAgentLauncher: TaskAgentLauncher(runner: launcher, candidateSockets: []))
+    var centered = 0
+    model.agentTerminalFocusHandler = { application, ticketID in
+      #expect(application == "WezTerm" && ticketID == "ECC-101")
+      centered += 1
+    }
     model.openSubtask(subtask, for: fixture.tickets[0])
     try await eventually { model.launchingTaskIDs.isEmpty }
+    #expect(centered == (transportFailure ? 0 : 1))
     let commands = await launcher.commands
     if transportFailure {
       #expect(commands.isEmpty)
@@ -908,5 +1027,36 @@ private actor ClosedDirectRecorder: WezTermControlling {
       throw WezTermError.runtimeClosed
     }
     return .focused(paneID: paneID)
+  }
+}
+
+private actor HoldingRecallRecorder: WezTermControlling {
+  let fails: Bool
+  private var released = false
+
+  init(fails: Bool) { self.fails = fails }
+
+  func openManagedRuntime(_ saved: TmuxSessionReference, taskID: String, provider: AgentProvider,
+    configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    while !released { try await Task.sleep(for: .milliseconds(10)) }
+    if fails { throw WezTermError.actionFailed("Fixture session failure") }
+    return .focused(paneID: 42)
+  }
+
+  func release() { released = true }
+
+  func listAttachablePanes(configuration: WezTermConfiguration) async throws -> [WezTermPane] { [] }
+  func listRunningAgents(configuration: WezTermConfiguration) async throws -> [RunningAgentSession] { [] }
+  func attach(paneID: Int, tabTitle: String, windowTitle: String,
+    configuration: WezTermConfiguration) async throws {}
+  func focusOrSpawn(directory: String, taskID: String,
+    configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    throw TestFailure.unexpectedExternalAction
+  }
+  func focusOrResume(session: TaskAgentSession, taskID: String,
+    configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    while !released { try await Task.sleep(for: .milliseconds(10)) }
+    if fails { throw WezTermError.actionFailed("Fixture session failure") }
+    return .focused(paneID: 42)
   }
 }

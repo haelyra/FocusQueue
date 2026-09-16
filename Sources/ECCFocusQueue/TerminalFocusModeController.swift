@@ -47,7 +47,8 @@ final class TerminalFocusModeController {
     func begin(
         applicationName: String,
         windowTitleHint: String?,
-        targetScreen: NSScreen?
+        targetScreen: NSScreen?,
+        requiresActivatedWindow: Bool = false
     ) async throws {
         clearFocusMode(revealQueue: false)
         let operation = TerminalFocusOperation()
@@ -57,16 +58,25 @@ final class TerminalFocusModeController {
             guard requestAccessibilityPermission() else {
                 throw TerminalFocusModeError.accessibilityPermissionRequired
             }
-            guard let application = try await waitForApplication(named: applicationName, operation: operation) else {
+            let candidate: NSRunningApplication?
+            if requiresActivatedWindow {
+                candidate = try await waitForActivatedApplication(named: applicationName, operation: operation)
+            } else { candidate = try await waitForApplication(named: applicationName, operation: operation) }
+            guard let application = candidate else {
                 throw TerminalFocusModeError.applicationUnavailable(applicationName)
             }
 
             try operation.checkCancellation()
-            application.activate(options: [.activateAllWindows])
-            guard let window = try await accessibility.waitForWindow(
-                processIdentifier: application.processIdentifier,
-                titleHint: windowTitleHint, operation: operation
-            ) else {
+            let selectedWindow: TerminalFocusWindow?
+            if requiresActivatedWindow {
+                selectedWindow = try await accessibility.waitForActivatedWindow(
+                    processIdentifier: application.processIdentifier, expectedTitle: windowTitleHint, operation: operation)
+            } else {
+                application.activate(options: [.activateAllWindows])
+                selectedWindow = try await accessibility.waitForWindow(
+                    processIdentifier: application.processIdentifier, titleHint: windowTitleHint, operation: operation)
+            }
+            guard let window = selectedWindow else {
                 throw TerminalFocusModeError.focusedWindowUnavailable
             }
             let currentFrame = try await accessibility.frame(of: window, operation: operation)
@@ -119,6 +129,15 @@ final class TerminalFocusModeController {
     private func requestAccessibilityPermission() -> Bool {
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         return AXIsProcessTrustedWithOptions(options)
+    }
+
+    private func waitForActivatedApplication(named name: String, operation: TerminalFocusOperation) async throws -> NSRunningApplication? {
+        for _ in 0..<30 {
+            try operation.checkCancellation()
+            if let frontmost = NSWorkspace.shared.frontmostApplication, application(frontmost, matches: name) { return frontmost }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        return nil
     }
 
     private func waitForApplication(

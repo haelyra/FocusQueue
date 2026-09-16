@@ -9,6 +9,7 @@ struct TerminalBrowserView: View {
   @State private var isLoading = false
   @State private var error: String?
   @State private var selectedPaneID: Int?
+  @State private var openingPaneID: Int?
 
   private var visiblePanes: [WezTermPane] {
     panes.filter { pane in
@@ -45,12 +46,23 @@ struct TerminalBrowserView: View {
                   Text("Saved association: \(session.ticketID) · \(session.provider.displayName)").font(.caption)
                 }
               }.frame(maxWidth: .infinity, alignment: .leading)
-              Button("View") {
+              Button {
+                openingPaneID = pane.paneID
                 Task {
+                  defer { openingPaneID = nil }
                   do { try await model.focusTerminalPane(pane); selectedPaneID = pane.paneID; error = nil }
                   catch { self.error = error.localizedDescription }
                 }
-              }.buttonStyle(.bordered)
+              } label: {
+                if openingPaneID == pane.paneID {
+                  HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Opening…")
+                  }
+                } else {
+                  Text("View")
+                }
+              }.buttonStyle(.bordered).disabled(openingPaneID != nil)
                 .accessibilityLabel("View window \(pane.windowID), pane \(pane.paneID)")
             }.padding(12).background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
           }

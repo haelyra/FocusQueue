@@ -232,8 +232,8 @@ rewrite of the scheduler or report engine.
   session ID, app-created runtime, and working directory directly from the agent
   environment, labels the exact terminal, and immediately notifies the running app. A
   task can retain multiple agents, displayed through readable named assignments.
-- Clicking an agent's descriptive subtask title focuses or reattaches the exact
-  saved runtime or resumes the saved provider conversation after that runtime ends.
+- Clicking an agent's descriptive subtask title focuses and centers the activated
+  window or resumes the saved provider conversation after that runtime ends.
   **Manage agents** removes associations while retaining assignment and conversation history.
 - Restart-safe completion requests. A checkbox asks a bounded Codex run
   session to verify evidence and never directly edits the ticket status.

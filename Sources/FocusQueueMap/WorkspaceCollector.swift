@@ -71,7 +71,7 @@ public actor WorkspaceCollector {
         do { activityReports = try MapAgentActivity.load(context: context) }
         catch { activityReports = []; activityWarning = error.localizedDescription }
         let primary = context.worktreePath ?? context.repositoryPath
-        let directories = Set(([primary].compactMap { $0 } + relevant.map(\.workingDirectory) + activityReports.map(\.workingDirectory))
+        let directories = Set(([primary].compactMap { $0 } + relevant.map(\.workingDirectory) + context.subtasks.compactMap { $0.workspace?.path } + activityReports.map(\.workingDirectory))
             .filter { $0.hasPrefix("/") }.map { URL(fileURLWithPath: $0).standardizedFileURL.path }).sorted()
         var nodes = [MapNode(id: "queue", parentID: nil, kind: .queue, label: "Focus Queue",
                              summary: "\(context.ticketID) · \(context.title)",
@@ -166,11 +166,11 @@ public actor WorkspaceCollector {
             let sessionID = session?.sessionID ?? subtask.sessionID
             let id = MapNode.identity("agent", subtask.provider.rawValue, sessionID?.lowercased() ?? "subtask:\(subtask.id)")
             guard addedAgents.insert(id).inserted else { continue }
-            nodes.append(MapNode(id: id, parentID: parent(for: session?.workingDirectory ?? primary), kind: .agent,
-                label: "\(subtask.provider.displayName) · \(subtask.title)", path: session?.workingDirectory ?? primary,
+            nodes.append(MapNode(id: id, parentID: parent(for: subtask.workspace?.path ?? session?.workingDirectory ?? primary), kind: .agent,
+                label: "\(subtask.provider.displayName) · \(subtask.title)", path: subtask.workspace?.path ?? session?.workingDirectory ?? primary,
                 summary: subtask.progressSummary.isEmpty ? "No progress summary reported." : subtask.progressSummary,
                 evidence: "Recorded assignment and explicit progress report", observedAt: subtask.lastHeartbeatAt,
-                reportedState: subtask.status.rawValue, provider: subtask.provider.rawValue,
+                reportedState: subtask.agentRemovedAt != nil && subtask.status != .completed ? "removed" : subtask.status.rawValue, provider: subtask.provider.rawValue,
                 sessionID: sessionID, subtaskID: subtask.id))
         }
         for session in relevant {

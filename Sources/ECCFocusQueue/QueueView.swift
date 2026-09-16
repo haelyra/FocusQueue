@@ -1550,6 +1550,76 @@ private struct CompletedTicketCard: View {
   }
 }
 
+struct SubtaskTitleLabel: View {
+  let title: String
+  let isExpanded: Bool
+  var fontSize: CGFloat = 13
+
+  var body: some View {
+    Text(title)
+      .font(.system(size: fontSize, weight: .semibold))
+      .lineLimit(isExpanded ? nil : 2)
+      .multilineTextAlignment(.leading)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .fixedSize(horizontal: false, vertical: true)
+  }
+}
+
+private struct SubtaskEditorSheet: View {
+  let subtask: TaskSubtask
+  let save: (String, String) -> Void
+  @Environment(\.dismiss) private var dismiss
+  @State private var title: String
+  @State private var explanation: String
+
+  init(subtask: TaskSubtask, save: @escaping (String, String) -> Void) {
+    self.subtask = subtask
+    self.save = save
+    _title = State(initialValue: subtask.title)
+    _explanation = State(initialValue: subtask.assignmentDescription.isEmpty
+      ? (subtask.initialPrompt ?? "") : subtask.assignmentDescription)
+  }
+
+  private var trimmedTitle: String {
+    title.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      Text("Edit subtask").font(.title2.weight(.semibold))
+      VStack(alignment: .leading, spacing: 6) {
+        Text("Title").font(.headline)
+        TextField("Short, readable title", text: $title)
+          .accessibilityLabel("Subtask title")
+        Text("Keep the title brief. Put the complete assignment in the explanation.")
+          .font(.caption).foregroundStyle(.secondary)
+      }
+      VStack(alignment: .leading, spacing: 6) {
+        Text("Explanation").font(.headline)
+        TextEditor(text: $explanation)
+          .font(.body)
+          .frame(minHeight: 120)
+          .padding(6)
+          .overlay(RoundedRectangle(cornerRadius: 7).stroke(.secondary.opacity(0.3)))
+          .accessibilityLabel("Subtask explanation")
+      }
+      HStack {
+        Spacer()
+        Button("Cancel") { dismiss() }
+        Button("Save") {
+          save(trimmedTitle, explanation)
+          dismiss()
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(trimmedTitle.isEmpty)
+        .keyboardShortcut(.defaultAction)
+      }
+    }
+    .padding(22)
+    .frame(width: 500)
+  }
+}
+
 private struct ArchivedSubtaskRow: View {
   let ticket: DashboardTicket
   let subtask: TaskSubtask
@@ -1567,9 +1637,7 @@ private struct ArchivedSubtaskRow: View {
               .foregroundStyle(.secondary)
               .frame(width: 12, height: 18)
             VStack(alignment: .leading, spacing: 3) {
-              Text(subtask.title)
-                .font(.system(size: 12, weight: .semibold))
-                .lineLimit(isExpanded ? nil : 2)
+              SubtaskTitleLabel(title: subtask.title, isExpanded: isExpanded, fontSize: 12)
               Text("Completed subtask")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
@@ -1634,8 +1702,6 @@ private struct TicketCard: View {
   @State private var newSubtaskTitle = ""
   @State private var newSubtaskExplanation = ""
   @State private var editingSubtask: TaskSubtask?
-  @State private var editedSubtaskTitle = ""
-  @State private var editedSubtaskExplanation = ""
   @State private var renamingAgent: TaskSubtask?
   @State private var agentName = ""
   @State private var completingSubtask: TaskSubtask?
@@ -1685,20 +1751,11 @@ private struct TicketCard: View {
       } message: {
         Text("Create the work item first. You can assign one or more agents afterward.")
       }
-      .alert("Edit subtask", isPresented: Binding(
-        get: { editingSubtask != nil }, set: { if !$0 { editingSubtask = nil } }
-      )) {
-        TextField("Subtask title", text: $editedSubtaskTitle)
-        TextField("Optional explanation", text: $editedSubtaskExplanation)
-        Button("Save") {
-          if let subtask = editingSubtask {
-            model.updateSubtask(
-              subtask, for: ticket, title: editedSubtaskTitle,
-              explanation: editedSubtaskExplanation)
-          }
-          editingSubtask = nil
+      .sheet(item: $editingSubtask) { subtask in
+        SubtaskEditorSheet(subtask: subtask) { title, explanation in
+          model.updateSubtask(
+            subtask, for: ticket, title: title, explanation: explanation)
         }
-        Button("Cancel", role: .cancel) { editingSubtask = nil }
       }
       .alert("Rename agent", isPresented: Binding(
         get: { renamingAgent != nil }, set: { if !$0 { renamingAgent = nil } }
@@ -1907,7 +1964,7 @@ private struct TicketCard: View {
         HStack {
           Label("View Central Plan", systemImage: "doc.text")
           Spacer()
-          Image(systemName: "rectangle.expand.horizontal")
+          Image(systemName: "arrow.up.left.and.arrow.down.right")
         }.font(.system(size: 12, weight: .semibold))
       }.buttonStyle(.bordered).controlSize(.regular)
         .help("Read or edit the central plan alongside the task orchestrator")
@@ -1967,10 +2024,7 @@ private struct TicketCard: View {
               .foregroundStyle(.secondary)
               .frame(width: 12, height: 18)
             VStack(alignment: .leading, spacing: 3) {
-              Text(subtask.title)
-                .font(.system(size: 13, weight: .semibold))
-                .lineLimit(isExpanded ? nil : 2)
-                .fixedSize(horizontal: false, vertical: true)
+              SubtaskTitleLabel(title: subtask.title, isExpanded: isExpanded)
               Text("\(subtask.status.rawValue.capitalized) · \(agentCount) agent\(agentCount == 1 ? "" : "s")")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
@@ -1984,10 +2038,10 @@ private struct TicketCard: View {
 
         Menu {
           Button("Edit title and explanation", systemImage: "pencil") {
-            editedSubtaskTitle = subtask.title
-            editedSubtaskExplanation = subtask.assignmentDescription.isEmpty
-              ? (subtask.initialPrompt ?? "") : subtask.assignmentDescription
-            editingSubtask = subtask
+            Task { @MainActor in
+              await Task.yield()
+              editingSubtask = subtask
+            }
           }
           if subtask.status != .completed {
             Button(agentCount == 0 ? "New agent" : "Add agent", systemImage: "person.badge.plus") {
@@ -2057,9 +2111,11 @@ private struct TicketCard: View {
           if isOpening {
             ProgressView().controlSize(.mini).frame(width: 20, height: 20)
           } else {
-            Image(systemName: "terminal")
-              .frame(width: 20, height: 20)
-              .foregroundStyle(.secondary)
+            Image(systemName: agent.provider.symbolName)
+              .font(.system(size: 13, weight: .semibold))
+              .frame(width: 24, height: 24)
+              .foregroundStyle(.primary)
+              .background(Color.primary.opacity(0.08), in: Circle())
           }
           VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 5) {

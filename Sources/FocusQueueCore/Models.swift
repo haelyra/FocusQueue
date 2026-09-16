@@ -1051,6 +1051,14 @@ public enum AgentProvider: String, Codable, CaseIterable, Equatable, Sendable {
 
   public var executableName: String { rawValue }
 
+  /// A bundled system symbol keeps provider identity visible without external image assets.
+  public var symbolName: String {
+    switch self {
+    case .codex: "chevron.left.forwardslash.chevron.right"
+    case .claude: "sparkles"
+    }
+  }
+
   public func resumeArguments(sessionID: String) -> [String] {
     switch self {
     case .codex: ["resume", sessionID]

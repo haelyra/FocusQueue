@@ -875,15 +875,34 @@ final class QueueViewModel {
       return
     }
     let trimmedExplanation = explanation?.trimmingCharacters(in: .whitespacesAndNewlines)
+    var updated = subtask
+    updated.title = String(trimmedTitle.prefix(200))
+    updated.assignmentDescription = trimmedExplanation?.isEmpty == false
+      ? String(trimmedExplanation!.prefix(2_000)) : ""
+    let previousContext = taskContexts[ticket.id]
+    if var optimisticContext = previousContext,
+       let index = optimisticContext.subtasks.firstIndex(where: { $0.id == subtask.id }) {
+      optimisticContext.subtasks[index] = updated
+      optimisticContext.updatedAt = Date()
+      taskContexts[ticket.id] = optimisticContext
+    }
+    actionMessages[ticket.id] = "Saving subtask…"
     Task {
       do {
-        var updated = subtask
-        updated.title = String(trimmedTitle.prefix(200))
-        updated.assignmentDescription = trimmedExplanation?.isEmpty == false
-          ? String(trimmedExplanation!.prefix(2_000)) : ""
-        taskContexts[ticket.id] = try await taskContextStore.upsertSubtask(
+        let saved = try await taskContextStore.upsertSubtask(
           ticketID: ticket.id, subtask: updated)
-      } catch { actionMessages[ticket.id] = error.localizedDescription }
+        if taskContexts[ticket.id]?.subtasks.first(where: { $0.id == subtask.id })?.title
+          == updated.title {
+          taskContexts[ticket.id] = saved
+          actionMessages[ticket.id] = "Subtask updated."
+        }
+      } catch {
+        if taskContexts[ticket.id]?.subtasks.first(where: { $0.id == subtask.id })?.title
+          == updated.title {
+          taskContexts[ticket.id] = previousContext
+        }
+        actionMessages[ticket.id] = "Could not save the subtask: \(error.localizedDescription)"
+      }
     }
   }
 

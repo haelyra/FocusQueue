@@ -42,6 +42,7 @@ extension TaskContext {
     /// provider runtime. Split those roles while retaining the runtime ID so
     /// existing CLI progress commands and saved sessions keep working.
     mutating func separateLegacyAgentAssignments() {
+        guard schemaVersion < TaskContext.currentSchemaVersion else { return }
         var usedIDs = Set(subtasks.map(\.id))
         var separated: [TaskSubtask] = []
         separated.reserveCapacity(subtasks.count * 2)
@@ -81,9 +82,10 @@ extension TaskContext {
             separated.append(agent)
         }
 
-        guard separated != subtasks else { return }
-        subtasks = separated
-        refreshAssignmentStatuses()
+        let changed = separated != subtasks
+        if changed { subtasks = separated }
+        schemaVersion = TaskContext.currentSchemaVersion
+        if changed { refreshAssignmentStatuses() }
     }
 
     /// Assignments survive runtime removal and have a stable order within each priority.

@@ -219,7 +219,8 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
 }
 
 public struct TaskContext: Codable, Equatable, Sendable {
-    public var schemaVersion = 1
+    public static let currentSchemaVersion = 2
+    public var schemaVersion = TaskContext.currentSchemaVersion
     public var ticketID: String
     public var title: String
     public var summary: String

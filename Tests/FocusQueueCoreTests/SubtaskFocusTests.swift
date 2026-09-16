@@ -88,7 +88,12 @@ struct SubtaskFocusTests {
             sessionID: "saved-session", status: .blocked, lastHeartbeatAt: Date())
         legacy.progressSummary = "Waiting for a dependency"
         legacy.initialPrompt = "Repair the queue without losing the existing session."
-        _ = try await store.upsertSubtask(ticketID: ticket.id, subtask: legacy)
+        var persisted = try #require(try await store.load(ticketID: ticket.id))
+        persisted.schemaVersion = 1
+        persisted.subtasks = [legacy]
+        let contextURL = try await store.directory(ticketID: ticket.id)
+            .appendingPathComponent("context.json")
+        try JSONEncoder().encode(persisted).write(to: contextURL, options: .atomic)
 
         let migrated = try await store.ensureContext(ticket: ticket)
         let assignment = try #require(migrated.focusSubtasks.first)
@@ -101,6 +106,7 @@ struct SubtaskFocusTests {
         #expect(agent.parentSubtaskID == assignment.id)
         #expect(agent.sessionID == legacy.sessionID)
         #expect(!agent.tracksCompletion)
+        #expect(migrated.schemaVersion == TaskContext.currentSchemaVersion)
 
         let repeated = try await store.ensureContext(ticket: ticket)
         #expect(repeated.subtasks == migrated.subtasks)

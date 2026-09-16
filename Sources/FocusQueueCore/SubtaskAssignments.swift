@@ -38,6 +38,54 @@ extension TaskContext {
         Set(([agent.parentSubtaskID ?? agent.id] + agent.associatedSubtaskIDs).map(canonicalSubtaskID))
     }
 
+    /// Older contexts stored one record as both the work assignment and its
+    /// provider runtime. Split those roles while retaining the runtime ID so
+    /// existing CLI progress commands and saved sessions keep working.
+    mutating func separateLegacyAgentAssignments() {
+        var usedIDs = Set(subtasks.map(\.id))
+        var separated: [TaskSubtask] = []
+        separated.reserveCapacity(subtasks.count * 2)
+
+        for var agent in subtasks {
+            guard agent.parentSubtaskID == nil, agent.mergedIntoSubtaskID == nil,
+                  !agent.isAssignmentOnly, agent.hasAgent else {
+                separated.append(agent)
+                continue
+            }
+
+            var assignmentID = "assignment-\(agent.id)"
+            var suffix = 2
+            while usedIDs.contains(assignmentID) {
+                assignmentID = "assignment-\(agent.id)-\(suffix)"
+                suffix += 1
+            }
+            usedIDs.insert(assignmentID)
+
+            var assignment = TaskSubtask(
+                id: assignmentID, title: agent.title,
+                assignmentDescription: agent.assignmentDescription,
+                provider: agent.provider, status: agent.status,
+                progressSummary: agent.progressSummary,
+                lastHeartbeatAt: agent.lastHeartbeatAt,
+                includeInitializationPrompt: agent.includeInitializationPrompt,
+                runtimeMode: nil)
+            assignment.workspace = agent.workspace
+            assignment.initialPrompt = agent.initialPrompt
+            assignment.tracksCompletion = agent.tracksCompletion
+            assignment.completionOverrideAt = agent.completionOverrideAt
+            assignment.isAssignmentOnly = true
+
+            agent.parentSubtaskID = assignmentID
+            agent.tracksCompletion = false
+            separated.append(assignment)
+            separated.append(agent)
+        }
+
+        guard separated != subtasks else { return }
+        subtasks = separated
+        refreshAssignmentStatuses()
+    }
+
     /// Assignments survive runtime removal and have a stable order within each priority.
     public var focusSubtasks: [TaskSubtask] {
         subtasks.enumerated().filter { $0.element.parentSubtaskID == nil && $0.element.mergedIntoSubtaskID == nil }

@@ -424,6 +424,7 @@ public actor TaskContextStore {
         try locked(ticketID: ticket.id) {
             if var existing = try load(ticketID: ticket.id) {
                 let previous = existing
+                existing.separateLegacyAgentAssignments()
                 existing.title = ticket.title
                 existing.summary = ticket.summary
                 existing.successCriteria = ticket.doneWhen ?? existing.successCriteria
@@ -783,6 +784,7 @@ public actor TaskContextStore {
     /// Only an orchestrator boundary combines assignments. Aliases keep old CLI IDs valid.
     @discardableResult public func reconcileSubtasks(ticketID: String) throws -> TaskContext {
         try mutate(ticketID: ticketID, archiveChanges: true, archiveBeforeChanges: true) { context in
+            context.separateLegacyAgentAssignments()
             context.mergeSharedAgentSubtasks()
         }
     }

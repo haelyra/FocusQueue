@@ -21,6 +21,15 @@ bundle_path="$staging_dir/$product_name.app"
 /bin/cp "$map_helper_path" "$bundle_path/Contents/MacOS/focus-queue-map"
 /bin/cp "$project_dir/Config/config.example.json" "$bundle_path/Contents/Resources/config.example.json"
 /bin/cp "$build_dir/checkouts/Ink/LICENSE" "$bundle_path/Contents/Resources/Ink-LICENSE.txt"
+automation_resources="$bundle_path/Contents/Resources/automation"
+/bin/mkdir -p "$automation_resources/Scripts" "$automation_resources/Config"
+for script in \
+  focus_queue_morning.py focus_queue_codex.py focus_queue_lock.py focus_queue_mail.py \
+  focus_queue_discord.py focus_queue_connectors.py focus-queue-mail.js; do
+  /bin/cp "$project_dir/Scripts/$script" "$automation_resources/Scripts/$script"
+done
+/bin/cp "$project_dir/Config/task-proposals.schema.json" \
+  "$automation_resources/Config/task-proposals.schema.json"
 
 info_plist="$bundle_path/Contents/Info.plist"
 /usr/bin/plutil -create xml1 "$info_plist"

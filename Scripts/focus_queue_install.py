@@ -23,6 +23,20 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def tree_digest(path):
+    value = hashlib.sha256()
+    for item in sorted(path.rglob("*")):
+        if item.is_symlink():
+            raise ValueError(f"Symlink inside managed automation requires review: {item}")
+        if not item.is_file():
+            continue
+        value.update(str(item.relative_to(path)).encode())
+        value.update(b"\0")
+        value.update(item.read_bytes())
+        value.update(b"\0")
+    return value.hexdigest()
+
+
 def safe_destination(path, home):
     if not path.is_relative_to(home) or path == home:
         raise ValueError(f"Destination is outside the selected home: {path}")
@@ -47,6 +61,7 @@ class Installer:
         self.bundle = bundle.absolute()
         self.home = home.absolute()
         self.support = self.home / "Library/Application Support" / PRODUCT
+        self.automation = self.support / "automation"
         self.app = self.home / "Applications" / f"{PRODUCT}.app"
         self.helper = self.home / ".local/bin/focus-queue-session"
         self.agent = self.home / "Library/LaunchAgents" / f"{IDENTIFIER}.plist"
@@ -63,8 +78,17 @@ class Installer:
         for name in ("ECCFocusQueue", "focus-queue-session"):
             if not os.access(self.bundle / "Contents/MacOS" / name, os.X_OK):
                 raise ValueError(f"Built app is incomplete: missing executable {name}.")
+        bundled_automation = self.bundle / "Contents/Resources/automation"
+        for relative in (
+            "Scripts/focus_queue_morning.py",
+            "Scripts/focus_queue_lock.py",
+            "Config/task-proposals.schema.json",
+        ):
+            source = bundled_automation / relative
+            if source.is_symlink() or not source.is_file():
+                raise ValueError(f"Built app is incomplete: missing automation file {relative}.")
         subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(self.bundle)], check=True, capture_output=True)
-        for path in (self.app, self.helper, self.agent, self.support, self.manifest):
+        for path in (self.app, self.helper, self.agent, self.support, self.automation, self.manifest):
             safe_destination(path, self.home)
         if self.app.exists() and app_identity(self.app) != IDENTIFIER:
             raise ValueError(f"Installation target belongs to another app: {self.app}")
@@ -91,10 +115,20 @@ class Installer:
             value = json.loads(self.manifest.read_text())
             if value.get("product") != IDENTIFIER or value.get("version") != 1:
                 raise ValueError("Existing installation manifest is unrecognized.")
+            automation_entry = next(
+                (item for item in value.get("artifacts", [])
+                 if item.get("path") == str(self.automation)),
+                None,
+            )
+            if automation_entry is not None and self.automation.exists():
+                if (self.automation.is_symlink() or not self.automation.is_dir()
+                        or tree_digest(self.automation) != automation_entry.get("sha256")):
+                    raise ValueError(
+                        f"Installed automation changed; retained for review: {self.automation}")
         return {"mode": "preflight", "application": str(self.app), "helper": str(self.helper),
                 "launchAtLogin": self.login, "desktopShortcut": self.shortcut,
                 "configuration": "preserve existing; first launch offers setup",
-                "companions": "unchanged; no mail or scheduled agent installation",
+                "companions": "app-owned automation updated; companion launch agents unchanged",
                 "signature": "verified (does not imply notarization)"}
 
     def stop(self):
@@ -147,7 +181,16 @@ class Installer:
             subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(staged_app)], check=True, capture_output=True)
             staged_helper = stage / self.helper.name
             shutil.copy2(staged_app / "Contents/MacOS/focus-queue-session", staged_helper)
-            planned = [(staged_app, self.app), (staged_helper, self.helper)]
+            staged_automation = stage / "automation-payload"
+            shutil.copytree(
+                staged_app / "Contents/Resources/automation",
+                staged_automation,
+            )
+            planned = [
+                (staged_app, self.app),
+                (staged_helper, self.helper),
+                (staged_automation, self.automation),
+            ]
             if self.login:
                 staged_agent = stage / self.agent.name
                 staged_agent.write_bytes(plistlib.dumps({"Label": IDENTIFIER,
@@ -163,7 +206,8 @@ class Installer:
             manifest = {"version": 1, "product": IDENTIFIER, "backupDirectory": str(backup),
                 "artifacts": [{"path": str(target),
                                "kind": "symlink" if source.is_symlink() else "directory" if source.is_dir() else "file",
-                               "sha256": digest(source) if source.is_file() and not source.is_symlink() else None}
+                               "sha256": digest(source) if source.is_file() and not source.is_symlink()
+                               else tree_digest(source) if target == self.automation else None}
                               for source, target in planned],
                 "launchAtLogin": self.login, "desktopShortcut": self.shortcut}
             staged_manifest = stage / "manifest.json"
@@ -224,7 +268,10 @@ def uninstall(home, *, check=False, stop=True):
     manifest = json.loads(installer.manifest.read_text())
     if manifest.get("product") != IDENTIFIER or manifest.get("version") != 1:
         raise ValueError("Unrecognized installation manifest.")
-    allowed = {installer.app, installer.helper, installer.agent, installer.desktop}
+    allowed = {
+        installer.app, installer.helper, installer.agent,
+        installer.desktop, installer.automation,
+    }
     targets = []
     for item in manifest["artifacts"]:
         path = Path(item["path"])
@@ -241,6 +288,10 @@ def uninstall(home, *, check=False, stop=True):
             if path == installer.app:
                 if app_identity(path) != IDENTIFIER:
                     raise ValueError(f"App identity changed; retained: {path}")
+            elif path == installer.automation:
+                if (path.is_symlink() or not path.is_dir()
+                        or tree_digest(path) != item["sha256"]):
+                    raise ValueError(f"Installed automation changed; retained: {path}")
             elif not path.is_file() or digest(path) != item["sha256"]:
                 raise ValueError(f"Installed file changed; retained: {path}")
         targets.append(path)

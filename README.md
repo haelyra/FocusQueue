@@ -67,12 +67,12 @@ clean-account validation, and support policies.
 ## Task orchestration
 
 Tasks now lead with a short explanation, an expandable **Central plan**, progress,
-and named subtask rows. Click a subtask to focus or resume its agent; use **New
-agent** to choose an assignment and provider. **Attach** can associate an existing
-session with an unassigned subtask. Right-click a subtask to rename it. Its working
-indicator requires a fresh progress report and expires after five minutes; a green
-dot indicates an unread completion. Task type menus support ordinary tasks, long
-running work, subtasks, and customer concerns requiring human review.
+and named subtask rows. Expand a subtask to read its full title, explanation, and
+latest update, then use **Open agent** to focus or resume its session. The three-dot
+menu edits details, requests verified completion, opens deployment logs, or deletes
+the archived entry after confirmation. Completed subtasks move into collapsed
+archives on their task and the Completed tab. Task type menus support ordinary
+tasks, long running work, subtasks, and customer concerns requiring human review.
 
 The central Markdown plan renders inside the expanded panel with a task-specific
 orchestrator conversation beside it, extending inward across the screen. Drag the
@@ -183,7 +183,8 @@ rewrite of the scheduler or report engine.
   thread. It can explain order, answer task questions, and perform explicitly
   requested wording or link changes before the dashboard refreshes. Unsent
   drafts survive tab changes for the life of the app, and the composer grows
-  upward for long messages while preserving transcript space.
+  upward for long messages while preserving transcript space. The arrow beside
+  the tab opens the same conversation beside the queue so tasks remain visible.
 - Verified read-only Queue chat access to `haley@ecc.tools`, including search,
   full-message read, and explicit Apple Mail open operations. Every displayed
   mail answer must match a fresh local proof receipt containing the connector,
@@ -211,7 +212,7 @@ rewrite of the scheduler or report engine.
   session ID, app-created runtime, and working directory directly from the agent
   environment, labels the exact terminal, and immediately notifies the running app. A
   task can retain multiple agents, displayed through readable named assignments.
-- Clicking an agent's descriptive subtask title focuses or reattaches the exact
+- **Open agent** on a descriptive subtask focuses or reattaches the exact
   saved runtime. Direct sessions can be focused only while their original pane remains open. The app never substitutes a blank terminal or a provider
   history command. **Manage agents** can remove one association or clear the
   current agent queue after its state has been retained in durable history.

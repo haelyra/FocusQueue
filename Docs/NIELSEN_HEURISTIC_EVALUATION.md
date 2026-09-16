@@ -41,9 +41,9 @@ The highest remaining product risk is that some apparently deterministic UI acti
 | --- | --- | --- |
 | Agent status | A spinner represented active work, plain text carried status, and a tiny green dot meant unread completion | Each agent has a labeled badge with an icon and color: yellow Working, red Issue, green Done and New, gray Done and Seen, gray Queued, or gray No recent update |
 | Session opening | Open actions kept their normal appearance while WezTerm discovery and activation ran | Agent rows, the agent update inspector, managed-session rows, terminal browsing, launch, and dashboard refresh show progress indicators and disable duplicate requests |
-| Completion action | An unlabeled empty circle requested agent completion review | A green `Verify done` button states the action and preserves the evidence-review behavior |
+| Completion action | An unlabeled empty circle requested agent completion review | `Mark as complete…` lives in the named action menu and asks for confirmation before starting evidence review |
 | Task checkboxes | Submitted completion controls used warning or information colors | Checked controls use the success green; the adjacent review pill still reports Pending, Running, or Accepted |
-| Deletion | One trash glyph required a double-click and individual subtasks had no visible remove action | Semantic trash buttons ask for confirmation, describe the effect, retain history, and leave the process running |
+| Subtask actions | Individual actions were spread across buttons, a context menu, and an ambiguous delete control | A labeled three-dot menu groups editing, verified completion, deployment logs, and confirmed deletion; completed subtasks move into task and Completed-tab archives |
 | Bulk removal | `Clear queue` inside one task removed agent entries from every task | `Remove all` names the destructive action and affects only the selected task |
 | Hidden click target | Clicking a ticket title opened the agent manager, duplicating the named Manage agents button | Ticket titles are informational and named controls own agent and detail disclosure |
 | Error recovery | A failed session open appeared as secondary body text | The affected agent receives a red Issue badge and the detailed error is presented with an error icon and color |
@@ -66,7 +66,7 @@ Remaining severity: 2. Daily report generation and queue chat show activity, but
 
 Baseline severity: 3. `Idle`, live terminal state, unread completion, and completion review were easy to conflate. `Clear queue` sounded local to the open task but acted globally.
 
-Resolved in this pass: user-facing labels now say Working, Issue, Done and New, Done and Seen, Queued, No recent update, Finding session, Verify done, Remove agent, and Remove all. The removal dialogs explain that removing an entry does not terminate its process.
+Resolved in this pass: user-facing labels now say Working, Issue, Done and New, Done and Seen, Queued, No recent update, Finding session, Mark as complete, Delete subtask, and Remove all. The removal dialogs explain that removing an entry does not terminate its process.
 
 Remaining severity: 2. Browse terminals still leads with window, tab, and pane IDs. Grouping saved agent terminals by task and assignment before listing raw terminal identifiers would better match the user's goal of finding an agent.
 

@@ -35,6 +35,7 @@ public enum TaskSessionBinding {
 public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     public var id: String
     public var title: String
+    public var assignmentDescription: String
     public var provider: AgentProvider
     public var sessionID: String?
     public var status: TaskSubtaskStatus
@@ -47,14 +48,17 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     public var terminalPaneID: Int?
     public var terminalSocketPath: String?
 
-    public init(id: String = UUID().uuidString, title: String, provider: AgentProvider = .codex,
+    public init(id: String = UUID().uuidString, title: String,
+                assignmentDescription: String = "", provider: AgentProvider = .codex,
                 sessionID: String? = nil, status: TaskSubtaskStatus = .queued,
                 progressSummary: String = "", lastHeartbeatAt: Date? = nil,
                 completionUnread: Bool = false, includeInitializationPrompt: Bool = true,
                 tmux: TmuxSessionReference? = nil,
                 runtimeMode: AgentRuntimeMode? = .tmux,
                 terminalPaneID: Int? = nil, terminalSocketPath: String? = nil) {
-        self.id = id; self.title = title; self.provider = provider; self.sessionID = sessionID
+        self.id = id; self.title = title
+        self.assignmentDescription = assignmentDescription
+        self.provider = provider; self.sessionID = sessionID
         self.status = status; self.progressSummary = progressSummary
         self.lastHeartbeatAt = lastHeartbeatAt; self.completionUnread = completionUnread
         self.includeInitializationPrompt = includeInitializationPrompt
@@ -65,7 +69,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, provider, sessionID, status, progressSummary, lastHeartbeatAt, completionUnread, includeInitializationPrompt, tmux
+        case id, title, assignmentDescription, provider, sessionID, status, progressSummary, lastHeartbeatAt, completionUnread, includeInitializationPrompt, tmux
         case runtimeMode, terminalPaneID, terminalSocketPath
     }
 
@@ -73,6 +77,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(String.self, forKey: .id)
         title = try values.decode(String.self, forKey: .title)
+        assignmentDescription = try values.decodeIfPresent(String.self, forKey: .assignmentDescription) ?? ""
         provider = try values.decode(AgentProvider.self, forKey: .provider)
         sessionID = try values.decodeIfPresent(String.self, forKey: .sessionID)
         status = try values.decode(TaskSubtaskStatus.self, forKey: .status)
@@ -123,9 +128,11 @@ public struct TaskContext: Codable, Equatable, Sendable {
             Register this pane: FOCUS_QUEUE_PROVIDER=\(subtask.provider.rawValue) FOCUS_QUEUE_TASK_ID=\(ticketID) FOCUS_QUEUE_SUBTASK_ID=\(subtask.id) \(command) attach \(ticketID)
             """
         }
+        let assignment = subtask.assignmentDescription.isEmpty
+            ? "" : "Assignment details: \(subtask.assignmentDescription)\n"
         return """
         Work on \(ticketID): \(title). Your subtask is \(subtask.title) (\(subtask.id)).
-        Read the central plan at \(planPath) and context at \(contextDirectory.appendingPathComponent("context.json").path) before acting. The central plan is the source of truth. Keep it current with decisions, checks, and handoff details; link supporting canvases from it.
+        \(assignment)Read the central plan at \(planPath) and context at \(contextDirectory.appendingPathComponent("context.json").path) before acting. The central plan is the source of truth. Keep it current with decisions, checks, and handoff details; link supporting canvases from it.
         Success criteria: \(successCriteria)
         Register this pane: FOCUS_QUEUE_PROVIDER=\(subtask.provider.rawValue) FOCUS_QUEUE_TASK_ID=\(ticketID) FOCUS_QUEUE_SUBTASK_ID=\(subtask.id) \(command) attach \(ticketID)
         Report concise progress and refresh activity at meaningful milestones (at least every 5 minutes while working): \(command) progress \(ticketID) \(subtask.id) working "short progress summary"
@@ -361,12 +368,19 @@ public actor TaskContextStore {
         }
     }
 
-    @discardableResult public func renameSubtask(ticketID: String, subtaskID: String, title: String) throws -> TaskContext {
+    @discardableResult public func renameSubtask(
+        ticketID: String, subtaskID: String, title: String,
+        assignmentDescription: String? = nil
+    ) throws -> TaskContext {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { throw TaskContextError.commandFailed("Give the subtask a readable name.") }
         return try mutate(ticketID: ticketID) { context in
             guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
             context.subtasks[index].title = String(title.prefix(200))
+            if let assignmentDescription {
+                context.subtasks[index].assignmentDescription = String(
+                    assignmentDescription.trimmingCharacters(in: .whitespacesAndNewlines).prefix(2_000))
+            }
         }
     }
 

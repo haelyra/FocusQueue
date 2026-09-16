@@ -26,7 +26,8 @@ struct QueueViewModelTests {
     let model = await fixture.model(agent: ControlledQueueAgent(), terminalController: recorder,
       taskAgentLauncher: TaskAgentLauncher(runner: launcherRunner, candidateSockets: []))
     model.launchAgent(for: fixture.tickets[0], title: "Direct worker", provider: .codex,
-      repositoryPath: repository.path, includePrompt: false, useTmux: false)
+      repositoryPath: repository.path, assignmentDescription: "Keep the exact pane identity",
+      includePrompt: false, useTmux: false)
     try await eventually { model.launchingTaskIDs.isEmpty }
     #expect(await recorder.opened == true)
     #expect(await launcherRunner.spawnCount == 1)
@@ -34,10 +35,47 @@ struct QueueViewModelTests {
     #expect(subtask.terminalPaneID == 42)
     #expect(subtask.runtimeMode == .terminal)
     #expect(subtask.status == .working)
+    #expect(subtask.assignmentDescription == "Keep the exact pane identity")
     let message = try #require(model.actionMessages["ECC-101"])
     #expect(message.contains(failReveal ? "Click the subtask to retry" : "Ready for your instructions"))
     model.openLaunchDiagnostics(for: subtask)
     #expect(model.launchDiagnostics?.text.contains(failReveal ? "view-failed" : "\"phase\":\"ready\"") == true)
+  }
+
+  @Test("Queue chat can open beside the task list and remains mutually exclusive with other inspectors")
+  func queueChatSideInspector() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    var visibility: [Bool] = []
+    model.reportVisibilityHandler = { visibility.append($0) }
+
+    model.setQueueChatInspectorPresented(true)
+    #expect(model.isQueueChatInspectorPresented)
+    #expect(model.isInspectorPresented)
+    #expect(visibility.last == true)
+
+    model.openPlan(for: fixture.tickets[0])
+    #expect(!model.isQueueChatInspectorPresented)
+    #expect(model.presentedPlanTicketID == "ECC-101")
+
+    model.setQueueChatInspectorPresented(true)
+    #expect(model.presentedPlanTicketID == nil)
+    model.setDailyReportPresented(true)
+    #expect(!model.isQueueChatInspectorPresented)
+    #expect(model.isDailyReportPresented)
+
+    model.setQueueChatInspectorPresented(true)
+    model.toggleQueueChatInspector()
+    #expect(!model.isQueueChatInspectorPresented)
+    #expect(!model.isInspectorPresented)
+    #expect(visibility.last == false)
+
+    model.setQueueChatInspectorPresented(true)
+    model.setPanelCollapsed(true)
+    #expect(model.isPanelCollapsed)
+    #expect(!model.isQueueChatInspectorPresented)
+    #expect(!model.isInspectorPresented)
   }
   @Test("Launch diagnostics open inside Focus Queue without a JSONL file association")
   func inlineLaunchDiagnostics() async throws {

@@ -417,6 +417,7 @@ struct NewTaskAgentView: View {
   let model: QueueViewModel
   @Environment(\.dismiss) private var dismiss
   @State private var title = ""
+  @State private var assignmentDescription = ""
   @State private var provider: AgentProvider = .codex
   @State private var repository = ""
   @AppStorage("agentIncludesInitializationPrompt") private var includePrompt = true
@@ -438,6 +439,13 @@ struct NewTaskAgentView: View {
       .font(.callout).foregroundStyle(.secondary)
       TextField("Clear subtask title, for example: Verify Telegram inbox polling", text: $title)
         .accessibilityLabel("Descriptive subtask title")
+      TextField(
+        "Optional explanation, outcome, or constraints",
+        text: $assignmentDescription,
+        axis: .vertical
+      )
+      .lineLimit(2...6)
+      .accessibilityLabel("Optional subtask explanation")
       Picker("Provider", selection: $provider) {
         ForEach(AgentProvider.allCases, id: \.self) { Text($0.displayName).tag($0) }
       }.pickerStyle(.segmented)
@@ -476,13 +484,14 @@ struct NewTaskAgentView: View {
       )
       .font(.caption).foregroundStyle(.secondary)
       Text("The title appears in every agent list, so describe the outcome instead of using a number.")
-        .font(.caption).foregroundStyle(.secondary)
+      .font(.caption).foregroundStyle(.secondary)
       HStack {
         Spacer()
         Button("Cancel") { dismiss() }
         Button("Start agent") {
           model.launchAgent(
             for: ticket, title: title, provider: provider, repositoryPath: repository,
+            assignmentDescription: assignmentDescription,
             includePrompt: includePrompt, useTmux: useTmux && tmuxAvailable)
           dismiss()
         }.buttonStyle(.borderedProminent)
@@ -492,7 +501,8 @@ struct NewTaskAgentView: View {
       }
     }.padding(24).frame(width: 430)
       .onAppear {
-        title = ticket.next.map { String($0.prefix(100)) } ?? "Implement \(ticket.title)"
+        title = String("Implement \(ticket.title)".prefix(120))
+        assignmentDescription = ticket.next ?? ""
         let context = model.taskContexts[ticket.id]
         repository =
           [

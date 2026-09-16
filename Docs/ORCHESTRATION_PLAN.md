@@ -103,8 +103,10 @@ These are product readiness work, separate from the requested local revisions.
 - Task conversations use individual persistent Codex sessions. Displayed replies
   stay attached to the initiating task even while the user opens another plan.
 - Working status expires after five minutes without an explicit progress report.
-  Completed subtasks retain a green unread dot until viewed. Right-click a subtask
-  to rename it; use Attach's assignment picker to recover an unbound launch.
+  Completed subtasks retain an explicit green unread state until viewed and move
+  into collapsed archives on the task and Completed tab. Expand a row for its full
+  assignment or use the three-dot menu; use Attach's assignment picker to recover
+  an unbound launch.
 - The document renderer disables content JavaScript and remote embedded resources.
   Links are opened only after a deliberate user action. Markdown remains editable
   and saved drafts survive closing the inspector and restarting the app.

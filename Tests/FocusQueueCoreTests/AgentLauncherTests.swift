@@ -16,6 +16,19 @@ import Testing
   #expect(args.contains("/tmp/task with spaces"))
 }
 
+@Test func subtaskExplanationSurvivesPersistenceAndAppearsInTheAgentPrompt() throws {
+  let context = TaskContext(
+    ticketID: "ECC-1", title: "Expandable subtask", summary: "", successCriteria: "Checks pass",
+    planPath: "/tmp/support/tasks/ECC-1/plan.md", worktreePath: "/tmp/worktree",
+    updatedAt: Date())
+  let subtask = TaskSubtask(
+    id: "details", title: "Keep the full title visible",
+    assignmentDescription: "Explain the interaction and retain archived results.")
+  let decoded = try JSONDecoder().decode(TaskSubtask.self, from: JSONEncoder().encode(subtask))
+  #expect(decoded.assignmentDescription == subtask.assignmentDescription)
+  #expect(context.agentPrompt(subtask: decoded).contains("Assignment details: \(subtask.assignmentDescription)"))
+}
+
 @Test func agentShellAliasesAndFunctionsPreserveHostileArgumentsInBothPromptModes() async throws {
   let root = FileManager.default.temporaryDirectory.appendingPathComponent("agent-shell-test-\(UUID().uuidString)")
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -74,7 +87,9 @@ import Testing
     supportDirectory: URL(fileURLWithPath: "/tmp/support"))
   #expect(command.last == context.contextDirectory.path)
   let legacy = Data(#"{"id":"old","title":"Legacy","provider":"codex","status":"queued"}"#.utf8)
-  #expect(try JSONDecoder().decode(TaskSubtask.self, from: legacy).includeInitializationPrompt)
+  let legacySubtask = try JSONDecoder().decode(TaskSubtask.self, from: legacy)
+  #expect(legacySubtask.includeInitializationPrompt)
+  #expect(legacySubtask.assignmentDescription.isEmpty)
 }
 
 private actor AgentLaunchRunner: ProcessRunning {

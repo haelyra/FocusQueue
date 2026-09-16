@@ -81,8 +81,11 @@ func taskContextProgressAndHeartbeat() async throws {
     #expect(context.subtasks[0].effectiveStatus(now: now.addingTimeInterval(10_000)) == .completed)
     context = try await store.acknowledgeCompletion(ticketID: "ECC-901", subtaskID: "archive")
     #expect(!context.subtasks[0].completionUnread)
-    context = try await store.renameSubtask(ticketID: "ECC-901", subtaskID: "archive", title: "  Durable archival  ")
+    context = try await store.renameSubtask(
+        ticketID: "ECC-901", subtaskID: "archive", title: "  Durable archival  ",
+        assignmentDescription: "  Retain the full completion evidence.  ")
     #expect(context.subtasks[0].title == "Durable archival")
+    #expect(context.subtasks[0].assignmentDescription == "Retain the full completion evidence.")
     #expect(context.subtasks[0].sessionID == "session-123")
     #expect(context.subtasks[0].status == .completed)
 }

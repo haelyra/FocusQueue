@@ -58,6 +58,7 @@ struct EmbeddedPlanTests {
     #expect(plan.preferredWidth(compactWidth: 440) == 1_440)
     #expect(plan.minimumWidth - 440 - 49 >= QueueInspectorLayout.inspectorMinimumWidth)
     #expect(QueueInspectorLayout.closed.preferredWidth(compactWidth: 460) == 460)
+    #expect(QueueInspectorLayout.chat.preferredWidth(compactWidth: 440) == 1_020)
     #expect(QueueInspectorLayout.report.preferredWidth(compactWidth: 440) == 1_020)
     for width in [900.0, 1_280, 1_440, 1_920, 3_440] {
       let screen = CGRect(x: -width, y: 100, width: width, height: 900)

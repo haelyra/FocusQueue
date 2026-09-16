@@ -65,6 +65,7 @@ final class QueueViewModel {
   private(set) var taskChatMessages: [String: [QueueChatMessage]] = [:]
   private(set) var taskContexts: [String: TaskContext] = [:]
   private(set) var subtaskActivityRevision = 0
+  private(set) var isQueueChatInspectorPresented = false
   private(set) var presentedAgentUpdate: QueueAgentUpdate?
   private(set) var presentedPlanTicketID: String?
   private(set) var presentedPlanURL: URL?
@@ -468,7 +469,10 @@ final class QueueViewModel {
     }
   }
 
-  var isInspectorPresented: Bool { isDailyReportPresented || presentedPlanTicketID != nil || presentedAgentUpdate != nil }
+  var isInspectorPresented: Bool {
+    isQueueChatInspectorPresented || isDailyReportPresented || presentedPlanTicketID != nil
+      || presentedAgentUpdate != nil
+  }
 
   var presentedPlanTicket: DashboardTicket? {
     dashboard.tickets.first { $0.id == presentedPlanTicketID }
@@ -639,6 +643,7 @@ final class QueueViewModel {
   }
 
   func openPlan(for ticket: DashboardTicket, sourceURL: URL? = nil) {
+    isQueueChatInspectorPresented = false
     presentedAgentUpdate = nil
     isDailyReportPresented = false
     presentedPlanTicketID = ticket.id
@@ -692,6 +697,7 @@ final class QueueViewModel {
   }
 
   func openAgentUpdate(_ update: QueueAgentUpdate) {
+    isQueueChatInspectorPresented = false
     presentedPlanTicketID = nil
     presentedPlanURL = nil
     isDailyReportPresented = false
@@ -731,6 +737,21 @@ final class QueueViewModel {
     presentedPlanTicketID = nil
     presentedPlanURL = nil
     reportVisibilityHandler?(isInspectorPresented)
+  }
+
+  func setQueueChatInspectorPresented(_ presented: Bool) {
+    if presented {
+      presentedAgentUpdate = nil
+      presentedPlanTicketID = nil
+      presentedPlanURL = nil
+      isDailyReportPresented = false
+    }
+    isQueueChatInspectorPresented = presented
+    reportVisibilityHandler?(isInspectorPresented)
+  }
+
+  func toggleQueueChatInspector() {
+    setQueueChatInspectorPresented(!isQueueChatInspectorPresented)
   }
 
   func reloadPresentedPlan() async {
@@ -781,9 +802,16 @@ final class QueueViewModel {
     }
   }
 
-  func renameSubtask(_ subtask: TaskSubtask, for ticket: DashboardTicket, title: String) {
+  func renameSubtask(
+    _ subtask: TaskSubtask, for ticket: DashboardTicket, title: String,
+    assignmentDescription: String? = nil
+  ) {
     Task {
-      do { taskContexts[ticket.id] = try await taskContextStore.renameSubtask(ticketID: ticket.id, subtaskID: subtask.id, title: title) }
+      do {
+        taskContexts[ticket.id] = try await taskContextStore.renameSubtask(
+          ticketID: ticket.id, subtaskID: subtask.id, title: title,
+          assignmentDescription: assignmentDescription)
+      }
       catch { actionMessages[ticket.id] = error.localizedDescription }
     }
   }
@@ -968,9 +996,12 @@ final class QueueViewModel {
 
   func launchAgent(
     for ticket: DashboardTicket, title: String, provider: AgentProvider,
-    repositoryPath: String, includePrompt: Bool = true, useTmux: Bool = true
+    repositoryPath: String, assignmentDescription: String = "",
+    includePrompt: Bool = true, useTmux: Bool = true
   ) {
     let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    let assignmentDescription = assignmentDescription.trimmingCharacters(
+      in: .whitespacesAndNewlines)
     guard !title.isEmpty, launchingTaskIDs.insert(ticket.id).inserted else { return }
     actionMessages[ticket.id] = "Preparing task worktree and agent context…"
     Task {
@@ -981,7 +1012,8 @@ final class QueueViewModel {
       do {
         let context = try await taskWorktreeManager.provision(ticket: ticket, repositoryPath: repositoryPath, store: taskContextStore)
         let subtask = TaskSubtask(
-          title: title, provider: provider, includeInitializationPrompt: includePrompt,
+          title: title, assignmentDescription: String(assignmentDescription.prefix(2_000)),
+          provider: provider, includeInitializationPrompt: includePrompt,
           runtimeMode: useTmux ? .tmux : .terminal)
         assignment = subtask
         agentSessionErrors[
@@ -1521,7 +1553,12 @@ final class QueueViewModel {
   }
 
   func setDailyReportPresented(_ presented: Bool) {
-    if presented { presentedAgentUpdate = nil; presentedPlanTicketID = nil; presentedPlanURL = nil }
+    if presented {
+      isQueueChatInspectorPresented = false
+      presentedAgentUpdate = nil
+      presentedPlanTicketID = nil
+      presentedPlanURL = nil
+    }
     isDailyReportPresented = presented
     reportVisibilityHandler?(isInspectorPresented)
     if presented { markReportViewed() }
@@ -1682,7 +1719,11 @@ final class QueueViewModel {
   }
 
   func setPanelCollapsed(_ collapsed: Bool) {
-    if collapsed { closeAgentUpdate(); closePlan() }
+    if collapsed {
+      closeAgentUpdate()
+      closePlan()
+      setQueueChatInspectorPresented(false)
+    }
     if collapsed, isDailyReportPresented {
       setDailyReportPresented(false)
     }

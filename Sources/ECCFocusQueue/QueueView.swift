@@ -7,6 +7,7 @@ struct QueueView: View {
   let model: QueueViewModel
   @State private var showsMoreTasks = false
   @State private var showsPastCompletedTasks = false
+  @State private var showsArchivedSubtasks = false
   @State private var visiblePastCompletedCount = 0
   @State private var screen: QueueScreen = .queue
   @State private var selectedTab: QueueTab = .focus
@@ -94,7 +95,24 @@ struct QueueView: View {
   }
 
   @ViewBuilder private var inspector: some View {
-    if let update = model.presentedAgentUpdate {
+    if model.isQueueChatInspectorPresented {
+      VStack(alignment: .leading, spacing: 10) {
+        HStack {
+          Label("Queue chat", systemImage: "bubble.left.and.bubble.right")
+            .font(.headline)
+          Spacer()
+          Button { model.setQueueChatInspectorPresented(false) } label: {
+            Image(systemName: "xmark")
+          }
+          .buttonStyle(.plain)
+          .minimumHitTarget()
+          .accessibilityLabel("Close Queue chat side panel")
+          .help("Close Queue chat side panel")
+        }
+        QueueAgentChatView(model: model, draft: $queueAgentDraft)
+      }
+      .frame(minWidth: 320, idealWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
+    } else if let update = model.presentedAgentUpdate {
       AgentUpdateView(model: model, update: update, draft: Binding(
         get: { updateDrafts[update.id] ?? "" }, set: { updateDrafts[update.id] = $0 }
       )).id(update.id)
@@ -227,6 +245,10 @@ struct QueueView: View {
     VStack(spacing: 10) {
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 10) {
+          if completedSubtaskCount > 0 {
+            archivedSubtasksSection
+          }
+
           SectionHeading(
             title: "Completed today",
             detail: "\(model.completedTodayTickets.count)"
@@ -270,11 +292,87 @@ struct QueueView: View {
   }
 
   private var queueTabs: some View {
-    Picker("Queue section", selection: $selectedTab) {
-      Text("Focus \(model.openTickets.count)").tag(QueueTab.focus)
-      Text("Completed \(model.completedTodayTickets.count)").tag(QueueTab.completed)
-      Text("Queue chat").tag(QueueTab.agent)
-    }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Queue section")
+    HStack(spacing: 6) {
+      Picker("Queue section", selection: $selectedTab) {
+        Text("Focus \(model.openTickets.count)").tag(QueueTab.focus)
+        Text("Completed \(model.completedTodayTickets.count)").tag(QueueTab.completed)
+        Text("Queue chat").tag(QueueTab.agent)
+      }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+      .accessibilityLabel("Queue section")
+      .onChange(of: selectedTab) { _, tab in
+        if tab == .agent, model.isQueueChatInspectorPresented {
+          model.setQueueChatInspectorPresented(false)
+        }
+      }
+
+      Button {
+        if selectedTab == .agent { selectedTab = .focus }
+        model.toggleQueueChatInspector()
+      } label: {
+        Image(
+          systemName: model.isQueueChatInspectorPresented
+            ? "rectangle.righthalf.inset.filled" : "arrow.right.to.line.compact"
+        )
+        .font(.system(size: 13, weight: .semibold))
+      }
+      .buttonStyle(.bordered)
+      .minimumHitTarget()
+      .accessibilityLabel(
+        model.isQueueChatInspectorPresented
+          ? "Close Queue chat beside the task queue" : "Open Queue chat beside the task queue"
+      )
+      .help(
+        model.isQueueChatInspectorPresented
+          ? "Close side-by-side Queue chat" : "Keep the task queue visible beside Queue chat"
+      )
+    }
+  }
+
+  private var completedSubtaskTickets: [DashboardTicket] {
+    model.dashboard.tickets.filter { ticket in
+      model.subtasks(for: ticket.id).contains { $0.status == .completed }
+    }
+  }
+
+  private var completedSubtaskCount: Int {
+    completedSubtaskTickets.reduce(0) { count, ticket in
+      count + model.subtasks(for: ticket.id).filter { $0.status == .completed }.count
+    }
+  }
+
+  private var archivedSubtasksSection: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      SectionHeading(title: "Archived subtasks", detail: "\(completedSubtaskCount)")
+      DisclosureGroup(isExpanded: $showsArchivedSubtasks) {
+        LazyVStack(alignment: .leading, spacing: 8) {
+          ForEach(completedSubtaskTickets) { ticket in
+            VStack(alignment: .leading, spacing: 6) {
+              Text("\(ticket.id) · \(ticket.title)")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+              ForEach(model.subtasks(for: ticket.id).filter { $0.status == .completed }) {
+                subtask in
+                TaskSubtaskRow(
+                  ticket: ticket, subtask: subtask, model: model, showsTicketIdentity: false)
+              }
+            }
+          }
+        }
+        .padding(.top, 8)
+      } label: {
+        Label(
+          showsArchivedSubtasks ? "Hide completed agents" : "Show completed agents",
+          systemImage: "archivebox"
+        )
+        .font(.system(size: 13, weight: .semibold))
+      }
+      .padding(12)
+      .notificationSurface(radius: 14)
+      .accessibilityHint("Completed subtasks retain their details, session links, and deployment logs.")
+    }
   }
 
   private var compactHeader: some View {
@@ -1457,9 +1555,7 @@ private struct TicketCard: View {
   @State private var showsAgentPicker = false
   @State private var showsContext = false
   @State private var showsNewAgent = false
-  @State private var renamingSubtask: TaskSubtask?
-  @State private var subtaskPendingRemoval: TaskSubtask?
-  @State private var subtaskName = ""
+  @State private var showsCompletedSubtasks = false
   @Environment(\.queueAccentStyle) private var accentStyle
 
   private var review: CompletionRequest? { model.latestReview(for: ticket.id) }
@@ -1499,33 +1595,6 @@ private struct TicketCard: View {
       }
     }.notificationSurface(radius: 18)
       .sheet(isPresented: $showsNewAgent) { NewTaskAgentView(ticket: ticket, model: model) }
-      .alert("Rename subtask", isPresented: Binding(
-        get: { renamingSubtask != nil }, set: { if !$0 { renamingSubtask = nil } }
-      )) {
-        TextField("Assignment", text: $subtaskName)
-        Button("Save") {
-          if let subtask = renamingSubtask { model.renameSubtask(subtask, for: ticket, title: subtaskName) }
-          renamingSubtask = nil
-        }
-        Button("Cancel", role: .cancel) { renamingSubtask = nil }
-      }
-      .confirmationDialog(
-        subtaskPendingRemoval.map { "Remove \($0.title)?" } ?? "Remove agent?",
-        isPresented: Binding(
-          get: { subtaskPendingRemoval != nil },
-          set: { if !$0 { subtaskPendingRemoval = nil } }
-        ),
-        titleVisibility: .visible
-      ) {
-        if let subtask = subtaskPendingRemoval {
-          Button("Remove agent entry", role: .destructive) {
-            model.removeSubtask(subtask, from: ticket)
-            subtaskPendingRemoval = nil
-          }
-        }
-      } message: {
-        Text("This removes the agent from this task after retaining its history. It does not terminate the running process.")
-      }
       .draggable(ticket.id)
       .accessibilityHint("Drag this task between Today's focus and Rest of queue.")
   }
@@ -1590,8 +1659,33 @@ private struct TicketCard: View {
 
   private var agentControls: some View {
     VStack(alignment: .leading, spacing: 7) {
-      ForEach(model.subtasks(for: ticket.id)) { subtask in
-        subtaskRow(subtask)
+      let activeSubtasks = model.subtasks(for: ticket.id).filter { $0.status != .completed }
+      let completedSubtasks = model.subtasks(for: ticket.id).filter { $0.status == .completed }
+
+      ForEach(activeSubtasks) { subtask in
+        TaskSubtaskRow(ticket: ticket, subtask: subtask, model: model)
+      }
+
+      if !completedSubtasks.isEmpty {
+        DisclosureGroup(isExpanded: $showsCompletedSubtasks) {
+          VStack(spacing: 7) {
+            ForEach(completedSubtasks) { subtask in
+              TaskSubtaskRow(ticket: ticket, subtask: subtask, model: model)
+            }
+          }
+          .padding(.top, 7)
+        } label: {
+          HStack {
+            Label("Completed subtasks", systemImage: "archivebox")
+            Spacer()
+            Text("\(completedSubtasks.count)")
+              .font(.system(size: 11, weight: .semibold).monospacedDigit())
+              .foregroundStyle(.secondary)
+          }
+          .font(.system(size: 12, weight: .semibold))
+        }
+        .padding(.horizontal, 9).padding(.vertical, 7)
+        .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 10))
       }
       HStack(spacing: 7) {
         Button { showsNewAgent = true } label: {
@@ -1684,102 +1778,6 @@ private struct TicketCard: View {
           .accessibilityLabel("Task step completion")
       }
     }.padding(.horizontal, 14).padding(.bottom, 12)
-  }
-
-  private func subtaskRow(_ subtask: TaskSubtask) -> some View {
-    let isOpening = model.isOpening(subtask, ticketID: ticket.id)
-    return VStack(alignment: .leading, spacing: 6) {
-      HStack(alignment: .top, spacing: 8) {
-        Image(systemName: "terminal")
-          .font(.system(size: 15, weight: .semibold))
-          .foregroundStyle(.secondary)
-          .frame(width: 20, height: 20)
-          .accessibilityHidden(true)
-        VStack(alignment: .leading, spacing: 3) {
-          Text(subtask.title).font(.system(size: 12, weight: .semibold)).lineLimit(2)
-          Text(
-            subtask.progressSummary.isEmpty
-              ? "\(subtask.provider.displayName) · Awaiting update"
-              : subtask.progressSummary
-          )
-          .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
-          if let heartbeat = subtask.lastHeartbeatAt {
-            Text("Last reported \(heartbeat.formatted(date: .abbreviated, time: .shortened))")
-              .font(.system(size: 10)).foregroundStyle(.secondary)
-          }
-        }.frame(maxWidth: .infinity, alignment: .leading)
-        AgentStatusIndicator(
-          status: model.effectiveStatus(for: subtask),
-          hasUnreadCompletion: subtask.completionUnread,
-          isOpening: isOpening,
-          issue: model.agentSessionError(for: subtask, ticketID: ticket.id)
-        )
-      }
-
-      HStack(spacing: 6) {
-        Button { model.openSubtask(subtask, for: ticket) } label: {
-          if isOpening {
-            HStack(spacing: 6) {
-              ProgressView().controlSize(.small)
-              Text("Finding session…")
-            }
-          } else {
-            Label("Open agent", systemImage: "terminal")
-          }
-        }
-        .buttonStyle(.bordered)
-        .disabled(isOpening)
-        .minimumHitTarget()
-        .help("Open the exact saved session for \(subtask.title)")
-        .accessibilityLabel(isOpening ? "Finding and opening \(subtask.title)" : "Open agent \(subtask.title)")
-        .contextMenu {
-          Button("Rename subtask") { subtaskName = subtask.title; renamingSubtask = subtask }
-          if model.hasLaunchDiagnostics(for: subtask) {
-            Button("Open launch diagnostics") { model.openLaunchDiagnostics(for: subtask) }
-          }
-        }
-
-        if model.hasLaunchDiagnostics(for: subtask) {
-          Button("Diagnostics", systemImage: "doc.text.magnifyingglass") {
-            model.openLaunchDiagnostics(for: subtask)
-          }
-          .buttonStyle(.bordered)
-          .minimumHitTarget()
-          .help("Open the complete launch log for \(subtask.title)")
-          .accessibilityLabel("Open launch diagnostics for \(subtask.title)")
-        }
-
-        if subtask.status != .completed {
-          Button("Verify done", systemImage: "checkmark.circle") {
-            model.requestSubtaskCompletion(subtask, for: ticket)
-          }
-          .buttonStyle(.bordered)
-          .minimumHitTarget()
-          .tint(QueueAccentPalette.color(.success, style: accentStyle))
-          .help("Ask the orchestrator to verify this subtask and record completion")
-          .accessibilityLabel("Request completion review for \(subtask.title)")
-        }
-
-        Spacer(minLength: 0)
-
-        Button(role: .destructive) {
-          subtaskPendingRemoval = subtask
-        } label: {
-          Image(systemName: "trash")
-        }
-        .buttonStyle(.bordered)
-        .minimumHitTarget()
-        .accessibilityLabel("Remove agent \(subtask.title)")
-        .help("Remove this agent from the task")
-      }
-      .controlSize(.small)
-    }
-    .padding(9)
-    .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
-    .overlay {
-      RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.06), lineWidth: 1)
-    }
-    .accessibilityElement(children: .contain)
   }
 
   private var details: some View {
@@ -1927,6 +1925,219 @@ private struct TicketCard: View {
     case "plan": "doc.text"
     case "file": "folder"
     default: "link"
+    }
+  }
+}
+
+private struct TaskSubtaskRow: View {
+  let ticket: DashboardTicket
+  let subtask: TaskSubtask
+  let model: QueueViewModel
+  var showsTicketIdentity = false
+
+  @State private var isExpanded = false
+  @State private var showsCompletionConfirmation = false
+  @State private var showsRemovalConfirmation = false
+  @State private var showsEditDialog = false
+  @State private var editedTitle = ""
+  @State private var editedDescription = ""
+  @Environment(\.queueAccentStyle) private var accentStyle
+
+  private var isOpening: Bool { model.isOpening(subtask, ticketID: ticket.id) }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Button {
+        withAnimation(.easeInOut(duration: 0.16)) { isExpanded.toggle() }
+      } label: {
+        HStack(alignment: .top, spacing: 8) {
+          Image(systemName: subtask.status == .completed ? "archivebox.fill" : "terminal")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .frame(width: 20, height: 20)
+            .accessibilityHidden(true)
+          VStack(alignment: .leading, spacing: 3) {
+            if showsTicketIdentity {
+              Text(ticket.id).font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(.secondary)
+            }
+            Text(subtask.title)
+              .font(.system(size: 12, weight: .semibold))
+              .lineLimit(isExpanded ? nil : 1)
+              .fixedSize(horizontal: false, vertical: isExpanded)
+            if !isExpanded {
+              Text(collapsedDetail)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            }
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+          AgentStatusIndicator(
+            status: model.effectiveStatus(for: subtask),
+            hasUnreadCompletion: subtask.completionUnread,
+            isOpening: isOpening,
+            issue: model.agentSessionError(for: subtask, ticketID: ticket.id)
+          )
+          Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(.secondary)
+            .frame(width: 14, height: 20)
+            .accessibilityHidden(true)
+        }
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("\(isExpanded ? "Collapse" : "Expand") subtask \(subtask.title)")
+      .accessibilityHint("Shows the full assignment, explanation, and latest agent update.")
+
+      if isExpanded {
+        VStack(alignment: .leading, spacing: 7) {
+          if !subtask.assignmentDescription.isEmpty {
+            subtaskDetail(label: "Explanation", text: subtask.assignmentDescription)
+          }
+          if !subtask.progressSummary.isEmpty {
+            subtaskDetail(label: "Latest update", text: subtask.progressSummary)
+          } else {
+            subtaskDetail(label: "Latest update", text: "Awaiting the first agent update.")
+          }
+          if let issue = model.agentSessionError(for: subtask, ticketID: ticket.id) {
+            Label(issue, systemImage: "exclamationmark.triangle.fill")
+              .font(.system(size: 11))
+              .foregroundStyle(QueueAccentPalette.color(.danger, style: accentStyle))
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          if let heartbeat = subtask.lastHeartbeatAt {
+            Text("Last reported \(heartbeat.formatted(date: .abbreviated, time: .shortened))")
+              .font(.system(size: 10))
+              .foregroundStyle(.secondary)
+          }
+        }
+        .padding(.leading, 28)
+        .transition(.opacity.combined(with: .move(edge: .top)))
+      }
+
+      HStack(spacing: 6) {
+        Button { model.openSubtask(subtask, for: ticket) } label: {
+          if isOpening {
+            HStack(spacing: 6) {
+              ProgressView().controlSize(.small)
+              Text("Finding session…")
+            }
+          } else {
+            Label("Open agent", systemImage: "terminal")
+          }
+        }
+        .buttonStyle(.bordered)
+        .disabled(isOpening)
+        .minimumHitTarget()
+        .help("Open the exact saved session for \(subtask.title)")
+        .accessibilityLabel(
+          isOpening ? "Finding and opening \(subtask.title)" : "Open agent \(subtask.title)"
+        )
+
+        Spacer(minLength: 0)
+
+        Menu {
+          Button("Open agent", systemImage: "terminal") {
+            model.openSubtask(subtask, for: ticket)
+          }
+          .disabled(isOpening)
+
+          Button("Edit title and explanation", systemImage: "pencil") {
+            editedTitle = subtask.title
+            editedDescription = subtask.assignmentDescription
+            showsEditDialog = true
+          }
+
+          if subtask.status != .completed {
+            Button("Mark as complete…", systemImage: "checkmark.circle") {
+              showsCompletionConfirmation = true
+            }
+          }
+
+          Button("View agent deployment logs", systemImage: "doc.text.magnifyingglass") {
+            model.openLaunchDiagnostics(for: subtask)
+          }
+          .disabled(!model.hasLaunchDiagnostics(for: subtask))
+
+          Divider()
+
+          Button("Delete subtask…", systemImage: "trash", role: .destructive) {
+            showsRemovalConfirmation = true
+          }
+        } label: {
+          Image(systemName: "ellipsis.circle")
+            .font(.system(size: 17, weight: .semibold))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .minimumHitTarget()
+        .accessibilityLabel("More actions for \(subtask.title)")
+        .help("Rename, verify completion, view deployment logs, or delete this subtask")
+      }
+      .controlSize(.small)
+    }
+    .padding(9)
+    .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
+    .overlay {
+      RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.06), lineWidth: 1)
+    }
+    .accessibilityElement(children: .contain)
+    .alert("Edit subtask", isPresented: $showsEditDialog) {
+      TextField("Subtask title", text: $editedTitle)
+      TextField("Optional explanation", text: $editedDescription)
+      Button("Save") {
+        model.renameSubtask(
+          subtask, for: ticket, title: editedTitle,
+          assignmentDescription: editedDescription)
+      }
+      .disabled(editedTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("The full title and explanation appear when this subtask is expanded.")
+    }
+    .confirmationDialog(
+      "Mark \(subtask.title) as complete?",
+      isPresented: $showsCompletionConfirmation,
+      titleVisibility: .visible
+    ) {
+      Button("Request verified completion") {
+        model.requestSubtaskCompletion(subtask, for: ticket)
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("Focus Queue will verify the evidence before recording and archiving completion.")
+    }
+    .confirmationDialog(
+      "Delete \(subtask.title)?",
+      isPresented: $showsRemovalConfirmation,
+      titleVisibility: .visible
+    ) {
+      Button("Delete subtask", role: .destructive) {
+        model.removeSubtask(subtask, from: ticket)
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("This removes the subtask after retaining an archive snapshot. It does not terminate a running process.")
+    }
+  }
+
+  private var collapsedDetail: String {
+    if !subtask.assignmentDescription.isEmpty { return subtask.assignmentDescription }
+    if !subtask.progressSummary.isEmpty { return subtask.progressSummary }
+    return "\(subtask.provider.displayName) · Awaiting update"
+  }
+
+  private func subtaskDetail(label: String, text: String) -> some View {
+    VStack(alignment: .leading, spacing: 2) {
+      Text(label.uppercased())
+        .font(.system(size: 9, weight: .bold, design: .monospaced))
+        .foregroundStyle(.secondary)
+      Text(text)
+        .font(.system(size: 11))
+        .fixedSize(horizontal: false, vertical: true)
+        .textSelection(.enabled)
     }
   }
 }

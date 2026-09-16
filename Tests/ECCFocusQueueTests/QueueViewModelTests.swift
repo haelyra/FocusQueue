@@ -26,6 +26,30 @@ struct QueueViewModelTests {
     #expect(model.visibleAgents(for: "ECC-101").isEmpty)
   }
 
+  @Test("Subtask edits appear immediately while durable context is saved")
+  func optimisticSubtaskEditing() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    model.createSubtask(
+      for: fixture.tickets[0], title: "Original title", explanation: "Original explanation")
+    try await eventually { model.focusSubtasks(for: "ECC-101").count == 1 }
+    let original = try #require(model.focusSubtasks(for: "ECC-101").first)
+
+    model.updateSubtask(
+      original, for: fixture.tickets[0], title: "Readable updated title",
+      explanation: "Full updated explanation")
+
+    #expect(model.focusSubtasks(for: "ECC-101").first?.title == "Readable updated title")
+    #expect(
+      model.focusSubtasks(for: "ECC-101").first?.assignmentDescription
+        == "Full updated explanation")
+    #expect(model.actionMessages["ECC-101"] == "Saving subtask…")
+    try await eventually {
+      model.actionMessages["ECC-101"] == "Subtask updated."
+    }
+  }
+
   @Test("New subtask agents and additional agents preserve independent assignments and workspaces")
   func nestedAgentLaunch() async throws {
     let fixture = try await Fixture()

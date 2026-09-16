@@ -90,6 +90,30 @@ func taskContextProgressAndHeartbeat() async throws {
     #expect(context.subtasks[0].status == .completed)
 }
 
+@Test("Generated agent names read like short titles instead of clipped prompt sentences")
+func generatedAgentNamesAreReadableTitles() {
+    #expect(TaskSubtask.agentName(
+        prompt: "Please investigate the subtask title delay and prevent it from happening again.",
+        provider: .codex) == "Investigate the subtask title delay")
+    #expect(TaskSubtask.agentName(
+        prompt: "## Restore agent icons.\nThen verify both providers remain easy to identify.",
+        provider: .claude) == "Restore agent icons")
+    #expect(TaskSubtask.agentName(
+        prompt: "Audit ECC035 iOS and tmux integration across provider sessions before release",
+        provider: .codex) == "Audit ECC035 iOS and tmux integration")
+    #expect(TaskSubtask.agentName(prompt: "  \n  ", provider: .claude) == "Blank Claude agent")
+}
+
+@Test("Generated agent names stop at word boundaries")
+func generatedAgentNamesRespectWordBoundaries() {
+    let prompt = "Implement extraordinarilylongcomponentname with careful migration checks and verification"
+    let title = TaskSubtask.agentName(prompt: prompt, provider: .codex)
+    #expect(title.count <= 56)
+    #expect(prompt.hasPrefix(title))
+    #expect(!title.hasSuffix("extraordinarilylongcom"))
+    #expect(!title.hasSuffix("caref"))
+}
+
 @Test("Managed runtime is durable and clearing the queue archives before removal")
 func taskContextManagedRuntimeAndClear() async throws {
     let root = try contextFixture(); defer { try? FileManager.default.removeItem(at: root) }

@@ -60,4 +60,23 @@ struct DocumentNavigationTests {
       if placement == .center { #expect(frame.midX == screen.midX && frame.midY == screen.midY) }
     }
   }
+
+  @Test("Top-task mode stays compact and anchored across placements")
+  func topTaskFrame() {
+    let screen = CGRect(x: -1920, y: 100, width: 1920, height: 1080)
+    for placement in [QueueWindowPlacement.upperLeft, .upperRight, .center] {
+      let frame = TopTaskQueueGeometry.frame(
+        preferredWidth: 440,
+        visibleFrame: screen,
+        placement: placement
+      )
+      #expect(frame.size == CGSize(width: 440, height: 238))
+      #expect(screen.contains(frame))
+      if placement == .upperRight { #expect(frame.maxX == screen.maxX - 12) }
+      if placement == .upperLeft { #expect(frame.minX == screen.minX + 12) }
+      if placement == .center { #expect(frame.midX == screen.midX && frame.midY == screen.midY) }
+    }
+    #expect(TopTaskQueueGeometry.size(preferredWidth: 200).width == 400)
+    #expect(TopTaskQueueGeometry.size(preferredWidth: 900).width == 620)
+  }
 }

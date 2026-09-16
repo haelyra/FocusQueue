@@ -25,6 +25,12 @@ struct QueueChatMessage: Identifiable, Codable, Sendable {
   }
 }
 
+enum QueuePanelMode: Equatable {
+  case expanded
+  case topTask
+  case collapsed
+}
+
 @MainActor
 @Observable
 final class QueueViewModel {
@@ -48,7 +54,7 @@ final class QueueViewModel {
   private(set) var dailyReportRunFailed = false
   private(set) var pendingDailyReportApproval: DailyReportApprovalRequest?
   private(set) var requestedReportTaskID: String?
-  private(set) var isPanelCollapsed = false
+  private(set) var panelMode: QueuePanelMode = .expanded
   private(set) var canSwitchMonitor = false
   private(set) var actionMessages: [String: String] = [:]
   private(set) var recurringPRProgressByTicketID: [String: RecurringPullRequestProgress] = [:]
@@ -80,6 +86,10 @@ final class QueueViewModel {
   private(set) var closureMessages: [String: String] = [:]
   private(set) var reportHistory = DailyReportHistorySnapshot()
   private(set) var reportHistoryError: String?
+  private(set) var connectorDiagnostics: ConnectorDiagnosticsSnapshot?
+  private(set) var connectorDiagnosticsError: String?
+  private(set) var connectorDiagnosticsCheckedAt: Date?
+  private(set) var isDiagnosingConnectors = false
   var expandedTicketIDs: Set<String> = []
 
   @ObservationIgnored private let paths: AppPaths
@@ -101,6 +111,7 @@ final class QueueViewModel {
   @ObservationIgnored private let reportHistoryRepository: JSONDailyReportHistoryRepository
   @ObservationIgnored private let conversationStore: QueueConversationStore
   @ObservationIgnored private let durableLibrary: DurableLibraryStore
+  @ObservationIgnored private let connectorDiagnosticsRunner: any ProcessRunning
   @ObservationIgnored private var durableErrors: [String: String] = [:]
   @ObservationIgnored private var durableRetryAfter: [String: Date] = [:]
   @ObservationIgnored private var lastDurableState: LocalState?
@@ -130,7 +141,7 @@ final class QueueViewModel {
   @ObservationIgnored var placementHandler: ((QueueWindowPlacement) -> Void)?
   @ObservationIgnored var monitorSwitchHandler: (() -> Void)?
   @ObservationIgnored var minimizeHandler: (() -> Void)?
-  @ObservationIgnored var collapseHandler: ((Bool) -> Void)?
+  @ObservationIgnored var panelModeHandler: ((QueuePanelMode) -> Void)?
   @ObservationIgnored var reportVisibilityHandler: ((Bool) -> Void)?
   @ObservationIgnored var dailyReportRunHandler: (
     @MainActor (DailyReportRunRequest) async -> DailyReportDocument?
@@ -156,7 +167,8 @@ final class QueueViewModel {
     queueAgent: any QueueAgentChatting = CodexQueueAgent(),
     pullRequestQueueLoader: any PullRequestQueueLoading = GitHubPullRequestQueueLoader(),
     taskAgentLauncher: TaskAgentLauncher = TaskAgentLauncher(),
-    agentLaunchLogger: AgentLaunchLogger? = nil
+    agentLaunchLogger: AgentLaunchLogger? = nil,
+    connectorDiagnosticsRunner: any ProcessRunning = FoundationProcessRunner()
   ) {
     self.paths = paths
     self.taskContextStore = TaskContextStore(root: paths.supportDirectory)
@@ -184,6 +196,7 @@ final class QueueViewModel {
     self.taskAgentLauncher = taskAgentLauncher
     self.agentLaunchLogger = agentLaunchLogger
       ?? AgentLaunchLogger(supportDirectory: paths.supportDirectory)
+    self.connectorDiagnosticsRunner = connectorDiagnosticsRunner
   }
 
   var openTickets: [DashboardTicket] {
@@ -237,6 +250,9 @@ final class QueueViewModel {
   var windowPlacement: QueueWindowPlacement {
     localState.window?.placement ?? config.defaultPlacement
   }
+
+  var isPanelCollapsed: Bool { panelMode == .collapsed }
+  var isTopTaskOnly: Bool { panelMode == .topTask }
 
   func bootstrap() async {
     guard !bootstrapped else { return }
@@ -346,7 +362,7 @@ final class QueueViewModel {
       resetDailyRoutinesIfNeeded()
       await importAgentRegistrations()
       await refreshTaskContexts()
-      if lastReportRefresh == nil || Date().timeIntervalSince(lastReportRefresh!) >= 10 {
+      if userInitiated || lastReportRefresh == nil || Date().timeIntervalSince(lastReportRefresh!) >= 10 {
         lastReportRefresh = Date()
         if !isDailyReportRunning {
           _ = try await reportHistoryRepository.reconcileInactiveRuns()
@@ -494,6 +510,23 @@ final class QueueViewModel {
         ($0.reportDate ?? Self.dayFormatter.string(from: Self.reportDate($0.finishedAt)))
           != Self.dayFormatter.string(from: Date())
       } == true
+  }
+
+  var reportNotificationID: String {
+    if let run = relevantFailedReportRun { return "daily-report-run:\(run.id)" }
+    if reportIsRunning, let run = reportHistory.runs.first(where: { $0.phase == .running }) {
+      return "daily-report-run:\(run.id)"
+    }
+    if let report = reportAttentionDocument { return "daily-report:\(report.runID)" }
+    let day = Self.dayFormatter.string(from: Date())
+    if dailyReportLoadError != nil || reportHistoryError != nil {
+      return "daily-report-error:\(day)"
+    }
+    return "daily-report-missing:\(day)"
+  }
+
+  var showsReportNotification: Bool {
+    reportNeedsAttention && !localState.dismissedNotificationIDs.contains(reportNotificationID)
   }
 
   var reportAttentionDocument: DailyReportDocument? {
@@ -750,7 +783,9 @@ final class QueueViewModel {
           subtaskID: subtask.id, date: subtask.resultAt ?? subtask.lastHeartbeatAt ?? .distantPast, resultID: subtask.resultID))
       }
     }
-    return updates.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
+    return updates
+      .filter { !localState.dismissedNotificationIDs.contains($0.presentationID) }
+      .sorted { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
   }
 
   func openAgentUpdate(_ update: QueueAgentUpdate) {
@@ -784,6 +819,19 @@ final class QueueViewModel {
         ticketID: update.ticketID, subtaskID: subtaskID, expectedResultID: update.resultID,
         expectedHeartbeat: update.resultID == nil && update.date != .distantPast ? update.date : nil)
     } catch { actionMessages[update.ticketID] = error.localizedDescription }
+  }
+
+  func dismissAgentUpdate(_ update: QueueAgentUpdate) {
+    localState.dismissedNotificationIDs.insert(update.presentationID)
+    persistLocalState()
+    if presentedAgentUpdate?.presentationID == update.presentationID { closeAgentUpdate() }
+    guard update.review == nil, update.subtaskID != nil else { return }
+    Task { await acknowledgeAgentUpdate(update) }
+  }
+
+  func dismissReportNotification() {
+    localState.dismissedNotificationIDs.insert(reportNotificationID)
+    persistLocalState()
   }
 
   func focusTerminalPane(_ pane: WezTermPane) async throws {
@@ -1919,6 +1967,50 @@ final class QueueViewModel {
     persistConfiguration()
   }
 
+  func runConnectorDiagnostics() {
+    guard !isDiagnosingConnectors else { return }
+    Task { await diagnoseConnectors() }
+  }
+
+  func diagnoseConnectors() async {
+    guard !isDiagnosingConnectors else { return }
+    isDiagnosingConnectors = true
+    connectorDiagnosticsError = nil
+    defer { isDiagnosingConnectors = false }
+
+    let script = paths.connectorDiagnosticsScript
+    guard FileManager.default.isReadableFile(atPath: script.path) else {
+      connectorDiagnosticsError =
+        "Connector diagnostics are unavailable. Reinstall the daily report automation to restore the diagnostic script."
+      return
+    }
+    do {
+      let result = try await connectorDiagnosticsRunner.run(ProcessSpecification(
+        executable: "/usr/bin/python3",
+        arguments: [script.path, "--config", paths.ingestionConfigurationFile.path],
+        workingDirectory: config.workspacePath,
+        timeoutSeconds: 30,
+        maximumOutputBytes: 128_000
+      ))
+      guard result.succeeded else {
+        connectorDiagnosticsError = result.timedOut
+          ? "Connector diagnostics timed out."
+          : "Connector diagnostics could not read the local connector configuration."
+        return
+      }
+      let snapshot = try JSONDecoder().decode(
+        ConnectorDiagnosticsSnapshot.self,
+        from: Data(result.standardOutput.utf8)
+      )
+      connectorDiagnostics = snapshot
+      connectorDiagnosticsCheckedAt = Date()
+    } catch is CancellationError {
+      return
+    } catch {
+      connectorDiagnosticsError = "Connector diagnostics failed: \(error.localizedDescription)"
+    }
+  }
+
   func placeWindow(_ placement: QueueWindowPlacement) {
     placementHandler?(placement)
   }
@@ -1942,16 +2034,25 @@ final class QueueViewModel {
   }
 
   func setPanelCollapsed(_ collapsed: Bool) {
-    if collapsed {
+    setPanelMode(collapsed ? .collapsed : .expanded)
+  }
+
+  func showTopTaskOnly() {
+    setPanelMode(.topTask)
+  }
+
+  func setPanelMode(_ mode: QueuePanelMode) {
+    guard panelMode != mode else { return }
+    if mode != .expanded {
       closeAgentUpdate()
       closePlan()
       setQueueChatInspectorPresented(false)
     }
-    if collapsed, isDailyReportPresented {
+    if mode != .expanded, isDailyReportPresented {
       setDailyReportPresented(false)
     }
-    isPanelCollapsed = collapsed
-    collapseHandler?(collapsed)
+    panelMode = mode
+    panelModeHandler?(mode)
   }
 
   func quit() {

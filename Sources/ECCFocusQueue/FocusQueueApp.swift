@@ -34,6 +34,7 @@ import UserNotifications
   private var currentPlacement: QueueWindowPlacement = .upperRight
   private var preferredDisplayIdentifier: String?
   private var isApplyingPanelFrame = false
+  private var appliedPanelMode: QueuePanelMode = .expanded
   private var isModelReady = false
   private var pendingDailyReportDecision: (shouldRun: Bool, approvalID: UUID?)?
   private var isResolvingDailyReportApproval = false
@@ -51,7 +52,7 @@ import UserNotifications
       self?.positionPanelOnCurrentDisplay(placement, animated: true)
     }
     model.monitorSwitchHandler = { [weak self] in self?.switchPanelMonitor() }
-    model.collapseHandler = { [weak self] collapsed in self?.setPanelCollapsed(collapsed) }
+    model.panelModeHandler = { [weak self] mode in self?.setPanelMode(mode) }
     model.minimizeHandler = { [weak self] in self?.panel?.miniaturize(nil) }
     model.reportVisibilityHandler = { [weak self] visible in
       self?.setDailyReportVisible(visible)
@@ -172,7 +173,7 @@ import UserNotifications
   }
 
   func windowDidResize(_ notification: Notification) {
-    if !isApplyingPanelFrame, !model.isPanelCollapsed, !model.isInspectorPresented, let panel {
+    if !isApplyingPanelFrame, model.panelMode == .expanded, !model.isInspectorPresented, let panel {
       compactPanelWidth = min(max(panel.frame.width, 400), 620)
     }
     saveWindowFrame()
@@ -829,6 +830,20 @@ import UserNotifications
       scheduleFocusChromeRefresh()
       return
     }
+    if model.isTopTaskOnly {
+      currentPlacement = placement
+      let frame = TopTaskQueueGeometry.frame(
+        preferredWidth: compactPanelWidth,
+        visibleFrame: targetScreen.visibleFrame,
+        placement: placement
+      )
+      isApplyingPanelFrame = true
+      panel.setFrame(frame, display: true, animate: animated)
+      isApplyingPanelFrame = false
+      if persist { preferredDisplayIdentifier = displayIdentifier(for: targetScreen) }
+      scheduleFocusChromeRefresh()
+      return
+    }
     let minimumWidth = inspectorLayout.minimumWidth
     let clampedMinimumWidth = min(
       minimumWidth,
@@ -864,11 +879,14 @@ import UserNotifications
     positionPanel(placement, on: currentPanelScreen(), animated: animated)
   }
 
-  private func setPanelCollapsed(_ collapsed: Bool) {
+  private func setPanelMode(_ mode: QueuePanelMode) {
     guard let panel else { return }
+    let previousMode = appliedPanelMode
     isApplyingPanelFrame = true
-    if collapsed {
+    if previousMode == .expanded, mode != .expanded {
       expandedPanelFrame = panel.frame
+    }
+    if mode == .collapsed {
       panel.styleMask.remove([.titled, .resizable, .fullSizeContentView])
       panel.minSize = CollapsedQueueGeometry.size
       panel.maxSize = CollapsedQueueGeometry.size
@@ -876,6 +894,20 @@ import UserNotifications
         CollapsedQueueGeometry.frame(
           visibleFrame: currentPanelScreen().visibleFrame, placement: currentPlacement),
         display: true, animate: true)
+    } else if mode == .topTask {
+      let size = TopTaskQueueGeometry.size(preferredWidth: compactPanelWidth)
+      panel.styleMask.remove([.titled, .resizable, .fullSizeContentView])
+      panel.minSize = size
+      panel.maxSize = size
+      panel.setFrame(
+        TopTaskQueueGeometry.frame(
+          preferredWidth: compactPanelWidth,
+          visibleFrame: currentPanelScreen().visibleFrame,
+          placement: currentPlacement
+        ),
+        display: true,
+        animate: true
+      )
     } else {
       panel.styleMask.insert([.titled, .resizable, .fullSizeContentView])
       panel.titleVisibility = .hidden
@@ -888,8 +920,9 @@ import UserNotifications
       if let expandedPanelFrame { panel.setFrame(expandedPanelFrame, display: false) }
       self.expandedPanelFrame = nil
     }
+    appliedPanelMode = mode
     isApplyingPanelFrame = false
-    if !collapsed { positionPanelOnCurrentDisplay(currentPlacement, animated: true) }
+    if mode == .expanded { positionPanelOnCurrentDisplay(currentPlacement, animated: true) }
     scheduleFocusChromeRefresh()
   }
 
@@ -901,8 +934,8 @@ import UserNotifications
 
   private func setDailyReportVisible(_ visible: Bool) {
     guard let panel else { return }
-    if visible, model.isPanelCollapsed {
-      model.setPanelCollapsed(false)
+    if visible, model.panelMode != .expanded {
+      model.setPanelMode(.expanded)
     }
     let screen = currentPanelScreen()
     let layout = inspectorLayout
@@ -957,7 +990,7 @@ import UserNotifications
   }
 
   private func saveWindowFrame() {
-    guard !isApplyingPanelFrame, !model.isPanelCollapsed, let panel else { return }
+    guard !isApplyingPanelFrame, model.panelMode == .expanded, let panel else { return }
     let frame = panel.frame
     if preferredDisplayIdentifier == nil {
       preferredDisplayIdentifier = displayIdentifier(for: panel.screen)

@@ -18,6 +18,8 @@ struct QueueView: View {
   @State private var taskAgentDrafts: [String: String] = [:]
   @State private var showsTerminals = false
   @State private var updateDrafts: [String: String] = [:]
+  @State private var notificationsExpanded = true
+  @State private var settingsTarget: QueueSettingsTarget?
 
   private let completedPageSize = 12
 
@@ -32,6 +34,7 @@ struct QueueView: View {
   var body: some View {
     Group {
       if model.isPanelCollapsed { compactHeader }
+      else if model.isTopTaskOnly { topTaskPanel }
       else { expandedPanel }
     }
     .preferredColorScheme(model.appearance == .dark ? .dark : .light)
@@ -130,8 +133,10 @@ struct QueueView: View {
     Group {
       if model.isPanelCollapsed {
         compactHeader
+      } else if model.isTopTaskOnly {
+        topTaskPanel
       } else if screen == .settings {
-        QueueSettingsView(model: model) {
+        QueueSettingsView(model: model, focusedSection: settingsTarget) {
           withAnimation(.easeInOut(duration: 0.18)) { screen = .queue }
         }
       } else {
@@ -146,8 +151,7 @@ struct QueueView: View {
       if model.pendingDailyReportApproval != nil {
         missedReportApprovalBanner
       }
-      if model.reportNeedsAttention { reportStatusBanner }
-      if let attention = completionAttention { attentionBanner(attention) }
+      if notificationCount > 0 { notificationFeed }
       queueTabs
       switch selectedTab {
       case .focus:
@@ -160,41 +164,101 @@ struct QueueView: View {
     }
   }
 
-  private var reportStatusBanner: some View {
-    Button { model.showLatestDailyReport() } label: {
-      HStack(spacing: 9) {
-        if model.reportIsRunning { ProgressView().controlSize(.small) }
-        else {
-          Image(systemName: model.reportHasFailure ? "exclamationmark.triangle.fill" : "doc.text.fill")
-            .foregroundStyle(model.reportHasFailure ? Color.orange : Color.accentColor)
-        }
-        VStack(alignment: .leading, spacing: 3) {
-          Text(model.reportAttentionTitle).font(.system(size: 12, weight: .semibold))
-          Text(model.reportAttentionMessage)
-            .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
-        }
-        Spacer(minLength: 0)
-        Image(systemName: "chevron.right").font(.caption)
-      }.padding(12).frame(maxWidth: .infinity, alignment: .leading).notificationSurface(radius: 14)
-    }.buttonStyle(.plain).help("Expand daily report and run details")
+  private var notificationCount: Int {
+    (model.showsReportNotification ? 1 : 0) + model.agentUpdates.count
   }
 
-  private var completionAttention: QueueAgentUpdate? { model.agentUpdates.first }
+  private var notificationFeed: some View {
+    VStack(spacing: 8) {
+      Button {
+        withAnimation(.easeInOut(duration: 0.18)) { notificationsExpanded.toggle() }
+      } label: {
+        HStack(spacing: 8) {
+          Label("Notifications", systemImage: "bell.fill")
+            .font(.system(size: 12, weight: .semibold))
+          Text("\(notificationCount)")
+            .font(.system(size: 11, weight: .bold).monospacedDigit())
+            .foregroundStyle(.secondary)
+          Spacer()
+          Text(notificationsExpanded ? "Hide" : "Show")
+            .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+          Image(systemName: notificationsExpanded ? "chevron.up" : "chevron.down")
+            .font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 11).frame(height: 32).contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .notificationSurface(radius: 12)
+      .accessibilityLabel(
+        notificationsExpanded ? "Collapse notifications" : "Expand notifications"
+      )
+
+      if notificationsExpanded {
+        if model.showsReportNotification { reportStatusBanner }
+        ForEach(model.agentUpdates) { attention in attentionBanner(attention) }
+      }
+    }
+  }
+
+  private var reportStatusBanner: some View {
+    SwipeToClearNotification(isEnabled: !model.reportIsRunning) {
+      withAnimation(.easeInOut(duration: 0.18)) { model.dismissReportNotification() }
+    } content: {
+      HStack(spacing: 8) {
+        Button { model.showLatestDailyReport() } label: {
+          HStack(spacing: 9) {
+            if model.reportIsRunning { ProgressView().controlSize(.small) }
+            else {
+              Image(systemName: model.reportHasFailure ? "exclamationmark.triangle.fill" : "doc.text.fill")
+                .foregroundStyle(model.reportHasFailure ? Color.orange : Color.accentColor)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+              Text(model.reportAttentionTitle).font(.system(size: 12, weight: .semibold))
+              Text(model.reportAttentionMessage)
+                .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right").font(.caption)
+          }
+          .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Expand daily report and run details")
+
+        if model.reportHasFailure {
+          Button(action: openConnectorDiagnostics) {
+            Image(systemName: "stethoscope")
+          }
+          .buttonStyle(.bordered)
+          .controlSize(.small)
+          .accessibilityLabel("Debug daily report connectors")
+          .help("Check Mail, Telegram, Discord, and GitHub connector setup")
+        }
+      }
+      .padding(12)
+      .notificationSurface(radius: 14)
+    }
+  }
 
   private func attentionBanner(_ attention: QueueAgentUpdate) -> some View {
-    HStack(alignment: .top, spacing: 9) {
-      Button { model.openAgentUpdate(attention) } label: {
-        VStack(alignment: .leading, spacing: 4) {
-          Text(attention.conciseReason).font(.system(size: 12, weight: .semibold)).lineLimit(3)
-          Text("\(attention.ticketID) · \(attention.title)").font(.system(size: 11)).foregroundStyle(.secondary)
-        }.frame(maxWidth: .infinity, alignment: .leading)
-      }.buttonStyle(.plain).help("Read the explanation and review details")
-      if attention.review != nil, let ticket = model.dashboard.tickets.first(where: { $0.id == attention.ticketID }),
-         let subtask = model.subtasks(for: ticket.id).first(where: { $0.id == attention.subtaskID }) {
-        Button("Override") { model.overrideCompletion(subtask, for: ticket) }
-          .help("Mark this subtask complete by user override")
+    SwipeToClearNotification {
+      withAnimation(.easeInOut(duration: 0.18)) { model.dismissAgentUpdate(attention) }
+    } content: {
+      HStack(alignment: .top, spacing: 9) {
+        Button { model.openAgentUpdate(attention) } label: {
+          VStack(alignment: .leading, spacing: 4) {
+            Text(attention.conciseReason).font(.system(size: 12, weight: .semibold)).lineLimit(3)
+            Text("\(attention.ticketID) · \(attention.title)").font(.system(size: 11)).foregroundStyle(.secondary)
+          }.frame(maxWidth: .infinity, alignment: .leading)
+        }.buttonStyle(.plain).help("Read the explanation and review details")
+        if attention.review != nil, let ticket = model.dashboard.tickets.first(where: { $0.id == attention.ticketID }),
+           let subtask = model.subtasks(for: ticket.id).first(where: { $0.id == attention.subtaskID }) {
+          Button("Override") { model.overrideCompletion(subtask, for: ticket) }
+            .help("Mark this subtask complete by user override")
+        }
       }
-    }.padding(12).notificationSurface(radius: 14)
+      .padding(12).notificationSurface(radius: 14)
+    }
   }
 
   private var activeQueueContent: some View {
@@ -382,18 +446,102 @@ struct QueueView: View {
         .frame(width: 52, height: 44).contentShape(Rectangle())
     }.buttonStyle(.plain).notificationSurface(radius: 12)
       .accessibilityLabel("Expand ECC Focus Queue").help("Expand queue")
+      .contextMenu {
+        Button("Show top task", systemImage: "rectangle.topthird.inset.filled") {
+          model.showTopTaskOnly()
+        }
+      }
   }
 
-  private var header: some View {
-    VStack(alignment: .leading, spacing: 7) {
-      HStack(spacing: 7) {
+  private var topTaskPanel: some View {
+    VStack(spacing: 8) {
+      HStack(spacing: 8) {
         Circle().fill(
           QueueAccentPalette.color(
             model.loadError == nil ? .success : .warning, style: model.accentStyle)
         ).frame(width: 7, height: 7)
-        syncLabel.lineLimit(1).minimumScaleFactor(0.8)
+        Text("Top task").font(.system(size: 13, weight: .bold))
+        Text("\(model.openTickets.count) tasks")
+          .font(.system(size: 10, weight: .semibold).monospacedDigit())
+          .foregroundStyle(.secondary)
+        Spacer()
+        Button { model.setPanelMode(.expanded) } label: {
+          Image(systemName: "rectangle.expand.vertical")
+        }
+        .buttonStyle(.plain).minimumHitTarget(width: 32, height: 32)
+        .accessibilityLabel("Show full task queue").help("Show full queue")
+        Button { model.setPanelMode(.collapsed) } label: {
+          Image(systemName: "rectangle.compress.vertical")
+        }
+        .buttonStyle(.plain).minimumHitTarget(width: 32, height: 32)
+        .accessibilityLabel("Collapse ECC Focus Queue to FQ").help("Collapse to FQ")
+      }
+
+      if let ticket = model.openTickets.first {
+        Button {
+          model.setPanelMode(.expanded)
+          model.openPlan(for: ticket)
+        } label: {
+          VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline) {
+              Text(ticket.id).font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundStyle(.secondary)
+              Spacer()
+              StatusPill(text: ticket.status, color: Color.accentColor)
+            }
+            Text(ticket.title).font(.system(size: 16, weight: .semibold)).lineLimit(2)
+              .frame(maxWidth: .infinity, alignment: .leading)
+            if !ticket.summary.isEmpty {
+              Text(ticket.summary).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack {
+              Text(ticket.priority.capitalized).font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+              Spacer()
+              Label("Open task", systemImage: "chevron.right")
+                .font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+            }
+          }
+          .padding(13).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .notificationSurface(radius: 16)
+        .help("Open \(ticket.id) and its plan")
+      } else {
+        ContentUnavailableView("Queue is clear", systemImage: "checkmark.circle")
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+      }
+    }
+    .padding(10)
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .panelSurface(radius: 22)
+  }
+
+  private var header: some View {
+    VStack(alignment: .leading, spacing: 3) {
+      HStack(alignment: .firstTextBaseline) {
+        Text("ECC Focus Queue").font(.system(size: 19, weight: .bold, design: .rounded))
+        Spacer()
+        Text(headerCountLabel).font(
+          .system(size: 11, weight: .semibold).monospacedDigit()
+        ).foregroundStyle(.secondary)
+      }
+      HStack(spacing: 6) {
+        Circle().fill(
+          QueueAccentPalette.color(
+            model.loadError == nil ? .success : .warning, style: model.accentStyle)
+        ).frame(width: 7, height: 7)
+        syncLabel.font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+          .lineLimit(1).minimumScaleFactor(0.8)
         Spacer()
         monitorButton
+        Button { showsTerminals = true } label: {
+          Image(systemName: "terminal").font(.system(size: 12, weight: .semibold))
+        }
+        .buttonStyle(.plain).minimumHitTarget(width: 30, height: 34)
+        .accessibilityLabel("Browse terminals")
+        .help("Review open terminals and switch to an exact pane")
         Button {
           if model.dailyReport == nil {
             Task { await model.reloadDailyReport() }
@@ -402,14 +550,15 @@ struct QueueView: View {
         } label: {
           Image(systemName: model.isDailyReportPresented ? "doc.text.fill" : "doc.text")
             .font(.system(size: 13, weight: .semibold))
-        }.buttonStyle(.plain).minimumHitTarget(width: 32, height: 44).accessibilityLabel(
+        }.buttonStyle(.plain).minimumHitTarget(width: 30, height: 34).accessibilityLabel(
           model.isDailyReportPresented ? "Close daily report" : "Open daily report"
         ).help("Daily message report")
         Button {
+          settingsTarget = nil
           withAnimation(.easeInOut(duration: 0.18)) { screen = .settings }
         } label: {
           Image(systemName: "gearshape.fill").font(.system(size: 13, weight: .semibold))
-        }.buttonStyle(.plain).minimumHitTarget(width: 32, height: 44).accessibilityLabel(
+        }.buttonStyle(.plain).minimumHitTarget(width: 30, height: 34).accessibilityLabel(
           "Open ECC Focus Queue settings"
         ).help("Settings")
         Button {
@@ -420,32 +569,31 @@ struct QueueView: View {
           } else {
             Image(systemName: "arrow.clockwise").font(.system(size: 13, weight: .semibold))
           }
-        }.buttonStyle(.plain).minimumHitTarget(width: 32, height: 44).disabled(model.isRefreshing)
-          .accessibilityLabel(model.isRefreshing ? "Refreshing task dashboard" : "Refresh task dashboard")
-          .help(model.isRefreshing ? "Refreshing" : "Refresh now")
+        }.buttonStyle(.plain).minimumHitTarget(width: 30, height: 34).disabled(model.isRefreshing)
+          .accessibilityLabel(model.isRefreshing ? "Synchronizing queue data" : "Synchronize queue data now")
+          .help(
+            model.isRefreshing
+              ? "Synchronizing queue data"
+              : "Reload tasks, agent activity, report status, terminal registrations, and GitHub progress"
+          )
         Button { model.minimizeHandler?() } label: {
           Image(systemName: "minus").font(.system(size: 13, weight: .semibold))
-        }.buttonStyle(.plain).minimumHitTarget(width: 32, height: 44)
+        }.buttonStyle(.plain).minimumHitTarget(width: 30, height: 34)
           .accessibilityLabel("Minimize ECC Focus Queue to Dock").help("Minimize to Dock")
         Button {
           model.setPanelCollapsed(true)
         } label: {
           Image(systemName: "rectangle.compress.vertical").font(
             .system(size: 13, weight: .semibold))
-        }.buttonStyle(.plain).minimumHitTarget(width: 32, height: 44).accessibilityLabel(
+        }.buttonStyle(.plain).minimumHitTarget(width: 30, height: 34).accessibilityLabel(
           "Collapse ECC Focus Queue to FQ"
-        ).help("Collapse queue")
+        ).help("Collapse queue; right-click to show only the top task")
+          .contextMenu {
+            Button("Show top task", systemImage: "rectangle.topthird.inset.filled") {
+              model.showTopTaskOnly()
+            }
+          }
       }
-      HStack(alignment: .firstTextBaseline) {
-        Text("ECC Focus Queue").font(.system(size: 21, weight: .bold, design: .rounded))
-        Spacer()
-        Text(headerCountLabel).font(
-          .system(size: 12, weight: .semibold).monospacedDigit()
-        ).foregroundStyle(.secondary)
-      }
-      Button("Browse terminals", systemImage: "terminal") { showsTerminals = true }
-        .buttonStyle(.bordered).controlSize(.small)
-        .help("Review open terminals and switch to an exact pane")
       if let error = model.loadError {
         Label(error, systemImage: "exclamationmark.triangle.fill").font(.system(size: 12))
           .foregroundStyle(.orange).lineLimit(2)
@@ -459,7 +607,7 @@ struct QueueView: View {
             .buttonStyle(.bordered).controlSize(.small)
         }
       }
-    }.padding(.horizontal, 15).padding(.vertical, 11).notificationSurface(radius: 18)
+    }.padding(.horizontal, 12).padding(.vertical, 8).notificationSurface(radius: 16)
   }
 
   private var missedReportApprovalBanner: some View {
@@ -596,7 +744,7 @@ struct QueueView: View {
 
   private var headerCountLabel: String {
     switch selectedTab {
-    case .focus: "\(model.openTickets.count) active"
+    case .focus: "\(model.openTickets.count) active tasks"
     case .completed: "\(model.completedTodayTickets.count) today"
     case .agent: model.isQueueAgentResponding ? "Codex working" : "Codex ready"
     }
@@ -629,12 +777,18 @@ struct QueueView: View {
     return handled
   }
 
+  private func openConnectorDiagnostics() {
+    settingsTarget = .connectors
+    model.runConnectorDiagnostics()
+    withAnimation(.easeInOut(duration: 0.18)) { screen = .settings }
+  }
+
   private var monitorButton: some View {
     Button {
       model.switchMonitor()
     } label: {
       Image(systemName: "display.2").font(.system(size: 13, weight: .semibold))
-    }.buttonStyle(.plain).minimumHitTarget(width: 46, height: 46).disabled(!model.canSwitchMonitor)
+    }.buttonStyle(.plain).minimumHitTarget(width: 30, height: 34).disabled(!model.canSwitchMonitor)
       .accessibilityLabel("Move ECC Focus Queue to the next display")
       .help(monitorButtonHelp)
   }
@@ -648,6 +802,10 @@ struct QueueView: View {
 private enum QueueScreen {
   case queue
   case settings
+}
+
+private enum QueueSettingsTarget: Hashable {
+  case connectors
 }
 
 private enum QueueTab: Hashable {
@@ -1084,6 +1242,7 @@ private struct DailyReportView: View {
 
 private struct QueueSettingsView: View {
   let model: QueueViewModel
+  let focusedSection: QueueSettingsTarget?
   let close: () -> Void
 
   var body: some View {
@@ -1101,6 +1260,8 @@ private struct QueueSettingsView: View {
 
       ScrollView {
         VStack(alignment: .leading, spacing: 14) {
+          if focusedSection == .connectors { connectorDiagnosticsSection }
+
           settingsSection(title: "Workspace and terminals", detail: "Configure the queue, review terminal support, and set up persistent sessions.") {
             Button("Open setup wizard", systemImage: "wand.and.stars") {
               model.isSetupPresented = true
@@ -1146,6 +1307,8 @@ private struct QueueSettingsView: View {
                 )
             }
           }
+
+          if focusedSection != .connectors { connectorDiagnosticsSection }
 
           settingsSection(
             title: "Daily message report",
@@ -1262,6 +1425,71 @@ private struct QueueSettingsView: View {
     )
   }
 
+  private var connectorDiagnosticsSection: some View {
+    settingsSection(
+      title: "Connector diagnostics",
+      detail:
+        "Check local Mail, Telegram, Discord, and GitHub setup without reading messages. Authentication and live access are not tested."
+    ) {
+      VStack(alignment: .leading, spacing: 10) {
+        if model.reportHasFailure {
+          Label(model.reportAttentionMessage, systemImage: "exclamationmark.triangle.fill")
+            .font(.system(size: 12)).foregroundStyle(.orange).fixedSize(
+              horizontal: false, vertical: true)
+        }
+
+        Button(
+          model.connectorDiagnostics == nil ? "Check connector setup" : "Check again",
+          systemImage: "stethoscope"
+        ) {
+          model.runConnectorDiagnostics()
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(model.isDiagnosingConnectors)
+
+        if model.isDiagnosingConnectors {
+          HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Checking local connector configuration…")
+          }.font(.system(size: 12)).foregroundStyle(.secondary)
+        }
+
+        if let error = model.connectorDiagnosticsError {
+          Label(error, systemImage: "exclamationmark.circle.fill")
+            .font(.system(size: 12)).foregroundStyle(.orange).fixedSize(
+              horizontal: false, vertical: true)
+        }
+
+        if let snapshot = model.connectorDiagnostics {
+          VStack(spacing: 8) {
+            ForEach(DailyReportPlatform.allCases) { platform in
+              ConnectorDiagnosticRow(
+                platform: platform,
+                diagnostic: snapshot.diagnostic(for: platform)
+              )
+            }
+          }
+          if let checkedAt = model.connectorDiagnosticsCheckedAt {
+            Text("Checked \(checkedAt.formatted(date: .omitted, time: .shortened)) · configuration only")
+              .font(.system(size: 10)).foregroundStyle(.secondary)
+          }
+        }
+
+        if !model.reportHistory.standardError.isEmpty {
+          DisclosureGroup("Latest report error log") {
+            Text(model.reportHistory.standardError)
+              .font(.system(size: 10, design: .monospaced))
+              .textSelection(.enabled)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .padding(.top, 7)
+          }
+          .font(.system(size: 12, weight: .semibold))
+        }
+      }
+    }
+    .id(QueueSettingsTarget.connectors)
+  }
+
   private func settingsSection<Content: View>(
     title: String, detail: String, @ViewBuilder content: () -> Content
   ) -> some View {
@@ -1288,6 +1516,52 @@ private struct SectionHeading: View {
       QueuePalette.component(for: colorScheme), in: Capsule()
     ).overlay {
       Capsule().stroke(QueuePalette.componentBorder(for: colorScheme), lineWidth: 0.6)
+    }
+  }
+}
+
+private struct ConnectorDiagnosticRow: View {
+  let platform: DailyReportPlatform
+  let diagnostic: ConnectorDiagnostic?
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 5) {
+      HStack(spacing: 8) {
+        Image(systemName: icon)
+          .foregroundStyle(color)
+          .frame(width: 18)
+        Text(platform.displayName).font(.system(size: 13, weight: .semibold))
+        Spacer()
+        Text(diagnostic?.statusLabel ?? "Not checked")
+          .font(.system(size: 10, weight: .bold))
+          .foregroundStyle(color)
+      }
+      if let diagnostic {
+        Text(diagnostic.nextStep)
+          .font(.system(size: 11)).foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .padding(.horizontal, 10).padding(.vertical, 9)
+    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+  }
+
+  private var color: Color {
+    switch diagnostic?.status {
+    case "configured_unverified": .blue
+    case "limited": .orange
+    case "setup_required": .orange
+    case .some: .secondary
+    case nil: .secondary
+    }
+  }
+
+  private var icon: String {
+    switch platform {
+    case .discord: "bubble.left.and.bubble.right"
+    case .telegram: "paperplane"
+    case .email: "envelope"
+    case .github: "chevron.left.forwardslash.chevron.right"
     }
   }
 }
@@ -1565,6 +1839,29 @@ struct SubtaskTitleLabel: View {
   }
 }
 
+struct SubtaskDisclosureState: Equatable {
+  private var collapsedIDs: Set<String> = []
+
+  func isExpanded(_ subtaskID: String) -> Bool {
+    !collapsedIDs.contains(subtaskID)
+  }
+
+  mutating func toggle(_ subtaskID: String) {
+    if collapsedIDs.contains(subtaskID) { collapsedIDs.remove(subtaskID) }
+    else { collapsedIDs.insert(subtaskID) }
+  }
+}
+
+struct SubtaskAgentPresentation: Equatable {
+  let agents: [TaskSubtask]
+
+  init(linkedAgents: [TaskSubtask]) {
+    agents = linkedAgents.filter(\.isAgentVisible)
+  }
+
+  var count: Int { agents.count }
+}
+
 private struct SubtaskEditorSheet: View {
   let subtask: TaskSubtask
   let save: (String, String) -> Void
@@ -1697,7 +1994,7 @@ private struct TicketCard: View {
   @State private var showsSubtasks = true
   @State private var showsAgents = true
   @State private var showsCompletedSubtasks = false
-  @State private var expandedSubtaskIDs: Set<String> = []
+  @State private var subtaskDisclosure = SubtaskDisclosureState()
   @State private var showsNewSubtask = false
   @State private var newSubtaskTitle = ""
   @State private var newSubtaskExplanation = ""
@@ -1926,7 +2223,9 @@ private struct TicketCard: View {
       Divider().opacity(0.45)
 
       DisclosureGroup("Agents (\(agents.count))", isExpanded: $showsAgents) {
-        ForEach(agents) { agent in agentRow(agent) }
+        ForEach(agents) { agent in
+          agentRow(agent).id("all-agent-\(ticket.id)-\(agent.id)")
+        }
         if agents.isEmpty {
           Text("No active agents. Add one from a subtask menu.")
             .font(.caption).foregroundStyle(.secondary)
@@ -2007,16 +2306,18 @@ private struct TicketCard: View {
   }
 
   private func subtaskRow(_ subtask: TaskSubtask) -> some View {
-    let isExpanded = expandedSubtaskIDs.contains(subtask.id)
+    let isExpanded = subtaskDisclosure.isExpanded(subtask.id)
     let rawExplanation: String? = subtask.assignmentDescription.isEmpty
       ? subtask.initialPrompt : subtask.assignmentDescription
     let explanation = rawExplanation?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let agentCount = model.agents(for: subtask, ticketID: ticket.id).count
+    let agentPresentation = SubtaskAgentPresentation(
+      linkedAgents: model.agents(for: subtask, ticketID: ticket.id)
+    )
+    let agentCount = agentPresentation.count
     return VStack(alignment: .leading, spacing: 7) {
       HStack(alignment: .top, spacing: 7) {
         Button {
-          if isExpanded { expandedSubtaskIDs.remove(subtask.id) }
-          else { expandedSubtaskIDs.insert(subtask.id) }
+          subtaskDisclosure.toggle(subtask.id)
         } label: {
           HStack(alignment: .top, spacing: 7) {
             Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
@@ -2082,6 +2383,15 @@ private struct TicketCard: View {
           Text("No explanation added.")
             .font(.system(size: 11))
             .foregroundStyle(.tertiary)
+        }
+        if !agentPresentation.agents.isEmpty {
+          Text("Assigned agents")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .padding(.top, 2)
+          ForEach(agentPresentation.agents) { agent in
+            agentRow(agent).id("subtask-\(subtask.id)-agent-\(agent.id)")
+          }
         }
         if subtask.status != .completed {
           Button(agentCount == 0 ? "New agent" : "Add agent", systemImage: "person.badge.plus") {
@@ -2190,7 +2500,11 @@ private struct TicketCard: View {
       .help("Open, rename, complete, inspect, or remove this agent")
     }
     .padding(9)
-    .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
+    .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
+    .overlay {
+      RoundedRectangle(cornerRadius: 9)
+        .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+    }
     .padding(.vertical, 2)
   }
 
@@ -2819,6 +3133,77 @@ private struct ReviewDetail: View {
         }
       }.font(.system(size: 13))
     }.accessibilityElement(children: .contain)
+  }
+}
+
+private struct SwipeToClearNotification<Content: View>: View {
+  let isEnabled: Bool
+  let onClear: () -> Void
+  let content: Content
+
+  @State private var horizontalOffset: CGFloat = 0
+
+  init(
+    isEnabled: Bool = true,
+    onClear: @escaping () -> Void,
+    @ViewBuilder content: () -> Content
+  ) {
+    self.isEnabled = isEnabled
+    self.onClear = onClear
+    self.content = content()
+  }
+
+  var body: some View {
+    ZStack(alignment: .leading) {
+      HStack(spacing: 7) {
+        Image(systemName: "xmark.circle.fill")
+        Text("Clear").font(.system(size: 11, weight: .bold))
+      }
+      .foregroundStyle(.white)
+      .padding(.leading, 14)
+      .frame(maxHeight: .infinity)
+
+      content.offset(x: horizontalOffset)
+    }
+    .background(Color.red.opacity(horizontalOffset > 0 ? 0.82 : 0))
+    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .contentShape(Rectangle())
+    .simultaneousGesture(
+      DragGesture(minimumDistance: 12)
+        .onChanged { value in
+          guard isEnabled,
+            value.translation.width > 0,
+            abs(value.translation.width) > abs(value.translation.height)
+          else { return }
+          horizontalOffset = min(value.translation.width, 110)
+        }
+        .onEnded { value in
+          guard isEnabled else { return }
+          if value.translation.width >= 84,
+            abs(value.translation.width) > abs(value.translation.height)
+          {
+            withAnimation(.easeOut(duration: 0.16)) { onClear() }
+          } else {
+            withAnimation(.spring(response: 0.24, dampingFraction: 0.82)) {
+              horizontalOffset = 0
+            }
+          }
+        }
+    )
+    .swipeActions(edge: .leading, allowsFullSwipe: true) {
+      if isEnabled {
+        Button("Clear", systemImage: "xmark", role: .destructive, action: onClear)
+      }
+    }
+    .contextMenu {
+      if isEnabled {
+        Button("Clear notification", systemImage: "xmark", role: .destructive, action: onClear)
+      }
+    }
+    .accessibilityAction(named: Text("Clear notification")) {
+      if isEnabled { onClear() }
+    }
+    .help(isEnabled ? "Swipe right to clear" : "This notification stays visible while running")
   }
 }
 

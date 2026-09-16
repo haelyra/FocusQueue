@@ -1186,6 +1186,7 @@ public struct LocalState: Codable, Equatable, Sendable {
   public var completedRoutineIDs: Set<String>
   public var completionRequests: [CompletionRequest]
   public var deferredTicketIDs: [String]
+  public var dismissedNotificationIDs: Set<String>
   public var window: WindowSnapshot?
   public var appearance: QueueAppearance?
   public var accentStyle: QueueAccentStyle?
@@ -1196,6 +1197,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     completedRoutineIDs: Set<String> = [],
     completionRequests: [CompletionRequest] = [],
     deferredTicketIDs: [String] = [],
+    dismissedNotificationIDs: Set<String> = [],
     window: WindowSnapshot? = nil,
     appearance: QueueAppearance? = nil,
     accentStyle: QueueAccentStyle? = nil,
@@ -1205,6 +1207,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     self.completedRoutineIDs = completedRoutineIDs
     self.completionRequests = completionRequests
     self.deferredTicketIDs = deferredTicketIDs
+    self.dismissedNotificationIDs = dismissedNotificationIDs
     self.window = window
     self.appearance = appearance
     self.accentStyle = accentStyle
@@ -1243,6 +1246,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     case completedRoutineIDs
     case completionRequests
     case deferredTicketIDs
+    case dismissedNotificationIDs
     case window
     case appearance
     case accentStyle
@@ -1258,6 +1262,8 @@ public struct LocalState: Codable, Equatable, Sendable {
       try container.decodeIfPresent([CompletionRequest].self, forKey: .completionRequests) ?? []
     deferredTicketIDs =
       try container.decodeIfPresent([String].self, forKey: .deferredTicketIDs) ?? []
+    dismissedNotificationIDs =
+      try container.decodeIfPresent(Set<String>.self, forKey: .dismissedNotificationIDs) ?? []
     window = try container.decodeIfPresent(WindowSnapshot.self, forKey: .window)
     appearance = try container.decodeIfPresent(QueueAppearance.self, forKey: .appearance)
     accentStyle = try container.decodeIfPresent(QueueAccentStyle.self, forKey: .accentStyle)
@@ -1271,6 +1277,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     try container.encode(completedRoutineIDs, forKey: .completedRoutineIDs)
     try container.encode(completionRequests, forKey: .completionRequests)
     try container.encode(deferredTicketIDs, forKey: .deferredTicketIDs)
+    try container.encode(dismissedNotificationIDs, forKey: .dismissedNotificationIDs)
     try container.encodeIfPresent(window, forKey: .window)
     try container.encodeIfPresent(appearance, forKey: .appearance)
     try container.encodeIfPresent(accentStyle, forKey: .accentStyle)

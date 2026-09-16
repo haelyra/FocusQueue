@@ -693,6 +693,7 @@ func localStatePersistence() async throws {
     routineDate: "2026-08-29",
     completedRoutineIDs: ["review-prs"],
     completionRequests: [request],
+    dismissedNotificationIDs: ["daily-report:run-1", "agent-update:worker-1"],
     window: WindowSnapshot(
       x: 10,
       y: 20,
@@ -728,6 +729,7 @@ func legacyLocalStateDecoding() throws {
   let state = try JSONDecoder().decode(LocalState.self, from: data)
   #expect(state.appearance == nil)
   #expect(state.accentStyle == nil)
+  #expect(state.dismissedNotificationIDs.isEmpty)
   #expect(state.deferredTicketIDs.isEmpty)
   #expect(state.agentSessions.isEmpty)
 }

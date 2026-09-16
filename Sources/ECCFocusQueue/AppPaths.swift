@@ -27,6 +27,10 @@ struct AppPaths: Sendable {
         supportDirectory.appendingPathComponent("automation/Scripts/focus_queue_morning.py")
     }
 
+    var connectorDiagnosticsScript: URL {
+        supportDirectory.appendingPathComponent("automation/Scripts/focus_queue_connectors.py")
+    }
+
     static func live(environment: [String: String] = ProcessInfo.processInfo.environment) -> Self {
         if let override = environment["FOCUS_QUEUE_SUPPORT_DIR"], !override.isEmpty {
             let directory = URL(fileURLWithPath: override, isDirectory: true)

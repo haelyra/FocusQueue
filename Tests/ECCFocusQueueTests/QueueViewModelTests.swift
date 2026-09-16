@@ -181,6 +181,15 @@ struct QueueViewModelTests {
     #expect(model.isPanelCollapsed)
     #expect(!model.isQueueChatInspectorPresented)
     #expect(!model.isInspectorPresented)
+
+    var panelModes: [QueuePanelMode] = []
+    model.panelModeHandler = { panelModes.append($0) }
+    model.showTopTaskOnly()
+    #expect(model.isTopTaskOnly)
+    #expect(!model.isPanelCollapsed)
+    model.setPanelMode(.expanded)
+    #expect(model.panelMode == .expanded)
+    #expect(panelModes == [.topTask, .expanded])
   }
   @Test("Launch diagnostics open inside Focus Queue without a JSONL file association")
   func inlineLaunchDiagnostics() async throws {
@@ -530,6 +539,65 @@ struct QueueViewModelTests {
     #expect(restarted.reportHistory.runs.first?.message == "Mail reader timed out")
   }
 
+  @Test("Cleared report notifications stay dismissed while a newer report can notify")
+  func reportNotificationDismissal() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    model.setDailyReportRunState(isRunning: true, message: "Reading configured platforms")
+    model.setDailyReportRunState(isRunning: false, message: "Mail reader timed out", isError: true)
+    try await eventually { model.relevantFailedReportRun != nil }
+    let notificationID = model.reportNotificationID
+    #expect(model.showsReportNotification)
+
+    model.dismissReportNotification()
+    #expect(!model.showsReportNotification)
+    try await eventually {
+      try await JSONLocalStateStore(url: fixture.paths.stateFile).load()
+        .dismissedNotificationIDs.contains(notificationID)
+    }
+    let restarted = await fixture.model(agent: ControlledQueueAgent())
+    #expect(!restarted.showsReportNotification)
+
+    let newer = fixture.report(
+      "newer-report",
+      finishedAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(60))
+    )
+    try fixture.archive(newer)
+    try JSONEncoder().encode(newer).write(to: fixture.paths.latestDailyReportFile)
+    await restarted.reloadDailyReport()
+    #expect(restarted.showsReportNotification)
+    #expect(restarted.reportNotificationID != notificationID)
+  }
+
+  @Test("Connector diagnostics use the installed offline checker and expose every platform")
+  func connectorDiagnostics() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let script = fixture.paths.connectorDiagnosticsScript
+    try FileManager.default.createDirectory(
+      at: script.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try Data("#!/usr/bin/env python3\n".utf8).write(to: script)
+    let runner = ConnectorDiagnosticsRunnerStub()
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(),
+      connectorDiagnosticsRunner: runner
+    )
+
+    await model.diagnoseConnectors()
+
+    #expect(model.connectorDiagnosticsError == nil)
+    #expect(model.connectorDiagnostics?.connectors.count == 4)
+    #expect(model.connectorDiagnostics?.diagnostic(for: .email)?.statusLabel == "Configured, not verified")
+    let command = try #require(await runner.commands.first)
+    #expect(command.executable == "/usr/bin/python3")
+    #expect(command.arguments == [
+      script.path, "--config", fixture.paths.ingestionConfigurationFile.path,
+    ])
+  }
+
   @Test("Reading an archived report keeps the latest unread report notification")
   func historicalViewingPreservesLatestAttention() async throws {
     let fixture = try await Fixture()
@@ -704,6 +772,14 @@ struct QueueViewModelTests {
     #expect(model.subtasks(for: "ECC-101").first(where: { $0.id == "second" })?.completionUnread == true)
     #expect(model.presentedAgentUpdate?.summary == "Full reply for first")
     #expect(model.dashboard.tickets[0].status == "open")
+
+    let second = try #require(model.agentUpdates.first(where: { $0.subtaskID == "second" }))
+    model.dismissAgentUpdate(second)
+    #expect(!model.agentUpdates.contains(where: { $0.presentationID == second.presentationID }))
+    try await eventually {
+      try await JSONLocalStateStore(url: fixture.paths.stateFile).load()
+        .dismissedNotificationIDs.contains(second.presentationID)
+    }
   }
 
   @Test("Changing type shows a pending response and the agent's result in the same task")
@@ -1013,11 +1089,13 @@ private struct Fixture {
 
   func model(agent: ControlledQueueAgent, verifier: (any CompletionVerifying)? = nil,
              terminalController: (any WezTermControlling)? = nil,
-             taskAgentLauncher: TaskAgentLauncher = TaskAgentLauncher()) async -> QueueViewModel {
+             taskAgentLauncher: TaskAgentLauncher = TaskAgentLauncher(),
+             connectorDiagnosticsRunner: any ProcessRunning = FoundationProcessRunner()) async -> QueueViewModel {
     let boundary = ForbiddenExternalActions()
     let model = QueueViewModel(paths: paths, terminalController: terminalController ?? boundary,
       verifier: verifier ?? boundary, queueAgent: agent, pullRequestQueueLoader: boundary,
-      taskAgentLauncher: taskAgentLauncher)
+      taskAgentLauncher: taskAgentLauncher,
+      connectorDiagnosticsRunner: connectorDiagnosticsRunner)
     await model.bootstrap()
     #expect(model.loadError == nil)
     return model
@@ -1049,6 +1127,32 @@ private actor DirectCreationRunner: ProcessRunning {
     }
     spawnCount += 1
     return .init(exitCode: 0, standardOutput: "42\n", standardError: "", timedOut: false)
+  }
+}
+
+private actor ConnectorDiagnosticsRunnerStub: ProcessRunning {
+  private(set) var commands: [ProcessSpecification] = []
+
+  func run(_ specification: ProcessSpecification) throws -> ProcessResult {
+    commands.append(specification)
+    return ProcessResult(
+      exitCode: 0,
+      standardOutput: """
+        {
+          "version": 1,
+          "mode": "offline",
+          "authenticationVerified": false,
+          "connectors": [
+            {"id":"discord","status":"setup_required","coverage":"unconfigured","nextStep":"Configure Discord."},
+            {"id":"telegram","status":"limited","coverage":"agent_session_archive","nextStep":"Configure Telegram."},
+            {"id":"email","status":"configured_unverified","coverage":"configured_apple_mail_account_and_mailboxes","nextStep":"Verify Mail."},
+            {"id":"github","status":"configured_unverified","coverage":"configured_repositories","nextStep":"Verify GitHub."}
+          ]
+        }
+        """,
+      standardError: "",
+      timedOut: false
+    )
   }
 }
 

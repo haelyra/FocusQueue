@@ -38,3 +38,28 @@ enum CollapsedQueueGeometry {
     return CGRect(x: x, y: y, width: size.width, height: size.height)
   }
 }
+
+enum TopTaskQueueGeometry {
+  static let height: CGFloat = 238
+
+  static func size(preferredWidth: CGFloat) -> CGSize {
+    CGSize(width: min(max(preferredWidth, 400), 620), height: height)
+  }
+
+  static func frame(
+    preferredWidth: CGFloat,
+    visibleFrame: CGRect,
+    placement: QueueWindowPlacement
+  ) -> CGRect {
+    let size = size(preferredWidth: preferredWidth)
+    let x: CGFloat
+    switch placement {
+    case .upperLeft: x = visibleFrame.minX + 12
+    case .upperRight: x = visibleFrame.maxX - size.width - 12
+    case .center: x = visibleFrame.midX - size.width / 2
+    }
+    let y = placement == .center
+      ? visibleFrame.midY - size.height / 2 : visibleFrame.maxY - size.height - 12
+    return CGRect(origin: CGPoint(x: x, y: y), size: size)
+  }
+}

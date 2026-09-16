@@ -28,6 +28,7 @@
 | Only reviewed automation is installed | `test_automation_payload_rejects_missing_extra_and_symlink_entries` | `dd1e328` accepted missing, extra, and symlinked payload entries | Preflight and staged-copy validation require the exact eight regular automation files |
 | Install and uninstall are serialized | `test_uninstall_uses_the_installation_lock` | `dd1e328` allowed uninstall while the install lock was held | Both mutating transactions use the same nonblocking installation lock |
 | Existing automation ownership upgrades safely | `test_upgrade_accepts_and_replaces_a_verified_legacy_automation_digest` | `9c4f363` reproduced a safe install being rejected after the digest format changed | Exact-file validation precedes legacy verification, and the replacement manifest records the canonical algorithm |
+| Legacy checksums remain unambiguous | `test_legacy_automation_digest_rejects_nul_content` | `ed5fea1` showed an algorithm-less manifest accepting delimiter-bearing file content | Legacy verification accepts only the NUL-free payload format emitted by the shipped release |
 
 ## Implementation result
 
@@ -48,7 +49,7 @@
 
 - Focused cancellation, history, presentation, migration, and workspace lifecycle tests passed.
 - `swift test --enable-code-coverage`: 281 tests passed in 29 suites. One live app interaction test was skipped under the repository's explicit UI opt-in policy.
-- `python3 -m unittest discover -s Tests -p 'test_*.py'`: 135 tests passed.
+- `python3 -m unittest discover -s Tests -p 'test_*.py'`: 136 tests passed.
 - Repository-wide Swift line coverage is 50.95%. Directly changed core files are 94.09% for `DailyReportHistory.swift`, 90.18% for `TaskWorktreeManager.swift`, and 88.64% for `TaskContext.swift`. The SwiftUI executable baseline remains lower, while the new coordinator, model state, title expansion, agent presentation, and symbol contracts have direct headless tests.
 - Pointer and keyboard automation was not run because `ECC_FOCUS_QUEUE_UI_TESTS=1` was not set.
 
@@ -77,3 +78,5 @@
 - `bdf2d8b` GREEN: canonical automation ownership and shared mutation locking.
 - `9c4f363` RED: verified legacy automation could not upgrade to the canonical digest format.
 - `0628f40` GREEN: exact-payload legacy verification followed by a canonical replacement manifest.
+- `ed5fea1` RED: ambiguous delimiter-bearing legacy automation content was accepted.
+- `9fd8718` GREEN: legacy verification rejects NUL-bearing content before hashing.

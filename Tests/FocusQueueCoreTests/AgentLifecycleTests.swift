@@ -82,7 +82,8 @@ struct AgentLifecycleTests {
         }
         _ = try await git(["init", "-q", "-b", "main"])
         _ = try await git(["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Base", "--allow-empty"])
-        let store = TaskContextStore(root: root.appendingPathComponent("support"))
+        let support = root.appendingPathComponent("support")
+        let store = TaskContextStore(root: support)
         _ = try await store.ensureContext(ticket: DashboardTicket(id: "ECC-777", title: "Workspace", status: "open", summary: ""))
         let manager = TaskWorktreeManager()
         let firstID = UUID().uuidString
@@ -116,5 +117,73 @@ struct AgentLifecycleTests {
         #expect(try await manager.cleanupAgent(ticketID: "ECC-777", subtask: subtask, store: store).removed)
         #expect(!FileManager.default.fileExists(atPath: first.path))
         #expect(FileManager.default.fileExists(atPath: second.path))
+    }
+
+    @Test("Managed cleanup refuses a workspace replaced after validation")
+    func workspaceReplacementSafety() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repo = root.appendingPathComponent("repo")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        let git = FoundationProcessRunner()
+        for arguments in [
+            ["init", "-q", "-b", "main"],
+            ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+             "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Base", "--allow-empty"],
+        ] {
+            #expect(try await git.run(.init(
+                executable: "/usr/bin/git", arguments: arguments,
+                workingDirectory: repo.path)).succeeded)
+        }
+        let support = root.appendingPathComponent("support")
+        let store = TaskContextStore(root: support)
+        _ = try await store.ensureContext(ticket: DashboardTicket(
+            id: "ECC-778", title: "Workspace identity", status: "open", summary: ""))
+        let id = UUID().uuidString
+        let managedPath = support.appendingPathComponent("worktrees/agents/\(id)")
+        let runner = WorkspaceReplacingRunner(target: managedPath)
+        let manager = TaskWorktreeManager(runner: runner)
+        let workspace = try await manager.provisionAgent(
+            ticketID: "ECC-778", subtaskID: id, path: repo.path,
+            createWorktree: true, store: store)
+        var agent = TaskSubtask(id: id, title: "Completed", status: .completed)
+        agent.workspace = workspace
+        _ = try await store.upsertSubtask(ticketID: "ECC-778", subtask: agent)
+
+        do {
+            _ = try await manager.cleanupAgent(
+                ticketID: "ECC-778", subtask: agent, store: store)
+            Issue.record("Cleanup accepted a replaced workspace")
+        } catch {
+            #expect(error.localizedDescription.contains("identity changed"))
+        }
+        #expect(FileManager.default.fileExists(
+            atPath: managedPath.appendingPathComponent("preserve.txt").path))
+    }
+}
+
+private actor WorkspaceReplacingRunner: ProcessRunning {
+    private let target: URL
+    private let delegate = FoundationProcessRunner()
+    private var replaced = false
+
+    init(target: URL) {
+        self.target = target
+    }
+
+    func run(_ specification: ProcessSpecification) async throws -> ProcessResult {
+        let result = try await delegate.run(specification)
+        if !replaced,
+           specification.workingDirectory == target.path,
+           specification.arguments.starts(with: ["merge-base", "--is-ancestor"]),
+           result.succeeded {
+            replaced = true
+            try FileManager.default.moveItem(
+                at: target,
+                to: target.appendingPathExtension("validated-worktree"))
+            try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+            try Data("preserve".utf8).write(to: target.appendingPathComponent("preserve.txt"))
+        }
+        return result
     }
 }

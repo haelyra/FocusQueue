@@ -101,7 +101,9 @@ func generatedAgentNamesAreReadableTitles() {
     #expect(TaskSubtask.agentName(
         prompt: "Audit ECC035 iOS and tmux integration across provider sessions before release",
         provider: .codex) == "Audit ECC035 iOS and tmux integration")
+    #expect(TaskSubtask.agentName(prompt: "iOS crash recovery", provider: .codex) == "iOS crash recovery")
     #expect(TaskSubtask.agentName(prompt: "  \n  ", provider: .claude) == "Blank Claude agent")
+    #expect(TaskSubtask.agentName(prompt: "!!!", provider: .claude) == "Untitled Claude task")
 }
 
 @Test("Generated agent names stop at word boundaries")
@@ -112,6 +114,10 @@ func generatedAgentNamesRespectWordBoundaries() {
     #expect(prompt.hasPrefix(title))
     #expect(!title.hasSuffix("extraordinarilylongcom"))
     #expect(!title.hasSuffix("caref"))
+    let unbroken = TaskSubtask.agentName(prompt: String(repeating: "x", count: 90), provider: .codex)
+    #expect(!unbroken.isEmpty)
+    #expect(unbroken != "Blank Codex agent")
+    #expect(unbroken.count == 56)
 }
 
 @Test("Managed runtime is durable and clearing the queue archives before removal")

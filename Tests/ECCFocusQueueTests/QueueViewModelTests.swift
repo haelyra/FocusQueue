@@ -539,6 +539,27 @@ struct QueueViewModelTests {
     #expect(restarted.reportHistory.runs.first?.message == "Mail reader timed out")
   }
 
+  @Test("Cancelling a daily report requests one cancellation until the run stops")
+  func dailyReportCancellationState() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    var cancellationCount = 0
+    model.dailyReportCancelHandler = { cancellationCount += 1 }
+    model.setDailyReportRunState(isRunning: true, message: "Reading configured platforms")
+
+    model.cancelDailyReport()
+    model.cancelDailyReport()
+
+    #expect(cancellationCount == 1)
+    #expect(model.isDailyReportRunning)
+    #expect(model.isDailyReportCancellationRequested)
+    #expect(model.dailyReportRunMessage == "Cancelling daily report…")
+
+    model.setDailyReportRunState(isRunning: false, message: "Daily report cancelled.")
+    #expect(!model.isDailyReportCancellationRequested)
+  }
+
   @Test("Cleared report notifications stay dismissed while a newer report can notify")
   func reportNotificationDismissal() async throws {
     let fixture = try await Fixture()

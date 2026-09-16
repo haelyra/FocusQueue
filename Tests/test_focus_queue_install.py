@@ -1,4 +1,5 @@
 import importlib.util
+import fcntl
 import json
 from pathlib import Path
 import plistlib
@@ -14,6 +15,17 @@ SPEC.loader.exec_module(MODULE)
 
 
 class InstallerTests(unittest.TestCase):
+    automation_files = (
+        "Scripts/focus_queue_morning.py",
+        "Scripts/focus_queue_codex.py",
+        "Scripts/focus_queue_lock.py",
+        "Scripts/focus_queue_mail.py",
+        "Scripts/focus_queue_discord.py",
+        "Scripts/focus_queue_connectors.py",
+        "Scripts/focus-queue-mail.js",
+        "Config/task-proposals.schema.json",
+    )
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -35,11 +47,10 @@ class InstallerTests(unittest.TestCase):
     def make_app(self, path, content):
         (path / "Contents/MacOS").mkdir(parents=True)
         automation = path / "Contents/Resources/automation"
-        (automation / "Scripts").mkdir(parents=True)
-        (automation / "Config").mkdir(parents=True)
-        (automation / "Scripts/focus_queue_morning.py").write_bytes(b"worker:" + content)
-        (automation / "Scripts/focus_queue_lock.py").write_text("lock helper")
-        (automation / "Config/task-proposals.schema.json").write_text("{}")
+        for relative in self.automation_files:
+            destination = automation / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"worker:" + content + b":" + relative.encode())
         (path / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": MODULE.IDENTIFIER}))
         for name in ("ECCFocusQueue", "focus-queue-session"):
             binary = path / "Contents/MacOS" / name
@@ -62,7 +73,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.installer.helper.read_bytes(), b"new executable")
         self.assertEqual(
             (self.installer.automation / "Scripts/focus_queue_morning.py").read_bytes(),
-            b"worker:new executable",
+            b"worker:new executable:Scripts/focus_queue_morning.py",
         )
         self.assertFalse(self.installer.agent.exists())
         self.assertFalse((self.home / "Applications/ECC Focus Mail Reader.app").exists())
@@ -73,7 +84,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(config.read_text(), "user owned config")
         self.assertEqual(
             (self.installer.automation / "Scripts/focus_queue_morning.py").read_bytes(),
-            b"worker:new executable",
+            b"worker:new executable:Scripts/focus_queue_morning.py",
         )
 
     def test_unknown_app_helper_and_parent_symlink_are_preserved(self):
@@ -92,6 +103,42 @@ class InstallerTests(unittest.TestCase):
                     installer.install()
                 if conflict != "parent":
                     self.assertEqual(path.read_text(), "unrelated")
+
+    def test_automation_digest_distinguishes_file_boundaries(self):
+        first = self.root / "first"
+        second = self.root / "second"
+        first.mkdir()
+        second.mkdir()
+        (first / "a").write_bytes(b"X")
+        (first / "b").write_bytes(b"Y")
+        (second / "a").write_bytes(b"X\0b\0Y")
+        self.assertNotEqual(MODULE.tree_digest(first), MODULE.tree_digest(second))
+
+    def test_automation_payload_rejects_missing_extra_and_symlink_entries(self):
+        for scenario in ("missing", "extra", "symlink"):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                bundle = Path(temporary) / "Built.app"
+                self.make_app(bundle, b"payload")
+                automation = bundle / "Contents/Resources/automation"
+                if scenario == "missing":
+                    (automation / "Scripts/focus_queue_codex.py").unlink()
+                elif scenario == "extra":
+                    (automation / "Scripts/unexpected.py").write_text("unexpected")
+                else:
+                    source = automation / "Scripts/focus_queue_connectors.py"
+                    source.unlink()
+                    source.symlink_to(Path(temporary) / "outside")
+                with self.assertRaisesRegex(ValueError, "automation"):
+                    MODULE.Installer(bundle, Path(temporary) / "home", start=False).preflight()
+
+    def test_uninstall_uses_the_installation_lock(self):
+        self.installer.install()
+        lock_path = self.installer.support / "install.lock"
+        with lock_path.open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaises(BlockingIOError):
+                MODULE.uninstall(self.home, stop=False)
+        self.assertTrue(self.installer.app.exists())
 
     def test_launch_failure_restores_old_app_helper_and_manifest(self):
         self.installer.install()

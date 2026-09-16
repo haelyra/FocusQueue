@@ -14,6 +14,7 @@ struct QueueAgentUpdate: Identifiable, Equatable {
   var resultID: String? = nil
 
   var conciseReason: String { CompletionExplanation.concise(summary) }
+  var presentationID: String { id + ":" + (resultID ?? String(date.timeIntervalSince1970)) }
 }
 
 struct AgentUpdateView: View {
@@ -136,7 +137,7 @@ struct AgentUpdateView: View {
       }
     }.padding(14).frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
       .background(.background, in: RoundedRectangle(cornerRadius: 14))
-      .task(id: update.id) {
+      .task(id: update.presentationID) {
         reviewOutput = ""
         logError = nil
         await model.acknowledgeAgentUpdate(update)

@@ -168,6 +168,29 @@ class InstallerTests(unittest.TestCase):
         )
         self.assertEqual(automation["digestAlgorithm"], "sha256-tree-v1")
 
+    def test_legacy_automation_digest_rejects_nul_content(self):
+        self.installer.install()
+        target = self.installer.automation / "Scripts/focus_queue_codex.py"
+        target.write_bytes(target.read_bytes() + b"\0Scripts/focus_queue_lock.py\0")
+        legacy = hashlib.sha256()
+        for item in sorted(self.installer.automation.rglob("*")):
+            if item.is_file():
+                legacy.update(str(item.relative_to(self.installer.automation)).encode())
+                legacy.update(b"\0")
+                legacy.update(item.read_bytes())
+                legacy.update(b"\0")
+        manifest = json.loads(self.installer.manifest.read_text())
+        automation = next(
+            item for item in manifest["artifacts"]
+            if item["path"] == str(self.installer.automation)
+        )
+        automation["sha256"] = legacy.hexdigest()
+        automation.pop("digestAlgorithm", None)
+        self.installer.manifest.write_text(json.dumps(manifest))
+
+        with self.assertRaisesRegex(ValueError, "NUL"):
+            self.installer.preflight()
+
     def test_launch_failure_restores_old_app_helper_and_manifest(self):
         self.installer.install()
         before = self.installer.manifest.read_bytes()

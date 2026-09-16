@@ -89,8 +89,52 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     public var hasManagedWorkspaces: Bool { workspace?.managed == true || workspaceHistory.contains(where: \.managed) }
     public var isAgentVisible: Bool { agentRemovedAt == nil && (status != .completed || completedRuntimeOpenedAt != nil) }
     public static func agentName(prompt: String, provider: AgentProvider) -> String {
-        let words = prompt.split(whereSeparator: \.isWhitespace).prefix(10).joined(separator: " ")
-        return words.isEmpty ? "Blank \(provider.displayName) agent" : String(words.prefix(80))
+        let firstLine = prompt.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty }) ?? ""
+        var phrase = firstLine.replacingOccurrences(
+            of: #"^\s*(?:[-*+>#]+|\d+[.)]|\[[ xX]\])\s*"#,
+            with: "", options: .regularExpression)
+        let requestPrefixes = [
+            "could you please ", "would you please ", "can you please ",
+            "i would like you to ", "i'd like you to ", "i need you to ", "i want you to ",
+            "your task is to ", "could you ", "would you ", "can you ", "we need to ",
+            "help me ", "please ",
+        ]
+        for prefix in requestPrefixes {
+            if let range = phrase.range(of: prefix, options: [.anchored, .caseInsensitive]) {
+                phrase.removeSubrange(range)
+                break
+            }
+        }
+        if let boundary = phrase.indices.first(where: { index in
+            guard ".!?;".contains(phrase[index]) else { return false }
+            let next = phrase.index(after: index)
+            return next == phrase.endIndex || phrase[next].isWhitespace
+        }) {
+            phrase = String(phrase[..<boundary])
+        }
+        let candidates = phrase.split(whereSeparator: \.isWhitespace).map(String.init)
+        var words: [String] = []
+        for word in candidates.prefix(6) {
+            let proposed = (words + [word]).joined(separator: " ")
+            guard proposed.count <= 56 else { break }
+            words.append(word)
+        }
+        let trailingFillers: Set<String> = [
+            "a", "an", "and", "because", "but", "for", "from", "in", "into", "of", "on", "or",
+            "so", "that", "the", "then", "to", "with",
+        ]
+        while words.count > 1, let last = words.last,
+              trailingFillers.contains(last.lowercased()) {
+            words.removeLast()
+        }
+        guard !words.isEmpty else { return "Blank \(provider.displayName) agent" }
+        var title = words.joined(separator: " ").trimmingCharacters(in: .punctuationCharacters)
+        if let first = title.first, first.isLowercase {
+            title.replaceSubrange(title.startIndex...title.startIndex, with: String(first).uppercased())
+        }
+        return title
     }
 
     public init(id: String = UUID().uuidString, title: String,

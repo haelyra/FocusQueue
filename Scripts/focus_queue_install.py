@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
@@ -17,6 +18,16 @@ import sys
 
 PRODUCT = "ECC Focus Queue"
 IDENTIFIER = "com.haelyra.ecc-focus-queue"
+AUTOMATION_FILES = (
+    "Scripts/focus_queue_morning.py",
+    "Scripts/focus_queue_codex.py",
+    "Scripts/focus_queue_lock.py",
+    "Scripts/focus_queue_mail.py",
+    "Scripts/focus_queue_discord.py",
+    "Scripts/focus_queue_connectors.py",
+    "Scripts/focus-queue-mail.js",
+    "Config/task-proposals.schema.json",
+)
 
 
 def digest(path):
@@ -24,17 +35,61 @@ def digest(path):
 
 
 def tree_digest(path):
-    value = hashlib.sha256()
-    for item in sorted(path.rglob("*")):
+    entries = []
+    if path.is_symlink() or not path.is_dir():
+        raise ValueError(f"Managed directory is not a regular directory: {path}")
+    for item in path.rglob("*"):
         if item.is_symlink():
-            raise ValueError(f"Symlink inside managed automation requires review: {item}")
-        if not item.is_file():
+            raise ValueError(f"Symlink inside managed directory requires review: {item}")
+        if item.is_dir():
             continue
-        value.update(str(item.relative_to(path)).encode())
-        value.update(b"\0")
-        value.update(item.read_bytes())
-        value.update(b"\0")
+        if not item.is_file():
+            raise ValueError(f"Special file inside managed directory requires review: {item}")
+        entries.append((item.relative_to(path).as_posix().encode(), item.read_bytes()))
+
+    value = hashlib.sha256()
+    value.update(b"focus-queue-managed-tree-v1")
+    value.update(len(entries).to_bytes(8, "big"))
+    for relative, content in sorted(entries):
+        value.update(len(relative).to_bytes(8, "big"))
+        value.update(relative)
+        value.update(len(content).to_bytes(8, "big"))
+        value.update(hashlib.sha256(content).digest())
     return value.hexdigest()
+
+
+def validate_automation_tree(path):
+    if path.is_symlink() or not path.is_dir():
+        raise ValueError(f"Built app automation is not a regular directory: {path}")
+    found = set()
+    for item in path.rglob("*"):
+        if item.is_symlink():
+            raise ValueError(f"Built app automation contains a symlink: {item}")
+        if item.is_dir():
+            continue
+        if not item.is_file():
+            raise ValueError(f"Built app automation contains a special file: {item}")
+        found.add(item.relative_to(path).as_posix())
+    expected = set(AUTOMATION_FILES)
+    if found != expected:
+        missing = sorted(expected - found)
+        extra = sorted(found - expected)
+        raise ValueError(
+            f"Built app automation payload is incomplete or unexpected; "
+            f"missing={missing}, extra={extra}."
+        )
+
+
+@contextmanager
+def installation_lock(support, home):
+    safe_destination(support, home)
+    support.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock_path = support / "install.lock"
+    safe_destination(lock_path, home)
+    with lock_path.open("a") as lock:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
 
 
 def safe_destination(path, home):
@@ -79,14 +134,7 @@ class Installer:
             if not os.access(self.bundle / "Contents/MacOS" / name, os.X_OK):
                 raise ValueError(f"Built app is incomplete: missing executable {name}.")
         bundled_automation = self.bundle / "Contents/Resources/automation"
-        for relative in (
-            "Scripts/focus_queue_morning.py",
-            "Scripts/focus_queue_lock.py",
-            "Config/task-proposals.schema.json",
-        ):
-            source = bundled_automation / relative
-            if source.is_symlink() or not source.is_file():
-                raise ValueError(f"Built app is incomplete: missing automation file {relative}.")
+        validate_automation_tree(bundled_automation)
         subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(self.bundle)], check=True, capture_output=True)
         for path in (self.app, self.helper, self.agent, self.support, self.automation, self.manifest):
             safe_destination(path, self.home)
@@ -157,12 +205,7 @@ class Installer:
 
     def install(self):
         self.preflight()
-        self.support.mkdir(parents=True, exist_ok=True, mode=0o700)
-        lock_path = self.support / "install.lock"
-        safe_destination(lock_path, self.home)
-        with lock_path.open("a") as lock:
-            os.chmod(lock_path, 0o600)
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with installation_lock(self.support, self.home):
             return self._install_locked()
 
     def _install_locked(self):
@@ -185,7 +228,9 @@ class Installer:
             shutil.copytree(
                 staged_app / "Contents/Resources/automation",
                 staged_automation,
+                symlinks=True,
             )
+            validate_automation_tree(staged_automation)
             planned = [
                 (staged_app, self.app),
                 (staged_helper, self.helper),
@@ -260,8 +305,7 @@ class Installer:
             shutil.rmtree(stage)
 
 
-def uninstall(home, *, check=False, stop=True):
-    installer = Installer(home / "Applications" / f"{PRODUCT}.app", home, start=False)
+def _uninstall_locked(installer, home, *, check, stop):
     safe_destination(installer.manifest, home)
     if not installer.manifest.is_file():
         raise ValueError("No installation ownership manifest exists. Install the current version before using managed uninstall.")
@@ -318,6 +362,14 @@ def uninstall(home, *, check=False, stop=True):
             saved.rename(path)
         raise
     return {**result, "mode": "uninstalled", "backupDirectory": str(backup)}
+
+
+def uninstall(home, *, check=False, stop=True):
+    installer = Installer(home / "Applications" / f"{PRODUCT}.app", home, start=False)
+    if check:
+        return _uninstall_locked(installer, home, check=True, stop=stop)
+    with installation_lock(installer.support, home):
+        return _uninstall_locked(installer, home, check=False, stop=stop)
 
 
 def main():

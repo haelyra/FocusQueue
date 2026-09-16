@@ -90,6 +90,7 @@ public actor TaskWorktreeManager {
         if contexts.contains(where: { context in
             context.subtasks.contains { other in
                 (context.ticketID != ticketID || other.id != subtask.id)
+                    && !other.isAssignmentOnly
                     && other.isAgentVisible && other.workspace?.path == workspace.path
             }
         }) {

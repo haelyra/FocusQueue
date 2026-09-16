@@ -50,6 +50,7 @@ final class QueueViewModel {
   private(set) var dailyReportLoadError: String?
   private(set) var isDailyReportPresented = false
   private(set) var isDailyReportRunning = false
+  private(set) var isDailyReportCancellationRequested = false
   private(set) var dailyReportRunMessage: String?
   private(set) var dailyReportRunFailed = false
   private(set) var pendingDailyReportApproval: DailyReportApprovalRequest?
@@ -146,6 +147,7 @@ final class QueueViewModel {
   @ObservationIgnored var dailyReportRunHandler: (
     @MainActor (DailyReportRunRequest) async -> DailyReportDocument?
   )?
+  @ObservationIgnored var dailyReportCancelHandler: (() -> Void)?
   @ObservationIgnored var dailyReportApprovalHandler: (@MainActor (Bool) async -> Void)?
   @ObservationIgnored var agentTerminalFocusHandler: (@MainActor (String, String) async throws -> Void)?
   @ObservationIgnored var terminalFocusHandler: (
@@ -1897,6 +1899,13 @@ final class QueueViewModel {
     }
   }
 
+  func cancelDailyReport() {
+    guard isDailyReportRunning, !isDailyReportCancellationRequested else { return }
+    isDailyReportCancellationRequested = true
+    dailyReportRunMessage = "Cancelling daily report…"
+    dailyReportCancelHandler?()
+  }
+
   func respondToDailyReportApproval(run: Bool) {
     Task { await dailyReportApprovalHandler?(run) }
   }
@@ -1905,10 +1914,12 @@ final class QueueViewModel {
     isRunning: Bool,
     message: String? = nil,
     isError: Bool = false,
-    reportID: String? = nil
+    reportID: String? = nil,
+    finalPhase: DailyReportRunPhase? = nil
   ) {
     let wasRunning = isDailyReportRunning
     isDailyReportRunning = isRunning
+    if !isRunning || !wasRunning { isDailyReportCancellationRequested = false }
     dailyReportRunMessage = message
     dailyReportRunFailed = isError
     guard isRunning || wasRunning || isError else { return }
@@ -1918,7 +1929,7 @@ final class QueueViewModel {
       do {
         try await reportHistoryRepository.recordRun(isRunning: isRunning,
           message: message ?? (isRunning ? "Daily report running" : "Daily report finished"),
-          isError: isError, reportID: reportID)
+          isError: isError, reportID: reportID, finalPhase: finalPhase)
         await reloadReportHistory()
       } catch { reportHistoryError = error.localizedDescription }
     }

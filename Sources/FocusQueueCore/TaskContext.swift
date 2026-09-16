@@ -86,7 +86,9 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         !isAssignmentOnly && (parentSubtaskID != nil || sessionID != nil || tmux != nil || terminalPaneID != nil || lastHeartbeatAt != nil || status == .completed)
     }
 
-    public var hasManagedWorkspaces: Bool { workspace?.managed == true || workspaceHistory.contains(where: \.managed) }
+    public var hasManagedWorkspaces: Bool {
+        !isAssignmentOnly && (workspace?.managed == true || workspaceHistory.contains(where: \.managed))
+    }
     public var isAgentVisible: Bool { agentRemovedAt == nil && (status != .completed || completedRuntimeOpenedAt != nil) }
     public static func agentName(prompt: String, provider: AgentProvider) -> String {
         let firstLine = prompt.components(separatedBy: .newlines)

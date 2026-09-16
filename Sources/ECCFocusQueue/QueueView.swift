@@ -234,6 +234,17 @@ struct QueueView: View {
           .accessibilityLabel("Debug daily report connectors")
           .help("Check Mail, Telegram, Discord, and GitHub connector setup")
         }
+        if model.isDailyReportRunning {
+          Button(
+            model.isDailyReportCancellationRequested ? "Cancelling" : "Cancel",
+            systemImage: "xmark.circle",
+            action: model.cancelDailyReport
+          )
+          .buttonStyle(.bordered)
+          .controlSize(.small)
+          .disabled(model.isDailyReportCancellationRequested)
+          .help("Stop the active daily report process")
+        }
       }
       .padding(12)
       .notificationSurface(radius: 14)
@@ -1073,6 +1084,12 @@ private struct DailyReportView: View {
           Text("Checking new messages and creating linked tasks…")
             .font(.system(size: 12, weight: .medium))
           Spacer()
+          Button(
+            model.isDailyReportCancellationRequested ? "Cancelling…" : "Cancel",
+            action: model.cancelDailyReport
+          )
+          .buttonStyle(.bordered)
+          .disabled(model.isDailyReportCancellationRequested)
         }.padding(13).notificationSurface(radius: 16)
       } else if let message = model.dailyReportRunMessage {
         Label(message, systemImage: model.dailyReportRunFailed ? "exclamationmark.triangle" : "info.circle")
@@ -1363,6 +1380,13 @@ private struct QueueSettingsView: View {
                 HStack(spacing: 8) {
                   ProgressView().controlSize(.small)
                   Text("Checking enabled platforms…")
+                  Spacer()
+                  Button(
+                    model.isDailyReportCancellationRequested ? "Cancelling…" : "Cancel",
+                    action: model.cancelDailyReport
+                  )
+                  .buttonStyle(.bordered)
+                  .disabled(model.isDailyReportCancellationRequested)
                 }.font(.system(size: 12)).foregroundStyle(.secondary)
               } else if let message = model.dailyReportRunMessage {
                 Text(message).font(.system(size: 12))
@@ -1840,10 +1864,11 @@ struct SubtaskTitleLabel: View {
 }
 
 struct SubtaskDisclosureState: Equatable {
+  static let defaultExpanded = true
   private var collapsedIDs: Set<String> = []
 
   func isExpanded(_ subtaskID: String) -> Bool {
-    !collapsedIDs.contains(subtaskID)
+    Self.defaultExpanded && !collapsedIDs.contains(subtaskID)
   }
 
   mutating func toggle(_ subtaskID: String) {
@@ -1921,7 +1946,7 @@ private struct ArchivedSubtaskRow: View {
   let ticket: DashboardTicket
   let subtask: TaskSubtask
   let model: QueueViewModel
-  @State private var isExpanded = false
+  @State private var isExpanded = SubtaskDisclosureState.defaultExpanded
   @State private var confirmsDeletion = false
 
   var body: some View {

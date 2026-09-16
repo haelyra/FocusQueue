@@ -10,6 +10,28 @@ import UserNotifications
   var body: some Scene { Settings { EmptyView() } }
 }
 
+@MainActor final class DailyReportRunCoordinator {
+  private var activeRun: (id: UUID, task: Task<DailyReportDocument?, Never>)?
+
+  var hasActiveRun: Bool { activeRun != nil }
+
+  func run(
+    _ operation: @escaping @MainActor () async -> DailyReportDocument?
+  ) async -> DailyReportDocument? {
+    guard activeRun == nil else { return nil }
+    let id = UUID()
+    let task = Task { @MainActor in await operation() }
+    activeRun = (id, task)
+    let result = await task.value
+    if activeRun?.id == id { activeRun = nil }
+    return result
+  }
+
+  func cancel() {
+    activeRun?.task.cancel()
+  }
+}
+
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   UNUserNotificationCenterDelegate
 {
@@ -28,6 +50,7 @@ import UserNotifications
   private var lastMorningAttempt: Date?
   private var lastFailedDailyReportAttempt: Date?
   private let morningRunner = FoundationProcessRunner()
+  private let dailyReportRunCoordinator = DailyReportRunCoordinator()
   private var isDailyReportProcessRunning = false
   private var expandedPanelFrame: NSRect?
   private var compactPanelWidth: CGFloat = 440
@@ -59,6 +82,9 @@ import UserNotifications
     }
     model.dailyReportRunHandler = { [weak self] request in
       await self?.runDailyReport(request)
+    }
+    model.dailyReportCancelHandler = { [weak self] in
+      self?.dailyReportRunCoordinator.cancel()
     }
     model.dailyReportApprovalHandler = { [weak self] shouldRun in
       await self?.respondToDailyReportApproval(shouldRun: shouldRun)
@@ -144,6 +170,7 @@ import UserNotifications
 
   func applicationWillTerminate(_ notification: Notification) {
     morningReconciliationTask?.cancel()
+    dailyReportRunCoordinator.cancel()
     DistributedNotificationCenter.default().removeObserver(self)
   }
 
@@ -342,6 +369,14 @@ import UserNotifications
   private func runDailyReport(
     _ request: DailyReportRunRequest
   ) async -> DailyReportDocument? {
+    await dailyReportRunCoordinator.run { [weak self] in
+      await self?.performDailyReport(request)
+    }
+  }
+
+  private func performDailyReport(
+    _ request: DailyReportRunRequest
+  ) async -> DailyReportDocument? {
     guard !isDailyReportProcessRunning else {
       model.setDailyReportRunState(
         isRunning: true,
@@ -365,6 +400,7 @@ import UserNotifications
     }
 
     isDailyReportProcessRunning = true
+    defer { isDailyReportProcessRunning = false }
     model.setDailyReportRunState(isRunning: true, message: "Checking new messages…")
     guard await model.persistDailyReportConfiguration() else {
       model.setDailyReportRunState(
@@ -372,10 +408,10 @@ import UserNotifications
         message: "Daily report settings could not be saved before the run.",
         isError: true
       )
-      isDailyReportProcessRunning = false
       return nil
     }
     do {
+      try Task.checkCancellation()
       let result = try await morningRunner.run(ProcessSpecification(
         executable: "/usr/bin/python3",
         arguments: DailyReportAutomation.arguments(
@@ -429,14 +465,20 @@ import UserNotifications
       if request.trigger == .manual, [0, 2].contains(result.exitCode) {
         model.setDailyReportPresented(true)
       }
-      isDailyReportProcessRunning = false
       return [0, 2].contains(result.exitCode) ? report : nil
+    } catch is CancellationError {
+      let message = "Daily report cancelled."
+      appendMorningLog("\(message)\n", error: false)
+      model.setDailyReportRunState(
+        isRunning: false,
+        message: message,
+        finalPhase: .interrupted
+      )
     } catch {
       let message = "Daily report failed to launch: \(error.localizedDescription)"
       appendMorningLog("\(message)\n", error: true)
       model.setDailyReportRunState(isRunning: false, message: message, isError: true)
     }
-    isDailyReportProcessRunning = false
     return nil
   }
 

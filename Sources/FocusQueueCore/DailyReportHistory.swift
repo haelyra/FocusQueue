@@ -143,10 +143,13 @@ public actor JSONDailyReportHistoryRepository {
   /// Call only for report execution transitions, not settings confirmation messages.
   public func recordRun(
     isRunning: Bool, message: String, isError: Bool = false,
-    reportID: String? = nil, now: Date = Date()
+    reportID: String? = nil, finalPhase: DailyReportRunPhase? = nil,
+    now: Date = Date()
   ) throws {
     var state = try readState()
-    let phase: DailyReportRunPhase = isRunning ? .running : (isError ? .failed : .completed)
+    let phase: DailyReportRunPhase = isRunning
+      ? .running
+      : (finalPhase ?? (isError ? .failed : .completed))
     if let index = state.runs.lastIndex(where: { $0.phase == .running }) {
       state.runs[index].updatedAt = now
       state.runs[index].phase = phase

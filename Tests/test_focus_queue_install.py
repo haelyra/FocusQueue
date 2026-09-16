@@ -34,6 +34,12 @@ class InstallerTests(unittest.TestCase):
 
     def make_app(self, path, content):
         (path / "Contents/MacOS").mkdir(parents=True)
+        automation = path / "Contents/Resources/automation"
+        (automation / "Scripts").mkdir(parents=True)
+        (automation / "Config").mkdir(parents=True)
+        (automation / "Scripts/focus_queue_morning.py").write_bytes(b"worker:" + content)
+        (automation / "Scripts/focus_queue_lock.py").write_text("lock helper")
+        (automation / "Config/task-proposals.schema.json").write_text("{}")
         (path / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": MODULE.IDENTIFIER}))
         for name in ("ECCFocusQueue", "focus-queue-session"):
             binary = path / "Contents/MacOS" / name
@@ -54,6 +60,10 @@ class InstallerTests(unittest.TestCase):
         result = self.installer.install()
         self.assertEqual(config.read_text(), "user owned config")
         self.assertEqual(self.installer.helper.read_bytes(), b"new executable")
+        self.assertEqual(
+            (self.installer.automation / "Scripts/focus_queue_morning.py").read_bytes(),
+            b"worker:new executable",
+        )
         self.assertFalse(self.installer.agent.exists())
         self.assertFalse((self.home / "Applications/ECC Focus Mail Reader.app").exists())
         manifest = json.loads(self.installer.manifest.read_text())
@@ -61,6 +71,10 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue(Path(result["backupDirectory"]).exists())
         self.installer.install()
         self.assertEqual(config.read_text(), "user owned config")
+        self.assertEqual(
+            (self.installer.automation / "Scripts/focus_queue_morning.py").read_bytes(),
+            b"worker:new executable",
+        )
 
     def test_unknown_app_helper_and_parent_symlink_are_preserved(self):
         for conflict in ["app", "helper", "parent"]:

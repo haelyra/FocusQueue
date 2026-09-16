@@ -234,7 +234,7 @@ struct QueueView: View {
           .accessibilityLabel("Debug daily report connectors")
           .help("Check Mail, Telegram, Discord, and GitHub connector setup")
         }
-        if model.isDailyReportRunning {
+        if model.canCancelDailyReport {
           Button(
             model.isDailyReportCancellationRequested ? "Cancelling" : "Cancel",
             systemImage: "xmark.circle",
@@ -1069,7 +1069,7 @@ private struct DailyReportView: View {
         } label: {
           Image(systemName: "arrow.clockwise")
         }.buttonStyle(.plain).minimumHitTarget(width: 46, height: 46)
-          .disabled(model.isDailyReportRunning).accessibilityLabel("Reload daily report").help("Reload latest report")
+          .disabled(model.reportIsRunning).accessibilityLabel("Reload daily report").help("Reload latest report")
         Button {
           model.setDailyReportPresented(false)
         } label: {
@@ -1078,7 +1078,7 @@ private struct DailyReportView: View {
           .accessibilityLabel("Close daily report").help("Collapse daily report")
       }.padding(.horizontal, 14).padding(.vertical, 10).notificationSurface(radius: 18)
 
-      if model.isDailyReportRunning {
+      if model.reportIsRunning {
         HStack(spacing: 9) {
           ProgressView().controlSize(.small)
           Text("Checking new messages and creating linked tasks…")
@@ -1141,7 +1141,7 @@ private struct DailyReportView: View {
 
       Button("Run comprehensive report", systemImage: "arrow.triangle.2.circlepath") {
         model.runComprehensiveDailyReport()
-      }.buttonStyle(.borderedProminent).disabled(model.isDailyReportRunning)
+      }.buttonStyle(.borderedProminent).disabled(model.reportIsRunning)
     }.frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
   }
 
@@ -1368,7 +1368,7 @@ private struct QueueSettingsView: View {
 
               Button("Run comprehensive report", systemImage: "arrow.triangle.2.circlepath") {
                 model.runComprehensiveDailyReport()
-              }.buttonStyle(.borderedProminent).disabled(model.isDailyReportRunning)
+              }.buttonStyle(.borderedProminent).disabled(model.reportIsRunning)
 
               DisclosureGroup("Past reports and logs") {
                 DailyReportHistoryView(snapshot: model.reportHistory) { report in
@@ -1376,7 +1376,7 @@ private struct QueueSettingsView: View {
                 }.padding(.top, 10)
               }.task { await model.reloadReportHistory() }
 
-              if model.isDailyReportRunning {
+              if model.reportIsRunning {
                 HStack(spacing: 8) {
                   ProgressView().controlSize(.small)
                   Text("Checking enabled platforms…")
@@ -2309,7 +2309,7 @@ private struct TicketCard: View {
           }
         } label: { Label("Type: \(ticket.queueTaskKind.title)", systemImage: ticket.queueTaskKind.icon) }
           .menuStyle(.borderlessButton).fixedSize()
-          .disabled(model.isQueueAgentResponding || model.isDailyReportRunning)
+          .disabled(model.isQueueAgentResponding || model.reportIsRunning)
           .help("Change the task type. Opens the agent response so you can follow the result.")
         Spacer()
         let subtasks = model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion)

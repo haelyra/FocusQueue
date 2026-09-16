@@ -154,6 +154,7 @@ import signal
 import sys
 import time
 from pathlib import Path
+sys.path.insert(0, {str(SCRIPT.parent)!r})
 spec = importlib.util.spec_from_file_location("morning_child", {str(SCRIPT)!r})
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
@@ -183,6 +184,8 @@ except module.TerminationRequested:
             self.assertEqual(worker.wait(timeout=5), 3, worker.stderr.read())
             self.assertFalse(control_path.exists())
             self.assertFalse((runtime / "daily-report-cancel.json").exists())
+            worker.stdout.close()
+            worker.stderr.close()
 
     def test_termination_does_not_record_a_failed_comprehensive_attempt(self):
         configuration = {

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import datetime as dt
 import hashlib
 import html
@@ -24,6 +25,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -59,23 +61,116 @@ class TerminationRequested(ReconciliationError):
 
 
 _ACTIVE_CHILD: subprocess.Popen[str] | None = None
+WORKER_CONTROL_FILE = "daily-report-control.json"
+WORKER_CANCEL_FILE = "daily-report-cancel.json"
+
+
+def _process_group_exists(group_id: int) -> bool:
+    try:
+        os.killpg(group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def stop_process_group(process: subprocess.Popen[str], *, grace_seconds: float = 1.0) -> None:
-    if process.poll() is not None:
-        return
     if os.name == "nt":
+        if process.poll() is not None:
+            return
         process.terminate()
-    else:
-        os.killpg(process.pid, signal.SIGTERM)
-    try:
-        process.wait(timeout=grace_seconds)
-    except subprocess.TimeoutExpired:
-        if os.name == "nt":
+        try:
+            process.wait(timeout=grace_seconds)
+        except subprocess.TimeoutExpired:
             process.kill()
-        else:
+            process.wait()
+        return
+
+    group_id = process.pid
+    try:
+        os.killpg(group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    deadline = time.monotonic() + grace_seconds
+    while _process_group_exists(group_id) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    if _process_group_exists(group_id):
+        try:
             os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    try:
+        process.wait(timeout=max(0.1, grace_seconds))
+    except subprocess.TimeoutExpired:
+        process.kill()
         process.wait()
+
+
+def start_tracked_process(
+    arguments: list[str],
+    **kwargs: Any,
+) -> subprocess.Popen[Any]:
+    """Publish the child before a pending SIGTERM can run its handler."""
+    global _ACTIVE_CHILD
+    previous_mask = None
+    if hasattr(signal, "pthread_sigmask"):
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+    try:
+        process = subprocess.Popen(arguments, **kwargs)
+        _ACTIVE_CHILD = process
+    finally:
+        if previous_mask is not None:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+    return process
+
+
+def _control_token_matches(path: Path, token: str) -> bool:
+    try:
+        value = load_json(path)
+    except (OSError, ReconciliationError):
+        return False
+    return value.get("version") == 1 and value.get("token") == token
+
+
+@contextlib.contextmanager
+def daily_report_run_control(runtime: Path):
+    """Publish a token so a relaunched app can cancel the lock-owning worker."""
+    runtime.mkdir(parents=True, exist_ok=True)
+    runtime.chmod(0o700)
+    token = str(uuid.uuid4())
+    control_path = runtime / WORKER_CONTROL_FILE
+    cancel_path = runtime / WORKER_CANCEL_FILE
+    cancel_path.unlink(missing_ok=True)
+    write_private_json(control_path, {
+        "version": 1,
+        "token": token,
+        "pid": os.getpid(),
+        "startedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+    })
+    stopped = threading.Event()
+
+    def watch_for_cancellation() -> None:
+        while not stopped.wait(0.05):
+            if _control_token_matches(cancel_path, token):
+                os.kill(os.getpid(), signal.SIGTERM)
+                return
+
+    watcher = threading.Thread(
+        target=watch_for_cancellation,
+        name="daily-report-cancellation",
+        daemon=True,
+    )
+    watcher.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        watcher.join(timeout=1)
+        if _control_token_matches(control_path, token):
+            control_path.unlink(missing_ok=True)
+        if _control_token_matches(cancel_path, token):
+            cancel_path.unlink(missing_ok=True)
 
 
 def handle_termination(_signum: int, _frame: Any) -> None:
@@ -92,7 +187,7 @@ def run_command(
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     global _ACTIVE_CHILD
-    process = subprocess.Popen(
+    process = start_tracked_process(
         arguments,
         cwd=str(cwd) if cwd else None,
         text=True,
@@ -100,7 +195,6 @@ def run_command(
         stderr=subprocess.PIPE,
         start_new_session=True,
     )
-    _ACTIVE_CHILD = process
     try:
         try:
             stdout, stderr = process.communicate(timeout=timeout)
@@ -132,7 +226,7 @@ def run_jsonl_command_bounded(
     total_bytes = 0
     truncated = False
     with tempfile.TemporaryFile() as stderr_file:
-        process = subprocess.Popen(
+        process = start_tracked_process(
             arguments,
             stdout=subprocess.PIPE,
             stderr=stderr_file,
@@ -2318,18 +2412,19 @@ def run_reconciliation(
     with run_lock.open("a+", encoding="utf-8") as lock:
         run_lock.chmod(0o600)
         acquire_exclusive_file_lock(lock)
-        if trigger == "scheduled":
-            existing = same_day_comprehensive_report(runtime, platforms)
-            if existing is not None:
-                return existing, existing.get("status") == "success"
-        return _run_reconciliation(
-            config,
-            runtime,
-            platforms=platforms,
-            trigger=trigger,
-            comprehensive=comprehensive,
-            recheck=recheck,
-        )
+        with daily_report_run_control(runtime):
+            if trigger == "scheduled":
+                existing = same_day_comprehensive_report(runtime, platforms)
+                if existing is not None:
+                    return existing, existing.get("status") == "success"
+            return _run_reconciliation(
+                config,
+                runtime,
+                platforms=platforms,
+                trigger=trigger,
+                comprehensive=comprehensive,
+                recheck=recheck,
+            )
 
 
 def same_day_comprehensive_report(
@@ -2653,6 +2748,8 @@ def main() -> int:
                     comprehensive=arguments.comprehensive,
                     recheck=arguments.recheck,
                 )
+            except TerminationRequested:
+                raise
             except Exception:
                 if arguments.comprehensive:
                     record_failed_comprehensive_attempt(

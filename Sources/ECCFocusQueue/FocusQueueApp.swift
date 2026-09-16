@@ -170,6 +170,8 @@ import UserNotifications
 
   func applicationWillTerminate(_ notification: Notification) {
     morningReconciliationTask?.cancel()
+    _ = try? DailyReportWorkerControl.requestCancellation(
+      runtimeDirectory: paths.ingestionRuntimeDirectory)
     dailyReportRunCoordinator.cancel()
     DistributedNotificationCenter.default().removeObserver(self)
   }
@@ -377,6 +379,13 @@ import UserNotifications
   private func performDailyReport(
     _ request: DailyReportRunRequest
   ) async -> DailyReportDocument? {
+    guard !model.reportIsRunning else {
+      model.setDailyReportRunState(
+        isRunning: false,
+        message: "A daily report is already running."
+      )
+      return nil
+    }
     guard !isDailyReportProcessRunning else {
       model.setDailyReportRunState(
         isRunning: true,

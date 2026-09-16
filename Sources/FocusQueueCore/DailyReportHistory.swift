@@ -40,6 +40,43 @@ public struct DailyReportHistorySnapshot: Equatable, Sendable {
   }
 }
 
+public enum DailyReportWorkerControl {
+  private struct Control: Decodable {
+    let version: Int
+    let token: String
+  }
+
+  private struct Cancellation: Encodable {
+    let version = 1
+    let token: String
+  }
+
+  @discardableResult
+  public static func requestCancellation(runtimeDirectory: URL) throws -> Bool {
+    let files = FileManager.default
+    let controlURL = runtimeDirectory.appendingPathComponent("daily-report-control.json")
+    let descriptor = Darwin.open(controlURL.path, O_RDONLY | O_NOFOLLOW)
+    guard descriptor >= 0 else { return false }
+    let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+    var metadata = stat()
+    guard Darwin.fstat(descriptor, &metadata) == 0,
+      metadata.st_mode & S_IFMT == S_IFREG,
+      let data = try handle.readToEnd()
+    else { return false }
+    let control = try JSONDecoder().decode(Control.self, from: data)
+    guard control.version == 1, UUID(uuidString: control.token) != nil else { return false }
+    try files.createDirectory(
+      at: runtimeDirectory,
+      withIntermediateDirectories: true,
+      attributes: [.posixPermissions: 0o700]
+    )
+    let requestURL = runtimeDirectory.appendingPathComponent("daily-report-cancel.json")
+    try JSONEncoder().encode(Cancellation(token: control.token)).write(to: requestURL, options: .atomic)
+    try files.setAttributes([.posixPermissions: 0o600], ofItemAtPath: requestURL.path)
+    return true
+  }
+}
+
 /// Reads the worker's existing report archive. Presentation state is kept separately so
 /// opening an old report never changes the worker's latest comprehensive report.
 public actor JSONDailyReportHistoryRepository {
@@ -138,6 +175,11 @@ public actor JSONDailyReportHistoryRepository {
     var state = try readState()
     state.viewedReportIDs.insert(runID)
     try writeState(state)
+  }
+
+  @discardableResult
+  public func requestCancellation() throws -> Bool {
+    try DailyReportWorkerControl.requestCancellation(runtimeDirectory: runtimeDirectory)
   }
 
   /// Call only for report execution transitions, not settings confirmation messages.

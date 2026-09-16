@@ -133,7 +133,7 @@ struct AgentUpdateView: View {
         TextField("Ask about this update", text: $draft).textFieldStyle(.roundedBorder)
           .onSubmit(send)
         Button("Send", action: send)
-          .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isQueueAgentResponding || model.isDailyReportRunning)
+          .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isQueueAgentResponding || model.reportIsRunning)
       }
     }.padding(14).frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
       .background(.background, in: RoundedRectangle(cornerRadius: 14))
@@ -162,7 +162,7 @@ struct AgentUpdateView: View {
   }
 
   private func send() {
-    guard !model.isQueueAgentResponding, !model.isDailyReportRunning,
+    guard !model.isQueueAgentResponding, !model.reportIsRunning,
           !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     model.sendQueueAgentMessage("Regarding the update \"\(update.title)\": \(update.summary)\n\n\(draft)", ticketID: update.ticketID)
     draft = ""

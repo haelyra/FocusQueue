@@ -50,6 +50,7 @@ final class QueueViewModel {
   private(set) var dailyReportLoadError: String?
   private(set) var isDailyReportPresented = false
   private(set) var isDailyReportRunning = false
+  private(set) var isRecoveredDailyReportRunning = false
   private(set) var isDailyReportCancellationRequested = false
   private(set) var dailyReportRunMessage: String?
   private(set) var dailyReportRunFailed = false
@@ -277,7 +278,7 @@ final class QueueViewModel {
       if let saved = try await conversationStore.load(ticketID: nil), !saved.isEmpty {
         queueChatMessages = saved
       }
-      _ = try await reportHistoryRepository.reconcileInactiveRuns()
+      isRecoveredDailyReportRunning = try await reportHistoryRepository.reconcileInactiveRuns()
       await reloadDailyReport()
       if let approval = try await dailyReportApprovalRepository.load(),
         approval.status == .pending,
@@ -367,7 +368,8 @@ final class QueueViewModel {
       if userInitiated || lastReportRefresh == nil || Date().timeIntervalSince(lastReportRefresh!) >= 10 {
         lastReportRefresh = Date()
         if !isDailyReportRunning {
-          _ = try await reportHistoryRepository.reconcileInactiveRuns()
+          isRecoveredDailyReportRunning = try await reportHistoryRepository.reconcileInactiveRuns()
+          if !isRecoveredDailyReportRunning { isDailyReportCancellationRequested = false }
         }
         await reloadDailyReport(preservingSelection: true)
       }
@@ -424,7 +426,7 @@ final class QueueViewModel {
   ) {
     let message = rawMessage.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !message.isEmpty, !isQueueAgentResponding else { return }
-    guard !isDailyReportRunning else {
+    guard !reportIsRunning else {
       dailyReportRunMessage = "Wait for the daily report to finish before editing the queue."
       return
     }
@@ -538,7 +540,12 @@ final class QueueViewModel {
   }
 
   var reportIsRunning: Bool {
-    isDailyReportRunning || reportHistory.runs.first?.phase == .running
+    isDailyReportRunning || isRecoveredDailyReportRunning
+      || reportHistory.runs.first?.phase == .running
+  }
+
+  var canCancelDailyReport: Bool {
+    isDailyReportRunning || isRecoveredDailyReportRunning
   }
 
   var relevantFailedReportRun: DailyReportRunReceipt? {
@@ -550,7 +557,11 @@ final class QueueViewModel {
   var reportHasFailure: Bool { dailyReportRunFailed || relevantFailedReportRun != nil }
 
   var reportAttentionMessage: String {
-    if isDailyReportRunning { return dailyReportRunMessage ?? "Checking enabled platforms…" }
+    if reportIsRunning {
+      return dailyReportRunMessage
+        ?? reportHistory.runs.first(where: { $0.phase == .running })?.message
+        ?? "Checking enabled platforms…"
+    }
     return relevantFailedReportRun?.message ?? dailyReportLoadError ?? reportHistoryError
       ?? (reportAttentionDocument.map { "\($0.summary) Open to read report and logs." })
       ?? "Open report, run details, and logs"
@@ -1026,7 +1037,7 @@ final class QueueViewModel {
 
   func changeTaskKind(_ kind: QueueTaskKind, for ticket: DashboardTicket) {
     guard kind != ticket.queueTaskKind else { return }
-    guard !isQueueAgentResponding, !isDailyReportRunning else {
+    guard !isQueueAgentResponding, !reportIsRunning else {
       actionMessages[ticket.id] = "Wait for the current agent or daily report to finish, then change the task type."
       return
     }
@@ -1885,7 +1896,7 @@ final class QueueViewModel {
   }
 
   func runComprehensiveDailyReport() {
-    guard !isDailyReportRunning else { return }
+    guard !reportIsRunning else { return }
     let request = DailyReportRunRequest(
       trigger: .manual,
       platforms: config.dailyReport.enabledPlatforms,
@@ -1900,10 +1911,25 @@ final class QueueViewModel {
   }
 
   func cancelDailyReport() {
-    guard isDailyReportRunning, !isDailyReportCancellationRequested else { return }
+    guard canCancelDailyReport, !isDailyReportCancellationRequested else { return }
     isDailyReportCancellationRequested = true
     dailyReportRunMessage = "Cancelling daily report…"
     dailyReportCancelHandler?()
+    Task { [weak self] in
+      guard let self else { return }
+      do {
+        let requested = try await reportHistoryRepository.requestCancellation()
+        if isRecoveredDailyReportRunning, !requested {
+          isDailyReportCancellationRequested = false
+          dailyReportRunMessage = "The recovered report worker could not be cancelled safely."
+        }
+      } catch {
+        if isRecoveredDailyReportRunning {
+          isDailyReportCancellationRequested = false
+          dailyReportRunMessage = "Could not cancel the recovered report: \(error.localizedDescription)"
+        }
+      }
+    }
   }
 
   func respondToDailyReportApproval(run: Bool) {
@@ -1919,6 +1945,7 @@ final class QueueViewModel {
   ) {
     let wasRunning = isDailyReportRunning
     isDailyReportRunning = isRunning
+    if isRunning { isRecoveredDailyReportRunning = false }
     if !isRunning || !wasRunning { isDailyReportCancellationRequested = false }
     dailyReportRunMessage = message
     dailyReportRunFailed = isError
@@ -2442,6 +2469,10 @@ final class QueueViewModel {
   private func dispatchDailyReport(
     _ request: DailyReportRunRequest
   ) async -> DailyReportDocument? {
+    guard !reportIsRunning else {
+      dailyReportRunMessage = "A daily report is already running."
+      return nil
+    }
     guard await persistDailyReportConfiguration() else { return nil }
     return await dailyReportRunHandler?(request)
   }

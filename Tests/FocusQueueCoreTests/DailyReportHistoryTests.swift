@@ -124,6 +124,30 @@ struct DailyReportHistoryTests {
     #expect(snapshot.runs.first?.message == "Daily report cancelled.")
   }
 
+  @Test("Cancellation requests copy only the active worker token into a private file")
+  func workerCancellationRequest() async throws {
+    let runtime = try temporaryRuntime()
+    defer { try? FileManager.default.removeItem(at: runtime.deletingLastPathComponent()) }
+    let token = UUID().uuidString
+    let control = runtime.appendingPathComponent("daily-report-control.json")
+    try JSONSerialization.data(withJSONObject: [
+      "version": 1,
+      "token": token,
+      "pid": 123,
+    ]).write(to: control)
+    let store = JSONDailyReportHistoryRepository(runtimeDirectory: runtime)
+
+    #expect(try await store.requestCancellation())
+
+    let request = try JSONSerialization.jsonObject(with: Data(
+      contentsOf: runtime.appendingPathComponent("daily-report-cancel.json"))) as? [String: Any]
+    #expect(request?["version"] as? Int == 1)
+    #expect(request?["token"] as? String == token)
+    let attributes = try FileManager.default.attributesOfItem(
+      atPath: runtime.appendingPathComponent("daily-report-cancel.json").path)
+    #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+  }
+
   @Test("Damaged viewing state preserves report visibility and is not overwritten")
   func damagedViewingState() async throws {
     let runtime = try temporaryRuntime()

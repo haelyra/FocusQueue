@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import Testing
 import FocusQueueCore
+import Darwin
 
 @testable import ECCFocusQueue
 
@@ -563,6 +564,47 @@ struct QueueViewModelTests {
     )
     #expect(!model.isDailyReportCancellationRequested)
     try await eventually { model.reportHistory.runs.first?.phase == .interrupted }
+  }
+
+  @Test("A live report recovered after restart stays gated and cancellable")
+  func recoveredDailyReportCancellation() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let history = JSONDailyReportHistoryRepository(
+      runtimeDirectory: fixture.paths.ingestionRuntimeDirectory)
+    try await history.recordRun(isRunning: true, message: "Reading configured platforms")
+    let lockURL = fixture.paths.ingestionRuntimeDirectory.appendingPathComponent("daily-report.lock")
+    FileManager.default.createFile(atPath: lockURL.path, contents: Data())
+    let descriptor = Darwin.open(lockURL.path, O_RDWR | O_NOFOLLOW)
+    #expect(descriptor >= 0)
+    defer {
+      flock(descriptor, LOCK_UN)
+      Darwin.close(descriptor)
+    }
+    #expect(flock(descriptor, LOCK_EX | LOCK_NB) == 0)
+    let token = UUID().uuidString
+    try JSONSerialization.data(withJSONObject: [
+      "version": 1,
+      "token": token,
+      "pid": 123,
+    ]).write(to: fixture.paths.ingestionRuntimeDirectory
+      .appendingPathComponent("daily-report-control.json"))
+
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    var cancellationCount = 0
+    model.dailyReportCancelHandler = { cancellationCount += 1 }
+
+    #expect(model.reportIsRunning)
+    #expect(model.canCancelDailyReport)
+    model.runComprehensiveDailyReport()
+    model.cancelDailyReport()
+
+    #expect(cancellationCount == 1)
+    #expect(model.isDailyReportCancellationRequested)
+    try await eventually {
+      FileManager.default.fileExists(atPath: fixture.paths.ingestionRuntimeDirectory
+        .appendingPathComponent("daily-report-cancel.json").path)
+    }
   }
 
   @Test("Cleared report notifications stay dismissed while a newer report can notify")

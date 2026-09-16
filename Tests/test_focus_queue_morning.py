@@ -108,6 +108,98 @@ class FocusQueueMorningTests(unittest.TestCase):
             )
         self.assertLess(time.monotonic() - started, 5)
 
+    @unittest.skipIf(os.name == "nt", "Uses POSIX process groups")
+    def test_process_group_cleanup_terminates_a_stubborn_grandchild(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            child_pid = Path(temporary) / "child.pid"
+            child_code = (
+                "import os,signal,time,pathlib; "
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                f"pathlib.Path({str(child_pid)!r}).write_text(str(os.getpid())); "
+                "time.sleep(30)"
+            )
+            leader_code = (
+                "import signal,subprocess,sys,time; "
+                f"subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
+                "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0)); "
+                "time.sleep(30)"
+            )
+            leader = subprocess.Popen(
+                [sys.executable, "-c", leader_code],
+                start_new_session=True,
+            )
+            self.addCleanup(lambda: leader.poll() is None and leader.kill())
+            deadline = time.monotonic() + 5
+            while not child_pid.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            descendant = int(child_pid.read_text(encoding="utf-8"))
+
+            MODULE.stop_process_group(leader, grace_seconds=0.2)
+
+            state = subprocess.run(
+                ["/bin/ps", "-o", "stat=", "-p", str(descendant)],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.strip()
+            self.assertFalse(state and not state.startswith("Z"), state)
+
+    @unittest.skipIf(os.name == "nt", "Uses POSIX signals")
+    def test_persisted_cancel_request_stops_a_recovered_worker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary)
+            child_code = f"""
+import importlib.util
+import signal
+import sys
+import time
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("morning_child", {str(SCRIPT)!r})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+signal.signal(signal.SIGTERM, module.handle_termination)
+try:
+    with module.daily_report_run_control(Path({str(runtime)!r})):
+        print("READY", flush=True)
+        time.sleep(30)
+except module.TerminationRequested:
+    raise SystemExit(3)
+"""
+            worker = subprocess.Popen(
+                [sys.executable, "-c", child_code],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.addCleanup(lambda: worker.poll() is None and worker.kill())
+            self.assertEqual(worker.stdout.readline().strip(), "READY")
+            control_path = runtime / "daily-report-control.json"
+            control = json.loads(control_path.read_text(encoding="utf-8"))
+            (runtime / "daily-report-cancel.json").write_text(
+                json.dumps({"version": 1, "token": control["token"]}),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(worker.wait(timeout=5), 3, worker.stderr.read())
+            self.assertFalse(control_path.exists())
+            self.assertFalse((runtime / "daily-report-cancel.json").exists())
+
+    def test_termination_does_not_record_a_failed_comprehensive_attempt(self):
+        configuration = {
+            "dailyReport": {"enabledPlatforms": ["email"]},
+        }
+        with mock.patch.object(sys, "argv", [
+            str(SCRIPT), "run", "--comprehensive", "--platform", "email",
+        ]), mock.patch.object(MODULE.signal, "signal"), \
+             mock.patch.object(MODULE, "load_config", return_value=configuration), \
+             mock.patch.object(
+                 MODULE,
+                 "run_reconciliation",
+                 side_effect=MODULE.TerminationRequested("cancelled"),
+             ), mock.patch.object(MODULE, "record_failed_comprehensive_attempt") as failed:
+            self.assertEqual(MODULE.main(), 1)
+            failed.assert_not_called()
+
     def test_scoped_collection_summary_does_not_call_skipped_sources_incomplete(self):
         bundle = {
             "discord": {"status": "skipped", "messages": []},

@@ -153,7 +153,7 @@ public actor WorkspaceCollector {
                 .first(where: { Self.contains(standardized, in: $0) }).flatMap { roots[$0] } ?? "queue"
         }
         var addedAgents = Set<String>()
-        for subtask in context.subtasks {
+        for subtask in context.subtasks where !subtask.isAssignmentOnly {
             // A saved subtask may precede session registration. Preserve its identity
             // until the actual provider session becomes available.
             let session = relevant.first {

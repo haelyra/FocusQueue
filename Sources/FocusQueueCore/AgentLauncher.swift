@@ -93,6 +93,45 @@ public actor TaskAgentLauncher {
     return matching.count == 1 ? matching.first?.sessionID : nil
   }
 
+  /// Read-only inspection. A failed connection is not evidence that a process ended.
+  public func runtimeAttention(subtask: TaskSubtask, configuration: WezTermConfiguration) async throws -> AgentAttention? {
+    let output: ProcessResult
+    if let tmux = subtask.tmux {
+      do { _ = try await TmuxController(runner: runner).verify(tmux) }
+      catch TmuxError.stopped { return .interrupted }
+      output = try await runner.run(.init(executable: tmux.executable,
+        arguments: ["-L", TmuxController.serverName, "capture-pane", "-p", "-t", tmux.paneID]))
+    } else if let paneID = subtask.terminalPaneID {
+      var requested = configuration
+      requested.socketPath = subtask.terminalSocketPath ?? configuration.socketPath
+      let connection = try await WezTermConnection.resolve(configuration: requested, runner: runner, candidateSockets: candidateSockets)
+      guard connection.result.succeeded else { throw WezTermError.actionFailed("Could not inspect the agent terminal.") }
+      guard subtask.terminalSocketPath == nil || connection.configuration.socketPath == subtask.terminalSocketPath else { return nil }
+      let panes = try JSONDecoder().decode([WezTermPane].self, from: Data(connection.result.standardOutput.utf8))
+      guard let pane = panes.first(where: { $0.paneID == paneID }) else { return .interrupted }
+      guard let sessionID = subtask.sessionID, let tty = pane.ttyName else { return nil }
+      let agents = try await WezTermController(runner: runner).agents(onTTY: tty)
+      guard agents.contains(where: { $0.provider == subtask.provider && $0.sessionID.lowercased() == sessionID.lowercased() }) else { return nil }
+      output = try await runner.run(.init(executable: connection.configuration.executable,
+        arguments: ["cli", "get-text", "--pane-id", String(paneID)], environment: connection.configuration.cliEnvironment))
+    } else { return nil }
+    guard output.succeeded else { return nil }
+    return Self.terminalAttention(output.standardOutput)
+  }
+
+  public static func terminalAttention(_ text: String) -> AgentAttention? {
+    let lines = text.split(separator: "\n").suffix(24).map {
+      $0.trimmingCharacters(in: .whitespaces).lowercased()
+    }
+    // Require both a provider confirmation prompt and its choice control, not just prose.
+    let prompt = lines.contains { line in
+      ["would you like to run the following command?", "do you want to proceed?",
+       "do you want to make this edit?", "do you want to allow this?"].contains(line)
+    }
+    let choices = lines.contains { $0.contains("1. yes") } && lines.contains { $0.contains("esc") || $0.contains("no") }
+    return prompt && choices ? .approval : nil
+  }
+
   /// Close only a verified runtime; a reused terminal identity is never sufficient.
   public func closeRuntime(subtask: TaskSubtask, configuration: WezTermConfiguration) async throws {
     if let tmux = subtask.tmux {

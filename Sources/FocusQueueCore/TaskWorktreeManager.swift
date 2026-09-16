@@ -47,6 +47,20 @@ public actor TaskWorktreeManager {
         }
     }
 
+    /// Completed worktrees may have been safely cleaned up. Recreate only the owned
+    /// location from its retained branch; never switch an existing checkout's branch.
+    public func restoreIfNeeded(_ saved: AgentWorkspace, subtaskID: String, store: TaskContextStore) async throws {
+        guard !FileManager.default.fileExists(atPath: saved.path) else { return }
+        let expected = store.root.appendingPathComponent("worktrees/agents/\(subtaskID)").standardizedFileURL
+        guard saved.managed, let branch = saved.branch,
+              URL(fileURLWithPath: saved.path).standardizedFileURL == expected,
+              expected.resolvingSymlinksInPath() == expected else {
+            throw TaskContextError.unsafeWorktree("The saved workspace is missing: \(saved.path)")
+        }
+        _ = try await git(["show-ref", "--verify", "refs/heads/\(branch)"], in: saved.repositoryPath)
+        _ = try await git(["worktree", "add", saved.path, branch], in: saved.repositoryPath)
+    }
+
     public func cleanupAgent(ticketID: String, subtask: TaskSubtask, store: TaskContextStore) async throws -> TaskWorktreeCleanupResult {
         let workspaces = (subtask.workspaceHistory + [subtask.workspace].compactMap { $0 }).filter(\.managed)
         var result = TaskWorktreeCleanupResult(removed: false, message: "Existing workspace retained.")

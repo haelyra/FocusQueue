@@ -8,6 +8,43 @@ import FocusQueueCore
 @Suite("Queue app state integration")
 @MainActor
 struct QueueViewModelTests {
+  @Test("New subtask agents and additional agents preserve independent assignments and workspaces")
+  func nestedAgentLaunch() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let repository = fixture.root.appendingPathComponent("repo")
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    let git = FoundationProcessRunner()
+    for arguments in [["init", "-q"], ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+      "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Fixture", "--allow-empty"]] {
+      #expect(try await git.run(.init(executable: "/usr/bin/git", arguments: arguments, workingDirectory: repository.path)).succeeded)
+    }
+    let launcher = DirectCreationRunner()
+    let model = await fixture.model(agent: ControlledQueueAgent(), terminalController: DirectViewRecorder(root: fixture.root, failReveal: false),
+      taskAgentLauncher: TaskAgentLauncher(runner: launcher, candidateSockets: []))
+    model.launchAgent(for: fixture.tickets[0], title: "New work", provider: .codex,
+      repositoryPath: repository.path, includePrompt: false, useTmux: false, createWorktree: false,
+      initialPrompt: "Do the requested work", subtaskID: "first-agent", createAssignment: true)
+    try await eventually { model.launchingTaskIDs.isEmpty }
+    let assignment = try #require(model.focusSubtasks(for: "ECC-101").first)
+    #expect(assignment.isAssignmentOnly)
+    #expect(assignment.tracksCompletion)
+    #expect(assignment.status == .working)
+    #expect(assignment.workspace?.path == repository.path)
+    #expect(model.agents(for: assignment, ticketID: "ECC-101").map(\.id) == ["first-agent"])
+    model.launchAgent(for: fixture.tickets[0], title: "Second worker", provider: .claude,
+      repositoryPath: repository.path, includePrompt: false, useTmux: false, createWorktree: false,
+      subtaskID: "second-agent", parentSubtaskID: assignment.id)
+    try await eventually { model.launchingTaskIDs.isEmpty }
+    #expect(model.focusSubtasks(for: "ECC-101").count == 1)
+    #expect(model.agents(for: assignment, ticketID: "ECC-101").count == 2)
+    let first = try #require(model.subtasks(for: "ECC-101").first { $0.id == "first-agent" })
+    model.removeAgent(first, from: fixture.tickets[0])
+    try await eventually { model.subtasks(for: "ECC-101").first { $0.id == first.id }?.agentRemovedAt != nil }
+    #expect(model.focusSubtasks(for: "ECC-101").count == 1)
+    #expect(model.agents(for: assignment, ticketID: "ECC-101").map(\.id) == ["second-agent"])
+  }
+
   @Test("Direct launch persists its pane before revealing it and keeps it on reveal failure", arguments: [false, true])
   func directLaunchRevealsSavedPane(failReveal: Bool) async throws {
     let fixture = try await Fixture()
@@ -814,7 +851,7 @@ struct QueueViewModelTests {
     #expect(centered == (transportFailure ? 0 : 1))
     let commands = await launcher.commands
     if transportFailure {
-      #expect(commands.isEmpty)
+      #expect(!commands.contains { $0.arguments.contains("spawn") })
       #expect(model.subtasks(for: "ECC-101").first?.terminalPaneID == 7)
     } else {
       let spawn = try #require(commands.first(where: { $0.arguments.contains("spawn") }))
@@ -925,8 +962,9 @@ private actor DirectViewRecorder: WezTermControlling {
   func openDirectRuntime(paneID: Int, socketPath: String?, taskID: String,
     provider: AgentProvider, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     let context = try await TaskContextStore(root: root).load(ticketID: taskID)
-    #expect(context?.subtasks.first?.terminalPaneID == paneID)
-    #expect(context?.subtasks.first?.runtimeMode == .terminal)
+    let saved = context?.subtasks.first { $0.terminalPaneID == paneID && $0.provider == provider }
+    #expect(saved?.terminalPaneID == paneID)
+    #expect(saved?.runtimeMode == .terminal)
     opened = true
     if failReveal { throw WezTermError.actionFailed("Fixture window failure") }
     return .focused(paneID: paneID)

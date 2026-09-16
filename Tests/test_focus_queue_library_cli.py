@@ -38,6 +38,24 @@ class DurableLibraryCLITests(unittest.TestCase):
         self.assertEqual(result.returncode, expected, result.stderr)
         return json.loads(result.stdout) if result.stdout else result
 
+    def test_agent_activity_and_assignment_associations(self):
+        first = self.command("add", "ECC-401", "codex", "First assignment")
+        second = self.command("add", "ECC-401", "codex", "Second assignment")
+        self.command("progress", "ECC-401", first["id"], "working", "Started")
+        context = self.command("associate", "ECC-401", first["id"], second["id"])
+        record = next(item for item in context["subtasks"] if item["id"] == first["id"])
+        self.assertEqual(record["associatedSubtaskIDs"], [second["id"]])
+        context = self.command("attention", "ECC-401", first["id"], "approval", "Approve the change")
+        record = next(item for item in context["subtasks"] if item["id"] == first["id"])
+        self.assertEqual(record["attention"], "approval")
+        self.assertEqual(record["status"], "idle")
+        context = self.command("result", "ECC-401", first["id"], "Ready to review")
+        record = next(item for item in context["subtasks"] if item["id"] == first["id"])
+        self.assertTrue(record["completionUnread"])
+        self.assertEqual(record["status"], "idle")
+        self.assertTrue(record["resultID"])
+        self.command("attention", "ECC-401", first["id"], "invalid", "Bad status", expected=1)
+
     def test_migrate_status_and_scoped_task_preserve_source_files(self):
         before = {path.name: path.read_bytes() for path in self.task.iterdir()}
         first = self.command("library", "migrate")

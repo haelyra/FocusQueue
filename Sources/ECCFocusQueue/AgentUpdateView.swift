@@ -11,6 +11,7 @@ struct QueueAgentUpdate: Identifiable, Equatable {
   var subtaskID: String? = nil
   var date: Date = .distantPast
   var isCleanup = false
+  var resultID: String? = nil
 
   var conciseReason: String { CompletionExplanation.concise(summary) }
 }
@@ -54,7 +55,7 @@ struct AgentUpdateView: View {
         HStack {
           Button("Override: mark complete") { model.overrideCompletion(subtask, for: ticket) }
             .buttonStyle(.borderedProminent)
-          Button("Remove agent") { model.removeAgent(subtask, from: ticket); model.closeAgentUpdate() }
+          Button(subtask.isAssignmentOnly ? "Remove agents" : "Remove agent") { model.removeAgent(subtask, from: ticket); model.closeAgentUpdate() }
         }
       }
       ScrollView {

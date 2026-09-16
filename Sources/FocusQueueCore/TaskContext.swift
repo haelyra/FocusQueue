@@ -68,9 +68,25 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     public var agentRemovedAt: Date?
     public var tracksCompletion: Bool = true
     public var completionOverrideAt: Date?
+    // New agents are child records; legacy assignment/runtime records remain readable.
+    public var isAssignmentOnly: Bool = false
+    public var parentSubtaskID: String?
+    public var associatedSubtaskIDs: [String] = []
+    public var mergedIntoSubtaskID: String?
+    public var attention: AgentAttention?
+    public var resultID: String?
+    public var resultSummary: String?
+    public var resultAt: Date?
+    public var observedEventID: String?
+    public var observedEventAt: Date?
+    public var completedRuntimeOpenedAt: Date?
+
+    public var hasAgent: Bool {
+        !isAssignmentOnly && (parentSubtaskID != nil || sessionID != nil || tmux != nil || terminalPaneID != nil || lastHeartbeatAt != nil || status == .completed)
+    }
 
     public var hasManagedWorkspaces: Bool { workspace?.managed == true || workspaceHistory.contains(where: \.managed) }
-    public var isAgentVisible: Bool { agentRemovedAt == nil && status != .completed }
+    public var isAgentVisible: Bool { agentRemovedAt == nil && (status != .completed || completedRuntimeOpenedAt != nil) }
     public static func agentName(prompt: String, provider: AgentProvider) -> String {
         let words = prompt.split(whereSeparator: \.isWhitespace).prefix(10).joined(separator: " ")
         return words.isEmpty ? "Blank \(provider.displayName) agent" : String(words.prefix(80))
@@ -96,6 +112,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, title, provider, sessionID, status, progressSummary, lastHeartbeatAt, completionUnread, includeInitializationPrompt, tmux
         case runtimeMode, terminalPaneID, terminalSocketPath, workspace, workspaceHistory, initialPrompt, agentRemovedAt, tracksCompletion, completionOverrideAt
+        case isAssignmentOnly, parentSubtaskID, associatedSubtaskIDs, mergedIntoSubtaskID, attention, resultID, resultSummary, resultAt, observedEventID, observedEventAt, completedRuntimeOpenedAt
     }
 
     public init(from decoder: any Decoder) throws {
@@ -119,6 +136,17 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         agentRemovedAt = try values.decodeIfPresent(Date.self, forKey: .agentRemovedAt)
         tracksCompletion = try values.decodeIfPresent(Bool.self, forKey: .tracksCompletion) ?? true
         completionOverrideAt = try values.decodeIfPresent(Date.self, forKey: .completionOverrideAt)
+        isAssignmentOnly = try values.decodeIfPresent(Bool.self, forKey: .isAssignmentOnly) ?? false
+        parentSubtaskID = try values.decodeIfPresent(String.self, forKey: .parentSubtaskID)
+        associatedSubtaskIDs = try values.decodeIfPresent([String].self, forKey: .associatedSubtaskIDs) ?? []
+        mergedIntoSubtaskID = try values.decodeIfPresent(String.self, forKey: .mergedIntoSubtaskID)
+        attention = try values.decodeIfPresent(AgentAttention.self, forKey: .attention)
+        resultID = try values.decodeIfPresent(String.self, forKey: .resultID)
+        resultSummary = try values.decodeIfPresent(String.self, forKey: .resultSummary)
+        resultAt = try values.decodeIfPresent(Date.self, forKey: .resultAt)
+        observedEventID = try values.decodeIfPresent(String.self, forKey: .observedEventID)
+        observedEventAt = try values.decodeIfPresent(Date.self, forKey: .observedEventAt)
+        completedRuntimeOpenedAt = try values.decodeIfPresent(Date.self, forKey: .completedRuntimeOpenedAt)
     }
 
     /// A live terminal is not proof of activity. Only a recent explicit heartbeat is.
@@ -166,15 +194,17 @@ public struct TaskContext: Codable, Equatable, Sendable {
             """
         }
         return """
+        \(subtask.initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? subtask.initialPrompt! : subtask.title)
+
         Work on \(ticketID): \(title). Your subtask is \(subtask.title) (\(subtask.id)).
         Read the central plan at \(planPath) and context at \(contextDirectory.appendingPathComponent("context.json").path) before acting. The central plan is the source of truth. Keep it current with decisions, checks, and handoff details; link supporting canvases from it.
-        Initial request: \(subtask.initialPrompt ?? subtask.title)
         Workspace: \(subtask.workspace?.path ?? worktreePath ?? repositoryPath ?? "not configured")
         Assigned branch: \(subtask.workspace?.branch ?? branch ?? "not configured")
         Success criteria: \(successCriteria)
         Register this pane: FOCUS_QUEUE_PROVIDER=\(subtask.provider.rawValue) FOCUS_QUEUE_TASK_ID=\(ticketID) FOCUS_QUEUE_SUBTASK_ID=\(subtask.id) \(command) attach \(ticketID)
         Report concise progress and refresh activity at meaningful milestones (at least every 5 minutes while working): \(command) progress \(ticketID) \(subtask.id) working "short progress summary"
         \(scopeInstruction)
+        Report approval requests with \(command) attention \(ticketID) \(subtask.id) approval "what needs approval", and questions with \(command) attention \(ticketID) \(subtask.id) question "what needs an answer". Report working when resuming. Report a finished response that leaves the assignment open with \(command) result \(ticketID) \(subtask.id) "short result".
         Use idle or blocked when waiting. On completion: \(command) complete \(ticketID) \(subtask.id) "what changed and verification result"
         Before any push, run \(command) review-push \(ticketID) \(subtask.id). The orchestrator scans the committed diff for accidental files, unrelated additions, generated output, and missing checks. If rejected, correct only your changes and run review-push again. Push only after acceptance and only when the user authorized remote delivery. Never push directly to main unless explicitly requested.
         Propose scope, branch, or plan changes to the task orchestrator before acting. Record approved workspace changes with \(command) workspace \(ticketID) \(subtask.id) <absolute-path>.
@@ -430,6 +460,7 @@ public actor TaskContextStore {
             context.subtasks[index].terminalSocketPath = nil
             if context.subtasks[index].status != .completed {
                 context.subtasks[index].status = .working
+                context.subtasks[index].attention = nil
                 context.subtasks[index].lastHeartbeatAt = Date()
                 context.subtasks[index].progressSummary =
                     "Managed session started and remains available through tmux."
@@ -451,6 +482,7 @@ public actor TaskContextStore {
             context.subtasks[index].terminalSocketPath = socketPath
             if context.subtasks[index].status != .completed {
                 context.subtasks[index].status = .working
+                context.subtasks[index].attention = nil
                 context.subtasks[index].lastHeartbeatAt = Date()
                 context.subtasks[index].progressSummary =
                     "Direct terminal session started. Closing its terminal ends the live process."
@@ -486,18 +518,43 @@ public actor TaskContextStore {
             // A late worker/verifier report cannot undo an explicit user override.
             guard context.subtasks[index].completionOverrideAt == nil else { return }
             context.subtasks[index].status = status
+            context.subtasks[index].completedRuntimeOpenedAt = nil
             context.subtasks[index].progressSummary = String(summary.prefix(2_000))
             context.subtasks[index].lastHeartbeatAt = now
             if let sessionID { context.subtasks[index].sessionID = sessionID }
-            context.subtasks[index].completionUnread = status == .completed
+            context.subtasks[index].attention = status == .blocked ? .failed : nil
+            if status == .completed {
+                context.subtasks[index].completionUnread = !context.subtasks[index].isAssignmentOnly
+                context.subtasks[index].resultID = UUID().uuidString
+                context.subtasks[index].resultSummary = String(summary.prefix(2_000))
+                context.subtasks[index].resultAt = context.subtasks[index].lastHeartbeatAt
+                if context.subtasks[index].isAssignmentOnly {
+                    let target = context.canonicalSubtaskID(subtaskID)
+                    for i in context.subtasks.indices where context.subtasks[i].hasAgent && context.assignmentIDs(for: context.subtasks[i]).contains(target) {
+                        context.subtasks[i].status = .completed
+                        context.subtasks[i].attention = nil
+                        context.subtasks[i].lastHeartbeatAt = now
+                        context.subtasks[i].progressSummary = String(summary.prefix(2_000))
+                        context.subtasks[i].completionUnread = true
+                        context.subtasks[i].resultID = UUID().uuidString
+                        context.subtasks[i].resultSummary = String(summary.prefix(2_000))
+                        context.subtasks[i].resultAt = now
+                    }
+                }
+            }
         }
     }
 
     /// Removing an agent never deletes its assignment, conversation identity, or workspace.
-    @discardableResult public func removeAgent(ticketID: String, subtaskID: String) throws -> TaskContext {
+    @discardableResult public func removeAgent(ticketID: String, subtaskID: String, automatically: Bool = false) throws -> TaskContext {
         try mutate(ticketID: ticketID, archiveChanges: true) { context in
             guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
-            context.subtasks[index].agentRemovedAt = Date()
+            let session = context.subtasks[index].sessionID
+            let provider = context.subtasks[index].provider
+            for i in context.subtasks.indices where i == index || (session != nil && context.subtasks[i].provider == provider && context.subtasks[i].sessionID?.lowercased() == session?.lowercased()) {
+                context.subtasks[i].agentRemovedAt = Date()
+                if !automatically { context.subtasks[i].completionUnread = false }
+            }
         }
     }
 
@@ -505,6 +562,7 @@ public actor TaskContextStore {
         try mutate(ticketID: ticketID, archiveChanges: true) { context in
             guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
             context.subtasks[index].agentRemovedAt = nil
+            if context.subtasks[index].status == .completed { context.subtasks[index].completedRuntimeOpenedAt = Date() }
         }
     }
 
@@ -513,15 +571,30 @@ public actor TaskContextStore {
             guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
             context.subtasks[index].status = .completed
             context.subtasks[index].completionOverrideAt = Date()
-            context.subtasks[index].completionUnread = true
+            context.subtasks[index].completionUnread = !context.subtasks[index].isAssignmentOnly
             context.subtasks[index].lastHeartbeatAt = Date()
             context.subtasks[index].progressSummary = "Completed by user override. Previous review evidence is retained."
+            let target = context.canonicalSubtaskID(subtaskID)
+            for i in context.subtasks.indices where context.subtasks[i].parentSubtaskID != nil && context.assignmentIDs(for: context.subtasks[i]).contains(target) {
+                context.subtasks[i].status = .completed
+                context.subtasks[i].completionOverrideAt = Date()
+                context.subtasks[i].attention = nil
+            }
         }
     }
 
     @discardableResult public func setAgentWorkspace(ticketID: String, subtaskID: String, workspace: AgentWorkspace) throws -> TaskContext {
         try mutate(ticketID: ticketID, archiveChanges: true) { context in
             guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
+            let previousWorkspace = context.subtasks[index].workspace
+            let parentIDs = context.assignmentIDs(for: context.subtasks[index])
+            for i in context.subtasks.indices where i != index && parentIDs.contains(context.subtasks[i].id)
+                && (context.subtasks[i].workspace == nil || context.subtasks[i].workspace == previousWorkspace) {
+                if let old = context.subtasks[i].workspace, old != workspace, !context.subtasks[i].workspaceHistory.contains(old) {
+                    context.subtasks[i].workspaceHistory.append(old)
+                }
+                context.subtasks[i].workspace = workspace
+            }
             if let previous = context.subtasks[index].workspace, previous != workspace,
                !context.subtasks[index].workspaceHistory.contains(previous) {
                 context.subtasks[index].workspaceHistory.append(previous)
@@ -539,10 +612,81 @@ public actor TaskContextStore {
         }
     }
 
-    @discardableResult public func acknowledgeCompletion(ticketID: String, subtaskID: String) throws -> TaskContext {
+    @discardableResult public func acknowledgeCompletion(ticketID: String, subtaskID: String, expectedResultID: String? = nil, expectedHeartbeat: Date? = nil) throws -> TaskContext {
         try mutate(ticketID: ticketID) { context in
             guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
+            if let expectedResultID, context.subtasks[index].resultID != expectedResultID { return }
+            if let expectedHeartbeat, context.subtasks[index].lastHeartbeatAt != expectedHeartbeat { return }
             context.subtasks[index].completionUnread = false
+        }
+    }
+
+    @discardableResult public func reportAttention(ticketID: String, subtaskID: String,
+        attention: AgentAttention?, summary: String, result: Bool = false, expectedHeartbeat: Date? = nil
+    ) throws -> TaskContext {
+        try mutate(ticketID: ticketID, archiveChanges: true) { context in
+            guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
+            guard context.subtasks[index].status != .completed, context.subtasks[index].agentRemovedAt == nil else { return }
+            if let expectedHeartbeat, context.subtasks[index].lastHeartbeatAt != expectedHeartbeat { return }
+            context.subtasks[index].attention = attention
+            context.subtasks[index].status = attention?.isProblem == true ? .blocked : .idle
+            context.subtasks[index].progressSummary = String(summary.prefix(2_000))
+            context.subtasks[index].lastHeartbeatAt = Date()
+            if result {
+                context.subtasks[index].completionUnread = true
+                context.subtasks[index].resultID = UUID().uuidString
+                context.subtasks[index].resultSummary = String(summary.prefix(2_000))
+                context.subtasks[index].resultAt = context.subtasks[index].lastHeartbeatAt
+            }
+        }
+    }
+
+    @discardableResult public func observeActivity(ticketID: String, subtaskID: String, event: AgentActivityEvent) throws -> TaskContext {
+        try mutate(ticketID: ticketID) { context in
+            guard let i = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
+            guard context.subtasks[i].isAgentVisible, context.subtasks[i].status != .completed,
+                  context.subtasks[i].observedEventID != event.id,
+                  event.date >= (context.subtasks[i].observedEventAt ?? .distantPast),
+                  event.date >= (context.subtasks[i].lastHeartbeatAt ?? .distantPast) else { return }
+            context.subtasks[i].observedEventID = event.id
+            context.subtasks[i].observedEventAt = event.date
+            context.subtasks[i].lastHeartbeatAt = event.date
+            if !event.summary.isEmpty { context.subtasks[i].progressSummary = event.summary }
+            switch event.kind {
+            case .working:
+                context.subtasks[i].status = .working
+                context.subtasks[i].attention = nil
+            case .result:
+                context.subtasks[i].status = .idle
+                context.subtasks[i].attention = nil
+                context.subtasks[i].completionUnread = true
+                context.subtasks[i].resultID = event.id
+                context.subtasks[i].resultSummary = event.summary
+                context.subtasks[i].resultAt = event.date
+            case .attention(let attention):
+                context.subtasks[i].status = attention.isProblem ? .blocked : .idle
+                context.subtasks[i].attention = attention
+            }
+        }
+    }
+
+    /// Correlates assignments without sharing their terminal identity or launch workspace.
+    @discardableResult public func associateAgent(ticketID: String, agentID: String, subtaskID: String) throws -> TaskContext {
+        try mutate(ticketID: ticketID, archiveChanges: true) { context in
+            guard let index = context.subtasks.firstIndex(where: { $0.id == agentID }), context.subtasks[index].hasAgent,
+                  let target = context.subtasks.first(where: { $0.id == subtaskID }), target.parentSubtaskID == nil else {
+                throw TaskContextError.missingSubtask(subtaskID)
+            }
+            if !context.subtasks[index].associatedSubtaskIDs.contains(subtaskID) {
+                context.subtasks[index].associatedSubtaskIDs.append(subtaskID)
+            }
+        }
+    }
+
+    /// Only an orchestrator boundary combines assignments. Aliases keep old CLI IDs valid.
+    @discardableResult public func reconcileSubtasks(ticketID: String) throws -> TaskContext {
+        try mutate(ticketID: ticketID, archiveChanges: true, archiveBeforeChanges: true) { context in
+            context.mergeSharedAgentSubtasks()
         }
     }
 
@@ -561,6 +705,7 @@ public actor TaskContextStore {
             context.subtasks[index].sessionID = sessionID
             if context.subtasks[index].status != .completed {
                 context.subtasks[index].status = .working
+                context.subtasks[index].attention = nil
                 context.subtasks[index].lastHeartbeatAt = now
                 context.subtasks[index].progressSummary = "Agent attached to the task workspace."
             }
@@ -616,7 +761,10 @@ public actor TaskContextStore {
         try locked(ticketID: ticketID) {
             guard var context = try load(ticketID: ticketID) else { throw TaskContextError.missingContext(ticketID) }
             if archiveBeforeChanges { try snapshot(context) }
+            let original = context
             try change(&context)
+            context.refreshAssignmentStatuses()
+            guard context != original else { return context }
             context.updatedAt = Date()
             try write(context)
             if archiveChanges { try snapshot(context) }
@@ -638,6 +786,8 @@ public actor TaskContextStore {
         for index in meaningfulContext.subtasks.indices {
             meaningfulContext.subtasks[index].lastHeartbeatAt = nil
             meaningfulContext.subtasks[index].completionUnread = false
+            meaningfulContext.subtasks[index].observedEventID = nil
+            meaningfulContext.subtasks[index].observedEventAt = nil
         }
         var content = try encoder.encode(meaningfulContext)
         content.append(plan)

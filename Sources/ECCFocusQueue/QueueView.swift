@@ -1460,6 +1460,7 @@ private struct TicketCard: View {
   @State private var showsContext = false
   @State private var showsNewAgent = false
   @State private var newAgentIsBlank = false
+  @State private var agentTargetSubtask: TaskSubtask?
   @State private var showsAgents = true
   @State private var renamingSubtask: TaskSubtask?
   @State private var subtaskName = ""
@@ -1501,7 +1502,7 @@ private struct TicketCard: View {
         details.padding(.top, 11).transition(.opacity.combined(with: .move(edge: .top)))
       }
     }.notificationSurface(radius: 18)
-      .sheet(isPresented: $showsNewAgent) { NewTaskAgentView(ticket: ticket, model: model, blank: newAgentIsBlank) }
+      .sheet(isPresented: $showsNewAgent) { NewTaskAgentView(ticket: ticket, model: model, blank: newAgentIsBlank, targetSubtask: agentTargetSubtask) }
       .alert("Rename subtask", isPresented: Binding(
         get: { renamingSubtask != nil }, set: { if !$0 { renamingSubtask = nil } }
       )) {
@@ -1576,20 +1577,16 @@ private struct TicketCard: View {
 
   private var agentControls: some View {
     VStack(alignment: .leading, spacing: 7) {
-      DisclosureGroup("Agents (\(model.visibleAgents(for: ticket.id).count))", isExpanded: $showsAgents) {
-        ForEach(model.visibleAgents(for: ticket.id)) { subtask in subtaskRow(subtask) }
-        if model.visibleAgents(for: ticket.id).isEmpty {
-          Text("No active agents").font(.caption).foregroundStyle(.secondary)
+      DisclosureGroup("Subtasks (\(model.focusSubtasks(for: ticket.id).count))", isExpanded: $showsAgents) {
+        ForEach(model.focusSubtasks(for: ticket.id)) { subtask in subtaskCard(subtask) }
+        if model.focusSubtasks(for: ticket.id).isEmpty {
+          Text("No subtasks yet").font(.caption).foregroundStyle(.secondary)
         }
       }.font(.system(size: 12, weight: .semibold))
-      HStack(spacing: 7) {
-        Button("New agent", systemImage: "plus") { newAgentIsBlank = false; showsNewAgent = true }
-          .buttonStyle(.bordered).disabled(model.launchingTaskIDs.contains(ticket.id) || ticket.isCompleted)
-          .help("Create a named subtask and launch its agent in the task worktree")
-        Button("New blank agent") { newAgentIsBlank = true; showsNewAgent = true }
-          .buttonStyle(.bordered).disabled(model.launchingTaskIDs.contains(ticket.id) || ticket.isCompleted)
-        Spacer()
-      }
+      Button("New subtask agent", systemImage: "plus") {
+        agentTargetSubtask = nil; newAgentIsBlank = true; showsNewAgent = true
+      }.buttonStyle(.bordered).disabled(model.launchingTaskIDs.contains(ticket.id) || ticket.isCompleted)
+        .help("Start a new subtask with a blank prompt and a suggested workspace")
       Button("Manage agents", systemImage: "person.crop.circle.badge.checkmark") {
         withAnimation(.easeInOut(duration: 0.18)) { showsAgentPicker.toggle() }
       }.buttonStyle(.bordered).help("Review or remove this task's agents")
@@ -1646,15 +1643,15 @@ private struct TicketCard: View {
           .disabled(model.isQueueAgentResponding || model.isDailyReportRunning)
           .help("Change the task type. Opens the agent response so you can follow the result.")
         Spacer()
-        let subtasks = model.subtasks(for: ticket.id).filter(\.tracksCompletion)
+        let subtasks = model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion)
         if !subtasks.isEmpty {
           Text("\(subtasks.filter { $0.status == .completed }.count)/\(subtasks.count) subtasks")
         } else { Text(ticket.progressLabel) }
       }.font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
       if ticket.isRecurringPullRequestTask {
         RecurringPRProgressSummary(progress: recurringProgress, error: recurringProgressError)
-      } else if !model.subtasks(for: ticket.id).filter(\.tracksCompletion).isEmpty {
-        let subtasks = model.subtasks(for: ticket.id).filter(\.tracksCompletion)
+      } else if !model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion).isEmpty {
+        let subtasks = model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion)
         ProgressView(value: Double(subtasks.filter { $0.status == .completed }.count), total: Double(subtasks.count))
           .accessibilityLabel("Subtask completion")
       } else if !ticket.steps.isEmpty {
@@ -1662,6 +1659,32 @@ private struct TicketCard: View {
           .accessibilityLabel("Task step completion")
       }
     }.padding(.horizontal, 14).padding(.bottom, 12)
+  }
+
+  private func subtaskCard(_ subtask: TaskSubtask) -> some View {
+    VStack(alignment: .leading, spacing: 7) {
+      HStack(alignment: .top) {
+        Text(subtask.title).font(.system(size: 13, weight: .semibold))
+          .fixedSize(horizontal: false, vertical: true)
+        Spacer(minLength: 4)
+        Text(subtask.status.rawValue.capitalized).font(.caption).foregroundStyle(.secondary)
+      }.contextMenu {
+        Button("Rename subtask") { subtaskName = subtask.title; renamingSubtask = subtask }
+        Button("Review completion") { model.requestSubtaskCompletion(subtask, for: ticket) }
+        Button("Override: mark complete") { model.overrideCompletion(subtask, for: ticket) }
+      }
+      let agents = model.agents(for: subtask, ticketID: ticket.id)
+      ForEach(agents) { agent in subtaskRow(agent) }
+      if subtask.status != .completed {
+        Button(agents.isEmpty ? "New agent" : "Add agent", systemImage: "plus") {
+          agentTargetSubtask = subtask; newAgentIsBlank = false; showsNewAgent = true
+        }.buttonStyle(.bordered).controlSize(.small)
+          .disabled(model.launchingTaskIDs.contains(ticket.id) || ticket.isCompleted)
+          .accessibilityLabel("New agent for \(subtask.title)")
+      }
+    }.padding(10)
+      .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 10))
+      .padding(.vertical, 3)
   }
 
   private func subtaskRow(_ subtask: TaskSubtask) -> some View {
@@ -1680,12 +1703,12 @@ private struct TicketCard: View {
           }
           VStack(alignment: .leading, spacing: 3) {
             HStack {
-              Text(subtask.title).font(.system(size: 12, weight: .semibold)).lineLimit(2)
+              Text("\(subtask.provider.displayName) · \(subtask.sessionID.map { String($0.suffix(6)) } ?? String(subtask.id.suffix(6)))").font(.system(size: 12, weight: .semibold)).lineLimit(1)
               Spacer(minLength: 3)
               AgentStatusIndicator(status: model.effectiveStatus(for: subtask),
                 hasUnreadCompletion: subtask.completionUnread,
                 isOpening: model.isOpening(subtask, ticketID: ticket.id),
-                issue: model.agentSessionError(for: subtask, ticketID: ticket.id))
+                issue: model.agentSessionError(for: subtask, ticketID: ticket.id), attention: subtask.attention)
             }
             Text(subtask.progressSummary.isEmpty ? "\(subtask.provider.displayName) · Awaiting update" : subtask.progressSummary)
               .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
@@ -1706,7 +1729,7 @@ private struct TicketCard: View {
             Button("Open launch diagnostics") { model.openLaunchDiagnostics(for: subtask) }
           }
         }
-        .accessibilityLabel("\(subtask.title), \(model.effectiveStatus(for: subtask).rawValue)\(subtask.completionUnread ? ", new completion" : "")")
+        .accessibilityLabel("\(subtask.title), \(subtask.attention?.label ?? model.effectiveStatus(for: subtask).rawValue)\(subtask.completionUnread ? ", new result" : "")")
       if model.hasLaunchDiagnostics(for: subtask) {
         Button { model.openLaunchDiagnostics(for: subtask) } label: {
           Image(systemName: "doc.text.magnifyingglass")
@@ -1741,7 +1764,7 @@ private struct TicketCard: View {
       }
 
       DisclosureGroup("Subtask history") {
-        ForEach(model.subtasks(for: ticket.id).filter(\.tracksCompletion)) { subtask in
+        ForEach(model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion)) { subtask in
           VStack(alignment: .leading, spacing: 5) {
             Text("\(subtask.title) · \(subtask.status.rawValue)")
             if let workspace = subtask.workspace {
@@ -1749,7 +1772,9 @@ private struct TicketCard: View {
             }
             if subtask.status != .completed {
               HStack {
-                Button("Open agent") { model.openSubtask(subtask, for: ticket) }
+                if !subtask.isAssignmentOnly {
+                  Button("Open agent") { model.openSubtask(subtask, for: ticket) }
+                }
                 Button("Override: mark complete") { model.overrideCompletion(subtask, for: ticket) }
               }
             }
@@ -1893,6 +1918,7 @@ private struct AgentStatusIndicator: View {
   let hasUnreadCompletion: Bool
   let isOpening: Bool
   let issue: String?
+  var attention: AgentAttention? = nil
 
   @Environment(\.queueAccentStyle) private var accentStyle
 
@@ -1917,7 +1943,10 @@ private struct AgentStatusIndicator: View {
 
   private var label: String {
     if isOpening { return "Opening" }
-    if issue != nil || status == .blocked { return "Issue" }
+    if issue != nil { return "Problem" }
+    if let attention { return attention.label }
+    if status == .blocked { return "Problem" }
+    if hasUnreadCompletion && status != .completed { return "New result" }
     switch status {
     case .working: return "Working"
     case .completed: return hasUnreadCompletion ? "Done · New" : "Done · Seen"
@@ -1928,7 +1957,9 @@ private struct AgentStatusIndicator: View {
   }
 
   private var icon: String {
-    if issue != nil || status == .blocked { return "exclamationmark.circle.fill" }
+    if issue != nil { return "exclamationmark.circle.fill" }
+    if let attention { return attention.icon }
+    if status == .blocked { return "exclamationmark.circle.fill" }
     switch status {
     case .working: return "circle.fill"
     case .completed: return hasUnreadCompletion ? "checkmark.circle.fill" : "checkmark.circle"
@@ -1940,9 +1971,12 @@ private struct AgentStatusIndicator: View {
 
   private var color: Color {
     if isOpening { return QueueAccentPalette.color(.info, style: accentStyle) }
-    if issue != nil || status == .blocked {
+    if issue != nil || attention?.isProblem == true {
       return QueueAccentPalette.color(.danger, style: accentStyle)
     }
+    if attention != nil { return QueueAccentPalette.color(.warning, style: accentStyle) }
+    if hasUnreadCompletion { return QueueAccentPalette.color(.success, style: accentStyle) }
+    if status == .blocked { return QueueAccentPalette.color(.danger, style: accentStyle) }
     switch status {
     case .working: return QueueAccentPalette.color(.warning, style: accentStyle)
     case .completed:

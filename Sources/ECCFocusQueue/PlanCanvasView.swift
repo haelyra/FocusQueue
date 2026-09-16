@@ -441,15 +441,16 @@ struct NewTaskAgentView: View {
   let ticket: DashboardTicket
   let model: QueueViewModel
   var blank = false
+  var targetSubtask: TaskSubtask?
   @Environment(\.dismiss) private var dismiss
   @State private var prompt = ""
   @AppStorage("newAgentProvider") private var provider: AgentProvider = .codex
   @State private var repository = ""
-  @State private var includePrompt = true
+  @State private var includePrompt = false
   @State private var createWorktree = true
   @State private var assignmentID = UUID().uuidString
-  @State private var sourceWorkspace: AgentWorkspace?
-  @State private var workspaceError: String?
+  @State private var workspacePreview = WorkspacePreviewModel()
+  private var sourceWorkspace: AgentWorkspace? { workspacePreview.workspace }
   @AppStorage("agentUsesTmux") private var useTmux = true
 
   private var tmuxAvailable: Bool {
@@ -477,9 +478,10 @@ struct NewTaskAgentView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text("\(blank ? "New blank agent" : "New agent") · \(ticket.id)").font(.title2.weight(.semibold))
+      Text("\(targetSubtask == nil ? "New subtask agent" : "New agent") · \(ticket.id)").font(.title2.weight(.semibold))
       ScrollView {
         VStack(alignment: .leading, spacing: 12) {
+          if let targetSubtask { Text(targetSubtask.title).font(.headline) }
           Text("Initial prompt").font(.headline)
           TextEditor(text: $prompt).font(.body).frame(minHeight: 130, maxHeight: 180)
             .padding(6).overlay(RoundedRectangle(cornerRadius: 6).stroke(.secondary.opacity(0.3)))
@@ -502,7 +504,7 @@ struct NewTaskAgentView: View {
             Text("Source: \(sourceWorkspace.branch ?? "unknown") at \(String((sourceWorkspace.baseCommit ?? "").prefix(8)))")
               .font(.caption).foregroundStyle(.secondary)
           }
-          if let workspaceError { Text(workspaceError).font(.caption).foregroundStyle(.orange) }
+          if let workspaceError = workspacePreview.error { Text(workspaceError).font(.caption).foregroundStyle(.orange) }
           Toggle("Send task initialization prompt", isOn: $includePrompt)
           Text("Adds the task plan, assignment, and progress instructions to your initial prompt. Turn off to send only your prompt, or leave it empty for a blank session.")
             .font(.caption).foregroundStyle(.secondary)
@@ -526,23 +528,20 @@ struct NewTaskAgentView: View {
         Button("Start agent") {
           model.launchAgent(for: ticket, title: name, provider: provider, repositoryPath: repository,
             includePrompt: includePrompt, useTmux: useTmux && tmuxAvailable, createWorktree: createWorktree,
-            initialPrompt: prompt, tracksCompletion: includePrompt, subtaskID: assignmentID)
+            initialPrompt: prompt, tracksCompletion: true, subtaskID: assignmentID,
+            parentSubtaskID: targetSubtask?.id, createAssignment: targetSubtask == nil)
           dismiss()
         }.buttonStyle(.borderedProminent).disabled(!repository.hasPrefix("/"))
       }
     }.padding(24).frame(width: 540, height: 660)
-      .task(id: repository) {
-        sourceWorkspace = nil; workspaceError = nil
-        guard !repository.isEmpty else { return }
-        do { sourceWorkspace = try await TaskWorktreeManager().workspace(at: repository) }
-        catch { workspaceError = error.localizedDescription }
-      }
+      .task(id: repository) { await workspacePreview.load(path: repository) }
       .onAppear {
-        includePrompt = !blank
-        createWorktree = !blank
-        prompt = blank ? "" : (ticket.next ?? "Implement \(ticket.title)")
+        includePrompt = false
+        createWorktree = !blank && targetSubtask?.workspace == nil
+        prompt = targetSubtask.map { $0.initialPrompt ?? $0.title } ?? ""
+        if let targetSubtask { provider = targetSubtask.provider }
         let context = model.taskContexts[ticket.id]
-        repository = [context?.worktreePath, context?.repositoryPath, ticket.worktree, model.config.workspacePath]
+        repository = [targetSubtask?.workspace?.path, targetSubtask?.workspace?.repositoryPath, context?.worktreePath, context?.repositoryPath, ticket.worktree, model.config.workspacePath]
           .compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0) } ?? model.config.workspacePath
       }
   }

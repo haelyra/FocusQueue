@@ -107,7 +107,7 @@ func generatedAgentNamesAreReadableTitles() {
     #expect(TaskSubtask.agentName(prompt: "!!!", provider: .claude) == "Untitled Claude task")
 }
 
-@Test("Generated agent names stop at word boundaries")
+@Test("Generated agent names use word boundaries when available")
 func generatedAgentNamesRespectWordBoundaries() {
     let prompt = "Implement extraordinarilylongcomponentname with careful migration checks and verification"
     let title = TaskSubtask.agentName(prompt: prompt, provider: .codex)

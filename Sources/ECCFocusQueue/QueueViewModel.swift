@@ -898,7 +898,6 @@ final class QueueViewModel {
     let precedingEdit = subtaskEditTasks[key]
     subtaskEditTasks[key] = Task {
       await precedingEdit?.value
-      guard subtaskEditTokens[key] == token else { return }
       do {
         _ = try await taskContextStore.renameSubtask(
           ticketID: ticket.id, subtaskID: subtask.id, title: updatedTitle,

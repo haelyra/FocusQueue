@@ -2039,7 +2039,7 @@ private struct TicketCard: View {
         Menu {
           Button("Edit title and explanation", systemImage: "pencil") {
             Task { @MainActor in
-              await Task.yield()
+              try? await Task.sleep(for: .milliseconds(100))
               editingSubtask = subtask
             }
           }

@@ -68,9 +68,14 @@ def legacy_tree_digest(path):
             continue
         if not item.is_file():
             raise ValueError(f"Special file inside managed directory requires review: {item}")
+        content = item.read_bytes()
+        if b"\0" in content:
+            raise ValueError(
+                f"Legacy automation digest cannot verify NUL-containing content: {item}"
+            )
         value.update(str(item.relative_to(path)).encode())
         value.update(b"\0")
-        value.update(item.read_bytes())
+        value.update(content)
         value.update(b"\0")
     return value.hexdigest()
 

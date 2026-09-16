@@ -76,6 +76,36 @@ struct SubtaskFocusTests {
         #expect(context.canonicalSubtaskID("c") == "c")
     }
 
+    @Test("Legacy combined subtask agents separate without changing the runtime identity")
+    func legacyCombinedRecordSeparation() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = TaskContextStore(root: root)
+        let ticket = DashboardTicket(id: "ECC-700", title: "Task", status: "open", summary: "")
+        _ = try await store.ensureContext(ticket: ticket)
+        var legacy = TaskSubtask(
+            id: "legacy-agent", title: "Repair the queue", provider: .codex,
+            sessionID: "saved-session", status: .blocked, lastHeartbeatAt: Date())
+        legacy.progressSummary = "Waiting for a dependency"
+        legacy.initialPrompt = "Repair the queue without losing the existing session."
+        _ = try await store.upsertSubtask(ticketID: ticket.id, subtask: legacy)
+
+        let migrated = try await store.ensureContext(ticket: ticket)
+        let assignment = try #require(migrated.focusSubtasks.first)
+        let agent = try #require(migrated.agents(for: assignment.id).first)
+
+        #expect(migrated.focusSubtasks.count == 1)
+        #expect(assignment.isAssignmentOnly)
+        #expect(assignment.status == .blocked)
+        #expect(agent.id == legacy.id)
+        #expect(agent.parentSubtaskID == assignment.id)
+        #expect(agent.sessionID == legacy.sessionID)
+        #expect(!agent.tracksCompletion)
+
+        let repeated = try await store.ensureContext(ticket: ticket)
+        #expect(repeated.subtasks == migrated.subtasks)
+    }
+
     @Test("Results survive automatic retirement and working reports; acknowledgement cannot clear a newer result")
     func unreadLifecycle() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

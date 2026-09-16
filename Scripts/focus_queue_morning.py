@@ -88,17 +88,29 @@ def stop_process_group(process: subprocess.Popen[str], *, grace_seconds: float =
         return
 
     group_id = process.pid
+    sent_group_termination = False
     try:
         os.killpg(group_id, signal.SIGTERM)
+        sent_group_termination = True
     except ProcessLookupError:
         pass
+    except PermissionError:
+        if process.poll() is None:
+            process.terminate()
+    if not sent_group_termination:
+        try:
+            process.wait(timeout=max(0.1, grace_seconds))
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        return
     deadline = time.monotonic() + grace_seconds
     while _process_group_exists(group_id) and time.monotonic() < deadline:
         time.sleep(0.02)
     if _process_group_exists(group_id):
         try:
             os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
     try:
         process.wait(timeout=max(0.1, grace_seconds))

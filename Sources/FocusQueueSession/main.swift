@@ -13,7 +13,7 @@ enum SessionRegistrationError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .usage:
-            "Usage: focus-queue-session diagnose <TASK-ID> | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude> <title> | rename <TASK-ID> <SUBTASK-ID> <title> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
+            "Usage: focus-queue-session review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude> <title> | rename <TASK-ID> <SUBTASK-ID> <title> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
         case .missingSessionIdentity:
             "No Codex or Claude session ID was found in the environment or current WezTerm pane."
         case .missingManagedRuntime:
@@ -457,6 +457,34 @@ enum SessionRegistrationError: Error, LocalizedError {
         let environment = ProcessInfo.processInfo.environment
         let root = supportDirectory(environment: environment)
         let store = TaskContextStore(root: root)
+        if ["review-push", "workspace"].contains(command) {
+            guard arguments.count == (command == "workspace" ? 4 : 3),
+                  let context = try await store.load(ticketID: arguments[1]),
+                  let subtask = context.subtasks.first(where: { $0.id == arguments[2] }) else {
+                throw SessionRegistrationError.usage
+            }
+            if command == "workspace" {
+                var workspace = try await TaskWorktreeManager().workspace(at: arguments[3])
+                if workspace.path == subtask.workspace?.path {
+                    workspace.managed = subtask.workspace?.managed ?? false
+                    workspace.baseBranch = subtask.workspace?.baseBranch ?? workspace.baseBranch
+                    workspace.baseCommit = subtask.workspace?.baseCommit ?? workspace.baseCommit
+                }
+                let updated = try await store.setAgentWorkspace(ticketID: context.ticketID, subtaskID: subtask.id, workspace: workspace)
+                await mirrorContext(updated, root: root)
+                notifyContextChanged()
+                try emit(workspace)
+            } else {
+                let configuration = try loadConfiguration(from: root)
+                let receipt = try await PushReviewer().review(context: context, subtask: subtask,
+                    configuration: configuration.verifier, supportDirectory: root)
+                try emit(receipt)
+                if !receipt.accepted {
+                    throw TaskContextError.commandFailed("Push review rejected. Correct the reported additions, commit the correction, and run review-push again before pushing.")
+                }
+            }
+            return
+        }
         if command == "plan", arguments.count == 2 {
             FileHandle.standardOutput.write(Data(try await store.readPlan(ticketID: arguments[1]).utf8))
             return
@@ -478,6 +506,25 @@ enum SessionRegistrationError: Error, LocalizedError {
             FileHandle.standardOutput.write(try JSONEncoder().encode(context.subtasks.first { $0.id == arguments[2] }))
             FileHandle.standardOutput.write(Data("\n".utf8))
             notifyContextChanged()
+            return
+        }
+        if command == "associate", arguments.count == 4 {
+            let updated = try await store.associateAgent(ticketID: arguments[1], agentID: arguments[2], subtaskID: arguments[3])
+            await mirrorContext(updated, root: root)
+            notifyContextChanged()
+            try emit(updated)
+            return
+        }
+        if command == "attention" || command == "result" {
+            let isResult = command == "result"
+            guard arguments.count == (isResult ? 4 : 5) else { throw SessionRegistrationError.usage }
+            let attention = isResult ? nil : AgentAttention(rawValue: arguments[3])
+            guard isResult || attention != nil else { throw SessionRegistrationError.usage }
+            let updated = try await store.reportAttention(ticketID: arguments[1], subtaskID: arguments[2],
+                attention: attention, summary: arguments[isResult ? 3 : 4], result: isResult)
+            await mirrorContext(updated, root: root)
+            notifyContextChanged()
+            try emit(updated)
             return
         }
         if command == "context", arguments.count == 2 {

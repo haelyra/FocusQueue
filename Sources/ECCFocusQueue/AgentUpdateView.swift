@@ -11,6 +11,10 @@ struct QueueAgentUpdate: Identifiable, Equatable {
   var subtaskID: String? = nil
   var date: Date = .distantPast
   var isCleanup = false
+  var resultID: String? = nil
+
+  var conciseReason: String { CompletionExplanation.concise(summary) }
+  var presentationID: String { id + ":" + (resultID ?? String(date.timeIntervalSince1970)) }
 }
 
 struct AgentUpdateView: View {
@@ -28,7 +32,8 @@ struct AgentUpdateView: View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(alignment: .top) {
         VStack(alignment: .leading, spacing: 4) {
-          Text(update.title).font(.title3.bold())
+          Text(update.conciseReason).font(.title3.bold()).lineLimit(4)
+          Text(update.title).font(.caption).foregroundStyle(.secondary)
           Text(update.ticketID).font(.caption).foregroundStyle(.secondary)
           if update.date != .distantPast {
             Text(update.date.formatted(date: .abbreviated, time: .shortened))
@@ -45,6 +50,14 @@ struct AgentUpdateView: View {
         }
         Button { model.closeAgentUpdate() } label: { Image(systemName: "xmark") }
           .buttonStyle(.bordered).accessibilityLabel("Close agent update")
+      }
+      if update.review != nil, let ticket,
+         let subtask = model.subtasks(for: ticket.id).first(where: { $0.id == update.subtaskID }) {
+        HStack {
+          Button("Override: mark complete") { model.overrideCompletion(subtask, for: ticket) }
+            .buttonStyle(.borderedProminent)
+          Button(subtask.isAssignmentOnly ? "Remove agents" : "Remove agent") { model.removeAgent(subtask, from: ticket); model.closeAgentUpdate() }
+        }
       }
       ScrollView {
         VStack(alignment: .leading, spacing: 14) {
@@ -124,7 +137,7 @@ struct AgentUpdateView: View {
       }
     }.padding(14).frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
       .background(.background, in: RoundedRectangle(cornerRadius: 14))
-      .task(id: update.id) {
+      .task(id: update.presentationID) {
         reviewOutput = ""
         logError = nil
         await model.acknowledgeAgentUpdate(update)

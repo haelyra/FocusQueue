@@ -1,10 +1,10 @@
 # Nielsen heuristic evaluation of ECC Focus Queue
 
-Evaluation date: 2026-09-14
+Evaluation date: 2026-09-16
 
 ## TL;DR
 
-Agent status and window actions were the main usability failure. This pass replaces ambiguous circles with named controls, status badges, loading feedback, task-scoped deletion, and recoverable archives. The highest remaining risk is that deterministic-looking field changes can still invoke a broadly capable freeform agent.
+Agent status and window actions were the main usability failure. This pass separates subtasks from the agents assigned to them, replaces ambiguous circles with named controls and status badges, adds loading feedback and recoverable deletion, and keeps Queue chat available beside the queue. The highest remaining risk is that deterministic-looking field changes can still invoke a broadly capable freeform agent.
 
 ## Contents
 
@@ -41,9 +41,11 @@ The highest remaining product risk is that some apparently deterministic UI acti
 | --- | --- | --- |
 | Agent status | A spinner represented active work, plain text carried status, and a tiny green dot meant unread completion | Each agent has a labeled badge with an icon and color: yellow Working, red Issue, green Done and New, gray Done and Seen, gray Queued, or gray No recent update |
 | Session opening | Open actions kept their normal appearance while WezTerm discovery and activation ran | Agent rows, the agent update inspector, managed-session rows, terminal browsing, launch, and dashboard refresh show progress indicators and disable duplicate requests |
-| Completion action | An unlabeled empty circle requested agent completion review | `Mark as complete…` lives in the named action menu and asks for confirmation before starting evidence review |
+| Completion action | An unlabeled empty circle requested agent completion review | `Review completion` queues evidence review, while `Mark as complete…` is an explicit user override with a second confirmation |
 | Task checkboxes | Submitted completion controls used warning or information colors | Checked controls use the success green; the adjacent review pill still reports Pending, Running, or Accepted |
-| Subtask actions | Individual actions were spread across buttons, a context menu, and an ambiguous delete control | A labeled three-dot menu groups editing, verified completion, deployment logs, and confirmed deletion; completed subtasks move into task and Completed-tab archives |
+| Subtasks and agents | One row mixed the assignment, provider session, status, logs, completion, and deletion | Separate Subtasks and Agents sections give every subtask and every agent its own row and three-dot menu; assignment completion and deletion stay with the subtask, while opening, logs, and removal stay with the agent |
+| Subtask details | Long titles were clipped and assignment context was hard to recover | Clicking the title area expands the full title and optional explanation; completed subtasks stay collapsed in the task and appear in the Completed-tab archive |
+| Queue chat | Opening Queue chat replaced the task list | The existing tab remains, with a second adjacent-panel button that keeps the task queue visible |
 | Bulk removal | `Clear queue` inside one task removed agent entries from every task | `Remove all` names the destructive action and affects only the selected task |
 | Hidden click target | Clicking a ticket title opened the agent manager, duplicating the named Manage agents button | Ticket titles are informational and named controls own agent and detail disclosure |
 | Error recovery | A failed session open appeared as secondary body text | The affected agent receives a red Issue badge and the detailed error is presented with an error icon and color |
@@ -66,7 +68,7 @@ Remaining severity: 2. Daily report generation and queue chat show activity, but
 
 Baseline severity: 3. `Idle`, live terminal state, unread completion, and completion review were easy to conflate. `Clear queue` sounded local to the open task but acted globally.
 
-Resolved in this pass: user-facing labels now say Working, Issue, Done and New, Done and Seen, Queued, No recent update, Finding session, Mark as complete, Delete subtask, and Remove all. The removal dialogs explain that removing an entry does not terminate its process.
+Resolved in this pass: user-facing labels now say Working, Issue, Done and New, Done and Seen, Queued, No recent update, Finding session, Mark as complete, Delete subtask, and Remove agent. Confirmation dialogs distinguish deleting an assignment and its linked agents from removing only one agent while retaining its subtask and history.
 
 Remaining severity: 2. Browse terminals still leads with window, tab, and pane IDs. Grouping saved agent terminals by task and assignment before listing raw terminal identifiers would better match the user's goal of finding an agent.
 
@@ -74,7 +76,7 @@ Remaining severity: 2. Browse terminals still leads with window, tab, and pane I
 
 Baseline severity: 3. Individual agent records could not be removed from the main task card, and the session manager used a double-click gesture. Bulk clearing had broad scope.
 
-Resolved in this pass: each agent can be removed with confirmation, and bulk removal is scoped to one task. Archived context provides a recovery record.
+Resolved in this pass: each agent can be removed with confirmation, each subtask can be deleted independently, and bulk removal is scoped to one task. Archived context provides a recovery record.
 
 Remaining severity: 3. Agent launch, queue-agent response, completion review, and report generation have no visible Cancel or Stop action. Moving a task between Today and Rest has no short-lived Undo. Restoring a removed agent requires archive-level recovery rather than a user-facing Restore action.
 
@@ -82,7 +84,7 @@ Remaining severity: 3. Agent launch, queue-agent response, completion review, an
 
 Baseline severity: 3. Small circles represented completion request, unread state, live work, or status depending on location. A custom double-click trash glyph did not behave like a standard button.
 
-Resolved in this pass: status is consistently a labeled badge, completion review is a named action, and removal uses semantic destructive buttons with confirmation. The hidden ticket-title action was removed.
+Resolved in this pass: status is consistently a labeled badge, completion review is a named action, and destructive actions use confirmation. Subtasks and agents use the same visible ellipsis-menu convention without sharing one menu.
 
 Remaining severity: 1. Capitalization varies between `New agent`, `View Central Plan`, `Queue chat`, and sentence-style settings labels. Standardizing sentence case would give the app a more settled voice.
 
@@ -100,7 +102,7 @@ Baseline severity: 3. Users had to remember what the green dot, spinner, termina
 
 Resolved in this pass: status labels and named actions carry their meaning without relying on memory or tooltips. The last report time and progress summary remain visible beside the status.
 
-Remaining severity: 2. A task can expose Central Plan, Context and evidence, Task details, Manage agents, diagnostics, an agent update inspector, and Queue chat. A single task-focused inspector with clear tabs would reduce the need to remember where each artifact opens.
+Remaining severity: 2. A task can expose Central Plan, Context and evidence, Task details, diagnostics, an agent update inspector, and Queue chat. A single task-focused inspector with clear tabs would reduce the need to remember where each artifact opens.
 
 ### 7. Flexibility and efficiency of use
 
@@ -110,7 +112,7 @@ Current severity: 2. Filtering in Browse terminals, remembered launch preference
 
 Current severity: 2. Task cards can show title, IDs, multiple pills, summary, plan, evidence, type, progress, several agents, action messages, cleanup messages, and details. Attention and report banners can further compress the queue. Keep the default card focused on title, task state, next action, and agent state. Move configuration and forensic controls into a consistent disclosure or inspector.
 
-The updated agent card is taller because its actions are now explicit. After live use, consider a two-line layout with one primary Open agent button and a trailing More menu for Diagnostics, Rename, and Verify. Keep Remove visible enough to discover while preserving its confirmation.
+The separate Subtasks and Agents disclosures make ownership clear, but a task with many active records can still become tall. After live use, consider filters or a task-focused inspector while preserving the independent row and menu for each entity.
 
 ### 9. Help users recognize, diagnose, and recover from errors
 
@@ -143,7 +145,7 @@ Remaining accessibility severity: 3. Much of the queue uses fixed 10 to 12 point
 
 ## Verification coverage
 
-Headless tests cover opening-state publication, successful and failed agent recall, single-agent removal, task-scoped bulk removal, sibling preservation, and pre-delete archive retention. The full package test suite and installed-app artifact checks are recorded in the delivery handoff for this change.
+Headless tests cover opening-state publication, successful and failed agent recall, standalone subtask creation, independent child-agent records, shared-agent reparenting during subtask deletion, single-agent removal, task-scoped bulk removal, sibling preservation, and pre-delete archive retention. The full package test suite and installed-app artifact checks are recorded in the delivery handoff for this change.
 
 ## Do next
 

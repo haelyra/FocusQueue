@@ -22,6 +22,8 @@ public struct LibrarySubtask: Codable, Equatable, Sendable, Identifiable {
     public var progressSummary: String
     public var lastHeartbeatAt: Date?
     public var isCurrent = true
+    public var parentSubtaskID: String?
+    public var mergedIntoSubtaskID: String?
 }
 
 public struct LibrarySession: Codable, Equatable, Sendable, Identifiable {
@@ -396,17 +398,24 @@ public actor DurableLibraryStore {
             let prior = task.subtasks.firstIndex { $0.legacyID == subtask.id }
             let entry = LibrarySubtask(id: prior.map { task.subtasks[$0].id } ?? UUID(), legacyID: subtask.id,
                 title: subtask.title, status: subtask.status.rawValue, progressSummary: subtask.progressSummary,
-                lastHeartbeatAt: subtask.lastHeartbeatAt)
+                lastHeartbeatAt: subtask.lastHeartbeatAt,
+                isCurrent: subtask.parentSubtaskID == nil && subtask.mergedIntoSubtaskID == nil,
+                parentSubtaskID: subtask.parentSubtaskID, mergedIntoSubtaskID: subtask.mergedIntoSubtaskID)
             if let prior { task.subtasks[prior] = entry } else { task.subtasks.append(entry) }
+        }
+        for subtask in context.subtasks {
             if let nativeID = subtask.sessionID, !nativeID.isEmpty {
                 let sessionID = ensureSession(provider: subtask.provider.rawValue, nativeID: nativeID, in: &library, device: device)
-                assign(taskID: taskID, sessionID: sessionID, subtaskID: entry.id, source: "task-context", into: &library)
-                for assignment in library.assignments where assignment.taskID == taskID && assignment.sessionID == sessionID
-                    && assignment.subtaskID == entry.id && assignment.source == "task-context" && assignment.endedAt == nil {
+                let linked = Set(task.subtasks.filter { context.assignmentIDs(for: subtask).contains($0.legacyID) }.map(\.id))
+                if subtask.isAgentVisible {
+                    for id in linked { assign(taskID: taskID, sessionID: sessionID, subtaskID: id, source: "task-context", into: &library) }
+                }
+                for assignment in library.assignments where subtask.isAgentVisible && assignment.taskID == taskID && assignment.sessionID == sessionID
+                    && assignment.subtaskID.map(linked.contains) == true && assignment.source == "task-context" && assignment.endedAt == nil {
                     currentAssignments.insert(assignment.id)
                 }
                 if !library.executionLocators.contains(where: { $0.sessionID == sessionID && $0.deviceID == device.id && $0.pathSource == "saved-session" }) {
-                    updateLocator(sessionID: sessionID, directory: context.worktreePath ?? context.repositoryPath,
+                    updateLocator(sessionID: sessionID, directory: subtask.workspace?.path ?? context.worktreePath ?? context.repositoryPath,
                         source: "task-context-fallback", window: nil, tab: nil, pane: nil, into: &library, device: device)
                 }
             }
@@ -451,7 +460,7 @@ public actor DurableLibraryStore {
                 let sessionID = ensureSession(provider: subtask.provider.rawValue, nativeID: nativeID, in: &library, device: device)
                 assign(taskID: taskID, sessionID: sessionID, subtaskID: entry?.id, source: "historical-context", into: &library)
                 if !library.executionLocators.contains(where: { $0.sessionID == sessionID && $0.deviceID == device.id }) {
-                    updateLocator(sessionID: sessionID, directory: context.worktreePath ?? context.repositoryPath,
+                    updateLocator(sessionID: sessionID, directory: subtask.workspace?.path ?? context.worktreePath ?? context.repositoryPath,
                         source: "historical-context-fallback", window: nil, tab: nil, pane: nil, into: &library, device: device)
                 }
             }

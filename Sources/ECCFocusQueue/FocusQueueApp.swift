@@ -72,6 +72,13 @@ import UserNotifications
         targetScreen: panel?.screen
       )
     }
+    model.agentTerminalFocusHandler = { [weak self] applicationName, taskID in
+      guard let self, let terminalFocusController else {
+        throw TerminalFocusModeError.applicationUnavailable(applicationName)
+      }
+      try await terminalFocusController.begin(applicationName: applicationName, windowTitleHint: taskID,
+        targetScreen: panel?.screen, requiresActivatedWindow: true)
+    }
     model.quitHandler = { NSApplication.shared.terminate(nil) }
     model.setCanSwitchMonitor(NSScreen.screens.count > 1)
     configureDailyReportNotifications()

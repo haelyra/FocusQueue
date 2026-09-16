@@ -64,6 +64,27 @@ actor TerminalFocusAccessibility {
         return nil
     }
 
+    /// Only the window just activated by WezTerm is eligible, even if siblings share its title.
+    func waitForActivatedWindow(processIdentifier: pid_t, expectedTitle: String?,
+                                operation: TerminalFocusOperation) async throws -> TerminalFocusWindow? {
+        let application = AXUIElementCreateApplication(processIdentifier)
+        AXUIElementSetMessagingTimeout(application, messagingTimeout)
+        for _ in 0..<30 {
+            try operation.checkCancellation()
+            if let window = focusedWindow(in: application) {
+                var value: CFTypeRef?
+                AXUIElementSetMessagingTimeout(window, messagingTimeout)
+                if AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &value) == .success,
+                   let title = value as? String,
+                   expectedTitle == nil || title.caseInsensitiveCompare(expectedTitle!) == .orderedSame {
+                    return reference(window)
+                }
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        return nil
+    }
+
     func frame(of window: TerminalFocusWindow, operation: TerminalFocusOperation) throws -> CGRect {
         try operation.checkCancellation()
         var positionValue: CFTypeRef?

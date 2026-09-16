@@ -155,6 +155,19 @@ struct ManagedSessionRecallTests {
     #expect(!calls.flatMap(\.arguments).contains("new-session"))
   }
 
+  @Test("Agent recall retains the registered provider tab label")
+  func registeredDirectLabel() async throws {
+    let panes = #"[{"window_id":12,"tab_id":21,"pane_id":41,"cwd":"file:///tmp/worktree"}]"#
+    let runner = ManagedRecallRunner([result(panes), result(), result(), result(), result()])
+    let identity = "11111111-2222-4333-8444-555555555555"
+    let subtask = TaskSubtask(title: "Resume", sessionID: identity, runtimeMode: .terminal, terminalPaneID: 41)
+    _ = try await WezTermController(runner: runner, candidateSockets: []).openAgentRuntime(
+      subtask, taskID: "ECC-1", configuration: .init(executable: "/mock/wezterm"))
+    let calls = await runner.calls
+    #expect(calls.contains { $0.arguments == ["cli", "set-tab-title", "--pane-id", "41", "ECC-1 · Codex · 555555"] })
+    #expect(calls.contains { $0.arguments == ["cli", "set-window-title", "--pane-id", "41", "ECC-1"] })
+  }
+
   @Test("Direct recall connects a GUI to the saved background mux")
   func revealBackgroundMux() async throws {
     let panes = #"[{"window_id":1,"tab_id":1,"pane_id":41,"cwd":"file:///tmp/worktree"}]"#

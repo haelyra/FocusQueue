@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "taskID": "REPLACE-TASK-ID",
+  "resources": [
+    {
+      "id": "test-database",
+      "label": "Test database",
+      "workspace": "/replace/with/registered/worktree",
+      "document": "file:///replace/with/instance-notes.md",
+      "summary": "Declared test instance; availability unverified",
+      "updatedAt": "2026-09-14T18:00:00Z"
+    }
+  ],
+  "connections": [
+    { "from": "resource:test-database", "to": "agent:REPLACE-SUBTASK-ID", "kind": "dependency" },
+    { "from": "file:/replace/with/registered/worktree/deploy.py", "to": "resource:test-database", "kind": "feedback" }
+  ]
+}

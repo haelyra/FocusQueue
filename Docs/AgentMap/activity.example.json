@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "taskID": "REPLACE-TASK-ID",
+  "provider": "codex",
+  "sessionID": "REPLACE-CHILD-SESSION-ID",
+  "parentSessionID": "REPLACE-PARENT-SESSION-ID",
+  "parentProvider": "codex",
+  "label": "Schema implementation subagent",
+  "workingDirectory": "/replace/with/worktree",
+  "state": "working",
+  "updatedAt": "2026-09-14T21:00:00Z",
+  "entries": [
+    {"path": "/replace/with/worktree/AGENTS.md", "operation": "read", "at": "2026-09-14T21:00:00Z", "importance": 20},
+    {"path": "/replace/with/worktree/Sources/schema.swift", "operation": "write", "at": "2026-09-14T21:00:00Z", "importance": 90}
+  ]
+}

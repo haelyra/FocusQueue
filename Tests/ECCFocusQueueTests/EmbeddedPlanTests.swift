@@ -55,7 +55,7 @@ struct EmbeddedPlanTests {
     "Plan expansion reserves two columns, respects display bounds and collapses to compact width")
   func sideBySideLayout() {
     let plan = QueueInspectorLayout.plan
-    #expect(plan.preferredWidth(compactWidth: 440) == 1_440)
+    #expect(plan.preferredWidth(compactWidth: 440) == 1_800)
     #expect(plan.minimumWidth - 440 - 49 >= QueueInspectorLayout.inspectorMinimumWidth)
     #expect(QueueInspectorLayout.closed.preferredWidth(compactWidth: 460) == 460)
     #expect(QueueInspectorLayout.chat.preferredWidth(compactWidth: 440) == 1_020)
@@ -177,6 +177,8 @@ struct EmbeddedPlanTests {
 
       - Preserve decisions
       - Verify acceptance criteria
+      - [x] Completed requirement
+      - [ ] Pending requirement
 
       | Assignment | Status |
       | --- | --- |
@@ -218,7 +220,12 @@ struct EmbeddedPlanTests {
       try await view.evaluateJavaScript(
         "[document.querySelectorAll('h1').length, document.querySelectorAll('li').length, document.querySelectorAll('table').length].join(',')"
       ) as? String
-    #expect(structure == "1,2,1")
+    #expect(structure == "1,4,1")
+    let checkboxes = try await view.evaluateJavaScript("Array.from(document.querySelectorAll('input[type=checkbox]')).map(x => [x.checked,x.disabled].join(':')).join(',')") as? String
+    #expect(checkboxes == "true:true,false:true")
+    let background = try await view.evaluateJavaScript("getComputedStyle(document.body).backgroundColor") as? String
+    #expect(background == "rgb(243, 243, 243)")
+    #expect(try await view.evaluateJavaScript("getComputedStyle(document.body).backgroundImage") as? String == "none")
     let href = try #require(
       try await view.evaluateJavaScript("document.querySelector('a').href") as? String)
     let routedURL = try #require(URL(string: href))

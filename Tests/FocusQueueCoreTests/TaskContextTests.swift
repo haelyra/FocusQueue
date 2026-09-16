@@ -150,6 +150,33 @@ func taskContextSingleSubtaskRemoval() async throws {
     })
 }
 
+@Test("Deleting an assignment removes only exclusive agents and reparents shared agents")
+func taskContextAssignmentRemoval() async throws {
+    let root = try contextFixture(); defer { try? FileManager.default.removeItem(at: root) }
+    let store = TaskContextStore(root: root)
+    let initial = try await store.ensureContext(ticket: contextTicket())
+    var first = TaskSubtask(id: "first", title: "First assignment", runtimeMode: nil)
+    first.isAssignmentOnly = true
+    var second = TaskSubtask(id: "second", title: "Second assignment", runtimeMode: nil)
+    second.isAssignmentOnly = true
+    var exclusive = TaskSubtask(id: "exclusive", title: "Exclusive agent")
+    exclusive.parentSubtaskID = first.id
+    var shared = TaskSubtask(id: "shared", title: "Shared agent")
+    shared.parentSubtaskID = first.id
+    shared.associatedSubtaskIDs = [second.id]
+    for subtask in [first, second, exclusive, shared] {
+        _ = try await store.upsertSubtask(ticketID: initial.ticketID, subtask: subtask)
+    }
+
+    let updated = try await store.removeSubtask(
+        ticketID: initial.ticketID, subtaskID: first.id)
+
+    #expect(updated.subtasks.map(\.id) == [second.id, shared.id])
+    let retained = try #require(updated.subtasks.first { $0.id == shared.id })
+    #expect(retained.parentSubtaskID == second.id)
+    #expect(retained.associatedSubtaskIDs.isEmpty)
+}
+
 @Test("Direct runtime persists only its exact terminal identity")
 func taskContextDirectRuntime() async throws {
     let root = try contextFixture(); defer { try? FileManager.default.removeItem(at: root) }

@@ -182,17 +182,19 @@ struct QueueView: View {
   private var completionAttention: QueueAgentUpdate? { model.agentUpdates.first }
 
   private func attentionBanner(_ attention: QueueAgentUpdate) -> some View {
-    Button { model.openAgentUpdate(attention) } label: {
-      HStack(alignment: .top, spacing: 9) {
-        Image(systemName: "bell.badge.fill").foregroundStyle(.orange)
-        VStack(alignment: .leading, spacing: 3) {
-          Text("\(attention.ticketID) · \(attention.title)").font(.system(size: 12, weight: .semibold))
-          Text(attention.summary).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
-        }
-        Spacer(minLength: 0)
-        Image(systemName: "chevron.right").font(.caption)
-      }.padding(12).notificationSurface(radius: 14)
-    }.buttonStyle(.plain).help("Read the full update, completion verdict, and available evidence")
+    HStack(alignment: .top, spacing: 9) {
+      Button { model.openAgentUpdate(attention) } label: {
+        VStack(alignment: .leading, spacing: 4) {
+          Text(attention.conciseReason).font(.system(size: 12, weight: .semibold)).lineLimit(3)
+          Text("\(attention.ticketID) · \(attention.title)").font(.system(size: 11)).foregroundStyle(.secondary)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+      }.buttonStyle(.plain).help("Read the explanation and review details")
+      if attention.review != nil, let ticket = model.dashboard.tickets.first(where: { $0.id == attention.ticketID }),
+         let subtask = model.subtasks(for: ticket.id).first(where: { $0.id == attention.subtaskID }) {
+        Button("Override") { model.overrideCompletion(subtask, for: ticket) }
+          .help("Mark this subtask complete by user override")
+      }
+    }.padding(12).notificationSurface(radius: 14)
   }
 
   private var activeQueueContent: some View {
@@ -332,13 +334,13 @@ struct QueueView: View {
 
   private var completedSubtaskTickets: [DashboardTicket] {
     model.dashboard.tickets.filter { ticket in
-      model.subtasks(for: ticket.id).contains { $0.status == .completed }
+      model.focusSubtasks(for: ticket.id).contains { $0.status == .completed }
     }
   }
 
   private var completedSubtaskCount: Int {
     completedSubtaskTickets.reduce(0) { count, ticket in
-      count + model.subtasks(for: ticket.id).filter { $0.status == .completed }.count
+      count + model.focusSubtasks(for: ticket.id).filter { $0.status == .completed }.count
     }
   }
 
@@ -353,10 +355,9 @@ struct QueueView: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
-              ForEach(model.subtasks(for: ticket.id).filter { $0.status == .completed }) {
+              ForEach(model.focusSubtasks(for: ticket.id).filter { $0.status == .completed }) {
                 subtask in
-                TaskSubtaskRow(
-                  ticket: ticket, subtask: subtask, model: model, showsTicketIdentity: false)
+                ArchivedSubtaskRow(ticket: ticket, subtask: subtask, model: model)
               }
             }
           }
@@ -364,14 +365,14 @@ struct QueueView: View {
         .padding(.top, 8)
       } label: {
         Label(
-          showsArchivedSubtasks ? "Hide completed agents" : "Show completed agents",
+          showsArchivedSubtasks ? "Hide completed subtasks" : "Show completed subtasks",
           systemImage: "archivebox"
         )
         .font(.system(size: 13, weight: .semibold))
       }
       .padding(12)
       .notificationSurface(radius: 14)
-      .accessibilityHint("Completed subtasks retain their details, session links, and deployment logs.")
+      .accessibilityHint("Completed subtasks retain their explanations and agent history.")
     }
   }
 
@@ -1549,13 +1550,98 @@ private struct CompletedTicketCard: View {
   }
 }
 
+private struct ArchivedSubtaskRow: View {
+  let ticket: DashboardTicket
+  let subtask: TaskSubtask
+  let model: QueueViewModel
+  @State private var isExpanded = false
+  @State private var confirmsDeletion = false
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(alignment: .top, spacing: 7) {
+        Button { isExpanded.toggle() } label: {
+          HStack(alignment: .top, spacing: 7) {
+            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+              .font(.system(size: 10, weight: .bold))
+              .foregroundStyle(.secondary)
+              .frame(width: 12, height: 18)
+            VStack(alignment: .leading, spacing: 3) {
+              Text(subtask.title)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(isExpanded ? nil : 2)
+              Text("Completed subtask")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+            }
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(isExpanded ? "Collapse" : "Expand") completed subtask \(subtask.title)")
+
+        Menu {
+          Button("Delete subtask…", systemImage: "trash", role: .destructive) {
+            confirmsDeletion = true
+          }
+        } label: {
+          Image(systemName: "ellipsis.circle")
+            .font(.system(size: 17, weight: .semibold))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .minimumHitTarget()
+        .accessibilityLabel("More options for completed subtask \(subtask.title)")
+      }
+      if isExpanded {
+        Text(subtask.assignmentDescription.isEmpty
+          ? (subtask.initialPrompt ?? "No explanation added.") : subtask.assignmentDescription)
+          .font(.system(size: 11))
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .textSelection(.enabled)
+      }
+    }
+    .padding(9)
+    .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 9))
+    .confirmationDialog(
+      "Delete this completed subtask?", isPresented: $confirmsDeletion,
+      titleVisibility: .visible
+    ) {
+      Button("Delete subtask and linked agents", role: .destructive) {
+        model.deleteSubtask(subtask, from: ticket)
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("The archived task context remains available for recovery.")
+    }
+  }
+}
+
 private struct TicketCard: View {
   let ticket: DashboardTicket
   let model: QueueViewModel
-  @State private var showsAgentPicker = false
   @State private var showsContext = false
   @State private var showsNewAgent = false
+  @State private var newAgentIsBlank = false
+  @State private var agentTargetSubtask: TaskSubtask?
+  @State private var showsSubtasks = true
+  @State private var showsAgents = true
   @State private var showsCompletedSubtasks = false
+  @State private var expandedSubtaskIDs: Set<String> = []
+  @State private var showsNewSubtask = false
+  @State private var newSubtaskTitle = ""
+  @State private var newSubtaskExplanation = ""
+  @State private var editingSubtask: TaskSubtask?
+  @State private var editedSubtaskTitle = ""
+  @State private var editedSubtaskExplanation = ""
+  @State private var renamingAgent: TaskSubtask?
+  @State private var agentName = ""
+  @State private var completingSubtask: TaskSubtask?
+  @State private var deletingSubtask: TaskSubtask?
+  @State private var completingAgent: TaskSubtask?
+  @State private var removingAgent: TaskSubtask?
   @Environment(\.queueAccentStyle) private var accentStyle
 
   private var review: CompletionRequest? { model.latestReview(for: ticket.id) }
@@ -1572,15 +1658,6 @@ private struct TicketCard: View {
       summary
       taskOverview
       agentControls
-      if showsAgentPicker {
-        AgentSessionPicker(
-          ticket: ticket,
-          model: model,
-          onClose: { showsAgentPicker = false }
-        )
-        .padding(.horizontal, 14).padding(.bottom, 12)
-        .transition(.opacity.combined(with: .move(edge: .top)))
-      }
       Button(action: toggleCardDisclosure) {
         HStack {
           Text(model.isExpanded(ticket.id) ? "Hide task details" : "Task details")
@@ -1594,7 +1671,103 @@ private struct TicketCard: View {
         details.padding(.top, 11).transition(.opacity.combined(with: .move(edge: .top)))
       }
     }.notificationSurface(radius: 18)
-      .sheet(isPresented: $showsNewAgent) { NewTaskAgentView(ticket: ticket, model: model) }
+      .sheet(isPresented: $showsNewAgent) { NewTaskAgentView(ticket: ticket, model: model, blank: newAgentIsBlank, targetSubtask: agentTargetSubtask) }
+      .alert("New subtask", isPresented: $showsNewSubtask) {
+        TextField("Subtask title", text: $newSubtaskTitle)
+        TextField("Optional explanation", text: $newSubtaskExplanation)
+        Button("Add subtask") {
+          model.createSubtask(
+            for: ticket, title: newSubtaskTitle, explanation: newSubtaskExplanation)
+          newSubtaskTitle = ""
+          newSubtaskExplanation = ""
+        }
+        Button("Cancel", role: .cancel) {}
+      } message: {
+        Text("Create the work item first. You can assign one or more agents afterward.")
+      }
+      .alert("Edit subtask", isPresented: Binding(
+        get: { editingSubtask != nil }, set: { if !$0 { editingSubtask = nil } }
+      )) {
+        TextField("Subtask title", text: $editedSubtaskTitle)
+        TextField("Optional explanation", text: $editedSubtaskExplanation)
+        Button("Save") {
+          if let subtask = editingSubtask {
+            model.updateSubtask(
+              subtask, for: ticket, title: editedSubtaskTitle,
+              explanation: editedSubtaskExplanation)
+          }
+          editingSubtask = nil
+        }
+        Button("Cancel", role: .cancel) { editingSubtask = nil }
+      }
+      .alert("Rename agent", isPresented: Binding(
+        get: { renamingAgent != nil }, set: { if !$0 { renamingAgent = nil } }
+      )) {
+        TextField("Agent name", text: $agentName)
+        Button("Save") {
+          if let agent = renamingAgent {
+            model.renameSubtask(agent, for: ticket, title: agentName)
+          }
+          renamingAgent = nil
+        }
+        Button("Cancel", role: .cancel) { renamingAgent = nil }
+      }
+      .confirmationDialog(
+        "Mark this subtask complete?",
+        isPresented: Binding(
+          get: { completingSubtask != nil }, set: { if !$0 { completingSubtask = nil } }),
+        titleVisibility: .visible
+      ) {
+        Button("Mark subtask complete") {
+          if let subtask = completingSubtask { model.overrideCompletion(subtask, for: ticket) }
+          completingSubtask = nil
+        }
+        Button("Cancel", role: .cancel) { completingSubtask = nil }
+      } message: {
+        Text("This records a user override and preserves the prior review evidence.")
+      }
+      .confirmationDialog(
+        "Delete this subtask?",
+        isPresented: Binding(
+          get: { deletingSubtask != nil }, set: { if !$0 { deletingSubtask = nil } }),
+        titleVisibility: .visible
+      ) {
+        Button("Delete subtask and linked agents", role: .destructive) {
+          if let subtask = deletingSubtask { model.deleteSubtask(subtask, from: ticket) }
+          deletingSubtask = nil
+        }
+        Button("Cancel", role: .cancel) { deletingSubtask = nil }
+      } message: {
+        Text("The archived task context remains available for recovery.")
+      }
+      .confirmationDialog(
+        "Mark this agent complete?",
+        isPresented: Binding(
+          get: { completingAgent != nil }, set: { if !$0 { completingAgent = nil } }),
+        titleVisibility: .visible
+      ) {
+        Button("Mark agent complete") {
+          if let agent = completingAgent { model.overrideCompletion(agent, for: ticket) }
+          completingAgent = nil
+        }
+        Button("Cancel", role: .cancel) { completingAgent = nil }
+      } message: {
+        Text("This changes only the selected agent record.")
+      }
+      .confirmationDialog(
+        "Remove this agent?",
+        isPresented: Binding(
+          get: { removingAgent != nil }, set: { if !$0 { removingAgent = nil } }),
+        titleVisibility: .visible
+      ) {
+        Button("Remove agent", role: .destructive) {
+          if let agent = removingAgent { model.removeAgent(agent, from: ticket) }
+          removingAgent = nil
+        }
+        Button("Cancel", role: .cancel) { removingAgent = nil }
+      } message: {
+        Text("The subtask, conversation, and workspace history will be retained.")
+      }
       .draggable(ticket.id)
       .accessibilityHint("Drag this task between Today's focus and Rest of queue.")
   }
@@ -1659,57 +1832,53 @@ private struct TicketCard: View {
 
   private var agentControls: some View {
     VStack(alignment: .leading, spacing: 7) {
-      let activeSubtasks = model.subtasks(for: ticket.id).filter { $0.status != .completed }
-      let completedSubtasks = model.subtasks(for: ticket.id).filter { $0.status == .completed }
+      let subtasks = model.focusSubtasks(for: ticket.id)
+      let activeSubtasks = subtasks.filter { $0.status != .completed }
+      let completedSubtasks = subtasks.filter { $0.status == .completed }
+      let agents = model.visibleAgents(for: ticket.id)
 
-      ForEach(activeSubtasks) { subtask in
-        TaskSubtaskRow(ticket: ticket, subtask: subtask, model: model)
+      DisclosureGroup("Subtasks (\(activeSubtasks.count))", isExpanded: $showsSubtasks) {
+        ForEach(activeSubtasks) { subtask in subtaskRow(subtask) }
+        if activeSubtasks.isEmpty {
+          Text("No subtasks yet").font(.caption).foregroundStyle(.secondary)
+        }
+        if !completedSubtasks.isEmpty {
+          DisclosureGroup(
+            "Completed subtasks (\(completedSubtasks.count))",
+            isExpanded: $showsCompletedSubtasks
+          ) {
+            ForEach(completedSubtasks) { subtask in subtaskRow(subtask) }
+          }
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(.secondary)
+          .padding(.top, 4)
+        }
+        Button("New subtask", systemImage: "plus") {
+          newSubtaskTitle = ""
+          newSubtaskExplanation = ""
+          showsNewSubtask = true
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(ticket.isCompleted)
+        .help("Create a subtask before assigning an agent")
+        .padding(.top, 3)
       }
+      .font(.system(size: 12, weight: .semibold))
 
-      if !completedSubtasks.isEmpty {
-        DisclosureGroup(isExpanded: $showsCompletedSubtasks) {
-          VStack(spacing: 7) {
-            ForEach(completedSubtasks) { subtask in
-              TaskSubtaskRow(ticket: ticket, subtask: subtask, model: model)
-            }
-          }
-          .padding(.top, 7)
-        } label: {
-          HStack {
-            Label("Completed subtasks", systemImage: "archivebox")
-            Spacer()
-            Text("\(completedSubtasks.count)")
-              .font(.system(size: 11, weight: .semibold).monospacedDigit())
-              .foregroundStyle(.secondary)
-          }
-          .font(.system(size: 12, weight: .semibold))
+      Divider().opacity(0.45)
+
+      DisclosureGroup("Agents (\(agents.count))", isExpanded: $showsAgents) {
+        ForEach(agents) { agent in agentRow(agent) }
+        if agents.isEmpty {
+          Text("No active agents. Add one from a subtask menu.")
+            .font(.caption).foregroundStyle(.secondary)
+            .padding(.vertical, 4)
         }
-        .padding(.horizontal, 9).padding(.vertical, 7)
-        .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 10))
       }
-      HStack(spacing: 7) {
-        Button { showsNewAgent = true } label: {
-          if model.launchingTaskIDs.contains(ticket.id) {
-            HStack(spacing: 7) {
-              ProgressView().controlSize(.small)
-              Text("Starting agent…")
-            }
-          } else {
-            Label("New agent", systemImage: "plus")
-          }
-        }
-          .buttonStyle(.bordered)
-          .disabled(model.launchingTaskIDs.contains(ticket.id) || ticket.isCompleted)
-          .accessibilityLabel(
-            model.launchingTaskIDs.contains(ticket.id) ? "Starting a new agent" : "New agent"
-          )
-          .help("Create a named subtask and launch its agent in the task worktree")
-        Button("Manage agents", systemImage: "person.crop.circle.badge.checkmark") {
-          withAnimation(.easeInOut(duration: 0.18)) { showsAgentPicker.toggle() }
-        }.buttonStyle(.bordered).help("Review or clear Focus Queue managed agent sessions")
-          .accessibilityIdentifier("attach-agent-\(ticket.id)")
-        Spacer()
-      }
+      .font(.system(size: 12, weight: .semibold))
+      .accessibilityIdentifier("attach-agent-\(ticket.id)")
+
       if let message = model.actionMessages[ticket.id] {
         if model.agentSessionIssue(for: ticket.id) != nil {
           Label(message, systemImage: "exclamationmark.triangle.fill")
@@ -1762,15 +1931,15 @@ private struct TicketCard: View {
           .disabled(model.isQueueAgentResponding || model.isDailyReportRunning)
           .help("Change the task type. Opens the agent response so you can follow the result.")
         Spacer()
-        let subtasks = model.subtasks(for: ticket.id)
+        let subtasks = model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion)
         if !subtasks.isEmpty {
           Text("\(subtasks.filter { $0.status == .completed }.count)/\(subtasks.count) subtasks")
         } else { Text(ticket.progressLabel) }
       }.font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
       if ticket.isRecurringPullRequestTask {
         RecurringPRProgressSummary(progress: recurringProgress, error: recurringProgressError)
-      } else if !model.subtasks(for: ticket.id).isEmpty {
-        let subtasks = model.subtasks(for: ticket.id)
+      } else if !model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion).isEmpty {
+        let subtasks = model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion)
         ProgressView(value: Double(subtasks.filter { $0.status == .completed }.count), total: Double(subtasks.count))
           .accessibilityLabel("Subtask completion")
       } else if !ticket.steps.isEmpty {
@@ -1778,6 +1947,195 @@ private struct TicketCard: View {
           .accessibilityLabel("Task step completion")
       }
     }.padding(.horizontal, 14).padding(.bottom, 12)
+  }
+
+  private func subtaskRow(_ subtask: TaskSubtask) -> some View {
+    let isExpanded = expandedSubtaskIDs.contains(subtask.id)
+    let rawExplanation: String? = subtask.assignmentDescription.isEmpty
+      ? subtask.initialPrompt : subtask.assignmentDescription
+    let explanation = rawExplanation?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let agentCount = model.agents(for: subtask, ticketID: ticket.id).count
+    return VStack(alignment: .leading, spacing: 7) {
+      HStack(alignment: .top, spacing: 7) {
+        Button {
+          if isExpanded { expandedSubtaskIDs.remove(subtask.id) }
+          else { expandedSubtaskIDs.insert(subtask.id) }
+        } label: {
+          HStack(alignment: .top, spacing: 7) {
+            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+              .font(.system(size: 10, weight: .bold))
+              .foregroundStyle(.secondary)
+              .frame(width: 12, height: 18)
+            VStack(alignment: .leading, spacing: 3) {
+              Text(subtask.title)
+                .font(.system(size: 13, weight: .semibold))
+                .lineLimit(isExpanded ? nil : 2)
+                .fixedSize(horizontal: false, vertical: true)
+              Text("\(subtask.status.rawValue.capitalized) · \(agentCount) agent\(agentCount == 1 ? "" : "s")")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+            }
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(isExpanded ? "Collapse" : "Expand") subtask \(subtask.title)")
+
+        Menu {
+          Button("Edit title and explanation", systemImage: "pencil") {
+            editedSubtaskTitle = subtask.title
+            editedSubtaskExplanation = subtask.assignmentDescription.isEmpty
+              ? (subtask.initialPrompt ?? "") : subtask.assignmentDescription
+            editingSubtask = subtask
+          }
+          if subtask.status != .completed {
+            Button(agentCount == 0 ? "New agent" : "Add agent", systemImage: "person.badge.plus") {
+              agentTargetSubtask = subtask
+              newAgentIsBlank = false
+              showsNewAgent = true
+            }
+            Button("Review completion", systemImage: "checkmark.seal") {
+              model.requestSubtaskCompletion(subtask, for: ticket)
+            }
+            Button("Mark as complete…", systemImage: "checkmark.circle") {
+              completingSubtask = subtask
+            }
+          }
+          Divider()
+          Button("Delete subtask…", systemImage: "trash", role: .destructive) {
+            deletingSubtask = subtask
+          }
+        } label: {
+          Image(systemName: "ellipsis.circle")
+            .font(.system(size: 17, weight: .semibold))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .minimumHitTarget()
+        .accessibilityLabel("More options for subtask \(subtask.title)")
+        .help("Edit, complete, assign an agent, or delete this subtask")
+      }
+
+      if isExpanded {
+        if let explanation, !explanation.isEmpty, explanation != subtask.title {
+          Text(explanation)
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
+        } else {
+          Text("No explanation added.")
+            .font(.system(size: 11))
+            .foregroundStyle(.tertiary)
+        }
+        if subtask.status != .completed {
+          Button(agentCount == 0 ? "New agent" : "Add agent", systemImage: "person.badge.plus") {
+            agentTargetSubtask = subtask
+            newAgentIsBlank = false
+            showsNewAgent = true
+          }
+          .buttonStyle(.bordered)
+          .controlSize(.small)
+          .disabled(model.launchingTaskIDs.contains(ticket.id) || ticket.isCompleted)
+        }
+      }
+    }
+    .padding(9)
+    .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 9))
+    .padding(.vertical, 2)
+  }
+
+  private func agentRow(_ agent: TaskSubtask) -> some View {
+    let isOpening = model.isOpening(agent, ticketID: ticket.id)
+    let assignment = model.focusSubtasks(for: ticket.id).first {
+      $0.id == agent.parentSubtaskID || model.agents(for: $0, ticketID: ticket.id).contains(where: { $0.id == agent.id })
+    }
+    return HStack(spacing: 7) {
+      Button { model.openSubtask(agent, for: ticket) } label: {
+        HStack(alignment: .top, spacing: 8) {
+          if isOpening {
+            ProgressView().controlSize(.mini).frame(width: 20, height: 20)
+          } else {
+            Image(systemName: "terminal")
+              .frame(width: 20, height: 20)
+              .foregroundStyle(.secondary)
+          }
+          VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 5) {
+              Text("\(agent.provider.displayName) · \(agent.sessionID.map { String($0.suffix(6)) } ?? String(agent.id.suffix(6)))")
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+              Spacer(minLength: 3)
+              AgentStatusIndicator(
+                status: model.effectiveStatus(for: agent),
+                hasUnreadCompletion: agent.completionUnread,
+                isOpening: isOpening,
+                issue: model.agentSessionError(for: agent, ticketID: ticket.id),
+                attention: agent.attention)
+            }
+            Text(agent.title)
+              .font(.system(size: 11, weight: .medium))
+              .lineLimit(2)
+            if let assignment, assignment.title != agent.title {
+              Text("Subtask: \(assignment.title)")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            }
+            Text(agent.progressSummary.isEmpty ? "Awaiting first update" : agent.progressSummary)
+              .font(.system(size: 10))
+              .foregroundStyle(.secondary)
+              .lineLimit(2)
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .disabled(isOpening)
+      .accessibilityLabel(
+        isOpening
+          ? "Finding and opening \(agent.title)"
+          : "Open \(agent.title), \(agent.attention?.label ?? model.effectiveStatus(for: agent).rawValue)"
+      )
+      .help("Focus or resume this agent in its saved workspace")
+
+      Menu {
+        Button("Open agent", systemImage: "terminal") {
+          model.openSubtask(agent, for: ticket)
+        }
+        .disabled(isOpening)
+        Button("Rename agent", systemImage: "pencil") {
+          agentName = agent.title
+          renamingAgent = agent
+        }
+        if agent.status != .completed {
+          Button("Mark as complete…", systemImage: "checkmark.circle") {
+            completingAgent = agent
+          }
+        }
+        Button("View deployment logs", systemImage: "doc.text.magnifyingglass") {
+          model.openLaunchDiagnostics(for: agent)
+        }
+        .disabled(!model.hasLaunchDiagnostics(for: agent))
+        Divider()
+        Button("Remove agent…", systemImage: "trash", role: .destructive) {
+          removingAgent = agent
+        }
+      } label: {
+        Image(systemName: "ellipsis.circle")
+          .font(.system(size: 17, weight: .semibold))
+      }
+      .menuStyle(.borderlessButton)
+      .fixedSize()
+      .minimumHitTarget()
+      .accessibilityLabel("More options for agent \(agent.title)")
+      .help("Open, rename, complete, inspect, or remove this agent")
+    }
+    .padding(9)
+    .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
+    .padding(.vertical, 2)
   }
 
   private var details: some View {
@@ -1796,6 +2154,25 @@ private struct TicketCard: View {
       if let next = ticket.next, !next.isEmpty { DetailBlock(title: "Next", text: next) }
       if let doneWhen = ticket.doneWhen, !doneWhen.isEmpty {
         DetailBlock(title: "Done when", text: doneWhen)
+      }
+
+      DisclosureGroup("Subtask history") {
+        ForEach(model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion)) { subtask in
+          VStack(alignment: .leading, spacing: 5) {
+            Text("\(subtask.title) · \(subtask.status.rawValue)")
+            if let workspace = subtask.workspace {
+              Text("\(workspace.path) · \(workspace.branch ?? "unknown branch")").font(.caption).textSelection(.enabled)
+            }
+            if subtask.status != .completed {
+              HStack {
+                if !subtask.isAssignmentOnly {
+                  Button("Open agent") { model.openSubtask(subtask, for: ticket) }
+                }
+                Button("Override: mark complete") { model.overrideCompletion(subtask, for: ticket) }
+              }
+            }
+          }.padding(.vertical, 4)
+        }
       }
 
       if !ticket.steps.isEmpty {
@@ -1929,224 +2306,12 @@ private struct TicketCard: View {
   }
 }
 
-private struct TaskSubtaskRow: View {
-  let ticket: DashboardTicket
-  let subtask: TaskSubtask
-  let model: QueueViewModel
-  var showsTicketIdentity = false
-
-  @State private var isExpanded = false
-  @State private var showsCompletionConfirmation = false
-  @State private var showsRemovalConfirmation = false
-  @State private var showsEditDialog = false
-  @State private var editedTitle = ""
-  @State private var editedDescription = ""
-  @Environment(\.queueAccentStyle) private var accentStyle
-
-  private var isOpening: Bool { model.isOpening(subtask, ticketID: ticket.id) }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Button {
-        withAnimation(.easeInOut(duration: 0.16)) { isExpanded.toggle() }
-      } label: {
-        HStack(alignment: .top, spacing: 8) {
-          Image(systemName: subtask.status == .completed ? "archivebox.fill" : "terminal")
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .frame(width: 20, height: 20)
-            .accessibilityHidden(true)
-          VStack(alignment: .leading, spacing: 3) {
-            if showsTicketIdentity {
-              Text(ticket.id).font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundStyle(.secondary)
-            }
-            Text(subtask.title)
-              .font(.system(size: 12, weight: .semibold))
-              .lineLimit(isExpanded ? nil : 1)
-              .fixedSize(horizontal: false, vertical: isExpanded)
-            if !isExpanded {
-              Text(collapsedDetail)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            }
-          }
-          .frame(maxWidth: .infinity, alignment: .leading)
-          AgentStatusIndicator(
-            status: model.effectiveStatus(for: subtask),
-            hasUnreadCompletion: subtask.completionUnread,
-            isOpening: isOpening,
-            issue: model.agentSessionError(for: subtask, ticketID: ticket.id)
-          )
-          Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-            .font(.system(size: 10, weight: .bold))
-            .foregroundStyle(.secondary)
-            .frame(width: 14, height: 20)
-            .accessibilityHidden(true)
-        }
-        .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel("\(isExpanded ? "Collapse" : "Expand") subtask \(subtask.title)")
-      .accessibilityHint("Shows the full assignment, explanation, and latest agent update.")
-
-      if isExpanded {
-        VStack(alignment: .leading, spacing: 7) {
-          if !subtask.assignmentDescription.isEmpty {
-            subtaskDetail(label: "Explanation", text: subtask.assignmentDescription)
-          }
-          if !subtask.progressSummary.isEmpty {
-            subtaskDetail(label: "Latest update", text: subtask.progressSummary)
-          } else {
-            subtaskDetail(label: "Latest update", text: "Awaiting the first agent update.")
-          }
-          if let issue = model.agentSessionError(for: subtask, ticketID: ticket.id) {
-            Label(issue, systemImage: "exclamationmark.triangle.fill")
-              .font(.system(size: 11))
-              .foregroundStyle(QueueAccentPalette.color(.danger, style: accentStyle))
-              .fixedSize(horizontal: false, vertical: true)
-          }
-          if let heartbeat = subtask.lastHeartbeatAt {
-            Text("Last reported \(heartbeat.formatted(date: .abbreviated, time: .shortened))")
-              .font(.system(size: 10))
-              .foregroundStyle(.secondary)
-          }
-        }
-        .padding(.leading, 28)
-        .transition(.opacity.combined(with: .move(edge: .top)))
-      }
-
-      HStack(spacing: 6) {
-        Button { model.openSubtask(subtask, for: ticket) } label: {
-          if isOpening {
-            HStack(spacing: 6) {
-              ProgressView().controlSize(.small)
-              Text("Finding session…")
-            }
-          } else {
-            Label("Open agent", systemImage: "terminal")
-          }
-        }
-        .buttonStyle(.bordered)
-        .disabled(isOpening)
-        .minimumHitTarget()
-        .help("Open the exact saved session for \(subtask.title)")
-        .accessibilityLabel(
-          isOpening ? "Finding and opening \(subtask.title)" : "Open agent \(subtask.title)"
-        )
-
-        Spacer(minLength: 0)
-
-        Menu {
-          Button("Open agent", systemImage: "terminal") {
-            model.openSubtask(subtask, for: ticket)
-          }
-          .disabled(isOpening)
-
-          Button("Edit title and explanation", systemImage: "pencil") {
-            editedTitle = subtask.title
-            editedDescription = subtask.assignmentDescription
-            showsEditDialog = true
-          }
-
-          if subtask.status != .completed {
-            Button("Mark as complete…", systemImage: "checkmark.circle") {
-              showsCompletionConfirmation = true
-            }
-          }
-
-          Button("View agent deployment logs", systemImage: "doc.text.magnifyingglass") {
-            model.openLaunchDiagnostics(for: subtask)
-          }
-          .disabled(!model.hasLaunchDiagnostics(for: subtask))
-
-          Divider()
-
-          Button("Delete subtask…", systemImage: "trash", role: .destructive) {
-            showsRemovalConfirmation = true
-          }
-        } label: {
-          Image(systemName: "ellipsis.circle")
-            .font(.system(size: 17, weight: .semibold))
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .minimumHitTarget()
-        .accessibilityLabel("More actions for \(subtask.title)")
-        .help("Rename, verify completion, view deployment logs, or delete this subtask")
-      }
-      .controlSize(.small)
-    }
-    .padding(9)
-    .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
-    .overlay {
-      RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.06), lineWidth: 1)
-    }
-    .accessibilityElement(children: .contain)
-    .alert("Edit subtask", isPresented: $showsEditDialog) {
-      TextField("Subtask title", text: $editedTitle)
-      TextField("Optional explanation", text: $editedDescription)
-      Button("Save") {
-        model.renameSubtask(
-          subtask, for: ticket, title: editedTitle,
-          assignmentDescription: editedDescription)
-      }
-      .disabled(editedTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("The full title and explanation appear when this subtask is expanded.")
-    }
-    .confirmationDialog(
-      "Mark \(subtask.title) as complete?",
-      isPresented: $showsCompletionConfirmation,
-      titleVisibility: .visible
-    ) {
-      Button("Request verified completion") {
-        model.requestSubtaskCompletion(subtask, for: ticket)
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("Focus Queue will verify the evidence before recording and archiving completion.")
-    }
-    .confirmationDialog(
-      "Delete \(subtask.title)?",
-      isPresented: $showsRemovalConfirmation,
-      titleVisibility: .visible
-    ) {
-      Button("Delete subtask", role: .destructive) {
-        model.removeSubtask(subtask, from: ticket)
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("This removes the subtask after retaining an archive snapshot. It does not terminate a running process.")
-    }
-  }
-
-  private var collapsedDetail: String {
-    if !subtask.assignmentDescription.isEmpty { return subtask.assignmentDescription }
-    if !subtask.progressSummary.isEmpty { return subtask.progressSummary }
-    return "\(subtask.provider.displayName) · Awaiting update"
-  }
-
-  private func subtaskDetail(label: String, text: String) -> some View {
-    VStack(alignment: .leading, spacing: 2) {
-      Text(label.uppercased())
-        .font(.system(size: 9, weight: .bold, design: .monospaced))
-        .foregroundStyle(.secondary)
-      Text(text)
-        .font(.system(size: 11))
-        .fixedSize(horizontal: false, vertical: true)
-        .textSelection(.enabled)
-    }
-  }
-}
-
 private struct AgentStatusIndicator: View {
   let status: TaskSubtaskStatus
   let hasUnreadCompletion: Bool
   let isOpening: Bool
   let issue: String?
+  var attention: AgentAttention? = nil
 
   @Environment(\.queueAccentStyle) private var accentStyle
 
@@ -2171,7 +2336,10 @@ private struct AgentStatusIndicator: View {
 
   private var label: String {
     if isOpening { return "Opening" }
-    if issue != nil || status == .blocked { return "Issue" }
+    if issue != nil { return "Problem" }
+    if let attention { return attention.label }
+    if status == .blocked { return "Problem" }
+    if hasUnreadCompletion && status != .completed { return "New result" }
     switch status {
     case .working: return "Working"
     case .completed: return hasUnreadCompletion ? "Done · New" : "Done · Seen"
@@ -2182,7 +2350,9 @@ private struct AgentStatusIndicator: View {
   }
 
   private var icon: String {
-    if issue != nil || status == .blocked { return "exclamationmark.circle.fill" }
+    if issue != nil { return "exclamationmark.circle.fill" }
+    if let attention { return attention.icon }
+    if status == .blocked { return "exclamationmark.circle.fill" }
     switch status {
     case .working: return "circle.fill"
     case .completed: return hasUnreadCompletion ? "checkmark.circle.fill" : "checkmark.circle"
@@ -2194,9 +2364,12 @@ private struct AgentStatusIndicator: View {
 
   private var color: Color {
     if isOpening { return QueueAccentPalette.color(.info, style: accentStyle) }
-    if issue != nil || status == .blocked {
+    if issue != nil || attention?.isProblem == true {
       return QueueAccentPalette.color(.danger, style: accentStyle)
     }
+    if attention != nil { return QueueAccentPalette.color(.warning, style: accentStyle) }
+    if hasUnreadCompletion { return QueueAccentPalette.color(.success, style: accentStyle) }
+    if status == .blocked { return QueueAccentPalette.color(.danger, style: accentStyle) }
     switch status {
     case .working: return QueueAccentPalette.color(.warning, style: accentStyle)
     case .completed:
@@ -2404,24 +2577,10 @@ private struct AgentSessionPicker: View {
   let model: QueueViewModel
   let onClose: () -> Void
 
-  @State private var removalTarget: AgentRemovalTarget?
+  @State private var confirmingClear = false
 
   private var attachedAgents: [TaskAgentSession] {
-    let subtasks = model.subtasks(for: ticket.id)
-    var sessions = model.agentSessions(for: ticket.id).filter { session in
-      guard let subtaskID = session.subtaskID,
-        let subtask = subtasks.first(where: { $0.id == subtaskID }),
-        let runtime = subtask.tmux
-      else { return false }
-      return session.tmux == runtime && session.provider == subtask.provider
-    }
-    for subtask in subtasks {
-      if let session = model.session(for: subtask, ticketID: ticket.id),
-         !sessions.contains(where: { $0.provider == session.provider && $0.sessionID.caseInsensitiveCompare(session.sessionID) == .orderedSame }) {
-        sessions.append(session)
-      }
-    }
-    return sessions
+    model.visibleAgents(for: ticket.id).compactMap { model.session(for: $0, ticketID: ticket.id) }
   }
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -2434,9 +2593,9 @@ private struct AgentSessionPicker: View {
             .font(.system(size: 12)).foregroundStyle(.secondary)
         }
         Spacer()
-        Button("Remove all") { removalTarget = .all }
+        Button("Remove all") { confirmingClear = true }
           .buttonStyle(.bordered).controlSize(.small)
-          .help("Remove this task's current agent entries after retaining their history")
+          .help("Remove current agents while retaining their subtasks and history")
         Button {
           onClose()
         } label: {
@@ -2466,31 +2625,13 @@ private struct AgentSessionPicker: View {
       .overlay {
         RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.08), lineWidth: 1)
       }
-      .confirmationDialog(
-        removalTitle,
-        isPresented: Binding(
-          get: { removalTarget != nil },
-          set: { if !$0 { removalTarget = nil } }
-        ),
-        titleVisibility: .visible
-      ) {
-        switch removalTarget {
-        case .all:
-          Button("Remove all agents from this task", role: .destructive) {
-            model.clearAgentQueue(for: ticket)
-            removalTarget = nil
-            onClose()
-          }
-        case .session(let session):
-          Button("Remove agent session", role: .destructive) {
-            model.removeAgent(session, from: ticket)
-            removalTarget = nil
-          }
-        case nil:
-          EmptyView()
+      .confirmationDialog("Remove every agent from \(ticket.id)?", isPresented: $confirmingClear, titleVisibility: .visible) {
+        Button("Remove all agents from this task", role: .destructive) {
+          model.clearAgentQueue(for: ticket)
+          onClose()
         }
       } message: {
-        Text(removalMessage)
+        Text("This removes current agents and closes verified runtimes. Subtasks, conversations, and workspace history are retained.")
       }
   }
 
@@ -2526,16 +2667,10 @@ private struct AgentSessionPicker: View {
             : "View \(session.provider.displayName) agent, \(session.tabTitle), session \(session.sessionID)"
         )
 
-      Button(role: .destructive) {
-        removalTarget = .session(session)
-      } label: {
-        Image(systemName: "trash")
-          .font(.system(size: 13, weight: .semibold))
-      }
-        .buttonStyle(.plain)
-        .minimumHitTarget()
-        .accessibilityLabel("Remove session \(session.sessionID)")
-        .accessibilityHint("Asks for confirmation before removing this agent from the task")
+      Button { model.removeAgent(session, from: ticket) } label: {
+        Image(systemName: "trash").font(.system(size: 13, weight: .semibold))
+      }.buttonStyle(.plain).minimumHitTarget()
+        .accessibilityLabel("Remove agent \(session.tabTitle)")
         .help("Remove this agent from the task")
     }.padding(.horizontal, 10).padding(.vertical, 8)
       .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 10))
@@ -2545,30 +2680,7 @@ private struct AgentSessionPicker: View {
     path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
   }
 
-  private var removalTitle: String {
-    switch removalTarget {
-    case .all: "Remove every agent from \(ticket.id)?"
-    case .session(let session): "Remove \(session.tabTitle)?"
-    case nil: "Remove agent?"
-    }
-  }
-
-  private var removalMessage: String {
-    switch removalTarget {
-    case .all:
-      "This retains their history and does not terminate running processes. Agents on other tasks stay in the queue."
-    case .session:
-      "This removes the session association from the task. It does not terminate the running process."
-    case nil:
-      "The agent entry will stay unchanged."
-    }
-  }
-}
-
-private enum AgentRemovalTarget {
-  case all
-  case session(TaskAgentSession)
-}
+ }
 
 private struct DetailLabel: View {
   let text: String

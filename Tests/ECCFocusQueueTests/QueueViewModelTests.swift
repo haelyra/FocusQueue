@@ -8,6 +8,61 @@ import FocusQueueCore
 @Suite("Queue app state integration")
 @MainActor
 struct QueueViewModelTests {
+  @Test("Subtasks can exist without agents and retain their own explanation")
+  func standaloneSubtaskCreation() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+
+    model.createSubtask(
+      for: fixture.tickets[0], title: "Review the session list",
+      explanation: "Clarify which agents are active before assigning one.")
+
+    try await eventually { model.focusSubtasks(for: "ECC-101").count == 1 }
+    let subtask = try #require(model.focusSubtasks(for: "ECC-101").first)
+    #expect(subtask.isAssignmentOnly)
+    #expect(subtask.assignmentDescription == "Clarify which agents are active before assigning one.")
+    #expect(model.agents(for: subtask, ticketID: "ECC-101").isEmpty)
+    #expect(model.visibleAgents(for: "ECC-101").isEmpty)
+  }
+
+  @Test("New subtask agents and additional agents preserve independent assignments and workspaces")
+  func nestedAgentLaunch() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let repository = fixture.root.appendingPathComponent("repo")
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    let git = FoundationProcessRunner()
+    for arguments in [["init", "-q"], ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+      "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Fixture", "--allow-empty"]] {
+      #expect(try await git.run(.init(executable: "/usr/bin/git", arguments: arguments, workingDirectory: repository.path)).succeeded)
+    }
+    let launcher = DirectCreationRunner()
+    let model = await fixture.model(agent: ControlledQueueAgent(), terminalController: DirectViewRecorder(root: fixture.root, failReveal: false),
+      taskAgentLauncher: TaskAgentLauncher(runner: launcher, candidateSockets: []))
+    model.launchAgent(for: fixture.tickets[0], title: "New work", provider: .codex,
+      repositoryPath: repository.path, includePrompt: false, useTmux: false, createWorktree: false,
+      initialPrompt: "Do the requested work", subtaskID: "first-agent", createAssignment: true)
+    try await eventually { model.launchingTaskIDs.isEmpty }
+    let assignment = try #require(model.focusSubtasks(for: "ECC-101").first)
+    #expect(assignment.isAssignmentOnly)
+    #expect(assignment.tracksCompletion)
+    #expect(assignment.status == .working)
+    #expect(assignment.workspace?.path == repository.path)
+    #expect(model.agents(for: assignment, ticketID: "ECC-101").map(\.id) == ["first-agent"])
+    model.launchAgent(for: fixture.tickets[0], title: "Second worker", provider: .claude,
+      repositoryPath: repository.path, includePrompt: false, useTmux: false, createWorktree: false,
+      subtaskID: "second-agent", parentSubtaskID: assignment.id)
+    try await eventually { model.launchingTaskIDs.isEmpty }
+    #expect(model.focusSubtasks(for: "ECC-101").count == 1)
+    #expect(model.agents(for: assignment, ticketID: "ECC-101").count == 2)
+    let first = try #require(model.subtasks(for: "ECC-101").first { $0.id == "first-agent" })
+    model.removeAgent(first, from: fixture.tickets[0])
+    try await eventually { model.subtasks(for: "ECC-101").first { $0.id == first.id }?.agentRemovedAt != nil }
+    #expect(model.focusSubtasks(for: "ECC-101").count == 1)
+    #expect(model.agents(for: assignment, ticketID: "ECC-101").map(\.id) == ["second-agent"])
+  }
+
   @Test("Direct launch persists its pane before revealing it and keeps it on reveal failure", arguments: [false, true])
   func directLaunchRevealsSavedPane(failReveal: Bool) async throws {
     let fixture = try await Fixture()
@@ -641,8 +696,9 @@ struct QueueViewModelTests {
     #expect(recovered.tmux == runtime)
     #expect(model.session(for: subtask, ticketID: "ECC-102") == nil)
     model.removeAgent(recovered, from: fixture.tickets[0])
-    try await eventually { model.subtasks(for: "ECC-101").first?.sessionID == nil }
-    #expect(model.session(for: subtask, ticketID: "ECC-101") == nil)
+    try await eventually { model.subtasks(for: "ECC-101").first?.agentRemovedAt != nil }
+    #expect(model.subtasks(for: "ECC-101").first?.sessionID == uuid)
+    #expect(model.visibleAgents(for: "ECC-101").isEmpty)
     #expect(model.subtasks(for: "ECC-101").first?.title == "Review session ownership")
   }
 
@@ -655,7 +711,8 @@ struct QueueViewModelTests {
     let sessionID = UUID().uuidString
     _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: TaskSubtask(
       id: "window-finder", title: "Find the exact agent window", provider: .codex,
-      sessionID: sessionID, status: .working, lastHeartbeatAt: Date()))
+      sessionID: sessionID, status: .working, lastHeartbeatAt: Date(),
+      tmux: try TmuxController.decode("fq-window-finder|123|1000|%0|124|/dev/ttys099|0\n", executable: "/mock/tmux").first))
     let terminal = HoldingRecallRecorder(fails: fails)
     let model = await fixture.model(agent: ControlledQueueAgent(), terminalController: terminal)
     let subtask = try #require(model.subtasks(for: "ECC-101").first)
@@ -685,7 +742,8 @@ struct QueueViewModelTests {
       _ = try await store.ensureContext(ticket: ticket)
       _ = try await store.upsertSubtask(ticketID: ticket.id, subtask: TaskSubtask(
         id: "worker", title: "Worker", sessionID: UUID().uuidString,
-        status: .working, lastHeartbeatAt: Date()))
+        status: .working, lastHeartbeatAt: Date(),
+        tmux: try TmuxController.decode("fq-worker|123|1000|%0|124|/dev/ttys099|0\n", executable: "/mock/tmux").first))
     }
     let terminal = HoldingRecallRecorder(fails: false)
     let model = await fixture.model(agent: ControlledQueueAgent(), terminalController: terminal)
@@ -721,8 +779,8 @@ struct QueueViewModelTests {
       LocalState(agentSessions: [firstSession, secondSession]))
     let model = await fixture.model(agent: ControlledQueueAgent())
 
-    model.removeSubtask(first, from: fixture.tickets[0])
-    try await eventually { model.subtasks(for: "ECC-101").isEmpty }
+    model.removeAgent(first, from: fixture.tickets[0])
+    try await eventually { model.visibleAgents(for: "ECC-101").isEmpty }
 
     #expect(model.agentSessions(for: "ECC-101").isEmpty)
     #expect(model.subtasks(for: "ECC-102").map(\.id) == ["second"])
@@ -750,7 +808,7 @@ struct QueueViewModelTests {
     let model = await fixture.model(agent: ControlledQueueAgent())
 
     model.clearAgentQueue(for: fixture.tickets[0])
-    try await eventually { model.subtasks(for: "ECC-101").isEmpty }
+    try await eventually { model.visibleAgents(for: "ECC-101").isEmpty }
 
     #expect(model.agentSessions(for: "ECC-101").isEmpty)
     #expect(model.subtasks(for: "ECC-102").map(\.id) == ["second"])
@@ -779,6 +837,87 @@ struct QueueViewModelTests {
     #expect(recalled.tmux == runtime)
     #expect(model.localState.agentSessions.first?.sessionID == session.sessionID)
     #expect(model.localState.agentSessions.first?.paneID == 42)
+  }
+
+  @Test("Override completes only the selected subtask and removes its agent without queuing parent review")
+  func manualOverride() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    let subtask = TaskSubtask(id: "accidental", title: "Undone assignment", status: .blocked)
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: subtask)
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    model.overrideCompletion(subtask, for: fixture.tickets[0])
+    try await eventually { model.subtasks(for: "ECC-101").first?.agentRemovedAt != nil }
+    #expect(model.subtasks(for: "ECC-101").first?.status == .completed)
+    #expect(model.visibleAgents(for: "ECC-101").isEmpty)
+    #expect(model.dashboard.tickets[0].isOpen)
+    try await Task.sleep(for: .milliseconds(2100))
+    await model.refresh()
+    #expect(model.localState.completionRequests.isEmpty)
+    #expect(model.dashboard.tickets[0].isOpen)
+  }
+
+  @Test("Completed agents disappear automatically while blank agents never drive parent completion")
+  func completedAndBlankAgents() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    var blank = TaskSubtask(id: "blank", title: "Interactive conversation", status: .completed)
+    blank.tracksCompletion = false
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: blank)
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(model.visibleAgents(for: "ECC-101").isEmpty)
+    #expect(model.subtasks(for: "ECC-101").first?.agentRemovedAt != nil)
+    #expect(model.localState.completionRequests.isEmpty)
+    #expect(model.dashboard.tickets[0].isOpen)
+  }
+
+  @Test("A closed direct agent resumes its saved conversation; transport failures never duplicate it", arguments: [false, true])
+  func directResume(transportFailure: Bool) async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let repository = fixture.root.appendingPathComponent("repo")
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    let git = FoundationProcessRunner()
+    for arguments in [["init", "-q", "-b", "feature"], ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+      "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Fixture", "--allow-empty"]] {
+      #expect(try await git.run(.init(executable: "/usr/bin/git", arguments: arguments, workingDirectory: repository.path)).succeeded)
+    }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    let identity = UUID().uuidString
+    var subtask = TaskSubtask(id: "resume-worker", title: "Existing conversation", sessionID: identity,
+      runtimeMode: .terminal, terminalPaneID: 7)
+    subtask.workspace = try await TaskWorktreeManager().workspace(at: repository.path)
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: subtask)
+    let launcher = DirectCreationRunner()
+    let terminal = ClosedDirectRecorder(transportFailure: transportFailure)
+    let model = await fixture.model(agent: ControlledQueueAgent(), terminalController: terminal,
+      taskAgentLauncher: TaskAgentLauncher(runner: launcher, candidateSockets: []))
+    var centered = 0
+    model.agentTerminalFocusHandler = { application, ticketID in
+      #expect(application == "WezTerm" && ticketID == "ECC-101")
+      centered += 1
+    }
+    model.openSubtask(subtask, for: fixture.tickets[0])
+    try await eventually { model.launchingTaskIDs.isEmpty }
+    #expect(centered == (transportFailure ? 0 : 1))
+    let commands = await launcher.commands
+    if transportFailure {
+      #expect(!commands.contains { $0.arguments.contains("spawn") })
+      #expect(model.subtasks(for: "ECC-101").first?.terminalPaneID == 7)
+    } else {
+      let spawn = try #require(commands.first(where: { $0.arguments.contains("spawn") }))
+      #expect(spawn.arguments.contains("resume"))
+      #expect(spawn.arguments.contains(identity))
+      #expect(spawn.arguments.contains(repository.path))
+      #expect(!spawn.arguments.contains { $0.contains("Work on ECC-101") })
+      #expect(model.subtasks(for: "ECC-101").first?.terminalPaneID == 42)
+      #expect(model.subtasks(for: "ECC-101").first?.sessionID == identity)
+    }
   }
 
   private func eventually(_ condition: @MainActor () async throws -> Bool) async throws {
@@ -849,7 +988,9 @@ private struct Fixture {
 
 private actor DirectCreationRunner: ProcessRunning {
   private(set) var spawnCount = 0
+  private(set) var commands: [ProcessSpecification] = []
   func run(_ specification: ProcessSpecification) throws -> ProcessResult {
+    commands.append(specification)
     if specification.arguments == ["cli", "list", "--format", "json"] {
       return .init(exitCode: 0, standardOutput: "[]", standardError: "", timedOut: false)
     }
@@ -877,8 +1018,9 @@ private actor DirectViewRecorder: WezTermControlling {
   func openDirectRuntime(paneID: Int, socketPath: String?, taskID: String,
     provider: AgentProvider, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     let context = try await TaskContextStore(root: root).load(ticketID: taskID)
-    #expect(context?.subtasks.first?.terminalPaneID == paneID)
-    #expect(context?.subtasks.first?.runtimeMode == .terminal)
+    let saved = context?.subtasks.first { $0.terminalPaneID == paneID && $0.provider == provider }
+    #expect(saved?.terminalPaneID == paneID)
+    #expect(saved?.runtimeMode == .terminal)
     opened = true
     if failReveal { throw WezTermError.actionFailed("Fixture window failure") }
     return .focused(paneID: paneID)
@@ -960,11 +1102,40 @@ private actor RecallRecorder: WezTermControlling {
   }
 }
 
+private actor ClosedDirectRecorder: WezTermControlling {
+  let transportFailure: Bool
+  init(transportFailure: Bool) { self.transportFailure = transportFailure }
+  func listAttachablePanes(configuration: WezTermConfiguration) async throws -> [WezTermPane] { [] }
+  func listRunningAgents(configuration: WezTermConfiguration) async throws -> [RunningAgentSession] { [] }
+  func attach(paneID: Int, tabTitle: String, windowTitle: String, configuration: WezTermConfiguration) async throws { }
+  func focusOrSpawn(directory: String, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    throw TestFailure.unexpectedExternalAction
+  }
+  func focusOrResume(session: TaskAgentSession, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    throw TestFailure.unexpectedExternalAction
+  }
+  func openDirectRuntime(paneID: Int, socketPath: String?, taskID: String, provider: AgentProvider,
+    configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    if paneID == 7 {
+      if transportFailure { throw WezTermError.actionFailed("Transport failed") }
+      throw WezTermError.runtimeClosed
+    }
+    return .focused(paneID: paneID)
+  }
+}
+
 private actor HoldingRecallRecorder: WezTermControlling {
   let fails: Bool
   private var released = false
 
   init(fails: Bool) { self.fails = fails }
+
+  func openManagedRuntime(_ saved: TmuxSessionReference, taskID: String, provider: AgentProvider,
+    configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    while !released { try await Task.sleep(for: .milliseconds(10)) }
+    if fails { throw WezTermError.actionFailed("Fixture session failure") }
+    return .focused(paneID: 42)
+  }
 
   func release() { released = true }
 

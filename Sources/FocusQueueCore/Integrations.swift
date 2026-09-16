@@ -244,6 +244,9 @@ public protocol WezTermControlling: Sendable {
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult
 
+    func openAgentRuntime(_ subtask: TaskSubtask, taskID: String,
+                          configuration: WezTermConfiguration) async throws -> TerminalActionResult
+
     func openDirectRuntime(
         paneID: Int,
         socketPath: String?,
@@ -254,6 +257,16 @@ public protocol WezTermControlling: Sendable {
 }
 
 public extension WezTermControlling {
+    func openAgentRuntime(_ subtask: TaskSubtask, taskID: String,
+                          configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+        if let tmux = subtask.tmux {
+            return try await openManagedRuntime(tmux, taskID: taskID, provider: subtask.provider, configuration: configuration)
+        }
+        guard let paneID = subtask.terminalPaneID else { throw WezTermError.runtimeClosed }
+        return try await openDirectRuntime(paneID: paneID, socketPath: subtask.terminalSocketPath,
+            taskID: taskID, provider: subtask.provider, configuration: configuration)
+    }
+
     func focusPane(_ pane: WezTermPane, configuration: WezTermConfiguration) async throws {
         throw WezTermError.actionFailed("This terminal integration does not support browsing panes.")
     }
@@ -281,9 +294,11 @@ public extension WezTermControlling {
 public enum WezTermError: Error, LocalizedError {
     case invalidList(String)
     case actionFailed(String)
+    case runtimeClosed
 
     public var errorDescription: String? {
         switch self {
+        case .runtimeClosed: "The saved terminal has closed. Reopen the agent to resume its conversation."
         case .invalidList(let detail):
             "Could not read WezTerm panes: \(detail)"
         case .actionFailed(let detail):
@@ -486,12 +501,29 @@ public actor WezTermController: WezTermControlling {
             tmux, taskID: taskID, provider: session.provider, configuration: configuration)
     }
 
+    public func openAgentRuntime(_ subtask: TaskSubtask, taskID: String,
+                                 configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+        let title = subtask.sessionID.map { AgentTerminalLabels.tabTitle(ticketID: taskID, provider: subtask.provider, sessionID: $0) }
+        if let tmux = subtask.tmux {
+            return try await openManagedRuntime(tmux, taskID: taskID, provider: subtask.provider,
+                configuration: configuration, tabTitle: title)
+        }
+        guard let paneID = subtask.terminalPaneID else { throw WezTermError.runtimeClosed }
+        return try await openDirectRuntime(paneID: paneID, socketPath: subtask.terminalSocketPath,
+            taskID: taskID, provider: subtask.provider, configuration: configuration, tabTitle: title)
+    }
+
     public func openManagedRuntime(
         _ saved: TmuxSessionReference,
         taskID: String,
         provider: AgentProvider,
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult {
+        try await openManagedRuntime(saved, taskID: taskID, provider: provider, configuration: configuration, tabTitle: nil)
+    }
+
+    private func openManagedRuntime(_ saved: TmuxSessionReference, taskID: String, provider: AgentProvider,
+                                    configuration: WezTermConfiguration, tabTitle: String?) async throws -> TerminalActionResult {
         let runtime = TmuxController(runner: runner)
         let live = try await runtime.verify(saved)
 
@@ -523,7 +555,7 @@ public actor WezTermController: WezTermControlling {
         let pinned = connection.configuration
         let panes = try Self.decodePanes(from: connection.result)
         let clients = try await runtime.clientTTYs(for: live)
-        let tabTitle = "\(taskID.uppercased()) · \(provider.displayName) · managed"
+        let tabTitle = tabTitle ?? "\(taskID.uppercased()) · \(provider.displayName) · managed"
         if let pane = panes.first(where: { $0.ttyName.map(clients.contains) == true }) {
             try await focus(
                 pane: pane, tabTitle: tabTitle, windowTitle: taskID.uppercased(),
@@ -563,6 +595,12 @@ public actor WezTermController: WezTermControlling {
         provider: AgentProvider,
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult {
+        try await openDirectRuntime(paneID: paneID, socketPath: socketPath, taskID: taskID,
+            provider: provider, configuration: configuration, tabTitle: nil)
+    }
+
+    private func openDirectRuntime(paneID: Int, socketPath: String?, taskID: String, provider: AgentProvider,
+                                   configuration: WezTermConfiguration, tabTitle: String?) async throws -> TerminalActionResult {
         guard paneID >= 0 else {
             throw WezTermError.actionFailed("The saved direct terminal identity is invalid.")
         }
@@ -571,21 +609,22 @@ public actor WezTermController: WezTermControlling {
         let connection = try await WezTermConnection.resolve(
             configuration: requested, runner: runner, candidateSockets: candidateSockets)
         guard connection.result.succeeded else {
-            throw WezTermError.actionFailed(
-                "The direct terminal session is no longer available. Start a new agent or use tmux next time.")
+            if !connection.result.timedOut,
+               ["Connection refused", "No such file or directory", "no running GUI"].contains(where: connection.result.standardError.contains) {
+                throw WezTermError.runtimeClosed
+            }
+            throw WezTermError.actionFailed("Could not inspect the saved terminal connection. Retry when WezTerm is available.")
         }
         if let socketPath, connection.configuration.socketPath != socketPath {
-            throw WezTermError.actionFailed(
-                "The saved terminal connection is no longer available. Start a new agent or use tmux next time.")
+            throw WezTermError.runtimeClosed
         }
         let pane = try Self.decodePanes(from: connection.result).first { $0.paneID == paneID }
         guard let pane else {
-            throw WezTermError.actionFailed(
-                "The direct terminal session has closed. Start a new agent or use tmux next time.")
+            throw WezTermError.runtimeClosed
         }
         try await focus(
             pane: pane,
-            tabTitle: "\(taskID.uppercased()) · \(provider.displayName) · direct",
+            tabTitle: tabTitle ?? "\(taskID.uppercased()) · \(provider.displayName) · direct",
             windowTitle: taskID.uppercased(), configuration: connection.configuration)
         return .focused(paneID: paneID)
     }
@@ -1180,7 +1219,8 @@ public actor CodexCompletionVerifier: CompletionVerifying {
         let prompt = """
         Review completion intent for ticket \(ticketID).
         The local request record is at \(requestFile.path).
-        Re-read the workspace instructions, canonical dashboard, repository evidence, PR state, and the ticket's doneWhen field yourself. Do not trust the checkbox as completion evidence. Update canonical state only if the normal workspace rules permit it, and never mark a ticket resolved while any resolutionPrs entry is unmerged. Return a concise verdict with remaining work or evidence accepted. Do not inspect or transmit unrelated private notes.
+        Read the request first. Lead your response with one short sentence stating the specific missing evidence or accepted result, then details. Do not lead with "Completion rejected", a subtask UUID, or a generic verdict.
+        Re-read the workspace instructions and repository evidence. Do not trust the checkbox as completion evidence. For parent task closure only, read the canonical dashboard, PR state, and doneWhen; never resolve a parent while resolutionPrs is unmerged. For subtask closure, assess only that assignment and its recorded changes and checks. Do not require the entire parent's success criteria, merged PRs, or unrelated work to accept a subtask. A user-requested undo or cancellation is a valid completed assignment when verified. Do not require live UI automation where workspace instructions prohibit it; explain any remaining manual check concisely. Do not inspect or transmit unrelated private notes.
         The request may contain contextPath and subtaskID. Read the central plan and context.json in contextPath when present. If subtaskID is present, review only that named subtask; do not close the parent task. After checks actually pass, run focus-queue-session complete <ticketID> <subtaskID> "concise evidence and checks" using the request's actual identifiers. On disagreement, leave the subtask open and explain the missing evidence. For parent completion, require all subtasks completed. Preserve worktrees and branches: the host archives context and performs guarded cleanup after canonical completion. Never force-remove, reset, or merge branches as part of this review.
         """
         try files.write(Data(prompt.utf8), to: promptURL)
@@ -1360,6 +1400,15 @@ public enum QueueAgentError: Error, LocalizedError {
 
 public actor CodexQueueAgent: QueueAgentChatting {
     public static let sessionName = "ecc-focus-queue-codex-v1"
+    /// Document requests use separate harness lock/state directories, so a
+    /// hidden central conversation cannot serialize or time out a document chat.
+    public static func documentRuntimeArguments(_ configuration: VerifierConfiguration) -> [String] {
+        guard configuration.sessionName.range(of: #"^ecc-focus-queue-task-[A-Za-z0-9_-]+-document-[a-f0-9]{16}$"#, options: .regularExpression) != nil,
+              let context = configuration.contextDirectory else { return [] }
+        let directory = URL(fileURLWithPath: context).appendingPathComponent("document-agents")
+            .appendingPathComponent(String(configuration.sessionName.suffix(16)))
+        return ["--runtime", directory.path]
+    }
     private static let errorLogURL = URL(
         fileURLWithPath: "/Users/hira/Library/Application Support/ECC Focus Queue/queue-chat.last-error.log"
     )
@@ -1459,7 +1508,7 @@ public actor CodexQueueAgent: QueueAgentChatting {
         )
         let result = try await runner.run(ProcessSpecification(
             executable: configuration.executable,
-            arguments: [
+            arguments: Self.documentRuntimeArguments(configuration) + [
                 "chat",
                 "--session", configuration.sessionName.hasPrefix("ecc-focus-queue-task-")
                     ? configuration.sessionName : Self.sessionName,
@@ -1808,6 +1857,8 @@ public actor CodexQueueAgent: QueueAgentChatting {
         Answer clarifying questions from the dashboard and workspace. On explicit request, you may create a task with a unique ID using the existing schema, clarify task fields including taskType and doneWhen, add links, or update a task's central plan. Edit the canonical dashboard only when the user's message directly and unambiguously requests that exact change. Preserve the dashboard schema and existing ticket IDs. Do not resolve, cancel, or invent completion evidence. Do not turn a disagreement with local order into a canonical priority change unless the user explicitly asks for that canonical change. Keep the response concise and state any file change you made.
 
         Every task has durable context under the Focus Queue support directory's tasks/<ticket-id>/ folder. When the user message includes a Task scope and central plan path, restrict the turn to that task and read its plan before proposing changes. Keep one central plan as the source of truth and link supporting canvases from it. Persist decisions, success criteria, progress, checks, and next actions concisely. Use focus-queue-session context <ticket-id> to read context and the helper's add/rename/progress/complete commands for subtask state instead of overwriting context.json. The helper defaults to the standard support directory; use FOCUS_QUEUE_SUPPORT_DIR when provided. Only record completed after evidence has been verified. Task types are task, long-running, subtask, and customer-concern. A customer concern needs the user's response/review before closure. Never send external messages without an explicit request. Worktree merging requires the task's explicit approval terms; leave cleanup to the host.
+
+        Subtasks are assignments, and agents are separately linked runtime records. New runtime records have parentSubtaskID; isAssignmentOnly records never identify a terminal. A single provider conversation may be associated with additional assignments using focus-queue-session associate <ticket-id> <agent-record-id> <subtask-id>. At review boundaries the host combines assignments handled by the same provider conversation and retains mergedIntoSubtaskID aliases, launch locations, and history. Read the refreshed context and reflect combined scope in the central plan when reviewing it. Keep provider session IDs and workspace paths on their own agent records. Never copy one agent's runtime into another assignment. Progress/result/attention reports describe agent activity; a finished response alone does not complete its assignment.
 
         Truth is a hard operational invariant. Never claim or imply that you checked, searched, found, read, opened, sent, changed, or verified an external source unless a successful tool result in this turn proves that exact action. Earlier chat turns, memory, dashboard text, task links, and plausible inference are not current verification. Name the source actually checked. If a tool fails, state `blocked` and its exact error. If evidence is incomplete, state `unverified`. Never fill a missing fact with a likely answer.
 

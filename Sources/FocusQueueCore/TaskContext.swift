@@ -32,6 +32,22 @@ public enum TaskSessionBinding {
     }
 }
 
+/// A launch location is retained independently of the task's current workspace.
+public struct AgentWorkspace: Codable, Equatable, Sendable {
+    public var path: String
+    public var repositoryPath: String
+    public var branch: String?
+    public var baseBranch: String?
+    public var baseCommit: String?
+    public var managed: Bool
+
+    public init(path: String, repositoryPath: String, branch: String? = nil,
+                baseBranch: String? = nil, baseCommit: String? = nil, managed: Bool = false) {
+        self.path = path; self.repositoryPath = repositoryPath; self.branch = branch
+        self.baseBranch = baseBranch; self.baseCommit = baseCommit; self.managed = managed
+    }
+}
+
 public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     public var id: String
     public var title: String
@@ -46,6 +62,19 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     public var runtimeMode: AgentRuntimeMode?
     public var terminalPaneID: Int?
     public var terminalSocketPath: String?
+    public var workspace: AgentWorkspace?
+    public var workspaceHistory: [AgentWorkspace] = []
+    public var initialPrompt: String?
+    public var agentRemovedAt: Date?
+    public var tracksCompletion: Bool = true
+    public var completionOverrideAt: Date?
+
+    public var hasManagedWorkspaces: Bool { workspace?.managed == true || workspaceHistory.contains(where: \.managed) }
+    public var isAgentVisible: Bool { agentRemovedAt == nil && status != .completed }
+    public static func agentName(prompt: String, provider: AgentProvider) -> String {
+        let words = prompt.split(whereSeparator: \.isWhitespace).prefix(10).joined(separator: " ")
+        return words.isEmpty ? "Blank \(provider.displayName) agent" : String(words.prefix(80))
+    }
 
     public init(id: String = UUID().uuidString, title: String, provider: AgentProvider = .codex,
                 sessionID: String? = nil, status: TaskSubtaskStatus = .queued,
@@ -66,7 +95,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, title, provider, sessionID, status, progressSummary, lastHeartbeatAt, completionUnread, includeInitializationPrompt, tmux
-        case runtimeMode, terminalPaneID, terminalSocketPath
+        case runtimeMode, terminalPaneID, terminalSocketPath, workspace, workspaceHistory, initialPrompt, agentRemovedAt, tracksCompletion, completionOverrideAt
     }
 
     public init(from decoder: any Decoder) throws {
@@ -84,6 +113,12 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         runtimeMode = try values.decodeIfPresent(AgentRuntimeMode.self, forKey: .runtimeMode)
         terminalPaneID = try values.decodeIfPresent(Int.self, forKey: .terminalPaneID)
         terminalSocketPath = try values.decodeIfPresent(String.self, forKey: .terminalSocketPath)
+        workspace = try values.decodeIfPresent(AgentWorkspace.self, forKey: .workspace)
+        workspaceHistory = try values.decodeIfPresent([AgentWorkspace].self, forKey: .workspaceHistory) ?? []
+        initialPrompt = try values.decodeIfPresent(String.self, forKey: .initialPrompt)
+        agentRemovedAt = try values.decodeIfPresent(Date.self, forKey: .agentRemovedAt)
+        tracksCompletion = try values.decodeIfPresent(Bool.self, forKey: .tracksCompletion) ?? true
+        completionOverrideAt = try values.decodeIfPresent(Date.self, forKey: .completionOverrideAt)
     }
 
     /// A live terminal is not proof of activity. Only a recent explicit heartbeat is.
@@ -126,10 +161,15 @@ public struct TaskContext: Codable, Equatable, Sendable {
         return """
         Work on \(ticketID): \(title). Your subtask is \(subtask.title) (\(subtask.id)).
         Read the central plan at \(planPath) and context at \(contextDirectory.appendingPathComponent("context.json").path) before acting. The central plan is the source of truth. Keep it current with decisions, checks, and handoff details; link supporting canvases from it.
+        Initial request: \(subtask.initialPrompt ?? subtask.title)
+        Workspace: \(subtask.workspace?.path ?? worktreePath ?? repositoryPath ?? "not configured")
+        Assigned branch: \(subtask.workspace?.branch ?? branch ?? "not configured")
         Success criteria: \(successCriteria)
         Register this pane: FOCUS_QUEUE_PROVIDER=\(subtask.provider.rawValue) FOCUS_QUEUE_TASK_ID=\(ticketID) FOCUS_QUEUE_SUBTASK_ID=\(subtask.id) \(command) attach \(ticketID)
         Report concise progress and refresh activity at meaningful milestones (at least every 5 minutes while working): \(command) progress \(ticketID) \(subtask.id) working "short progress summary"
         Use idle or blocked when waiting. On completion: \(command) complete \(ticketID) \(subtask.id) "what changed and verification result"
+        Before any push, run \(command) review-push \(ticketID) \(subtask.id). The orchestrator scans the committed diff for accidental files, unrelated additions, generated output, and missing checks. If rejected, correct only your changes and run review-push again. Push only after acceptance and only when the user authorized remote delivery. Never push directly to main unless explicitly requested.
+        Propose scope, branch, or plan changes to the task orchestrator before acting. Record approved workspace changes with \(command) workspace \(ticketID) \(subtask.id) <absolute-path>.
         Complete only your assigned subtask. Preserve other agents' changes. Never force-remove a worktree or merge a branch without the task's approval terms. Task closure requires verification and safe cleanup.
         """
     }
@@ -271,8 +311,8 @@ public actor TaskContextStore {
         for task in try files.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
             guard task.lastPathComponent != ticketID.uppercased(), files.fileExists(atPath: task.appendingPathComponent("context.json").path) else { continue }
             let other = try JSONDecoder().decode(TaskContext.self, from: Data(contentsOf: task.appendingPathComponent("context.json")))
-            if let otherPath = other.worktreePath,
-               URL(fileURLWithPath: otherPath).resolvingSymlinksInPath().standardizedFileURL == candidate { return true }
+            let paths = [other.worktreePath].compactMap { $0 } + other.subtasks.compactMap { $0.workspace?.path }
+            if paths.contains(where: { URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL == candidate }) { return true }
         }
         return false
     }
@@ -420,6 +460,8 @@ public actor TaskContextStore {
                                                   summary: String, sessionID: String? = nil, now: Date = Date()) throws -> TaskContext {
         try mutate(ticketID: ticketID, archiveChanges: true) { context in
             guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
+            // A late worker/verifier report cannot undo an explicit user override.
+            guard context.subtasks[index].completionOverrideAt == nil else { return }
             context.subtasks[index].status = status
             context.subtasks[index].progressSummary = String(summary.prefix(2_000))
             context.subtasks[index].lastHeartbeatAt = now
@@ -428,11 +470,48 @@ public actor TaskContextStore {
         }
     }
 
+    /// Removing an agent never deletes its assignment, conversation identity, or workspace.
+    @discardableResult public func removeAgent(ticketID: String, subtaskID: String) throws -> TaskContext {
+        try mutate(ticketID: ticketID, archiveChanges: true) { context in
+            guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
+            context.subtasks[index].agentRemovedAt = Date()
+        }
+    }
+
+    @discardableResult public func restoreAgent(ticketID: String, subtaskID: String) throws -> TaskContext {
+        try mutate(ticketID: ticketID, archiveChanges: true) { context in
+            guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
+            context.subtasks[index].agentRemovedAt = nil
+        }
+    }
+
+    @discardableResult public func overrideCompletion(ticketID: String, subtaskID: String) throws -> TaskContext {
+        try mutate(ticketID: ticketID, archiveChanges: true) { context in
+            guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
+            context.subtasks[index].status = .completed
+            context.subtasks[index].completionOverrideAt = Date()
+            context.subtasks[index].completionUnread = true
+            context.subtasks[index].lastHeartbeatAt = Date()
+            context.subtasks[index].progressSummary = "Completed by user override. Previous review evidence is retained."
+        }
+    }
+
+    @discardableResult public func setAgentWorkspace(ticketID: String, subtaskID: String, workspace: AgentWorkspace) throws -> TaskContext {
+        try mutate(ticketID: ticketID, archiveChanges: true) { context in
+            guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
+            if let previous = context.subtasks[index].workspace, previous != workspace,
+               !context.subtasks[index].workspaceHistory.contains(previous) {
+                context.subtasks[index].workspaceHistory.append(previous)
+            }
+            context.subtasks[index].workspace = workspace
+        }
+    }
+
     @discardableResult public func detachSession(ticketID: String, provider: AgentProvider, sessionID: String) throws -> TaskContext {
         try mutate(ticketID: ticketID) { context in
             for index in context.subtasks.indices where context.subtasks[index].provider == provider
                 && context.subtasks[index].sessionID?.caseInsensitiveCompare(sessionID) == .orderedSame {
-                context.subtasks[index].sessionID = nil
+                context.subtasks[index].agentRemovedAt = Date()
             }
         }
     }

@@ -11,6 +11,8 @@ struct QueueAgentUpdate: Identifiable, Equatable {
   var subtaskID: String? = nil
   var date: Date = .distantPast
   var isCleanup = false
+
+  var conciseReason: String { CompletionExplanation.concise(summary) }
 }
 
 struct AgentUpdateView: View {
@@ -28,7 +30,8 @@ struct AgentUpdateView: View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(alignment: .top) {
         VStack(alignment: .leading, spacing: 4) {
-          Text(update.title).font(.title3.bold())
+          Text(update.conciseReason).font(.title3.bold()).lineLimit(4)
+          Text(update.title).font(.caption).foregroundStyle(.secondary)
           Text(update.ticketID).font(.caption).foregroundStyle(.secondary)
           if update.date != .distantPast {
             Text(update.date.formatted(date: .abbreviated, time: .shortened))
@@ -45,6 +48,14 @@ struct AgentUpdateView: View {
         }
         Button { model.closeAgentUpdate() } label: { Image(systemName: "xmark") }
           .buttonStyle(.bordered).accessibilityLabel("Close agent update")
+      }
+      if update.review != nil, let ticket,
+         let subtask = model.subtasks(for: ticket.id).first(where: { $0.id == update.subtaskID }) {
+        HStack {
+          Button("Override: mark complete") { model.overrideCompletion(subtask, for: ticket) }
+            .buttonStyle(.borderedProminent)
+          Button("Remove agent") { model.removeAgent(subtask, from: ticket); model.closeAgentUpdate() }
+        }
       }
       ScrollView {
         VStack(alignment: .leading, spacing: 14) {

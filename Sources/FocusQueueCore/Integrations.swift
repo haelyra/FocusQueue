@@ -281,9 +281,11 @@ public extension WezTermControlling {
 public enum WezTermError: Error, LocalizedError {
     case invalidList(String)
     case actionFailed(String)
+    case runtimeClosed
 
     public var errorDescription: String? {
         switch self {
+        case .runtimeClosed: "The saved terminal has closed. Reopen the agent to resume its conversation."
         case .invalidList(let detail):
             "Could not read WezTerm panes: \(detail)"
         case .actionFailed(let detail):
@@ -571,17 +573,18 @@ public actor WezTermController: WezTermControlling {
         let connection = try await WezTermConnection.resolve(
             configuration: requested, runner: runner, candidateSockets: candidateSockets)
         guard connection.result.succeeded else {
-            throw WezTermError.actionFailed(
-                "The direct terminal session is no longer available. Start a new agent or use tmux next time.")
+            if !connection.result.timedOut,
+               ["Connection refused", "No such file or directory", "no running GUI"].contains(where: connection.result.standardError.contains) {
+                throw WezTermError.runtimeClosed
+            }
+            throw WezTermError.actionFailed("Could not inspect the saved terminal connection. Retry when WezTerm is available.")
         }
         if let socketPath, connection.configuration.socketPath != socketPath {
-            throw WezTermError.actionFailed(
-                "The saved terminal connection is no longer available. Start a new agent or use tmux next time.")
+            throw WezTermError.runtimeClosed
         }
         let pane = try Self.decodePanes(from: connection.result).first { $0.paneID == paneID }
         guard let pane else {
-            throw WezTermError.actionFailed(
-                "The direct terminal session has closed. Start a new agent or use tmux next time.")
+            throw WezTermError.runtimeClosed
         }
         try await focus(
             pane: pane,
@@ -1180,7 +1183,8 @@ public actor CodexCompletionVerifier: CompletionVerifying {
         let prompt = """
         Review completion intent for ticket \(ticketID).
         The local request record is at \(requestFile.path).
-        Re-read the workspace instructions, canonical dashboard, repository evidence, PR state, and the ticket's doneWhen field yourself. Do not trust the checkbox as completion evidence. Update canonical state only if the normal workspace rules permit it, and never mark a ticket resolved while any resolutionPrs entry is unmerged. Return a concise verdict with remaining work or evidence accepted. Do not inspect or transmit unrelated private notes.
+        Read the request first. Lead your response with one short sentence stating the specific missing evidence or accepted result, then details. Do not lead with "Completion rejected", a subtask UUID, or a generic verdict.
+        Re-read the workspace instructions and repository evidence. Do not trust the checkbox as completion evidence. For parent task closure only, read the canonical dashboard, PR state, and doneWhen; never resolve a parent while resolutionPrs is unmerged. For subtask closure, assess only that assignment and its recorded changes and checks. Do not require the entire parent's success criteria, merged PRs, or unrelated work to accept a subtask. A user-requested undo or cancellation is a valid completed assignment when verified. Do not require live UI automation where workspace instructions prohibit it; explain any remaining manual check concisely. Do not inspect or transmit unrelated private notes.
         The request may contain contextPath and subtaskID. Read the central plan and context.json in contextPath when present. If subtaskID is present, review only that named subtask; do not close the parent task. After checks actually pass, run focus-queue-session complete <ticketID> <subtaskID> "concise evidence and checks" using the request's actual identifiers. On disagreement, leave the subtask open and explain the missing evidence. For parent completion, require all subtasks completed. Preserve worktrees and branches: the host archives context and performs guarded cleanup after canonical completion. Never force-remove, reset, or merge branches as part of this review.
         """
         try files.write(Data(prompt.utf8), to: promptURL)

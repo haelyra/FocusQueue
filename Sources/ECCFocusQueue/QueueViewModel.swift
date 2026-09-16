@@ -117,6 +117,7 @@ final class QueueViewModel {
   @ObservationIgnored private var bootstrapped = false
   @ObservationIgnored private var refreshInFlight = false
   @ObservationIgnored private var lastActivityCheck = Date()
+  @ObservationIgnored private var lastIdentityRefresh: Date?
 
   @ObservationIgnored var placementHandler: ((QueueWindowPlacement) -> Void)?
   @ObservationIgnored var monitorSwitchHandler: (() -> Void)?
@@ -614,13 +615,33 @@ final class QueueViewModel {
         cleanupSignatures[ticket.id] = context.updatedAt
         await finalizeCompletedTask(ticket)
       } else if ticket.isOpen, ticket.queueTaskKind != .customerConcern,
-                !context.subtasks.isEmpty, context.subtasks.allSatisfy({ $0.status == .completed }),
+                !context.subtasks.filter(\.tracksCompletion).isEmpty, context.subtasks.filter(\.tracksCompletion).allSatisfy({ $0.status == .completed }),
+                !context.subtasks.contains(where: { $0.completionOverrideAt != nil }),
                 !localState.completionRequests.contains(where: {
                   $0.ticketID == ticket.id && [.pending, .running].contains($0.status)
                 }) {
         let lastCompletion = context.subtasks.compactMap(\.lastHeartbeatAt).max() ?? context.updatedAt
         if latestReview(for: ticket.id).map({ $0.requestedAt < lastCompletion }) ?? true {
           requestCompletion(for: ticket)
+        }
+      }
+    }
+    for ticket in tickets {
+      for subtask in subtasks(for: ticket.id) where subtask.status == .completed && subtask.agentRemovedAt == nil {
+        await retireAgent(subtask, for: ticket)
+      }
+    }
+    if lastIdentityRefresh == nil || Date().timeIntervalSince(lastIdentityRefresh!) >= 15 {
+      lastIdentityRefresh = Date()
+      for ticket in tickets {
+        for subtask in visibleAgents(for: ticket.id) where subtask.sessionID == nil {
+          if let identity = try? await taskAgentLauncher.identify(subtask: subtask, configuration: config.wezTerm),
+             subtasks(for: ticket.id).first(where: { $0.id == subtask.id })?.isAgentVisible == true {
+            do {
+              taskContexts[ticket.id] = try await taskContextStore.attachSubtask(ticketID: ticket.id,
+                subtaskID: subtask.id, provider: subtask.provider, sessionID: identity)
+            } catch { actionMessages[ticket.id] = error.localizedDescription }
+          }
         }
       }
     }
@@ -672,7 +693,8 @@ final class QueueViewModel {
         guard let review = reviews.max(by: { $0.requestedAt < $1.requestedAt }),
               [.failed, .needsWork].contains(review.status) else { continue }
         if let subtaskID = review.subtaskID,
-           subtasks(for: ticket.id).first(where: { $0.id == subtaskID })?.status == .completed { continue }
+           let subtask = subtasks(for: ticket.id).first(where: { $0.id == subtaskID }),
+           subtask.status == .completed || subtask.agentRemovedAt != nil { continue }
         if ticket.isCompleted && review.subtaskID == nil { continue }
         updates.append(QueueAgentUpdate(id: review.id.uuidString, ticketID: ticket.id,
           title: review.status == .failed ? "Completion review failed" : "Completion needs more work",
@@ -853,82 +875,100 @@ final class QueueViewModel {
             && $0.sessionID?.caseInsensitiveCompare(sessionID) == .orderedSame }) else { return nil }
     return TaskAgentSession(id: uuid, ticketID: ticketID, provider: subtask.provider,
       sessionID: sessionID, tabTitle: subtask.title,
-      workingDirectory: context.worktreePath ?? context.repositoryPath ?? config.workspacePath,
+      workingDirectory: subtask.workspace?.path ?? context.worktreePath ?? context.repositoryPath ?? config.workspacePath,
       subtaskID: subtask.id, tmux: subtask.tmux)
       .withContext(context, subtask: subtask, supportDirectory: paths.supportDirectory)
   }
 
+  func proposedAgentWorktreePath(subtaskID: String) -> String {
+    paths.supportDirectory.appendingPathComponent("worktrees/agents/\(subtaskID)").path
+  }
+
+  func visibleAgents(for ticketID: String) -> [TaskSubtask] {
+    subtasks(for: ticketID).filter(\.isAgentVisible)
+  }
+
   func openSubtask(_ subtask: TaskSubtask, for ticket: DashboardTicket) {
-    if let session = session(for: subtask, ticketID: ticket.id) { viewAgent(session, for: ticket) }
-    else if subtask.runtimeMode == .terminal, let paneID = subtask.terminalPaneID {
-      actionMessages[ticket.id] = "Opening \(subtask.title)…"
-      Task {
-        do {
-          let result = try await terminalController.openDirectRuntime(
-            paneID: paneID, socketPath: subtask.terminalSocketPath,
-            taskID: ticket.id, provider: subtask.provider, configuration: config.wezTerm)
-          actionMessages[ticket.id] = "\(result.message) Direct session: \(subtask.title)."
-        } catch { actionMessages[ticket.id] = error.localizedDescription }
-      }
-    }
-    else if let tmux = subtask.tmux {
-      actionMessages[ticket.id] = "Opening \(subtask.title)…"
-      Task {
-        do {
-          let result = try await terminalController.openManagedRuntime(
-            tmux, taskID: ticket.id, provider: subtask.provider, configuration: config.wezTerm)
-          actionMessages[ticket.id] = "\(result.message) Managed session: \(subtask.title)."
-        } catch { actionMessages[ticket.id] = error.localizedDescription }
-      }
-    }
-    else if subtask.runtimeMode == .tmux {
-      actionMessages[ticket.id] =
-        "Checking the exact tmux session created for \(subtask.title)…"
-      Task {
-        do {
-          guard let executable = config.tmuxExecutable ?? SetupEnvironment.executable("tmux") else {
-            throw TmuxError.unavailable("No tmux executable is configured on this Mac.")
-          }
-          let name = try TmuxController.sessionName(subtaskID: subtask.id)
-          let tmux = try await TmuxController().inspect(name: name, executable: executable)
-          taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
-            ticketID: ticket.id, subtaskID: subtask.id, tmux: tmux)
-          await recordAgentLaunch(
-            subtask, ticketID: ticket.id, phase: "manual-recovery", outcome: "succeeded",
-            message: "Recovered the running tmux pane from its deterministic session name.",
-            details: [
-              "tmuxName": tmux.name, "pane": tmux.paneID,
-              "panePID": String(tmux.panePID), "terminal": tmux.tty,
-            ])
-          let result = try await terminalController.openManagedRuntime(
-            tmux, taskID: ticket.id, provider: subtask.provider, configuration: config.wezTerm)
-          actionMessages[ticket.id] =
-            "\(result.message) Recovered managed session: \(subtask.title)."
-        } catch {
-          actionMessages[ticket.id] =
-            "Could not recover the tmux session created for this subtask. \(error.localizedDescription) Focus Queue did not start a replacement."
-          await recordAgentLaunch(
-            subtask, ticketID: ticket.id, phase: "manual-recovery", outcome: "failed",
-            message: error.localizedDescription)
+    guard launchingTaskIDs.insert(ticket.id).inserted else { return }
+    actionMessages[ticket.id] = "Opening \(subtask.title)…"
+    Task {
+      defer { launchingTaskIDs.remove(ticket.id) }
+      do {
+        if subtask.agentRemovedAt != nil {
+          taskContexts[ticket.id] = try await taskContextStore.restoreAgent(ticketID: ticket.id, subtaskID: subtask.id)
         }
-      }
-    }
-    else {
-      actionMessages[ticket.id] =
-        "This entry has no saved Focus Queue runtime. Start a new, clearly named agent from the task."
-    }
-    if subtask.completionUnread {
-      Task {
-        do {
-          taskContexts[ticket.id] = try await taskContextStore.acknowledgeCompletion(ticketID: ticket.id, subtaskID: subtask.id)
-        } catch { actionMessages[ticket.id] = error.localizedDescription }
-      }
+        if let tmux = subtask.tmux {
+          do {
+            _ = try await terminalController.openManagedRuntime(tmux, taskID: ticket.id,
+              provider: subtask.provider, configuration: config.wezTerm)
+            actionMessages[ticket.id] = "Opened \(subtask.title)."
+            return
+          } catch TmuxError.stopped { /* Resume the durable provider conversation below. */ }
+        } else if let paneID = subtask.terminalPaneID {
+          do {
+            _ = try await terminalController.openDirectRuntime(paneID: paneID,
+              socketPath: subtask.terminalSocketPath, taskID: ticket.id,
+              provider: subtask.provider, configuration: config.wezTerm)
+            actionMessages[ticket.id] = "Opened \(subtask.title)."
+            return
+          } catch WezTermError.runtimeClosed { /* A confirmed closed pane can be replaced. */ }
+        } else if subtask.runtimeMode == .tmux {
+          if let executable = config.tmuxExecutable ?? SetupEnvironment.executable("tmux") {
+            do {
+              let runtime = try await TmuxController().inspect(
+                name: TmuxController.sessionName(subtaskID: subtask.id), executable: executable)
+              taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
+                ticketID: ticket.id, subtaskID: subtask.id, tmux: runtime)
+              _ = try await terminalController.openManagedRuntime(runtime, taskID: ticket.id,
+                provider: subtask.provider, configuration: config.wezTerm)
+              return
+            } catch TmuxError.stopped { }
+          }
+        }
+        guard var context = try await taskContextStore.load(ticketID: ticket.id) else {
+          throw TaskContextError.missingContext(ticket.id)
+        }
+        var assignment = subtask
+        // Old records recover their original launch directory before inheriting a task default.
+        if assignment.workspace == nil {
+          let path = session(for: subtask, ticketID: ticket.id)?.workingDirectory
+            ?? context.worktreePath ?? context.repositoryPath ?? config.workspacePath
+          assignment.workspace = try await taskWorktreeManager.workspace(at: path)
+          if let branch = context.branch, context.worktreePath == path { assignment.workspace?.branch = branch }
+        }
+        try await taskWorktreeManager.validate(assignment.workspace!)
+        assignment.agentRemovedAt = nil
+        context = try await taskContextStore.upsertSubtask(ticketID: ticket.id, subtask: assignment)
+        taskContexts[ticket.id] = context
+        if assignment.runtimeMode == .tmux {
+          guard let executable = config.tmuxExecutable ?? SetupEnvironment.executable("tmux") else {
+            throw TmuxError.unavailable("Configure tmux or change the agent runtime before reopening.")
+          }
+          let runtime = try await taskAgentLauncher.startManagedSession(context: context, subtask: assignment,
+            supportDirectory: paths.supportDirectory, tmuxExecutable: executable)
+          taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
+            ticketID: ticket.id, subtaskID: assignment.id, tmux: runtime)
+          _ = try await terminalController.openManagedRuntime(runtime, taskID: ticket.id,
+            provider: assignment.provider, configuration: config.wezTerm)
+        } else {
+          assignment.runtimeMode = .terminal
+          let receipt = try await taskAgentLauncher.launchDirect(context: context, subtask: assignment,
+            configuration: config.wezTerm, supportDirectory: paths.supportDirectory)
+          taskContexts[ticket.id] = try await taskContextStore.setDirectRuntime(
+            ticketID: ticket.id, subtaskID: assignment.id, paneID: receipt.paneID, socketPath: receipt.socketPath)
+          _ = try await terminalController.openDirectRuntime(paneID: receipt.paneID, socketPath: receipt.socketPath,
+            taskID: ticket.id, provider: assignment.provider, configuration: config.wezTerm)
+        }
+        actionMessages[ticket.id] = assignment.sessionID == nil ? "New agent opened in its assigned workspace." : "Resumed the saved agent conversation in its assigned workspace."
+      } catch { actionMessages[ticket.id] = error.localizedDescription }
     }
   }
 
   func launchAgent(
     for ticket: DashboardTicket, title: String, provider: AgentProvider,
-    repositoryPath: String, includePrompt: Bool = true, useTmux: Bool = true
+    repositoryPath: String, includePrompt: Bool = true, useTmux: Bool = true,
+    createWorktree: Bool = true, initialPrompt: String? = nil, tracksCompletion: Bool = true,
+    subtaskID: String = UUID().uuidString
   ) {
     let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !title.isEmpty, launchingTaskIDs.insert(ticket.id).inserted else { return }
@@ -939,10 +979,14 @@ final class QueueViewModel {
       var phase = "preparing the task workspace"
       defer { launchingTaskIDs.remove(ticket.id) }
       do {
-        let context = try await taskWorktreeManager.provision(ticket: ticket, repositoryPath: repositoryPath, store: taskContextStore)
-        let subtask = TaskSubtask(
-          title: title, provider: provider, includeInitializationPrompt: includePrompt,
+        let context = try await taskContextStore.ensureContext(ticket: ticket)
+        var subtask = TaskSubtask(
+          id: subtaskID, title: title, provider: provider, includeInitializationPrompt: includePrompt,
           runtimeMode: useTmux ? .tmux : .terminal)
+        subtask.initialPrompt = initialPrompt
+        subtask.tracksCompletion = tracksCompletion
+        subtask.workspace = try await taskWorktreeManager.provisionAgent(ticketID: ticket.id,
+          subtaskID: subtask.id, path: repositoryPath, createWorktree: createWorktree, store: taskContextStore)
         assignment = subtask
         taskContexts[ticket.id] = try await taskContextStore.upsertSubtask(ticketID: ticket.id, subtask: subtask)
         await recordAgentLaunch(
@@ -952,7 +996,7 @@ final class QueueViewModel {
         if useTmux {
           phase = "starting the tmux process"
           guard let tmuxExecutable = config.tmuxExecutable ?? SetupEnvironment.executable("tmux") else {
-            throw TmuxError.unavailable("tmux is unavailable. Uncheck Keep running in tmux to launch directly.")
+            throw TmuxError.unavailable("tmux is unavailable. Uncheck Open in tmux to launch directly.")
           }
           let expectedName = try TmuxController.sessionName(subtaskID: subtask.id)
           actionMessages[ticket.id] =
@@ -963,7 +1007,7 @@ final class QueueViewModel {
             details: ["tmuxName": expectedName, "executable": tmuxExecutable])
           let tmux = try await taskAgentLauncher.startManagedSession(
             context: context, subtask: subtask, supportDirectory: paths.supportDirectory,
-            includePrompt: includePrompt, tmuxExecutable: tmuxExecutable)
+            includePrompt: true, tmuxExecutable: tmuxExecutable)
           runtimeStarted = true
           phase = "saving the confirmed tmux process"
           taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
@@ -984,7 +1028,7 @@ final class QueueViewModel {
             "Starting \(provider.displayName) directly in a new WezTerm window…"
           let receipt = try await taskAgentLauncher.launchDirect(
             context: context, subtask: subtask, configuration: config.wezTerm,
-            supportDirectory: paths.supportDirectory, includePrompt: includePrompt)
+            supportDirectory: paths.supportDirectory, includePrompt: true)
           runtimeStarted = true
           phase = "saving the direct WezTerm pane"
           taskContexts[ticket.id] = try await taskContextStore.setDirectRuntime(
@@ -1070,9 +1114,13 @@ final class QueueViewModel {
   private func finalizeCompletedTask(_ ticket: DashboardTicket) async {
     do {
       try await taskContextStore.archive(ticketID: ticket.id)
-      if subtasks(for: ticket.id).contains(where: { $0.status != .completed }) {
+      if subtasks(for: ticket.id).contains(where: { $0.tracksCompletion && $0.status != .completed }) {
         closureMessages[ticket.id] = "Completion needs review: some subtasks remain open."
         return
+      }
+      for subtask in subtasks(for: ticket.id) where subtask.hasManagedWorkspaces {
+        let cleanup = try await taskWorktreeManager.cleanupAgent(ticketID: ticket.id, subtask: subtask, store: taskContextStore)
+        if !cleanup.removed { closureMessages[ticket.id] = cleanup.message; return }
       }
       let wasManaged = taskContexts[ticket.id]?.managedWorktree == true
       let result = try await taskWorktreeManager.cleanup(ticketID: ticket.id, store: taskContextStore)
@@ -1201,7 +1249,7 @@ final class QueueViewModel {
       for registration in registrations {
         guard let subtaskID = registration.subtaskID,
           let subtask = taskContexts[registration.ticketID]?.subtasks.first(where: {
-            $0.id == subtaskID && $0.provider == registration.provider
+            $0.id == subtaskID && $0.provider == registration.provider && $0.isAgentVisible
           }),
           (subtask.runtimeMode == .tmux
             && registration.tmux == subtask.tmux
@@ -1225,6 +1273,24 @@ final class QueueViewModel {
   }
 
   func viewAgent(_ session: TaskAgentSession, for ticket: DashboardTicket) {
+    if let subtask = subtasks(for: ticket.id).first(where: {
+      $0.id == session.subtaskID || ($0.provider == session.provider && $0.sessionID?.caseInsensitiveCompare(session.sessionID) == .orderedSame)
+    }) { openSubtask(subtask, for: ticket); return }
+    if session.tmux == nil {
+      Task {
+        do {
+          _ = try await taskContextStore.ensureContext(ticket: ticket)
+          var agent = TaskSubtask(id: session.subtaskID ?? session.id.uuidString, title: session.tabTitle,
+            provider: session.provider, sessionID: session.sessionID, includeInitializationPrompt: false,
+            runtimeMode: .terminal, terminalPaneID: session.paneID)
+          agent.tracksCompletion = false
+          agent.workspace = try await taskWorktreeManager.workspace(at: session.workingDirectory)
+          taskContexts[ticket.id] = try await taskContextStore.upsertSubtask(ticketID: ticket.id, subtask: agent)
+          openSubtask(agent, for: ticket)
+        } catch { actionMessages[ticket.id] = error.localizedDescription }
+      }
+      return
+    }
     let context = taskContexts[ticket.id]
     let subtask = subtasks(for: ticket.id).first { $0.provider == session.provider && $0.sessionID?.lowercased() == session.sessionID.lowercased() }
     var session = context.map { session.withContext($0, subtask: subtask, supportDirectory: paths.supportDirectory) } ?? session
@@ -1264,23 +1330,55 @@ final class QueueViewModel {
     }
   }
 
+  func removeAgent(_ subtask: TaskSubtask, from ticket: DashboardTicket) {
+    Task { await retireAgent(subtask, for: ticket) }
+  }
+
+  private func retireAgent(_ subtask: TaskSubtask, for ticket: DashboardTicket) async {
+    do {
+      taskContexts[ticket.id] = try await taskContextStore.removeAgent(ticketID: ticket.id, subtaskID: subtask.id)
+      localState.agentSessions.removeAll {
+        $0.ticketID == ticket.id && ($0.subtaskID == subtask.id ||
+          ($0.provider == subtask.provider && $0.sessionID.caseInsensitiveCompare(subtask.sessionID ?? "") == .orderedSame))
+      }
+      persistLocalState()
+      actionMessages[ticket.id] = "Agent removed. Its assignment, conversation, and workspace history are retained."
+      // List removal is independent of process cleanup and completion approval.
+      do { try await taskAgentLauncher.closeRuntime(subtask: subtask, configuration: config.wezTerm) }
+      catch { actionMessages[ticket.id] = "Agent removed. \(error.localizedDescription)" }
+      if subtask.status == .completed {
+        let result = try await taskWorktreeManager.cleanupAgent(ticketID: ticket.id, subtask: subtask, store: taskContextStore)
+        if subtask.hasManagedWorkspaces && !result.removed { closureMessages[ticket.id] = result.message }
+      }
+    } catch { actionMessages[ticket.id] = error.localizedDescription }
+  }
+
   func removeAgent(_ session: TaskAgentSession, from ticket: DashboardTicket) {
     guard session.ticketID == ticket.id else { return }
+    if let subtask = subtasks(for: ticket.id).first(where: {
+      $0.id == session.subtaskID || ($0.provider == session.provider && $0.sessionID?.caseInsensitiveCompare(session.sessionID) == .orderedSame)
+    }) { removeAgent(subtask, from: ticket); return }
+    localState.agentSessions.removeAll { $0.id == session.id }
+    persistLocalState()
+  }
+
+  func overrideCompletion(_ subtask: TaskSubtask, for ticket: DashboardTicket) {
     Task {
       do {
-        await captureDurableState(localState)
-        if let context = taskContexts[ticket.id] { await captureDurableContexts([context]) }
-        if taskContexts[ticket.id] != nil {
-          taskContexts[ticket.id] = try await taskContextStore.detachSession(
-            ticketID: ticket.id, provider: session.provider, sessionID: session.sessionID)
-        }
-        localState.agentSessions.removeAll {
-          $0.ticketID == ticket.id && $0.provider == session.provider
-            && $0.sessionID.caseInsensitiveCompare(session.sessionID) == .orderedSame
+        taskContexts[ticket.id] = try await taskContextStore.overrideCompletion(ticketID: ticket.id, subtaskID: subtask.id)
+        for index in localState.completionRequests.indices where localState.completionRequests[index].ticketID == ticket.id
+          && localState.completionRequests[index].subtaskID == subtask.id {
+          localState.completionRequests[index].status = .accepted
+          localState.completionRequests[index].updatedAt = Date()
         }
         persistLocalState()
-        actionMessages[ticket.id] = "Removed \(session.provider.displayName) session \(session.sessionID) from this task."
-      } catch { actionMessages[ticket.id] = "Could not remove agent association: \(error.localizedDescription)" }
+        closureMessages[ticket.id] = nil
+        if let completed = subtasks(for: ticket.id).first(where: { $0.id == subtask.id }) {
+          await retireAgent(completed, for: ticket)
+        }
+        actionMessages[ticket.id] = "Subtask completed by your override. Parent task remains unchanged."
+        presentedAgentUpdate = nil
+      } catch { actionMessages[ticket.id] = error.localizedDescription }
     }
   }
 
@@ -1311,8 +1409,8 @@ final class QueueViewModel {
         await captureDurableState(localState)
         await captureDurableContexts(Array(taskContexts.values))
         let registrations = try await agentRegistrationInbox.pending()
-        for ticketID in taskContexts.keys.sorted() {
-          taskContexts[ticketID] = try await taskContextStore.clearSubtasks(ticketID: ticketID)
+        for ticket in dashboard.tickets {
+          for subtask in visibleAgents(for: ticket.id) { await retireAgent(subtask, for: ticket) }
         }
         localState.agentSessions.removeAll()
         try await stateStore.save(localState)
@@ -1675,7 +1773,8 @@ final class QueueViewModel {
       let result = try await verifier.verify(
         ticketID: request.ticketID,
         requestFile: URL(fileURLWithPath: request.requestFilePath),
-        workspace: config.workspacePath,
+        workspace: request.subtaskID.flatMap { id in subtasks(for: request.ticketID).first(where: { $0.id == id })?.workspace?.path }
+          ?? taskContexts[request.ticketID]?.worktreePath ?? config.workspacePath,
         configuration: reviewConfiguration
       )
       let logURL = try await reviewArtifacts.writeLog(result.log, for: request.id)
@@ -1684,6 +1783,7 @@ final class QueueViewModel {
       if let subtaskID = request.subtaskID {
         let context = try await taskContextStore.load(ticketID: request.ticketID)
         taskContexts[request.ticketID] = context
+        if context?.subtasks.first(where: { $0.id == subtaskID })?.completionOverrideAt != nil { return }
         request.status = result.succeeded && context?.subtasks.first(where: { $0.id == subtaskID })?.status == .completed
           ? .accepted : (result.succeeded ? .needsWork : .failed)
       } else {
@@ -1704,10 +1804,12 @@ final class QueueViewModel {
         await finalizeCompletedTask(canonicalTicket)
       } else if request.status == .accepted {
         closureMessages[request.ticketID] = nil
-      } else if request.status != .accepted {
+      } else if request.status != .accepted, request.subtaskID == nil {
         closureMessages[request.ticketID] = result.summary
       }
     } catch {
+      if let subtaskID = request.subtaskID,
+         subtasks(for: request.ticketID).first(where: { $0.id == subtaskID })?.completionOverrideAt != nil { return }
       request.status = .failed
       request.summary = error.localizedDescription
       request.updatedAt = Date()

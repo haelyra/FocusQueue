@@ -400,13 +400,15 @@ public actor DurableLibraryStore {
             if let prior { task.subtasks[prior] = entry } else { task.subtasks.append(entry) }
             if let nativeID = subtask.sessionID, !nativeID.isEmpty {
                 let sessionID = ensureSession(provider: subtask.provider.rawValue, nativeID: nativeID, in: &library, device: device)
-                assign(taskID: taskID, sessionID: sessionID, subtaskID: entry.id, source: "task-context", into: &library)
-                for assignment in library.assignments where assignment.taskID == taskID && assignment.sessionID == sessionID
+                if subtask.isAgentVisible {
+                    assign(taskID: taskID, sessionID: sessionID, subtaskID: entry.id, source: "task-context", into: &library)
+                }
+                for assignment in library.assignments where subtask.isAgentVisible && assignment.taskID == taskID && assignment.sessionID == sessionID
                     && assignment.subtaskID == entry.id && assignment.source == "task-context" && assignment.endedAt == nil {
                     currentAssignments.insert(assignment.id)
                 }
                 if !library.executionLocators.contains(where: { $0.sessionID == sessionID && $0.deviceID == device.id && $0.pathSource == "saved-session" }) {
-                    updateLocator(sessionID: sessionID, directory: context.worktreePath ?? context.repositoryPath,
+                    updateLocator(sessionID: sessionID, directory: subtask.workspace?.path ?? context.worktreePath ?? context.repositoryPath,
                         source: "task-context-fallback", window: nil, tab: nil, pane: nil, into: &library, device: device)
                 }
             }
@@ -451,7 +453,7 @@ public actor DurableLibraryStore {
                 let sessionID = ensureSession(provider: subtask.provider.rawValue, nativeID: nativeID, in: &library, device: device)
                 assign(taskID: taskID, sessionID: sessionID, subtaskID: entry?.id, source: "historical-context", into: &library)
                 if !library.executionLocators.contains(where: { $0.sessionID == sessionID && $0.deviceID == device.id }) {
-                    updateLocator(sessionID: sessionID, directory: context.worktreePath ?? context.repositoryPath,
+                    updateLocator(sessionID: sessionID, directory: subtask.workspace?.path ?? context.worktreePath ?? context.repositoryPath,
                         source: "historical-context-fallback", window: nil, tab: nil, pane: nil, into: &library, device: device)
                 }
             }

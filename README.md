@@ -10,18 +10,29 @@ for compatibility, installation, reconnect instructions and remaining public-lau
 
 ## Reliable session recall
 
-With **Keep this agent running in tmux** checked, Focus Queue creates the agent inside its dedicated tmux server and stores
-the exact server, session, pane and process identity on the named subtask before
-opening a terminal view. Closing WezTerm disconnects the view while the tmux
-process continues. Clicking the subtask focuses an existing attached client or
-opens a new client attached to that exact runtime. With the option unchecked,
-Focus Queue stores the exact WezTerm pane and socket; closing that terminal ends the live session.
+With **Open in tmux** checked, Focus Queue saves the exact runtime before opening
+its terminal view. Closing the view leaves tmux running. Direct launches save the
+WezTerm pane and socket. Clicking an agent focuses the live runtime; when that
+runtime is confirmed closed, the app starts `codex resume <session-id>` or
+`claude --resume <session-id>` in its saved workspace through your login-shell
+command preferences. Initialization is never replayed during resume. If there is
+no provider session ID, a new agent starts with the saved assignment. Ambiguous
+transport failures do not create duplicate processes.
 
-Recall does not run `codex resume`, scan provider transcripts, or open a blank
-shell. Entries without an app-created saved runtime explain that they cannot be
-reopened. A stopped or replaced runtime identity also fails closed. Provider session
-IDs remain useful history metadata after the provider reports them, but they do
-not authorize process reconstruction.
+Each assignment records its workspace path, repository, branch, base commit,
+worktree ownership, and previous workspace locations independently of the task's
+current workspace. **Create worktree** creates a separate branch for that agent
+from the selected checkout's exact commit. A dirty source requires committing
+first or choosing the existing checkout. Branch mismatches on resume require an
+explicit workspace correction instead of silently switching another agent's branch.
+
+The **Agents** disclosure contains active agents with a one-click remove button.
+Removing an agent preserves its subtask, provider conversation ID, and workspace
+history. Completed agents leave the list automatically and verified runtimes are
+closed. Cleanup retains dirty, ignored, unmerged, or shared worktrees; clean merged
+app-owned worktrees can be removed while branches and context remain recoverable.
+Subtask history remains under task details. **Override: mark complete** records a
+user override, retains prior review logs, and leaves the parent task unchanged.
 
 New launches write structured phase-by-phase diagnostics under
 `Application Support/ECC Focus Queue/logs/agent-launches`. The document icon beside
@@ -104,7 +115,7 @@ focus-queue-session progress ECC-035 <subtask-id> working "History persistence v
 focus-queue-session complete ECC-035 <subtask-id> "Implemented; focused tests passed"
 ```
 
-Manual completion starts the bounded verifier for the task or subtask. Missing
+Manual completion review starts the bounded verifier for the selected task or subtask. Subtask checks are scoped to the assignment, including requested undo work. Missing
 evidence stays visible in the queue. Cleanup archives first and removes only
 app-created, clean, merged worktrees with all subtasks complete. Ignored private
 files, changed branches, and unmerged commits block removal. Existing user-owned
@@ -129,11 +140,21 @@ can inspect known profile declarations without executing them. Base installation
 does not inspect shell profiles. Bash follows its normal login-profile rules;
 other shells currently fall back to zsh.
 
-Turn off **Send task initialization prompt** to open a normal interactive session
-without submitting a message. The task worktree and context access remain set up,
-and the prompt choice is remembered both in the dialog and for that subtask's
-future opens. Background reports and completion checks keep their bounded
-execution settings, independent of interactive aliases.
+**New agent** has a wrapping Initial prompt editor and derives a readable name.
+**New blank agent** starts with an empty prompt and guesses the workspace. The
+initialization checkbox has a fixed description and an expandable preview, with
+the planned workspace and branch shown before launch. Turning initialization off
+sends only the custom prompt; an empty prompt submits nothing. Blank agents do not
+count toward subtask completion.
+
+Initialized agents are instructed to call `focus-queue-session review-push
+<TASK-ID> <SUBTASK-ID>` before an authorized push. The read-only orchestrator scan
+returns a commit-specific receipt and concrete correction instructions. Rejection
+returns a failing status to the calling agent, which must correct its changes and
+retry. A checkout change during review invalidates acceptance. This is an agent
+workflow gate; it does not install or replace Git hooks or grant push permission.
+Use `focus-queue-session workspace <TASK-ID> <SUBTASK-ID> <absolute-path>` to record
+an approved workspace change, retaining the prior location in history.
 
 ## What works
 
@@ -212,9 +233,8 @@ rewrite of the scheduler or report engine.
   environment, labels the exact terminal, and immediately notifies the running app. A
   task can retain multiple agents, displayed through readable named assignments.
 - Clicking an agent's descriptive subtask title focuses or reattaches the exact
-  saved runtime. Direct sessions can be focused only while their original pane remains open. The app never substitutes a blank terminal or a provider
-  history command. **Manage agents** can remove one association or clear the
-  current agent queue after its state has been retained in durable history.
+  saved runtime or resumes the saved provider conversation after that runtime ends.
+  **Manage agents** removes associations while retaining assignment and conversation history.
 - Restart-safe completion requests. A checkbox asks a bounded Codex run
   session to verify evidence and never directly edits the ticket status.
 - Atomic local state and bounded verifier logs under Application Support.

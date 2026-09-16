@@ -603,8 +603,9 @@ struct QueueViewModelTests {
     #expect(recovered.tmux == runtime)
     #expect(model.session(for: subtask, ticketID: "ECC-102") == nil)
     model.removeAgent(recovered, from: fixture.tickets[0])
-    try await eventually { model.subtasks(for: "ECC-101").first?.sessionID == nil }
-    #expect(model.session(for: subtask, ticketID: "ECC-101") == nil)
+    try await eventually { model.subtasks(for: "ECC-101").first?.agentRemovedAt != nil }
+    #expect(model.subtasks(for: "ECC-101").first?.sessionID == uuid)
+    #expect(model.visibleAgents(for: "ECC-101").isEmpty)
     #expect(model.subtasks(for: "ECC-101").first?.title == "Review session ownership")
   }
 
@@ -630,6 +631,81 @@ struct QueueViewModelTests {
     #expect(recalled.tmux == runtime)
     #expect(model.localState.agentSessions.first?.sessionID == session.sessionID)
     #expect(model.localState.agentSessions.first?.paneID == 42)
+  }
+
+  @Test("Override completes only the selected subtask and removes its agent without queuing parent review")
+  func manualOverride() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    let subtask = TaskSubtask(id: "accidental", title: "Undone assignment", status: .blocked)
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: subtask)
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    model.overrideCompletion(subtask, for: fixture.tickets[0])
+    try await eventually { model.subtasks(for: "ECC-101").first?.agentRemovedAt != nil }
+    #expect(model.subtasks(for: "ECC-101").first?.status == .completed)
+    #expect(model.visibleAgents(for: "ECC-101").isEmpty)
+    #expect(model.dashboard.tickets[0].isOpen)
+    try await Task.sleep(for: .milliseconds(2100))
+    await model.refresh()
+    #expect(model.localState.completionRequests.isEmpty)
+    #expect(model.dashboard.tickets[0].isOpen)
+  }
+
+  @Test("Completed agents disappear automatically while blank agents never drive parent completion")
+  func completedAndBlankAgents() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    var blank = TaskSubtask(id: "blank", title: "Interactive conversation", status: .completed)
+    blank.tracksCompletion = false
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: blank)
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(model.visibleAgents(for: "ECC-101").isEmpty)
+    #expect(model.subtasks(for: "ECC-101").first?.agentRemovedAt != nil)
+    #expect(model.localState.completionRequests.isEmpty)
+    #expect(model.dashboard.tickets[0].isOpen)
+  }
+
+  @Test("A closed direct agent resumes its saved conversation; transport failures never duplicate it", arguments: [false, true])
+  func directResume(transportFailure: Bool) async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let repository = fixture.root.appendingPathComponent("repo")
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    let git = FoundationProcessRunner()
+    for arguments in [["init", "-q", "-b", "feature"], ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+      "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Fixture", "--allow-empty"]] {
+      #expect(try await git.run(.init(executable: "/usr/bin/git", arguments: arguments, workingDirectory: repository.path)).succeeded)
+    }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    let identity = UUID().uuidString
+    var subtask = TaskSubtask(id: "resume-worker", title: "Existing conversation", sessionID: identity,
+      runtimeMode: .terminal, terminalPaneID: 7)
+    subtask.workspace = try await TaskWorktreeManager().workspace(at: repository.path)
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: subtask)
+    let launcher = DirectCreationRunner()
+    let terminal = ClosedDirectRecorder(transportFailure: transportFailure)
+    let model = await fixture.model(agent: ControlledQueueAgent(), terminalController: terminal,
+      taskAgentLauncher: TaskAgentLauncher(runner: launcher, candidateSockets: []))
+    model.openSubtask(subtask, for: fixture.tickets[0])
+    try await eventually { model.launchingTaskIDs.isEmpty }
+    let commands = await launcher.commands
+    if transportFailure {
+      #expect(commands.isEmpty)
+      #expect(model.subtasks(for: "ECC-101").first?.terminalPaneID == 7)
+    } else {
+      let spawn = try #require(commands.first(where: { $0.arguments.contains("spawn") }))
+      #expect(spawn.arguments.contains("resume"))
+      #expect(spawn.arguments.contains(identity))
+      #expect(spawn.arguments.contains(repository.path))
+      #expect(!spawn.arguments.contains { $0.contains("Work on ECC-101") })
+      #expect(model.subtasks(for: "ECC-101").first?.terminalPaneID == 42)
+      #expect(model.subtasks(for: "ECC-101").first?.sessionID == identity)
+    }
   }
 
   private func eventually(_ condition: @MainActor () async throws -> Bool) async throws {
@@ -700,7 +776,9 @@ private struct Fixture {
 
 private actor DirectCreationRunner: ProcessRunning {
   private(set) var spawnCount = 0
+  private(set) var commands: [ProcessSpecification] = []
   func run(_ specification: ProcessSpecification) throws -> ProcessResult {
+    commands.append(specification)
     if specification.arguments == ["cli", "list", "--format", "json"] {
       return .init(exitCode: 0, standardOutput: "[]", standardError: "", timedOut: false)
     }
@@ -808,5 +886,27 @@ private actor RecallRecorder: WezTermControlling {
   func focusOrResume(session: TaskAgentSession, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     sessions.append(session)
     return .focused(paneID: 42)
+  }
+}
+
+private actor ClosedDirectRecorder: WezTermControlling {
+  let transportFailure: Bool
+  init(transportFailure: Bool) { self.transportFailure = transportFailure }
+  func listAttachablePanes(configuration: WezTermConfiguration) async throws -> [WezTermPane] { [] }
+  func listRunningAgents(configuration: WezTermConfiguration) async throws -> [RunningAgentSession] { [] }
+  func attach(paneID: Int, tabTitle: String, windowTitle: String, configuration: WezTermConfiguration) async throws { }
+  func focusOrSpawn(directory: String, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    throw TestFailure.unexpectedExternalAction
+  }
+  func focusOrResume(session: TaskAgentSession, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    throw TestFailure.unexpectedExternalAction
+  }
+  func openDirectRuntime(paneID: Int, socketPath: String?, taskID: String, provider: AgentProvider,
+    configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    if paneID == 7 {
+      if transportFailure { throw WezTermError.actionFailed("Transport failed") }
+      throw WezTermError.runtimeClosed
+    }
+    return .focused(paneID: paneID)
   }
 }

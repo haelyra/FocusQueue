@@ -415,92 +415,110 @@ struct EmbeddedPlanDocument: NSViewRepresentable {
 struct NewTaskAgentView: View {
   let ticket: DashboardTicket
   let model: QueueViewModel
+  var blank = false
   @Environment(\.dismiss) private var dismiss
-  @State private var title = ""
-  @State private var provider: AgentProvider = .codex
+  @State private var prompt = ""
+  @AppStorage("newAgentProvider") private var provider: AgentProvider = .codex
   @State private var repository = ""
-  @AppStorage("agentIncludesInitializationPrompt") private var includePrompt = true
+  @State private var includePrompt = true
+  @State private var createWorktree = true
+  @State private var assignmentID = UUID().uuidString
+  @State private var sourceWorkspace: AgentWorkspace?
+  @State private var workspaceError: String?
   @AppStorage("agentUsesTmux") private var useTmux = true
 
   private var tmuxAvailable: Bool {
-    guard let executable = model.config.tmuxExecutable ?? SetupEnvironment.executable("tmux") else {
-      return false
-    }
+    guard let executable = model.config.tmuxExecutable ?? SetupEnvironment.executable("tmux") else { return false }
     return FileManager.default.isExecutableFile(atPath: executable)
+  }
+  private var name: String { TaskSubtask.agentName(prompt: prompt, provider: provider) }
+  private var preview: String {
+    guard let context = model.taskContexts[ticket.id] else { return "Task context will be prepared at launch." }
+    var subtask = TaskSubtask(id: assignmentID, title: name, provider: provider)
+    subtask.workspace = proposedWorkspace
+    subtask.initialPrompt = prompt
+    return context.agentPrompt(subtask: subtask)
+  }
+
+  private var proposedWorkspace: AgentWorkspace {
+    var workspace = sourceWorkspace ?? AgentWorkspace(path: repository, repositoryPath: repository)
+    if createWorktree {
+      workspace.path = model.proposedAgentWorktreePath(subtaskID: assignmentID)
+      workspace.branch = "focus-queue/\(ticket.id.lowercased())-\(assignmentID.lowercased())"
+      workspace.managed = true
+    }
+    return workspace
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      Text("New agent · \(ticket.id)").font(.title2.weight(.semibold))
-      Text(
-        "Give this agent a clear assignment. Parallel subtasks share the task's worktree and central plan."
-      )
-      .font(.callout).foregroundStyle(.secondary)
-      TextField("Clear subtask title, for example: Verify Telegram inbox polling", text: $title)
-        .accessibilityLabel("Descriptive subtask title")
-      Picker("Provider", selection: $provider) {
-        ForEach(AgentProvider.allCases, id: \.self) { Text($0.displayName).tag($0) }
-      }.pickerStyle(.segmented)
-      TextField("Repository path", text: $repository).accessibilityLabel("Repository path")
-      Toggle("Send task initialization prompt", isOn: $includePrompt)
-        .help("Turn off to open your usual interactive session without submitting a message")
-      Text(
-        includePrompt
-          ? "The agent receives its assignment, central plan, and progress instructions automatically."
-          : "Opens an interactive session in the task worktree. No message is submitted; you choose what to ask."
-      )
-      .font(.caption).foregroundStyle(.secondary)
-      Toggle(
-        "Keep this agent running in tmux",
-        isOn: Binding(
-          get: { useTmux && tmuxAvailable },
-          set: { useTmux = $0 }
-        )
-      )
-      .disabled(!tmuxAvailable)
-      .help("Keeps the agent alive when its terminal view closes")
-      Text(
-        tmuxAvailable
-          ? (useTmux
-            ? "The terminal can be closed and reopened without stopping this agent."
-            : "This agent belongs to its WezTerm window. Closing that window ends the live session.")
-          : "tmux is not available, so this agent will run directly in WezTerm."
-      )
-      .font(.caption).foregroundStyle(.secondary)
-      Text(
-        "Uses your login shell's codex or claude alias, function, or command, including your custom flags and terminal setup."
-      )
-      .font(.caption).foregroundStyle(.secondary)
-      Text(
-        "An existing task worktree is reused. A main checkout gets a dedicated task branch and worktree."
-      )
-      .font(.caption).foregroundStyle(.secondary)
-      Text("The title appears in every agent list, so describe the outcome instead of using a number.")
-        .font(.caption).foregroundStyle(.secondary)
+    VStack(alignment: .leading, spacing: 12) {
+      Text("\(blank ? "New blank agent" : "New agent") · \(ticket.id)").font(.title2.weight(.semibold))
+      ScrollView {
+        VStack(alignment: .leading, spacing: 12) {
+          Text("Initial prompt").font(.headline)
+          TextEditor(text: $prompt).font(.body).frame(minHeight: 130, maxHeight: 180)
+            .padding(6).overlay(RoundedRectangle(cornerRadius: 6).stroke(.secondary.opacity(0.3)))
+            .accessibilityLabel("Initial prompt")
+          Text("Name: \(name)").font(.caption).foregroundStyle(.secondary)
+          Picker("Provider", selection: $provider) {
+            ForEach(AgentProvider.allCases, id: \.self) { Text($0.displayName).tag($0) }
+          }.pickerStyle(.segmented)
+          TextField("Workspace path", text: $repository).accessibilityLabel("Workspace path")
+          Toggle("Create worktree", isOn: $createWorktree)
+          Text(createWorktree
+            ? "Creates a separate worktree and branch from the selected checkout's current commit. Uncommitted changes must be committed first."
+            : "Uses the selected path and its current branch, including local changes.")
+            .font(.caption).foregroundStyle(.secondary)
+          Text("\(createWorktree ? "New worktree" : "Workspace"): \(proposedWorkspace.path)")
+            .font(.caption).textSelection(.enabled)
+          Text("Branch: \(proposedWorkspace.branch ?? "checking…")")
+            .font(.caption).textSelection(.enabled)
+          if createWorktree, let sourceWorkspace {
+            Text("Source: \(sourceWorkspace.branch ?? "unknown") at \(String((sourceWorkspace.baseCommit ?? "").prefix(8)))")
+              .font(.caption).foregroundStyle(.secondary)
+          }
+          if let workspaceError { Text(workspaceError).font(.caption).foregroundStyle(.orange) }
+          Toggle("Send task initialization prompt", isOn: $includePrompt)
+          Text("Adds the task plan, assignment, and progress instructions to your initial prompt. Turn off to send only your prompt, or leave it empty for a blank session.")
+            .font(.caption).foregroundStyle(.secondary)
+          if includePrompt {
+            DisclosureGroup("Initialization prompt preview") {
+              Text(preview).font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            }
+          }
+          Toggle("Open in tmux", isOn: Binding(get: { useTmux && tmuxAvailable }, set: { useTmux = $0 }))
+            .disabled(!tmuxAvailable)
+          Text("tmux keeps the process alive after closing its terminal. A stopped agent can resume its saved conversation in a new terminal.")
+            .font(.caption).foregroundStyle(.secondary)
+          Text("Uses your login shell's codex or claude alias, function, or command and custom flags.")
+            .font(.caption).foregroundStyle(.secondary)
+        }.padding(2)
+      }
       HStack {
         Spacer()
         Button("Cancel") { dismiss() }
         Button("Start agent") {
-          model.launchAgent(
-            for: ticket, title: title, provider: provider, repositoryPath: repository,
-            includePrompt: includePrompt, useTmux: useTmux && tmuxAvailable)
+          model.launchAgent(for: ticket, title: name, provider: provider, repositoryPath: repository,
+            includePrompt: includePrompt, useTmux: useTmux && tmuxAvailable, createWorktree: createWorktree,
+            initialPrompt: prompt, tracksCompletion: includePrompt, subtaskID: assignmentID)
           dismiss()
-        }.buttonStyle(.borderedProminent)
-          .disabled(
-            title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-              || !repository.hasPrefix("/"))
+        }.buttonStyle(.borderedProminent).disabled(!repository.hasPrefix("/"))
       }
-    }.padding(24).frame(width: 430)
+    }.padding(24).frame(width: 540, height: 660)
+      .task(id: repository) {
+        sourceWorkspace = nil; workspaceError = nil
+        guard !repository.isEmpty else { return }
+        do { sourceWorkspace = try await TaskWorktreeManager().workspace(at: repository) }
+        catch { workspaceError = error.localizedDescription }
+      }
       .onAppear {
-        title = ticket.next.map { String($0.prefix(100)) } ?? "Implement \(ticket.title)"
+        includePrompt = !blank
+        createWorktree = !blank
+        prompt = blank ? "" : (ticket.next ?? "Implement \(ticket.title)")
         let context = model.taskContexts[ticket.id]
-        repository =
-          [
-            context?.worktreePath, context?.repositoryPath, ticket.worktree,
-            model.config.workspacePath,
-          ]
-          .compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0) }
-          ?? model.config.workspacePath
+        repository = [context?.worktreePath, context?.repositoryPath, ticket.worktree, model.config.workspacePath]
+          .compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0) } ?? model.config.workspacePath
       }
   }
 }

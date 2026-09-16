@@ -13,11 +13,13 @@ public struct TmuxSessionReference: Codable, Equatable, Sendable {
 
 public enum TmuxError: Error, LocalizedError {
   case invalidName
+  case stopped
   case unavailable(String)
   case startedButUnconfirmed(name: String, executable: String, attempts: Int, lastDetail: String)
   case changed
   public var errorDescription: String? {
     switch self {
+    case .stopped: "The tmux agent has stopped."
     case .invalidName: "Session names must contain 1 to 80 letters, numbers, hyphens or underscores, starting with a letter or number."
     case .unavailable(let detail): "tmux could not open the agent session: \(detail)"
     case .startedButUnconfirmed(let name, _, let attempts, let lastDetail):
@@ -114,8 +116,12 @@ public actor TmuxController {
   public func inspect(name: String, executable: String) async throws -> TmuxSessionReference {
     try Self.validateName(name)
     let result = try await run(executable, ["display-message", "-p", "-t", "=\(name):0.0", Self.format])
+    if !result.succeeded, !result.timedOut,
+       ["no server running", "No such file or directory", "can't find", "no sessions"].contains(where: result.standardError.contains) {
+      throw TmuxError.stopped
+    }
     guard result.succeeded, let reference = try Self.decode(result.standardOutput, executable: executable).first,
-      reference.name == name else { throw TmuxError.unavailable("The named session is not running. No replacement was started.") }
+      reference.name == name else { throw TmuxError.unavailable("Could not determine whether the saved agent is running. Retry before starting another process.") }
     return reference
   }
 
@@ -123,6 +129,12 @@ public actor TmuxController {
     let current = try await inspect(name: saved.name, executable: saved.executable)
     guard current == saved else { throw TmuxError.changed }
     return current
+  }
+
+  public func stop(_ saved: TmuxSessionReference) async throws {
+    do { _ = try await verify(saved) } catch TmuxError.stopped { return }
+    let result = try await run(saved.executable, ["kill-session", "-t", "=\(saved.name)"])
+    guard result.succeeded else { throw TmuxError.unavailable("Could not close the completed agent runtime.") }
   }
 
   public func clientTTYs(for reference: TmuxSessionReference) async throws -> Set<String> {

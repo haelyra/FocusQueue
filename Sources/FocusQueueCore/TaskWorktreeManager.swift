@@ -11,6 +11,92 @@ public actor TaskWorktreeManager {
     private let runner: any ProcessRunning
     public init(runner: any ProcessRunning = FoundationProcessRunner()) { self.runner = runner }
 
+    public func workspace(at path: String) async throws -> AgentWorkspace {
+        guard path.hasPrefix("/"), FileManager.default.fileExists(atPath: path) else {
+            throw TaskContextError.unsafeWorktree("The saved workspace is missing: \(path)")
+        }
+        let root = try await git(["rev-parse", "--show-toplevel"], in: path).trimmingCharacters(in: .whitespacesAndNewlines)
+        let branch = try await git(["symbolic-ref", "--short", "HEAD"], in: path).trimmingCharacters(in: .whitespacesAndNewlines)
+        let commit = try await git(["rev-parse", "HEAD"], in: path).trimmingCharacters(in: .whitespacesAndNewlines)
+        return AgentWorkspace(path: path, repositoryPath: root, branch: branch,
+            baseBranch: branch, baseCommit: commit, managed: false)
+    }
+
+    public func provisionAgent(ticketID: String, subtaskID: String, path: String,
+                               createWorktree: Bool, store: TaskContextStore) async throws -> AgentWorkspace {
+        let source = try await workspace(at: path)
+        guard createWorktree else { return source }
+        let status = try await git(["status", "--porcelain", "--untracked-files=all"], in: path)
+        guard status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw TaskContextError.unsafeWorktree("The selected checkout has uncommitted changes. Commit them first, or turn off Create worktree to use this checkout with those changes.")
+        }
+        guard UUID(uuidString: subtaskID) != nil else { throw TaskContextError.invalidIdentifier }
+        let destination = store.root.appendingPathComponent("worktrees/agents/\(subtaskID)")
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let branch = "focus-queue/\(ticketID.lowercased())-\(subtaskID.lowercased())"
+        _ = try await git(["worktree", "add", "-b", branch, destination.path, source.baseCommit!], in: path)
+        return AgentWorkspace(path: destination.path, repositoryPath: source.repositoryPath,
+            branch: branch, baseBranch: source.branch, baseCommit: source.baseCommit, managed: true)
+    }
+
+    /// Never change branches underneath another agent to make a resume succeed.
+    public func validate(_ saved: AgentWorkspace) async throws {
+        let actual = try await workspace(at: saved.path)
+        guard saved.branch == nil || actual.branch == saved.branch else {
+            throw TaskContextError.unsafeWorktree("Workspace branch changed from \(saved.branch ?? "unknown") to \(actual.branch ?? "detached"). Restore the assigned branch or record an approved workspace change before reopening.")
+        }
+    }
+
+    public func cleanupAgent(ticketID: String, subtask: TaskSubtask, store: TaskContextStore) async throws -> TaskWorktreeCleanupResult {
+        let workspaces = (subtask.workspaceHistory + [subtask.workspace].compactMap { $0 }).filter(\.managed)
+        var result = TaskWorktreeCleanupResult(removed: false, message: "Existing workspace retained.")
+        for workspace in workspaces {
+            var historical = subtask
+            historical.workspace = workspace
+            result = try await cleanupManagedAgent(ticketID: ticketID, subtask: historical, store: store)
+            if !result.removed { return result }
+        }
+        return result
+    }
+
+    private func cleanupManagedAgent(ticketID: String, subtask: TaskSubtask, store: TaskContextStore) async throws -> TaskWorktreeCleanupResult {
+        guard let workspace = subtask.workspace, workspace.managed else {
+            return .init(removed: false, message: "Existing workspace retained.")
+        }
+        let expected = store.root.appendingPathComponent("worktrees/agents/\(subtask.id)").standardizedFileURL
+        guard URL(fileURLWithPath: workspace.path).standardizedFileURL == expected,
+              expected.resolvingSymlinksInPath() == expected else {
+            throw TaskContextError.unsafeWorktree("Agent worktree is outside its managed location.")
+        }
+        guard FileManager.default.fileExists(atPath: workspace.path) else {
+            return .init(removed: true, message: "Agent worktree already removed; branch and context retained.")
+        }
+        let contexts = try await store.loadAll()
+        if contexts.contains(where: { context in
+            context.subtasks.contains { other in
+                (context.ticketID != ticketID || other.id != subtask.id)
+                    && other.isAgentVisible && other.workspace?.path == workspace.path
+            }
+        }) {
+            return .init(removed: false, message: "Agent worktree retained: another active agent uses it.")
+        }
+        try await validate(workspace)
+        let changes = try await git(["status", "--porcelain", "--untracked-files=all"], in: workspace.path)
+        let ignored = try await git(["ls-files", "--others", "--ignored", "--exclude-standard"], in: workspace.path)
+        guard changes.isEmpty && ignored.isEmpty else {
+            return .init(removed: false, message: "Agent worktree retained: it contains uncommitted, untracked, or ignored files.")
+        }
+        guard let base = workspace.baseBranch else { throw TaskContextError.unsafeWorktree("Missing base branch.") }
+        let merged = try await runner.run(.init(executable: "/usr/bin/git",
+            arguments: ["merge-base", "--is-ancestor", "HEAD", base], workingDirectory: workspace.path))
+        guard merged.succeeded else {
+            return .init(removed: false, message: "Agent worktree retained: its commits have not been merged into \(base).")
+        }
+        try await store.archive(ticketID: ticketID)
+        _ = try await git(["worktree", "remove", workspace.path], in: workspace.repositoryPath)
+        return .init(removed: true, message: "Clean, merged agent worktree removed; branch and context retained.")
+    }
+
     public func provision(ticket: DashboardTicket, repositoryPath: String, store: TaskContextStore) async throws -> TaskContext {
         let initial = try await store.ensureContext(ticket: ticket)
         let repository = try await git(["rev-parse", "--show-toplevel"], in: repositoryPath).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -58,7 +144,7 @@ public actor TaskWorktreeManager {
               expected.resolvingSymlinksInPath() == expected else {
             throw TaskContextError.unsafeWorktree("Cleanup refused because the registered worktree is outside the managed location or resolves through a symbolic link.")
         }
-        guard context.subtasks.allSatisfy({ $0.status == .completed }) else {
+        guard context.subtasks.filter(\.tracksCompletion).allSatisfy({ $0.status == .completed }) else {
             return .init(removed: false, message: "Some subtasks are still open. Complete or review them before closing the task.")
         }
         guard FileManager.default.fileExists(atPath: path) else {

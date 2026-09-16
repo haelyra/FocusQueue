@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public struct TaskWorktreeCleanupResult: Equatable, Sendable {
     public let removed: Bool
@@ -86,6 +87,10 @@ public actor TaskWorktreeManager {
         guard FileManager.default.fileExists(atPath: workspace.path) else {
             return .init(removed: true, message: "Agent worktree already removed; branch and context retained.")
         }
+        let workspaceIdentity = try await managedWorkspaceIdentity(
+            path: workspace.path,
+            expected: expected,
+            repositoryPath: workspace.repositoryPath)
         let contexts = try await store.loadAll()
         if contexts.contains(where: { context in
             context.subtasks.contains { other in
@@ -109,6 +114,11 @@ public actor TaskWorktreeManager {
             return .init(removed: false, message: "Agent worktree retained: its commits have not been merged into \(base).")
         }
         try await store.archive(ticketID: ticketID)
+        try await requireUnchangedManagedWorkspace(
+            path: workspace.path,
+            expected: expected,
+            repositoryPath: workspace.repositoryPath,
+            baseline: workspaceIdentity)
         _ = try await git(["worktree", "remove", workspace.path], in: workspace.repositoryPath)
         return .init(removed: true, message: "Clean, merged agent worktree removed; branch and context retained.")
     }
@@ -168,6 +178,10 @@ public actor TaskWorktreeManager {
             _ = try await store.setWorktree(ticketID: ticketID, path: nil, branch: branch, baseBranch: base, managed: false)
             return .init(removed: true, message: "The managed worktree was already removed. Its context and archive remain available.")
         }
+        let workspaceIdentity = try await managedWorkspaceIdentity(
+            path: path,
+            expected: expected,
+            repositoryPath: repository)
         let actualRoot = try await git(["rev-parse", "--show-toplevel"], in: path).trimmingCharacters(in: .whitespacesAndNewlines)
         guard URL(fileURLWithPath: actualRoot).standardizedFileURL == expected else {
             throw TaskContextError.unsafeWorktree("Cleanup refused because the registered path is not the worktree root.")
@@ -204,6 +218,11 @@ public actor TaskWorktreeManager {
         }
         // Archive first. A failed archival write must leave the worktree intact.
         try await store.archive(ticketID: ticketID)
+        try await requireUnchangedManagedWorkspace(
+            path: path,
+            expected: expected,
+            repositoryPath: repository,
+            baseline: workspaceIdentity)
         _ = try await git(["worktree", "remove", path], in: repository)
         _ = try await store.setWorktree(ticketID: ticketID, path: nil, branch: branch, baseBranch: base, managed: false)
         // Branch deletion is intentionally separate from successful workspace cleanup.
@@ -229,5 +248,100 @@ public actor TaskWorktreeManager {
             throw TaskContextError.commandFailed(result.standardError.isEmpty ? "Git failed: \(arguments.joined(separator: " "))" : result.standardError)
         }
         return result.standardOutput
+    }
+
+    private struct FileIdentity: Equatable, Sendable {
+        let device: UInt64
+        let inode: UInt64
+    }
+
+    private struct ManagedWorkspaceIdentity: Equatable, Sendable {
+        let file: FileIdentity
+        let gitDirectory: String
+        let commonDirectory: String
+    }
+
+    private func fileIdentity(at path: String) throws -> FileIdentity {
+        var metadata = stat()
+        guard Darwin.lstat(path, &metadata) == 0,
+              metadata.st_mode & S_IFMT == S_IFDIR else {
+            throw TaskContextError.unsafeWorktree(
+                "Managed workspace identity is unavailable or is not a directory.")
+        }
+        return FileIdentity(
+            device: UInt64(metadata.st_dev),
+            inode: UInt64(metadata.st_ino))
+    }
+
+    private func managedWorkspaceIdentity(
+        path: String,
+        expected: URL,
+        repositoryPath: String
+    ) async throws -> ManagedWorkspaceIdentity {
+        let pathURL = URL(fileURLWithPath: path).standardizedFileURL
+        guard pathURL == expected,
+              expected.resolvingSymlinksInPath() == expected else {
+            throw TaskContextError.unsafeWorktree(
+                "Managed workspace identity changed or resolves through a symbolic link.")
+        }
+        let file = try fileIdentity(at: path)
+        let root = try await git(
+            ["rev-parse", "--show-toplevel"], in: path)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard URL(fileURLWithPath: root).standardizedFileURL == expected else {
+            throw TaskContextError.unsafeWorktree(
+                "Managed workspace identity changed from its registered root.")
+        }
+        let gitDirectory = try await git(
+            ["rev-parse", "--path-format=absolute", "--absolute-git-dir"], in: path)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let commonDirectory = try await git(
+            ["rev-parse", "--path-format=absolute", "--git-common-dir"], in: path)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let repositoryCommonDirectory = try await git(
+            ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            in: repositoryPath)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedGitDirectory = URL(fileURLWithPath: gitDirectory)
+            .standardizedFileURL.resolvingSymlinksInPath().path
+        let normalizedCommonDirectory = URL(fileURLWithPath: commonDirectory)
+            .standardizedFileURL.resolvingSymlinksInPath().path
+        let normalizedRepositoryCommon = URL(fileURLWithPath: repositoryCommonDirectory)
+            .standardizedFileURL.resolvingSymlinksInPath().path
+        guard normalizedCommonDirectory == normalizedRepositoryCommon,
+              normalizedGitDirectory.hasPrefix(normalizedCommonDirectory + "/worktrees/") else {
+            throw TaskContextError.unsafeWorktree(
+                "Managed workspace Git registration does not match its repository.")
+        }
+        return ManagedWorkspaceIdentity(
+            file: file,
+            gitDirectory: normalizedGitDirectory,
+            commonDirectory: normalizedCommonDirectory)
+    }
+
+    private func requireUnchangedManagedWorkspace(
+        path: String,
+        expected: URL,
+        repositoryPath: String,
+        baseline: ManagedWorkspaceIdentity
+    ) async throws {
+        guard (try? fileIdentity(at: path)) == baseline.file else {
+            throw TaskContextError.unsafeWorktree(
+                "Managed workspace identity changed during cleanup; no files were removed.")
+        }
+        let current: ManagedWorkspaceIdentity
+        do {
+            current = try await managedWorkspaceIdentity(
+                path: path,
+                expected: expected,
+                repositoryPath: repositoryPath)
+        } catch {
+            throw TaskContextError.unsafeWorktree(
+                "Managed workspace identity changed during cleanup; no files were removed.")
+        }
+        guard current == baseline else {
+            throw TaskContextError.unsafeWorktree(
+                "Managed workspace identity changed during cleanup; no files were removed.")
+        }
     }
 }

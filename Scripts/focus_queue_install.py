@@ -18,6 +18,7 @@ import sys
 
 PRODUCT = "ECC Focus Queue"
 IDENTIFIER = "com.haelyra.ecc-focus-queue"
+TREE_DIGEST_ALGORITHM = "sha256-tree-v1"
 AUTOMATION_FILES = (
     "Scripts/focus_queue_morning.py",
     "Scripts/focus_queue_codex.py",
@@ -58,6 +59,22 @@ def tree_digest(path):
     return value.hexdigest()
 
 
+def legacy_tree_digest(path):
+    value = hashlib.sha256()
+    for item in sorted(path.rglob("*")):
+        if item.is_symlink():
+            raise ValueError(f"Symlink inside managed directory requires review: {item}")
+        if item.is_dir():
+            continue
+        if not item.is_file():
+            raise ValueError(f"Special file inside managed directory requires review: {item}")
+        value.update(str(item.relative_to(path)).encode())
+        value.update(b"\0")
+        value.update(item.read_bytes())
+        value.update(b"\0")
+    return value.hexdigest()
+
+
 def validate_automation_tree(path):
     if path.is_symlink() or not path.is_dir():
         raise ValueError(f"Built app automation is not a regular directory: {path}")
@@ -78,6 +95,17 @@ def validate_automation_tree(path):
             f"Built app automation payload is incomplete or unexpected; "
             f"missing={missing}, extra={extra}."
         )
+
+
+def automation_digest_matches(path, artifact):
+    validate_automation_tree(path)
+    recorded = artifact.get("sha256")
+    algorithm = artifact.get("digestAlgorithm")
+    if algorithm == TREE_DIGEST_ALGORITHM:
+        return tree_digest(path) == recorded
+    if algorithm is None:
+        return recorded in {tree_digest(path), legacy_tree_digest(path)}
+    return False
 
 
 @contextmanager
@@ -170,7 +198,7 @@ class Installer:
             )
             if automation_entry is not None and self.automation.exists():
                 if (self.automation.is_symlink() or not self.automation.is_dir()
-                        or tree_digest(self.automation) != automation_entry.get("sha256")):
+                        or not automation_digest_matches(self.automation, automation_entry)):
                     raise ValueError(
                         f"Installed automation changed; retained for review: {self.automation}")
         return {"mode": "preflight", "application": str(self.app), "helper": str(self.helper),
@@ -252,7 +280,9 @@ class Installer:
                 "artifacts": [{"path": str(target),
                                "kind": "symlink" if source.is_symlink() else "directory" if source.is_dir() else "file",
                                "sha256": digest(source) if source.is_file() and not source.is_symlink()
-                               else tree_digest(source) if target == self.automation else None}
+                               else tree_digest(source) if target == self.automation else None,
+                               **({"digestAlgorithm": TREE_DIGEST_ALGORITHM}
+                                  if target == self.automation else {})}
                               for source, target in planned],
                 "launchAtLogin": self.login, "desktopShortcut": self.shortcut}
             staged_manifest = stage / "manifest.json"
@@ -334,7 +364,7 @@ def _uninstall_locked(installer, home, *, check, stop):
                     raise ValueError(f"App identity changed; retained: {path}")
             elif path == installer.automation:
                 if (path.is_symlink() or not path.is_dir()
-                        or tree_digest(path) != item["sha256"]):
+                        or not automation_digest_matches(path, item)):
                     raise ValueError(f"Installed automation changed; retained: {path}")
             elif not path.is_file() or digest(path) != item["sha256"]:
                 raise ValueError(f"Installed file changed; retained: {path}")

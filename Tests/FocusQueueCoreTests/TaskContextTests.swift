@@ -102,6 +102,7 @@ func generatedAgentNamesAreReadableTitles() {
         prompt: "Audit ECC035 iOS and tmux integration across provider sessions before release",
         provider: .codex) == "Audit ECC035 iOS and tmux integration")
     #expect(TaskSubtask.agentName(prompt: "iOS crash recovery", provider: .codex) == "iOS crash recovery")
+    #expect(TaskSubtask.agentName(prompt: "tmux session recovery", provider: .codex) == "tmux session recovery")
     #expect(TaskSubtask.agentName(prompt: "  \n  ", provider: .claude) == "Blank Claude agent")
     #expect(TaskSubtask.agentName(prompt: "!!!", provider: .claude) == "Untitled Claude task")
 }

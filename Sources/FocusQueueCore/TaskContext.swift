@@ -129,9 +129,22 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
               trailingFillers.contains(last.lowercased()) {
             words.removeLast()
         }
-        guard !words.isEmpty else { return "Blank \(provider.displayName) agent" }
+        if words.isEmpty, let first = candidates.first {
+            let token = first.trimmingCharacters(in: .punctuationCharacters)
+            if !token.isEmpty { words = [String(token.prefix(56))] }
+        }
+        guard !words.isEmpty else {
+            return firstLine.isEmpty
+                ? "Blank \(provider.displayName) agent"
+                : "Untitled \(provider.displayName) task"
+        }
         var title = words.joined(separator: " ").trimmingCharacters(in: .punctuationCharacters)
-        if let first = title.first, first.isLowercase {
+        guard !title.isEmpty else { return "Untitled \(provider.displayName) task" }
+        let firstWord = title.prefix { !$0.isWhitespace }
+        let lowercaseTechnicalTerms: Set<String> = ["git", "npm", "tmux"]
+        if let first = title.first, first.isLowercase,
+           !firstWord.dropFirst().contains(where: \.isUppercase),
+           !lowercaseTechnicalTerms.contains(firstWord.lowercased()) {
             title.replaceSubrange(title.startIndex...title.startIndex, with: String(first).uppercased())
         }
         return title

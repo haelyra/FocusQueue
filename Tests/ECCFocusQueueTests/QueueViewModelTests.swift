@@ -58,6 +58,22 @@ struct QueueViewModelTests {
     #expect(saved.status == .working)
     #expect(saved.progressSummary == "Concurrent agent progress")
     #expect(saved.sessionID == "live-session")
+
+    let current = try #require(model.focusSubtasks(for: "ECC-101").first)
+    model.updateSubtask(
+      current, for: fixture.tickets[0], title: "Readable updated title",
+      explanation: "Superseded explanation")
+    model.updateSubtask(
+      current, for: fixture.tickets[0], title: "Readable updated title",
+      explanation: "Newest explanation")
+    #expect(
+      model.focusSubtasks(for: "ECC-101").first?.assignmentDescription
+        == "Newest explanation")
+    try await eventually {
+      guard model.actionMessages["ECC-101"] == "Subtask updated." else { return false }
+      return try await externalStore.load(ticketID: "ECC-101")?.subtasks.first?
+        .assignmentDescription == "Newest explanation"
+    }
   }
 
   @Test("New subtask agents and additional agents preserve independent assignments and workspaces")

@@ -124,6 +124,8 @@ final class QueueViewModel {
   @ObservationIgnored private var lastActivityCheck = Date()
   @ObservationIgnored private let agentActivityObserver = AgentActivityObserver()
   @ObservationIgnored private var lastIdentityRefresh: Date?
+  @ObservationIgnored private var subtaskEditTokens: [String: UUID] = [:]
+  @ObservationIgnored private var subtaskEditTasks: [String: Task<Void, Never>] = [:]
 
   @ObservationIgnored var placementHandler: ((QueueWindowPlacement) -> Void)?
   @ObservationIgnored var monitorSwitchHandler: (() -> Void)?
@@ -875,31 +877,48 @@ final class QueueViewModel {
       return
     }
     let trimmedExplanation = explanation?.trimmingCharacters(in: .whitespacesAndNewlines)
-    var updated = subtask
-    updated.title = String(trimmedTitle.prefix(200))
-    updated.assignmentDescription = trimmedExplanation?.isEmpty == false
+    let updatedTitle = String(trimmedTitle.prefix(200))
+    let updatedExplanation = trimmedExplanation?.isEmpty == false
       ? String(trimmedExplanation!.prefix(2_000)) : ""
-    let previousContext = taskContexts[ticket.id]
-    if var optimisticContext = previousContext,
+    let key = Self.subtaskKey(ticketID: ticket.id, subtaskID: subtask.id)
+    let token = UUID()
+    subtaskEditTokens[key] = token
+    var previousFields: (title: String, explanation: String)?
+    if var optimisticContext = taskContexts[ticket.id],
        let index = optimisticContext.subtasks.firstIndex(where: { $0.id == subtask.id }) {
-      optimisticContext.subtasks[index] = updated
+      previousFields = (
+        optimisticContext.subtasks[index].title,
+        optimisticContext.subtasks[index].assignmentDescription)
+      optimisticContext.subtasks[index].title = updatedTitle
+      optimisticContext.subtasks[index].assignmentDescription = updatedExplanation
       optimisticContext.updatedAt = Date()
       taskContexts[ticket.id] = optimisticContext
     }
     actionMessages[ticket.id] = "Saving subtask…"
-    Task {
+    let precedingEdit = subtaskEditTasks[key]
+    subtaskEditTasks[key] = Task {
+      await precedingEdit?.value
+      guard subtaskEditTokens[key] == token else { return }
       do {
-        let saved = try await taskContextStore.upsertSubtask(
-          ticketID: ticket.id, subtask: updated)
-        if taskContexts[ticket.id]?.subtasks.first(where: { $0.id == subtask.id })?.title
-          == updated.title {
-          taskContexts[ticket.id] = saved
-          actionMessages[ticket.id] = "Subtask updated."
-        }
+        _ = try await taskContextStore.renameSubtask(
+          ticketID: ticket.id, subtaskID: subtask.id, title: updatedTitle,
+          assignmentDescription: updatedExplanation)
+        guard subtaskEditTokens[key] == token else { return }
+        subtaskEditTokens[key] = nil
+        subtaskEditTasks[key] = nil
+        actionMessages[ticket.id] = "Subtask updated."
       } catch {
-        if taskContexts[ticket.id]?.subtasks.first(where: { $0.id == subtask.id })?.title
-          == updated.title {
-          taskContexts[ticket.id] = previousContext
+        guard subtaskEditTokens[key] == token else { return }
+        subtaskEditTokens[key] = nil
+        subtaskEditTasks[key] = nil
+        if var current = taskContexts[ticket.id],
+           let index = current.subtasks.firstIndex(where: { $0.id == subtask.id }),
+           current.subtasks[index].title == updatedTitle,
+           current.subtasks[index].assignmentDescription == updatedExplanation,
+           let previousFields {
+          current.subtasks[index].title = previousFields.title
+          current.subtasks[index].assignmentDescription = previousFields.explanation
+          taskContexts[ticket.id] = current
         }
         actionMessages[ticket.id] = "Could not save the subtask: \(error.localizedDescription)"
       }

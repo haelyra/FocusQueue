@@ -150,6 +150,13 @@ public struct TaskContext: Codable, Equatable, Sendable {
         let support = contextDirectory.deletingLastPathComponent().deletingLastPathComponent().path
         let quotedSupport = "'" + support.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
         let command = "FOCUS_QUEUE_SUPPORT_DIR=\(quotedSupport) focus-queue-session"
+        let mapHelper = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Applications/ECC Focus Queue.app/Contents/MacOS/focus-queue-map").path
+        let quotedMapHelper = "'" + mapHelper.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+        let scopeInstruction = FileManager.default.isExecutableFile(atPath: mapHelper) ? """
+        Keep your map scope current after registration and when your files change: FOCUS_QUEUE_SUPPORT_DIR=\(quotedSupport) \(quotedMapHelper) scope \(ticketID) \(subtask.id) --input <context-file> --output <output-file>
+        Repeat --input/--output for multiple files; each call replaces your previous scope. Declare only your actual context and intended outputs. Git changes alone do not establish ownership.
+        """ : ""
         if subtask.status == .completed {
             return """
             Resume \(ticketID): \(title). Your subtask \(subtask.title) (\(subtask.id)) is already completed.
@@ -167,6 +174,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
         Success criteria: \(successCriteria)
         Register this pane: FOCUS_QUEUE_PROVIDER=\(subtask.provider.rawValue) FOCUS_QUEUE_TASK_ID=\(ticketID) FOCUS_QUEUE_SUBTASK_ID=\(subtask.id) \(command) attach \(ticketID)
         Report concise progress and refresh activity at meaningful milestones (at least every 5 minutes while working): \(command) progress \(ticketID) \(subtask.id) working "short progress summary"
+        \(scopeInstruction)
         Use idle or blocked when waiting. On completion: \(command) complete \(ticketID) \(subtask.id) "what changed and verification result"
         Before any push, run \(command) review-push \(ticketID) \(subtask.id). The orchestrator scans the committed diff for accidental files, unrelated additions, generated output, and missing checks. If rejected, correct only your changes and run review-push again. Push only after acceptance and only when the user authorized remote delivery. Never push directly to main unless explicitly requested.
         Propose scope, branch, or plan changes to the task orchestrator before acting. Record approved workspace changes with \(command) workspace \(ticketID) \(subtask.id) <absolute-path>.

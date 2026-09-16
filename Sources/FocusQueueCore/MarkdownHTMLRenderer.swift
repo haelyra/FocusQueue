@@ -5,7 +5,7 @@ public enum MarkdownHTMLRenderer {
   public static func page(
     markdown: String, sourceURL: URL, accentStyle: QueueAccentStyle = .vibrant
   ) -> String {
-    let parser = MarkdownParser(modifiers: [headingModifier, mermaidModifier])
+    let parser = MarkdownParser(modifiers: [headingModifier, mermaidModifier, taskListModifier])
     let body = parser.html(from: markdown)
     let title = escapeHTML(sourceURL.lastPathComponent)
     let baseURL = escapeHTML(
@@ -26,30 +26,28 @@ public enum MarkdownHTMLRenderer {
         <style>
           :root {
             color-scheme: light dark;
-            --page: light-dark(#f7f8fc, #0c1019);
-            --surface: light-dark(#ffffff, #121827);
-            --surface-raised: light-dark(#f2f4fa, #171e30);
-            --surface-hover: light-dark(#eceffd, #1c2540);
-            --border: light-dark(#d9deeb, #29324a);
-            --border-strong: light-dark(#bcc5da, #3b4665);
-            --text: light-dark(#17203b, #edf0f8);
-            --text-secondary: light-dark(#5d6883, #9ba6c1);
-            --text-tertiary: light-dark(#8791aa, #6f7a96);
+            --page: light-dark(#f3f3f3, #242424);
+            --surface: light-dark(#ffffff, #292929);
+            --surface-raised: light-dark(#ededed, #303030);
+            --surface-hover: light-dark(#e7e7e7, #363636);
+            --border: light-dark(#d5d5d5, #454545);
+            --border-strong: light-dark(#bdbdbd, #626262);
+            --text: light-dark(#252525, #eeeeee);
+            --text-secondary: light-dark(#606060, #b2b2b2);
+            --text-tertiary: light-dark(#777777, #969696);
             \(accentTokens)
             --radius: 12px;
             --radius-small: 7px;
           }
           * { box-sizing: border-box; }
-          html { min-height: 100%; -webkit-font-smoothing: antialiased; }
+          html { background: var(--page); min-height: 100%; -webkit-font-smoothing: antialiased; }
           body {
             min-height: 100vh;
-            max-width: 920px;
+            max-width: 1100px;
             margin: 0 auto;
-            padding: 48px 52px 90px;
+            padding: 28px 34px 64px;
             color: var(--text);
-            background:
-              radial-gradient(circle at 8% -8%, var(--accent-glow), transparent 34%),
-              var(--page);
+            background: var(--page);
             font: 15.5px/1.66 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
             overflow-wrap: break-word;
           }
@@ -70,7 +68,7 @@ public enum MarkdownHTMLRenderer {
             width: 62px;
             height: 4px;
             border-radius: 99px;
-            background: linear-gradient(90deg, var(--accent), var(--accent-companion));
+            background: var(--border-strong);
           }
           h2 { padding-bottom: 0.42em; border-bottom: 1px solid var(--border); font-size: 21px; }
           h3 { font-size: 17px; }
@@ -83,6 +81,8 @@ public enum MarkdownHTMLRenderer {
           p, li, blockquote { text-wrap: pretty; }
           ul, ol { padding-left: 1.45em; }
           li { margin: 0.28em 0; }
+          li.task-list-item { list-style: none; margin-left: -1.3em; }
+          .task-checkbox { width: 14px; height: 14px; margin: 0 7px 0 0; vertical-align: middle; accent-color: var(--text-secondary); opacity: 1; }
           a {
             color: var(--accent);
             font-weight: 520;
@@ -144,7 +144,7 @@ public enum MarkdownHTMLRenderer {
             cursor: pointer;
             border: 1px solid var(--border);
             border-radius: calc(var(--radius) + 6px);
-            background: linear-gradient(145deg, var(--surface), var(--accent-glow));
+            background: var(--surface);
             box-shadow: 0 1px 2px light-dark(rgba(27, 35, 64, 0.06), rgba(0, 0, 0, 0.28));
             transition-property: border-color, box-shadow, transform, background-color;
             transition-duration: 150ms;
@@ -219,6 +219,21 @@ public enum MarkdownHTMLRenderer {
       .replacingOccurrences(of: "\"", with: "&quot;")
       .replacingOccurrences(of: "<", with: "&lt;")
       .replacingOccurrences(of: ">", with: "&gt;")
+  }
+
+  private static var taskListModifier: Modifier {
+    Modifier(target: .lists) { input in
+      // Modify parsed list items only. Literal examples in code remain literal.
+      guard let regex = try? NSRegularExpression(pattern: #"<li>(<p>)?\[([ xX])\]\s*"#) else { return input.html }
+      var html = input.html
+      for match in regex.matches(in: html, range: NSRange(html.startIndex..., in: html)).reversed() {
+        guard let range = Range(match.range, in: html), let marker = Range(match.range(at: 2), in: html) else { continue }
+        let checked = html[marker].lowercased() == "x"
+        let paragraph = match.range(at: 1).location == NSNotFound ? "" : "<p>"
+        html.replaceSubrange(range, with: "<li class=\"task-list-item\">\(paragraph)<input class=\"task-checkbox\" type=\"checkbox\" disabled\(checked ? " checked" : "") aria-label=\"\(checked ? "Completed task" : "Incomplete task")\"> ")
+      }
+      return html
+    }
   }
 
   private static var headingModifier: Modifier {

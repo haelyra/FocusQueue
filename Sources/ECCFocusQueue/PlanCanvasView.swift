@@ -11,9 +11,11 @@ struct PlanCanvasView: View {
   @State private var editDraft = ""
   @State private var editBaseline = ""
   @State private var isSaving = false
-  @State private var documentTabs = PlanDocumentTabs()
+  @State private var sideDocuments = DocumentPaneState()
   @State private var canvasSelection: PlanCanvasSelection?
   @State private var composerFocusRequest = 0
+  @State private var showsWorkspaceMap = false
+  @State private var workspaceMap = WorkspaceMapModel()
 
   private var sourceURL: URL {
     model.presentedPlanURL ?? URL(fileURLWithPath: model.taskContexts[ticket.id]?.planPath ?? "/")
@@ -24,15 +26,11 @@ struct PlanCanvasView: View {
       HStack(alignment: .top, spacing: 8) {
         Image(systemName: "square.grid.2x2.fill")
           .font(.system(size: 14, weight: .semibold))
-          .foregroundStyle(.white)
+          .foregroundStyle(.secondary)
           .frame(width: 34, height: 34)
-          .background(
-            LinearGradient(
-              colors: [Color.accentColor, Color.accentColor.opacity(0.62)],
-              startPoint: .topLeading, endPoint: .bottomTrailing),
-            in: RoundedRectangle(cornerRadius: 9))
+          .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
         VStack(alignment: .leading, spacing: 3) {
-          Text(model.presentedPlanURL == nil ? "Central plan" : "Supporting document")
+          Text(showsWorkspaceMap ? "Workspace map" : (model.presentedPlanURL == nil ? "Central plan" : "Supporting document"))
             .font(.system(size: 20, weight: .bold, design: .rounded))
           Text("\(ticket.id) · \(ticket.title)").font(.caption).foregroundStyle(.secondary)
             .lineLimit(2)
@@ -47,16 +45,10 @@ struct PlanCanvasView: View {
         .padding(.horizontal, 9).padding(.vertical, 6)
         .background(Color.secondary.opacity(0.09), in: Capsule())
         Menu {
-          Button("Central plan") { model.openPlan(for: ticket) }
+          Button("Central plan") { showsWorkspaceMap = false; model.openPlan(for: ticket) }
           ForEach(ticket.planLinks) { link in
             Button(link.label) {
-              if let url = ResourceLocator.url(for: link.url), url.isFileURL,
-                ["md", "markdown"].contains(url.pathExtension.lowercased())
-              {
-                openDocument(url)
-              } else {
-                model.open(link.url)
-              }
+              if let url = ResourceLocator.url(for: link.url) { openDocument(url) }
             }
           }
         } label: {
@@ -66,6 +58,7 @@ struct PlanCanvasView: View {
         .help("Choose the central plan or a supporting document").accessibilityLabel("Choose plan")
         if model.presentedPlanURL == nil {
           Button {
+            showsWorkspaceMap = false
             editDraft = model.planEditDrafts[ticket.id]?.markdown ?? model.presentedPlanMarkdown
             editBaseline = model.planEditDrafts[ticket.id]?.baseline ?? model.presentedPlanMarkdown
             isEditing.toggle()
@@ -96,19 +89,48 @@ struct PlanCanvasView: View {
         Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
           .frame(maxWidth: .infinity, alignment: .leading)
       }
+      if let error = sideDocuments.error {
+        HStack {
+          Text(error).font(.caption).foregroundStyle(.orange)
+          Button("Dismiss") { sideDocuments.error = nil }.font(.caption)
+        }
+      }
 
+      if sideDocuments.isPresented {
+        HStack {
+          Button(sideDocuments.centralChatCollapsed ? "Show central chat" : "Hide central chat") {
+            sideDocuments.centralChatCollapsed.toggle()
+          }.font(.caption)
+          if model.isQueueAgentResponding && model.respondingTicketID == ticket.id {
+            ProgressView().controlSize(.mini)
+            Text("Central conversation is still working").font(.caption).foregroundStyle(.secondary)
+          }
+          Spacer()
+        }
+      }
       GeometryReader { geometry in
         ScrollView(.horizontal) {
-          HSplitView {
-            if model.windowPlacement == .upperRight { conversation }
-            document
-            if model.windowPlacement != .upperRight { conversation }
+          if sideDocuments.isPresented {
+            PlanPaneSplit(initialFraction: 0.5, minimumPrimary: 500, minimumSecondary: 460) {
+              VStack(spacing: 8) {
+                document
+                if !sideDocuments.centralChatCollapsed { conversation.frame(height: 230) }
+              }
+            } secondary: {
+              SideDocumentPane(queue: model, ticket: ticket, state: sideDocuments)
+                .padding(.horizontal, 4)
+            }
+            .frame(width: max(geometry.size.width, QueueInspectorLayout.documentPairMinimumWidth), height: geometry.size.height)
+          } else {
+            PlanPaneSplit(initialFraction: 0.74, minimumPrimary: QueueInspectorLayout.documentMinimumWidth,
+                          minimumSecondary: QueueInspectorLayout.chatMinimumWidth) {
+              document
+            } secondary: { conversation }
+            .frame(width: max(geometry.size.width, QueueInspectorLayout.inspectorMinimumWidth), height: geometry.size.height)
           }
-          .frame(
-            width: max(geometry.size.width, QueueInspectorLayout.inspectorMinimumWidth),
-            height: geometry.size.height)
         }.scrollIndicators(.automatic)
       }
+
     }.frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
       .onAppear { rememberPresentedDocument() }
       .onChange(of: model.presentedPlanURL) { _, _ in
@@ -121,7 +143,20 @@ struct PlanCanvasView: View {
   private var document: some View {
     VStack(spacing: 8) {
       documentTabBar
-      if isEditing {
+      if !showsWorkspaceMap, let context = model.taskContexts[ticket.id] {
+        DocumentMetadataStrip(url: URL(fileURLWithPath: context.planPath), taskID: ticket.id)
+      }
+      if showsWorkspaceMap {
+        WorkspaceMapView(queue: model, ticket: ticket, model: workspaceMap,
+          openDocument: { url in openDocument(url) },
+          discuss: { context in
+            sideDocuments.centralChatCollapsed = false
+            if !chatDraft.isEmpty { chatDraft += "\n\n" }
+            chatDraft += context
+            canvasSelection = nil
+            composerFocusRequest &+= 1
+          })
+      } else if isEditing {
         if editBaseline != model.presentedPlanMarkdown {
           VStack(alignment: .leading, spacing: 6) {
             Text(
@@ -181,11 +216,7 @@ struct PlanCanvasView: View {
           appearance: model.appearance, accentStyle: model.accentStyle,
           canvasSelection: canvasSelection,
           open: { url in
-            if EmbeddedDocumentLink.documentURL(url) != nil {
-              openDocument(url)
-            } else {
-              model.open(url.absoluteString)
-            }
+            openDocument(url)
           },
           select: { action in
             canvasSelection = action.selection
@@ -209,27 +240,16 @@ struct PlanCanvasView: View {
   private var documentTabBar: some View {
     ScrollView(.horizontal) {
       HStack(spacing: 6) {
-        Button("Central plan") { model.openPlan(for: ticket) }
+        Button("Central plan") { showsWorkspaceMap = false; model.openPlan(for: ticket) }
           .buttonStyle(.bordered)
-          .tint(model.presentedPlanURL == nil ? .accentColor : .secondary)
-        ForEach(documentTabs.urls, id: \.self) { url in
-          HStack(spacing: 4) {
-            Button(url.lastPathComponent) { openDocument(url) }
-              .buttonStyle(.plain).lineLimit(1)
-            Button {
-              documentTabs.close(url)
-              if model.presentedPlanURL == url { model.openPlan(for: ticket) }
-            } label: {
-              Image(systemName: "xmark").font(.caption2)
-            }.buttonStyle(.plain).accessibilityLabel("Close \(url.lastPathComponent)")
-          }
-          .padding(.horizontal, 9).padding(.vertical, 6)
-          .background(
-            model.presentedPlanURL == url
-              ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.1),
-            in: RoundedRectangle(cornerRadius: 6)
-          )
-          .help(url.path)
+          .tint(model.presentedPlanURL == nil && !showsWorkspaceMap ? .accentColor : .secondary)
+        Button("Map") { showsWorkspaceMap = true; canvasSelection = nil }
+          .buttonStyle(.bordered).tint(showsWorkspaceMap ? .accentColor : .secondary)
+          .help("See this task’s workspaces, agents, and files")
+        if !sideDocuments.tabs.isEmpty {
+          Button("Documents (\(sideDocuments.tabs.count))") {
+            if let selected = sideDocuments.selected { sideDocuments.open(selected) }
+          }.buttonStyle(.bordered).tint(.secondary)
         }
       }.padding(.vertical, 2)
     }.disabled(isEditing || isSaving)
@@ -237,18 +257,14 @@ struct PlanCanvasView: View {
   }
 
   private func rememberPresentedDocument() {
-    if let url = model.presentedPlanURL { documentTabs.open(url) }
+    if let url = model.presentedPlanURL {
+      sideDocuments.open(url)
+      model.openPlan(for: ticket)
+    }
   }
 
   private func openDocument(_ url: URL) {
-    guard let documentURL = EmbeddedDocumentLink.documentURL(url) else { return }
-    let centralURL = model.taskContexts[ticket.id].map { URL(fileURLWithPath: $0.planPath) }
-    if documentURL == centralURL?.standardizedFileURL {
-      model.openPlan(for: ticket)
-    } else {
-      documentTabs.open(documentURL)
-      model.openPlan(for: ticket, sourceURL: documentURL)
-    }
+    sideDocuments.open(url)
   }
 
   private var conversation: some View {
@@ -260,7 +276,7 @@ struct PlanCanvasView: View {
         canvasSelection: $canvasSelection, focusRequest: composerFocusRequest)
     }.padding(.horizontal, 4)
       .frame(
-        minWidth: QueueInspectorLayout.chatMinimumWidth, idealWidth: 360,
+        minWidth: QueueInspectorLayout.chatMinimumWidth, idealWidth: 270,
         maxWidth: .infinity, minHeight: 200, maxHeight: .infinity)
   }
 }
@@ -280,6 +296,7 @@ struct EmbeddedPlanDocument: NSViewRepresentable {
     let configuration = Self.webConfiguration(coordinator: context.coordinator)
     let view = WKWebView(frame: .zero, configuration: configuration)
     view.navigationDelegate = context.coordinator
+    view.uiDelegate = context.coordinator
     return view
   }
 
@@ -318,11 +335,12 @@ struct EmbeddedPlanDocument: NSViewRepresentable {
   static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
     view.stopLoading()
     view.navigationDelegate = nil
+    view.uiDelegate = nil
     view.configuration.userContentController.removeScriptMessageHandler(
       forName: PlanCanvasWebRuntime.messageHandlerName, contentWorld: .defaultClient)
   }
 
-  @MainActor final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+  @MainActor final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler, WKUIDelegate {
     private struct RenderInput: Equatable {
       let markdown: String
       let sourceURL: URL
@@ -388,6 +406,13 @@ struct EmbeddedPlanDocument: NSViewRepresentable {
       renderedCanvasSelection = action.selection
       select(action)
     }
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+      if let url = navigationAction.request.url, let target = EmbeddedDocumentLink.destination(url),
+         EmbeddedDocumentPolicy.allowsLink(target) { open(target) }
+      return nil
+    }
+
     func webView(
       _ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
       decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void

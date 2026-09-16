@@ -556,8 +556,13 @@ struct QueueViewModelTests {
     #expect(model.isDailyReportCancellationRequested)
     #expect(model.dailyReportRunMessage == "Cancelling daily report…")
 
-    model.setDailyReportRunState(isRunning: false, message: "Daily report cancelled.")
+    model.setDailyReportRunState(
+      isRunning: false,
+      message: "Daily report cancelled.",
+      finalPhase: .interrupted
+    )
     #expect(!model.isDailyReportCancellationRequested)
+    try await eventually { model.reportHistory.runs.first?.phase == .interrupted }
   }
 
   @Test("Cleared report notifications stay dismissed while a newer report can notify")

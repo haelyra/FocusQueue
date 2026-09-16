@@ -107,6 +107,23 @@ struct DailyReportHistoryTests {
     #expect(snapshot.runs.first?.message.contains("interrupted") == true)
   }
 
+  @Test("User cancellation records an interrupted run instead of a completed run")
+  func cancelledRun() async throws {
+    let runtime = try temporaryRuntime()
+    defer { try? FileManager.default.removeItem(at: runtime.deletingLastPathComponent()) }
+    let store = JSONDailyReportHistoryRepository(runtimeDirectory: runtime)
+    try await store.recordRun(isRunning: true, message: "Reading messages")
+    try await store.recordRun(
+      isRunning: false,
+      message: "Daily report cancelled.",
+      finalPhase: .interrupted
+    )
+    let snapshot = try await store.load()
+    #expect(snapshot.runs.count == 1)
+    #expect(snapshot.runs.first?.phase == .interrupted)
+    #expect(snapshot.runs.first?.message == "Daily report cancelled.")
+  }
+
   @Test("Damaged viewing state preserves report visibility and is not overwritten")
   func damagedViewingState() async throws {
     let runtime = try temporaryRuntime()

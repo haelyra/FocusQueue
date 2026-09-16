@@ -106,6 +106,13 @@ struct AgentLifecycleTests {
         try Data("keep".utf8).write(to: ignored)
         #expect(try await !manager.cleanupAgent(ticketID: "ECC-777", subtask: subtask, store: store).removed)
         try FileManager.default.removeItem(at: ignored)
+        var assignment = TaskSubtask(id: "assignment", title: "Review workspace cleanup")
+        assignment.isAssignmentOnly = true
+        assignment.workspace = first
+        subtask.parentSubtaskID = assignment.id
+        _ = try await store.upsertSubtask(ticketID: "ECC-777", subtask: assignment)
+        _ = try await store.upsertSubtask(ticketID: "ECC-777", subtask: subtask)
+        #expect(!assignment.hasManagedWorkspaces)
         #expect(try await manager.cleanupAgent(ticketID: "ECC-777", subtask: subtask, store: store).removed)
         #expect(!FileManager.default.fileExists(atPath: first.path))
         #expect(FileManager.default.fileExists(atPath: second.path))

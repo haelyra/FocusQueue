@@ -28,6 +28,7 @@ struct SubtaskPresentationTests {
 
   @Test("Subtasks start expanded and collapse only after an explicit toggle")
   func defaultExpansion() {
+    #expect(SubtaskDisclosureState.defaultExpanded)
     var disclosure = SubtaskDisclosureState()
     #expect(disclosure.isExpanded("existing-subtask"))
     #expect(disclosure.isExpanded("new-subtask"))

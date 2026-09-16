@@ -6,6 +6,7 @@
 - An assignment's agent count always matches the visible agent cards beneath it.
 - Legacy combined assignment and runtime records migrate without losing session identity.
 - A running daily report has a Cancel button that stops the owned worker process.
+- A report worker recovered after an app restart remains gated and cancellable.
 - A cancelled report is retained as interrupted, never completed or failed.
 
 ## RED and GREEN evidence
@@ -18,6 +19,9 @@
 | Cancellation is single-shot and reusable | `coordinatorCancellation`, `dailyReportCancellationState` | `1469cd9` did not compile because the coordinator and cancellation state did not exist | The app owns one cancellable report task and resets after it exits |
 | Cancellation history remains truthful | `cancelledRun` | `96b58b7` did not compile because an interrupted final phase could not be recorded | Cancellation transitions the active receipt to `interrupted` |
 | Assignment metadata cannot block runtime cleanup | `workspaceSafety` | The added assignment fixture retained the child worktree as if another agent owned it | Assignment-only records are excluded from cleanup ownership and sharing checks |
+| Recovered workers remain controllable | `recoveredDailyReportCancellation`, `workerCancellationRequest`, `test_persisted_cancel_request_stops_a_recovered_worker` | `ef633e0` did not compile or failed because no worker control protocol or recovered UI state existed | The lock-owning worker publishes a private token and watches for the matching cancellation request |
+| Cancellation stops descendants | `test_process_group_cleanup_terminates_a_stubborn_grandchild` | `ef633e0` left a SIGTERM-resistant grandchild running | Worker cleanup verifies the process group and escalates the entire group to `SIGKILL` after the grace period |
+| Cleanup rejects directory replacement | `workspaceReplacementSafety` | `e5e8b52` reached Git removal after the validated directory was replaced | Cleanup revalidates inode, worktree root, Git directory, and common repository immediately before removal |
 
 ## Implementation result
 
@@ -27,15 +31,18 @@
 - Schema 1 contexts split each legacy combined record into an assignment parent and runtime child. Schema 2 prevents repeat migration.
 - App-owned daily-report execution covers manual, scheduled, chat, and approval entry points. Cancel cooperatively terminates the Python process through the existing process runner and escalates after its bounded grace period when needed.
 - Cancellation is available from the queue notification, report view, and settings view. Repeated clicks are disabled while cancellation is pending.
-- App termination also cancels an active report task. Cancellation before process launch is checked after settings persistence.
+- Recovered workers publish an unguessable run token in the private runtime directory. A relaunched app can request cancellation without signaling an unvalidated PID, while new launches remain gated on the live lock.
+- App termination writes the same cancellation request and cancels the active task. Cancellation before process launch is checked after settings persistence.
+- Python blocks `SIGTERM` while publishing each child process, then terminates and verifies the complete process group. User cancellation does not write failed retry metadata.
 - Managed worktree cleanup applies only to runtime records, not assignment metadata that references the same workspace.
+- Managed cleanup pins device, inode, worktree Git directory, and common repository identity, then rechecks them after archival and immediately before Git removal.
 
 ## Verification and coverage
 
 - Focused cancellation, history, presentation, migration, and workspace lifecycle tests passed.
-- `swift test --enable-code-coverage`: 278 tests passed in 29 suites. One live app interaction test was skipped under the repository's explicit UI opt-in policy.
-- `python3 -m unittest discover -s Tests -p 'test_*.py'`: 128 tests passed.
-- Repository-wide Swift line coverage is 50.65%. Directly changed core files are 95.59% for `DailyReportHistory.swift`, 91.53% for `TaskWorktreeManager.swift`, and 88.64% for `TaskContext.swift`. The SwiftUI executable baseline remains lower, while the new coordinator, model state, title expansion, agent presentation, and symbol contracts have direct headless tests.
+- `swift test --enable-code-coverage`: 281 tests passed in 29 suites. One live app interaction test was skipped under the repository's explicit UI opt-in policy.
+- `python3 -m unittest discover -s Tests -p 'test_*.py'`: 131 tests passed.
+- Repository-wide Swift line coverage is 50.95%. Directly changed core files are 94.09% for `DailyReportHistory.swift`, 90.18% for `TaskWorktreeManager.swift`, and 88.64% for `TaskContext.swift`. The SwiftUI executable baseline remains lower, while the new coordinator, model state, title expansion, agent presentation, and symbol contracts have direct headless tests.
 - Pointer and keyboard automation was not run because `ECC_FOCUS_QUEUE_UI_TESTS=1` was not set.
 
 ## ECC-035 persisted-state validation
@@ -52,4 +59,8 @@
 - `1469cd9` RED: daily-report cancellation contracts.
 - `96b58b7` RED: interrupted history, archived expansion, and workspace cleanup edges.
 - `ab101ba` GREEN: report cancellation, interrupted persistence, expanded archives, and safe workspace cleanup.
-
+- `ef633e0` RED: recovered cancellation, descendant teardown, and cancellation metadata contracts.
+- `74e6135` GREEN: persisted worker control, recovered-run gating, and full process-group teardown.
+- `e5e8b52` RED: managed directory replacement during cleanup.
+- `1717990` GREEN: inode and Git-identity revalidation before removal.
+- `6e7e858` refinement: safe handling when a short-lived process group exits before escalation.

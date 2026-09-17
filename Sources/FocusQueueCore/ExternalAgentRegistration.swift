@@ -86,7 +86,7 @@ public actor ExternalAgentRegistry {
             throw TaskContextError.commandFailed("Registration requires the provider's exact session UUID and absolute working directory.")
         }
         var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: event.cwd, isDirectory: &isDirectory), isDirectory.boolValue else {
+        if FileManager.default.fileExists(atPath: event.cwd, isDirectory: &isDirectory), !isDirectory.boolValue {
             throw ProcessRunnerError.invalidWorkingDirectory(event.cwd)
         }
         let cwd = Self.normalized(event.cwd)
@@ -98,7 +98,7 @@ public actor ExternalAgentRegistry {
         let lock = try await TmuxOrganizerLock.acquire(name: "registration-" + lockID)
         defer { lock.release() }
         let previous = try registrations().first { $0.id == id }
-        let contexts = try await TaskContextStore(root: root).loadAll()
+        let contexts = try await TaskContextStore(root: root).loadAvailableForDiscovery()
         let parent = event.isSubagent ? (event.parentSessionID ?? event.sessionID).lowercased() : nil
         let hasParent = parent != nil || previous?.parentSessionID != nil
         var record = ExternalAgentRegistration(id: id, provider: provider, sessionID: event.providerSessionID,
@@ -111,6 +111,8 @@ public actor ExternalAgentRegistry {
         if let prompt = event.prompt?.trimmingCharacters(in: .whitespacesAndNewlines), !prompt.isEmpty {
             record.title = TaskSubtask.agentName(prompt: prompt, provider: provider)
         }
+        // Tracking survives an incomplete task or a failed enrichment step.
+        if previous == nil { try save(record) }
         guard let sessionID = record.sessionID else {
             record.reason = "The provider supplied a child ID without a resumable session UUID."
             try save(record); return record
@@ -140,7 +142,7 @@ public actor ExternalAgentRegistry {
         let chosen: TaskContext?
         if let explicit {
             chosen = contexts.first { $0.ticketID == explicit }
-            if chosen == nil { throw TaskContextError.missingContext(explicit) }
+            if chosen == nil { record.reason = "Task context is missing or incomplete. Session retained for placement." }
         } else if (priorDeleted || tombstoned || staleInherited) && existing.isEmpty {
             chosen = nil
             record.reason = "The previous task association was cleared. Choose a task to attach this live session."

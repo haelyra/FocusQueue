@@ -67,6 +67,9 @@ private struct ExternalAgentsInboxView: View {
               }
               Text(registration.cwd).font(.caption).foregroundStyle(.secondary)
                 .lineLimit(2).textSelection(.enabled)
+              if let reason = registration.reason {
+                Text(reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+              }
               if registration.sessionID == nil {
                 Text("Waiting for a resumable provider session ID.").font(.caption).foregroundStyle(.secondary)
               }

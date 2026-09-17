@@ -186,11 +186,14 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(String.self, forKey: .id)
-        title = try values.decode(String.self, forKey: .title)
+        title = try values.decodeIfPresent(String.self, forKey: .title) ?? "Agent awaiting details"
+        if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { title = "Agent awaiting details" }
         assignmentDescription = try values.decodeIfPresent(String.self, forKey: .assignmentDescription) ?? ""
-        provider = try values.decode(AgentProvider.self, forKey: .provider)
+        provider = (try values.decodeIfPresent(String.self, forKey: .provider))?.isEmpty == true
+            ? .codex : try values.decodeIfPresent(AgentProvider.self, forKey: .provider) ?? .codex
         sessionID = try values.decodeIfPresent(String.self, forKey: .sessionID)
-        status = try values.decode(TaskSubtaskStatus.self, forKey: .status)
+        status = (try values.decodeIfPresent(String.self, forKey: .status))?.isEmpty == true
+            ? .queued : try values.decodeIfPresent(TaskSubtaskStatus.self, forKey: .status) ?? .queued
         progressSummary = try values.decodeIfPresent(String.self, forKey: .progressSummary) ?? ""
         lastHeartbeatAt = try values.decodeIfPresent(Date.self, forKey: .lastHeartbeatAt)
         completionUnread = try values.decodeIfPresent(Bool.self, forKey: .completionUnread) ?? false
@@ -411,7 +414,34 @@ public actor TaskContextStore {
     public func load(ticketID: String) throws -> TaskContext? {
         let url = try directory(ticketID: ticketID).appendingPathComponent("context.json")
         guard files.fileExists(atPath: url.path) else { return nil }
-        return try JSONDecoder().decode(TaskContext.self, from: Data(contentsOf: url))
+        let data = try Data(contentsOf: url)
+        guard var value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw TaskContextError.commandFailed("Task context must be a JSON object. The original file was preserved.")
+        }
+        let defaults: [String: Any] = ["ticketID": ticketID.uppercased(), "title": ticketID.uppercased(),
+            "summary": "", "successCriteria": "", "planPath": url.deletingLastPathComponent().appendingPathComponent("plan.md").path,
+            "managedWorktree": false, "subtasks": [], "updatedAt": 0, "schemaVersion": 2]
+        for (key, fallback) in defaults where value[key] == nil || value[key] is NSNull
+            || (["ticketID", "title", "planPath"].contains(key) && (value[key] as? String)?.isEmpty == true) {
+            value[key] = fallback
+        }
+        if var rows = value["subtasks"] as? [[String: Any]] {
+            for index in rows.indices where rows[index]["id"] == nil || rows[index]["id"] is NSNull || rows[index]["id"] as? String == "" {
+                rows[index]["id"] = "unidentified-\(ticketID.uppercased())-\(index)"
+            }
+            value["subtasks"] = rows
+        }
+        return try JSONDecoder().decode(TaskContext.self, from: JSONSerialization.data(withJSONObject: value))
+    }
+
+    /// Discovery tolerates an unrelated damaged task. Destructive operations keep
+    /// using strict loadAll(), so missing ownership evidence can never allow cleanup.
+    public func loadAvailableForDiscovery() throws -> [TaskContext] {
+        let tasks = root.appendingPathComponent("tasks")
+        guard files.fileExists(atPath: tasks.path) else { return [] }
+        return try files.contentsOfDirectory(at: tasks, includingPropertiesForKeys: [.isSymbolicLinkKey])
+            .filter { (try? $0.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true }
+            .compactMap { try? load(ticketID: $0.lastPathComponent) }
     }
 
     public func loadAll() throws -> [TaskContext] {
@@ -480,7 +510,7 @@ public actor TaskContextStore {
     /// Called under the task lock. Existing authored documents are never replaced.
     private func ensureDocuments(context: TaskContext, ticket: DashboardTicket) throws {
         let planURL = URL(fileURLWithPath: context.planPath)
-        if !files.fileExists(atPath: planURL.path) {
+        if !files.fileExists(atPath: planURL.path) || (try? files.attributesOfItem(atPath: planURL.path)[.size] as? NSNumber)?.intValue == 0 {
             let links = ticket.links.map { "- [\($0.label)](\($0.url))" }.joined(separator: "\n")
             let steps = ticket.steps.map { "- [\($0.isDone ? "x" : " ")] \($0.label)" }.joined(separator: "\n")
             let markdown = """

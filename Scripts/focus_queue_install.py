@@ -19,6 +19,22 @@ import sys
 PRODUCT = "ECC Focus Queue"
 IDENTIFIER = "com.haelyra.ecc-focus-queue"
 TREE_DIGEST_ALGORITHM = "sha256-tree-v1"
+PROMPT_START = "<!-- BEGIN ECC FOCUS QUEUE AGENT CONTRACT v1 -->"
+PROMPT_END = "<!-- END ECC FOCUS QUEUE AGENT CONTRACT v1 -->"
+
+
+def merge_codex_prompt(original, payload):
+    """Replace only our delimited block; keep personal instructions byte-for-byte."""
+    if not payload.startswith(PROMPT_START) or not payload.rstrip().endswith(PROMPT_END):
+        raise ValueError("The bundled Codex instruction block is incomplete.")
+    if PROMPT_START in original or PROMPT_END in original:
+        if original.count(PROMPT_START) != 1 or original.count(PROMPT_END) != 1:
+            raise ValueError("The installed Codex instruction markers require review.")
+        start, end = original.index(PROMPT_START), original.index(PROMPT_END) + len(PROMPT_END)
+        if end <= start:
+            raise ValueError("The installed Codex instruction markers are reversed.")
+        return original[:start] + payload.rstrip("\n") + original[end:]
+    return original + ("\n\n" if original else "") + payload
 AUTOMATION_FILES = (
     "Scripts/focus_queue_morning.py",
     "Scripts/focus_queue_codex.py",
@@ -155,6 +171,8 @@ class Installer:
         self.agent = self.home / "Library/LaunchAgents" / f"{IDENTIFIER}.plist"
         self.desktop = self.home / "Desktop" / f"{PRODUCT}.app"
         self.manifest = self.support / "install-manifest.json"
+        self.codex_prompt = self.home / ".codex/AGENTS.md"
+        self.codex_entry = self.support / "shell/focus_queue_codex_entry.py"
         self.login, self.shortcut, self.start = login, desktop, start
         self.service = f"gui/{os.getuid()}/{IDENTIFIER}"
 
@@ -167,6 +185,16 @@ class Installer:
             if not os.access(self.bundle / "Contents/MacOS" / name, os.X_OK):
                 raise ValueError(f"Built app is incomplete: missing executable {name}.")
         bundled_automation = self.bundle / "Contents/Resources/automation"
+        safe_destination(self.codex_prompt, self.home)
+        payload = self.bundle / "Contents/Resources/CODEX_GLOBAL_INSTRUCTIONS.md"
+        if not payload.is_file() or payload.is_symlink():
+            raise ValueError("The built app is missing its shareable Codex instructions.")
+        merge_codex_prompt(self.codex_prompt.read_text() if self.codex_prompt.exists() else "", payload.read_text())
+        safe_destination(self.codex_entry, self.home)
+        if self.codex_entry.exists():
+            candidates = [app / "Contents/Resources/shell/focus_queue_codex_entry.py" for app in (self.app, self.bundle)]
+            if not self.codex_entry.is_file() or not any(p.is_file() and digest(p) == digest(self.codex_entry) for p in candidates):
+                raise ValueError("The installed Codex entry has local changes; retained for review.")
         validate_automation_tree(bundled_automation)
         subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(self.bundle)], check=True, capture_output=True)
         for path in (self.app, self.helper, self.agent, self.support, self.automation, self.manifest):
@@ -210,6 +238,7 @@ class Installer:
                 "launchAtLogin": self.login, "desktopShortcut": self.shortcut,
                 "configuration": "preserve existing; first launch offers setup",
                 "companions": "app-owned automation updated; companion launch agents unchanged",
+                "codexInstructions": "merge app-owned block; preserve personal instructions",
                 "signature": "verified (does not imply notarization)"}
 
     def stop(self):
@@ -269,6 +298,19 @@ class Installer:
                 (staged_helper, self.helper),
                 (staged_automation, self.automation),
             ]
+            original_prompt = self.codex_prompt.read_bytes() if self.codex_prompt.exists() else b""
+            staged_prompt = stage / "codex-instructions.md"
+            staged_prompt.write_text(merge_codex_prompt(original_prompt.decode(),
+                (staged_app / "Contents/Resources/CODEX_GLOBAL_INSTRUCTIONS.md").read_text()))
+            staged_prompt.chmod(self.codex_prompt.stat().st_mode & 0o777 if self.codex_prompt.exists() else 0o600)
+            planned.append((staged_prompt, self.codex_prompt))
+            # Refresh an already configured entry without changing aliases, flags or hook trust.
+            original_entry = self.codex_entry.read_bytes() if self.codex_entry.exists() else None
+            if original_entry is not None:
+                staged_entry = stage / "codex-entry.py"
+                shutil.copy2(staged_app / "Contents/Resources/shell/focus_queue_codex_entry.py", staged_entry)
+                staged_entry.chmod(self.codex_entry.stat().st_mode & 0o777)
+                planned.append((staged_entry, self.codex_entry))
             if self.login:
                 staged_agent = stage / self.agent.name
                 staged_agent.write_bytes(plistlib.dumps({"Label": IDENTIFIER,
@@ -288,7 +330,9 @@ class Installer:
                                else tree_digest(source) if target == self.automation else None,
                                **({"digestAlgorithm": TREE_DIGEST_ALGORITHM}
                                   if target == self.automation else {})}
-                              for source, target in planned],
+                              for source, target in planned if target not in {self.codex_prompt, self.codex_entry}],
+                "managedSettings": [{"path": str(self.codex_prompt), "ownership": "delimited-block-only"},
+                    {"path": str(self.codex_entry), "ownership": "configured-entry-only"}],
                 "launchAtLogin": self.login, "desktopShortcut": self.shortcut}
             staged_manifest = stage / "manifest.json"
             staged_manifest.write_text(json.dumps(manifest, indent=2) + "\n")
@@ -302,6 +346,10 @@ class Installer:
                 self.stop()
                 stopped = True
             for index, (source, target) in enumerate(planned):
+                if target == self.codex_prompt and (target.read_bytes() if target.exists() else b"") != original_prompt:
+                    raise ValueError("Codex instructions changed during installation; retry to preserve the newer edit.")
+                if target == self.codex_entry and (target.read_bytes() if target.exists() else None) != original_entry:
+                    raise ValueError("Codex entry changed during installation; retry to preserve the newer edit.")
                 target.parent.mkdir(parents=True, exist_ok=True)
                 previous = backup / str(index)
                 existed = target.exists() or target.is_symlink()

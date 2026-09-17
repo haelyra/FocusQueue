@@ -36,6 +36,7 @@ enum SessionRegistrationError: Error, LocalizedError {
             else if arguments.first == "--help" || arguments.first == "help" {
                 print(SessionRegistrationError.usage.localizedDescription)
                 print("Agent log: log <TASK-ID> <AGENT-ID> <entry> (append-only, task-locked)")
+                print("Maintenance: reconcile <TASK-ID> [--no-cleanup] (repair documents and save a receipt; optional workspace cleanup)")
                 print("Persistent terminals: tmux list | tmux start <name> [--cwd <directory>] [-- <command> ...] | tmux attach <name> | tmux ssh-command <user@host> <name>")
                 print("Task layouts: tmux panes <name> | tmux arrange <name> | tmux manual <name> | tmux save | tmux restore | tmux persistence")
             }
@@ -47,6 +48,15 @@ enum SessionRegistrationError: Error, LocalizedError {
             else if arguments.first == "diagnose" { try await diagnose(arguments: arguments) }
             else if arguments.first == "register-event" { try await registerEvent(arguments: arguments) }
             else if arguments.first == "attach" { try await register() }
+            else if arguments.first == "reconcile", (2...3).contains(arguments.count) {
+                guard arguments.count == 2 || arguments[2] == "--no-cleanup" else { throw SessionRegistrationError.usage }
+                let root = supportDirectory(environment: ProcessInfo.processInfo.environment)
+                let store = TaskContextStore(root: root)
+                let context = try await store.load(ticketID: arguments[1])
+                let ticket = DashboardTicket(id: arguments[1], title: context?.title ?? arguments[1],
+                    status: "open", summary: context?.summary ?? "", doneWhen: context?.successCriteria)
+                try emit(try await TaskMaintenance(root: root).run(ticket: ticket, allowCleanup: arguments.count == 2))
+            }
             else { try await updateContext(arguments: arguments) }
         } catch {
             FileHandle.standardError.write(Data("\(error.localizedDescription)\n".utf8))

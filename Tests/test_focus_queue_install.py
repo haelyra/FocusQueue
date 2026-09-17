@@ -47,6 +47,12 @@ class InstallerTests(unittest.TestCase):
 
     def make_app(self, path, content):
         (path / "Contents/MacOS").mkdir(parents=True)
+        (path / "Contents/Resources").mkdir(parents=True)
+        shutil.copy2(Path(__file__).parents[1] / "Config/CODEX_GLOBAL_INSTRUCTIONS.md",
+                     path / "Contents/Resources/CODEX_GLOBAL_INSTRUCTIONS.md")
+        shell = path / "Contents/Resources/shell"
+        shell.mkdir()
+        (shell / "focus_queue_codex_entry.py").write_bytes(b"entry:" + content)
         automation = path / "Contents/Resources/automation"
         for relative in self.automation_files:
             destination = automation / relative
@@ -64,6 +70,56 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(result["launchAtLogin"])
         self.assertFalse(result["desktopShortcut"])
         self.assertEqual([call[0] for call in self.calls], ["/usr/bin/codesign"])
+
+    def test_global_prompt_install_is_idempotent_and_preserves_personal_text(self):
+        prompt = self.home / ".codex/AGENTS.md"
+        prompt.parent.mkdir(parents=True)
+        personal = "# Personal\n\nKeep my exact words.\n\n"
+        prompt.write_text(personal)
+        self.installer.install()
+        once = prompt.read_text()
+        self.assertTrue(once.startswith(personal))
+        self.assertEqual(once.count(MODULE.PROMPT_START), 1)
+        self.installer.install()
+        self.assertEqual(prompt.read_text(), once)
+        manifest = json.loads(self.installer.manifest.read_text())
+        self.assertNotIn(str(prompt), [entry["path"] for entry in manifest["artifacts"]])
+        self.assertEqual(manifest["managedSettings"][0]["ownership"], "delimited-block-only")
+
+    def test_malformed_global_prompt_markers_fail_without_overwriting(self):
+        prompt = self.home / ".codex/AGENTS.md"
+        prompt.parent.mkdir(parents=True)
+        prompt.write_text("My notes\n" + MODULE.PROMPT_START)
+        before = prompt.read_bytes()
+        with self.assertRaises(ValueError):
+            self.installer.install()
+        self.assertEqual(prompt.read_bytes(), before)
+
+    def test_existing_launcher_refresh_preserves_alias_and_uninstall_preserves_personal_prompt(self):
+        self.make_app(self.installer.app, b"previous")
+        entry = self.installer.codex_entry
+        entry.parent.mkdir(parents=True)
+        entry.write_bytes(b"entry:previous")
+        shell = entry.parent / "codex.zsh"
+        shell.write_text("my configured aliases and flags")
+        prompt = self.installer.codex_prompt
+        prompt.parent.mkdir(parents=True)
+        prompt.write_text("Personal text\n")
+        self.installer.install()
+        self.assertEqual(entry.read_bytes(), b"entry:new executable")
+        self.assertEqual(shell.read_text(), "my configured aliases and flags")
+        installed_prompt = prompt.read_bytes()
+        MODULE.uninstall(self.home, stop=False)
+        self.assertEqual(prompt.read_bytes(), installed_prompt)
+        self.assertTrue(entry.exists())
+
+    def test_changed_launcher_stops_install_without_clobbering(self):
+        entry = self.installer.codex_entry
+        entry.parent.mkdir(parents=True)
+        entry.write_text("custom launcher")
+        with self.assertRaises(ValueError):
+            self.installer.install()
+        self.assertEqual(entry.read_text(), "custom launcher")
 
     def test_second_user_install_and_reinstall_preserve_config_and_record_ownership(self):
         self.installer.support.mkdir(parents=True)

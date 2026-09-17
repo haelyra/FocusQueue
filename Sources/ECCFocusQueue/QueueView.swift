@@ -2609,6 +2609,19 @@ private struct TicketCard: View {
         }
       }
 
+      if let maintenance = model.maintenanceReceipts[ticket.id] {
+        DisclosureGroup("Tracking and workspace checks") {
+          ForEach(maintenance.notes, id: \.self) { Text($0).font(.caption) }
+          ForEach(model.subtasks(for: ticket.id).filter { !$0.isAssignmentOnly }) { agent in
+            VStack(alignment: .leading, spacing: 3) {
+              Text(agent.title.isEmpty ? "Agent awaiting details" : agent.title).font(.caption.bold())
+              Text(maintenance.agentStates[agent.id] ?? "Tracking details pending.").font(.caption)
+              Text(agent.workspace?.path ?? "Workspace not recorded yet.").font(.caption).textSelection(.enabled)
+            }
+          }
+        }
+      }
+
       if !ticket.steps.isEmpty {
         VStack(alignment: .leading, spacing: 5) {
           DetailLabel(text: "Progress")

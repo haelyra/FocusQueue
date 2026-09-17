@@ -166,7 +166,7 @@ struct QueueViewModelTests {
     #expect(subtask.status == .working)
     #expect(subtask.assignmentDescription == "Keep the exact pane identity")
     let message = try #require(model.actionMessages["ECC-101"])
-    #expect(message.contains(failReveal ? "Click the subtask to retry" : "Ready for your instructions"))
+    #expect(message.contains(failReveal ? "Click the subtask to retry" : "Preparing task context"))
     model.openLaunchDiagnostics(for: subtask)
     #expect(model.launchDiagnostics?.text.contains(failReveal ? "view-failed" : "\"phase\":\"ready\"") == true)
   }
@@ -569,7 +569,7 @@ struct QueueViewModelTests {
     try Data().write(to: URL(fileURLWithPath: context.planPath))
     model.openPlan(for: fixture.tickets[0])
     try await eventually { !model.isPlanLoading }
-    #expect(model.presentedPlanMarkdown.isEmpty)
+    #expect(model.presentedPlanMarkdown.contains("ECC-101"))
     #expect(model.planError == nil)
 
     model.openPlan(for: fixture.tickets[0], sourceURL: fixture.root.appendingPathComponent("missing.md"))
@@ -1408,6 +1408,7 @@ private struct Fixture {
       verifier: verifier ?? boundary, queueAgent: agent, pullRequestQueueLoader: boundary,
       taskAgentLauncher: taskAgentLauncher,
       connectorDiagnosticsRunner: connectorDiagnosticsRunner, discoverExternalAgents: { [] },
+      maintenanceEnabled: false,
       locateExistingAgent: locateExistingAgent)
     await model.bootstrap()
     #expect(model.loadError == nil)

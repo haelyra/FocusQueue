@@ -76,6 +76,10 @@ final class QueueViewModel {
   private(set) var taskContexts: [String: TaskContext] = [:]
   private(set) var unassignedAgentRegistrations: [ExternalAgentRegistration] = []
   private(set) var externalAgentRegistrationError: String?
+  private(set) var maintenanceReceipts: [String: TaskMaintenanceReceipt] = [:]
+  @ObservationIgnored private var maintenanceSignatures: [String: String] = [:]
+  @ObservationIgnored private var lastMaintenanceAt: Date?
+  @ObservationIgnored private let maintenanceEnabled: Bool
   private(set) var subtaskActivityRevision = 0
   private(set) var isQueueChatInspectorPresented = false
   private(set) var presentedAgentUpdate: QueueAgentUpdate?
@@ -185,11 +189,13 @@ final class QueueViewModel {
     discoverExternalAgents: @escaping @Sendable () async throws -> [KnownProviderProcess] = {
       try await WezTermController().knownProviderProcesses()
     },
+    maintenanceEnabled: Bool = true,
     locateExistingAgent: @escaping @Sendable (AgentProvider, String) async throws -> KnownProviderProcess? = { provider, sessionID in
       try await WezTermController().locateProviderProcess(provider: provider, sessionID: sessionID)
     }
   ) {
     self.paths = paths
+    self.maintenanceEnabled = maintenanceEnabled
     self.discoverExternalAgents = discoverExternalAgents
     self.locateExistingAgent = locateExistingAgent
     self.taskContextStore = TaskContextStore(root: paths.supportDirectory)
@@ -389,6 +395,28 @@ final class QueueViewModel {
       await importAgentRegistrations()
       await refreshTaskContexts()
       await refreshExternalAgentRegistrations()
+      if maintenanceEnabled {
+        let recoverySweep = lastMaintenanceAt == nil || Date().timeIntervalSince(lastMaintenanceAt!) >= 60
+        if recoverySweep { lastMaintenanceAt = Date() }
+        let maintenance = TaskMaintenance(root: paths.supportDirectory)
+        for ticket in dashboard.tickets {
+          guard let context = taskContexts[ticket.id] else { continue }
+          // Semantic events trigger a pass; frequent heartbeat timestamps do not.
+          let signature = context.successCriteria + context.subtasks.map {
+            [$0.id, $0.sessionID ?? "", $0.status.rawValue, $0.resultID ?? "", $0.workspace?.path ?? "",
+             $0.agentRemovedAt == nil ? "visible" : "removed"].joined(separator: "|")
+          }.joined(separator: "\n")
+          guard recoverySweep || maintenanceSignatures[ticket.id] != signature else { continue }
+          maintenanceSignatures[ticket.id] = signature
+          do {
+            let receipt = try await maintenance.run(ticket: ticket)
+            if maintenanceReceipts[ticket.id] != receipt { maintenanceReceipts[ticket.id] = receipt }
+          } catch {
+            maintenanceReceipts[ticket.id] = .init(ticketID: ticket.id,
+              notes: ["Maintenance retained existing data: \(error.localizedDescription)"])
+          }
+        }
+      }
       if userInitiated || lastReportRefresh == nil || Date().timeIntervalSince(lastReportRefresh!) >= 10 {
         lastReportRefresh = Date()
         if !isDailyReportRunning {
@@ -400,6 +428,8 @@ final class QueueViewModel {
       await refreshRecurringPRProgressIfNeeded(force: forceRecurringPRProgress)
     } catch {
       if loadError != error.localizedDescription { loadError = error.localizedDescription }
+      // A missing dashboard must not disable mandatory agent tracking.
+      await refreshExternalAgentRegistrations()
     }
   }
 
@@ -1241,8 +1271,11 @@ final class QueueViewModel {
       }
       do {
         if subtask.agentRemovedAt != nil {
+          // Restoring the record itself is serialized by the context store.
           taskContexts[ticket.id] = try await taskContextStore.restoreAgent(ticketID: ticket.id, subtaskID: subtask.id)
         }
+        let workspaceLease = try await TaskMaintenance.lease(ticketID: ticket.id, root: paths.supportDirectory)
+        defer { workspaceLease.release() }
         if subtask.tmux != nil {
           do {
             _ = try await terminalController.openAgentRuntime(subtask, taskID: ticket.id, configuration: config.wezTerm)
@@ -1356,6 +1389,8 @@ final class QueueViewModel {
       do {
         let context = try await taskContextStore.ensureContext(ticket: ticket)
         let previous = context.subtasks.first(where: { $0.id == subtaskID })
+        let workspaceLease = try await TaskMaintenance.lease(ticketID: ticket.id, root: paths.supportDirectory)
+        defer { workspaceLease.release() }
         guard previous?.tmux == nil, previous?.terminalPaneID == nil, previous?.sessionID == nil else {
           throw TaskContextError.commandFailed("This agent already has a saved session. Open it from the task to continue.")
         }
@@ -1455,7 +1490,7 @@ final class QueueViewModel {
           message: "The provider process and terminal view are ready.")
         actionMessages[ticket.id] = (includePrompt || initialPrompt?.isEmpty == false)
           ? "Opened \(provider.displayName) for \(title)\(useTmux ? " in tmux" : " directly"). Waiting for its first progress update."
-          : "Opened \(provider.displayName) for \(title)\(useTmux ? " in tmux" : " directly"). Ready for your instructions; no message was submitted."
+          : "Opened \(provider.displayName) for \(title)\(useTmux ? " in tmux" : " directly"). Preparing task context, then waiting for your instructions."
       } catch {
         if let subtask = assignment,
           case let TmuxError.startedButUnconfirmed(name, executable, attempts, lastDetail) = error
@@ -1526,16 +1561,29 @@ final class QueueViewModel {
 
   private func finalizeCompletedTask(_ ticket: DashboardTicket) async {
     do {
+      let lease = try await TaskMaintenance.lease(ticketID: ticket.id, root: paths.supportDirectory)
+      defer { lease.release() }
+      let maintenance = TaskMaintenance(root: paths.supportDirectory)
       try await taskContextStore.archive(ticketID: ticket.id)
       if focusSubtasks(for: ticket.id).contains(where: { $0.tracksCompletion && $0.status != .completed }) {
         closureMessages[ticket.id] = "Completion needs review: some subtasks remain open."
         return
       }
       for subtask in subtasks(for: ticket.id) where subtask.hasManagedWorkspaces {
+        guard subtask.status == .completed else {
+          closureMessages[ticket.id] = "Workspace retained: an agent assignment is still open."
+          return
+        }
+        try await maintenance.requireInactive(subtask)
         let cleanup = try await taskWorktreeManager.cleanupAgent(ticketID: ticket.id, subtask: subtask, store: taskContextStore)
         if !cleanup.removed { closureMessages[ticket.id] = cleanup.message; return }
       }
       let wasManaged = taskContexts[ticket.id]?.managedWorktree == true
+      if wasManaged, let context = taskContexts[ticket.id], let path = context.worktreePath {
+        var owner = TaskSubtask(id: "task-workspace", title: ticket.id)
+        owner.workspace = AgentWorkspace(path: path, repositoryPath: context.repositoryPath ?? path, managed: true)
+        try await maintenance.requireInactive(owner)
+      }
       let result = try await taskWorktreeManager.cleanup(ticketID: ticket.id, store: taskContextStore)
       closureMessages[ticket.id] = wasManaged && !result.removed ? result.message : nil
       actionMessages[ticket.id] = result.message
@@ -1700,6 +1748,10 @@ final class QueueViewModel {
       if lastExternalAgentDiscovery == nil || Date().timeIntervalSince(lastExternalAgentDiscovery!) >= 15 {
         lastExternalAgentDiscovery = Date()
         let discovered = try await discoverExternalAgents()
+        let receipts = AgentIntakeStore.unresolved(root: paths.supportDirectory)
+        let sessionsByProcess = Dictionary(grouping: discovered, by: \.processID)
+          .mapValues { Set($0.map { $0.sessionID.lowercased() }) }
+        let parents = receipts.isEmpty ? [:] : ((try? await AgentIntakeStore.processParents()) ?? [:])
         let tmuxPanes: [TmuxPaneSnapshot]
         if !discovered.isEmpty, let executable = config.tmuxExecutable ?? SetupEnvironment.executable("tmux") {
           tmuxPanes = (try? await TmuxController().panes(executable: executable)) ?? []
@@ -1709,6 +1761,9 @@ final class QueueViewModel {
           let tmux = process.tty.flatMap { tty in tmuxPanes.first { $0.reference.tty == tty }?.reference }
           let terminal = tmux == nil ? process.tty.flatMap { tty in terminals.first { $0.ttyName == tty } } : nil
           var prompt: String?
+          let intake = AgentIntakeStore.match(process, tmux: tmux, receipts: receipts, parents: parents,
+            candidateSessionsForProcess: sessionsByProcess[process.processID] ?? [])
+          if let intake { prompt = intake.title }
           if let tmux {
             let metadataURL = paths.supportDirectory.appendingPathComponent("shell/launch-metadata/\(tmux.name).json")
             if let data = try? Data(contentsOf: metadataURL),
@@ -1718,17 +1773,18 @@ final class QueueViewModel {
           _ = try await registry.register(ExternalAgentEvent(sessionID: process.sessionID,
             cwd: process.cwd, hookEventName: "ProcessDiscovery", prompt: prompt), provider: process.provider,
             tmux: tmux, paneID: terminal?.paneID, socketPath: terminal?.socketPath)
+          if let intake { try AgentIntakeStore.resolve(intake, sessionID: process.sessionID, root: paths.supportDirectory) }
         }
       }
       let records = try await registry.registrations()
-      let unassigned = records.filter { $0.taskID == nil }
+      let unassigned = records.filter { $0.taskID == nil } + AgentIntakeStore.pending(root: paths.supportDirectory)
       if unassignedAgentRegistrations != unassigned { unassignedAgentRegistrations = unassigned }
       if externalAgentRegistrationError != nil { externalAgentRegistrationError = nil }
       await importAgentRegistrations()
     } catch {
       // Existing hook receipts remain useful when process inspection is unavailable.
       if let records = try? await registry.registrations() {
-        let unassigned = records.filter { $0.taskID == nil }
+        let unassigned = records.filter { $0.taskID == nil } + AgentIntakeStore.pending(root: paths.supportDirectory)
         if unassignedAgentRegistrations != unassigned { unassignedAgentRegistrations = unassigned }
       }
       if externalAgentRegistrationError != error.localizedDescription {
@@ -1843,6 +1899,8 @@ final class QueueViewModel {
 
   private func retireAgent(_ subtask: TaskSubtask, for ticket: DashboardTicket, automatically: Bool = false) async {
     do {
+      let lease = try await TaskMaintenance.lease(ticketID: ticket.id, root: paths.supportDirectory)
+      defer { lease.release() }
       taskContexts[ticket.id] = try await taskContextStore.removeAgent(ticketID: ticket.id, subtaskID: subtask.id, automatically: automatically)
       localState.agentSessions.removeAll {
         $0.ticketID == ticket.id && ($0.subtaskID == subtask.id ||
@@ -1855,6 +1913,7 @@ final class QueueViewModel {
       do { try await taskAgentLauncher.closeRuntime(subtask: subtask, configuration: config.wezTerm) }
       catch { actionMessages[ticket.id] = "Agent removed. \(error.localizedDescription)" }
       if subtask.status == .completed {
+        try await TaskMaintenance(root: paths.supportDirectory).requireInactive(subtask)
         let result = try await taskWorktreeManager.cleanupAgent(ticketID: ticket.id, subtask: subtask, store: taskContextStore)
         if subtask.hasManagedWorkspaces && !result.removed { closureMessages[ticket.id] = result.message }
       }

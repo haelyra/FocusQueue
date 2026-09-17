@@ -17,13 +17,17 @@ Every new app launch includes a compact task ID, agent ID, workspace, plan/log p
 - Supporting artifacts: store beside task context and link from the plan or log. Context lives outside disposable worktrees.
 - Structured state: use helper commands for progress, result, attention, and verified completion. Preserve user queue order, cleared subtasks, and other agents' identities.
 
-Preparing task context creates missing documents without replacing authored files. Log appends use the same cross-process task lock as state changes. They never re-save the central plan or overwrite task state. Symbolic-link log destinations are rejected. Existing historical plans are preserved until a deliberate archival migration.
+Preparing task context creates missing documents and outlines empty plans without replacing authored content. Log appends use the same cross-process task lock as state changes. They never re-save the central plan or overwrite task state. Symbolic-link log destinations are rejected. Existing historical plans are preserved until a deliberate archival migration.
+
+The installable, coworker-shareable Codex payload is [CODEX_GLOBAL_INSTRUCTIONS.md](../Config/CODEX_GLOBAL_INSTRUCTIONS.md). App installation replaces only its marked global block and preserves personal instructions. The [entry guide](CODEX_TMUX_ENTRY.md) covers fresh shell setup, role selection, missing-data behavior, enforcement boundaries and recovery.
 
 ## Management boundaries
 
 Agents explain their assignment and configuration briefly, then report at meaningful milestones. A lightweight orchestrator maintains authorized context and behavior, reconciles records, and answers questions. Coding, agent deployment, merging, remote delivery, priority changes, and destructive cleanup require their own authority.
 
-Response-ready, assignment-complete, merged, and cleaned are separate states. Existing guarded cleanup remains conservative; this change does not install a merge watcher or enable broad document deletion. Automatic external-agent worktree enforcement, merge-triggered reconciliation, and role-aware read-only launches remain proposed follow-up work.
+Response-ready, assignment-complete, merged, and cleaned are separate states. The deterministic reconciler reacts to semantic state changes and runs a slow recovery sweep, using a per-task lease and changed-only audit receipts. It repairs missing context documents, explains incomplete fields, and rechecks eligible completed workspaces after merge. Existing task closure and agent removal also check runtime inactivity under the same lease. Missing ownership, uncertain process discovery, active agents, dirty files and unmerged commits retain work. Shell-created external worktrees remain retained for review; broad document deletion stays disabled.
+
+The configured entry persists launch intent before starting Codex. Task/session/label metadata can remain provisional; unknown identities never authorize resume or cleanup. New interactive coding starts and forks in committed repositories get a separate worktree; read-only research/orchestration and explicit existing-workspace modes retain their checkout and record the policy. Noninteractive calls are tracked in their existing checkout. A native-executable bypass remains discoverable on a best-effort basis rather than an OS-wide launch gate.
 
 ## Verification
 

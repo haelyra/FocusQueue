@@ -63,6 +63,13 @@ func liveManagedProviderSanity() async throws {
         throw LiveAgentFailure("\(label): \(error.localizedDescription)\nPane output:\n\(capture.suffix(4_000))")
       }
       let nativeID = try #require(sessionID)
+      let processesForTracking = try await WezTermController().knownProviderProcesses()
+      let nativeProcess = try #require(processesForTracking.first { $0.sessionID.lowercased() == nativeID.lowercased() })
+      let intake = try #require(AgentIntakeStore.match(nativeProcess, tmux: reference,
+        receipts: AgentIntakeStore.load(root: fixture.support), parents: try await AgentIntakeStore.processParents()),
+        "The real Codex process must bind to its mandatory pre-launch receipt")
+      try AgentIntakeStore.resolve(intake, sessionID: nativeID, root: fixture.support)
+      #expect(!AgentIntakeStore.pending(root: fixture.support).contains { $0.id == intake.id })
       #expect(observedSessions.insert(nativeID).inserted, "Each New Agent must create its own conversation")
       #expect(nativeID != ProcessInfo.processInfo.environment["CODEX_SESSION_ID"])
       subtask.sessionID = nativeID

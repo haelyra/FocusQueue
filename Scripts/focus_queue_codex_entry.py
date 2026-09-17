@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 import uuid
+import re
 
 
 UTILITY_COMMANDS = {
@@ -38,7 +39,7 @@ class EntryError(RuntimeError):
     pass
 
 
-def invocation(arguments):
+def invocation(arguments, *, classify_agents=False):
     """Return interactive kind and an explicit resume UUID, without interpreting prompts."""
     mode = "new"
     positional = False
@@ -64,6 +65,8 @@ def invocation(arguments):
         if not positional:
             positional = True
             if argument in UTILITY_COMMANDS:
+                if classify_agents and argument in {"exec", "e", "review"}:
+                    return ("utility" if any(item in {"--help", "-h", "-V", "--version"} for item in arguments[index + 1:]) else "noninteractive"), None
                 return "utility", None
             if argument in {"resume", "fork"}:
                 mode = argument
@@ -113,13 +116,179 @@ def initial_prompt(arguments):
 def canonical_uuid(value):
     try:
         return str(uuid.UUID(value))
-    except (ValueError, AttributeError):
+    except (ValueError, AttributeError, TypeError):
         return None
 
 
 def support_directory(environment):
     return Path(environment.get("FOCUS_QUEUE_SUPPORT_DIR") or
                 str(Path.home() / "Library/Application Support/ECC Focus Queue")).absolute()
+
+
+def selected_directory(arguments):
+    directory = os.getcwd()
+    index = 0
+    while index < len(arguments):
+        value = arguments[index]
+        if value == "--":
+            break
+        if value in VALUE_OPTIONS:
+            if index + 1 >= len(arguments):
+                raise EntryError(f"Missing value for {value}.")
+            if value in {"--cd", "-C"}:
+                directory = os.path.abspath(arguments[index + 1])
+            index += 2
+            continue
+        if value.startswith("--cd=") or (value.startswith("-C") and len(value) > 2):
+            directory = os.path.abspath(value.split("=", 1)[1] if value.startswith("--cd=") else value[2:])
+        index += 1
+    if not Path(directory).is_dir():
+        raise EntryError("The selected working directory is missing. Choose an existing directory.")
+    return str(Path(directory).resolve())
+
+
+def workspace_arguments(arguments, directory):
+    result, index = ["--cd", directory], 0
+    while index < len(arguments):
+        value = arguments[index]
+        if value == "--":
+            result.extend(arguments[index:])
+            break
+        if value in {"-C", "--cd"}:
+            index += 2
+            continue
+        if value.startswith("--cd=") or (value.startswith("-C") and len(value) > 2):
+            index += 1
+            continue
+        if value in VALUE_OPTIONS and index + 1 < len(arguments):
+            result.extend(arguments[index:index + 2])
+            index += 2
+            continue
+        result.append(value)
+        index += 1
+    return result
+
+
+def git(directory, arguments, *, required=True):
+    result = subprocess.run(["/usr/bin/git", *arguments], cwd=directory,
+                            capture_output=True, text=True, timeout=25)
+    if required and result.returncode:
+        raise EntryError(result.stderr.strip()[:500] or "Git workspace preparation failed.")
+    return result
+
+
+def begin_tracking(arguments, mode, session_id, support, *, isolate=True):
+    """Persist intent first. Unknown task/session/configuration fields stay optional."""
+    support = support.resolve()
+    directory = support / "tracking/launches"
+    for path in (support / "tracking", directory):
+        if path.is_symlink():
+            raise EntryError("Tracking storage is redirected. Restore it before launching an agent.")
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    launch_id = str(uuid.uuid4())
+    path = directory / (launch_id + ".json")
+    source = selected_directory(arguments)
+    role = os.environ.get("FOCUS_QUEUE_AGENT_ROLE", "coding")
+    if role not in {"coding", "research", "orchestrator"}:
+        role = "coding"
+    record = {"schemaVersion": 1, "launchID": launch_id, "provider": "codex", "mode": mode,
+              "role": role, "sourceCwd": source, "cwd": source, "processID": os.getpid(),
+              "createdAt": datetime.now(timezone.utc).isoformat(), "phase": "preparing",
+              "title": (initial_prompt(arguments) or "Codex agent").splitlines()[0][:120]}
+    started = subprocess.run(["/bin/ps", "-p", str(os.getpid()), "-o", "lstart="],
+                             capture_output=True, text=True, timeout=5)
+    record["processStartedAt"] = " ".join(started.stdout.split()) if started.returncode == 0 else None
+    for key, value in (("sessionID", session_id), ("taskID", os.environ.get("FOCUS_QUEUE_TASK_ID")),
+                       ("agentID", os.environ.get("FOCUS_QUEUE_SUBTASK_ID"))):
+        if value:
+            record[key] = value
+    write_private_json(path, record)  # Failure here must prevent provider execution.
+    try:
+        workspace = source
+        saved = None
+        task_id = record.get("taskID", "")
+        if re.fullmatch(r"[A-Za-z0-9_-]+", task_id):
+            context = support / "tasks" / task_id.upper() / "context.json"
+            try:
+                value = json.loads(context.read_text())
+                rows = value.get("subtasks") or []
+                assigned = next((row for row in rows if isinstance(row, dict) and (
+                    (record.get("agentID") and row.get("id") == record["agentID"])
+                    or (session_id and canonical_uuid(row.get("sessionID")) == session_id))), None)
+                if assigned and mode in {"new", "fork"} and canonical_uuid(assigned.get("sessionID")):
+                    # A nested new Codex process must not inherit its parent's
+                    # existing writer workspace just through environment values.
+                    record.pop("agentID", None)
+                    assigned = None
+                saved = assigned.get("workspace") if assigned else None
+            except (OSError, ValueError, AttributeError, TypeError):
+                record["note"] = "Task context is incomplete; tracking is retained for reconciliation."
+        if not saved and session_id:
+            matches = []
+            for context in (support / "tasks").glob("*/context.json"):
+                if context.is_symlink() or context.parent.is_symlink():
+                    continue
+                try:
+                    rows = json.loads(context.read_text()).get("subtasks") or []
+                    for row in rows:
+                        if isinstance(row, dict) and canonical_uuid(row.get("sessionID")) == session_id and isinstance(row.get("workspace"), dict):
+                            matches.append((context.parent.name, row))
+                except (OSError, ValueError, AttributeError, TypeError):
+                    continue
+            if len(matches) > 1:
+                raise EntryError("Multiple task records own this conversation. Resolve its placement before resuming.")
+            if matches:
+                task_id, row = matches[0]
+                saved = row["workspace"]
+                record.update(taskID=task_id, agentID=row.get("id"))
+                write_private_json(path, record)
+        existing = os.environ.get("FOCUS_QUEUE_WORKSPACE_MODE") == "existing"
+        if saved and (not isinstance(saved.get("path"), str) or not Path(saved["path"]).is_absolute() or not Path(saved["path"]).is_dir()):
+            raise EntryError("The saved workspace is missing. Restore it from the task before resuming; no replacement was created.")
+        if saved:
+            workspace = str(Path(saved["path"]).resolve())
+            if mode in {"new", "fork"} and workspace != source:
+                raise EntryError("The launch directory differs from this agent's assigned workspace.")
+            if saved.get("branch"):
+                actual = git(workspace, ["branch", "--show-current"]).stdout.strip()
+                if actual != saved["branch"]:
+                    raise EntryError("The assigned branch changed. Restore it before launching this agent.")
+            record["workspacePolicy"] = "assigned"
+        elif mode not in {"new", "fork"} or not isolate or role != "coding" or existing:
+            record["workspacePolicy"] = "resume" if mode == "resume" else "existing-requested" if existing else "noninteractive-existing" if not isolate else role
+        else:
+            if any(part.lower().endswith(".app") for part in Path(source).parts):
+                raise EntryError("Choose source files instead of an application bundle.")
+            repository = git(source, ["rev-parse", "--show-toplevel"], required=False)
+            if repository.returncode:
+                record["workspacePolicy"] = "non-git"
+                record["note"] = "No Git checkout; workspace isolation is unavailable. Tracking remains active."
+            else:
+                commit = git(source, ["rev-parse", "HEAD"], required=False)
+                if commit.returncode:
+                    record["workspacePolicy"] = "unborn-repository"
+                    record["note"] = "No committed base yet. Create the initial commit before isolated coding."
+                else:
+                    base = git(source, ["branch", "--show-current"]).stdout.strip()
+                    destination = support / "worktrees/external" / launch_id
+                    if destination.parent.is_symlink() or destination.parent.parent.is_symlink():
+                        raise EntryError("The worktree storage is redirected; review it before launching.")
+                    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    branch = "focus-queue/agent-" + launch_id
+                    git(source, ["worktree", "add", "-b", branch, str(destination), commit.stdout.strip()])
+                    workspace = str(destination)
+                    record.update(workspacePolicy="isolated", repositoryPath=repository.stdout.strip(),
+                                  branch=branch, baseBranch=base, baseCommit=commit.stdout.strip())
+                    if git(source, ["status", "--porcelain"]).stdout.strip():
+                        record["note"] = "Source edits retained; this agent uses the committed snapshot."
+        record.update(cwd=workspace, phase="ready")
+        write_private_json(path, record)
+        os.environ["FOCUS_QUEUE_LAUNCH_ID"] = launch_id
+        return path, record, workspace_arguments(arguments, workspace)
+    except BaseException as error:
+        record.update(phase="blocked", note=str(error)[:500])
+        write_private_json(path, record)
+        raise
 
 
 def run_json(helper, arguments):
@@ -184,6 +353,8 @@ def write_private_json(path, value):
         with os.fdopen(descriptor, "w") as stream:
             json.dump(value, stream)
             stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(temporary, path)
     finally:
         if os.path.exists(temporary):
@@ -257,13 +428,23 @@ def main(argv=None):
     arguments = options.arguments
     if arguments[:1] == ["--"]:
         arguments = arguments[1:]
-    command = ["/bin/bash", str(options.usage_wrapper), *options.default_flag, *arguments]
-    mode, session_id = invocation(arguments)
+    mode, session_id = invocation(arguments, classify_agents=True)
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
     bypass = (bool(os.environ.get("TMUX")) or
               os.environ.get("FOCUS_QUEUE_RUNTIME_MODE") == "terminal" or
               os.environ.get("FOCUS_QUEUE_CODEX_TMUX") == "off")
-    if mode == "utility" or not interactive:
+    command = ["/bin/bash", str(options.usage_wrapper), *options.default_flag, *arguments]
+    # Utility commands do not create agents. Explicit exec/review invocations do.
+    creates_agent = mode != "utility"
+    if mode == "noninteractive":
+        interactive = False
+    if not creates_agent:
+        os.execv(command[0], command)
+    intake_path, intake, arguments = begin_tracking(arguments, mode, session_id,
+        support_directory(os.environ), isolate=interactive)
+    command = ["/bin/bash", str(options.usage_wrapper), *options.default_flag, *arguments]
+    os.chdir(intake["cwd"])
+    if not interactive:
         os.execv(command[0], command)
     if bypass:
         if session_id:
@@ -280,6 +461,8 @@ def main(argv=None):
         reference = start(options.helper, "fq-codex-" + str(uuid.uuid4()), command,
                           prompt=initial_prompt(arguments), support=support_directory(os.environ))
     name, pane = validate_reference(reference)
+    intake["reference"] = reference
+    write_private_json(intake_path, intake)
     # Attachment failure leaves the already-started agent available in Focus Queue.
     os.execv(str(options.helper), [str(options.helper), "tmux", "attach", name, "--pane", pane])
 

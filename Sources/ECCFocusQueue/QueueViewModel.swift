@@ -186,8 +186,7 @@ final class QueueViewModel {
       try await WezTermController().knownProviderProcesses()
     },
     locateExistingAgent: @escaping @Sendable (AgentProvider, String) async throws -> KnownProviderProcess? = { provider, sessionID in
-      try await WezTermController().knownProviderProcesses(provider: provider, requireComplete: true)
-        .first { $0.sessionID.caseInsensitiveCompare(sessionID) == .orderedSame }
+      try await WezTermController().locateProviderProcess(provider: provider, sessionID: sessionID)
     }
   ) {
     self.paths = paths
@@ -1337,6 +1336,7 @@ final class QueueViewModel {
     includePrompt: Bool = true, useTmux: Bool = true,
     createWorktree: Bool = true, initialPrompt: String? = nil, tracksCompletion: Bool = true,
     subtaskID: String = UUID().uuidString, parentSubtaskID: String? = nil, createAssignment: Bool = false,
+    workspacePolicy: AgentWorkspacePolicy? = nil,
     completion: (@MainActor (Bool) -> Void)? = nil
   ) {
     let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1373,7 +1373,9 @@ final class QueueViewModel {
           subtask.tracksCompletion = false
         }
         subtask.workspace = try await taskWorktreeManager.provisionAgent(ticketID: ticket.id,
-          subtaskID: subtask.id, path: repositoryPath, createWorktree: createWorktree, store: taskContextStore)
+          subtaskID: subtask.id, path: repositoryPath,
+          policy: workspacePolicy ?? (createWorktree ? .isolatedCleanCheckout : .existingCheckout),
+          store: taskContextStore)
         if let previous {
           subtask.parentSubtaskID = previous.parentSubtaskID
           subtask.tracksCompletion = previous.tracksCompletion

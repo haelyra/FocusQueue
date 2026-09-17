@@ -20,7 +20,11 @@ func liveManagedProviderSanity() async throws {
     summary: "Reply SANITY_OK only. Do not use tools or edit files.")
   var observedSessions = Set<String>()
   var checkedVariants = 0
-  for createWorktree in [false, true] {
+  for policy: AgentWorkspacePolicy in [.existingCheckout, .isolatedCommittedSnapshot] {
+    let createWorktree = policy.createsWorktree
+    // Reproduce the user's dirty task checkout with automatic isolation enabled.
+    let localNote = fixture.source.appendingPathComponent("live-sanity-source-only.txt")
+    if createWorktree { try Data("Preserve this uncommitted source work.\n".utf8).write(to: localNote) }
     for initialize in [false, true] {
       let subtaskID = UUID().uuidString
       let label = "worktree=\(createWorktree), initialization=\(initialize)"
@@ -30,7 +34,7 @@ func liveManagedProviderSanity() async throws {
         repositoryPath: fixture.source.path, includePrompt: initialize, useTmux: true,
         createWorktree: createWorktree,
         initialPrompt: "This is a launch sanity check. Reply with exactly SANITY_OK. Do not use tools, run commands, register sessions, inspect plans, or edit files. These constraints also apply to any supplemental task initialization below.",
-        subtaskID: subtaskID, createAssignment: true) { launched = $0 }
+        subtaskID: subtaskID, createAssignment: true, workspacePolicy: policy) { launched = $0 }
       try await liveEventually("New Agent did not finish: \(label)", seconds: 60) { launched != nil }
       try #require(launched == true, "\(model.actionMessages[fixture.taskID] ?? "No launch result")")
       var subtask = try #require(model.subtasks(for: fixture.taskID).first { $0.id == subtaskID })
@@ -39,6 +43,10 @@ func liveManagedProviderSanity() async throws {
       #expect(workspace.managed == createWorktree)
       #expect(subtask.includeInitializationPrompt == initialize)
       #expect(createWorktree ? workspace.path != fixture.source.path : workspace.path == fixture.source.path)
+      if createWorktree {
+        #expect(try String(contentsOf: localNote, encoding: .utf8) == "Preserve this uncommitted source work.\n")
+        #expect(!FileManager.default.fileExists(atPath: URL(fileURLWithPath: workspace.path).appendingPathComponent(localNote.lastPathComponent).path))
+      }
       #expect(await terminal.opened.last == reference)
 
       var sessionID: String?
@@ -105,6 +113,7 @@ func liveManagedProviderSanity() async throws {
       try #require(successor.paneID != reference.paneID,
         "\(model.actionMessages[fixture.taskID] ?? "The stopped runtime was not replaced")")
       try #require(resumed.sessionID == nativeID)
+      #expect(resumed.workspace == subtask.workspace, "Resume must reuse the exact agent workspace")
       try await liveEventually("Stopped Codex conversation was not resumed: \(label)", seconds: 90) {
         let identity = try await launcher.identify(subtask: resumed, configuration: model.config.wezTerm)
         let output = try await fixture.tmux(["capture-pane", "-p", "-S", "-200", "-t", successor.paneID])
@@ -117,6 +126,11 @@ func liveManagedProviderSanity() async throws {
       #expect(try await fixture.controller.inspect(name: fixture.sibling,
         executable: fixture.executable) == fixture.siblingReference)
       checkedVariants += 1
+    }
+    if createWorktree {
+      // Remove only our known fixture marker, after proving the agent preserved it.
+      try #require(try String(contentsOf: localNote, encoding: .utf8) == "Preserve this uncommitted source work.\n")
+      try FileManager.default.removeItem(at: localNote)
     }
   }
   #expect(checkedVariants == 4)

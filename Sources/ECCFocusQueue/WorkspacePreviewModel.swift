@@ -12,13 +12,17 @@ final class WorkspacePreviewModel {
   private var requestID = UUID()
 
   func launchBlockReason(path: String, createWorktree: Bool) -> String? {
+    launchBlockReason(path: path, policy: createWorktree ? .isolatedCleanCheckout : .existingCheckout)
+  }
+
+  func launchBlockReason(path: String, policy: AgentWorkspacePolicy) -> String? {
     guard !path.isEmpty else { return "Choose a workspace to start an agent." }
     guard inspectedPath == path else { return "Checking the selected workspace…" }
     if let error { return error }
     guard workspace?.path == path, let hasUncommittedChanges, !isLoading else {
       return "Checking the selected workspace…"
     }
-    if createWorktree && hasUncommittedChanges {
+    if policy == .isolatedCleanCheckout && hasUncommittedChanges {
       return "This checkout has uncommitted changes. Use this checkout, or choose a repository checkout for the new worktree."
     }
     return nil

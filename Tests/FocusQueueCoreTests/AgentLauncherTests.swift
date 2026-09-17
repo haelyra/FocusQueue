@@ -85,7 +85,8 @@ import Testing
   #expect(resumed.contextDirectory == context.contextDirectory.path)
   let command = try TaskAgentLauncher.command(context: context, subtask: decoded,
     supportDirectory: URL(fileURLWithPath: "/tmp/support"))
-  #expect(command.last == context.contextDirectory.path)
+  #expect(command.last == context.agentBootstrap(subtask: decoded))
+  #expect(command.last?.contains("wait for my instruction") == true)
   let legacy = Data(#"{"id":"old","title":"Legacy","provider":"codex","status":"queued"}"#.utf8)
   let legacySubtask = try JSONDecoder().decode(TaskSubtask.self, from: legacy)
   #expect(legacySubtask.includeInitializationPrompt)

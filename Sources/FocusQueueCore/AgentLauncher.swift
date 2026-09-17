@@ -65,9 +65,9 @@ public actor TaskAgentLauncher {
     } else if includePrompt && subtask.includeInitializationPrompt {
       if subtask.provider == .claude { providerArguments.append("--") }
       providerArguments.append(context.agentPrompt(subtask: subtask))
-    } else if includePrompt, let prompt = subtask.initialPrompt, !prompt.isEmpty {
+    } else if includePrompt {
       if subtask.provider == .claude { providerArguments.append("--") }
-      providerArguments.append(prompt)
+      providerArguments.append(context.agentBootstrap(subtask: subtask))
     }
     return ["/usr/bin/env", "FOCUS_QUEUE_SUPPORT_DIR=\(supportDirectory.path)",
             "FOCUS_QUEUE_PROVIDER=\(subtask.provider.rawValue)",

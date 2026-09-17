@@ -45,7 +45,7 @@ struct AgentLifecycleTests {
         #expect(!command.contains { $0.contains("NEVER REPLAY THIS") })
     }
 
-    @Test("Custom initial prompt is sent without task initialization; blank sessions submit nothing")
+    @Test("Compact initialization preserves custom prompts and prepares empty sessions without starting work")
     func customAndBlank() throws {
         let context = TaskContext(ticketID: "ECC-777", title: "Lifecycle", summary: "", successCriteria: "",
             planPath: "/tmp/support/tasks/ECC-777/plan.md", worktreePath: "/tmp/repo", updatedAt: Date())
@@ -53,11 +53,20 @@ struct AgentLifecycleTests {
         subtask.tracksCompletion = false
         subtask.initialPrompt = "Review literal $(data)\nsecond line"
         let command = try TaskAgentLauncher.command(context: context, subtask: subtask, supportDirectory: URL(fileURLWithPath: "/tmp/support"))
-        #expect(command.last == subtask.initialPrompt)
+        #expect(command.last == context.agentBootstrap(subtask: subtask))
+        #expect(command.last?.hasPrefix(subtask.initialPrompt! + "\n\n") == true)
         #expect(!command.contains { $0.contains("Work on ECC-777") })
         subtask.initialPrompt = ""
         let blank = try TaskAgentLauncher.command(context: context, subtask: subtask, supportDirectory: URL(fileURLWithPath: "/tmp/support"))
-        #expect(blank.last == context.contextDirectory.path)
+        #expect(blank.last?.contains("wait for my instruction before implementing anything") == true)
+        #expect(blank.last?.contains(context.planPath) == true)
+        subtask.includeInitializationPrompt = true
+        let detailedBlank = try TaskAgentLauncher.command(context: context, subtask: subtask,
+            supportDirectory: URL(fileURLWithPath: "/tmp/support"))
+        #expect(detailedBlank.last?.hasPrefix("Prepare the task context, then wait for my instruction") == true)
+        let suppressed = try TaskAgentLauncher.command(context: context, subtask: subtask,
+            supportDirectory: URL(fileURLWithPath: "/tmp/support"), includePrompt: false)
+        #expect(suppressed.last == context.contextDirectory.path)
         #expect(try JSONDecoder().decode(TaskSubtask.self, from: JSONEncoder().encode(subtask)).tracksCompletion == false)
     }
 

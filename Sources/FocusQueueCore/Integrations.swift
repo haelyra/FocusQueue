@@ -839,6 +839,26 @@ public actor WezTermController: WezTermControlling {
 
     /// One process list and one lsof call cover terminals, tmux, and IDE shells.
     /// Multiple Codex writer locks are separate exact thread identities.
+    public func locateProviderProcess(provider: AgentProvider, sessionID: String,
+                                      attempts: Int = 4, retryDelay: Duration = .milliseconds(250)) async throws -> KnownProviderProcess? {
+        // A process can release its writer lock before exiting. Reinspect that
+        // transient state rather than asking the user to click Open repeatedly.
+        // A failed/partial final scan never authorizes a second conversation.
+        let limit = max(1, min(attempts, 4))
+        for attempt in 0..<limit {
+            try Task.checkCancellation()
+            do {
+                return try await knownProviderProcesses(provider: provider, requireComplete: true)
+                    .first { $0.sessionID.caseInsensitiveCompare(sessionID) == .orderedSame }
+            } catch is CancellationError { throw CancellationError() }
+            catch {
+                guard attempt + 1 < limit else { throw error }
+                try await Task.sleep(for: retryDelay)
+            }
+        }
+        throw WezTermError.actionFailed("Provider ownership could not be verified.")
+    }
+
     public func knownProviderProcesses(provider: AgentProvider? = nil,
                                        requireComplete: Bool = false) async throws -> [KnownProviderProcess] {
         let processes = try await runner.run(.init(executable: "/bin/ps",
@@ -1927,7 +1947,7 @@ public actor CodexQueueAgent: QueueAgentChatting {
 
         Answer clarifying questions from the dashboard and workspace. On explicit request, you may create a task with a unique ID using the existing schema, clarify task fields including taskType and doneWhen, add links, or update a task's central plan. Edit the canonical dashboard only when the user's message directly and unambiguously requests that exact change. Preserve the dashboard schema and existing ticket IDs. Do not resolve, cancel, or invent completion evidence. Do not turn a disagreement with local order into a canonical priority change unless the user explicitly asks for that canonical change. Keep the response concise and state any file change you made.
 
-        Every task has durable context under the Focus Queue support directory's tasks/<ticket-id>/ folder. When the user message includes a Task scope and central plan path, restrict the turn to that task and read its plan before proposing changes. Keep one central plan as the source of truth and link supporting canvases from it. Persist decisions, success criteria, progress, checks, and next actions concisely. Use focus-queue-session context <ticket-id> to read context and the helper's add/rename/progress/complete commands for subtask state instead of overwriting context.json. The helper defaults to the standard support directory; use FOCUS_QUEUE_SUPPORT_DIR when provided. Only record completed after evidence has been verified. Task types are task, long-running, subtask, and customer-concern. A customer concern needs the user's response/review before closure. Never send external messages without an explicit request. Worktree merging requires the task's explicit approval terms; leave cleanup to the host.
+        Every task has durable context under the Focus Queue support directory's tasks/<ticket-id>/ folder. When the user message includes a Task scope and central plan path, restrict the turn to that task and read its plan before proposing changes. Keep the central plan short: goal, scope, success criteria, implementation outline, current focus, next step, and supporting links. If missing, create that brief outline. Keep decisions and rationale, configuration, detailed progress, checks, and handoffs in the adjacent agent-log.md; read relevant entries on demand instead of injecting the full log. Registered agents append with focus-queue-session log <ticket-id> <agent-id> "entry"; never invent an agent identity to log. Preserve historical plans until safely archived. Use focus-queue-session context <ticket-id> to read context and the helper's add/rename/progress/complete commands for subtask state instead of overwriting context.json. The helper defaults to the standard support directory; use FOCUS_QUEUE_SUPPORT_DIR when provided. Only record completed after evidence has been verified. Task types are task, long-running, subtask, and customer-concern. A customer concern needs the user's response/review before closure. Never send external messages without an explicit request. Worktree merging requires the task's explicit approval terms; leave cleanup to the host. A lightweight orchestrator maintains authorized task context and behavior, and answers questions; application-code changes and autonomous agent deployment require a separate user request.
 
         Subtasks are assignments, and agents are separately linked runtime records. New runtime records have parentSubtaskID; isAssignmentOnly records never identify a terminal. A single provider conversation may be associated with additional assignments using focus-queue-session associate <ticket-id> <agent-record-id> <subtask-id>. At review boundaries the host combines assignments handled by the same provider conversation and retains mergedIntoSubtaskID aliases, launch locations, and history. Read the refreshed context and reflect combined scope in the central plan when reviewing it. Keep provider session IDs and workspace paths on their own agent records. Never copy one agent's runtime into another assignment. Progress/result/attention reports describe agent activity; a finished response alone does not complete its assignment.
 

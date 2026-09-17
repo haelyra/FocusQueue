@@ -101,12 +101,19 @@ struct WorkspacePreviewTests {
     #expect(model.hasUncommittedChanges == true)
     #expect(model.launchBlockReason(path: worktree.path, createWorktree: true)?.contains("uncommitted changes") == true)
     #expect(model.launchBlockReason(path: worktree.path, createWorktree: false) == nil)
+    #expect(model.launchBlockReason(path: worktree.path, policy: .isolatedCommittedSnapshot) == nil)
     let manager = TaskWorktreeManager()
     let store = TaskContextStore(root: root.appendingPathComponent("support"))
     let existing = try await manager.provisionAgent(ticketID: "SANITY-1", subtaskID: UUID().uuidString,
       path: worktree.path, createWorktree: false, store: store)
     #expect(existing.path == worktree.path)
     #expect(!existing.managed)
+    let snapshot = try await manager.provisionAgent(ticketID: "SANITY-1", subtaskID: UUID().uuidString,
+      path: worktree.path, policy: .isolatedCommittedSnapshot, store: store)
+    #expect(snapshot.managed)
+    #expect(snapshot.baseCommit == originalCommit)
+    #expect(try Data(contentsOf: URL(fileURLWithPath: snapshot.path).appendingPathComponent("user-file.txt")) == original)
+    #expect(!FileManager.default.fileExists(atPath: URL(fileURLWithPath: snapshot.path).appendingPathComponent("user-notes.txt").path))
 
     // A changed selection cannot use the old preview before SwiftUI starts its lookup.
     #expect(model.launchBlockReason(path: repository.path, createWorktree: true)?.contains("Checking") == true)
@@ -123,6 +130,6 @@ struct WorkspacePreviewTests {
     #expect(FileManager.default.fileExists(atPath: untrackedFile.path))
     #expect(try await git(["rev-parse", "HEAD"], at: worktree) == originalCommit)
     #expect(try await git(["rev-parse", "HEAD"], at: repository) == originalCommit)
-    print("WORKSPACE_PREVIEW_SANITY passed: dirty task checkout blocked new worktree, explicit existing checkout allowed, repository rechecked clean, new worktree used original commit, user edits preserved")
+    print("WORKSPACE_PREVIEW_SANITY passed: automatic isolation from dirty source uses committed HEAD, excludes untracked edits, preserves source bytes and HEAD; legacy strict and existing-checkout paths retained")
   }
 }

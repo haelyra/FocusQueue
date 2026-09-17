@@ -1,6 +1,15 @@
 import Foundation
 import Darwin
 
+public enum AgentWorkspacePolicy: Sendable {
+    case existingCheckout
+    case isolatedCleanCheckout
+    /// Fork the selected HEAD without copying, stashing, or changing local edits.
+    case isolatedCommittedSnapshot
+
+    public var createsWorktree: Bool { self != .existingCheckout }
+}
+
 public struct TaskWorktreeCleanupResult: Equatable, Sendable {
     public let removed: Bool
     public let message: String
@@ -47,6 +56,13 @@ public actor TaskWorktreeManager {
 
     public func provisionAgent(ticketID: String, subtaskID: String, path: String,
                                createWorktree: Bool, store: TaskContextStore) async throws -> AgentWorkspace {
+        try await provisionAgent(ticketID: ticketID, subtaskID: subtaskID, path: path,
+            policy: createWorktree ? .isolatedCleanCheckout : .existingCheckout, store: store)
+    }
+
+    public func provisionAgent(ticketID: String, subtaskID: String, path: String,
+                               policy: AgentWorkspacePolicy, store: TaskContextStore) async throws -> AgentWorkspace {
+        let createWorktree = policy.createsWorktree
         let source = try await workspace(at: path)
         let destination = store.root.appendingPathComponent("worktrees/agents/\(subtaskID)")
         let branch = "focus-queue/\(ticketID.lowercased())-\(subtaskID.lowercased())"
@@ -66,8 +82,8 @@ public actor TaskWorktreeManager {
         }
         guard createWorktree else { return source }
         guard UUID(uuidString: subtaskID) != nil else { throw TaskContextError.invalidIdentifier }
-        guard try await !hasUncommittedChanges(at: path) else {
-            throw TaskContextError.unsafeWorktree("The selected checkout has uncommitted changes. Commit them first, or turn off Create worktree to use this checkout with those changes.")
+        if policy == .isolatedCleanCheckout, try await hasUncommittedChanges(at: path) {
+            throw TaskContextError.unsafeWorktree("The selected checkout has uncommitted changes. Commit them first or explicitly choose isolation from its committed snapshot.")
         }
         try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         _ = try await git(["worktree", "add", "-b", branch, destination.path, source.baseCommit!], in: path)

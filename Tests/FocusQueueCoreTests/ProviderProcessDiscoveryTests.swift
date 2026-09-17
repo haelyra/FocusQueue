@@ -49,4 +49,36 @@ struct ProviderProcessDiscoveryTests {
             "p40\nfcwd\nn/tmp/repository\nf8\nn/Users/example/.claude/projects/tmp/\(parent).jsonl\nf9\nn/Users/example/.claude/projects/tmp/\(child).jsonl\n"])
         #expect(try await WezTermController(runner: runner).knownProviderProcesses().isEmpty)
     }
+
+    @Test("A closing process gets a bounded ownership recheck before stopped-session resume")
+    func closingProcessRecheck() async throws {
+        let runner = ProviderDiscoveryRunner([
+            "40 ttys040 /opt/codex\n", "p40\nfcwd\nn/tmp/repository\n",
+            "41 ttys041 /opt/codex\n", "p41\nfcwd\nn/tmp/other\nf8\nn/Users/example/.codex/thread-writer-locks/\(child).lock\n",
+        ])
+        #expect(try await WezTermController(runner: runner).locateProviderProcess(
+            provider: .codex, sessionID: parent, retryDelay: .zero) == nil)
+        #expect(await runner.outputs.isEmpty)
+    }
+
+    @Test("Unresolved ownership still fails closed after bounded retries")
+    func persistentUnknownRecheck() async throws {
+        let sample = ["40 ttys040 /opt/codex\n", "p40\nfcwd\nn/tmp/repository\n"]
+        let runner = ProviderDiscoveryRunner(sample + sample + sample + sample)
+        await #expect(throws: WezTermError.self) {
+            try await WezTermController(runner: runner).locateProviderProcess(
+                provider: .codex, sessionID: parent, retryDelay: .zero)
+        }
+        #expect(await runner.outputs.isEmpty)
+    }
+
+    @Test("A starting process that acquires the requested identity is returned rather than duplicated")
+    func startingProcessRecheck() async throws {
+        let runner = ProviderDiscoveryRunner([
+            "40 ttys040 /opt/codex\n", "p40\nfcwd\nn/tmp/repository\n",
+            "40 ttys040 /opt/codex\n", "p40\nfcwd\nn/tmp/repository\nf8\nn/Users/example/.codex/thread-writer-locks/\(parent).lock\n",
+        ])
+        #expect(try await WezTermController(runner: runner).locateProviderProcess(
+            provider: .codex, sessionID: parent, retryDelay: .zero)?.sessionID == parent)
+    }
 }

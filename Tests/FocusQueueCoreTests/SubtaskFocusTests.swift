@@ -151,7 +151,7 @@ struct SubtaskFocusTests {
         #expect(TaskAgentLauncher.terminalAttention("The agent asked: Do you want to proceed?") == nil)
     }
 
-    @Test("Initialization starts with the initial prompt; disabling it sends only that prompt")
+    @Test("Both prompt modes preserve the initial instruction and compact mode includes task pointers")
     func promptPreview() throws {
         let context = context()
         var agent = TaskSubtask(title: "Fix issue", includeInitializationPrompt: false)
@@ -159,7 +159,10 @@ struct SubtaskFocusTests {
         agent.workspace = AgentWorkspace(path: "/tmp/repo", repositoryPath: "/tmp/repo")
         #expect(context.agentPrompt(subtask: agent).hasPrefix(agent.initialPrompt! + "\n\n"))
         let command = try TaskAgentLauncher.command(context: context, subtask: agent, supportDirectory: URL(fileURLWithPath: "/tmp"))
-        #expect(command.last == agent.initialPrompt)
+        #expect(command.last == context.agentBootstrap(subtask: agent))
+        #expect(command.last?.hasPrefix(agent.initialPrompt! + "\n\n") == true)
+        #expect(command.last?.contains(context.planPath) == true)
+        #expect(command.last?.contains(context.agentLogURL.path) == true)
         #expect(!command.contains(context.agentPrompt(subtask: agent)))
     }
 

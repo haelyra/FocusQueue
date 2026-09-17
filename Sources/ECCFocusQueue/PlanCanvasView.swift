@@ -459,7 +459,6 @@ struct NewTaskAgentView: View {
   @AppStorage("newAgentProvider") private var provider: AgentProvider = .codex
   @State private var repository = ""
   @State private var includePrompt = false
-  @State private var createWorktree = true
   @State private var assignmentID = UUID().uuidString
   @State private var workspacePreview = WorkspacePreviewModel()
   @State private var isStarting = false
@@ -468,17 +467,10 @@ struct NewTaskAgentView: View {
     workspacePreview.workspace?.path == repository ? workspacePreview.workspace : nil
   }
   private var workspaceBlockReason: String? {
-    workspacePreview.launchBlockReason(path: repository, createWorktree: createWorktree)
+    workspacePreview.launchBlockReason(path: repository, policy: .isolatedCommittedSnapshot)
   }
   private var sourceHasChanges: Bool {
     sourceWorkspace != nil && workspacePreview.hasUncommittedChanges == true
-  }
-  private var repositoryCheckout: String? {
-    guard let path = model.taskContexts[ticket.id]?.repositoryPath,
-      path.hasPrefix("/"),
-      URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
-        != URL(fileURLWithPath: repository).standardizedFileURL.resolvingSymlinksInPath() else { return nil }
-    return path
   }
   @AppStorage("agentUsesTmux") private var useTmux = true
 
@@ -497,24 +489,10 @@ struct NewTaskAgentView: View {
 
   private var proposedWorkspace: AgentWorkspace {
     var workspace = sourceWorkspace ?? AgentWorkspace(path: repository, repositoryPath: repository)
-    if createWorktree {
-      workspace.path = model.proposedAgentWorktreePath(subtaskID: assignmentID)
-      workspace.branch = "focus-queue/\(ticket.id.lowercased())-\(assignmentID.lowercased())"
-      workspace.managed = true
-    }
+    workspace.path = model.proposedAgentWorktreePath(subtaskID: assignmentID)
+    workspace.branch = "focus-queue/\(ticket.id.lowercased())-\(assignmentID.lowercased())"
+    workspace.managed = true
     return workspace
-  }
-
-  private var sharedAgentCount: Int {
-    guard let sourceWorkspace else { return 0 }
-    return model.taskContexts.values.flatMap(\.subtasks).filter { agent in
-      guard !agent.isAssignmentOnly, agent.isAgentVisible, let workspace = agent.workspace else { return false }
-      if let gitDirectory = sourceWorkspace.gitDirectory, let savedDirectory = workspace.gitDirectory {
-        return gitDirectory == savedDirectory
-      }
-      return URL(fileURLWithPath: workspace.path).standardizedFileURL.resolvingSymlinksInPath()
-        == URL(fileURLWithPath: sourceWorkspace.path).standardizedFileURL.resolvingSymlinksInPath()
-    }.count
   }
 
   var body: some View {
@@ -531,53 +509,27 @@ struct NewTaskAgentView: View {
           Picker("Provider", selection: $provider) {
             ForEach(AgentProvider.allCases, id: \.self) { Text($0.displayName).tag($0) }
           }.pickerStyle(.segmented)
-          TextField("Workspace path", text: $repository).accessibilityLabel("Workspace path")
-          Toggle("Create worktree", isOn: $createWorktree)
-          Text(createWorktree
-            ? "Creates a separate worktree and branch from the selected checkout's current commit."
-            : "Uses the selected path and its current branch, including local changes.")
+          TextField("Source checkout", text: $repository).accessibilityLabel("Source checkout")
+          Text("Each new agent gets its own worktree and branch from this checkout's current commit. Reopening an agent reuses its workspace.")
             .font(.caption).foregroundStyle(.secondary)
-          if createWorktree && sourceHasChanges {
-            Text(workspaceBlockReason ?? "This checkout has uncommitted changes.")
-              .font(.callout).foregroundStyle(.orange)
-            HStack {
-              Button("Use existing checkout") {
-                createWorktree = false
-                launchError = nil
-              }
-              if let repositoryCheckout {
-                Button("Use repository checkout") {
-                  repository = repositoryCheckout
-                  launchError = nil
-                }
-              }
-              Button("Recheck") {
-                Task { await workspacePreview.load(path: repository) }
-              }.accessibilityLabel("Recheck selected workspace")
-            }.controlSize(.small)
-            Text("Your edits stay in their current checkout. A repository choice is checked before Start becomes available.")
-              .font(.caption).foregroundStyle(.secondary)
-          } else if let workspaceBlockReason {
+          if let workspaceBlockReason {
             Text(workspaceBlockReason).font(.caption)
               .foregroundStyle(workspacePreview.error == nil ? Color.secondary : Color.orange)
-          } else if sourceHasChanges {
-            Text("The agent will use this checkout with its current local changes.")
-              .font(.caption).foregroundStyle(.secondary)
           }
-          if !createWorktree, sharedAgentCount > 0 {
-            Text("Shared with \(sharedAgentCount) other agent\(sharedAgentCount == 1 ? "" : "s"). Create a worktree for independent file changes.")
+          if sourceHasChanges {
+            Text("Uncommitted changes stay in the source checkout. This agent starts from the committed version and will not see those edits.")
               .font(.caption).foregroundStyle(.orange)
           }
-          Text("\(createWorktree ? "New worktree" : "Workspace"): \(proposedWorkspace.path)")
+          Text("Agent workspace: \(proposedWorkspace.path)")
             .font(.caption).textSelection(.enabled)
           Text("Branch: \(proposedWorkspace.branch ?? (sourceWorkspace == nil ? "checking…" : "detached at \(String((sourceWorkspace?.baseCommit ?? "").prefix(8)))"))")
             .font(.caption).textSelection(.enabled)
-          if createWorktree, let sourceWorkspace {
+          if let sourceWorkspace {
             Text("Source: \(sourceWorkspace.branch ?? "unknown") at \(String((sourceWorkspace.baseCommit ?? "").prefix(8)))")
               .font(.caption).foregroundStyle(.secondary)
           }
-          Toggle("Send task initialization prompt", isOn: $includePrompt)
-          Text("Adds the task plan, assignment, and progress instructions to your initial prompt. Turn off to send only your prompt, or leave it empty for a blank session.")
+          Toggle("Include detailed task instructions", isOn: $includePrompt)
+          Text("Task identity and plan/log paths are always included. This adds the full assignment and reporting instructions. An empty initial prompt prepares context, then waits for you.")
             .font(.caption).foregroundStyle(.secondary)
           if includePrompt {
             DisclosureGroup("Initialization prompt preview") {
@@ -605,9 +557,10 @@ struct NewTaskAgentView: View {
           isStarting = true
           launchError = nil
           model.launchAgent(for: ticket, title: name, provider: provider, repositoryPath: repository,
-            includePrompt: includePrompt, useTmux: useTmux && tmuxAvailable, createWorktree: createWorktree,
+            includePrompt: includePrompt, useTmux: useTmux && tmuxAvailable,
             initialPrompt: prompt, tracksCompletion: true, subtaskID: assignmentID,
-            parentSubtaskID: targetSubtask?.id, createAssignment: targetSubtask == nil) { started in
+            parentSubtaskID: targetSubtask?.id, createAssignment: targetSubtask == nil,
+            workspacePolicy: .isolatedCommittedSnapshot) { started in
               isStarting = false
               if started { dismiss() }
               else { launchError = model.actionMessages[ticket.id] ?? "Agent could not start. Check the workspace and try again." }
@@ -620,7 +573,6 @@ struct NewTaskAgentView: View {
       .task(id: repository) { await workspacePreview.load(path: repository) }
       .onAppear {
         includePrompt = false
-        createWorktree = !blank && targetSubtask?.workspace == nil
         prompt = targetSubtask.map {
           !$0.assignmentDescription.isEmpty ? $0.assignmentDescription : ($0.initialPrompt ?? $0.title)
         } ?? ""

@@ -35,6 +35,7 @@ enum SessionRegistrationError: Error, LocalizedError {
             if arguments.first == "tmux" { try await tmuxCommand(arguments: arguments) }
             else if arguments.first == "--help" || arguments.first == "help" {
                 print(SessionRegistrationError.usage.localizedDescription)
+                print("Agent log: log <TASK-ID> <AGENT-ID> <entry> (append-only, task-locked)")
                 print("Persistent terminals: tmux list | tmux start <name> [--cwd <directory>] [-- <command> ...] | tmux attach <name> | tmux ssh-command <user@host> <name>")
                 print("Task layouts: tmux panes <name> | tmux arrange <name> | tmux manual <name> | tmux save | tmux restore | tmux persistence")
             }
@@ -455,6 +456,12 @@ enum SessionRegistrationError: Error, LocalizedError {
         let environment = ProcessInfo.processInfo.environment
         let root = supportDirectory(environment: environment)
         let store = TaskContextStore(root: root)
+        if command == "log", arguments.count == 4 {
+            try await store.appendAgentLog(ticketID: arguments[1], subtaskID: arguments[2], entry: arguments[3])
+            notifyContextChanged()
+            try emit(["appended": true])
+            return
+        }
         if ["review-push", "workspace"].contains(command) {
             guard arguments.count == (command == "workspace" ? 4 : 3),
                   let context = try await store.load(ticketID: arguments[1]),

@@ -245,6 +245,23 @@ public struct TaskContext: Codable, Equatable, Sendable {
 
     public var contextDirectory: URL { URL(fileURLWithPath: planPath).deletingLastPathComponent() }
 
+    public var agentLogURL: URL { contextDirectory.appendingPathComponent("agent-log.md") }
+
+    /// Identity and document pointers survive the optional detailed-prompt switch.
+    /// Document contents and history are deliberately excluded from launch arguments.
+    public func agentBootstrap(subtask: TaskSubtask) -> String {
+        let prompt = subtask.initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return """
+        \(prompt.isEmpty ? "Prepare the task context, then wait for my instruction before implementing anything." : prompt)
+
+        Focus Queue task: \(ticketID). Agent: \(subtask.id) (\(subtask.provider.rawValue)).
+        Assigned workspace: \(subtask.workspace?.path ?? worktreePath ?? "not configured").
+        Read \(planPath) before acting; if missing, create a brief goal, scope, implementation outline, and next step. Keep this shared plan concise and re-read before editing.
+        Task state: \(contextDirectory.appendingPathComponent("context.json").path). Decisions, detailed progress, configuration, and evidence belong in \(agentLogURL.path), not the central plan. Append with focus-queue-session log \(ticketID) \(subtask.id) "entry". Read only relevant log entries when needed.
+        Register with focus-queue-session attach \(ticketID), briefly state your assignment and configuration, and report milestones with focus-queue-session progress \(ticketID) \(subtask.id) working "summary". Preserve user scope and queue order.
+        """
+    }
+
     public func agentPrompt(subtask: TaskSubtask) -> String {
         let support = contextDirectory.deletingLastPathComponent().deletingLastPathComponent().path
         let quotedSupport = "'" + support.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
@@ -269,10 +286,12 @@ public struct TaskContext: Codable, Equatable, Sendable {
         let assignmentLine = assignmentDetails.isEmpty
             ? "" : "Assignment details: \(assignmentDetails)\n"
         return """
-        \(subtask.initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? subtask.initialPrompt! : subtask.title)
+        \(subtask.initialPrompt.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Prepare the task context, then wait for my instruction before implementing anything." : $0 } ?? subtask.title)
 
         Work on \(ticketID): \(title). Your subtask is \(subtask.title) (\(subtask.id)).
-        \(assignmentLine)Read the central plan at \(planPath) and context at \(contextDirectory.appendingPathComponent("context.json").path) before acting. The central plan is the source of truth. Keep it current with decisions, checks, and handoff details; link supporting canvases from it.
+        \(assignmentLine)Read the central plan at \(planPath) and context at \(contextDirectory.appendingPathComponent("context.json").path) before acting. If the plan is missing, create a brief goal, scope, implementation outline, success criteria, and next step. Keep it concise; re-read before edits and preserve concurrent changes. Link supporting canvases from it.
+        Keep decisions, detailed progress, configuration, research, and verification evidence in \(agentLogURL.path). Append with \(command) log \(ticketID) \(subtask.id) "entry". Read only relevant entries when needed; do not inject the whole log or put decision history in the central plan.
+        Briefly state your assignment, provider, workspace, branch, and intended outputs. Reuse this assigned worktree on resume. Create an isolated worktree before coding if no dedicated writer workspace is assigned; preserve the source checkout's local edits.
         Workspace: \(subtask.workspace?.path ?? worktreePath ?? repositoryPath ?? "not configured")
         Assigned branch: \(subtask.workspace?.branch ?? branch ?? "not configured")
         Success criteria: \(successCriteria)
@@ -282,7 +301,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
         Report approval requests with \(command) attention \(ticketID) \(subtask.id) approval "what needs approval", and questions with \(command) attention \(ticketID) \(subtask.id) question "what needs an answer". Report working when resuming. Report a finished response that leaves the assignment open with \(command) result \(ticketID) \(subtask.id) "short result".
         Use idle or blocked when waiting. On completion: \(command) complete \(ticketID) \(subtask.id) "what changed and verification result"
         Before any push, run \(command) review-push \(ticketID) \(subtask.id). The orchestrator scans the committed diff for accidental files, unrelated additions, generated output, and missing checks. If rejected, correct only your changes and run review-push again. Push only after acceptance and only when the user authorized remote delivery. Never push directly to main unless explicitly requested.
-        Propose scope, branch, or plan changes to the task orchestrator before acting. Record approved workspace changes with \(command) workspace \(ticketID) \(subtask.id) <absolute-path>.
+        Update the plan within the agreed scope without an extra approval loop. Ask before materially changing scope, ownership, branch strategy, or external delivery. Record approved workspace changes with \(command) workspace \(ticketID) \(subtask.id) <absolute-path>.
         Complete only your assigned subtask. Preserve other agents' changes. Never force-remove a worktree or merge a branch without the task's approval terms. Task closure requires verification and safe cleanup.
         """
     }
@@ -441,6 +460,7 @@ public actor TaskContextStore {
                 // A retained branch with no workspace records completed cleanup. Dashboard
                 // metadata may still mention the former workspace until its next refresh.
                 if existing.worktreePath == nil, existing.branch == nil { existing.worktreePath = worktreePath ?? ticket.worktree }
+                try ensureDocuments(context: existing, ticket: ticket)
                 if previous != existing { existing.updatedAt = Date(); try write(existing); try snapshot(existing) }
                 else if !files.fileExists(atPath: existing.contextDirectory.appendingPathComponent("archive").path) { try snapshot(existing) }
                 return existing
@@ -450,46 +470,84 @@ public actor TaskContextStore {
             let context = TaskContext(ticketID: ticket.id.uppercased(), title: ticket.title,
                                       summary: ticket.summary, successCriteria: ticket.doneWhen ?? "Confirm the requested behavior and record verification results.",
                                       planPath: planURL.path, worktreePath: worktreePath ?? ticket.worktree, updatedAt: Date())
-            if !files.fileExists(atPath: planURL.path) {
-                let links = ticket.links.map { "- [\($0.label)](\($0.url))" }.joined(separator: "\n")
-                let steps = ticket.steps.map { "- [\($0.isDone ? "x" : " ")] \($0.label)" }.joined(separator: "\n")
-                let markdown = """
-                # \(ticket.id): \(ticket.title)
-
-                ## Purpose
-
-                \(ticket.summary)
-
-                ## Success criteria
-
-                \(context.successCriteria)
-
-                ## Implementation plan
-
-                \(steps.isEmpty ? "- [ ] Confirm scope and record the implementation approach." : steps)
-
-                ## Progress and handoff
-
-                \(ticket.next ?? "Record completed changes, current focus, blockers, and the next action here.")
-
-                ## Decisions
-
-                Record material decisions and their reasons here.
-
-                ## Verification
-
-                Record the sanity check for each completed behavior here.
-
-                ## Supporting plans and references
-
-                \(links)
-
-                """
-                try Data(markdown.utf8).write(to: planURL, options: .atomic)
-            }
+            try ensureDocuments(context: context, ticket: ticket)
             try write(context)
             try snapshot(context)
             return context
+        }
+    }
+
+    /// Called under the task lock. Existing authored documents are never replaced.
+    private func ensureDocuments(context: TaskContext, ticket: DashboardTicket) throws {
+        let planURL = URL(fileURLWithPath: context.planPath)
+        if !files.fileExists(atPath: planURL.path) {
+            let links = ticket.links.map { "- [\($0.label)](\($0.url))" }.joined(separator: "\n")
+            let steps = ticket.steps.map { "- [\($0.isDone ? "x" : " ")] \($0.label)" }.joined(separator: "\n")
+            let markdown = """
+            # \(ticket.id): \(ticket.title)
+
+            ## Purpose
+
+            \(ticket.summary)
+
+            ## Scope
+
+            Stay within this task and the assigned subtask. Ask before materially expanding scope.
+
+            ## Success criteria
+
+            \(context.successCriteria)
+
+            ## Implementation plan
+
+            \(steps.isEmpty ? "- [ ] Confirm scope and record the implementation approach." : steps)
+
+            ## Current focus and next step
+
+            \(ticket.next ?? "Confirm scope, choose the next implementation step, and record any blocker briefly.")
+
+            ## Supporting plans and references
+
+            - [Agent log](agent-log.md): decisions, configuration, detailed progress, research, and verification evidence. Read relevant entries on demand.
+            \(links)
+
+            """
+            try Data(markdown.utf8).write(to: planURL, options: .atomic)
+        }
+        try ensureAgentLog(context)
+    }
+
+    private func ensureAgentLog(_ context: TaskContext) throws {
+        guard (try? context.agentLogURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else {
+            throw TaskContextError.commandFailed("The agent log must be a regular task-owned file, not a symbolic link.")
+        }
+        if !files.fileExists(atPath: context.agentLogURL.path) {
+            try Data("# \(context.ticketID) agent log\n\nAppend-only decisions, configuration, progress, and evidence. Keep the central plan brief; read this log selectively.\n".utf8)
+                .write(to: context.agentLogURL, options: .atomic)
+        }
+    }
+
+    /// Serializes app and CLI writers across processes without re-saving the plan.
+    public func appendAgentLog(ticketID: String, subtaskID: String, entry: String, now: Date = Date()) throws {
+        try locked(ticketID: ticketID) {
+            guard let context = try load(ticketID: ticketID) else { throw TaskContextError.missingContext(ticketID) }
+            guard let agent = context.subtasks.first(where: { $0.id == subtaskID }), !agent.isAssignmentOnly else {
+                throw TaskContextError.missingSubtask(subtaskID)
+            }
+            let body = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !body.isEmpty else { throw TaskContextError.commandFailed("Agent log entry cannot be empty.") }
+            try ensureAgentLog(context)
+            let heading = "\n## \(ISO8601DateFormatter().string(from: now)) | \(agent.provider.rawValue) | \(agent.id)\n\n"
+            let descriptor = Darwin.open(context.agentLogURL.path, O_WRONLY | O_APPEND | O_NOFOLLOW | O_NONBLOCK)
+            guard descriptor >= 0 else { throw TaskContextError.commandFailed("Could not open the task-owned agent log for append.") }
+            let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+            defer { try? handle.close() }
+            var metadata = stat()
+            guard fstat(descriptor, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFREG else {
+                throw TaskContextError.commandFailed("The agent log must be a regular task-owned file.")
+            }
+            try handle.write(contentsOf: Data((heading + body + "\n").utf8))
+            try handle.synchronize()
         }
     }
 

@@ -31,9 +31,10 @@ public struct QueueOrderStore: Sendable {
 
     @discardableResult
     public func move(_ ticketID: String, to placement: QueuePlacement,
-                     tickets: [DashboardTicket], fallbackIDs: [String]) throws -> [String] {
+                     tickets: [DashboardTicket], fallbackIDs: [String], visibleIDs: Set<String>? = nil) throws -> [String] {
         try locked {
-            var ids = Self.orderedTickets(tickets, savedIDs: try load() ?? fallbackIDs).map(\.id)
+            let allIDs = Self.orderedTickets(tickets, savedIDs: try load() ?? fallbackIDs).map(\.id)
+            var ids = allIDs.filter { visibleIDs?.contains($0) ?? true }
             guard ids.contains(ticketID) else {
                 throw TaskContextError.commandFailed("No open task named \(ticketID) exists in this queue.")
             }
@@ -42,7 +43,7 @@ public struct QueueOrderStore: Sendable {
                 guard ids.contains(target) else {
                     throw TaskContextError.commandFailed("No open task named \(target) exists in this queue.")
                 }
-                if target == ticketID { return ids }
+                if target == ticketID { return allIDs }
             default: break
             }
             ids.removeAll { $0 == ticketID }
@@ -52,14 +53,28 @@ public struct QueueOrderStore: Sendable {
             case .before(let target): ids.insert(ticketID, at: ids.firstIndex(of: target)!)
             case .after(let target): ids.insert(ticketID, at: ids.firstIndex(of: target)! + 1)
             }
-            try write(ids)
-            return ids
+            var iterator = ids.makeIterator()
+            let result = allIDs.map { id in
+                (visibleIDs?.contains(id) ?? true) ? iterator.next()! : id
+            }
+            try write(result)
+            return result
         }
     }
 
     /// An explicit empty order restores priority sorting and supersedes legacy deferrals.
     public func reset() throws {
         try locked { try write([]) }
+    }
+
+    public func reset(tickets: [DashboardTicket], visibleIDs: Set<String>, fallbackIDs: [String]) throws -> [String] {
+        try locked {
+            let all = Self.orderedTickets(tickets, savedIDs: try load() ?? fallbackIDs).map(\.id)
+            var sorted = DashboardOrdering.openTickets(in: tickets).filter { visibleIDs.contains($0.id) }.map(\.id).makeIterator()
+            let result = all.map { visibleIDs.contains($0) ? sorted.next()! : $0 }
+            try write(result)
+            return result
+        }
     }
 
     private func write(_ ids: [String]) throws {

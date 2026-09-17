@@ -39,6 +39,11 @@ struct QueueView: View {
     }
     .preferredColorScheme(model.appearance == .dark ? .dark : .light)
     .environment(\.queueAccentStyle, model.accentStyle)
+    .onChange(of: model.selectedProjectID) { _, _ in
+      showsMoreTasks = false
+      showsPastCompletedTasks = false
+      visiblePastCompletedCount = 0
+    }
     .sheet(isPresented: $showsTerminals) { TerminalBrowserView(model: model) }
     .sheet(item: Binding(get: { model.launchDiagnostics }, set: { model.launchDiagnostics = $0 })) { log in
       VStack(alignment: .leading, spacing: 12) {
@@ -148,6 +153,8 @@ struct QueueView: View {
   private var queueContent: some View {
     VStack(spacing: 10) {
       header
+      ProjectSelectorView(model: model)
+      if let error = model.projectError { Text(error).font(.caption).foregroundStyle(.orange) }
       if model.pendingDailyReportApproval != nil {
         missedReportApprovalBanner
       }
@@ -213,7 +220,7 @@ struct QueueView: View {
                 .foregroundStyle(model.reportHasFailure ? Color.orange : Color.accentColor)
             }
             VStack(alignment: .leading, spacing: 3) {
-              Text(model.reportAttentionTitle).font(.system(size: 12, weight: .semibold))
+              Text("Global · " + model.reportAttentionTitle).font(.system(size: 12, weight: .semibold))
               Text(model.reportAttentionMessage)
                 .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
             }
@@ -284,7 +291,7 @@ struct QueueView: View {
         }.padding(.horizontal, 2).padding(.vertical, 2)
       }.scrollIndicators(.automatic)
 
-      if !remainingTickets.isEmpty || !model.config.dailyRoutines.isEmpty { moreButton }
+      if !remainingTickets.isEmpty || !model.visibleRoutines.isEmpty { moreButton }
     }
   }
 
@@ -310,8 +317,9 @@ struct QueueView: View {
       if focusTickets.isEmpty {
         ContentUnavailableView(
           "Queue is clear", systemImage: "checkmark.circle",
-          description: Text("No open tasks are present in the dashboard.")
+          description: Text(model.selectedProjectID == nil ? "No open tasks are present in the dashboard." : "No open tasks in \(model.projectScopeName).")
         ).frame(maxWidth: .infinity).notificationSurface(radius: 18)
+        if model.selectedProjectID != nil { Button("View all projects") { model.selectProject(nil) } }
       } else {
         ForEach(focusTickets) { ticket in TicketCard(ticket: ticket, model: model) }
       }
@@ -408,7 +416,7 @@ struct QueueView: View {
   }
 
   private var completedSubtaskTickets: [DashboardTicket] {
-    model.dashboard.tickets.filter { ticket in
+    model.projectTickets.filter { ticket in
       model.focusSubtasks(for: ticket.id).contains { $0.status == .completed }
     }
   }
@@ -453,10 +461,12 @@ struct QueueView: View {
 
   private var compactHeader: some View {
     Button { model.setPanelCollapsed(false) } label: {
-      Text("FQ").font(.system(size: 17, weight: .bold, design: .rounded))
-        .frame(width: 52, height: 44).contentShape(Rectangle())
+      VStack(spacing: 1) {
+        Text("FQ").font(.system(size: 15, weight: .bold, design: .rounded))
+        Text("\(model.openTickets.count)").font(.system(size: 10, weight: .medium).monospacedDigit())
+      }.frame(width: 52, height: 44).contentShape(Rectangle())
     }.buttonStyle(.plain).notificationSurface(radius: 12)
-      .accessibilityLabel("Expand ECC Focus Queue").help("Expand queue")
+      .accessibilityLabel("Expand ECC Focus Queue: \(model.projectScopeName), \(model.openTickets.count) tasks").help("\(model.projectScopeName) · \(model.openTickets.count) tasks")
       .contextMenu {
         Button("Show top task", systemImage: "rectangle.topthird.inset.filled") {
           model.showTopTaskOnly()
@@ -488,6 +498,7 @@ struct QueueView: View {
         .accessibilityLabel("Collapse ECC Focus Queue to FQ").help("Collapse to FQ")
       }
 
+      Text(model.projectScopeName).font(.caption).foregroundStyle(.secondary).lineLimit(1)
       if let ticket = model.openTickets.first {
         Button {
           model.setPanelMode(.expanded)
@@ -655,12 +666,12 @@ struct QueueView: View {
 
   private var additionalQueue: some View {
     LazyVStack(alignment: .leading, spacing: 10) {
-      if !model.config.dailyRoutines.isEmpty {
+      if !model.visibleRoutines.isEmpty {
         SectionHeading(
           title: "Daily checklist",
-          detail: "\(model.completedRoutineCount)/\(model.config.dailyRoutines.count)")
+          detail: "\(model.completedRoutineCount)/\(model.visibleRoutines.count)")
         VStack(spacing: 1) {
-          ForEach(model.config.dailyRoutines) { routine in
+          ForEach(model.visibleRoutines) { routine in
             RoutineRow(
               routine: routine, isComplete: model.routineIsComplete(routine.id),
               toggle: { model.toggleRoutine(routine.id) },
@@ -840,6 +851,9 @@ struct QueueAgentChatView: View {
   var body: some View {
     GeometryReader { geometry in
       VStack(spacing: 10) {
+        if ticketID == nil {
+          Text("Scope: \(model.projectScopeName)").font(.caption).foregroundStyle(.secondary)
+        }
         ScrollViewReader { proxy in
           ScrollView {
             LazyVStack(spacing: 9) {
@@ -1282,6 +1296,9 @@ private struct QueueSettingsView: View {
       ScrollView {
         VStack(alignment: .leading, spacing: 14) {
           if focusedSection == .connectors { connectorDiagnosticsSection }
+          settingsSection(title: "Projects", detail: "Organize tasks by repository and choose a project from the queue.") {
+            ProjectSettingsView(model: model)
+          }
 
           settingsSection(title: "Workspace and terminals", detail: "Configure the queue, review terminal support, and set up persistent sessions.") {
             Button("Open setup wizard", systemImage: "wand.and.stars") {
@@ -1637,6 +1654,10 @@ private struct CompletedTicketCard: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       summary
+      if model.selectedProjectID == nil, !model.config.projects.isEmpty {
+        Text(model.project(for: ticket)?.name ?? "Unassigned")
+          .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.bottom, 6)
+      }
       Button { model.openPlan(for: ticket) } label: {
         Label("Central plan and history", systemImage: "doc.text")
           .font(.system(size: 12, weight: .medium))
@@ -1644,6 +1665,7 @@ private struct CompletedTicketCard: View {
       }.buttonStyle(.plain).padding(.horizontal, 14).padding(.bottom, 12)
         .help("Read the retained plan and conversation for this completed task")
       if model.isExpanded(ticket.id) {
+        TaskProjectMenu(model: model, ticket: ticket).padding(.horizontal, 14).padding(.vertical, 6)
         Divider().opacity(0.45).padding(.horizontal, 14)
         details.padding(.top, 11).transition(.opacity.combined(with: .move(edge: .top)))
       }
@@ -2050,6 +2072,10 @@ private struct TicketCard: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       summary
+      if model.selectedProjectID == nil, !model.config.projects.isEmpty {
+        Text(model.project(for: ticket)?.name ?? "Unassigned")
+          .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14)
+      }
       taskOverview
       agentControls
       Button(action: toggleCardDisclosure) {
@@ -2061,6 +2087,7 @@ private struct TicketCard: View {
           .frame(minHeight: 36).contentShape(Rectangle())
       }.buttonStyle(.plain).accessibilityLabel("\(model.isExpanded(ticket.id) ? "Collapse" : "Expand") \(ticket.id) details")
       if model.isExpanded(ticket.id) {
+        TaskProjectMenu(model: model, ticket: ticket).padding(.horizontal, 14).padding(.vertical, 6)
         Divider().opacity(0.45).padding(.horizontal, 14)
         details.padding(.top, 11).transition(.opacity.combined(with: .move(edge: .top)))
       }

@@ -42,6 +42,8 @@ final class QueueViewModel {
   private(set) var lastSync: Date?
   private(set) var sourceModificationDate: Date?
   private(set) var loadError: String?
+  private(set) var projectError: String?
+  private(set) var isSavingProject = false
   private(set) var durableHistoryError: String?
   private(set) var configurationIsLoaded = false
   var isSetupPresented = false
@@ -227,6 +229,10 @@ final class QueueViewModel {
   }
 
   var openTickets: [DashboardTicket] {
+    allOpenTickets.filter { includesInProject($0) }
+  }
+
+  private var allOpenTickets: [DashboardTicket] {
     if let savedQueueOrder {
       return QueueOrderStore.orderedTickets(dashboard.tickets, savedIDs: savedQueueOrder)
     }
@@ -245,7 +251,7 @@ final class QueueViewModel {
   }
 
   var completedTickets: [DashboardTicket] {
-    dashboard.tickets
+    projectTickets
       .filter { $0.isCompleted && closureMessages[$0.id] == nil }
       .sorted {
         if $0.completionTimestamp != $1.completionTimestamp {
@@ -270,7 +276,103 @@ final class QueueViewModel {
   }
 
   var completedRoutineCount: Int {
-    localState.completedRoutineIDs.intersection(Set(config.dailyRoutines.map(\.id))).count
+    localState.completedRoutineIDs.intersection(Set(visibleRoutines.map(\.id))).count
+  }
+
+  var selectedProjectID: String? {
+    ProjectCatalog.normalizedSelection(localState.selectedProjectID, projects: config.projects)
+  }
+  var selectedProject: ProjectDefinition? { config.projects.first { $0.id == selectedProjectID } }
+  var projectScopeName: String {
+    selectedProjectID == ProjectCatalog.unassignedID ? "Unassigned" : selectedProject?.name ?? "All projects"
+  }
+  var activeProjects: [ProjectDefinition] { config.projects.filter { $0.archivedAt == nil } }
+  var projectTickets: [DashboardTicket] { dashboard.tickets.filter { includesInProject($0) } }
+  var hasUnassignedTasks: Bool { dashboard.tickets.contains { project(for: $0) == nil } }
+  var visibleRoutines: [DailyRoutine] {
+    config.dailyRoutines.filter { routine in
+      guard let selection = selectedProjectID, let owner = routine.projectID else { return true }
+      return owner == selection
+    }
+  }
+  func project(for ticket: DashboardTicket) -> ProjectDefinition? { ProjectCatalog.project(for: ticket, in: config.projects) }
+  func includesInProject(_ ticket: DashboardTicket) -> Bool {
+    ProjectCatalog.includes(ticket, selection: selectedProjectID, projects: config.projects)
+  }
+  func selectProject(_ id: String?) {
+    let selection = ProjectCatalog.normalizedSelection(id, projects: config.projects)
+    guard localState.selectedProjectID != selection else { return }
+    localState.selectedProjectID = selection
+    if let ticket = presentedPlanTicket, !includesInProject(ticket) { closePlan() }
+    if let update = presentedAgentUpdate,
+       let ticket = dashboard.tickets.first(where: { $0.id == update.ticketID }), !includesInProject(ticket) { closeAgentUpdate() }
+    persistLocalState()
+  }
+  func revealProject(for ticketID: String) {
+    guard let ticket = dashboard.tickets.first(where: { $0.id == ticketID }), !includesInProject(ticket) else { return }
+    let owner = project(for: ticket)
+    selectProject(owner?.archivedAt == nil ? owner?.id ?? ProjectCatalog.unassignedID : nil)
+  }
+  func defaultRepository(for ticket: DashboardTicket) -> String {
+    let context = taskContexts[ticket.id]
+    return context?.worktreePath ?? context?.repositoryPath ?? ticket.worktree
+      ?? project(for: ticket)?.repositoryPath ?? config.workspacePath
+  }
+  private var projectTaskStore: ProjectTaskStore {
+    ProjectTaskStore(dashboardURL: URL(fileURLWithPath: config.dashboardPath), supportDirectory: paths.supportDirectory)
+  }
+  @discardableResult
+  func saveProject(_ project: ProjectDefinition) async -> Bool {
+    guard !isSavingProject else { return false }
+    isSavingProject = true
+    defer { isSavingProject = false }
+    do {
+      if project.archivedAt != nil {
+        let current = try await dashboardRepository.load(from: URL(fileURLWithPath: config.dashboardPath))
+        guard !current.tickets.contains(where: { $0.projectID == project.id && $0.isOpen }) else {
+          throw TaskContextError.commandFailed("Reassign this project's open tasks before archiving it. Completed history stays in All projects.")
+        }
+      }
+      var next = config
+      if let index = next.projects.firstIndex(where: { $0.id == project.id }) { next.projects[index] = project }
+      else { next.projects.append(project) }
+      _ = try next.validated()
+      configurationSaveTask?.cancel()
+      await configurationSaveTask?.value
+      try await configurationRepository.save(next)
+      config = next
+      selectProject(selectedProjectID)
+      lastContextRefresh = nil
+      await refresh()
+      projectError = nil
+      return true
+    } catch { projectError = error.localizedDescription; return false }
+  }
+  @discardableResult
+  func assignProject(_ projectID: String?, to ticketID: String) async -> Bool {
+    do {
+      guard projectID == nil || activeProjects.contains(where: { $0.id == projectID }) else {
+        throw TaskContextError.commandFailed("Choose an active project or Unassigned.")
+      }
+      try projectTaskStore.assign(ticketID: ticketID, projectID: projectID)
+      lastContextRefresh = nil
+      await refresh()
+      projectError = nil
+      return true
+    } catch { projectError = error.localizedDescription; return false }
+  }
+  func createTask(title: String, summary: String, projectID: String?) async -> Bool {
+    do {
+      let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !title.isEmpty, projectID == nil || activeProjects.contains(where: { $0.id == projectID }) else {
+        throw TaskContextError.commandFailed("Enter a title and choose an active project or Unassigned.")
+      }
+      let id = try projectTaskStore.create(title: title, summary: summary, projectID: projectID)
+      await refresh()
+      revealReportTask(id)
+      projectError = nil
+      return true
+    } catch { projectError = error.localizedDescription; return false }
   }
 
   var configurationURL: URL { paths.configurationFile }
@@ -300,6 +402,7 @@ final class QueueViewModel {
       isSetupPresented = firstRun || config.setupCompleted == false
       configurationIsLoaded = true
       localState = try await stateStore.load()
+      localState.selectedProjectID = selectedProjectID
       // Preserve the prior task associations before registration can move them.
       await captureDurableState(localState)
       if let saved = try await conversationStore.load(ticketID: nil), !saved.isEmpty {
@@ -457,7 +560,8 @@ final class QueueViewModel {
   func moveTicket(_ ticketID: String, to placement: QueuePlacement) -> Bool {
     do {
       savedQueueOrder = try queueOrderStore.move(ticketID, to: placement,
-        tickets: dashboard.tickets, fallbackIDs: openTickets.filter(\.isOpen).map(\.id))
+        tickets: dashboard.tickets, fallbackIDs: allOpenTickets.filter(\.isOpen).map(\.id),
+        visibleIDs: selectedProjectID.map { _ in Set(projectTickets.map(\.id)) })
       actionMessages[ticketID] = "Queue position saved on this Mac."
       return true
     } catch {
@@ -468,8 +572,13 @@ final class QueueViewModel {
 
   func resetQueueOrder() {
     do {
-      try queueOrderStore.reset()
-      savedQueueOrder = []
+      if selectedProjectID != nil {
+        savedQueueOrder = try queueOrderStore.reset(tickets: dashboard.tickets,
+          visibleIDs: Set(projectTickets.map(\.id)), fallbackIDs: allOpenTickets.map(\.id))
+      } else {
+        try queueOrderStore.reset()
+        savedQueueOrder = []
+      }
     } catch { loadError = error.localizedDescription }
   }
 
@@ -511,10 +620,14 @@ final class QueueViewModel {
       return true
     }
     let visibleOrder = openTickets.map(\.id)
-    let deferredTicketIDs = savedQueueOrder == nil ? localState.deferredTicketIDs : []
+    let scopedTaskIDs = ticketID.map { [$0] } ?? projectTickets.map(\.id)
+    let chatWorkspace = ticketID.flatMap { id in dashboard.tickets.first { $0.id == id }.map(defaultRepository) }
+      ?? selectedProject?.repositoryPath ?? config.workspacePath
+    let deferredTicketIDs = savedQueueOrder == nil ? localState.deferredTicketIDs.filter { scopedTaskIDs.contains($0) } : []
     let scopedMessage: String
     var agentConfiguration = config.verifier
     agentConfiguration.supportDirectory = paths.supportDirectory.path
+    agentConfiguration.projectScopeID = ticketID.flatMap { id in dashboard.tickets.first { $0.id == id }?.projectID } ?? selectedProjectID
     agentConfiguration.contextDirectory =
       paths.supportDirectory.appendingPathComponent("tasks").path
     let contextualMessage =
@@ -528,9 +641,11 @@ final class QueueViewModel {
         Apply changes only when requested.
 
         """
-      scopedMessage = taskScope + contextScope + contextualMessage
+      scopedMessage = taskScope + "Project: \(context.projectName ?? context.projectID ?? "Unassigned"). " + contextScope + contextualMessage
     } else {
-      scopedMessage = contextualMessage
+      let scope = "Project scope: \(projectScopeName). Project ID: \(selectedProjectID ?? "all"). Allowed task IDs: \(projectTickets.map(\.id).joined(separator: ", ")). "
+      let rules = "Preserve projectID on edits. New tasks use \(selectedProject?.id ?? "no projectID (Unassigned) unless explicitly assigned"). Restrict actions to this scope. Ask the user to select All projects before acting on hidden tasks.\n\n"
+      scopedMessage = scope + rules + contextualMessage
     }
     queueChatTask = Task { [weak self] in
       guard let self else { return }
@@ -539,13 +654,13 @@ final class QueueViewModel {
         self.respondingTicketID = nil
       }
       do {
-        for id in ticketID.map({ [$0] }) ?? Array(self.taskContexts.keys) {
+        for id in scopedTaskIDs.filter({ self.taskContexts[$0] != nil }) {
           self.taskContexts[id] = try await self.taskContextStore.reconcileSubtasks(ticketID: id)
         }
         let reply = try await self.queueAgent.send(
           message: scopedMessage,
           dashboardPath: self.config.dashboardPath,
-          workspace: self.config.workspacePath,
+          workspace: chatWorkspace,
           visibleOrder: visibleOrder,
           deferredTicketIDs: deferredTicketIDs,
           configuration: agentConfiguration
@@ -731,7 +846,7 @@ final class QueueViewModel {
     lastContextRefresh = Date()
     let tickets = dashboard.tickets
     let baseline = taskContexts
-    let snapshot = await taskContextStore.refreshContexts(tickets: tickets)
+    let snapshot = await taskContextStore.refreshContexts(tickets: tickets, projects: config.projects)
     var merged = taskContexts
     for (ticketID, context) in snapshot.contexts where merged[ticketID] == baseline[ticketID] {
       merged[ticketID] = context
@@ -816,6 +931,7 @@ final class QueueViewModel {
   }
 
   func openPlan(for ticket: DashboardTicket, sourceURL: URL? = nil) {
+    revealProject(for: ticket.id)
     isQueueChatInspectorPresented = false
     presentedAgentUpdate = nil
     isDailyReportPresented = false
@@ -829,7 +945,7 @@ final class QueueViewModel {
     reportVisibilityHandler?(true)
     Task {
       do {
-        taskContexts[ticket.id] = try await taskContextStore.ensureContext(ticket: ticket)
+        taskContexts[ticket.id] = try await taskContextStore.ensureContext(ticket: ticket, project: project(for: ticket))
         guard planPresentationID == presentationID, presentedPlanTicketID == ticket.id else { return }
         await reloadPresentedPlan()
       } catch {
@@ -856,7 +972,7 @@ final class QueueViewModel {
 
   var agentUpdates: [QueueAgentUpdate] {
     var updates: [QueueAgentUpdate] = []
-    for ticket in dashboard.tickets {
+    for ticket in projectTickets {
       if let message = closureMessages[ticket.id] {
         updates.append(QueueAgentUpdate(id: "cleanup-\(ticket.id)", ticketID: ticket.id,
           title: "Task closure needs attention", summary: message, isCleanup: true))
@@ -890,6 +1006,7 @@ final class QueueViewModel {
   }
 
   func openAgentUpdate(_ update: QueueAgentUpdate) {
+    revealProject(for: update.ticketID)
     isQueueChatInspectorPresented = false
     presentedPlanTicketID = nil
     presentedPlanURL = nil
@@ -1090,7 +1207,7 @@ final class QueueViewModel {
     let trimmedExplanation = explanation?.trimmingCharacters(in: .whitespacesAndNewlines)
     Task {
       do {
-        _ = try await taskContextStore.ensureContext(ticket: ticket)
+        _ = try await taskContextStore.ensureContext(ticket: ticket, project: project(for: ticket))
         var assignment = TaskSubtask(
           title: String(trimmedTitle.prefix(200)),
           assignmentDescription: trimmedExplanation?.isEmpty == false
@@ -1217,7 +1334,7 @@ final class QueueViewModel {
             && $0.sessionID?.caseInsensitiveCompare(sessionID) == .orderedSame }) else { return nil }
     return TaskAgentSession(id: uuid, ticketID: ticketID, provider: subtask.provider,
       sessionID: sessionID, tabTitle: subtask.title,
-      workingDirectory: subtask.workspace?.path ?? context.worktreePath ?? context.repositoryPath ?? config.workspacePath,
+      workingDirectory: subtask.workspace?.path ?? context.worktreePath ?? context.repositoryPath ?? context.projectRepositoryPath ?? config.workspacePath,
       subtaskID: subtask.id, tmux: subtask.tmux)
       .withContext(context, subtask: subtask, supportDirectory: paths.supportDirectory)
   }
@@ -1323,7 +1440,7 @@ final class QueueViewModel {
         // Old records recover their original launch directory before inheriting a task default.
         if assignment.workspace == nil {
           let path = session(for: subtask, ticketID: ticket.id)?.workingDirectory
-            ?? context.worktreePath ?? context.repositoryPath ?? config.workspacePath
+            ?? context.worktreePath ?? context.repositoryPath ?? context.projectRepositoryPath ?? config.workspacePath
           assignment.workspace = try await taskWorktreeManager.workspace(at: path)
           if let branch = context.branch, context.worktreePath == path { assignment.workspace?.branch = branch }
         }
@@ -1368,7 +1485,8 @@ final class QueueViewModel {
     repositoryPath: String, assignmentDescription: String = "",
     includePrompt: Bool = true, useTmux: Bool = true,
     createWorktree: Bool = true, initialPrompt: String? = nil, tracksCompletion: Bool = true,
-    subtaskID: String = UUID().uuidString, parentSubtaskID: String? = nil, createAssignment: Bool = false,
+    subtaskID: String = UUID().uuidString, allowProjectRepositoryMismatch: Bool = false,
+    parentSubtaskID: String? = nil, createAssignment: Bool = false,
     workspacePolicy: AgentWorkspacePolicy? = nil,
     completion: (@MainActor (Bool) -> Void)? = nil
   ) {
@@ -1387,7 +1505,11 @@ final class QueueViewModel {
         completion?(runtimeStarted)
       }
       do {
-        let context = try await taskContextStore.ensureContext(ticket: ticket)
+        let context = try await taskContextStore.ensureContext(ticket: ticket, project: project(for: ticket))
+        if let project = project(for: ticket), !allowProjectRepositoryMismatch,
+           try await !ProjectRepositoryResolver().matches(path: repositoryPath, project: project) {
+          throw TaskContextError.commandFailed("This checkout could not be matched to \(project.name). Confirm the repository choice in New Agent before starting it.")
+        }
         let previous = context.subtasks.first(where: { $0.id == subtaskID })
         let workspaceLease = try await TaskMaintenance.lease(ticketID: ticket.id, root: paths.supportDirectory)
         defer { workspaceLease.release() }
@@ -1669,7 +1791,7 @@ final class QueueViewModel {
   }
 
   func focusTerminal(for ticket: DashboardTicket) {
-    let directory = ticket.worktree ?? config.workspacePath
+    let directory = defaultRepository(for: ticket)
     actionMessages[ticket.id] = "Finding a matching WezTerm pane…"
     Task {
       do {
@@ -1800,7 +1922,7 @@ final class QueueViewModel {
     }
     Task {
       do {
-        _ = try await taskContextStore.ensureContext(ticket: ticket)
+        _ = try await taskContextStore.ensureContext(ticket: ticket, project: project(for: ticket))
         _ = try await ExternalAgentRegistry(root: paths.supportDirectory).register(
           ExternalAgentEvent(sessionID: sessionID, cwd: registration.cwd, hookEventName: "ExplicitAttach", prompt: registration.title),
           provider: registration.provider, explicitTaskID: ticket.id, tmux: registration.tmux,
@@ -1818,7 +1940,7 @@ final class QueueViewModel {
     if session.tmux == nil {
       Task {
         do {
-          _ = try await taskContextStore.ensureContext(ticket: ticket)
+          _ = try await taskContextStore.ensureContext(ticket: ticket, project: project(for: ticket))
           var agent = TaskSubtask(id: session.subtaskID ?? session.id.uuidString, title: session.tabTitle,
             provider: session.provider, sessionID: session.sessionID, includeInitializationPrompt: false,
             runtimeMode: .terminal, terminalPaneID: session.paneID)
@@ -1956,7 +2078,7 @@ final class QueueViewModel {
       $0.sessionID?.lowercased() == session.sessionID.lowercased()
     }) == true { return }
     do {
-      let context = try await taskContextStore.ensureContext(ticket: ticket)
+      let context = try await taskContextStore.ensureContext(ticket: ticket, project: project(for: ticket))
       if context.subtasks.contains(where: { $0.sessionID?.lowercased() == session.sessionID.lowercased() }) {
         if taskContexts[ticket.id] != context { taskContexts[ticket.id] = context }
         return
@@ -2184,6 +2306,7 @@ final class QueueViewModel {
   }
 
   func revealReportTask(_ taskID: String) {
+    revealProject(for: taskID)
     requestedReportTaskID = taskID
     expandedTicketIDs.insert(taskID)
     setDailyReportPresented(false)
@@ -2446,11 +2569,12 @@ final class QueueViewModel {
       var reviewConfiguration = config.verifier
       reviewConfiguration.contextDirectory = request.contextPath
       reviewConfiguration.supportDirectory = paths.supportDirectory.path
+      reviewConfiguration.projectScopeID = taskContexts[request.ticketID]?.projectID
       let result = try await verifier.verify(
         ticketID: request.ticketID,
         requestFile: URL(fileURLWithPath: request.requestFilePath),
         workspace: request.subtaskID.flatMap { id in subtasks(for: request.ticketID).first(where: { $0.id == id })?.workspace?.path }
-          ?? taskContexts[request.ticketID]?.worktreePath ?? config.workspacePath,
+          ?? taskContexts[request.ticketID]?.worktreePath ?? taskContexts[request.ticketID]?.projectRepositoryPath ?? config.workspacePath,
         configuration: reviewConfiguration
       )
       let logURL = try await reviewArtifacts.writeLog(result.log, for: request.id)

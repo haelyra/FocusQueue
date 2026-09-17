@@ -22,6 +22,7 @@ actor DocumentContextReader {
         Document conversation for task \(context.ticketID): \(context.title)
         Selected document: \(document.absoluteString)
         Central plan: \(context.planPath)
+        Project: \(context.projectName ?? context.projectID ?? "Unassigned"). Preserve explicit ownership.
         Workspace: \(context.worktreePath ?? context.repositoryPath ?? "Unregistered")
         Success criteria: \(context.successCriteria)
         Discuss the selected document in this task's context. Make changes only when the user requests them.
@@ -81,12 +82,13 @@ final class DocumentConversation {
     init(document: URL, context: TaskContext, support: URL, agent: any QueueAgentChatting,
          configuration: VerifierConfiguration, dashboardPath: String, workspace: String) {
         self.document = document; self.taskID = context.ticketID; self.context = context
-        self.agent = agent; self.dashboardPath = dashboardPath; self.workspace = context.worktreePath ?? context.repositoryPath ?? workspace
+        self.agent = agent; self.dashboardPath = dashboardPath; self.workspace = context.worktreePath ?? context.repositoryPath ?? context.projectRepositoryPath ?? workspace
         let key = Self.key(document: document, taskID: context.ticketID)
         var config = configuration
         config.sessionName = "ecc-focus-queue-task-\(context.ticketID.lowercased())-document-\(key.prefix(16))"
         config.contextDirectory = context.contextDirectory.path
         config.supportDirectory = support.path
+        config.projectScopeID = context.projectID
         self.configuration = config
         self.store = DocumentConversationStore(directory: context.contextDirectory.appendingPathComponent("documents/\(key)"))
     }

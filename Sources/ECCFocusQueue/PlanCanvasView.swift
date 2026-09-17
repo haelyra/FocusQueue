@@ -463,6 +463,8 @@ struct NewTaskAgentView: View {
   @State private var workspacePreview = WorkspacePreviewModel()
   @State private var isStarting = false
   @State private var launchError: String?
+  @State private var repositoryMatchesProject: Bool?
+  @State private var allowsOtherRepository = false
   private var sourceWorkspace: AgentWorkspace? {
     workspacePreview.workspace?.path == repository ? workspacePreview.workspace : nil
   }
@@ -510,6 +512,14 @@ struct NewTaskAgentView: View {
             ForEach(AgentProvider.allCases, id: \.self) { Text($0.displayName).tag($0) }
           }.pickerStyle(.segmented)
           TextField("Source checkout", text: $repository).accessibilityLabel("Source checkout")
+          if let project = model.project(for: ticket) {
+            Text("Project: \(project.name)").font(.caption).foregroundStyle(.secondary)
+            if repositoryMatchesProject == false {
+              Text("This checkout could not be matched to the repository for \(project.name). The task's project and existing workspaces will stay unchanged.")
+                .font(.caption).foregroundStyle(.orange)
+              Toggle("Use this repository for this agent", isOn: $allowsOtherRepository)
+            }
+          }
           Text("Each new agent gets its own worktree and branch from this checkout's current commit. Reopening an agent reuses its workspace.")
             .font(.caption).foregroundStyle(.secondary)
           if let workspaceBlockReason {
@@ -559,6 +569,7 @@ struct NewTaskAgentView: View {
           model.launchAgent(for: ticket, title: name, provider: provider, repositoryPath: repository,
             includePrompt: includePrompt, useTmux: useTmux && tmuxAvailable,
             initialPrompt: prompt, tracksCompletion: true, subtaskID: assignmentID,
+            allowProjectRepositoryMismatch: allowsOtherRepository,
             parentSubtaskID: targetSubtask?.id, createAssignment: targetSubtask == nil,
             workspacePolicy: .isolatedCommittedSnapshot) { started in
               isStarting = false
@@ -566,20 +577,27 @@ struct NewTaskAgentView: View {
               else { launchError = model.actionMessages[ticket.id] ?? "Agent could not start. Check the workspace and try again." }
             }
         }.buttonStyle(.borderedProminent)
-          .disabled(isStarting || model.launchingTaskIDs.contains(ticket.id) || workspaceBlockReason != nil)
+          .disabled(isStarting || model.launchingTaskIDs.contains(ticket.id) || workspaceBlockReason != nil
+            || (model.project(for: ticket) != nil && repositoryMatchesProject != true && !allowsOtherRepository))
       }
     }.padding(24).frame(width: 540, height: 660)
       .interactiveDismissDisabled(isStarting)
-      .task(id: repository) { await workspacePreview.load(path: repository) }
+      .task(id: repository) {
+        allowsOtherRepository = false
+        repositoryMatchesProject = nil
+        await workspacePreview.load(path: repository)
+        if let project = model.project(for: ticket) {
+          let matches = (try? await ProjectRepositoryResolver().matches(path: repository, project: project)) ?? false
+          if !Task.isCancelled { repositoryMatchesProject = matches }
+        }
+      }
       .onAppear {
         includePrompt = false
         prompt = targetSubtask.map {
           !$0.assignmentDescription.isEmpty ? $0.assignmentDescription : ($0.initialPrompt ?? $0.title)
         } ?? ""
         if let targetSubtask { provider = targetSubtask.provider }
-        let context = model.taskContexts[ticket.id]
-        repository = [targetSubtask?.workspace?.path, targetSubtask?.workspace?.repositoryPath, context?.worktreePath, context?.repositoryPath, ticket.worktree, model.config.workspacePath]
-          .compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0) } ?? model.config.workspacePath
+        repository = targetSubtask?.workspace?.path ?? model.defaultRepository(for: ticket)
       }
   }
 }

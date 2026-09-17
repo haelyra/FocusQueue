@@ -85,7 +85,10 @@ public actor JSONConfigurationRepository: ConfigurationLoading {
 
     public func save(_ configuration: AppConfiguration) throws {
         let validated = try configuration.validated()
-        try files.write(try Self.encoder.encode(validated), to: url)
+        if files is SystemFileAccessor {
+            try files.createDirectory(at: url.deletingLastPathComponent())
+            try ProjectFileLock.withLock(file: url) { try files.write(try Self.encoder.encode(validated), to: url) }
+        } else { try files.write(try Self.encoder.encode(validated), to: url) }
     }
 
     private static var encoder: JSONEncoder {
@@ -164,7 +167,11 @@ public actor JSONDashboardRepository: DashboardLoading {
 
     public func load(from url: URL) throws -> DashboardDocument {
         let data = try files.read(from: url)
-        return try JSONDecoder().decode(DashboardDocument.self, from: data)
+        let document = try JSONDecoder().decode(DashboardDocument.self, from: data)
+        guard Set(document.tickets.map(\.id)).count == document.tickets.count else {
+            throw TaskContextError.commandFailed("The dashboard contains duplicate task IDs. Resolve them before updating the queue.")
+        }
+        return document
     }
 
     public func modificationDate(at url: URL) throws -> Date? {

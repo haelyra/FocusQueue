@@ -8,6 +8,36 @@ another device through SSH over Tailscale while execution stays on the original 
 The current target is a private macOS beta. See [the beta handoff](Docs/LAUNCH_BETA.md)
 for compatibility, installation, reconnect instructions and remaining public-launch gates.
 
+## Projects
+
+Use the project menu below the header to show **All projects**, one project, or
+**Unassigned** tasks. The selection survives relaunch and applies to tasks,
+completed history, task notifications, counts and project routines. Daily reports
+remain global. Filtering preserves queue order; dragging within one project keeps
+hidden tasks in their existing positions.
+
+**Manage projects…** in the menu, or **Settings > Projects**, adds and edits project
+names, repository folders and optional GitHub URLs/aliases. Archived projects keep
+their history in All projects; reassign open tasks before archiving. **New task**
+shows the project assignment before saving. A task's expanded details also include
+an assignment menu. Project ownership is separate from agent workspaces, so moving
+a task between projects never relocates an existing agent.
+
+Projects are stored in configuration and tasks have an optional `projectID` in
+the shared dashboard. Older and unknown-project tasks remain visible. New agent
+workspaces default to the project repository when the task has no existing
+workspace. Imported tasks use a unique trusted repository match or stay Unassigned.
+Queue chat displays its scope; its queue helper uses `FOCUS_QUEUE_PROJECT_ID` for
+scoped list, move and reset operations. Select All projects for cross-project work.
+
+The operator migration script `Scripts/focus_queue_projects.py` supports `preview`,
+`apply` and `rollback` with a `--manifest` path. Preview requires `--config`,
+`--focus-queue-repository` and `--ecc-repository`; it proposes ECC-035 for Focus
+Queue and the other existing tasks for ECC. Apply refuses changed source hashes
+and backs up the dashboard, configuration and local state. Rollback restores only
+project fields and retains subsequent task edits. Run the dashboard's own data
+checks after migration. This migration never runs automatically for other users.
+
 ## Reliable session recall
 
 New tmux agents share one session per task. **Sessions** shows a live pane map with

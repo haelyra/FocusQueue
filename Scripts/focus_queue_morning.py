@@ -340,6 +340,7 @@ def load_config(path: Path) -> dict[str, Any]:
     if app_config_path.exists():
         try:
             app_config = load_json(app_config_path)
+            config["projects"] = app_config.get("projects", [])
             candidate = app_config.get("dailyReport")
             if isinstance(candidate, dict):
                 report_settings.update(candidate)
@@ -1142,6 +1143,7 @@ def dashboard_snapshot(path: Path) -> dict[str, Any]:
             "id": ticket.get("id"),
             "title": ticket.get("title"),
             "category": ticket.get("category"),
+            "projectID": ticket.get("projectID"),
             "priority": ticket.get("priority"),
             "status": ticket.get("status"),
             "next": clipped_text(ticket.get("next"), 300),
@@ -1189,6 +1191,7 @@ def collect_sources(
             "maximumNewTasks": int(config["maxNewTasksPerRun"]),
         },
         "dashboard": dashboard_snapshot(Path(config["dashboardPath"])),
+        "projects": [{"id": p["id"], "name": p["name"], "remote": p.get("remote"), "remoteAliases": p.get("remoteAliases", [])} for p in config.get("projects", []) if not p.get("archivedAt")],
         "discord": guarded("discord", lambda: collect_discord(effective_config, cutoff)),
         "telegram": guarded("telegram", lambda: collect_telegram(effective_config)),
         "email": guarded("email", lambda: collect_mail(effective_config)),
@@ -2012,6 +2015,7 @@ TASK POLICY
 - GitHub data is authoritative for issue and PR facts. Never claim completion from prose.
 - Use critical only for active security, broken default branch, failed release/deploy, or an owner-blocking emergency. Use high for same-day maintainer work, medium for normal actionable work, and low for optional cleanup.
 - Return at most {maximum_tasks} new tasks.
+- Set projectID only when a supplied project repository matches the trusted source links. Otherwise use null (Unassigned). Preserve the existing project for task updates.
 
 OUTPUT SCHEMA
 {{
@@ -2028,6 +2032,7 @@ OUTPUT SCHEMA
   "newTasks": [
     {{
       "title": "imperative concise title",
+      "projectID": "a supplied project ID, or null when uncertain",
       "category": "Inbox|Bug|Feature|Maintenance|Community|Security",
       "priority": "critical|high|medium|low",
       "summary": "minimal paraphrase of the actionable request",
@@ -2191,6 +2196,22 @@ def next_ticket_number(tickets: list[dict[str, Any]]) -> int:
     return max(numbers, default=0) + 1
 
 
+def project_for_source_links(projects: list[dict[str, Any]], links: list[dict[str, str]]) -> str | None:
+    def repository(value: str) -> str | None:
+        value = re.sub(r"^git@([^:]+):", r"https://\1/", value.strip())
+        if "://" not in value:
+            value = "https://" + value
+        parsed = urllib.parse.urlparse(value)
+        parts = parsed.path.strip("/").removesuffix(".git").split("/")
+        if not parsed.hostname or len(parts) < 2:
+            return None
+        return (parsed.hostname + "/" + "/".join(parts[:2])).lower()
+    sources = {repository(link.get("url", "")) for link in links if link.get("type") == "github"}
+    owners = {p["id"] for p in projects if not p.get("archivedAt") and
+              sources.intersection({repository(value) for value in [p.get("remote") or ""] + p.get("remoteAliases", [])} - {None})}
+    return next(iter(owners)) if len(owners) == 1 else None
+
+
 def apply_proposals(
     config: dict[str, Any],
     proposals: dict[str, Any],
@@ -2202,8 +2223,9 @@ def apply_proposals(
     dashboard_directory = Path(config["dashboardDirectory"])
     runtime.mkdir(parents=True, exist_ok=True)
     lock_path = runtime / "reconciliation.lock"
-    with lock_path.open("a+", encoding="utf-8") as lock:
+    with lock_path.open("a+", encoding="utf-8") as lock, Path(str(dashboard_path) + ".focus-queue.lock").open("a+") as dashboard_lock:
         acquire_exclusive_file_lock(lock)
+        acquire_exclusive_file_lock(dashboard_lock)
         original = dashboard_path.read_bytes()
         original_mode = stat.S_IMODE(dashboard_path.stat().st_mode)
         dashboard = json.loads(original)
@@ -2212,6 +2234,8 @@ def apply_proposals(
             raise ReconciliationError("Dashboard tickets must be an array")
 
         existing_by_id = {str(ticket.get("id")): ticket for ticket in tickets}
+        if len(existing_by_id) != len(tickets):
+            raise ReconciliationError("Dashboard task IDs must be unique")
         existing_by_url: dict[str, list[dict[str, Any]]] = {}
         for ticket in tickets:
             for link in ticket.get("links", []):
@@ -2286,6 +2310,9 @@ def apply_proposals(
                 "prs": [],
                 "links": links,
             }
+            # Ownership comes from verified repository links, not a model-proposed label.
+            project_id = project_for_source_links(config.get("projects", []), links)
+            task["projectID"] = project_id
             tickets.insert(0, task)
             existing_by_id[ticket_id] = task
             for link in links:
@@ -2528,6 +2555,7 @@ def _run_reconciliation(
         "version": 1,
         "policy": bundle.get("policy", {}),
         "dashboard": bundle.get("dashboard", {}),
+        "projects": bundle.get("projects", []),
         "messages": [],
     }
     base_prompt_bytes = len(
@@ -2548,6 +2576,7 @@ def _run_reconciliation(
             "version": 1,
             "policy": bundle.get("policy", {}),
             "dashboard": bundle.get("dashboard", {}),
+            "projects": bundle.get("projects", []),
             "messages": checked_messages,
         }
         maximum_tasks = int(config["maxNewTasksPerRun"])
@@ -2696,6 +2725,7 @@ def run_diagnostic_collection(
             "version": 1,
             "policy": bundle.get("policy", {}),
             "dashboard": bundle.get("dashboard", {}),
+            "projects": bundle.get("projects", []),
             "messages": message_envelopes(bundle, platforms),
         }
         proposals = classify_with_retry(config, classification_bundle, runtime)

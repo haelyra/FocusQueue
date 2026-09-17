@@ -39,11 +39,13 @@ public struct DailyRoutine: Codable, Identifiable, Equatable, Sendable {
   public let id: String
   public let title: String
   public let url: String?
+  public var projectID: String?
 
-  public init(id: String, title: String, url: String? = nil) {
+  public init(id: String, title: String, url: String? = nil, projectID: String? = nil) {
     self.id = id
     self.title = title
     self.url = url
+    self.projectID = projectID
   }
 }
 
@@ -64,6 +66,7 @@ public struct WezTermConfiguration: Codable, Equatable, Sendable {
 }
 
 public struct VerifierConfiguration: Codable, Equatable, Sendable {
+  public var projectScopeID: String?
   public var enabled: Bool
   public var executable: String
   public var sessionName: String
@@ -129,6 +132,7 @@ public struct DailyReportConfiguration: Codable, Equatable, Sendable {
 }
 
 public struct AppConfiguration: Codable, Equatable, Sendable {
+  public var projects: [ProjectDefinition] = []
   public var appName: String
   public var dashboardPath: String
   public var workspacePath: String
@@ -166,12 +170,14 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
 
   private enum CodingKeys: String, CodingKey {
     case appName, dashboardPath, workspacePath, defaultPlacement, refreshIntervalSeconds
+    case projects
     case dailyRoutines, wezTerm, verifier, dailyReport, persistentTerminals, tmuxExecutable, setupCompleted
   }
 
   public init(from decoder: any Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     appName = try container.decode(String.self, forKey: .appName)
+    projects = try container.decodeIfPresent([ProjectDefinition].self, forKey: .projects) ?? []
     dashboardPath = try container.decode(String.self, forKey: .dashboardPath)
     workspacePath = try container.decode(String.self, forKey: .workspacePath)
     defaultPlacement = try container.decode(QueueWindowPlacement.self, forKey: .defaultPlacement)
@@ -222,6 +228,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   }
 
   public func validated() throws -> Self {
+    try ProjectCatalog.validate(projects)
     guard dashboardPath.hasPrefix("/"), workspacePath.hasPrefix("/") else {
       throw ConfigurationError.pathsMustBeAbsolute
     }
@@ -710,6 +717,7 @@ public struct DashboardCompletion: Codable, Equatable, Sendable {
 }
 
 public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
+  public let projectID: String?
   public let id: String
   public let title: String
   public let category: String?
@@ -732,6 +740,7 @@ public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
   public init(
     id: String,
     title: String,
+    projectID: String? = nil,
     category: String? = nil,
     priority: String = "medium",
     status: String,
@@ -751,6 +760,7 @@ public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
   ) {
     self.id = id
     self.title = title
+    self.projectID = projectID
     self.category = category
     self.priority = priority
     self.status = status
@@ -771,12 +781,14 @@ public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
 
   private enum CodingKeys: String, CodingKey {
     case id, title, category, priority, status, summary, next, doneWhen
+    case projectID
     case updatedAt, completedAt, completion, taskType, recurrence, worktree, resolutionPrs, prs, links, steps
   }
 
   public init(from decoder: any Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     id = try container.decode(String.self, forKey: .id)
+    projectID = try container.decodeIfPresent(String.self, forKey: .projectID)
     title = try container.decodeIfPresent(String.self, forKey: .title) ?? id
     category = try container.decodeIfPresent(String.self, forKey: .category)
     priority = try container.decodeIfPresent(String.self, forKey: .priority) ?? "medium"
@@ -1182,6 +1194,7 @@ public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {
 }
 
 public struct LocalState: Codable, Equatable, Sendable {
+  public var selectedProjectID: String?
   public var routineDate: String
   public var completedRoutineIDs: Set<String>
   public var completionRequests: [CompletionRequest]
@@ -1243,6 +1256,7 @@ public struct LocalState: Codable, Equatable, Sendable {
 
   private enum CodingKeys: String, CodingKey {
     case routineDate
+    case selectedProjectID
     case completedRoutineIDs
     case completionRequests
     case deferredTicketIDs
@@ -1256,6 +1270,7 @@ public struct LocalState: Codable, Equatable, Sendable {
   public init(from decoder: any Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     routineDate = try container.decodeIfPresent(String.self, forKey: .routineDate) ?? ""
+    selectedProjectID = try container.decodeIfPresent(String.self, forKey: .selectedProjectID)
     completedRoutineIDs =
       try container.decodeIfPresent(Set<String>.self, forKey: .completedRoutineIDs) ?? []
     completionRequests =
@@ -1274,6 +1289,7 @@ public struct LocalState: Codable, Equatable, Sendable {
   public func encode(to encoder: any Encoder) throws {
     var container = encoder.container(keyedBy: CodingKeys.self)
     try container.encode(routineDate, forKey: .routineDate)
+    try container.encodeIfPresent(selectedProjectID, forKey: .selectedProjectID)
     try container.encode(completedRoutineIDs, forKey: .completedRoutineIDs)
     try container.encode(completionRequests, forKey: .completionRequests)
     try container.encode(deferredTicketIDs, forKey: .deferredTicketIDs)

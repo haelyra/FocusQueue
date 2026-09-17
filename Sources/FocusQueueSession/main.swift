@@ -72,9 +72,17 @@ enum SessionRegistrationError: Error, LocalizedError {
         let state = try await JSONLocalStateStore(url: root.appendingPathComponent("state.json")).load()
         let fallback = DashboardOrdering.openTickets(in: dashboard.tickets,
             deferredTicketIDs: state.deferredTicketIDs).map(\.id)
+        let requestedScope = ProcessInfo.processInfo.environment["FOCUS_QUEUE_PROJECT_ID"].flatMap { $0.isEmpty ? nil : $0 }
+        let selection = ProjectCatalog.normalizedSelection(requestedScope, projects: config.projects)
+        guard selection == requestedScope else { throw TaskContextError.commandFailed("The requested project is unavailable. Select a current project before changing its queue.") }
+        let visible = selection.map { scope in Set(dashboard.tickets.filter {
+            ProjectCatalog.includes($0, selection: scope, projects: config.projects)
+        }.map(\.id)) }
         switch arguments.dropFirst().first {
         case "list" where arguments.count == 2: break
-        case "reset" where arguments.count == 2: try store.reset()
+        case "reset" where arguments.count == 2:
+            if let visible { _ = try store.reset(tickets: dashboard.tickets, visibleIDs: visible, fallbackIDs: fallback) }
+            else { try store.reset() }
         case "move" where arguments.count == 4 || arguments.count == 5:
             let placement: QueuePlacement
             switch arguments[3] {
@@ -85,11 +93,11 @@ enum SessionRegistrationError: Error, LocalizedError {
             default: throw SessionRegistrationError.usage
             }
             try store.move(arguments[2].uppercased(), to: placement,
-                tickets: dashboard.tickets, fallbackIDs: fallback)
+                tickets: dashboard.tickets, fallbackIDs: fallback, visibleIDs: visible)
         default: throw SessionRegistrationError.usage
         }
         let order = QueueOrderStore.orderedTickets(dashboard.tickets, savedIDs: try store.load() ?? fallback)
-        try emit(["order": order.map(\.id)])
+        try emit(["order": order.filter { visible?.contains($0.id) ?? true }.map(\.id)])
         notifyContextChanged()
     }
 

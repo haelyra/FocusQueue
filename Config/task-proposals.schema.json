@@ -27,9 +27,10 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["title", "category", "priority", "summary", "next", "doneWhen", "sourceKeys", "sourceLinks"],
+        "required": ["title", "projectID", "category", "priority", "summary", "next", "doneWhen", "sourceKeys", "sourceLinks"],
         "properties": {
           "title": {"type": "string", "minLength": 1, "maxLength": 180},
+          "projectID": {"type": ["string", "null"], "maxLength": 128},
           "category": {"type": "string", "enum": ["Inbox", "Bug", "Feature", "Maintenance", "Community", "Security"]},
           "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
           "summary": {"type": "string", "minLength": 1, "maxLength": 600},

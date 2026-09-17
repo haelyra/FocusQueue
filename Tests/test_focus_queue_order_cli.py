@@ -24,11 +24,29 @@ class QueueOrderCLITests(unittest.TestCase):
         (self.root / "config.json").write_text(json.dumps(config))
         (self.root / "state.json").write_text(json.dumps({"deferredTicketIDs": ["ECC-029"]}))
 
-    def command(self, *arguments, expected=0):
+    def command(self, *arguments, expected=0, project=""):
         result = subprocess.run([str(BINARY), "queue", *arguments], capture_output=True, text=True,
-            env={**os.environ, "FOCUS_QUEUE_SUPPORT_DIR": str(self.root)}, timeout=10)
+            env={**os.environ, "FOCUS_QUEUE_SUPPORT_DIR": str(self.root), "FOCUS_QUEUE_PROJECT_ID": project}, timeout=10)
         self.assertEqual(result.returncode, expected, result.stderr)
         return json.loads(result.stdout)["order"] if expected == 0 else result.stderr
+
+    def test_project_commands_preserve_hidden_positions_and_reject_hidden_targets(self):
+        config = json.loads((self.root / "config.json").read_text())
+        config["projects"] = [{"id": "ecc", "name": "ECC", "repositoryPath": str(self.root)},
+                              {"id": "focus", "name": "Focus", "repositoryPath": str(self.root)}]
+        (self.root / "config.json").write_text(json.dumps(config))
+        dashboard = json.loads(self.dashboard.read_text())
+        for ticket in dashboard["tickets"]:
+            ticket["projectID"] = "focus" if ticket["id"] == "ECC-035" else "ecc"
+        self.dashboard.write_text(json.dumps(dashboard))
+        self.command("move", "ECC-029", "top")
+        self.assertEqual(self.command("list"), ["ECC-029", "ECC-035", "ECC-040"])
+        self.assertEqual(self.command("list", project="ecc"), ["ECC-029", "ECC-040"])
+        self.assertEqual(self.command("move", "ECC-040", "top", project="ecc"), ["ECC-040", "ECC-029"])
+        self.assertEqual(self.command("list"), ["ECC-040", "ECC-035", "ECC-029"])
+        self.command("move", "ECC-035", "top", project="ecc", expected=1)
+        self.command("move", "ECC-040", "before", "ECC-035", project="ecc", expected=1)
+        self.command("list", project="missing", expected=1)
 
     def test_moves_preserve_other_tasks_and_do_not_edit_dashboard_or_app_state(self):
         original = {name: (self.root / name).read_bytes() for name in ["dashboard.json", "state.json"]}

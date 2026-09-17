@@ -40,6 +40,11 @@ public actor TaskWorktreeManager {
             repositoryIdentity: try await repositoryIdentity(in: path))
     }
 
+    public func hasUncommittedChanges(at path: String) async throws -> Bool {
+        let status = try await git(["status", "--porcelain", "--untracked-files=all"], in: path)
+        return !status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     public func provisionAgent(ticketID: String, subtaskID: String, path: String,
                                createWorktree: Bool, store: TaskContextStore) async throws -> AgentWorkspace {
         let source = try await workspace(at: path)
@@ -61,8 +66,7 @@ public actor TaskWorktreeManager {
         }
         guard createWorktree else { return source }
         guard UUID(uuidString: subtaskID) != nil else { throw TaskContextError.invalidIdentifier }
-        let status = try await git(["status", "--porcelain", "--untracked-files=all"], in: path)
-        guard status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard try await !hasUncommittedChanges(at: path) else {
             throw TaskContextError.unsafeWorktree("The selected checkout has uncommitted changes. Commit them first, or turn off Create worktree to use this checkout with those changes.")
         }
         try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)

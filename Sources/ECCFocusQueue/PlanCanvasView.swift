@@ -16,6 +16,7 @@ struct PlanCanvasView: View {
   @State private var composerFocusRequest = 0
   @State private var showsWorkspaceMap = false
   @State private var workspaceMap = WorkspaceMapModel()
+  @State private var showsTaskSessions = false
 
   private var sourceURL: URL {
     model.presentedPlanURL ?? URL(fileURLWithPath: model.taskContexts[ticket.id]?.planPath ?? "/")
@@ -36,6 +37,8 @@ struct PlanCanvasView: View {
             .lineLimit(2)
         }
         Spacer()
+        Button("Sessions", systemImage: "rectangle.split.2x2") { showsTaskSessions = true }
+          .help("Open this task's tmux panes and layout")
         Label(
           isEditing ? "Edit source" : "View · select to discuss",
           systemImage: isEditing ? "pencil.line" : "cursorarrow.click.2"
@@ -132,6 +135,7 @@ struct PlanCanvasView: View {
       }
 
     }.frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+      .sheet(isPresented: $showsTaskSessions) { TaskSessionsView(model: model, initialTaskID: ticket.id) }
       .onAppear { rememberPresentedDocument() }
       .onChange(of: model.presentedPlanURL) { _, _ in
         isEditing = false

@@ -99,14 +99,13 @@ enum SessionRegistrationError: Error, LocalizedError {
             throw TaskContextError.commandFailed(
                 "This subtask was launched as a direct terminal session, so it has no tmux runtime to repair.")
         }
-        let name = try TmuxController.sessionName(subtaskID: subtaskID)
         let configuration = try loadConfiguration(from: root)
         guard let executable = configuration.tmuxExecutable
             ?? SetupEnvironment.executable("tmux") else {
             throw TmuxError.unavailable("The configured executable is missing.")
         }
-        let runtime = try await TmuxController().inspect(
-            name: name, executable: executable)
+        let runtime = try await TmuxController().inspectAgent(
+            taskID: ticketID, subtaskID: subtaskID, executable: executable)
         if let saved = subtask.tmux, saved != runtime { throw TmuxError.changed }
         let repaired = try await store.setManagedRuntime(
             ticketID: ticketID, subtaskID: subtaskID, tmux: runtime)
@@ -130,6 +129,16 @@ enum SessionRegistrationError: Error, LocalizedError {
         }
         let controller = TmuxController()
         switch arguments[1] {
+        case "panes" where arguments.count == 3:
+            let panes = try await controller.panes(name: arguments[2], executable: executable)
+            try emit(panes.map { ["pane": $0.id, "session": $0.reference.name,
+                "tab": String($0.windowIndex + 1), "agent": $0.subtaskID] })
+        case "reflow" where arguments.count == 3:
+            try await controller.reflow(name: arguments[2], executable: executable)
+        case "arrange" where arguments.count == 3:
+            try await controller.setAutomatic(name: arguments[2], executable: executable, enabled: true)
+        case "manual" where arguments.count == 3:
+            try await controller.setAutomatic(name: arguments[2], executable: executable, enabled: false)
         case "list" where arguments.count == 2:
             try emit(try await controller.list(executable: executable))
         case "attach" where arguments.count == 3:
@@ -316,15 +325,15 @@ enum SessionRegistrationError: Error, LocalizedError {
         switch runtimeMode {
         case .tmux:
             guard let tmuxName = environment["FOCUS_QUEUE_TMUX_NAME"], !tmuxName.isEmpty,
-                  tmuxName == (try? TmuxController.sessionName(subtaskID: subtaskID)) else {
+                  TmuxController.ownsSession(name: tmuxName, taskID: ticketID, subtaskID: subtaskID) else {
                 throw SessionRegistrationError.missingManagedRuntime
             }
             guard let executable = configuration.tmuxExecutable
                 ?? SetupEnvironment.executable("tmux") else {
                 throw TmuxError.unavailable("The configured executable is missing.")
             }
-            let inspected = try await TmuxController().inspect(
-                name: tmuxName, executable: executable)
+            let inspected = try await TmuxController().inspectAgent(
+                taskID: ticketID, subtaskID: subtaskID, executable: executable)
             guard inspected.paneID == environment["TMUX_PANE"] else {
                 throw TmuxError.changed
             }

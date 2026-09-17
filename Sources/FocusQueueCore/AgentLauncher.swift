@@ -165,11 +165,18 @@ public actor TaskAgentLauncher {
     let command = try Self.command(
       context: context, subtask: subtask, supportDirectory: supportDirectory,
       includePrompt: includePrompt)
-    let name = try TmuxController.sessionName(subtaskID: subtask.id)
     let runtime = TmuxController(runner: runner)
-    return try await runtime.start(
-      name: name, directory: (subtask.workspace?.path ?? context.worktreePath)!, command: command,
+    let reference = try await runtime.startAgent(
+      taskID: context.ticketID, subtaskID: subtask.id,
+      directory: (subtask.workspace?.path ?? context.worktreePath)!, command: command,
       executable: tmuxExecutable)
+    let bundledHelper = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/focus-queue-session").path
+    if let helper = [bundledHelper, SetupEnvironment.executable("focus-queue-session")].compactMap({ $0 })
+      .first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
+      try? await runtime.configureTask(name: reference.name, executable: tmuxExecutable,
+        helper: helper, supportDirectory: supportDirectory)
+    }
+    return reference
   }
 
   /// Starts a terminal-owned provider process and records its transient pane.

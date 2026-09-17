@@ -1196,8 +1196,8 @@ final class QueueViewModel {
         } else if subtask.runtimeMode == .tmux {
           if let executable = config.tmuxExecutable ?? SetupEnvironment.executable("tmux") {
             do {
-              let runtime = try await TmuxController().inspect(
-                name: TmuxController.sessionName(subtaskID: subtask.id), executable: executable)
+              let runtime = try await TmuxController().inspectAgent(
+                taskID: ticket.id, subtaskID: subtask.id, executable: executable)
               taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
                 ticketID: ticket.id, subtaskID: subtask.id, tmux: runtime)
               _ = try await terminalController.openManagedRuntime(runtime, taskID: ticket.id,
@@ -1313,7 +1313,7 @@ final class QueueViewModel {
           guard let tmuxExecutable = config.tmuxExecutable ?? SetupEnvironment.executable("tmux") else {
             throw TmuxError.unavailable("tmux is unavailable. Uncheck Open in tmux to launch directly.")
           }
-          let expectedName = try TmuxController.sessionName(subtaskID: subtask.id)
+          let expectedName = try TmuxController.taskSessionName(taskID: ticket.id)
           actionMessages[ticket.id] =
             "Starting \(provider.displayName) in tmux session \(expectedName). Waiting for the final pane process before opening WezTerm…"
           await recordAgentLaunch(
@@ -1574,7 +1574,7 @@ final class QueueViewModel {
           }),
           (subtask.runtimeMode == .tmux
             && registration.tmux == subtask.tmux
-            && registration.tmux?.name == (try? TmuxController.sessionName(subtaskID: subtaskID))
+            && registration.tmux.map { TmuxController.ownsSession(name: $0.name, taskID: registration.ticketID, subtaskID: subtaskID) } == true
             || subtask.runtimeMode == .terminal
             && registration.tmux == nil
             && registration.paneID == subtask.terminalPaneID)

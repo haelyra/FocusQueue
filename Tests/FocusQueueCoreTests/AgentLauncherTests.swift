@@ -102,22 +102,33 @@ private actor AgentLaunchRunner: ProcessRunning {
   }
 }
 
+private actor TaskPaneLaunchRunner: ProcessRunning {
+  private(set) var specifications: [ProcessSpecification] = []
+  var observations = 0
+  let timeout: Bool
+  init(timeout: Bool = false) { self.timeout = timeout }
+  func run(_ specification: ProcessSpecification) -> ProcessResult {
+    specifications.append(specification)
+    if specification.arguments.contains("new-session") {
+      return .init(exitCode: timeout ? 1 : 0,
+        standardOutput: "fq-task-ecc-1|123|1000|%0|||0\n", standardError: "", timedOut: timeout)
+    }
+    if specification.arguments.contains("display-message") {
+      observations += 1
+      return .init(exitCode: 0,
+        standardOutput: "fq-task-ecc-1|123|1000|%0|\(observations == 1 ? 120 : 124)|/dev/ttys099|0\n",
+        standardError: "", timedOut: false)
+    }
+    return .init(exitCode: 0, standardOutput: "", standardError: "", timedOut: false)
+  }
+}
+
 @Test func managedAgentCreationReturnsTheExactTmuxIdentityBeforeAnyTerminalWork() async throws {
   let root = FileManager.default.temporaryDirectory.appendingPathComponent(
     "managed-agent-launch-\(UUID().uuidString)")
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
   defer { try? FileManager.default.removeItem(at: root) }
-  let output = "fq-implement\t123\t1000\t%0\t124\t/dev/ttys099\t0\n"
-  let transitional = "fq-implement\t123\t1000\t%0\t120\t/dev/ttys099\t0\n"
-  let runner = AgentLaunchRunner([
-    // tmux may acknowledge new-session before the pane TTY/PID fields settle.
-    .init(exitCode: 0, standardOutput: "fq-implement\t123\t1000\t%0\t\t\t0\n", standardError: "", timedOut: false),
-    // A user's shell wrapper can briefly be the pane process before the provider.
-    .init(exitCode: 0, standardOutput: transitional, standardError: "", timedOut: false),
-    .init(exitCode: 0, standardOutput: output, standardError: "", timedOut: false),
-    .init(exitCode: 0, standardOutput: output, standardError: "", timedOut: false),
-    .init(exitCode: 0, standardOutput: output, standardError: "", timedOut: false),
-  ])
+  let runner = TaskPaneLaunchRunner()
   let context = TaskContext(
     ticketID: "ECC-1", title: "Launch", summary: "", successCriteria: "Checks pass",
     planPath: root.appendingPathComponent("plan.md").path, worktreePath: root.path,
@@ -128,18 +139,14 @@ private actor AgentLaunchRunner: ProcessRunning {
     context: context, subtask: subtask,
     supportDirectory: root.appendingPathComponent("support"), tmuxExecutable: "/test/tmux")
 
-  #expect(reference.name == "fq-implement")
+  #expect(reference.name == "fq-task-ecc-1")
   #expect(reference.panePID == 124)
   let calls = await runner.specifications
-  #expect(calls.count == 5)
-  #expect(calls[0].executable == "/test/tmux")
-  #expect(calls[0].arguments.contains("new-session"))
-  #expect(calls[1].arguments.contains("display-message"))
-  #expect(calls[2].arguments.contains("display-message"))
-  #expect(calls[3].arguments.contains("display-message"))
-  #expect(calls[4].arguments.contains("display-message"))
-  #expect(!calls[0].arguments.contains("resume"))
-  #expect(!calls[0].arguments.contains("spawn"))
+  #expect(calls.allSatisfy { $0.executable == "/test/tmux" })
+  #expect(calls.filter { $0.arguments.contains("new-session") }.count == 1)
+  #expect(calls.filter { $0.arguments.contains("display-message") }.count == 4)
+  #expect(!calls.flatMap(\.arguments).contains("resume"))
+  #expect(!calls.flatMap(\.arguments).contains("spawn"))
 }
 
 @Test func managedAgentCreationTimeoutDoesNotAttemptASecondSession() async throws {
@@ -147,9 +154,7 @@ private actor AgentLaunchRunner: ProcessRunning {
     "managed-agent-timeout-\(UUID().uuidString)")
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
   defer { try? FileManager.default.removeItem(at: root) }
-  let runner = AgentLaunchRunner([
-    .init(exitCode: 1, standardOutput: "", standardError: "", timedOut: true)
-  ])
+  let runner = TaskPaneLaunchRunner(timeout: true)
   let context = TaskContext(
     ticketID: "ECC-1", title: "Launch", summary: "", successCriteria: "Checks pass",
     planPath: root.appendingPathComponent("plan.md").path, worktreePath: root.path,
@@ -160,7 +165,7 @@ private actor AgentLaunchRunner: ProcessRunning {
       context: context, subtask: .init(id: "implement", title: "Implement session ownership"),
       supportDirectory: root.appendingPathComponent("support"), tmuxExecutable: "/test/tmux")
   }
-  #expect(await runner.specifications.count == 1)
+  #expect(await runner.specifications.filter { $0.arguments.contains("new-session") }.count == 1)
 }
 
 @Test func directAgentCreationStoresTheExactPaneWithoutStartingTmux() async throws {
@@ -235,7 +240,7 @@ func liveManagedProviderSanity() async throws {
   let subtask = TaskSubtask(
     id: "sanity-\(UUID().uuidString.lowercased())", title: "Verify live managed launch",
     includeInitializationPrompt: false, runtimeMode: .tmux)
-  let name = try TmuxController.sessionName(subtaskID: subtask.id)
+  let name = try TmuxController.taskSessionName(taskID: "SANITY-1")
   let runner = FoundationProcessRunner()
   defer {
     let cleanup = Process()

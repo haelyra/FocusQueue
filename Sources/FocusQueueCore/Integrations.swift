@@ -524,8 +524,12 @@ public actor WezTermController: WezTermControlling {
 
     private func openManagedRuntime(_ saved: TmuxSessionReference, taskID: String, provider: AgentProvider,
                                     configuration: WezTermConfiguration, tabTitle: String?) async throws -> TerminalActionResult {
+        if saved.name.hasPrefix("fq-task-"), saved.name != (try TmuxController.taskSessionName(taskID: taskID)) {
+            throw TmuxError.changed
+        }
         let runtime = TmuxController(runner: runner)
         let live = try await runtime.verify(saved)
+        if live.name.hasPrefix("fq-task-") { try await runtime.select(live) }
 
         var connection = try await WezTermConnection.resolve(
             configuration: configuration, runner: runner, candidateSockets: candidateSockets)

@@ -37,7 +37,7 @@ public actor TmuxController {
   // underscores. GUI apps often have no locale, so use a printable delimiter.
   public static let format = "#{session_name}|#{pid}|#{session_created}|#{pane_id}|#{pane_pid}|#{pane_tty}|#{pane_dead}"
   private let runner: any ProcessRunning
-  private let serverName: String
+  let serverName: String
   private let confirmationAttempts: Int
   private let confirmationDelayMilliseconds: Int
   private let requiredStableObservations: Int
@@ -115,7 +115,11 @@ public actor TmuxController {
 
   public func inspect(name: String, executable: String) async throws -> TmuxSessionReference {
     try Self.validateName(name)
-    let result = try await run(executable, ["display-message", "-p", "-t", "=\(name):0.0", Self.format])
+    return try await inspectTarget("=\(name):", name: name, executable: executable)
+  }
+
+  func inspectTarget(_ target: String, name: String, executable: String) async throws -> TmuxSessionReference {
+    let result = try await run(executable, ["display-message", "-p", "-t", target, Self.format])
     if !result.succeeded, !result.timedOut,
        ["no server running", "No such file or directory", "can't find", "no sessions"].contains(where: result.standardError.contains) {
       throw TmuxError.stopped
@@ -126,14 +130,18 @@ public actor TmuxController {
   }
 
   public func verify(_ saved: TmuxSessionReference) async throws -> TmuxSessionReference {
-    let current = try await inspect(name: saved.name, executable: saved.executable)
+    try Self.validateName(saved.name)
+    guard saved.paneID.range(of: "^%[0-9]+$", options: .regularExpression) != nil else { throw TmuxError.changed }
+    let current = try await inspectTarget(saved.paneID, name: saved.name, executable: saved.executable)
+    if current.serverPID != saved.serverPID,
+       kill(pid_t(saved.serverPID), 0) == -1, errno == ESRCH { throw TmuxError.stopped }
     guard current == saved else { throw TmuxError.changed }
     return current
   }
 
   public func stop(_ saved: TmuxSessionReference) async throws {
     do { _ = try await verify(saved) } catch TmuxError.stopped { return }
-    let result = try await run(saved.executable, ["kill-session", "-t", "=\(saved.name)"])
+    let result = try await run(saved.executable, ["kill-pane", "-t", saved.paneID])
     guard result.succeeded else { throw TmuxError.unavailable("Could not close the completed agent runtime.") }
   }
 
@@ -210,7 +218,7 @@ public actor TmuxController {
     return arguments.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }.joined(separator: " ")
   }
 
-  private func run(_ executable: String, _ arguments: [String]) async throws -> ProcessResult {
+  func run(_ executable: String, _ arguments: [String]) async throws -> ProcessResult {
     // tmux parses a trailing semicolon as a command separator even in an argv
     // array. Escape that parser layer; tmux removes this one backslash before
     // passing the original value to the command or child process.

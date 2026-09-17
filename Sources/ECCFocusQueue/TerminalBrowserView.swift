@@ -1,7 +1,7 @@
 import FocusQueueCore
 import SwiftUI
 
-struct TerminalBrowserView: View {
+struct WezTermBrowserView: View {
   let model: QueueViewModel
   @Environment(\.dismiss) private var dismiss
   @State private var panes: [WezTermPane] = []

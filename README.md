@@ -18,6 +18,15 @@ automatic layout saves, including while detached. See the [session organizer](Do
 for controls, terminal options and recovery limits, and the [roadmap](Docs/FOCUS_QUEUE_ROADMAP.md)
 for the remaining project and orchestration work.
 
+Codex sessions started outside **New Agent** are also detected by their exact
+process-owned session UUID. Clear task associations join the task's agent list;
+ambiguous sessions appear under **Agents to place** in the terminal browser. Its
+queue-header count makes unplaced agents visible. Assigning a task keeps the
+conversation and preserves your queue order. Cleared assignments stay cleared
+until you explicitly attach the session again.
+The optional [Codex shell entry](Docs/CODEX_TMUX_ENTRY.md) starts interactive
+Codex sessions in tmux while retaining existing command flags and the usage bar.
+
 With **Open in tmux** checked, Focus Queue saves the exact runtime before opening
 its terminal view. Closing the view leaves tmux running. Direct launches save the
 WezTerm pane and socket. Clicking an agent focuses the live runtime; when that

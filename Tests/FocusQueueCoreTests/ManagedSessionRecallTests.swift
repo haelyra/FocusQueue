@@ -89,19 +89,25 @@ struct ManagedSessionRecallTests {
     #expect(!calls.flatMap(\.arguments).contains("new-session"))
   }
 
-  @Test("Recall focuses the terminal attached to the exact tmux client")
-  func focusExistingClient() async throws {
+  @Test("Recall selects the exact pane in legacy and external tmux sessions",
+    arguments: ["fq-implement", "fq-codex-11111111-2222-4333-8444-555555555555"])
+  func focusExistingClient(name: String) async throws {
     let panes = #"[{"window_id":12,"tab_id":21,"pane_id":41,"cwd":"file:///tmp/worktree","tty_name":"/dev/ttys028"}]"#
+    let output = tmuxOutput.replacingOccurrences(of: "fq-implement", with: name)
+    var saved = try session()
+    saved.tmux?.name = name
     let runner = ManagedRecallRunner([
-      result(tmuxOutput), result(panes), result("/dev/ttys028\n"),
+      result(output), result(output), result(), result(), result(panes), result("/dev/ttys028\n"),
       result(), result(), result(), result(),
     ])
 
     let action = try await WezTermController(runner: runner, candidateSockets: []).focusOrResume(
-      session: session(), taskID: "ECC-1", configuration: .init(executable: "/mock/wezterm"))
+      session: saved, taskID: "ECC-1", configuration: .init(executable: "/mock/wezterm"))
 
     #expect(action == .focused(paneID: 41))
     let calls = await runner.calls
+    #expect(calls.contains { $0.arguments.suffix(3) == ["select-pane", "-t", "%0"] })
+    #expect(calls.contains { $0.arguments.suffix(3) == ["select-window", "-t", "%0"] })
     #expect(calls.contains { $0.arguments == ["cli", "activate-pane", "--pane-id", "41"] })
     #expect(!calls.flatMap(\.arguments).contains("resume"))
     #expect(!calls.flatMap(\.arguments).contains("new-session"))
@@ -113,7 +119,7 @@ struct ManagedSessionRecallTests {
     let detachedPanes = "[]"
     let reopenedPanes = #"[{"window_id":12,"tab_id":21,"pane_id":41,"cwd":"file:///tmp/worktree","tty_name":"/dev/ttys028"}]"#
     let runner = ManagedRecallRunner([
-      result(tmuxOutput), result(detachedPanes), result(), result("41\n"),
+      result(tmuxOutput), result(tmuxOutput), result(), result(), result(detachedPanes), result(), result("41\n"),
       result(tmuxOutput), result(reopenedPanes), result(), result(), result(), result(),
     ])
 

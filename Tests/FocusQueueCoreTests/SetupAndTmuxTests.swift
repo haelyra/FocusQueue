@@ -205,7 +205,9 @@ struct SetupAndTmuxTests {
     let runner = TmuxSequenceRunner([
       .init(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
       .init(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
+      .init(exitCode: 0, standardOutput: "fq-pending\n", standardError: "", timedOut: false),
       .init(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
+      .init(exitCode: 0, standardOutput: "fq-pending\n", standardError: "", timedOut: false),
     ])
     let controller = TmuxController(
       runner: runner, serverName: "fixture", confirmationAttempts: 2,
@@ -229,6 +231,27 @@ struct SetupAndTmuxTests {
     let calls = await runner.calls
     #expect(calls.filter { $0.arguments.contains("new-session") }.count == 1)
     #expect(calls.filter { $0.arguments.contains("display-message") }.count == 2)
+  }
+
+  @Test("Empty tmux display context requires authoritative absence before resume")
+  func missingPaneRequiresEnumeration() async throws {
+    let saved = try #require(TmuxController.decode(
+      "fq-test|123|1000|%1|124|/dev/ttys099|0", executable: "/mock/tmux").first)
+    for (output, timeout, stopped) in [("%2\n", false, true), ("%1\n", false, false),
+      ("%2\n", true, false), ("incomplete", false, false)] {
+      let runner = TmuxSequenceRunner([
+        .init(exitCode: 0, standardOutput: "|123|||||\n", standardError: "", timedOut: false),
+        .init(exitCode: 0, standardOutput: output, standardError: "", timedOut: timeout),
+      ])
+      do {
+        _ = try await TmuxController(runner: runner).verify(saved)
+        Issue.record("Empty display context cannot verify a live runtime")
+      } catch TmuxError.stopped { #expect(stopped) }
+      catch TmuxError.unavailable { #expect(!stopped) }
+      let calls = await runner.calls
+      #expect(calls.count == 2)
+      #expect(calls.last?.arguments.suffix(4) == ["list-panes", "-a", "-F", "#{pane_id}"])
+    }
   }
 }
 

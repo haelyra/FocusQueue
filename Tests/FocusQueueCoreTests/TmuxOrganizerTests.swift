@@ -12,6 +12,10 @@ struct TmuxOrganizerTests {
     #expect(TmuxPaneLayout.capacity(width: 240, height: 60) == 4)
     #expect(TmuxPaneLayout.capacity(width: 500, height: 200) == 4)
     #expect(TmuxPaneLayout.groups(Array(0..<9), width: 160, height: 50).map(\.count) == [4, 4, 1])
+    #expect(TmuxPaneLayout.contentHeight(clientHeight: 51, status: "4", controlMode: false) == 47)
+    #expect(TmuxPaneLayout.contentHeight(clientHeight: 51, status: "on", controlMode: false) == 50)
+    #expect(TmuxPaneLayout.contentHeight(clientHeight: 51, status: "off", controlMode: false) == 51)
+    #expect(TmuxPaneLayout.contentHeight(clientHeight: 51, status: "4", controlMode: true) == 51)
     #expect(throws: TmuxError.self) { try TmuxPaneLayout.layout(paneIDs: ["%0", "%1"], width: 80, height: 24) }
   }
 
@@ -46,6 +50,10 @@ struct TmuxOrganizerTests {
         environment: ["TMUX_TMPDIR": "/tmp"]))
       #expect(result.succeeded, "\(arguments): \(result.standardError)")
     }
+    // Real upgrades already have legacy sessions. A bare target is interpreted
+    // as a window by list-panes, which used to abort every first task launch.
+    try await command(["-f", "/dev/null", "new-session", "-d", "-s", "fq-legacy-agent", "/bin/sleep", "90"])
+    #expect(try await controller.panes(name: name, executable: executable).isEmpty)
     var references: [TmuxSessionReference] = []
     for index in 0..<5 {
       references.append(try await controller.startAgent(taskID: taskID, subtaskID: "agent-\(index)",
@@ -78,6 +86,10 @@ struct TmuxOrganizerTests {
     try await controller.reflow(name: name, executable: executable)
     #expect(try await controller.panes(name: name, executable: executable) == manual)
     try await controller.stop(references[0])
+    do {
+      _ = try await controller.verify(references[0])
+      Issue.record("A pane removed while sibling sessions remain must be reported stopped")
+    } catch TmuxError.stopped { }
     for reference in references.dropFirst() { #expect(try await controller.verify(reference) == reference) }
     #expect(try await controller.panes(name: name, executable: executable).count == 4)
   }
@@ -147,6 +159,7 @@ struct TmuxOrganizerTests {
       try? FileManager.default.removeItem(at: root)
     }
     try await controller.configureTask(name: name, executable: executable, helper: helper, supportDirectory: root)
+    try await controller.checked(executable, ["set-option", "-t", name, "status", "4"])
     client.executableURL = URL(fileURLWithPath: executable)
     client.arguments = ["-L", server, "-C", "attach-session", "-t", "=\(name)"]
     client.environment = ["TMUX_TMPDIR": "/tmp", "PATH": "/usr/bin:/bin", "TERM": "xterm-256color"]
@@ -164,6 +177,8 @@ struct TmuxOrganizerTests {
       try await Task.sleep(for: .milliseconds(100))
     }
     #expect(regrouped, "The actual resize hook must invoke the helper and combine panes")
+    #expect(try await controller.panes(name: name, executable: executable).allSatisfy { $0.windowHeight == 51 },
+      "Control clients have no status display; use their full advertised pane height")
     #expect(try await controller.verify(first) == first)
     #expect(try await controller.verify(second) == second)
     try await controller.checked(executable, ["resize-pane", "-t", first.paneID, "-R", "1"])

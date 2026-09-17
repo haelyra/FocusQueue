@@ -437,7 +437,9 @@ class FocusQueueCodexTests(unittest.TestCase):
             MODULE, "resolve_codex", return_value="/usr/bin/codex"
         ), mock.patch.object(
             MODULE, "discover_no_tools_codex_capabilities", return_value=(("shell_tool",), ())
-        ), mock.patch.object(MODULE.subprocess, "Popen", FakeProcess):
+        ), mock.patch.object(MODULE.subprocess, "Popen", FakeProcess), mock.patch.dict(
+            os.environ, {"FOCUS_QUEUE_SUPPORT_DIR": temporary}
+        ):
             root = Path(temporary)
             context = root / "task context"
             context.mkdir()

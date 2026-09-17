@@ -1680,7 +1680,9 @@ final class QueueViewModel {
         await bindSubtask(to: registration)
         actionMessages[registration.ticketID] = subtask.runtimeMode == .tmux
           ? "\(registration.provider.displayName) is running and registered in tmux. Click \(subtask.title) to open its exact terminal session."
-          : "\(registration.provider.displayName) is running in its saved WezTerm pane. Click \(subtask.title) to focus it."
+          : registration.paneID != nil
+            ? "\(registration.provider.displayName) is running in its saved WezTerm pane. Click \(subtask.title) to focus it."
+            : "Session tracked. Continue in its existing terminal; Focus Queue will check it before resuming."
       }
       try await stateStore.save(localState)
       await captureDurableState(localState)

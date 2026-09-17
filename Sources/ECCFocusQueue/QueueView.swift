@@ -548,11 +548,17 @@ struct QueueView: View {
         Spacer()
         monitorButton
         Button { showsTerminals = true } label: {
-          Image(systemName: "terminal").font(.system(size: 12, weight: .semibold))
+          HStack(spacing: 4) {
+            Image(systemName: "terminal").font(.system(size: 12, weight: .semibold))
+            if !model.unassignedAgentRegistrations.isEmpty {
+              Text(String(model.unassignedAgentRegistrations.count))
+                .font(.caption2.monospacedDigit()).foregroundStyle(.orange)
+            }
+          }
         }
         .buttonStyle(.plain).minimumHitTarget(width: 30, height: 34)
-        .accessibilityLabel("Browse terminals")
-        .help("Review open terminals and switch to an exact pane")
+        .accessibilityLabel("Browse terminals, \(model.unassignedAgentRegistrations.count) agents to place")
+        .help("Review tracked agents, assign tasks, and open terminal panes")
         Button {
           if model.dailyReport == nil {
             Task { await model.reloadDailyReport() }

@@ -542,7 +542,9 @@ public actor WezTermController: WezTermControlling {
         }
         let runtime = TmuxController(runner: runner)
         let live = try await runtime.verify(saved)
-        if live.name.hasPrefix("fq-task-") { try await runtime.select(live) }
+        // Externally created sessions can also have several panes or windows.
+        // Selecting the saved identity is required before attaching its view.
+        try await runtime.select(live)
 
         var connection = try await WezTermConnection.resolve(
             configuration: configuration, runner: runner, candidateSockets: candidateSockets)

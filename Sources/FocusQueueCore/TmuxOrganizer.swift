@@ -61,6 +61,13 @@ public enum TmuxPaneLayout {
   public static let minimumColumns = 72
   public static let minimumRows = 20
 
+  public static func contentHeight(clientHeight: Int, status: String, controlMode: Bool) -> Int {
+    // tmux control clients have no status display. Their dimensions already
+    // describe the available pane area (status_line_size in upstream tmux).
+    let rows = controlMode || status == "off" ? 0 : max(0, Int(status) ?? 1)
+    return max(1, clientHeight - rows)
+  }
+
   public static func capacity(width: Int, height: Int) -> Int {
     min(4, max(1, (width + 1) / (minimumColumns + 1)) * max(1, (height + 1) / (minimumRows + 1)))
   }
@@ -115,7 +122,7 @@ extension TmuxController {
 
   public func panes(name: String? = nil, executable: String) async throws -> [TmuxPaneSnapshot] {
     if let name { try Self.validateName(name) }
-    let arguments = ["list-panes"] + (name.map { ["-s", "-t", "=\($0)"] } ?? ["-a"])
+    let arguments = ["list-panes"] + (name.map { ["-s", "-t", "=\($0):"] } ?? ["-a"])
       + ["-F", TmuxPaneSnapshot.format]
     let result = try await run(executable, arguments)
     if !result.succeeded {
@@ -137,7 +144,7 @@ extension TmuxController {
     guard matches.count <= 1 else { throw TmuxError.unavailable("More than one pane claims this agent. Check the task panes before retrying.") }
     if let match = matches.first { return match.reference }
     if let pending = try pendingLaunch(taskID: taskID, subtaskID: subtaskID), !all.isEmpty {
-      let result = try await run(executable, ["list-panes", "-s", "-t", "=\(name)", "-f",
+      let result = try await run(executable, ["list-panes", "-s", "-t", "=\(name):", "-f",
         "#{==:#{window_name},\(pending)}", "-F", Self.format])
       guard result.succeeded else { throw TmuxError.unavailable("The previous launch is still unconfirmed. Refresh the task before retrying.") }
       if !result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -304,15 +311,20 @@ extension TmuxController {
     guard all.allSatisfy({ !$0.subtaskID.isEmpty }) else { return }
     let focused = try await run(executable, ["display-message", "-p", "-t", "=\(name):", "#{pane_id}"])
     let activePane = focused.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-    let sizes = try await run(executable, ["list-clients", "-t", "=\(name)", "-F", "#{client_width}|#{client_height}|#{client_activity}"])
+    let sizes = try await run(executable, ["list-clients", "-t", "=\(name)", "-F", "#{client_width}|#{client_height}|#{client_activity}|#{client_control_mode}"])
     guard sizes.succeeded else { throw TmuxError.unavailable("Could not read the task window size.") }
-    let clients = sizes.standardOutput.split(separator: "\n").compactMap { line -> (Int, Int, Int)? in
+    let clients = sizes.standardOutput.split(separator: "\n").compactMap { line -> (Int, Int, Int, Int)? in
       let f = line.split(separator: "|").compactMap { Int($0) }
-      return f.count == 3 ? (f[0], f[1], f[2]) : nil
+      return f.count == 4 ? (f[0], f[1], f[2], f[3]) : nil
     }
     let client = clients.max(by: { $0.2 < $1.2 })
+    // User wrappers can reserve multiple status rows (for example a usage bar).
+    // Respect that setting instead of sizing panes underneath those rows.
+    let status = try await run(executable, ["show-options", "-Av", "-t", name, "status"])
+    guard status.succeeded else { throw TmuxError.unavailable("Could not read the task status bar size.") }
+    let statusValue = status.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
     let width = client?.0 ?? first.windowWidth
-    let height = client.map { max(1, $0.1 - 1) } ?? first.windowHeight
+    let height = client.map { TmuxPaneLayout.contentHeight(clientHeight: $0.1, status: statusValue, controlMode: $0.3 == 1) } ?? first.windowHeight
     let ordered = all.sorted { (Int($0.id.dropFirst()) ?? 0) < (Int($1.id.dropFirst()) ?? 0) }
     let signature = "\(width)x\(height):" + ordered.map(\.id).joined(separator: ",")
     let previous = try await run(executable, ["show-options", "-qv", "-t", name, "@focus-queue-size"])

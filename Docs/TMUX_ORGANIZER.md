@@ -27,6 +27,8 @@ flowchart TD
 
 The layout uses terminal cells, with a target minimum of 72 columns and 20 rows per pane and at most four panes per tab. This accounts for font size, window size and monitor changes. A terminal too small for that minimum shows one pane. Extra panes use tmux tabs, which are available in terminals without native tabs.
 
+Available height excludes the actual configured status-bar rows, including multi-row usage bars. Creating a task session also works when the server already contains older per-agent sessions.
+
 Client attachment and resize hooks invoke the helper. A size-and-pane signature avoids repeating unchanged layouts. A task lock serializes launches, rearrangement and swaps across the app and helper. Reflow preserves the selected pane and never starts or kills an agent process. A user arrangement remains in effect until automatic layout is selected again.
 
 Pane identity includes the server, session creation time, pane ID, process PID and TTY. Closing an agent kills only that verified pane. An unresolved launch receipt blocks duplicate starts and permits recovery of the original pane. A runtime belonging to another task cannot be opened through a misbound task record.
@@ -55,5 +57,13 @@ The shipped drag-and-drop interaction lives in SwiftUI and uses verified tmux sw
 ## Verification and boundaries
 
 Headless tests use disposable tmux servers for pane overflow, reflow, identity retention, selection, manual layout, launch uncertainty, and save/restore. Existing app and Python tests cover launch, workspace, completion and document regressions. UI automation remains opt-in; real mouse interactions and monitor dragging require manual assessment.
+
+The existing-server launch regression is covered by creating an unrelated legacy session before the first task pane. Provider sanity checks must verify an actual Codex session UUID and readiness, rather than treating a live shell or usage-wrapper PID as success. Run the live-agent test suite before committing launch changes or handing them over for manual assessment.
+
+```sh
+ECC_FOCUS_QUEUE_LIVE_AGENT_TESTS=1 swift test --filter liveManagedProviderSanity
+```
+
+This runs the same New Agent model action for all four worktree and initialization combinations with the installed Codex command. It checks a real response, exact UUID capture, detach/reopen, stopped-conversation resume, and isolated persistence. Only terminal rendering is replaced by a headless tmux control client; mouse/keyboard automation stays disabled.
 
 The project hierarchy, worktree lifecycle automation, broader hotkeys and orchestrator policy enforcement remain in the [roadmap](FOCUS_QUEUE_ROADMAP.md).

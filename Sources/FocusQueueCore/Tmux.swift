@@ -127,9 +127,30 @@ public actor TmuxController {
        ["no server running", "No such file or directory", "can't find", "no sessions"].contains(where: result.standardError.contains) {
       throw TmuxError.stopped
     }
-    guard result.succeeded, let reference = try Self.decode(result.standardOutput, executable: executable).first,
-      (allowDifferentSession || reference.name == name) else { throw TmuxError.unavailable("Could not determine whether the saved agent is running. Retry before starting another process.") }
-    return reference
+    guard result.succeeded else {
+      throw TmuxError.unavailable("Could not determine whether the saved agent is running. Retry before starting another process.")
+    }
+    do {
+      guard let reference = try Self.decode(result.standardOutput, executable: executable).first,
+        (allowDifferentSession || reference.name == name) else {
+        throw TmuxError.unavailable("Could not determine whether the saved agent is running. Retry before starting another process.")
+      }
+      return reference
+    } catch {
+      // display-message can succeed with empty context fields for a removed
+      // target. Confirm absence with an authoritative enumeration; malformed
+      // metadata or failed transport alone never authorizes a replacement.
+      let isPane = target.hasPrefix("%")
+      let probe = try await run(executable, isPane
+        ? ["list-panes", "-a", "-F", "#{pane_id}"]
+        : ["list-sessions", "-F", "#{session_name}"])
+      let identities = probe.standardOutput.split(separator: "\n").map(String.init)
+      let valid = identities.allSatisfy {
+        $0.range(of: isPane ? "^%[0-9]+$" : "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$", options: .regularExpression) != nil
+      }
+      if probe.succeeded, valid, !identities.contains(isPane ? target : name) { throw TmuxError.stopped }
+      throw error
+    }
   }
 
   public func verify(_ saved: TmuxSessionReference) async throws -> TmuxSessionReference {

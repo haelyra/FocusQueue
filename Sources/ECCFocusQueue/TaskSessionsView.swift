@@ -4,16 +4,104 @@ import SwiftUI
 
 struct TerminalBrowserView: View {
   let model: QueueViewModel
-  @State private var legacy = false
+  @State private var selectedView = 0
   var body: some View {
     VStack(spacing: 0) {
-      Picker("Terminal view", selection: $legacy) {
-        Text("Task sessions").tag(false)
-        Text("Other terminals").tag(true)
+      Picker("Terminal view", selection: $selectedView) {
+        Text("Task sessions").tag(0)
+        Text("Agents to place (\(model.unassignedAgentRegistrations.count))").tag(1)
+        Text("Other terminals").tag(2)
       }.pickerStyle(.segmented).padding([.top, .horizontal], 16)
-      if legacy { WezTermBrowserView(model: model) }
+      if selectedView == 1 { ExternalAgentsInboxView(model: model) }
+      else if selectedView == 2 { WezTermBrowserView(model: model) }
       else { TaskSessionsView(model: model) }
+    }.task {
+      await model.refreshExternalAgentRegistrations()
+      if !model.unassignedAgentRegistrations.isEmpty { selectedView = 1 }
     }
+  }
+}
+
+/// Session identity is captured before optional task placement. Ambiguous
+/// workspaces stay visible here instead of silently joining the wrong task.
+private struct ExternalAgentsInboxView: View {
+  let model: QueueViewModel
+  @Environment(\.dismiss) private var dismiss
+  @State private var refreshing = false
+  @State private var message: String?
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack {
+        Text("Agents to place").font(.title2.bold())
+        Spacer()
+        Button("Refresh", systemImage: "arrow.clockwise") {
+          refreshing = true
+          Task { await model.refreshExternalAgentRegistrations(); refreshing = false }
+        }.disabled(refreshing)
+        Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
+      }
+      Text("These agents are tracked. Choose a task to place them in your queue.")
+        .font(.callout).foregroundStyle(.secondary)
+      if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
+      if let error = model.externalAgentRegistrationError {
+        Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+      }
+      ScrollView {
+        LazyVStack(alignment: .leading, spacing: 12) {
+          ForEach(model.unassignedAgentRegistrations) { registration in
+            VStack(alignment: .leading, spacing: 6) {
+              HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                  Text(registration.title).font(.headline).lineLimit(3)
+                  Text(registration.provider.displayName + " · " + String((registration.sessionID ?? registration.agentID ?? registration.id).suffix(8)))
+                    .font(.caption.monospaced()).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Menu("Assign task") {
+                  ForEach(model.openTickets) { ticket in
+                    Button("\(ticket.id) · \(ticket.title)") { model.assignExternalAgent(registration, to: ticket) }
+                  }
+                }.disabled(model.openTickets.isEmpty || registration.sessionID == nil)
+                  .accessibilityLabel("Assign \(registration.title) to a task")
+              }
+              Text(registration.cwd).font(.caption).foregroundStyle(.secondary)
+                .lineLimit(2).textSelection(.enabled)
+              if registration.sessionID == nil {
+                Text("Waiting for a resumable provider session ID.").font(.caption).foregroundStyle(.secondary)
+              }
+              if registration.provider == .codex, let sessionID = registration.sessionID,
+                UUID(uuidString: sessionID) != nil {
+                Button(registration.tmux == nil ? "Copy resume command" : "Copy attach command") {
+                  let command: String
+                  if let tmux = registration.tmux,
+                    (try? TmuxController.validateName(tmux.name)) != nil,
+                    tmux.paneID.range(of: "^%[0-9]+$", options: .regularExpression) != nil {
+                    command = "focus-queue-session tmux attach \(tmux.name) --pane \(tmux.paneID)"
+                  } else {
+                    // Load the integration explicitly. Missing setup must stop
+                    // here instead of falling through to an unguarded alias.
+                    let entry = model.configurationURL.deletingLastPathComponent()
+                      .appendingPathComponent("shell/codex.zsh").path
+                    let quoted = "'" + entry.replacingOccurrences(of: "'", with: "'\\''") + "'"
+                    command = "/bin/zsh -lc 'source \"$1\" && codex resume \"$2\"' focus-queue-resume \(quoted) \(sessionID)"
+                  }
+                  NSPasteboard.general.clearContents()
+                  NSPasteboard.general.setString(command, forType: .string)
+                  message = "Copied. Paste into a terminal to open this exact conversation."
+                }.font(.caption)
+              }
+            }.padding(12).background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+          }
+          if model.unassignedAgentRegistrations.isEmpty, model.externalAgentRegistrationError == nil {
+            ContentUnavailableView("All detected agents are placed", systemImage: "checkmark.circle",
+              description: Text("New Codex sessions are detected automatically. Sessions without a clear task appear here."))
+          }
+        }
+      }
+      Text("Placement keeps the existing conversation. It does not start another agent or change your task order.")
+        .font(.caption).foregroundStyle(.secondary)
+    }.padding(20).frame(width: 700, height: 620)
   }
 }
 

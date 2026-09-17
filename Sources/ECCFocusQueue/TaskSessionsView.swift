@@ -26,6 +26,7 @@ struct TaskSessionsView: View {
   @State private var message: String?
   @State private var busy = false
   @State private var groupingByWorktree = false
+  @State private var persistenceStatus: TmuxPersistenceStatus?
 
   private var executable: String? { model.config.tmuxExecutable ?? SetupEnvironment.executable("tmux") }
   private var names: [String] { Array(Set(panes.map { $0.reference.name })).sorted() }
@@ -89,6 +90,17 @@ struct TaskSessionsView: View {
         Toggle("Group list by worktree", isOn: $groupingByWorktree).font(.caption)
       }
       if let message { Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+      HStack {
+        if let saved = persistenceStatus?.lastSavedAt {
+          Text("Layout saved \(saved, style: .relative) ago").font(.caption).foregroundStyle(.secondary)
+        } else {
+          Text("Automatic saves every 5 minutes").font(.caption).foregroundStyle(.secondary)
+        }
+        Spacer()
+        Button("Save now") { persistenceAction(restore: false) }.disabled(busy || panes.isEmpty)
+        Button("Restore saved layout") { persistenceAction(restore: true) }
+          .disabled(busy || persistenceStatus?.canRestore != true)
+      }
       ScrollView {
         VStack(alignment: .leading, spacing: 14) {
           ForEach(Array(windows.enumerated()), id: \.element) { index, window in
@@ -111,7 +123,11 @@ struct TaskSessionsView: View {
             }
           }
           if !taskPanes.isEmpty {
-            ForEach(listPanes) { pane in
+            ForEach(Array(listPanes.enumerated()), id: \.element.id) { index, pane in
+              if groupingByWorktree, index == 0 || assignment(listPanes[index - 1])?.1.workspace?.path != assignment(pane)?.1.workspace?.path {
+                Text(assignment(pane)?.1.workspace?.path ?? "Task workspace")
+                  .font(.caption.bold()).foregroundStyle(.secondary).padding(.top, 6)
+              }
               HStack {
                 VStack(alignment: .leading, spacing: 3) {
                   Text(assignment(pane)?.1.title ?? "Shell \(pane.id)").font(.callout)
@@ -199,6 +215,24 @@ struct TaskSessionsView: View {
     }
   }
 
+  private func persistenceAction(restore: Bool) {
+    guard !busy, let executable else { return }
+    busy = true
+    Task {
+      defer { busy = false }
+      do {
+        let persistence = try TmuxPersistence.prepare(executable: executable,
+          supportDirectory: model.configurationURL.deletingLastPathComponent())
+        if restore { try await persistence.restoreLayout() }
+        else { try await persistence.enable(); try await persistence.save() }
+        persistenceStatus = persistence.status()
+        panes = try await TmuxController().panes(executable: executable)
+        if !names.contains(selectedTask) { selectedTask = names.first ?? "" }
+        message = restore ? "Layout restored. Open each agent from its task to resume its saved conversation." : "Layout saved."
+      } catch { message = error.localizedDescription }
+    }
+  }
+
   private func reload(quiet: Bool = false) async {
     guard !busy else { return }
     guard let executable else { message = "Install tmux, then select its executable in Setup."; return }
@@ -206,6 +240,8 @@ struct TaskSessionsView: View {
     defer { busy = false }
     do {
       panes = try await TmuxController().panes(executable: executable)
+      persistenceStatus = try TmuxPersistence.prepare(executable: executable,
+        supportDirectory: model.configurationURL.deletingLastPathComponent()).status()
       if !names.contains(selectedTask) {
         let current = initialTaskID ?? model.presentedPlanTicketID ?? model.openTickets.first?.id
         selectedTask = current.flatMap { try? TmuxController.taskSessionName(taskID: $0) }

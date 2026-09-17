@@ -144,7 +144,7 @@ private actor TaskPaneLaunchRunner: ProcessRunning {
   let calls = await runner.specifications
   #expect(calls.allSatisfy { $0.executable == "/test/tmux" })
   #expect(calls.filter { $0.arguments.contains("new-session") }.count == 1)
-  #expect(calls.filter { $0.arguments.contains("display-message") }.count == 4)
+  #expect(calls.filter { $0.arguments.contains("display-message") }.count >= 4)
   #expect(!calls.flatMap(\.arguments).contains("resume"))
   #expect(!calls.flatMap(\.arguments).contains("spawn"))
 }

@@ -41,18 +41,21 @@ public actor TmuxController {
   private let confirmationAttempts: Int
   private let confirmationDelayMilliseconds: Int
   private let requiredStableObservations: Int
+  private let configurationPath: String
   public init(
     runner: any ProcessRunning = FoundationProcessRunner(),
     serverName: String = TmuxController.serverName,
     confirmationAttempts: Int = 120,
     confirmationDelayMilliseconds: Int = 250,
-    requiredStableObservations: Int = 3
+    requiredStableObservations: Int = 3,
+    configurationPath: String = "/dev/null"
   ) {
     self.runner = runner
     self.serverName = serverName
     self.confirmationAttempts = max(1, confirmationAttempts)
     self.confirmationDelayMilliseconds = max(0, confirmationDelayMilliseconds)
     self.requiredStableObservations = max(1, requiredStableObservations)
+    self.configurationPath = configurationPath
   }
 
   public static func sessionName(subtaskID: String) throws -> String {
@@ -86,12 +89,12 @@ public actor TmuxController {
       let server = Int(fields[1])
       let created = Int(fields[2])
       let panePID = Int(fields[4])
-      if server.map({ $0 > 0 }) != true { invalid.append("server PID") }
+      if server.map({ $0 > 0 && $0 <= Int(Int32.max) }) != true { invalid.append("server PID") }
       if created == nil { invalid.append("session creation time") }
       if fields[3].range(of: "^%[0-9]+$", options: .regularExpression) == nil {
         invalid.append("pane number")
       }
-      if panePID.map({ $0 > 0 }) != true { invalid.append("pane process PID") }
+      if panePID.map({ $0 > 0 && $0 <= Int(Int32.max) }) != true { invalid.append("pane process PID") }
       if !fields[5].hasPrefix("/dev/") { invalid.append("terminal device") }
       if fields[6] != "0" { invalid.append("running pane state") }
       guard invalid.isEmpty, let server, let created, let panePID else {
@@ -118,21 +121,22 @@ public actor TmuxController {
     return try await inspectTarget("=\(name):", name: name, executable: executable)
   }
 
-  func inspectTarget(_ target: String, name: String, executable: String) async throws -> TmuxSessionReference {
+  func inspectTarget(_ target: String, name: String, executable: String, allowDifferentSession: Bool = false) async throws -> TmuxSessionReference {
     let result = try await run(executable, ["display-message", "-p", "-t", target, Self.format])
     if !result.succeeded, !result.timedOut,
        ["no server running", "No such file or directory", "can't find", "no sessions"].contains(where: result.standardError.contains) {
       throw TmuxError.stopped
     }
     guard result.succeeded, let reference = try Self.decode(result.standardOutput, executable: executable).first,
-      reference.name == name else { throw TmuxError.unavailable("Could not determine whether the saved agent is running. Retry before starting another process.") }
+      (allowDifferentSession || reference.name == name) else { throw TmuxError.unavailable("Could not determine whether the saved agent is running. Retry before starting another process.") }
     return reference
   }
 
   public func verify(_ saved: TmuxSessionReference) async throws -> TmuxSessionReference {
     try Self.validateName(saved.name)
+    guard saved.serverPID > 0, saved.serverPID <= Int(Int32.max) else { throw TmuxError.changed }
     guard saved.paneID.range(of: "^%[0-9]+$", options: .regularExpression) != nil else { throw TmuxError.changed }
-    let current = try await inspectTarget(saved.paneID, name: saved.name, executable: saved.executable)
+    let current = try await inspectTarget(saved.paneID, name: saved.name, executable: saved.executable, allowDifferentSession: true)
     if current.serverPID != saved.serverPID,
        kill(pid_t(saved.serverPID), 0) == -1, errno == ESRCH { throw TmuxError.stopped }
     guard current == saved else { throw TmuxError.changed }
@@ -225,7 +229,7 @@ public actor TmuxController {
     let literalArguments = arguments.map { argument in
       argument.hasSuffix(";") ? String(argument.dropLast()) + "\\;" : argument
     }
-    return try await runner.run(.init(executable: executable, arguments: ["-f", "/dev/null", "-L", serverName] + literalArguments,
+    return try await runner.run(.init(executable: executable, arguments: ["-f", configurationPath, "-L", serverName] + literalArguments,
       environment: ["TMUX_TMPDIR": "/tmp"], timeoutSeconds: 10))
   }
 }

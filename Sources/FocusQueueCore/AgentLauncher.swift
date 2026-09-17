@@ -162,14 +162,28 @@ public actor TaskAgentLauncher {
     context: TaskContext, subtask: TaskSubtask, supportDirectory: URL,
     includePrompt: Bool = true, tmuxExecutable: String
   ) async throws -> TmuxSessionReference {
+    if let workspace = subtask.workspace { try await TaskWorktreeManager().validate(workspace) }
+    if subtask.tmux != nil, subtask.sessionID == nil {
+      throw TaskContextError.commandFailed("This stopped agent has no saved conversation to resume. Start New Agent with a fresh assignment.")
+    }
     let command = try Self.command(
       context: context, subtask: subtask, supportDirectory: supportDirectory,
       includePrompt: includePrompt)
-    let runtime = TmuxController(runner: runner)
+    let persistence = FileManager.default.isExecutableFile(atPath: tmuxExecutable)
+      ? try TmuxPersistence.prepare(executable: tmuxExecutable, supportDirectory: supportDirectory) : nil
+    let runtime = TmuxController(runner: runner, configurationPath: persistence?.configurationURL.path ?? "/dev/null")
     let reference = try await runtime.startAgent(
       taskID: context.ticketID, subtaskID: subtask.id,
       directory: (subtask.workspace?.path ?? context.worktreePath)!, command: command,
       executable: tmuxExecutable)
+    try? await runtime.label(reference, title: "\(subtask.provider.displayName): \(subtask.title)")
+    if let persistence {
+      do { try await persistence.enable(runner: runner) }
+      catch {
+        throw TmuxError.startedButUnconfirmed(name: reference.name, executable: tmuxExecutable, attempts: 3,
+          lastDetail: "The agent is running, but automatic layout saving needs attention. \(error.localizedDescription)")
+      }
+    }
     let bundledHelper = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/focus-queue-session").path
     if let helper = [bundledHelper, SetupEnvironment.executable("focus-queue-session")].compactMap({ $0 })
       .first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {

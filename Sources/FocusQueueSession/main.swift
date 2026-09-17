@@ -36,6 +36,7 @@ enum SessionRegistrationError: Error, LocalizedError {
             else if arguments.first == "--help" || arguments.first == "help" {
                 print(SessionRegistrationError.usage.localizedDescription)
                 print("Persistent terminals: tmux list | tmux start <name> [--cwd <directory>] [-- <command> ...] | tmux attach <name> | tmux ssh-command <user@host> <name>")
+                print("Task layouts: tmux panes <name> | tmux arrange <name> | tmux manual <name> | tmux save | tmux restore | tmux persistence")
             }
             else if arguments.first == "agents" { try await agentsCommand(arguments: arguments) }
             else if arguments.first == "runtime" { try await runtimeCommand(arguments: arguments) }
@@ -127,13 +128,31 @@ enum SessionRegistrationError: Error, LocalizedError {
         guard let executable = configuration.tmuxExecutable ?? SetupEnvironment.executable("tmux") else {
             throw TmuxError.unavailable("Install tmux on this host, then choose its executable in setup.")
         }
-        let controller = TmuxController()
+        let persistence = ["start", "save", "restore", "persistence"].contains(arguments[1])
+            ? try TmuxPersistence.prepare(executable: executable, supportDirectory: supportDirectory(environment: environment)) : nil
+        let serverName: String
+        if arguments[1] == "reflow", arguments.count == 5, arguments[3] == "--server" {
+            try TmuxController.validateName(arguments[4])
+            serverName = arguments[4]
+        } else { serverName = TmuxController.serverName }
+        let controller = TmuxController(serverName: serverName, configurationPath: persistence?.configurationURL.path ?? "/dev/null")
         switch arguments[1] {
+        case "save" where arguments.count == 2:
+            try await persistence!.enable()
+            try await persistence!.save()
+            print("Saved the managed tmux layout.")
+        case "restore" where arguments.count == 2:
+            try await persistence!.restoreLayout()
+            print(TmuxPersistenceStatus.restoreExplanation)
+        case "persistence" where arguments.count == 2:
+            let status = persistence!.status()
+            try emit(["available": String(status.available), "canRestore": String(status.canRestore),
+                "directory": status.snapshotDirectory, "intervalMinutes": String(status.saveIntervalMinutes)])
         case "panes" where arguments.count == 3:
             let panes = try await controller.panes(name: arguments[2], executable: executable)
             try emit(panes.map { ["pane": $0.id, "session": $0.reference.name,
                 "tab": String($0.windowIndex + 1), "agent": $0.subtaskID] })
-        case "reflow" where arguments.count == 3:
+        case "reflow" where arguments.count == 3 || (arguments.count == 5 && arguments[3] == "--server"):
             try await controller.reflow(name: arguments[2], executable: executable)
         case "arrange" where arguments.count == 3:
             try await controller.setAutomatic(name: arguments[2], executable: executable, enabled: true)
@@ -163,6 +182,7 @@ enum SessionRegistrationError: Error, LocalizedError {
             else if !remaining.isEmpty { throw SessionRegistrationError.usage }
             let command = remaining.isEmpty ? [InteractiveAgentShell.executable(), "-l"] : remaining
             try emit(try await controller.start(name: arguments[2], directory: directory, command: command, executable: executable))
+            try await persistence?.enable()
         default: throw SessionRegistrationError.usage
         }
     }

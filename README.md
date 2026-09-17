@@ -10,13 +10,21 @@ for compatibility, installation, reconnect instructions and remaining public-lau
 
 ## Reliable session recall
 
+New tmux agents share one session per task. **Sessions** shows a live pane map with
+drag-and-drop swaps, worktree grouping and manual layout control. Automatic layout
+uses the terminal's actual size, keeps up to four readable panes together and adds
+tmux tabs when needed. Pinned tmux-resurrect and tmux-continuum are bundled for
+automatic layout saves, including while detached. See the [session organizer](Docs/TMUX_ORGANIZER.md)
+for controls, terminal options and recovery limits, and the [roadmap](Docs/FOCUS_QUEUE_ROADMAP.md)
+for the remaining project and orchestration work.
+
 With **Open in tmux** checked, Focus Queue saves the exact runtime before opening
 its terminal view. Closing the view leaves tmux running. Direct launches save the
 WezTerm pane and socket. Clicking an agent focuses the live runtime; when that
 runtime is confirmed closed, the app starts `codex resume <session-id>` or
 `claude --resume <session-id>` in its saved workspace through your login-shell
-command preferences. Initialization is never replayed during resume. If there is
-no provider session ID, a new agent starts with the saved assignment. Ambiguous
+command preferences. Initialization is never replayed during resume. A stopped
+tmux agent without a saved provider conversation requires a fresh assignment. Ambiguous
 transport failures do not create duplicate processes.
 
 Each assignment records its workspace path, repository, branch, base commit,

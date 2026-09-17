@@ -124,6 +124,17 @@ import UserNotifications
     Task { [weak self] in
       guard let self else { return }
       await model.bootstrap()
+      Task {
+        if let executable = model.config.tmuxExecutable ?? SetupEnvironment.executable("tmux") {
+          do {
+            if !(try await TmuxController().panes(executable: executable)).isEmpty {
+              let persistence = try TmuxPersistence.prepare(executable: executable,
+                supportDirectory: model.configurationURL.deletingLastPathComponent())
+              try await persistence.enable()
+            }
+          } catch { NSLog("Managed tmux persistence: %@", error.localizedDescription) }
+        }
+      }
       if let snapshot = model.windowSnapshot {
         currentPlacement = snapshot.placement
         preferredDisplayIdentifier = snapshot.displayIdentifier

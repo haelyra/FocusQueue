@@ -252,7 +252,7 @@ extension TmuxController {
     try Self.validateName(name)
     guard name.hasPrefix("fq-task-"), FileManager.default.isExecutableFile(atPath: helper) else { return }
     let shellQuote: (String) -> String = { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-    let command = ["/usr/bin/env", "FOCUS_QUEUE_SUPPORT_DIR=\(supportDirectory.path)", helper, "tmux", "reflow", name]
+    let command = ["/usr/bin/env", "FOCUS_QUEUE_SUPPORT_DIR=\(supportDirectory.path)", helper, "tmux", "reflow", name, "--server", serverName]
       .map(shellQuote).joined(separator: " ")
     for hook in ["client-attached", "client-resized", "client-session-changed"] {
       try await checked(executable, ["set-hook", "-t", name, "\(hook)[35]", "run-shell -b \(shellQuote(command))"])
@@ -260,6 +260,16 @@ extension TmuxController {
     // A deliberate border resize opts out of the next automatic rearrangement.
     try await checked(executable, ["set-hook", "-t", name, "after-resize-pane[35]",
       "set-option -t \(name) @focus-queue-layout manual"])
+  }
+
+  public func label(_ saved: TmuxSessionReference, title: String) async throws {
+    _ = try await verify(saved)
+    let readable = String(title.filter { !$0.isNewline && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }.prefix(100))
+    try await checked(saved.executable, ["set-option", "-p", "-t", saved.paneID, "@focus-queue-label", readable])
+    try await checked(saved.executable, ["set-option", "-t", saved.name, "status-left", "#{@focus-queue-task} "])
+    try await checked(saved.executable, ["set-option", "-t", saved.name, "status-right", "Click tabs | Drag borders"])
+    try await checked(saved.executable, ["set-window-option", "-t", saved.paneID, "pane-border-status", "top"])
+    try await checked(saved.executable, ["set-window-option", "-t", saved.paneID, "pane-border-format", " #{@focus-queue-label} "])
   }
 
   public func setAutomatic(name: String, executable: String, enabled: Bool) async throws {
@@ -331,6 +341,8 @@ extension TmuxController {
       try await checked(executable, ["rename-window", "-t", anchor.id, "Agents \(index + 1)"])
       try await checked(executable, ["set-window-option", "-t", anchor.id, "automatic-rename", "off"])
       try await checked(executable, ["set-window-option", "-t", anchor.id, "window-size", "latest"])
+      try await checked(executable, ["set-window-option", "-t", anchor.id, "pane-border-status", "top"])
+      try await checked(executable, ["set-window-option", "-t", anchor.id, "pane-border-format", " #{@focus-queue-label} "])
     }
     try await checked(executable, ["set-option", "-t", name, "@focus-queue-size", signature])
     if all.contains(where: { $0.id == activePane }) {

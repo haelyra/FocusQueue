@@ -63,6 +63,18 @@ struct ManagedSessionRecallTests {
     #expect(await runner.calls.isEmpty)
   }
 
+  @Test("A misbound task runtime is rejected before terminal selection")
+  func misboundTaskRuntime() async throws {
+    let runner = ManagedRecallRunner([])
+    var saved = try #require(session().tmux)
+    saved.name = "fq-task-ecc-2"
+    await #expect(throws: TmuxError.self) {
+      try await WezTermController(runner: runner, candidateSockets: []).openManagedRuntime(
+        saved, taskID: "ECC-1", provider: .codex, configuration: .init(executable: "/mock/wezterm"))
+    }
+    #expect(await runner.calls.isEmpty)
+  }
+
   @Test("A stopped or replaced runtime never starts a provider fallback")
   func endedRuntime() async throws {
     let runner = ManagedRecallRunner([result(exit: 1)])

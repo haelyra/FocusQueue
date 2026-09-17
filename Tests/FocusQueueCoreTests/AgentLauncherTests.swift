@@ -227,86 +227,43 @@ private actor TaskPaneLaunchRunner: ProcessRunning {
   #expect(calls.filter { $0.arguments.contains("spawn") }.count == 1)
 }
 
-@Test(
-  "Live app launcher starts one provider and survives terminal client reopen",
-  .enabled(if: ProcessInfo.processInfo.environment["ECC_FOCUS_QUEUE_LIVE_AGENT_TESTS"] == "1")
-)
-func liveManagedProviderSanity() async throws {
-  let executable = try #require(SetupEnvironment.executable("tmux"))
-  let root = FileManager.default.temporaryDirectory.appendingPathComponent(
-    "live-agent-sanity-\(UUID().uuidString)")
+@Test func managedLauncherKeepsStartAttentionAndCleanupOnItsInjectedServer() async throws {
+  let root = FileManager.default.temporaryDirectory.appendingPathComponent("isolated-launcher-\(UUID().uuidString)")
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
   defer { try? FileManager.default.removeItem(at: root) }
-  let subtask = TaskSubtask(
-    id: "sanity-\(UUID().uuidString.lowercased())", title: "Verify live managed launch",
-    includeInitializationPrompt: false, runtimeMode: .tmux)
-  let name = try TmuxController.taskSessionName(taskID: "SANITY-1")
-  let runner = FoundationProcessRunner()
-  defer {
-    let cleanup = Process()
-    cleanup.executableURL = URL(fileURLWithPath: executable)
-    cleanup.arguments = ["-f", "/dev/null", "-L", TmuxController.serverName,
-      "kill-session", "-t", "=\(name)"]
-    cleanup.environment = ["PATH": "/usr/bin:/bin", "TMUX_TMPDIR": "/tmp"]
-    try? cleanup.run()
-    for _ in 0..<100 where cleanup.isRunning { usleep(10_000) }
-    if cleanup.isRunning { cleanup.terminate() }
-  }
-  let context = TaskContext(
-    ticketID: "SANITY-1", title: "Live launch", summary: "",
-    successCriteria: "The provider remains in the exact tmux pane.",
-    planPath: root.appendingPathComponent("plan.md").path,
-    worktreePath: root.path, updatedAt: Date())
-  let reference = try await TaskAgentLauncher().startManagedSession(
-    context: context, subtask: subtask, supportDirectory: root,
-    includePrompt: false, tmuxExecutable: executable)
-  #expect(reference.name == name)
-  #expect(kill(pid_t(reference.panePID), 0) == 0)
+  let runner = TaskPaneLaunchRunner()
+  let server = "launch-test-\(UUID().uuidString.lowercased())"
+  let launcher = TaskAgentLauncher(runner: runner, tmuxServerName: server)
+  let context = TaskContext(ticketID: "ECC-1", title: "Isolated launch", summary: "", successCriteria: "",
+    planPath: root.appendingPathComponent("plan.md").path, worktreePath: root.path, updatedAt: Date())
+  var subtask = TaskSubtask(id: "isolated", title: "Isolated provider", runtimeMode: .tmux)
+  subtask.tmux = try await launcher.startManagedSession(context: context, subtask: subtask,
+    supportDirectory: root, tmuxExecutable: "/test/tmux")
+  _ = try await launcher.runtimeAttention(subtask: subtask, configuration: .init(executable: "/unused/wezterm"))
+  try await launcher.closeRuntime(subtask: subtask, configuration: .init(executable: "/unused/wezterm"))
+  let calls = await runner.specifications
+  #expect(calls.contains { $0.arguments.contains("capture-pane") })
+  #expect(calls.contains { $0.arguments.contains("kill-pane") })
+  #expect(calls.allSatisfy { specification in
+    guard let flag = specification.arguments.firstIndex(of: "-L") else { return false }
+    return specification.arguments[flag + 1] == server
+  })
+}
 
-  func controlClient() throws -> Process {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: executable)
-    process.arguments = ["-f", "/dev/null", "-L", TmuxController.serverName,
-      "-C", "attach-session", "-t", "=\(name)"]
-    process.environment = ["PATH": "/usr/bin:/bin", "TMUX_TMPDIR": "/tmp", "TERM": "xterm-256color"]
-    process.standardInput = Pipe()
-    process.standardOutput = FileHandle.nullDevice
-    process.standardError = FileHandle.nullDevice
-    try process.run()
-    return process
+@Test("Partial metadata for a still-present pane stays unavailable, preventing duplicate resume")
+func managedRuntimeAttentionRetainsAnUnconfirmedLivePane() async throws {
+  let runner = AgentLaunchRunner([
+    .init(exitCode: 0, standardOutput: "fq-task-ecc-1|123|1000|%0|||0\n", standardError: "", timedOut: false),
+    .init(exitCode: 0, standardOutput: "%0\n", standardError: "", timedOut: false)
+  ])
+  var subtask = TaskSubtask(id: "partial", title: "Partially ready pane", runtimeMode: .tmux)
+  subtask.tmux = .init(name: "fq-task-ecc-1", serverPID: 123, createdAt: 1000,
+    paneID: "%0", panePID: 124, tty: "/dev/ttys099", executable: "/test/tmux")
+  let launcher = TaskAgentLauncher(runner: runner, tmuxServerName: "isolated-partial")
+  // A stopped result is translated to .interrupted. The known present pane must
+  // keep throwing unavailable until its metadata settles.
+  await #expect(throws: TmuxError.self) {
+    try await launcher.runtimeAttention(subtask: subtask, configuration: .init(executable: "/unused/wezterm"))
   }
-  func waitForClient(_ process: Process, present: Bool) async throws {
-    for _ in 0..<100 {
-      let clients = try await runner.run(.init(
-        executable: executable,
-        arguments: ["-f", "/dev/null", "-L", TmuxController.serverName,
-          "list-clients", "-t", "=\(name)", "-F", "#{client_pid}"],
-        environment: ["TMUX_TMPDIR": "/tmp"]))
-      let found = clients.standardOutput.split(separator: "\n")
-        .contains(Substring(String(process.processIdentifier)))
-      if found == present { return }
-      try await Task.sleep(for: .milliseconds(25))
-    }
-    Issue.record("Control client did not reach expected attachment state")
-  }
-  func stopClient(_ process: Process) async {
-    if process.isRunning { process.terminate() }
-    for _ in 0..<100 {
-      if !process.isRunning { return }
-      try? await Task.sleep(for: .milliseconds(10))
-    }
-    if process.isRunning { kill(process.processIdentifier, SIGKILL) }
-  }
-
-  let first = try controlClient()
-  try await waitForClient(first, present: true)
-  await stopClient(first)
-  try await waitForClient(first, present: false)
-  #expect(try await TmuxController().verify(reference) == reference)
-
-  let second = try controlClient()
-  try await waitForClient(second, present: true)
-  #expect(try await TmuxController().verify(reference) == reference)
-  await stopClient(second)
-  try await waitForClient(second, present: false)
+  #expect(await runner.specifications.last?.arguments.suffix(4) == ["list-panes", "-a", "-F", "#{pane_id}"])
 }

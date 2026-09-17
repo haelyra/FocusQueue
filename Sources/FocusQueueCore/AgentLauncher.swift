@@ -38,12 +38,15 @@ public struct DirectAgentLaunchReceipt: Equatable, Sendable {
 public actor TaskAgentLauncher {
   private let runner: any ProcessRunning
   private let candidateSockets: [String]?
+  private let tmuxServerName: String
   public init(
     runner: any ProcessRunning = FoundationProcessRunner(),
-    candidateSockets: [String]? = nil
+    candidateSockets: [String]? = nil,
+    tmuxServerName: String = TmuxController.serverName
   ) {
     self.runner = runner
     self.candidateSockets = candidateSockets
+    self.tmuxServerName = tmuxServerName
   }
 
   public static func command(context: TaskContext, subtask: TaskSubtask, supportDirectory: URL,
@@ -79,7 +82,7 @@ public actor TaskAgentLauncher {
     let candidates: [RunningAgentSession]
     if let tmux = subtask.tmux {
       guard FileManager.default.isExecutableFile(atPath: tmux.executable) else { return nil }
-      _ = try await TmuxController(runner: runner).verify(tmux)
+      _ = try await TmuxController(runner: runner, serverName: tmuxServerName).verify(tmux)
       candidates = try await controller.agents(onTTY: tmux.tty)
     } else if let paneID = subtask.terminalPaneID {
       guard FileManager.default.isExecutableFile(atPath: configuration.executable) else { return nil }
@@ -97,10 +100,11 @@ public actor TaskAgentLauncher {
   public func runtimeAttention(subtask: TaskSubtask, configuration: WezTermConfiguration) async throws -> AgentAttention? {
     let output: ProcessResult
     if let tmux = subtask.tmux {
-      do { _ = try await TmuxController(runner: runner).verify(tmux) }
+      do { _ = try await TmuxController(runner: runner, serverName: tmuxServerName).verify(tmux) }
       catch TmuxError.stopped { return .interrupted }
       output = try await runner.run(.init(executable: tmux.executable,
-        arguments: ["-L", TmuxController.serverName, "capture-pane", "-p", "-t", tmux.paneID]))
+        arguments: ["-L", tmuxServerName, "capture-pane", "-p", "-t", tmux.paneID],
+        environment: ["TMUX_TMPDIR": "/tmp"]))
     } else if let paneID = subtask.terminalPaneID {
       var requested = configuration
       requested.socketPath = subtask.terminalSocketPath ?? configuration.socketPath
@@ -135,7 +139,7 @@ public actor TaskAgentLauncher {
   /// Close only a verified runtime; a reused terminal identity is never sufficient.
   public func closeRuntime(subtask: TaskSubtask, configuration: WezTermConfiguration) async throws {
     if let tmux = subtask.tmux {
-      try await TmuxController(runner: runner).stop(tmux)
+      try await TmuxController(runner: runner, serverName: tmuxServerName).stop(tmux)
       return
     }
     guard let paneID = subtask.terminalPaneID else { return }
@@ -170,8 +174,10 @@ public actor TaskAgentLauncher {
       context: context, subtask: subtask, supportDirectory: supportDirectory,
       includePrompt: includePrompt)
     let persistence = FileManager.default.isExecutableFile(atPath: tmuxExecutable)
-      ? try TmuxPersistence.prepare(executable: tmuxExecutable, supportDirectory: supportDirectory) : nil
-    let runtime = TmuxController(runner: runner, configurationPath: persistence?.configurationURL.path ?? "/dev/null")
+      ? try TmuxPersistence.prepare(executable: tmuxExecutable, serverName: tmuxServerName,
+          supportDirectory: supportDirectory) : nil
+    let runtime = TmuxController(runner: runner, serverName: tmuxServerName,
+      configurationPath: persistence?.configurationURL.path ?? "/dev/null")
     let reference = try await runtime.startAgent(
       taskID: context.ticketID, subtaskID: subtask.id,
       directory: (subtask.workspace?.path ?? context.worktreePath)!, command: command,

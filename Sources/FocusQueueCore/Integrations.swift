@@ -185,6 +185,11 @@ public struct KnownProviderProcess: Sendable, Equatable {
     public let processID: Int32
     public let tty: String?
     public let cwd: String
+
+    public init(provider: AgentProvider, sessionID: String, processID: Int32, tty: String?, cwd: String) {
+        self.provider = provider; self.sessionID = sessionID; self.processID = processID
+        self.tty = tty; self.cwd = cwd
+    }
 }
 
 public enum TerminalActionResult: Equatable, Sendable {

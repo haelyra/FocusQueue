@@ -148,6 +148,7 @@ final class QueueViewModel {
   @ObservationIgnored private var planReadID = UUID()
   @ObservationIgnored private var lastExternalAgentDiscovery: Date?
   @ObservationIgnored private let discoverExternalAgents: @Sendable () async throws -> [KnownProviderProcess]
+  @ObservationIgnored private let locateExistingAgent: @Sendable (AgentProvider, String) async throws -> KnownProviderProcess?
 
   @ObservationIgnored var placementHandler: ((QueueWindowPlacement) -> Void)?
   @ObservationIgnored var monitorSwitchHandler: (() -> Void)?
@@ -183,10 +184,15 @@ final class QueueViewModel {
     connectorDiagnosticsRunner: any ProcessRunning = FoundationProcessRunner(),
     discoverExternalAgents: @escaping @Sendable () async throws -> [KnownProviderProcess] = {
       try await WezTermController().knownProviderProcesses()
+    },
+    locateExistingAgent: @escaping @Sendable (AgentProvider, String) async throws -> KnownProviderProcess? = { provider, sessionID in
+      try await WezTermController().knownProviderProcesses(provider: provider, requireComplete: true)
+        .first { $0.sessionID.caseInsensitiveCompare(sessionID) == .orderedSame }
     }
   ) {
     self.paths = paths
     self.discoverExternalAgents = discoverExternalAgents
+    self.locateExistingAgent = locateExistingAgent
     self.taskContextStore = TaskContextStore(root: paths.supportDirectory)
     self.reportHistoryRepository = JSONDailyReportHistoryRepository(runtimeDirectory: paths.ingestionRuntimeDirectory)
     self.conversationStore = QueueConversationStore(root: paths.supportDirectory)
@@ -1269,6 +1275,14 @@ final class QueueViewModel {
               return
             } catch TmuxError.stopped { }
           }
+        }
+        // A missing or closed saved view does not prove the conversation stopped.
+        // External terminals and IDEs may still own it. Only a complete, exact
+        // provider process scan can authorize a new resume process.
+        if let sessionID = subtask.sessionID,
+          let running = try await locateExistingAgent(subtask.provider, sessionID) {
+          throw TaskContextError.commandFailed(
+            "This conversation is already running in \(running.cwd). Open its existing terminal. No second agent was started.")
         }
         guard var context = try await taskContextStore.load(ticketID: ticket.id) else {
           throw TaskContextError.missingContext(ticket.id)

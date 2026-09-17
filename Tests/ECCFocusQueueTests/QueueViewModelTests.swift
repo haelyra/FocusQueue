@@ -1328,6 +1328,35 @@ struct QueueViewModelTests {
     }
   }
 
+  @Test("Runtime-less external sessions never duplicate a live or unverified provider", arguments: [false, true])
+  func externalSessionRecallFailsClosed(unknown: Bool) async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    let sessionID = UUID().uuidString.lowercased()
+    let registry = ExternalAgentRegistry(root: fixture.root)
+    let record = try await registry.register(.init(sessionID: sessionID, cwd: fixture.root.path,
+      hookEventName: "SessionStart", prompt: "External editor"), provider: .codex, explicitTaskID: "ECC-101")
+    #expect(record.tmux == nil && record.paneID == nil)
+    let launcher = DirectCreationRunner()
+    let model = await fixture.model(agent: ControlledQueueAgent(),
+      taskAgentLauncher: TaskAgentLauncher(runner: launcher, candidateSockets: []),
+      locateExistingAgent: { provider, suppliedID in
+        #expect(provider == .codex && suppliedID == sessionID)
+        if unknown { throw WezTermError.actionFailed("Provider ownership lookup failed; running state is unknown.") }
+        return KnownProviderProcess(provider: provider, sessionID: suppliedID, processID: 123,
+          tty: nil, cwd: fixture.root.path)
+      })
+    let subtask = try #require(model.subtasks(for: "ECC-101").first { $0.id == record.subtaskID })
+    model.openSubtask(subtask, for: fixture.tickets[0])
+    try await eventually { model.openingSubtaskIDs.isEmpty }
+    #expect(await launcher.spawnCount == 0)
+    let error = try #require(model.agentSessionError(for: subtask, ticketID: "ECC-101"))
+    #expect(error.contains(unknown ? "running state is unknown" : "already running"))
+    #expect(try await store.load(ticketID: "ECC-101")?.subtasks.count == 1)
+  }
+
   private func eventually(_ condition: @MainActor () async throws -> Bool) async throws {
     for _ in 0..<200 {
       if try await condition() { return }
@@ -1372,12 +1401,14 @@ private struct Fixture {
   func model(agent: ControlledQueueAgent, verifier: (any CompletionVerifying)? = nil,
              terminalController: (any WezTermControlling)? = nil,
              taskAgentLauncher: TaskAgentLauncher = TaskAgentLauncher(),
-             connectorDiagnosticsRunner: any ProcessRunning = FoundationProcessRunner()) async -> QueueViewModel {
+             connectorDiagnosticsRunner: any ProcessRunning = FoundationProcessRunner(),
+             locateExistingAgent: @escaping @Sendable (AgentProvider, String) async throws -> KnownProviderProcess? = { _, _ in nil }) async -> QueueViewModel {
     let boundary = ForbiddenExternalActions()
     let model = QueueViewModel(paths: paths, terminalController: terminalController ?? boundary,
       verifier: verifier ?? boundary, queueAgent: agent, pullRequestQueueLoader: boundary,
       taskAgentLauncher: taskAgentLauncher,
-      connectorDiagnosticsRunner: connectorDiagnosticsRunner, discoverExternalAgents: { [] })
+      connectorDiagnosticsRunner: connectorDiagnosticsRunner, discoverExternalAgents: { [] },
+      locateExistingAgent: locateExistingAgent)
     await model.bootstrap()
     #expect(model.loadError == nil)
     return model

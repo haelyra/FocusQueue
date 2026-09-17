@@ -138,7 +138,8 @@ private struct DurableFixture {
   @MainActor func model() async -> QueueViewModel {
     let boundary = DurableForbiddenActions()
     let model = QueueViewModel(paths: paths, terminalController: boundary,
-      verifier: boundary, queueAgent: boundary, pullRequestQueueLoader: boundary)
+      verifier: boundary, queueAgent: boundary, pullRequestQueueLoader: boundary,
+      discoverExternalAgents: { [] }, locateExistingAgent: { _, _ in nil })
     await model.bootstrap()
     return model
   }

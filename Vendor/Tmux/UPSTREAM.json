@@ -1,0 +1,16 @@
+{
+  "tmux-resurrect": {
+    "repository": "https://github.com/tmux-plugins/tmux-resurrect",
+    "commit": "cff343cf9e81983d3da0c8562b01616f12e8d548",
+    "archiveSHA256": "9f1dda18554291ee7f8a0f499e2af90bbadc2ebceb7a995bb13b76529fe0c5c9",
+    "license": "MIT",
+    "localPatches": ["Quote script and snapshot paths; preserve spaces during backup pruning; escape literal tmux format characters in restored directories."]
+  },
+  "tmux-continuum": {
+    "repository": "https://github.com/tmux-plugins/tmux-continuum",
+    "commit": "0698e8f4b17d6454c71bf5212895ec055c578da0",
+    "archiveSHA256": "a1b9a2f0715163472ca713679204a1ca55d3f845cf1c659ae04222db3553424f",
+    "license": "MIT",
+    "localPatches": []
+  }
+}

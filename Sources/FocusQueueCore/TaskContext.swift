@@ -40,11 +40,17 @@ public struct AgentWorkspace: Codable, Equatable, Sendable {
     public var baseBranch: String?
     public var baseCommit: String?
     public var managed: Bool
+    /// Captured independently of a branch name so reopening cannot follow a
+    /// replaced checkout or a symlink into another agent's worktree.
+    public var gitDirectory: String?
+    public var repositoryIdentity: String?
 
     public init(path: String, repositoryPath: String, branch: String? = nil,
-                baseBranch: String? = nil, baseCommit: String? = nil, managed: Bool = false) {
+                baseBranch: String? = nil, baseCommit: String? = nil, managed: Bool = false,
+                gitDirectory: String? = nil, repositoryIdentity: String? = nil) {
         self.path = path; self.repositoryPath = repositoryPath; self.branch = branch
         self.baseBranch = baseBranch; self.baseCommit = baseCommit; self.managed = managed
+        self.gitDirectory = gitDirectory; self.repositoryIdentity = repositoryIdentity
     }
 }
 

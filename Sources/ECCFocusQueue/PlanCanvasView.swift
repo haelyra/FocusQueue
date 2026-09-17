@@ -462,6 +462,8 @@ struct NewTaskAgentView: View {
   @State private var createWorktree = true
   @State private var assignmentID = UUID().uuidString
   @State private var workspacePreview = WorkspacePreviewModel()
+  @State private var isStarting = false
+  @State private var launchError: String?
   private var sourceWorkspace: AgentWorkspace? { workspacePreview.workspace }
   @AppStorage("agentUsesTmux") private var useTmux = true
 
@@ -488,6 +490,18 @@ struct NewTaskAgentView: View {
     return workspace
   }
 
+  private var sharedAgentCount: Int {
+    guard let sourceWorkspace else { return 0 }
+    return model.taskContexts.values.flatMap(\.subtasks).filter { agent in
+      guard !agent.isAssignmentOnly, agent.isAgentVisible, let workspace = agent.workspace else { return false }
+      if let gitDirectory = sourceWorkspace.gitDirectory, let savedDirectory = workspace.gitDirectory {
+        return gitDirectory == savedDirectory
+      }
+      return URL(fileURLWithPath: workspace.path).standardizedFileURL.resolvingSymlinksInPath()
+        == URL(fileURLWithPath: sourceWorkspace.path).standardizedFileURL.resolvingSymlinksInPath()
+    }.count
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       Text("\(targetSubtask == nil ? "New subtask agent" : "New agent") · \(ticket.id)").font(.title2.weight(.semibold))
@@ -508,9 +522,13 @@ struct NewTaskAgentView: View {
             ? "Creates a separate worktree and branch from the selected checkout's current commit. Uncommitted changes must be committed first."
             : "Uses the selected path and its current branch, including local changes.")
             .font(.caption).foregroundStyle(.secondary)
+          if !createWorktree, sharedAgentCount > 0 {
+            Text("Shared with \(sharedAgentCount) other agent\(sharedAgentCount == 1 ? "" : "s"). Create a worktree for independent file changes.")
+              .font(.caption).foregroundStyle(.orange)
+          }
           Text("\(createWorktree ? "New worktree" : "Workspace"): \(proposedWorkspace.path)")
             .font(.caption).textSelection(.enabled)
-          Text("Branch: \(proposedWorkspace.branch ?? "checking…")")
+          Text("Branch: \(proposedWorkspace.branch ?? (sourceWorkspace == nil ? "checking…" : "detached at \(String((sourceWorkspace?.baseCommit ?? "").prefix(8)))"))")
             .font(.caption).textSelection(.enabled)
           if createWorktree, let sourceWorkspace {
             Text("Source: \(sourceWorkspace.branch ?? "unknown") at \(String((sourceWorkspace.baseCommit ?? "").prefix(8)))")
@@ -532,20 +550,32 @@ struct NewTaskAgentView: View {
             .font(.caption).foregroundStyle(.secondary)
           Text("Uses your login shell's codex or claude alias, function, or command and custom flags.")
             .font(.caption).foregroundStyle(.secondary)
-        }.padding(2)
+        }.padding(2).disabled(isStarting)
+      }
+      if let launchError {
+        Text(launchError).font(.callout).foregroundStyle(.orange)
+          .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+          .accessibilityLabel("Agent launch error: \(launchError)")
       }
       HStack {
         Spacer()
-        Button("Cancel") { dismiss() }
-        Button("Start agent") {
+        Button("Cancel") { dismiss() }.disabled(isStarting)
+        Button(isStarting ? "Starting…" : "Start agent") {
+          isStarting = true
+          launchError = nil
           model.launchAgent(for: ticket, title: name, provider: provider, repositoryPath: repository,
             includePrompt: includePrompt, useTmux: useTmux && tmuxAvailable, createWorktree: createWorktree,
             initialPrompt: prompt, tracksCompletion: true, subtaskID: assignmentID,
-            parentSubtaskID: targetSubtask?.id, createAssignment: targetSubtask == nil)
-          dismiss()
-        }.buttonStyle(.borderedProminent).disabled(!repository.hasPrefix("/"))
+            parentSubtaskID: targetSubtask?.id, createAssignment: targetSubtask == nil) { started in
+              isStarting = false
+              if started { dismiss() }
+              else { launchError = model.actionMessages[ticket.id] ?? "Agent could not start. Check the workspace and try again." }
+            }
+        }.buttonStyle(.borderedProminent)
+          .disabled(isStarting || model.launchingTaskIDs.contains(ticket.id) || sourceWorkspace == nil)
       }
     }.padding(24).frame(width: 540, height: 660)
+      .interactiveDismissDisabled(isStarting)
       .task(id: repository) { await workspacePreview.load(path: repository) }
       .onAppear {
         includePrompt = false

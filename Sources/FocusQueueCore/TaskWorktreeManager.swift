@@ -13,38 +13,93 @@ public actor TaskWorktreeManager {
     public init(runner: any ProcessRunning = FoundationProcessRunner()) { self.runner = runner }
 
     public func workspace(at path: String) async throws -> AgentWorkspace {
-        guard path.hasPrefix("/"), FileManager.default.fileExists(atPath: path) else {
+        var isDirectory: ObjCBool = false
+        guard path.hasPrefix("/"), FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
             throw TaskContextError.unsafeWorktree("The saved workspace is missing: \(path)")
         }
+        let canonicalPath = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
+        guard !canonicalPath.pathComponents.contains(where: { $0.lowercased().hasSuffix(".app") }) else {
+            throw TaskContextError.unsafeWorktree("Choose a source checkout. An application bundle cannot be an agent workspace.")
+        }
         let root = try await git(["rev-parse", "--show-toplevel"], in: path).trimmingCharacters(in: .whitespacesAndNewlines)
-        let branch = try await git(["symbolic-ref", "--short", "HEAD"], in: path).trimmingCharacters(in: .whitespacesAndNewlines)
+        let branchResult = try await runner.run(.init(executable: "/usr/bin/git",
+            arguments: ["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory: path))
+        guard branchResult.succeeded || (!branchResult.timedOut && branchResult.exitCode == 1) else {
+            throw TaskContextError.commandFailed(branchResult.standardError.isEmpty
+                ? "Could not read the workspace branch." : branchResult.standardError)
+        }
+        let branch = branchResult.succeeded
+            ? branchResult.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines) : nil
         let commit = try await git(["rev-parse", "HEAD"], in: path).trimmingCharacters(in: .whitespacesAndNewlines)
+        let gitDirectory = try await git(["rev-parse", "--absolute-git-dir"], in: path)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return AgentWorkspace(path: path, repositoryPath: root, branch: branch,
-            baseBranch: branch, baseCommit: commit, managed: false)
+            baseBranch: branch, baseCommit: commit, managed: false,
+            gitDirectory: URL(fileURLWithPath: gitDirectory).standardizedFileURL.resolvingSymlinksInPath().path,
+            repositoryIdentity: try await repositoryIdentity(in: path))
     }
 
     public func provisionAgent(ticketID: String, subtaskID: String, path: String,
                                createWorktree: Bool, store: TaskContextStore) async throws -> AgentWorkspace {
         let source = try await workspace(at: path)
+        let destination = store.root.appendingPathComponent("worktrees/agents/\(subtaskID)")
+        let branch = "focus-queue/\(ticketID.lowercased())-\(subtaskID.lowercased())"
+        // A failed provider launch may already own a provisioned workspace.
+        // Retry that exact assignment instead of creating another branch.
+        if let saved = try await store.load(ticketID: ticketID)?.subtasks.first(where: { $0.id == subtaskID })?.workspace {
+            let sameSelection = createWorktree
+                ? saved.managed && saved.path == destination.path && saved.branch == branch
+                : saved.path == path
+            guard sameSelection,
+                  saved.repositoryIdentity == source.repositoryIdentity else {
+                throw TaskContextError.unsafeWorktree("This agent already has a different assigned workspace. Reopen it from the task, or start a new agent to choose another workspace.")
+            }
+            try await restoreIfNeeded(saved, subtaskID: subtaskID, store: store)
+            try await validate(saved)
+            return saved
+        }
         guard createWorktree else { return source }
+        guard UUID(uuidString: subtaskID) != nil else { throw TaskContextError.invalidIdentifier }
         let status = try await git(["status", "--porcelain", "--untracked-files=all"], in: path)
         guard status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw TaskContextError.unsafeWorktree("The selected checkout has uncommitted changes. Commit them first, or turn off Create worktree to use this checkout with those changes.")
         }
-        guard UUID(uuidString: subtaskID) != nil else { throw TaskContextError.invalidIdentifier }
-        let destination = store.root.appendingPathComponent("worktrees/agents/\(subtaskID)")
         try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let branch = "focus-queue/\(ticketID.lowercased())-\(subtaskID.lowercased())"
         _ = try await git(["worktree", "add", "-b", branch, destination.path, source.baseCommit!], in: path)
-        return AgentWorkspace(path: destination.path, repositoryPath: source.repositoryPath,
-            branch: branch, baseBranch: source.branch, baseCommit: source.baseCommit, managed: true)
+        var workspace = try await self.workspace(at: destination.path)
+        workspace.repositoryPath = source.repositoryPath
+        workspace.baseBranch = source.branch
+        workspace.baseCommit = source.baseCommit
+        workspace.managed = true
+        return workspace
     }
 
     /// Never change branches underneath another agent to make a resume succeed.
     public func validate(_ saved: AgentWorkspace) async throws {
         let actual = try await workspace(at: saved.path)
+        let expectedRepository = try await repositoryIdentity(in: saved.repositoryPath)
+        guard actual.repositoryIdentity == expectedRepository,
+              saved.repositoryIdentity == nil || actual.repositoryIdentity == saved.repositoryIdentity,
+              saved.gitDirectory == nil || actual.gitDirectory == saved.gitDirectory else {
+            throw TaskContextError.unsafeWorktree("Workspace identity changed. Restore the assigned checkout or record an approved workspace change before reopening.")
+        }
+        if saved.managed {
+            let commonDirectory = try await git(["rev-parse", "--path-format=absolute", "--git-common-dir"], in: saved.path)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let common = URL(fileURLWithPath: commonDirectory).standardizedFileURL.resolvingSymlinksInPath().path
+            let root = URL(fileURLWithPath: actual.repositoryPath).standardizedFileURL.resolvingSymlinksInPath()
+            guard actual.gitDirectory?.hasPrefix(common + "/worktrees/") == true,
+                  URL(fileURLWithPath: saved.path).standardizedFileURL.resolvingSymlinksInPath() == root else {
+                throw TaskContextError.unsafeWorktree("The managed workspace no longer points to its assigned worktree.")
+            }
+        }
         guard saved.branch == nil || actual.branch == saved.branch else {
             throw TaskContextError.unsafeWorktree("Workspace branch changed from \(saved.branch ?? "unknown") to \(actual.branch ?? "detached"). Restore the assigned branch or record an approved workspace change before reopening.")
+        }
+        if saved.branch == nil, saved.repositoryIdentity != nil,
+           actual.branch != nil || actual.baseCommit != saved.baseCommit {
+            throw TaskContextError.unsafeWorktree("The assigned detached checkout changed. Restore its saved commit or record an approved workspace change before reopening.")
         }
     }
 
@@ -248,6 +303,14 @@ public actor TaskWorktreeManager {
             throw TaskContextError.commandFailed(result.standardError.isEmpty ? "Git failed: \(arguments.joined(separator: " "))" : result.standardError)
         }
         return result.standardOutput
+    }
+
+    private func repositoryIdentity(in directory: String) async throws -> String {
+        let commonDirectory = try await git(["rev-parse", "--path-format=absolute", "--git-common-dir"], in: directory)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let common = URL(fileURLWithPath: commonDirectory).standardizedFileURL.resolvingSymlinksInPath().path
+        let identity = try fileIdentity(at: common)
+        return "\(common):\(identity.device):\(identity.inode)"
     }
 
     private struct FileIdentity: Equatable, Sendable {

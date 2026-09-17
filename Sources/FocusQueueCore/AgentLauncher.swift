@@ -186,6 +186,9 @@ public actor TaskAgentLauncher {
     configuration: WezTermConfiguration, supportDirectory: URL,
     includePrompt: Bool = true
   ) async throws -> DirectAgentLaunchReceipt {
+    if let workspace = subtask.workspace {
+      try await TaskWorktreeManager().validate(workspace)
+    }
     let command = try Self.command(
       context: context, subtask: subtask, supportDirectory: supportDirectory,
       includePrompt: includePrompt)

@@ -16,7 +16,9 @@ private actor PushReviewRunner: ProcessRunning {
         let output: String
         if specification.executable == "/mock/reviewer" { output = verdict }
         else if specification.arguments == ["rev-parse", "--show-toplevel"] { output = path }
-        else if specification.arguments == ["symbolic-ref", "--short", "HEAD"] { output = "feature" }
+        else if specification.arguments == ["symbolic-ref", "--quiet", "--short", "HEAD"] { output = "feature" }
+        else if specification.arguments == ["rev-parse", "--absolute-git-dir"] { output = path }
+        else if specification.arguments == ["rev-parse", "--path-format=absolute", "--git-common-dir"] { output = path }
         else if specification.arguments == ["rev-parse", "HEAD"] {
             headReads += 1
             output = changed && headReads >= 3 ? "bbbb" : "aaaa"

@@ -1296,18 +1296,29 @@ final class QueueViewModel {
     repositoryPath: String, assignmentDescription: String = "",
     includePrompt: Bool = true, useTmux: Bool = true,
     createWorktree: Bool = true, initialPrompt: String? = nil, tracksCompletion: Bool = true,
-    subtaskID: String = UUID().uuidString, parentSubtaskID: String? = nil, createAssignment: Bool = false
+    subtaskID: String = UUID().uuidString, parentSubtaskID: String? = nil, createAssignment: Bool = false,
+    completion: (@MainActor (Bool) -> Void)? = nil
   ) {
     let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !title.isEmpty, launchingTaskIDs.insert(ticket.id).inserted else { return }
+    guard !title.isEmpty, launchingTaskIDs.insert(ticket.id).inserted else {
+      completion?(false)
+      return
+    }
     actionMessages[ticket.id] = "Preparing task worktree and agent context…"
     Task {
       var assignment: TaskSubtask?
       var runtimeStarted = false
       var phase = "preparing the task workspace"
-      defer { launchingTaskIDs.remove(ticket.id) }
+      defer {
+        launchingTaskIDs.remove(ticket.id)
+        completion?(runtimeStarted)
+      }
       do {
         let context = try await taskContextStore.ensureContext(ticket: ticket)
+        let previous = context.subtasks.first(where: { $0.id == subtaskID })
+        guard previous?.tmux == nil, previous?.terminalPaneID == nil, previous?.sessionID == nil else {
+          throw TaskContextError.commandFailed("This agent already has a saved session. Open it from the task to continue.")
+        }
         var subtask = TaskSubtask(
           id: subtaskID, title: title, assignmentDescription: assignmentDescription,
           provider: provider, includeInitializationPrompt: includePrompt,
@@ -1323,7 +1334,10 @@ final class QueueViewModel {
         }
         subtask.workspace = try await taskWorktreeManager.provisionAgent(ticketID: ticket.id,
           subtaskID: subtask.id, path: repositoryPath, createWorktree: createWorktree, store: taskContextStore)
-        if parentSubtaskID == nil && createAssignment {
+        if let previous {
+          subtask.parentSubtaskID = previous.parentSubtaskID
+          subtask.tracksCompletion = previous.tracksCompletion
+        } else if parentSubtaskID == nil && createAssignment {
           var parent = TaskSubtask(title: title, provider: provider, runtimeMode: nil)
           parent.isAssignmentOnly = true
           parent.assignmentDescription = assignmentDescription.isEmpty
@@ -1342,7 +1356,8 @@ final class QueueViewModel {
         await recordAgentLaunch(
           subtask, ticketID: ticket.id, phase: "request", outcome: "accepted",
           message: "Focus Queue saved the named subtask and selected runtime mode.",
-          details: ["worktree": context.worktreePath ?? "", "prompt": includePrompt ? "included" : "omitted"])
+          details: ["worktree": subtask.workspace?.path ?? "", "branch": subtask.workspace?.branch ?? "detached",
+                    "prompt": includePrompt ? "included" : "omitted"])
         if useTmux {
           phase = "starting the tmux process"
           guard let tmuxExecutable = config.tmuxExecutable ?? SetupEnvironment.executable("tmux") else {
@@ -1461,7 +1476,7 @@ final class QueueViewModel {
             details: ["errorType": String(reflecting: type(of: error))])
         }
         actionMessages[ticket.id] = !runtimeStarted
-          ? "Agent did not start during \(phase). \(error.localizedDescription) No replacement process was started. Open the document icon beside the subtask for the full launch log."
+          ? "Agent did not start. \(error.localizedDescription)\(assignment == nil ? "" : " Open the agent's launch log for details.")"
           : "The agent process started, but WezTerm did not open its view. Click the subtask to retry the exact saved process. \(error.localizedDescription) Open the document icon for the full launch log."
       }
     }

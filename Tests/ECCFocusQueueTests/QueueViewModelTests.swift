@@ -148,6 +148,74 @@ struct QueueViewModelTests {
     #expect(model.launchDiagnostics?.text.contains(failReveal ? "view-failed" : "\"phase\":\"ready\"") == true)
   }
 
+  @Test("A failed New Agent launch returns its error and retries its saved workspace and assignment")
+  func launchRetryPreservesAssignment() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let repository = fixture.root.appendingPathComponent("repo")
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    for arguments in [["init", "-q", "-b", "main"], ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+      "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Fixture", "--allow-empty"]] {
+      #expect(try await FoundationProcessRunner().run(.init(executable: "/usr/bin/git", arguments: arguments,
+        workingDirectory: repository.path)).succeeded)
+    }
+    let launcher = DirectCreationRunner(failFirstSpawn: true)
+    let model = await fixture.model(agent: ControlledQueueAgent(),
+      terminalController: DirectViewRecorder(root: fixture.root, failReveal: false),
+      taskAgentLauncher: TaskAgentLauncher(runner: launcher, candidateSockets: []))
+    let id = UUID().uuidString
+    var outcomes: [Bool] = []
+    func launch() {
+      model.launchAgent(for: fixture.tickets[0], title: "Retry worker", provider: .codex,
+        repositoryPath: repository.path, includePrompt: false, useTmux: false,
+        subtaskID: id, createAssignment: true) { outcomes.append($0) }
+    }
+    launch()
+    try await eventually { outcomes.count == 1 }
+    #expect(outcomes == [false])
+    #expect(model.actionMessages["ECC-101"]?.contains("Fixture launch unavailable") == true)
+    let original = try #require(model.subtasks(for: "ECC-101").first { $0.id == id })
+    #expect(original.status == .blocked)
+    #expect(original.workspace?.managed == true)
+    // The retry already owns a safe workspace, even if another agent edits the source.
+    try Data("other agent's work".utf8).write(to: repository.appendingPathComponent("other.txt"))
+    launch()
+    try await eventually { outcomes.count == 2 }
+    #expect(outcomes == [false, true])
+    let retried = try #require(model.subtasks(for: "ECC-101").first { $0.id == id })
+    #expect(retried.workspace == original.workspace)
+    #expect(retried.parentSubtaskID == original.parentSubtaskID)
+    #expect(retried.terminalPaneID == 42)
+    #expect(model.focusSubtasks(for: "ECC-101").count == 1)
+    #expect(await launcher.spawnCount == 2)
+    launch()
+    try await eventually { outcomes.count == 3 }
+    #expect(outcomes == [false, true, false])
+    #expect(await launcher.spawnCount == 2)
+    #expect(model.actionMessages["ECC-101"]?.contains("already has a saved session") == true)
+  }
+
+  @Test("New Agent preflight failures finish visibly before any provider is started")
+  func launchPreflightFeedback() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let launcher = DirectCreationRunner()
+    let model = await fixture.model(agent: ControlledQueueAgent(),
+      taskAgentLauncher: TaskAgentLauncher(runner: launcher, candidateSockets: []))
+    var completed = false
+    model.launchAgent(for: fixture.tickets[0], title: "Missing workspace", provider: .codex,
+      repositoryPath: fixture.root.appendingPathComponent("missing").path) { started in
+        #expect(!started)
+        completed = true
+      }
+    try await eventually { completed }
+    #expect(model.launchingTaskIDs.isEmpty)
+    #expect(model.actionMessages["ECC-101"]?.contains("workspace is missing") == true)
+    #expect(model.actionMessages["ECC-101"]?.contains("document icon") == false)
+    #expect(await launcher.spawnCount == 0)
+    #expect(model.subtasks(for: "ECC-101").isEmpty)
+  }
+
   @Test("Queue chat can open beside the task list and remains mutually exclusive with other inspectors")
   func queueChatSideInspector() async throws {
     let fixture = try await Fixture()
@@ -1308,6 +1376,8 @@ private struct Fixture {
 private actor DirectCreationRunner: ProcessRunning {
   private(set) var spawnCount = 0
   private(set) var commands: [ProcessSpecification] = []
+  private let failFirstSpawn: Bool
+  init(failFirstSpawn: Bool = false) { self.failFirstSpawn = failFirstSpawn }
   func run(_ specification: ProcessSpecification) throws -> ProcessResult {
     commands.append(specification)
     if specification.arguments == ["cli", "list", "--format", "json"] {
@@ -1317,6 +1387,9 @@ private actor DirectCreationRunner: ProcessRunning {
       throw TestFailure.unexpectedExternalAction
     }
     spawnCount += 1
+    if failFirstSpawn && spawnCount == 1 {
+      return .init(exitCode: 1, standardOutput: "", standardError: "Fixture launch unavailable", timedOut: false)
+    }
     return .init(exitCode: 0, standardOutput: "42\n", standardError: "", timedOut: false)
   }
 }

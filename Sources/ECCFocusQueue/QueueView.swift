@@ -3200,7 +3200,7 @@ private struct ReviewDetail: View {
   }
 }
 
-private struct SwipeToClearNotification<Content: View>: View {
+struct SwipeToClearNotification<Content: View>: View {
   let isEnabled: Bool
   let onClear: () -> Void
   let content: Content
@@ -3218,17 +3218,17 @@ private struct SwipeToClearNotification<Content: View>: View {
   }
 
   var body: some View {
-    ZStack(alignment: .leading) {
-      HStack(spacing: 7) {
-        Image(systemName: "xmark.circle.fill")
-        Text("Clear").font(.system(size: 11, weight: .bold))
+    content.offset(x: horizontalOffset)
+      .background(alignment: .leading) {
+        // The reveal affordance follows the card's size without stretching the feed.
+        HStack(spacing: 7) {
+          Image(systemName: "xmark.circle.fill")
+          Text("Clear").font(.system(size: 11, weight: .bold))
+        }
+        .foregroundStyle(.white)
+        .padding(.leading, 14)
+        .frame(maxHeight: .infinity)
       }
-      .foregroundStyle(.white)
-      .padding(.leading, 14)
-      .frame(maxHeight: .infinity)
-
-      content.offset(x: horizontalOffset)
-    }
     .background(Color.red.opacity(horizontalOffset > 0 ? 0.82 : 0))
     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     .contentShape(Rectangle())

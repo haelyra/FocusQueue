@@ -78,6 +78,7 @@ final class QueueViewModel {
   private(set) var presentedPlanTicketID: String?
   private(set) var presentedPlanURL: URL?
   private(set) var presentedPlanMarkdown = ""
+  private(set) var isPlanLoading = false
   private(set) var planError: String?
   private(set) var planEditDrafts: [String: PlanEditDraft] = [:]
   private(set) var launchingTaskIDs: Set<String> = []
@@ -139,6 +140,8 @@ final class QueueViewModel {
   @ObservationIgnored private var lastIdentityRefresh: Date?
   @ObservationIgnored private var subtaskEditTokens: [String: UUID] = [:]
   @ObservationIgnored private var subtaskEditTasks: [String: Task<Void, Never>] = [:]
+  @ObservationIgnored private var planPresentationID = UUID()
+  @ObservationIgnored private var planReadID = UUID()
 
   @ObservationIgnored var placementHandler: ((QueueWindowPlacement) -> Void)?
   @ObservationIgnored var monitorSwitchHandler: (() -> Void)?
@@ -420,15 +423,16 @@ final class QueueViewModel {
     return true
   }
 
+  @discardableResult
   func sendQueueAgentMessage(
     _ rawMessage: String, ticketID: String? = nil,
     canvasSelection: PlanCanvasSelection? = nil
-  ) {
+  ) -> Bool {
     let message = rawMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !message.isEmpty, !isQueueAgentResponding else { return }
+    guard !message.isEmpty, !isQueueAgentResponding else { return false }
     guard !reportIsRunning else {
       dailyReportRunMessage = "Wait for the daily report to finish before editing the queue."
-      return
+      return false
     }
 
     appendChat(
@@ -443,7 +447,7 @@ final class QueueViewModel {
       )
     {
       runDailyReportFromChat(reportRequest)
-      return
+      return true
     }
     let visibleOrder = openTickets.map(\.id)
     let deferredTicketIDs = localState.deferredTicketIDs
@@ -496,6 +500,7 @@ final class QueueViewModel {
           QueueChatMessage(role: .agent, text: error.localizedDescription), ticketID: ticketID)
       }
     }
+    return true
   }
 
   var isInspectorPresented: Bool {
@@ -751,20 +756,35 @@ final class QueueViewModel {
     presentedPlanTicketID = ticket.id
     presentedPlanURL = sourceURL
     presentedPlanMarkdown = ""
+    isPlanLoading = true
     planError = nil
+    let presentationID = UUID()
+    planPresentationID = presentationID
     reportVisibilityHandler?(true)
     Task {
       do {
         taskContexts[ticket.id] = try await taskContextStore.ensureContext(ticket: ticket)
-        if taskChatMessages[ticket.id] == nil {
-          taskChatMessages[ticket.id] = try await conversationStore.load(ticketID: ticket.id) ?? []
-        }
-        if planEditDrafts[ticket.id] == nil {
-          planEditDrafts[ticket.id] = try await conversationStore.loadPlanDraft(ticketID: ticket.id)
-        }
-        guard presentedPlanTicketID == ticket.id else { return }
+        guard planPresentationID == presentationID, presentedPlanTicketID == ticket.id else { return }
         await reloadPresentedPlan()
-      } catch { planError = error.localizedDescription }
+      } catch {
+        guard planPresentationID == presentationID, presentedPlanTicketID == ticket.id else { return }
+        isPlanLoading = false
+        planError = error.localizedDescription
+        return
+      }
+      // The document stays usable even when an auxiliary chat or draft file is damaged.
+      do {
+        if taskChatMessages[ticket.id] == nil {
+          let saved = try await conversationStore.load(ticketID: ticket.id) ?? []
+          if taskChatMessages[ticket.id] == nil { taskChatMessages[ticket.id] = saved }
+        }
+      } catch { actionMessages[ticket.id] = "Could not load task chat: \(error.localizedDescription)" }
+      do {
+        if planEditDrafts[ticket.id] == nil {
+          let saved = try await conversationStore.loadPlanDraft(ticketID: ticket.id)
+          if planEditDrafts[ticket.id] == nil { planEditDrafts[ticket.id] = saved }
+        }
+      } catch { actionMessages[ticket.id] = "Could not load your saved draft: \(error.localizedDescription)" }
     }
   }
 
@@ -776,21 +796,23 @@ final class QueueViewModel {
           title: "Task closure needs attention", summary: message, isCleanup: true))
       }
       let groups = Dictionary(grouping: localState.completionRequests.filter { $0.ticketID == ticket.id }) {
-        $0.subtaskID ?? ""
+        $0.subtaskID.map { taskContexts[ticket.id]?.canonicalSubtaskID($0) ?? $0 } ?? ""
       }
       for reviews in groups.values {
         guard let review = reviews.max(by: { $0.requestedAt < $1.requestedAt }),
               [.failed, .needsWork].contains(review.status) else { continue }
-        if let subtaskID = review.subtaskID,
-           let subtask = subtasks(for: ticket.id).first(where: { $0.id == subtaskID }),
-           subtask.status == .completed || subtask.agentRemovedAt != nil { continue }
+        let subtask = completionSubtask(for: review)
+        if review.subtaskID != nil, taskContexts[ticket.id] != nil {
+          guard let subtask, subtask.status != .completed, subtask.agentRemovedAt == nil else { continue }
+        }
         if ticket.isCompleted && review.subtaskID == nil { continue }
         updates.append(QueueAgentUpdate(id: review.id.uuidString, ticketID: ticket.id,
-          title: review.status == .failed ? "Completion review failed" : "Completion needs more work",
+          title: subtask.map { "\($0.title) · Review needs attention" }
+            ?? (review.status == .failed ? "Completion review failed" : "Completion needs more work"),
           summary: review.summary ?? "Completion evidence is incomplete. Review the agent output for details.",
-          review: review, subtaskID: review.subtaskID, date: review.updatedAt))
+          review: review, subtaskID: subtask?.id ?? review.subtaskID, date: review.updatedAt))
       }
-      for subtask in subtasks(for: ticket.id) where subtask.completionUnread {
+      for subtask in subtasks(for: ticket.id) where subtask.completionUnread && subtask.completionOverrideAt == nil {
         updates.append(QueueAgentUpdate(id: "subtask-\(ticket.id)-\(subtask.id)", ticketID: ticket.id,
           title: "\(subtask.title) · \(subtask.status == .completed ? "Completed" : "New result")", summary: subtask.resultSummary ?? subtask.progressSummary,
           subtaskID: subtask.id, date: subtask.resultAt ?? subtask.lastHeartbeatAt ?? .distantPast, resultID: subtask.resultID))
@@ -855,6 +877,8 @@ final class QueueViewModel {
     guard presentedPlanTicketID != nil else { return }
     presentedPlanTicketID = nil
     presentedPlanURL = nil
+    isPlanLoading = false
+    planPresentationID = UUID()
     reportVisibilityHandler?(isInspectorPresented)
   }
 
@@ -876,6 +900,9 @@ final class QueueViewModel {
   func reloadPresentedPlan() async {
     guard let ticketID = presentedPlanTicketID else { return }
     let sourceURL = presentedPlanURL
+    let presentationID = planPresentationID
+    let readID = UUID()
+    planReadID = readID
     do {
       let markdown: String
       if let sourceURL {
@@ -883,13 +910,16 @@ final class QueueViewModel {
           try String(contentsOf: sourceURL, encoding: .utf8)
         }.value
       } else { markdown = try await taskContextStore.readPlan(ticketID: ticketID) }
-      guard presentedPlanTicketID == ticketID, presentedPlanURL == sourceURL else { return }
+      guard planPresentationID == presentationID, planReadID == readID,
+        presentedPlanTicketID == ticketID, presentedPlanURL == sourceURL else { return }
+      if isPlanLoading { isPlanLoading = false }
       if presentedPlanMarkdown != markdown { presentedPlanMarkdown = markdown }
       if planError != nil { planError = nil }
     } catch {
-      if presentedPlanTicketID == ticketID, planError != error.localizedDescription {
-        planError = error.localizedDescription
-      }
+      guard planPresentationID == presentationID, planReadID == readID,
+        presentedPlanTicketID == ticketID, presentedPlanURL == sourceURL else { return }
+      if isPlanLoading { isPlanLoading = false }
+      if planError != error.localizedDescription { planError = error.localizedDescription }
     }
   }
 
@@ -1712,19 +1742,15 @@ final class QueueViewModel {
     Task {
       do {
         taskContexts[ticket.id] = try await taskContextStore.overrideCompletion(ticketID: ticket.id, subtaskID: subtask.id)
-        for index in localState.completionRequests.indices where localState.completionRequests[index].ticketID == ticket.id
-          && localState.completionRequests[index].subtaskID == subtask.id {
-          localState.completionRequests[index].status = .accepted
-          localState.completionRequests[index].updatedAt = Date()
-        }
+        settleOverriddenReviews(ticketID: ticket.id)
         persistLocalState()
         closureMessages[ticket.id] = nil
         let completedAgents = taskContexts[ticket.id]?.agents(for: subtask.id, includingRemoved: true) ?? []
         for completed in completedAgents where completed.status == .completed {
           await retireAgent(completed, for: ticket)
         }
-        actionMessages[ticket.id] = "Subtask completed by your override. Parent task remains unchanged."
-        presentedAgentUpdate = nil
+        actionMessages[ticket.id] = "Subtask marked complete. Review history saved."
+        if presentedAgentUpdate?.ticketID == ticket.id { closeAgentUpdate() }
       } catch { actionMessages[ticket.id] = error.localizedDescription }
     }
   }
@@ -2194,6 +2220,8 @@ final class QueueViewModel {
   }
 
   private func resumePendingReviews() {
+    for ticketID in taskContexts.keys { settleOverriddenReviews(ticketID: ticketID) }
+    persistLocalState()
     for request in localState.completionRequests where request.status == .pending {
       scheduleReview(requestID: request.id)
     }
@@ -2208,7 +2236,8 @@ final class QueueViewModel {
 
   private func runReview(requestID: UUID) async {
     defer { reviewTasks[requestID] = nil }
-    guard var request = localState.completionRequests.first(where: { $0.id == requestID }) else {
+    guard var request = localState.completionRequests.first(where: { $0.id == requestID }),
+      request.status == .pending else {
       return
     }
     request.status = .running
@@ -2216,6 +2245,11 @@ final class QueueViewModel {
     replaceReview(request)
     do {
       taskContexts[request.ticketID] = try await taskContextStore.reconcileSubtasks(ticketID: request.ticketID)
+      if completionSubtask(for: request)?.completionOverrideAt != nil {
+        settleOverriddenReviews(ticketID: request.ticketID)
+        try await stateStore.save(localState)
+        return
+      }
       try await reviewArtifacts.writeRequest(request)
       try await stateStore.save(localState)
       var reviewConfiguration = config.verifier
@@ -2231,11 +2265,12 @@ final class QueueViewModel {
       let logURL = try await reviewArtifacts.writeLog(result.log, for: request.id)
       await refresh()
       let canonicalTicket = dashboard.tickets.first { $0.id == request.ticketID }
-      if let subtaskID = request.subtaskID {
+      if request.subtaskID != nil {
         let context = try await taskContextStore.load(ticketID: request.ticketID)
         taskContexts[request.ticketID] = context
-        if context?.subtasks.first(where: { $0.id == subtaskID })?.completionOverrideAt != nil { return }
-        request.status = result.succeeded && context?.subtasks.first(where: { $0.id == subtaskID })?.status == .completed
+        let completed = completionSubtask(for: request)
+        request.status = completed?.completionOverrideAt != nil
+          || (result.succeeded && completed?.status == .completed)
           ? .accepted : (result.succeeded ? .needsWork : .failed)
       } else {
         request.status = canonicalTicket?.isOpen == false && result.succeeded
@@ -2249,7 +2284,8 @@ final class QueueViewModel {
       try await stateStore.save(localState)
       actionMessages[request.ticketID] =
         request.status == .accepted
-        ? "Completion evidence accepted."
+        ? (completionSubtask(for: request)?.completionOverrideAt != nil
+          ? "Subtask marked complete. Review history saved." : "Completion evidence accepted.")
         : "Review needs attention: \(result.summary)"
       if request.status == .accepted, request.subtaskID == nil, let canonicalTicket {
         await finalizeCompletedTask(canonicalTicket)
@@ -2259,8 +2295,11 @@ final class QueueViewModel {
         closureMessages[request.ticketID] = result.summary
       }
     } catch {
-      if let subtaskID = request.subtaskID,
-         subtasks(for: request.ticketID).first(where: { $0.id == subtaskID })?.completionOverrideAt != nil { return }
+      if completionSubtask(for: request)?.completionOverrideAt != nil {
+        settleOverriddenReviews(ticketID: request.ticketID)
+        try? await stateStore.save(localState)
+        return
+      }
       request.status = .failed
       request.summary = error.localizedDescription
       request.updatedAt = Date()
@@ -2276,6 +2315,22 @@ final class QueueViewModel {
       return
     }
     mutation(&localState.completionRequests[index])
+  }
+
+  func completionSubtask(for request: CompletionRequest) -> TaskSubtask? {
+    guard let subtaskID = request.subtaskID, let context = taskContexts[request.ticketID] else { return nil }
+    let canonicalID = context.canonicalSubtaskID(subtaskID)
+    return context.subtasks.first { $0.id == canonicalID }
+  }
+
+  private func settleOverriddenReviews(ticketID: String) {
+    for index in localState.completionRequests.indices {
+      let request = localState.completionRequests[index]
+      guard request.ticketID == ticketID, request.status != .accepted,
+        completionSubtask(for: request)?.completionOverrideAt != nil else { continue }
+      localState.completionRequests[index].status = .accepted
+      localState.completionRequests[index].updatedAt = Date()
+    }
   }
 
   private func replaceReview(_ request: CompletionRequest) {

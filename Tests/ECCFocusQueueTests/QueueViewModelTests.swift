@@ -232,6 +232,7 @@ struct QueueViewModelTests {
       _ = model.loadError
       _ = model.actionMessages
       _ = model.presentedPlanMarkdown
+      _ = model.isPlanLoading
       _ = model.planError
       _ = model.dailyReport
       _ = model.latestDailyReport
@@ -454,6 +455,40 @@ struct QueueViewModelTests {
     #expect(restarted.taskChatMessages.isEmpty)
   }
 
+  @Test("A damaged conversation or draft does not prevent task details loading", arguments: ["conversation.json", "plan-draft.json"])
+  func planLoadsDespiteDamagedAuxiliaryFile(filename: String) async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let context = try #require(model.taskContexts["ECC-101"])
+    try Data("damaged JSON".utf8).write(to: context.contextDirectory.appendingPathComponent(filename))
+
+    model.openPlan(for: fixture.tickets[0])
+    try await eventually { model.actionMessages["ECC-101"]?.contains("Could not load") == true }
+    #expect(model.presentedPlanMarkdown.contains("ECC-101"))
+    #expect(model.planError == nil)
+  }
+
+  @Test("An empty plan finishes loading and document switches clear prior errors")
+  func emptyPlanAndDocumentSwitch() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let context = try #require(model.taskContexts["ECC-101"])
+    try Data().write(to: URL(fileURLWithPath: context.planPath))
+    model.openPlan(for: fixture.tickets[0])
+    try await eventually { !model.isPlanLoading }
+    #expect(model.presentedPlanMarkdown.isEmpty)
+    #expect(model.planError == nil)
+
+    model.openPlan(for: fixture.tickets[0], sourceURL: fixture.root.appendingPathComponent("missing.md"))
+    try await eventually { model.planError != nil }
+    model.openPlan(for: fixture.tickets[1])
+    try await eventually { !model.isPlanLoading }
+    #expect(model.presentedPlanMarkdown.contains("ECC-102"))
+    #expect(model.planError == nil)
+  }
+
   @Test("Plan drafts survive closing and restart, preserve conflicts, and clear after saving")
   func planDraftPersistenceAndConflict() async throws {
     let fixture = try await Fixture()
@@ -528,13 +563,18 @@ struct QueueViewModelTests {
     let agent = ControlledQueueAgent()
     let model = await fixture.model(agent: agent)
     model.setDailyReportRunState(isRunning: true, message: "Reading configured platforms")
-    model.sendQueueAgentMessage("Change the queue")
+    #expect(!model.sendQueueAgentMessage("Change the queue"))
     #expect(!model.isQueueAgentResponding)
     #expect(await agent.messages.isEmpty)
     model.setDailyReportRunState(isRunning: false, message: "Mail reader timed out", isError: true)
     try await eventually { model.reportHistory.runs.first?.phase == .failed }
     #expect(model.reportHistory.runs.count == 1)
     #expect(model.reportNeedsAttention)
+    #expect(model.sendQueueAgentMessage("Change the queue"))
+    try await eventually { await agent.hasPendingReply }
+    #expect(!model.sendQueueAgentMessage("Keep this second draft"))
+    await agent.reply("Queue updated")
+    try await eventually { !model.isQueueAgentResponding }
     let restarted = await fixture.model(agent: ControlledQueueAgent())
     #expect(restarted.reportAttentionTitle == "Daily report failed")
     #expect(restarted.reportHistory.runs.first?.message == "Mail reader timed out")
@@ -868,6 +908,32 @@ struct QueueViewModelTests {
     #expect(model.dashboard.tickets[0].queueTaskKind == .task)
   }
 
+  @Test("Deleted and completed merged subtasks do not retain review notifications")
+  func staleReviewNotifications() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    var completed = TaskSubtask(id: "canonical", title: "Finished assignment", status: .completed)
+    completed.isAssignmentOnly = true
+    completed.completionOverrideAt = Date()
+    var alias = TaskSubtask(id: "old-id", title: "Old assignment", status: .blocked)
+    alias.isAssignmentOnly = true
+    alias.mergedIntoSubtaskID = completed.id
+    for subtask in [completed, alias] {
+      _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: subtask)
+    }
+    var state = LocalState()
+    state.completionRequests = ["deleted", alias.id].map {
+      CompletionRequest(ticketID: "ECC-101", status: .needsWork,
+        summary: "Old review", requestFilePath: "/tmp/old-review.json", subtaskID: $0)
+    }
+    try await JSONLocalStateStore(url: fixture.paths.stateFile).save(state)
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(model.agentUpdates.isEmpty)
+    #expect(model.localState.completionRequests.count == 2)
+  }
+
   @Test("Managed subtasks remain openable before provider registration arrives")
   func contextOnlyManagedAgentSession() async throws {
     let fixture = try await Fixture()
@@ -1051,6 +1117,58 @@ struct QueueViewModelTests {
     await model.refresh()
     #expect(model.localState.completionRequests.isEmpty)
     #expect(model.dashboard.tickets[0].isOpen)
+  }
+
+  @Test("An assignment override settles running child reviews and survives a late verifier result")
+  func overrideSettlesChildReview() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    var assignment = TaskSubtask(id: "assignment", title: "Finish the assignment")
+    assignment.isAssignmentOnly = true
+    var child = TaskSubtask(id: "child", title: "Check the result", status: .blocked)
+    child.parentSubtaskID = assignment.id
+    child.tracksCompletion = false
+    for subtask in [assignment, child] {
+      _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: subtask)
+    }
+    let verifier = ControlledCompletionVerifier()
+    let model = await fixture.model(agent: ControlledQueueAgent(), verifier: verifier)
+    model.requestSubtaskCompletion(child, for: fixture.tickets[0])
+    try await eventually { await verifier.hasPendingReply }
+    model.overrideCompletion(assignment, for: fixture.tickets[0])
+    try await eventually { model.subtasks(for: "ECC-101").first(where: { $0.id == child.id })?.agentRemovedAt != nil }
+    #expect(model.localState.completionRequests.first?.status == .accepted)
+    await verifier.reply()
+    try await eventually { model.localState.completionRequests.first?.logPath != nil }
+    #expect(model.localState.completionRequests.first?.status == .accepted)
+    #expect(model.agentUpdates.isEmpty)
+    let restarted = await fixture.model(agent: ControlledQueueAgent())
+    #expect(restarted.localState.completionRequests.first?.status == .accepted)
+    #expect(restarted.agentUpdates.isEmpty)
+  }
+
+  @Test("Restart settles an interrupted review that was already completed by the user")
+  func recoverOverriddenChildReview() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    let subtask = TaskSubtask(id: "completed", title: "User completed this")
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: subtask)
+    _ = try await store.overrideCompletion(ticketID: "ECC-101", subtaskID: subtask.id)
+    var state = LocalState()
+    state.completionRequests = [CompletionRequest(ticketID: "ECC-101", status: .running,
+      summary: "Earlier evidence", requestFilePath: "/tmp/stale-request.json", subtaskID: subtask.id)]
+    try await JSONLocalStateStore(url: fixture.paths.stateFile).save(state)
+
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(model.localState.completionRequests.first?.status == .accepted)
+    #expect(model.agentUpdates.isEmpty)
+    try await eventually {
+      try await JSONLocalStateStore(url: fixture.paths.stateFile).load().completionRequests.first?.status == .accepted
+    }
   }
 
   @Test("Completed agents disappear automatically while blank agents never drive parent completion")
@@ -1290,6 +1408,20 @@ private actor CountingRefusalVerifier: CompletionVerifying {
     ticketIDs.append(ticketID)
     return VerificationRunResult(succeeded: false,
       summary: "Acceptance evidence still missing", log: "Headless review refusal")
+  }
+}
+
+private actor ControlledCompletionVerifier: CompletionVerifying {
+  private var pending: CheckedContinuation<VerificationRunResult, Never>?
+  var hasPendingReply: Bool { pending != nil }
+  func verify(ticketID: String, requestFile: URL, workspace: String,
+    configuration: VerifierConfiguration) async throws -> VerificationRunResult {
+    await withCheckedContinuation { pending = $0 }
+  }
+  func reply() {
+    pending?.resume(returning: VerificationRunResult(succeeded: false,
+      summary: "A late review still needs evidence", log: "Retained review evidence"))
+    pending = nil
   }
 }
 

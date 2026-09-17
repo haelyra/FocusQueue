@@ -879,6 +879,10 @@ struct QueueAgentChatView: View {
         }
 
         VStack(spacing: 7) {
+          if model.reportIsRunning {
+            Text("Chat resumes when the daily report finishes. Your draft stays here.")
+              .font(.caption).foregroundStyle(.secondary)
+          }
           if let selection = canvasSelection?.wrappedValue {
             selectionComposerContext(selection)
               .transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -925,6 +929,7 @@ struct QueueAgentChatView: View {
             .disabled(
               draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || model.isQueueAgentResponding
+                || model.reportIsRunning
             )
             .accessibilityLabel("Send message to Codex Queue agent")
           }
@@ -978,9 +983,10 @@ struct QueueAgentChatView: View {
     let message = draft.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !message.isEmpty, !model.isQueueAgentResponding else { return }
     let selection = canvasSelection?.wrappedValue
-    draft = ""
-    canvasSelection?.wrappedValue = nil
-    model.sendQueueAgentMessage(message, ticketID: ticketID, canvasSelection: selection)
+    if model.sendQueueAgentMessage(message, ticketID: ticketID, canvasSelection: selection) {
+      draft = ""
+      canvasSelection?.wrappedValue = nil
+    }
   }
 
   private func selectionComposerContext(_ selection: PlanCanvasSelection) -> some View {

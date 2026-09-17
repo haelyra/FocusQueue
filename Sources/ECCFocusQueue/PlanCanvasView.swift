@@ -200,8 +200,16 @@ struct PlanCanvasView: View {
             }
           }.buttonStyle(.borderedProminent).disabled(isSaving)
         }
-      } else if model.presentedPlanMarkdown.isEmpty && model.planError == nil {
+      } else if model.isPlanLoading {
         ProgressView("Loading central plan…").frame(maxWidth: .infinity, maxHeight: .infinity)
+      } else if let error = model.planError, model.presentedPlanMarkdown.isEmpty {
+        ContentUnavailableView {
+          Label("Could not load this plan", systemImage: "doc.badge.ellipsis")
+        } description: {
+          Text(error)
+        } actions: {
+          Button("Retry") { model.openPlan(for: ticket, sourceURL: model.presentedPlanURL) }
+        }
       } else {
         if model.presentedPlanURL == nil, model.planEditDrafts[ticket.id] != nil {
           HStack {

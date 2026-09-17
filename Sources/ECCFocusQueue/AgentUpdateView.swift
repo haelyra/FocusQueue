@@ -48,6 +48,8 @@ struct AgentUpdateView: View {
             }
           }.fixedSize().accessibilityLabel("Choose another agent update")
         }
+        Button("Dismiss") { model.dismissAgentUpdate(update) }
+          .buttonStyle(.bordered).help("Hide this update and keep its history")
         Button { model.closeAgentUpdate() } label: { Image(systemName: "xmark") }
           .buttonStyle(.bordered).accessibilityLabel("Close agent update")
       }
@@ -79,9 +81,10 @@ struct AgentUpdateView: View {
               if let logError { Text(logError).font(.caption).foregroundStyle(.orange) }
               HStack {
                 Button("Review again") {
-                  if let subtaskID = review.subtaskID,
-                     let subtask = model.subtasks(for: ticket.id).first(where: { $0.id == subtaskID }) {
-                    model.requestSubtaskCompletion(subtask, for: ticket)
+                  if review.subtaskID != nil {
+                    if let subtask = model.completionSubtask(for: review) {
+                      model.requestSubtaskCompletion(subtask, for: ticket)
+                    }
                   } else { model.retryReview(for: ticket) }
                 }.disabled(model.localState.completionRequests.contains {
                   $0.ticketID == ticket.id && $0.subtaskID == review.subtaskID && [.pending, .running].contains($0.status)

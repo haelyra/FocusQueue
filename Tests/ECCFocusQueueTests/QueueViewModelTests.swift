@@ -9,6 +9,29 @@ import Darwin
 @Suite("Queue app state integration")
 @MainActor
 struct QueueViewModelTests {
+  @Test("App and agent share queue moves across refreshes, state saves, and restarts")
+  func sharedQueueOrder() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
+    #expect(model.moveTicket("ECC-102", to: .top))
+    #expect(model.openTickets.map(\.id) == ["ECC-102", "ECC-101"])
+    await model.refresh()
+    #expect(model.openTickets.first?.id == "ECC-102")
+    let restarted = await fixture.model(agent: ControlledQueueAgent())
+    #expect(restarted.openTickets.first?.id == "ECC-102")
+    let external = QueueOrderStore(root: fixture.root)
+    try external.move("ECC-101", to: .top, tickets: fixture.tickets, fallbackIDs: [])
+    model.setPanelCollapsed(true)
+    await model.refresh()
+    #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
+    #expect(!model.moveTicket("missing", to: .top))
+    #expect(model.openTickets.first?.id == "ECC-101")
+    model.resetQueueOrder()
+    #expect(try external.load() == [])
+  }
+
   @Test("Subtasks can exist without agents and retain their own explanation")
   func standaloneSubtaskCreation() async throws {
     let fixture = try await Fixture()

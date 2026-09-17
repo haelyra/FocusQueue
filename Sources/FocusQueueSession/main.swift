@@ -13,7 +13,7 @@ enum SessionRegistrationError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .usage:
-            "Usage: focus-queue-session review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude> <title> | rename <TASK-ID> <SUBTASK-ID> <title> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
+            "Usage: focus-queue-session queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reset | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude> <title> | rename <TASK-ID> <SUBTASK-ID> <title> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
         case .missingSessionIdentity:
             "No Codex or Claude session ID was found in the environment or current WezTerm pane."
         case .missingManagedRuntime:
@@ -38,6 +38,7 @@ enum SessionRegistrationError: Error, LocalizedError {
                 print("Persistent terminals: tmux list | tmux start <name> [--cwd <directory>] [-- <command> ...] | tmux attach <name> | tmux ssh-command <user@host> <name>")
                 print("Task layouts: tmux panes <name> | tmux arrange <name> | tmux manual <name> | tmux save | tmux restore | tmux persistence")
             }
+            else if arguments.first == "queue" { try await queueCommand(arguments: arguments) }
             else if arguments.first == "agents" { try await agentsCommand(arguments: arguments) }
             else if arguments.first == "runtime" { try await runtimeCommand(arguments: arguments) }
             else if arguments.first == "library" { try await libraryCommand(arguments: arguments) }
@@ -49,6 +50,35 @@ enum SessionRegistrationError: Error, LocalizedError {
             FileHandle.standardError.write(Data("\(error.localizedDescription)\n".utf8))
             Darwin.exit(1)
         }
+    }
+
+    private static func queueCommand(arguments: [String]) async throws {
+        let root = supportDirectory(environment: ProcessInfo.processInfo.environment)
+        let config = try loadConfiguration(from: root)
+        let dashboard = try await JSONDashboardRepository().load(from: URL(fileURLWithPath: config.dashboardPath))
+        let store = QueueOrderStore(root: root)
+        let state = try await JSONLocalStateStore(url: root.appendingPathComponent("state.json")).load()
+        let fallback = DashboardOrdering.openTickets(in: dashboard.tickets,
+            deferredTicketIDs: state.deferredTicketIDs).map(\.id)
+        switch arguments.dropFirst().first {
+        case "list" where arguments.count == 2: break
+        case "reset" where arguments.count == 2: try store.reset()
+        case "move" where arguments.count == 4 || arguments.count == 5:
+            let placement: QueuePlacement
+            switch arguments[3] {
+            case "top" where arguments.count == 4: placement = .top
+            case "bottom" where arguments.count == 4: placement = .bottom
+            case "before" where arguments.count == 5: placement = .before(arguments[4].uppercased())
+            case "after" where arguments.count == 5: placement = .after(arguments[4].uppercased())
+            default: throw SessionRegistrationError.usage
+            }
+            try store.move(arguments[2].uppercased(), to: placement,
+                tickets: dashboard.tickets, fallbackIDs: fallback)
+        default: throw SessionRegistrationError.usage
+        }
+        let order = QueueOrderStore.orderedTickets(dashboard.tickets, savedIDs: try store.load() ?? fallback)
+        try emit(["order": order.map(\.id)])
+        notifyContextChanged()
     }
 
     private static func agentsCommand(arguments: [String]) async throws {

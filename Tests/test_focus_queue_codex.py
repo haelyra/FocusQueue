@@ -451,6 +451,7 @@ class FocusQueueCodexTests(unittest.TestCase):
                         runtime=root / "runtime", timeout=10, sandbox=sandbox,
                         thread_id=None, output_schema=None, context_directory=context,
                         disable_tools=disable_tools, expose_evidence_directories=True,
+                        expose_queue_order=True,
                     )
                     command = captured[-1]
                     extra_directories = [
@@ -460,7 +461,8 @@ class FocusQueueCodexTests(unittest.TestCase):
                     if sandbox == "workspace-write" and not disable_tools:
                         self.assertEqual(extra_directories, [
                             str(MODULE.DEFAULT_PROOF_DIRECTORY),
-                            str(MODULE.DEFAULT_MAIL_COMMAND_DIRECTORY), str(context.resolve()),
+                            str(MODULE.DEFAULT_MAIL_COMMAND_DIRECTORY),
+                            str((root / "queue-order").resolve()), str(context.resolve()),
                         ])
                     else:
                         self.assertEqual(extra_directories, [])

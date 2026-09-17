@@ -37,6 +37,8 @@ final class QueueViewModel {
   private(set) var config: AppConfiguration
   private(set) var dashboard = DashboardDocument(tickets: [])
   private(set) var localState = LocalState()
+  private(set) var savedQueueOrder: [String]?
+  private var queueOrderStore: QueueOrderStore { QueueOrderStore(root: paths.supportDirectory) }
   private(set) var lastSync: Date?
   private(set) var sourceModificationDate: Date?
   private(set) var loadError: String?
@@ -206,6 +208,9 @@ final class QueueViewModel {
   }
 
   var openTickets: [DashboardTicket] {
+    if let savedQueueOrder {
+      return QueueOrderStore.orderedTickets(dashboard.tickets, savedIDs: savedQueueOrder)
+    }
     let ordered = DashboardOrdering.openTickets(
       in: dashboard.tickets,
       deferredTicketIDs: localState.deferredTicketIDs
@@ -355,6 +360,8 @@ final class QueueViewModel {
       let updatedDashboard = try await document
       if dashboard != updatedDashboard { dashboard = updatedDashboard }
       await captureDurableDashboard(updatedDashboard)
+      let updatedOrder = try queueOrderStore.load()
+      if savedQueueOrder != updatedOrder { savedQueueOrder = updatedOrder }
       pruneDeferredTickets()
       let updatedModificationDate = try await modificationDate
       if sourceModificationDate != updatedModificationDate { sourceModificationDate = updatedModificationDate }
@@ -403,24 +410,34 @@ final class QueueViewModel {
   }
 
   @discardableResult
-  func moveTicketToRest(_ ticketID: String) -> Bool {
-    guard dashboard.tickets.contains(where: { $0.id == ticketID && $0.isOpen }) else {
+  func moveTicket(_ ticketID: String, to placement: QueuePlacement) -> Bool {
+    do {
+      savedQueueOrder = try queueOrderStore.move(ticketID, to: placement,
+        tickets: dashboard.tickets, fallbackIDs: openTickets.filter(\.isOpen).map(\.id))
+      actionMessages[ticketID] = "Queue position saved on this Mac."
+      return true
+    } catch {
+      actionMessages[ticketID] = error.localizedDescription
       return false
     }
-    localState.deferredTicketIDs.removeAll { $0 == ticketID }
-    localState.deferredTicketIDs.append(ticketID)
-    actionMessages[ticketID] = "Moved to Rest of queue on this Mac."
-    persistLocalState()
-    return true
+  }
+
+  func resetQueueOrder() {
+    do {
+      try queueOrderStore.reset()
+      savedQueueOrder = []
+    } catch { loadError = error.localizedDescription }
+  }
+
+  @discardableResult
+  func moveTicketToRest(_ ticketID: String) -> Bool {
+    let others = openTickets.filter { $0.isOpen && $0.id != ticketID }
+    return moveTicket(ticketID, to: others.count > 5 ? .before(others[5].id) : .bottom)
   }
 
   @discardableResult
   func moveTicketToToday(_ ticketID: String) -> Bool {
-    guard localState.deferredTicketIDs.contains(ticketID) else { return false }
-    localState.deferredTicketIDs.removeAll { $0 == ticketID }
-    actionMessages[ticketID] = "Restored to Today's focus using canonical priority."
-    persistLocalState()
-    return true
+    moveTicket(ticketID, to: .top)
   }
 
   @discardableResult
@@ -450,7 +467,7 @@ final class QueueViewModel {
       return true
     }
     let visibleOrder = openTickets.map(\.id)
-    let deferredTicketIDs = localState.deferredTicketIDs
+    let deferredTicketIDs = savedQueueOrder == nil ? localState.deferredTicketIDs : []
     let scopedMessage: String
     var agentConfiguration = config.verifier
     agentConfiguration.supportDirectory = paths.supportDirectory.path

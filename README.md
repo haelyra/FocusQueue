@@ -252,11 +252,28 @@ rewrite of the scheduler or report engine.
 
 ## Queue ordering and chat
 
-The app, not an agent, computes the normal open-task order by priority, then
-`updatedAt`, then task ID. A drag from Today's focus to Rest of queue creates a
-local deferred-task override without changing priority in the canonical
-dashboard. Dragging that task back removes the override and restores canonical
-ordering.
+Drag a task onto the upper or lower half of another card to place it before or
+after that task. The card menu also offers Move up, Move down, Move to top, and
+Move to bottom. Moving a task preserves the relative order of all other tasks.
+Today's focus displays the first five tasks; Rest of queue displays the rest.
+Saved positions survive refreshes and restarts, including priority/date changes.
+New tasks append in priority order. Use the Queue ordering menu to restore
+priority sorting (priority, then updatedAt, then task ID).
+
+The orchestrator can reorder tasks at your request using the same local order:
+
+```sh
+focus-queue-session queue list
+focus-queue-session queue move ECC-035 top
+focus-queue-session queue move ECC-029 after ECC-035
+focus-queue-session queue reset
+```
+
+Order is stored separately under Application Support in `queue-order/order.json`.
+The app reloads it automatically. Queue chat has write access to that directory.
+The helper uses a lock and atomic writes so app and agent changes share the latest
+order without overwriting other app state. Existing deferred ordering is retained
+until you move a task or restore priority sorting.
 
 Queue chat resumes a bounded, named Codex thread with the current visible order
 and local overrides in its prompt. Questions are read-only by default. Codex is

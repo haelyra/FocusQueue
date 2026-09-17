@@ -290,10 +290,22 @@ struct QueueView: View {
 
   private var todayFocusSection: some View {
     VStack(alignment: .leading, spacing: 10) {
-      SectionHeading(
-        title: focusDropIsTargeted ? "Drop to Today's focus" : "Today's focus",
-        detail: "Top \(focusTickets.count)"
-      )
+      HStack {
+        SectionHeading(
+          title: focusDropIsTargeted ? "Drop to Today's focus" : "Today's focus",
+          detail: "Top \(focusTickets.count)"
+        )
+        .dropDestination(for: String.self) { ticketIDs, _ in
+          moveTicketsToToday(ticketIDs)
+        } isTargeted: { focusDropIsTargeted = $0 }
+        Menu {
+          Button("Restore priority order") { model.resetQueueOrder() }
+        } label: { Image(systemName: "arrow.up.arrow.down") }
+          .menuStyle(.borderlessButton).fixedSize()
+          .accessibilityLabel("Queue ordering")
+      }
+      Text("Drag tasks to set their order")
+        .font(.caption).foregroundStyle(.secondary)
 
       if focusTickets.isEmpty {
         ContentUnavailableView(
@@ -302,18 +314,6 @@ struct QueueView: View {
         ).frame(maxWidth: .infinity).notificationSurface(radius: 18)
       } else {
         ForEach(focusTickets) { ticket in TicketCard(ticket: ticket, model: model) }
-      }
-    }
-    .dropDestination(for: String.self) { ticketIDs, _ in
-      moveTicketsToToday(ticketIDs)
-    } isTargeted: {
-      focusDropIsTargeted = $0
-    }
-    .overlay {
-      if focusDropIsTargeted {
-        RoundedRectangle(cornerRadius: 20)
-          .stroke(.tint, style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
-          .allowsHitTesting(false)
       }
     }
   }
@@ -669,19 +669,10 @@ struct QueueView: View {
             title: restSectionDropIsTargeted ? "Drop to Rest of queue" : "Rest of queue",
             detail: "\(remainingTickets.count)"
           )
+          .dropDestination(for: String.self) { ticketIDs, _ in
+            moveTicketsToRest(ticketIDs)
+          } isTargeted: { restSectionDropIsTargeted = $0 }
           ForEach(remainingTickets) { ticket in TicketCard(ticket: ticket, model: model) }
-        }
-        .dropDestination(for: String.self) { ticketIDs, _ in
-          moveTicketsToRest(ticketIDs)
-        } isTargeted: {
-          restSectionDropIsTargeted = $0
-        }
-        .overlay {
-          if restSectionDropIsTargeted {
-            RoundedRectangle(cornerRadius: 20)
-              .stroke(.tint, style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
-              .allowsHitTesting(false)
-          }
         }
       }
     }
@@ -696,7 +687,7 @@ struct QueueView: View {
           .system(size: 12, weight: .bold))
         Text(
           restButtonDropIsTargeted
-            ? (showsMoreTasks ? "Drop to Today's focus" : "Drop to Rest of queue")
+            ? "Drop after the top five"
             : (showsMoreTasks ? "Show only top five" : moreButtonLabel)
         ).font(
           .system(size: 14, weight: .semibold))
@@ -708,9 +699,10 @@ struct QueueView: View {
       }.padding(.horizontal, 15).frame(height: 52).contentShape(Rectangle())
     }.buttonStyle(.plain).notificationSurface(radius: 16)
       .dropDestination(for: String.self) { ticketIDs, _ in
-        showsMoreTasks ? moveTicketsToToday(ticketIDs) : moveTicketsToRest(ticketIDs)
+        moveTicketsToRest(ticketIDs)
       } isTargeted: {
         restButtonDropIsTargeted = $0
+        if $0 { showsMoreTasks = true }
       }
       .overlay {
         if restButtonDropIsTargeted {
@@ -2019,6 +2011,8 @@ private struct TicketCard: View {
   let ticket: DashboardTicket
   let model: QueueViewModel
   @State private var showsContext = false
+  @State private var reorderDropIsTargeted = false
+  @State private var cardHeight: CGFloat = 1
   @State private var showsNewAgent = false
   @State private var newAgentIsBlank = false
   @State private var agentTargetSubtask: TaskSubtask?
@@ -2154,7 +2148,40 @@ private struct TicketCard: View {
         Text("The subtask, conversation, and workspace history will be retained.")
       }
       .draggable(ticket.id)
-      .accessibilityHint("Drag this task between Today's focus and Rest of queue.")
+      .background {
+        GeometryReader { geometry in
+          Color.clear.onAppear { cardHeight = geometry.size.height }
+            .onChange(of: geometry.size.height) { _, height in cardHeight = height }
+        }
+      }
+      .dropDestination(for: String.self) { ids, point in
+        guard ids.count == 1, let id = ids.first, id != ticket.id else { return false }
+        return model.moveTicket(id, to: point.y < cardHeight / 2 ? .before(ticket.id) : .after(ticket.id))
+      } isTargeted: { reorderDropIsTargeted = $0 }
+      .overlay {
+        if reorderDropIsTargeted {
+          RoundedRectangle(cornerRadius: 18).stroke(.tint, lineWidth: 2).allowsHitTesting(false)
+        }
+      }
+      .contextMenu {
+        Button("Move to top") { model.moveTicket(ticket.id, to: .top) }
+        Button("Move up") { moveOnePosition(up: true) }
+          .disabled(model.openTickets.first?.id == ticket.id)
+        Button("Move down") { moveOnePosition(up: false) }
+          .disabled(model.openTickets.last?.id == ticket.id)
+        Button("Move to bottom") { model.moveTicket(ticket.id, to: .bottom) }
+      }
+      .accessibilityAction(named: "Move up") { moveOnePosition(up: true) }
+      .accessibilityAction(named: "Move down") { moveOnePosition(up: false) }
+      .accessibilityHint("Drag to reorder. Drop on the upper half of a task to place it before, or the lower half to place it after.")
+  }
+
+  private func moveOnePosition(up: Bool) {
+    let ids = model.openTickets.map(\.id)
+    guard let index = ids.firstIndex(of: ticket.id) else { return }
+    let target = index + (up ? -1 : 1)
+    guard ids.indices.contains(target) else { return }
+    model.moveTicket(ticket.id, to: up ? .before(ids[target]) : .after(ids[target]))
   }
 
   private var summary: some View {

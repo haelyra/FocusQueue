@@ -492,6 +492,7 @@ def run_codex(
     output_schema: Path | None,
     usage_file: Path | None = None,
     expose_evidence_directories: bool = False,
+    expose_queue_order: bool = False,
     disable_tools: bool = False,
     context_directory: Path | None = None,
 ) -> tuple[str, str | None]:
@@ -558,6 +559,11 @@ def run_codex(
                     str(DEFAULT_MAIL_COMMAND_DIRECTORY),
                 ]
             )
+        if expose_queue_order and allow_extra_writes:
+            support = Path(os.environ.get("FOCUS_QUEUE_SUPPORT_DIR", str(runtime.parent)))
+            queue_order_directory = support / "queue-order"
+            queue_order_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            command.extend(["--add-dir", str(queue_order_directory.resolve())])
         if context_directory is not None and allow_extra_writes:
             command.extend(["--add-dir", str(context_directory)])
         if output_schema is not None:
@@ -658,6 +664,7 @@ def chat(arguments: argparse.Namespace) -> int:
                 thread_id=prior_thread,
                 output_schema=None,
                 expose_evidence_directories=True,
+                expose_queue_order=True,
                 context_directory=getattr(arguments, "context_dir", None),
             )
         except CodexHarnessError as error:
@@ -679,6 +686,7 @@ def chat(arguments: argparse.Namespace) -> int:
                 thread_id=None,
                 output_schema=None,
                 expose_evidence_directories=True,
+                expose_queue_order=True,
                 context_directory=getattr(arguments, "context_dir", None),
             )
         thread_id = observed_thread or prior_thread

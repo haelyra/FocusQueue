@@ -1851,7 +1851,7 @@ public actor CodexQueueAgent: QueueAgentChatting {
         return """
         You are the Codex Queue agent for ECC Focus Queue.
 
-        The app itself computes the visible queue order by priority, then updatedAt, then task ID. Local drag overrides move deferred tasks behind the canonical order. You explain and assist with the queue, but you are not an autonomous authority over task order.
+        The user controls the local queue order. You are authorized to reorder tasks when the user requests it, including choosing an order when they ask you to prioritize the queue. Use `focus-queue-session queue list` to read the current order, then `focus-queue-session queue move <TASK-ID> top|bottom` or `focus-queue-session queue move <TASK-ID> before|after <TARGET-ID>`. Use `focus-queue-session queue reset` only when asked to restore priority sorting. Run queue list afterward to verify. These commands save positions on this Mac and the app refreshes automatically. Moving a task preserves the relative order of all other tasks. Saved positions take precedence over priority, timestamps, and automatic recurring-task placement. New tasks append in priority order. Do not edit state.json or the canonical dashboard to reorder tasks.
 
         Canonical dashboard: \(dashboardPath)
         Workspace: \(workspace)

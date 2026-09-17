@@ -1377,7 +1377,7 @@ private struct Fixture {
     let model = QueueViewModel(paths: paths, terminalController: terminalController ?? boundary,
       verifier: verifier ?? boundary, queueAgent: agent, pullRequestQueueLoader: boundary,
       taskAgentLauncher: taskAgentLauncher,
-      connectorDiagnosticsRunner: connectorDiagnosticsRunner)
+      connectorDiagnosticsRunner: connectorDiagnosticsRunner, discoverExternalAgents: { [] })
     await model.bootstrap()
     #expect(model.loadError == nil)
     return model

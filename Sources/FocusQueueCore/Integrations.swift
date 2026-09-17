@@ -179,6 +179,14 @@ public struct RunningAgentSession: Identifiable, Equatable, Sendable {
     }
 }
 
+public struct KnownProviderProcess: Sendable, Equatable {
+    public let provider: AgentProvider
+    public let sessionID: String
+    public let processID: Int32
+    public let tty: String?
+    public let cwd: String
+}
+
 public enum TerminalActionResult: Equatable, Sendable {
     case focused(paneID: Int)
     case spawned(paneID: Int?)
@@ -820,6 +828,58 @@ public actor WezTermController: WezTermControlling {
 
     public func agents(onTTY tty: String, preferredSession: TaskAgentSession? = nil) async throws -> [RunningAgentSession] {
         try await discoverAgents(in: [WezTermPane(windowID: 0, paneID: 0, cwd: "", ttyName: tty)], preferredSession: preferredSession)
+    }
+
+    /// One process list and one lsof call cover terminals, tmux, and IDE shells.
+    /// Multiple Codex writer locks are separate exact thread identities.
+    public func knownProviderProcesses(provider: AgentProvider? = nil,
+                                       requireComplete: Bool = false) async throws -> [KnownProviderProcess] {
+        let processes = try await runner.run(.init(executable: "/bin/ps",
+            arguments: ["-axo", "pid=,tty=,comm="], timeoutSeconds: 10))
+        guard processes.succeeded else { throw WezTermError.actionFailed("Could not inspect provider processes.") }
+        let providers = Self.agentProcesses(in: processes.standardOutput).filter { provider == nil || $0.provider == provider }
+        guard !providers.isEmpty else { return [] }
+        let files = try await runner.run(.init(executable: "/usr/sbin/lsof",
+            arguments: ["-a", "-p", providers.map { String($0.pid) }.joined(separator: ","), "-Fpnf"], timeoutSeconds: 10))
+        guard files.succeeded else { throw WezTermError.actionFailed("Provider ownership lookup failed; running state is unknown.") }
+        var lines: [Int32: [String]] = [:]
+        var directories: [Int32: String] = [:]
+        var currentPID: Int32?
+        var isCWD = false
+        for line in files.standardOutput.split(separator: "\n").map(String.init) {
+            if line.hasPrefix("p") { currentPID = Int32(line.dropFirst()); isCWD = false }
+            else if let currentPID {
+                if line.hasPrefix("f") { isCWD = line == "fcwd" }
+                if line.hasPrefix("n"), isCWD { directories[currentPID] = String(line.dropFirst()) }
+                lines[currentPID, default: []].append(line)
+            }
+        }
+        var result: [KnownProviderProcess] = []
+        var seen = Set<String>()
+        for process in providers {
+            guard let cwd = directories[process.pid], cwd.hasPrefix("/") else {
+                if requireComplete { throw WezTermError.actionFailed("A provider process has no verified working directory yet.") }
+                continue
+            }
+            let candidates = Self.sessionCandidates(for: process.provider,
+                inLsofOutput: (lines[process.pid] ?? []).joined(separator: "\n"))
+            let ids: Set<String>
+            if process.provider == .codex {
+                // Reading an older transcript does not make this process its owner.
+                ids = Set(candidates.filter(\.isWriterLock).map(\.sessionID))
+            } else {
+                let all = Set(candidates.map(\.sessionID))
+                ids = all.count == 1 ? all : []
+            }
+            if ids.isEmpty, requireComplete {
+                throw WezTermError.actionFailed("A provider process has no exact session identity yet. Retry after startup.")
+            }
+            for sessionID in ids.sorted() where seen.insert(process.provider.rawValue + ":" + sessionID).inserted {
+                result.append(KnownProviderProcess(provider: process.provider, sessionID: sessionID,
+                    processID: process.pid, tty: process.tty == "??" ? nil : "/dev/" + process.tty, cwd: cwd))
+            }
+        }
+        return result
     }
 
     public func labelTmuxClients(session: TaskAgentSession, configuration: WezTermConfiguration) async throws {

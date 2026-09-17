@@ -240,6 +240,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
     public var baseBranch: String?
     public var managedWorktree = false
     public var subtasks: [TaskSubtask] = []
+    public var removedAgentSessionKeys: [String]?
     public var updatedAt: Date
 
     public var contextDirectory: URL { URL(fileURLWithPath: planPath).deletingLastPathComponent() }
@@ -514,6 +515,60 @@ public actor TaskContextStore {
         }
     }
 
+    /// Registers a provider-supplied identity while holding the task's cross-process lock.
+    /// Repeated hook events cannot create duplicate records or revive completed work.
+    @discardableResult public func registerExternalSession(
+        ticketID: String, provider: AgentProvider, sessionID: String, title: String, cwd: String,
+        preferredSubtaskID: String?, allowFreshAssociation: Bool,
+        tmux: TmuxSessionReference?, paneID: Int?, socketPath: String?, eventName: String
+    ) throws -> TaskContext {
+        try mutate(ticketID: ticketID) { context in
+            let sameSession: (TaskSubtask) -> Bool = {
+                $0.provider == provider && $0.sessionID?.lowercased() == sessionID.lowercased()
+            }
+            var index = context.subtasks.firstIndex {
+                sameSession($0) && $0.agentRemovedAt == nil && $0.status != .completed
+            }
+            if index == nil, let preferredSubtaskID {
+                index = context.subtasks.firstIndex {
+                    $0.id == preferredSubtaskID && $0.provider == provider && !$0.isAssignmentOnly
+                        && $0.agentRemovedAt == nil && $0.status != .completed
+                        && ($0.sessionID == nil || sameSession($0))
+                        && ($0.workspace.map { ExternalAgentRegistry.contains(directory: $0.path, path: cwd) } ?? false)
+                }
+            }
+            if index == nil {
+                let key = provider.rawValue + ":" + sessionID.lowercased()
+                guard allowFreshAssociation || (!context.subtasks.contains(where: sameSession)
+                    && !(context.removedAgentSessionKeys ?? []).contains(key)) else { return }
+                var agent = TaskSubtask(title: title, provider: provider, sessionID: sessionID,
+                    status: .idle, includeInitializationPrompt: false, runtimeMode: nil)
+                agent.tracksCompletion = false
+                agent.workspace = AgentWorkspace(path: cwd, repositoryPath: context.repositoryPath ?? cwd)
+                context.subtasks.append(agent)
+                index = context.subtasks.count - 1
+            }
+            guard let index else { return }
+            context.subtasks[index].sessionID = sessionID.lowercased()
+            if context.subtasks[index].title.hasPrefix(provider.displayName + " ·")
+                || context.subtasks[index].title.hasPrefix("Subagent ·") {
+                context.subtasks[index].title = title
+            }
+            if let tmux { context.subtasks[index].tmux = tmux; context.subtasks[index].runtimeMode = .tmux }
+            else if let paneID {
+                context.subtasks[index].terminalPaneID = paneID
+                context.subtasks[index].terminalSocketPath = socketPath
+                context.subtasks[index].runtimeMode = .terminal
+            }
+            // A stopped response is not completed work. Completion remains explicit.
+            if ["UserPromptSubmit", "SubagentStart"].contains(eventName) { context.subtasks[index].status = .working }
+            else if ["Stop", "SubagentStop", "SessionEnd"].contains(eventName) { context.subtasks[index].status = .idle }
+            if eventName != "ProcessDiscovery" || context.subtasks[index].lastHeartbeatAt == nil {
+                context.subtasks[index].lastHeartbeatAt = Date()
+            }
+        }
+    }
+
     @discardableResult public func renameSubtask(
         ticketID: String, subtaskID: String, title: String,
         assignmentDescription: String? = nil
@@ -576,6 +631,10 @@ public actor TaskContextStore {
         try mutate(
             ticketID: ticketID, archiveChanges: true, archiveBeforeChanges: true
         ) { context in
+            let keys = context.subtasks.compactMap { subtask in
+                subtask.sessionID.map { subtask.provider.rawValue + ":" + $0.lowercased() }
+            }
+            context.removedAgentSessionKeys = Array(Set((context.removedAgentSessionKeys ?? []) + keys)).sorted()
             context.subtasks.removeAll()
         }
     }
@@ -597,6 +656,10 @@ public actor TaskContextStore {
                 let otherAssignments = context.assignmentIDs(for: agent).subtracting([targetID])
                 return otherAssignments.isEmpty ? agent.id : nil
             })
+            let removedSessionKeys = context.subtasks.filter { candidate in
+                candidate.id == removed.id || linkedAgentIDs.contains(candidate.id)
+            }.compactMap { agent in agent.sessionID.map { agent.provider.rawValue + ":" + $0.lowercased() } }
+            context.removedAgentSessionKeys = Array(Set((context.removedAgentSessionKeys ?? []) + removedSessionKeys)).sorted()
             context.subtasks.removeAll { candidate in
                 candidate.id == removed.id || linkedAgentIDs.contains(candidate.id)
             }

@@ -44,6 +44,7 @@ enum SessionRegistrationError: Error, LocalizedError {
             else if arguments.first == "library" { try await libraryCommand(arguments: arguments) }
             else if arguments.first == "architecture" { try await architectureCommand(arguments: arguments) }
             else if arguments.first == "diagnose" { try await diagnose(arguments: arguments) }
+            else if arguments.first == "register-event" { try await registerEvent(arguments: arguments) }
             else if arguments.first == "attach" { try await register() }
             else { try await updateContext(arguments: arguments) }
         } catch {
@@ -115,6 +116,11 @@ enum SessionRegistrationError: Error, LocalizedError {
     /// deterministic session name prevents this command from adopting an
     /// unrelated process or creating a replacement.
     private static func runtimeCommand(arguments: [String]) async throws {
+        if arguments.count == 4, arguments[1] == "locate",
+           let provider = AgentProvider(rawValue: arguments[2]), UUID(uuidString: arguments[3]) != nil {
+            try await locateRuntime(provider: provider, sessionID: arguments[3].lowercased())
+            return
+        }
         guard arguments.count == 4, arguments[1] == "repair" else {
             throw SessionRegistrationError.usage
         }
@@ -190,8 +196,13 @@ enum SessionRegistrationError: Error, LocalizedError {
             try await controller.setAutomatic(name: arguments[2], executable: executable, enabled: false)
         case "list" where arguments.count == 2:
             try emit(try await controller.list(executable: executable))
-        case "attach" where arguments.count == 3:
-            _ = try await controller.inspect(name: arguments[2], executable: executable)
+        case "attach" where arguments.count == 3 || (arguments.count == 5 && arguments[3] == "--pane"):
+            if arguments.count == 5 {
+                guard arguments[4].range(of: "^%[0-9]+$", options: .regularExpression) != nil,
+                      let pane = try await controller.panes(name: arguments[2], executable: executable)
+                        .first(where: { $0.id == arguments[4] }) else { throw TmuxError.changed }
+                try await controller.select(pane.reference)
+            } else { _ = try await controller.inspect(name: arguments[2], executable: executable) }
             guard isatty(STDIN_FILENO) != 0, isatty(STDOUT_FILENO) != 0 else {
                 throw TmuxError.unavailable("Attach needs an interactive terminal. Use ssh -t when connecting remotely.")
             }
@@ -336,171 +347,99 @@ enum SessionRegistrationError: Error, LocalizedError {
 
     private static func register() async throws {
         let arguments = Array(CommandLine.arguments.dropFirst())
-        guard arguments.count == 2, arguments[0] == "attach", !arguments[1].isEmpty else {
-            throw SessionRegistrationError.usage
-        }
-
-        let ticketID = arguments[1].uppercased()
+        guard arguments.count == 2 else { throw SessionRegistrationError.usage }
         let environment = ProcessInfo.processInfo.environment
-        guard let subtaskID = TaskSessionBinding.subtaskID(
-            ticketID: ticketID, environment: environment) else {
-            throw SessionRegistrationError.missingManagedRuntime
-        }
-        let inferredRuntime = environment["FOCUS_QUEUE_TMUX_NAME"].flatMap {
-            $0.isEmpty ? nil : AgentRuntimeMode.tmux
-        }
-        guard let runtimeMode = environment["FOCUS_QUEUE_RUNTIME_MODE"]
-            .flatMap(AgentRuntimeMode.init(rawValue:)) ?? inferredRuntime else {
-            throw SessionRegistrationError.missingManagedRuntime
-        }
+        guard let (provider, sessionID) = TaskSessionBinding.providerSession(environment: environment),
+              UUID(uuidString: sessionID) != nil else { throw SessionRegistrationError.missingSessionIdentity }
+        let event = ExternalAgentEvent(sessionID: sessionID, cwd: FileManager.default.currentDirectoryPath,
+            hookEventName: "ExplicitAttach")
+        try await registerEvent(event, provider: provider, explicitTaskID: arguments[1], environment: environment)
+    }
 
-        let supportDirectory = supportDirectory(environment: environment)
-        let configuration = try loadConfiguration(from: supportDirectory)
-        let library = DurableLibraryStore(root: supportDirectory)
-        let controller = WezTermController()
-        let store = TaskContextStore(root: supportDirectory)
-        guard var context = try await store.load(ticketID: ticketID),
-              let originalSubtask = context.subtasks.first(where: { $0.id == subtaskID }) else {
-            throw TaskContextError.missingSubtask(subtaskID)
+    private static func registerEvent(arguments: [String]) async throws {
+        var provider: AgentProvider?
+        var taskID: String?
+        var index = 1
+        while index < arguments.count {
+            guard index + 1 < arguments.count else { throw SessionRegistrationError.usage }
+            switch arguments[index] {
+            case "--provider": provider = AgentProvider(rawValue: arguments[index + 1])
+            case "--task": taskID = arguments[index + 1]
+            default: throw SessionRegistrationError.usage
+            }
+            index += 2
         }
-        guard originalSubtask.runtimeMode == runtimeMode
-            || (originalSubtask.runtimeMode == nil && runtimeMode == .tmux) else {
-            throw TaskContextError.commandFailed(
-                "This pane does not match the runtime selected when the subtask was created.")
+        guard let provider else { throw SessionRegistrationError.usage }
+        var data = Data()
+        while data.count <= 1_048_576 {
+            guard let chunk = try FileHandle.standardInput.read(upToCount: min(65_536, 1_048_577 - data.count)), !chunk.isEmpty else { break }
+            data.append(chunk)
         }
+        guard data.count <= 1_048_576 else { throw TaskContextError.commandFailed("Registration event exceeds 1 MB.") }
+        let event = try JSONDecoder().decode(ExternalAgentEvent.self, from: data)
+        try await registerEvent(event, provider: provider, explicitTaskID: taskID,
+            environment: ProcessInfo.processInfo.environment)
+    }
 
-        var tmux: TmuxSessionReference?
-        var directPaneID: Int?
-        var wezTermConfiguration = configuration.wezTerm
-        switch runtimeMode {
-        case .tmux:
-            guard let tmuxName = environment["FOCUS_QUEUE_TMUX_NAME"], !tmuxName.isEmpty,
-                  TmuxController.ownsSession(name: tmuxName, taskID: ticketID, subtaskID: subtaskID) else {
-                throw SessionRegistrationError.missingManagedRuntime
-            }
-            guard let executable = configuration.tmuxExecutable
-                ?? SetupEnvironment.executable("tmux") else {
-                throw TmuxError.unavailable("The configured executable is missing.")
-            }
-            let inspected = try await TmuxController().inspectAgent(
-                taskID: ticketID, subtaskID: subtaskID, executable: executable)
-            guard inspected.paneID == environment["TMUX_PANE"] else {
-                throw TmuxError.changed
-            }
-            if let saved = originalSubtask.tmux, saved != inspected {
-                throw TmuxError.changed
-            }
-            if originalSubtask.tmux == nil || originalSubtask.runtimeMode == nil {
-                context = try await store.setManagedRuntime(
-                    ticketID: ticketID, subtaskID: subtaskID, tmux: inspected)
-            }
-            tmux = inspected
-        case .terminal:
-            guard environment["FOCUS_QUEUE_TMUX_NAME"] == nil,
-                  let paneText = environment["WEZTERM_PANE"],
-                  let paneID = Int(paneText), paneID >= 0 else {
-                throw SessionRegistrationError.missingManagedRuntime
-            }
-            let socketPath = environment["WEZTERM_UNIX_SOCKET"].flatMap {
-                $0.isEmpty ? nil : $0
-            }
-            if let savedPane = originalSubtask.terminalPaneID, savedPane != paneID {
-                throw TaskContextError.commandFailed(
-                    "This pane is not the direct terminal saved for this subtask.")
-            }
-            if let savedSocket = originalSubtask.terminalSocketPath,
-               let socketPath, savedSocket != socketPath {
-                throw TaskContextError.commandFailed(
-                    "This terminal connection is not the one saved for this subtask.")
-            }
-            if originalSubtask.terminalPaneID == nil {
-                context = try await store.setDirectRuntime(
-                    ticketID: ticketID, subtaskID: subtaskID,
-                    paneID: paneID, socketPath: socketPath)
-            }
-            directPaneID = paneID
-            wezTermConfiguration.socketPath = socketPath ?? wezTermConfiguration.socketPath
+    private static func registerEvent(_ event: ExternalAgentEvent, provider: AgentProvider,
+                                      explicitTaskID: String?, environment: [String: String]) async throws {
+        let root = supportDirectory(environment: environment)
+        let config = try loadConfiguration(from: root)
+        var runtime: TmuxSessionReference?
+        var directPane: Int?
+        if !event.isSubagent, let name = environment["FOCUS_QUEUE_TMUX_NAME"],
+           let paneID = environment["TMUX_PANE"], let executable = config.tmuxExecutable ?? SetupEnvironment.executable("tmux") {
+            runtime = try? await TmuxController().panes(name: name, executable: executable)
+                .first(where: { $0.id == paneID })?.reference
+        } else if !event.isSubagent, environment["TMUX"] == nil,
+                  let pane = environment["WEZTERM_PANE"].flatMap(Int.init), pane >= 0 {
+            directPane = pane
         }
-
-        guard let subtask = context.subtasks.first(where: { $0.id == subtaskID }) else {
-            throw TaskContextError.missingSubtask(subtaskID)
-        }
-
-        let providerAndSession: (AgentProvider, String)
-        if let identity = TaskSessionBinding.providerSession(environment: environment) {
-            providerAndSession = identity
-        } else {
-            let agents: [RunningAgentSession]
-            if let tmux {
-                agents = try await controller.agents(onTTY: tmux.tty)
-            } else {
-                agents = try await controller.listRunningAgents(
-                    configuration: wezTermConfiguration).filter {
-                        $0.pane.paneID == directPaneID && $0.provider == subtask.provider
-                    }
-            }
-            guard let agent = agents.first else {
-                throw SessionRegistrationError.missingSessionIdentity
-            }
-            providerAndSession = (agent.provider, agent.sessionID)
-        }
-        guard subtask.provider == providerAndSession.0 else {
-            throw TaskContextError.commandFailed(
-                "This subtask is assigned to \(subtask.provider.displayName). Attach an agent from that provider or create a matching subtask.")
-        }
-
-        var session = TaskAgentSession(
-            ticketID: ticketID,
-            provider: providerAndSession.0,
-            sessionID: providerAndSession.1,
-            tabTitle: ticketID,
-            workingDirectory: environment["PWD"] ?? FileManager.default.currentDirectoryPath,
-            paneID: directPaneID,
-            tmux: tmux
-        ).canonicalizedForTerminal()
-        session = session.withContext(
-            context, subtask: subtask, supportDirectory: supportDirectory)
-        let inbox = AgentRegistrationInbox(
-            directory: supportDirectory.appendingPathComponent("agent-registrations", isDirectory: true)
-        )
-        try await inbox.submit(session)
-        if FileManager.default.isExecutableFile(atPath: configuration.wezTerm.executable) {
+        let registry = ExternalAgentRegistry(root: root)
+        let record = try await registry.register(event, provider: provider, explicitTaskID: explicitTaskID,
+            environment: environment, tmux: runtime, paneID: directPane,
+            socketPath: environment["WEZTERM_UNIX_SOCKET"])
+        if let session = record.session, FileManager.default.isExecutableFile(atPath: config.wezTerm.executable) {
             do {
-                if tmux != nil {
-                    try await controller.labelTmuxClients(
-                        session: session, configuration: configuration.wezTerm)
-                } else if let directPaneID {
-                    try await controller.attach(
-                        paneID: directPaneID, tabTitle: session.terminalTabTitle,
-                        windowTitle: session.terminalWindowTitle,
-                        configuration: wezTermConfiguration)
+                let controller = WezTermController()
+                if session.tmux != nil { try await controller.labelTmuxClients(session: session, configuration: config.wezTerm) }
+                else if let pane = session.paneID {
+                    var connection = config.wezTerm
+                    connection.socketPath = record.socketPath ?? connection.socketPath
+                    try await controller.attach(paneID: pane, tabTitle: session.terminalTabTitle,
+                        windowTitle: session.terminalWindowTitle, configuration: connection)
                 }
-            }
-            catch { FileHandle.standardError.write(Data("Session registered; desktop labels are pending: \(error.localizedDescription)\n".utf8)) }
+            } catch { FileHandle.standardError.write(Data("Registered; terminal labels will retry when the connection is available.\n".utf8)) }
         }
-        do { try await library.recordSession(session) }
-        catch { historyWarning(error) }
-        let attachedContext = try await store.attachSubtask(
-            ticketID: ticketID, subtaskID: subtaskID,
-            provider: providerAndSession.0, sessionID: providerAndSession.1)
-        await mirrorContext(attachedContext, root: supportDirectory)
+        notifyContextChanged()
         DistributedNotificationCenter.default().postNotificationName(
-            Notification.Name(AgentRegistrationInbox.notificationName),
-            object: nil,
-            userInfo: nil,
-            deliverImmediately: true
-        )
+            Notification.Name(AgentRegistrationInbox.notificationName), object: nil, userInfo: nil, deliverImmediately: true)
+        var output: [String: String] = ["status": record.status, "registrationID": record.id, "provider": provider.rawValue]
+        output["sessionID"] = record.sessionID; output["taskID"] = record.taskID; output["subtaskID"] = record.subtaskID
+        output["agentID"] = record.agentID; output["parentSessionID"] = record.parentSessionID
+        try emit(output)
+    }
 
-        let result: [String: Any] = [
-            "provider": providerAndSession.0.rawValue,
-            "sessionID": providerAndSession.1,
-            "taskID": ticketID,
-            "paneID": directPaneID.map(String.init) ?? tmux?.paneID ?? "",
-            "runtime": runtimeMode.rawValue,
-        ]
-        let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
-        FileHandle.standardOutput.write(data)
-        FileHandle.standardOutput.write(Data("\n".utf8))
+    private static func locateRuntime(provider: AgentProvider, sessionID: String) async throws {
+        do {
+            let controller = WezTermController()
+            let processes = try await controller.knownProviderProcesses(provider: provider)
+            guard let process = processes.first(where: { $0.sessionID == sessionID }) else {
+                let complete = try await controller.knownProviderProcesses(provider: provider, requireComplete: true)
+                if let appeared = complete.first(where: { $0.sessionID == sessionID }) {
+                    try emit(["status": "running", "sessionID": sessionID, "processID": String(appeared.processID)])
+                    return
+                }
+                try emit(["status": "stopped", "sessionID": sessionID]); return
+            }
+            var result = ["status": "running", "sessionID": sessionID, "processID": String(process.processID)]
+            let config = try loadConfiguration(from: supportDirectory(environment: ProcessInfo.processInfo.environment))
+            if let tty = process.tty, let executable = config.tmuxExecutable ?? SetupEnvironment.executable("tmux"),
+               let pane = try? await TmuxController().panes(executable: executable).first(where: { $0.reference.tty == tty }) {
+                result["tmuxName"] = pane.reference.name; result["paneID"] = pane.id; result["runtime"] = "tmux"
+            }
+            try emit(result)
+        } catch { try emit(["status": "unknown", "sessionID": sessionID, "reason": error.localizedDescription]) }
     }
 
     private static func supportDirectory(environment: [String: String]) -> URL {

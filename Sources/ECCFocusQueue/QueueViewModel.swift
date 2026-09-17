@@ -74,6 +74,8 @@ final class QueueViewModel {
   private(set) var respondingTicketID: String?
   private(set) var taskChatMessages: [String: [QueueChatMessage]] = [:]
   private(set) var taskContexts: [String: TaskContext] = [:]
+  private(set) var unassignedAgentRegistrations: [ExternalAgentRegistration] = []
+  private(set) var externalAgentRegistrationError: String?
   private(set) var subtaskActivityRevision = 0
   private(set) var isQueueChatInspectorPresented = false
   private(set) var presentedAgentUpdate: QueueAgentUpdate?
@@ -144,6 +146,8 @@ final class QueueViewModel {
   @ObservationIgnored private var subtaskEditTasks: [String: Task<Void, Never>] = [:]
   @ObservationIgnored private var planPresentationID = UUID()
   @ObservationIgnored private var planReadID = UUID()
+  @ObservationIgnored private var lastExternalAgentDiscovery: Date?
+  @ObservationIgnored private let discoverExternalAgents: @Sendable () async throws -> [KnownProviderProcess]
 
   @ObservationIgnored var placementHandler: ((QueueWindowPlacement) -> Void)?
   @ObservationIgnored var monitorSwitchHandler: (() -> Void)?
@@ -176,9 +180,13 @@ final class QueueViewModel {
     pullRequestQueueLoader: any PullRequestQueueLoading = GitHubPullRequestQueueLoader(),
     taskAgentLauncher: TaskAgentLauncher = TaskAgentLauncher(),
     agentLaunchLogger: AgentLaunchLogger? = nil,
-    connectorDiagnosticsRunner: any ProcessRunning = FoundationProcessRunner()
+    connectorDiagnosticsRunner: any ProcessRunning = FoundationProcessRunner(),
+    discoverExternalAgents: @escaping @Sendable () async throws -> [KnownProviderProcess] = {
+      try await WezTermController().knownProviderProcesses()
+    }
   ) {
     self.paths = paths
+    self.discoverExternalAgents = discoverExternalAgents
     self.taskContextStore = TaskContextStore(root: paths.supportDirectory)
     self.reportHistoryRepository = JSONDailyReportHistoryRepository(runtimeDirectory: paths.ingestionRuntimeDirectory)
     self.conversationStore = QueueConversationStore(root: paths.supportDirectory)
@@ -375,6 +383,7 @@ final class QueueViewModel {
       resetDailyRoutinesIfNeeded()
       await importAgentRegistrations()
       await refreshTaskContexts()
+      await refreshExternalAgentRegistrations()
       if userInitiated || lastReportRefresh == nil || Date().timeIntervalSince(lastReportRefresh!) >= 10 {
         lastReportRefresh = Date()
         if !isDailyReportRunning {
@@ -1634,12 +1643,19 @@ final class QueueViewModel {
       let registrations = try await agentRegistrationInbox.pending()
       guard !registrations.isEmpty else { return }
       await captureDurableState(localState)
+      let external = try await ExternalAgentRegistry(root: paths.supportDirectory).registrations()
       for registration in registrations {
+        // CLI hooks can arrive before the app's next context poll or bootstrap.
+        if let fresh = try await taskContextStore.load(ticketID: registration.ticketID),
+          taskContexts[registration.ticketID] != fresh { taskContexts[registration.ticketID] = fresh }
         guard let subtaskID = registration.subtaskID,
           let subtask = taskContexts[registration.ticketID]?.subtasks.first(where: {
             $0.id == subtaskID && $0.provider == registration.provider && $0.isAgentVisible
           }),
-          (subtask.runtimeMode == .tmux
+          (external.contains(where: { $0.taskID == registration.ticketID && $0.subtaskID == subtaskID
+            && $0.provider == registration.provider && $0.sessionID == registration.sessionID.lowercased()
+            && subtask.sessionID?.lowercased() == $0.sessionID })
+            || subtask.runtimeMode == .tmux
             && registration.tmux == subtask.tmux
             && registration.tmux.map { TmuxController.ownsSession(name: $0.name, taskID: registration.ticketID, subtaskID: subtaskID) } == true
             || subtask.runtimeMode == .terminal
@@ -1657,6 +1673,67 @@ final class QueueViewModel {
       await agentRegistrationInbox.acknowledge(registrations)
     } catch {
       loadError = "Could not import agent registration: \(error.localizedDescription)"
+    }
+  }
+
+  func refreshExternalAgentRegistrations() async {
+    let registry = ExternalAgentRegistry(root: paths.supportDirectory)
+    do {
+      if lastExternalAgentDiscovery == nil || Date().timeIntervalSince(lastExternalAgentDiscovery!) >= 15 {
+        lastExternalAgentDiscovery = Date()
+        let discovered = try await discoverExternalAgents()
+        let tmuxPanes: [TmuxPaneSnapshot]
+        if !discovered.isEmpty, let executable = config.tmuxExecutable ?? SetupEnvironment.executable("tmux") {
+          tmuxPanes = (try? await TmuxController().panes(executable: executable)) ?? []
+        } else { tmuxPanes = [] }
+        let terminals = discovered.isEmpty ? [] : ((try? await terminalController.listAttachablePanes(configuration: config.wezTerm)) ?? [])
+        for process in discovered {
+          let tmux = process.tty.flatMap { tty in tmuxPanes.first { $0.reference.tty == tty }?.reference }
+          let terminal = tmux == nil ? process.tty.flatMap { tty in terminals.first { $0.ttyName == tty } } : nil
+          var prompt: String?
+          if let tmux {
+            let metadataURL = paths.supportDirectory.appendingPathComponent("shell/launch-metadata/\(tmux.name).json")
+            if let data = try? Data(contentsOf: metadataURL),
+              let metadata = try? JSONDecoder().decode(ExternalAgentLaunchMetadata.self, from: data),
+              metadata.reference == tmux { prompt = metadata.initialPrompt }
+          }
+          _ = try await registry.register(ExternalAgentEvent(sessionID: process.sessionID,
+            cwd: process.cwd, hookEventName: "ProcessDiscovery", prompt: prompt), provider: process.provider,
+            tmux: tmux, paneID: terminal?.paneID, socketPath: terminal?.socketPath)
+        }
+      }
+      let records = try await registry.registrations()
+      let unassigned = records.filter { $0.taskID == nil }
+      if unassignedAgentRegistrations != unassigned { unassignedAgentRegistrations = unassigned }
+      if externalAgentRegistrationError != nil { externalAgentRegistrationError = nil }
+      await importAgentRegistrations()
+    } catch {
+      // Existing hook receipts remain useful when process inspection is unavailable.
+      if let records = try? await registry.registrations() {
+        let unassigned = records.filter { $0.taskID == nil }
+        if unassignedAgentRegistrations != unassigned { unassignedAgentRegistrations = unassigned }
+      }
+      if externalAgentRegistrationError != error.localizedDescription {
+        externalAgentRegistrationError = error.localizedDescription
+      }
+    }
+  }
+
+  func assignExternalAgent(_ registration: ExternalAgentRegistration, to ticket: DashboardTicket) {
+    guard let sessionID = registration.sessionID else {
+      actionMessages[ticket.id] = "This child has no resumable provider session ID yet."
+      return
+    }
+    Task {
+      do {
+        _ = try await taskContextStore.ensureContext(ticket: ticket)
+        _ = try await ExternalAgentRegistry(root: paths.supportDirectory).register(
+          ExternalAgentEvent(sessionID: sessionID, cwd: registration.cwd, hookEventName: "ExplicitAttach", prompt: registration.title),
+          provider: registration.provider, explicitTaskID: ticket.id, tmux: registration.tmux,
+          paneID: registration.paneID, socketPath: registration.socketPath)
+        await refreshExternalAgentRegistrations()
+        actionMessages[ticket.id] = "Agent attached to this task."
+      } catch { actionMessages[ticket.id] = error.localizedDescription }
     }
   }
 

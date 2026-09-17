@@ -1,0 +1,52 @@
+import Foundation
+import Testing
+@testable import FocusQueueCore
+
+private actor ProviderDiscoveryRunner: ProcessRunning {
+    var outputs: [ProcessResult]
+    init(_ outputs: [String]) {
+        self.outputs = outputs.map { .init(exitCode: 0, standardOutput: $0, standardError: "", timedOut: false) }
+    }
+    func run(_ specification: ProcessSpecification) throws -> ProcessResult {
+        guard !outputs.isEmpty else { throw CocoaError(.fileReadUnknown) }
+        return outputs.removeFirst()
+    }
+}
+
+@Suite("Provider process discovery")
+struct ProviderProcessDiscoveryTests {
+    let parent = "11111111-1111-4111-8111-111111111111"
+    let child = "22222222-2222-4222-8222-222222222222"
+    let history = "33333333-3333-4333-8333-333333333333"
+
+    @Test("Writer locks identify both live Codex threads without claiming an opened old transcript")
+    func exactWriterLocks() async throws {
+        let runner = ProviderDiscoveryRunner([
+            "40 ttys040 /opt/codex\n41 ?? /opt/claude\n42 ttys042 /opt/unrelated\n",
+            "p40\nfcwd\nn/tmp/repository with spaces\nf8\nn/Users/example/.codex/thread-writer-locks/\(parent).lock\nf9\nn/Users/example/.codex/thread-writer-locks/\(child).lock\nf10\nn/Users/example/.codex/sessions/rollout-\(history).jsonl\np41\nfcwd\nn/tmp/claude\nf9\nn/Users/example/.claude/projects/tmp/\(history).jsonl\n",
+        ])
+        let records = try await WezTermController(runner: runner).knownProviderProcesses(requireComplete: true)
+        #expect(records.count == 3)
+        #expect(Set(records.filter { $0.provider == .codex }.map(\.sessionID)) == Set([parent, child]))
+        #expect(records.first { $0.sessionID == parent }?.cwd == "/tmp/repository with spaces")
+        #expect(records.first { $0.sessionID == parent }?.tty == "/dev/ttys040")
+        #expect(records.first { $0.provider == .claude }?.tty == nil)
+    }
+
+    @Test("A starting process with no writer lock makes a complete stopped check unknown")
+    func noIdentityFailsClosed() async throws {
+        let outputs = ["40 ttys040 /opt/codex\n",
+            "p40\nfcwd\nn/tmp/repository\nf8\nn/Users/example/.codex/sessions/rollout-\(history).jsonl\n"]
+        #expect(try await WezTermController(runner: ProviderDiscoveryRunner(outputs)).knownProviderProcesses().isEmpty)
+        await #expect(throws: (any Error).self) {
+            try await WezTermController(runner: ProviderDiscoveryRunner(outputs)).knownProviderProcesses(requireComplete: true)
+        }
+    }
+
+    @Test("Multiple Claude transcripts do not choose an arbitrary identity")
+    func ambiguousClaudeFailsClosed() async throws {
+        let runner = ProviderDiscoveryRunner(["40 ttys040 /opt/claude\n",
+            "p40\nfcwd\nn/tmp/repository\nf8\nn/Users/example/.claude/projects/tmp/\(parent).jsonl\nf9\nn/Users/example/.claude/projects/tmp/\(child).jsonl\n"])
+        #expect(try await WezTermController(runner: runner).knownProviderProcesses().isEmpty)
+    }
+}

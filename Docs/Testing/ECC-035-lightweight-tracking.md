@@ -13,7 +13,7 @@ September 17, 2026. Implements the approved agent-system follow-up with mandator
 
 ## Verification-loop checks
 
-- Swift build/type verification and full Swift Testing suite: 331 tests passed, including real Git dirty/unmerged/merged cleanup, sparse context, identity ambiguity, PID reuse, idempotency and active-owner checks.
+- Swift build/type verification and full Swift Testing suite: 332 tests passed, including real Git dirty/unmerged/merged cleanup, sparse context, identity ambiguity, PID reuse, idempotency and active-owner checks. The integrated notification-spacing fix also passed headless rendering at two widths and three panel heights.
 - Python suite: 167 tests passed. Includes second-user installer preservation/rollback, launcher routing, real dirty-source isolation, exact saved-workspace resume, noninteractive receipt persistence and real helper reconciliation.
 - Real Codex launch matrix passed twice: four New Agent configurations each, distinct native UUIDs, receipt binding, actual `SANITY_OK` responses, exact detach/reopen and stopped-conversation resume, isolated persistence, preserved dirty source and legacy sibling.
 - The real helper cleanup sanity retained clean merged fixture work when a separate provider had no exact session identity. This is intentional fail-closed behavior. The real Git lifecycle test exercises successful removal with an injected inactive-runtime result; Git and file operations remain real.

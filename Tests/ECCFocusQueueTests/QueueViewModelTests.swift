@@ -777,8 +777,9 @@ struct QueueViewModelTests {
     #expect(try await store.load(ticketID: "ECC-999") == nil)
   }
 
-  @Test("Completed subtasks trigger one parent review, preserve refusals, and respect human review", arguments: [false, true])
-  func automaticParentReviewIsBounded(customerConcern: Bool) async throws {
+  @Test("Completed subtasks trigger one parent review, ignore blank agent activity, and respect human review",
+    arguments: [false, true], [TaskSubtaskStatus.working, .completed])
+  func automaticParentReviewIsBounded(customerConcern: Bool, blankStatus: TaskSubtaskStatus) async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let ticket = DashboardTicket(id: "ECC-101", title: "Review task",
@@ -801,6 +802,10 @@ struct QueueViewModelTests {
       #expect(model.localState.completionRequests.count == 1)
       #expect(model.latestReview(for: ticket.id)?.subtaskID == nil)
     }
+    var blankAgent = TaskSubtask(id: "blank", title: "Unrelated blank agent",
+      status: blankStatus, lastHeartbeatAt: Date())
+    blankAgent.tracksCompletion = false
+    _ = try await store.upsertSubtask(ticketID: ticket.id, subtask: blankAgent)
     // Pass the model's real context-refresh throttle, so the second refresh
     // exercises review deduplication rather than taking the fast return.
     try await Task.sleep(for: .milliseconds(2100))

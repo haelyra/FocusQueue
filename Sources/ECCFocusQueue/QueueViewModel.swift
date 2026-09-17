@@ -696,7 +696,12 @@ final class QueueViewModel {
                 !localState.completionRequests.contains(where: {
                   $0.ticketID == ticket.id && [.pending, .running].contains($0.status)
                 }) {
-        let lastCompletion = context.subtasks.compactMap(\.lastHeartbeatAt).max() ?? context.updatedAt
+        let trackedIDs = Set(context.focusSubtasks.filter(\.tracksCompletion).map(\.id))
+        // Only progress on completed, tracked work can justify another review.
+        // Blank agents and general context edits otherwise replay the same refusal.
+        let lastCompletion = context.subtasks.filter {
+          $0.status == .completed && !context.assignmentIDs(for: $0).isDisjoint(with: trackedIDs)
+        }.compactMap(\.lastHeartbeatAt).max() ?? .distantPast
         if latestReview(for: ticket.id).map({ $0.requestedAt < lastCompletion }) ?? true {
           requestCompletion(for: ticket)
         }

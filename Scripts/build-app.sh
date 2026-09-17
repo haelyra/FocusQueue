@@ -22,6 +22,9 @@ bundle_path="$staging_dir/$product_name.app"
 /bin/cp "$project_dir/Config/config.example.json" "$bundle_path/Contents/Resources/config.example.json"
 /bin/cp "$build_dir/checkouts/Ink/LICENSE" "$bundle_path/Contents/Resources/Ink-LICENSE.txt"
 /usr/bin/ditto "$project_dir/Vendor/Tmux" "$bundle_path/Contents/Resources/tmux"
+/bin/mkdir -p "$bundle_path/Contents/Resources/shell"
+/bin/cp "$project_dir/Scripts/focus_queue_codex_entry.py" "$project_dir/Scripts/install_codex_entry.py" \
+  "$bundle_path/Contents/Resources/shell/"
 automation_resources="$bundle_path/Contents/Resources/automation"
 /bin/mkdir -p "$automation_resources/Scripts" "$automation_resources/Config"
 for script in \

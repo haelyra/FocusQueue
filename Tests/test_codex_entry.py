@@ -171,11 +171,16 @@ else:
         hooks.parent.mkdir()
         custom = {"hooks":{"SessionStart":[{"hooks":[{"type":"command", "command":"echo retained"}]}]}}
         hooks.write_text(json.dumps(custom))
+        original_hooks = hooks.read_bytes()
         preview = INSTALL.install(home, self.wrapper, ["--yolo"], check=True)
         self.assertEqual(preview["mode"], "preview")
+        self.assertNotIn(str(hooks), preview["paths"])
+        self.assertNotIn("hookReview", preview)
         self.assertEqual(zshrc.read_text(), original)
         self.assertFalse((home / "Library").exists())
         result = INSTALL.install(home, self.wrapper, ["--yolo"])
+        self.assertEqual(result["nativeHooks"], "unchanged")
+        self.assertEqual(hooks.read_bytes(), original_hooks)
         self.assertIn(original.strip(), zshrc.read_text())
         self.assertTrue(Path(result["backupDirectory"]).exists())
         once = hooks.read_bytes()
@@ -187,6 +192,45 @@ else:
         self.assertEqual(json.loads(completed.stdout), ["--yolo", "--help"])
         self.assertFalse((home / ".codex/config.toml").exists())
         self.assertFalse(any("trust" in path.name for path in (home / ".codex").iterdir()))
+
+    def test_default_install_never_creates_or_reads_native_hooks(self):
+        home = self.root / "Default User"
+        home.mkdir()
+        preview = INSTALL.install(home, self.wrapper, ["--yolo"], check=True)
+        self.assertEqual(len(preview["paths"]), 3)
+        self.assertFalse((home / ".codex").exists())
+        INSTALL.install(home, self.wrapper, ["--yolo"])
+        self.assertFalse((home / ".codex").exists())
+        hooks = home / ".codex/hooks.json"
+        hooks.parent.mkdir()
+        hooks.write_bytes(b"user-owned content, deliberately not JSON\n")
+        original = hooks.read_bytes()
+        self.assertEqual(INSTALL.install(home, self.wrapper, ["--yolo"])["paths"], [])
+        self.assertEqual(hooks.read_bytes(), original)
+
+    def test_hooks_require_explicit_opt_in_and_merge_idempotently(self):
+        home = self.root / "Opt In User"
+        hooks = home / ".codex/hooks.json"
+        hooks.parent.mkdir(parents=True)
+        custom = {"description":"user notes", "hooks":{"SessionStart":[{"hooks":[{"type":"command", "command":"echo retained"}]}]}}
+        hooks.write_text(json.dumps(custom))
+        original = hooks.read_bytes()
+        preview = INSTALL.install(home, self.wrapper, ["--yolo"], check=True, install_hooks=True)
+        self.assertEqual(preview["nativeHooks"], "requested")
+        self.assertIn("hookReview", preview)
+        self.assertIn(str(hooks), preview["paths"])
+        self.assertEqual(hooks.read_bytes(), original)
+        INSTALL.install(home, self.wrapper, ["--yolo"], install_hooks=True)
+        installed = hooks.read_bytes()
+        value = json.loads(installed)
+        self.assertEqual(value["description"], "user notes")
+        self.assertEqual(value["hooks"]["SessionStart"][0], custom["hooks"]["SessionStart"][0])
+        self.assertEqual(set(value["hooks"]), set(INSTALL.HOOK_EVENTS))
+        self.assertEqual(INSTALL.install(home, self.wrapper, ["--yolo"], install_hooks=True)["paths"], [])
+        self.assertEqual(hooks.read_bytes(), installed)
+        # A later default install retains the explicitly selected hooks unchanged.
+        self.assertEqual(INSTALL.install(home, self.wrapper, ["--yolo"])["paths"], [])
+        self.assertEqual(hooks.read_bytes(), installed)
 
     def test_install_failure_rolls_back_existing_user_files(self):
         home = self.root / "Rollback User"
@@ -201,7 +245,7 @@ else:
             real_replace(source, destination)
         with mock.patch.object(INSTALL.os, "replace", side_effect=replace):
             with self.assertRaisesRegex(OSError, "simulated"):
-                INSTALL.install(home, self.wrapper, ["--yolo"])
+                INSTALL.install(home, self.wrapper, ["--yolo"], install_hooks=True)
         self.assertEqual(zshrc.read_bytes(), before)
         self.assertFalse((home / "Library/Application Support/ECC Focus Queue/shell/codex.zsh").exists())
 

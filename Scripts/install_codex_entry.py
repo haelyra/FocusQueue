@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the optional Codex shell entry and native lifecycle hook definitions."""
+"""Install the Codex shell entry, with native lifecycle hooks available by opt-in."""
 from __future__ import annotations
 
 import argparse
@@ -61,7 +61,7 @@ def merge_hooks(original, helper):
     return json.dumps(value, indent=2, ensure_ascii=False) + "\n"
 
 
-def plan(home, usage_wrapper, flags, *, source_directory=None):
+def plan(home, usage_wrapper, flags, *, source_directory=None, install_hooks=False):
     home = home.absolute()
     source_directory = source_directory or Path(__file__).resolve().parent
     support = home / "Library/Application Support/ECC Focus Queue"
@@ -75,7 +75,8 @@ def plan(home, usage_wrapper, flags, *, source_directory=None):
         raise ValueError("Choose the existing usage wrapper with an absolute file path.")
     if "--dangerously-bypass-hook-trust" in flags:
         raise ValueError("This integration uses native /hooks review and cannot bypass hook trust.")
-    for path in (entry, shell, zshrc, hook_file):
+    destinations = (entry, shell, zshrc, hook_file) if install_hooks else (entry, shell, zshrc)
+    for path in destinations:
         safe_destination(path, home)
     command = ["/usr/bin/python3", str(entry), "--usage-wrapper", str(usage_wrapper)]
     command += ["--default-flag=" + flag for flag in flags]
@@ -89,18 +90,22 @@ def plan(home, usage_wrapper, flags, *, source_directory=None):
         entry: (source_directory / "focus_queue_codex_entry.py").read_bytes(),
         shell: shell_source.encode(),
         zshrc: merge_shell(zshrc.read_text() if zshrc.exists() else "", shell).encode(),
-        hook_file: merge_hooks(hook_file.read_text() if hook_file.exists() else "", helper).encode(),
     }
+    if install_hooks:
+        files[hook_file] = merge_hooks(hook_file.read_text() if hook_file.exists() else "", helper).encode()
     return support, files
 
 
-def install(home, usage_wrapper, flags, *, check=False, source_directory=None):
-    support, files = plan(home, usage_wrapper, flags, source_directory=source_directory)
+def install(home, usage_wrapper, flags, *, check=False, source_directory=None, install_hooks=False):
+    support, files = plan(home, usage_wrapper, flags, source_directory=source_directory, install_hooks=install_hooks)
     changed = {path: content for path, content in files.items()
                if not path.exists() or path.read_bytes() != content}
     result = {"mode": "preview" if check else "installed", "paths": [str(path) for path in changed],
-        "hookReview": "Open /hooks in Codex and review the Focus Queue hooks. Discovery remains available before trust.",
+        "tracking": "process discovery and verified launch metadata",
+        "nativeHooks": "requested" if install_hooks else "unchanged",
         "originalAlias": "retained", "defaultFlags": flags}
+    if install_hooks:
+        result["hookReview"] = "Codex will prompt to review these hooks before the initial prompt. Review and trust them through /hooks when ready."
     if check or not changed:
         return result
     backups = support / "backups"
@@ -155,8 +160,11 @@ def main():
     parser.add_argument("--usage-wrapper", type=Path, required=True)
     parser.add_argument("--default-flag", action="append", default=[])
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--install-hooks", action="store_true",
+                        help="Also merge native Codex hooks; Codex will require interactive review and trust before they run.")
     options = parser.parse_args()
-    print(json.dumps(install(options.home, options.usage_wrapper, options.default_flag, check=options.check), indent=2))
+    print(json.dumps(install(options.home, options.usage_wrapper, options.default_flag,
+                            check=options.check, install_hooks=options.install_hooks), indent=2))
 
 
 if __name__ == "__main__":

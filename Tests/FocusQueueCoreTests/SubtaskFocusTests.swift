@@ -232,7 +232,7 @@ struct SubtaskFocusTests {
         var agent = TaskSubtask(id: id, title: "Completed", status: .completed)
         agent.workspace = saved
         #expect(try await manager.cleanupAgent(ticketID: "ECC-700", subtask: agent, store: store).removed)
-        try await manager.restoreIfNeeded(saved, subtaskID: id, store: store)
+        try await manager.restoreIfNeeded(saved, ticketID: "ECC-700", subtaskID: id, store: store)
         let restored = try await manager.workspace(at: saved.path)
         #expect(restored.path == saved.path)
         #expect(restored.branch == saved.branch)

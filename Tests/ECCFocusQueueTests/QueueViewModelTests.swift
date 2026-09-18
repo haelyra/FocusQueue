@@ -104,7 +104,8 @@ struct QueueViewModelTests {
   func nestedAgentLaunch() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let repository = fixture.root.appendingPathComponent("repo")
+    let repository = externalWorkspace(for: fixture.root)
+    defer { try? FileManager.default.removeItem(at: repository) }
     try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
     let git = FoundationProcessRunner()
     for arguments in [["init", "-q"], ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
@@ -141,7 +142,8 @@ struct QueueViewModelTests {
   func directLaunchRevealsSavedPane(failReveal: Bool) async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let repository = fixture.root.appendingPathComponent("repo")
+    let repository = externalWorkspace(for: fixture.root)
+    defer { try? FileManager.default.removeItem(at: repository) }
     try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
     let git = FoundationProcessRunner()
     for arguments in [["init", "-q"], ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
@@ -175,7 +177,8 @@ struct QueueViewModelTests {
   func launchRetryPreservesAssignment() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let repository = fixture.root.appendingPathComponent("repo")
+    let repository = externalWorkspace(for: fixture.root)
+    defer { try? FileManager.default.removeItem(at: repository) }
     try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
     for arguments in [["init", "-q", "-b", "main"], ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
       "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Fixture", "--allow-empty"]] {
@@ -227,7 +230,7 @@ struct QueueViewModelTests {
       taskAgentLauncher: TaskAgentLauncher(runner: launcher, candidateSockets: []))
     var completed = false
     model.launchAgent(for: fixture.tickets[0], title: "Missing workspace", provider: .codex,
-      repositoryPath: fixture.root.appendingPathComponent("missing").path) { started in
+      repositoryPath: externalWorkspace(for: fixture.root, suffix: "missing").path) { started in
         #expect(!started)
         completed = true
       }
@@ -1287,7 +1290,8 @@ struct QueueViewModelTests {
   func directResume(transportFailure: Bool) async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let repository = fixture.root.appendingPathComponent("repo")
+    let repository = externalWorkspace(for: fixture.root)
+    defer { try? FileManager.default.removeItem(at: repository) }
     try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
     let git = FoundationProcessRunner()
     for arguments in [["init", "-q", "-b", "feature"], ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
@@ -1357,6 +1361,201 @@ struct QueueViewModelTests {
     #expect(try await store.load(ticketID: "ECC-101")?.subtasks.count == 1)
   }
 
+  @Test("A task-tagged launch appears immediately and receives provisional terminal labels")
+  func provisionalLaunchAppearsImmediately() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    let terminal = LabelRecorder()
+    let model = await fixture.model(agent: ControlledQueueAgent(), terminalController: terminal)
+    let launchID = UUID().uuidString.lowercased()
+    let workspace = fixture.root.appendingPathComponent("ECCFocusQueue-worktrees/ecc-101/agents/\(launchID)")
+    let receipt: [String: Any] = [
+      "launchID": launchID, "taskID": "ECC-101", "agentID": launchID,
+      "cwd": workspace.path, "repositoryPath": fixture.root.path,
+      "workspacePolicy": "isolated", "phase": "ready", "title": "Fix agent launch",
+      "reference": ["name": "fq-codex-\(launchID)", "serverPID": 10, "createdAt": 20,
+        "paneID": "%3", "panePID": 30, "tty": "/dev/ttys099", "executable": "/opt/homebrew/bin/tmux"],
+    ]
+    let intake = try JSONDecoder().decode(AgentIntakeReceipt.self,
+      from: JSONSerialization.data(withJSONObject: receipt))
+
+    try await model.importProvisionalAgentIntakes([intake])
+
+    let agent = try #require(model.visibleAgents(for: "ECC-101").first { $0.id == launchID })
+    #expect(agent.workspace?.path == workspace.path)
+    #expect(agent.workspace?.managed == true)
+    #expect(agent.sessionID == nil)
+    let label = try #require(await terminal.labels.last)
+    #expect(label.terminalWindowTitle == "ECC-101")
+    #expect(label.terminalTabTitle == "ECC-101 · Codex · \(launchID.suffix(6))")
+    let unchanged = try #require(try await store.load(ticketID: "ECC-101"))
+    try await model.importProvisionalAgentIntakes([intake])
+    #expect(try await store.load(ticketID: "ECC-101")?.updatedAt == unchanged.updatedAt)
+    #expect(await terminal.labels.count == 1)
+  }
+
+  @Test("An app-created launch enriches its assigned row without replacing task configuration")
+  func assignedLaunchEnrichesExistingAgent() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    let agentID = UUID().uuidString.lowercased()
+    let launchID = UUID().uuidString.lowercased()
+    let sessionID = UUID().uuidString.lowercased()
+    let workspace = fixture.root.appendingPathComponent("assigned-agent")
+    var assigned = TaskSubtask(id: agentID, title: "Keep configured title",
+      assignmentDescription: "Keep configured scope", provider: .codex,
+      status: .queued, progressSummary: "Waiting for launch",
+      includeInitializationPrompt: true, runtimeMode: .tmux)
+    assigned.initialPrompt = "Keep configured prompt"
+    assigned.tracksCompletion = true
+    assigned.parentSubtaskID = "parent-assignment"
+    assigned.workspace = .init(path: workspace.path, repositoryPath: fixture.root.path,
+      branch: "focus-queue/assigned", managed: true)
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: assigned)
+    let terminal = LabelRecorder()
+    let paneLabels = PaneLabelRecorder()
+    let model = await fixture.model(agent: ControlledQueueAgent(), terminalController: terminal,
+      labelTmuxPane: { reference, title in
+        await paneLabels.record(reference: reference, title: title)
+      })
+    let intake = try JSONDecoder().decode(AgentIntakeReceipt.self,
+      from: JSONSerialization.data(withJSONObject: [
+        "launchID": launchID, "taskID": "ECC-101", "agentID": agentID,
+        "sessionID": sessionID, "cwd": workspace.path,
+        "phase": "ready", "title": "Receipt title must not replace configuration",
+        "reference": ["name": "fq-task-ecc-101", "serverPID": 10,
+          "createdAt": 20, "paneID": "%3", "panePID": 30,
+          "tty": "/dev/ttys099", "executable": "/mock/tmux"],
+      ]))
+
+    try await model.importProvisionalAgentIntakes([intake])
+
+    let context = try #require(try await store.load(ticketID: "ECC-101"))
+    #expect(context.subtasks.count == 1)
+    let enriched = try #require(context.subtasks.first)
+    #expect(enriched.id == agentID)
+    #expect(enriched.title == "Keep configured title")
+    #expect(enriched.assignmentDescription == "Keep configured scope")
+    #expect(enriched.initialPrompt == "Keep configured prompt")
+    #expect(enriched.parentSubtaskID == "parent-assignment")
+    #expect(enriched.tracksCompletion)
+    #expect(enriched.workspace == assigned.workspace)
+    #expect(enriched.sessionID == sessionID)
+    #expect(enriched.tmux == intake.reference)
+    #expect(enriched.runtimeMode == .tmux)
+    #expect(!context.subtasks.contains { $0.id == launchID })
+    #expect(intake.discoveryEnvironment(in: context)["FOCUS_QUEUE_SUBTASK_ID"] == agentID)
+    let label = try #require(await terminal.labels.last)
+    #expect(label.subtaskID == agentID)
+    #expect(label.sessionID == sessionID)
+    let paneLabel = try #require(await paneLabels.labels.last)
+    #expect(paneLabel.reference == intake.reference)
+    #expect(paneLabel.title == "Codex: Keep configured title")
+  }
+
+  @Test("Pre-reference notifications do not discover, while one exact reference notification does")
+  func intakeReferenceGatesForcedDiscovery() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let counter = DiscoveryCounter()
+    let model = await fixture.model(agent: ControlledQueueAgent(), discoverExternalAgents: {
+      await counter.record()
+      return []
+    })
+    await counter.reset()
+    _ = try await TaskContextStore(root: fixture.root).ensureContext(ticket: fixture.tickets[0])
+    let launchID = UUID().uuidString.lowercased()
+    let directory = fixture.root.appendingPathComponent("tracking/launches")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let path = directory.appendingPathComponent("\(launchID).json")
+    var receipt: [String: Any] = [
+      "launchID": launchID, "taskID": "ECC-101", "agentID": "inherited-agent",
+      "cwd": fixture.root.path, "phase": "ready", "title": "Reference race",
+    ]
+    try JSONSerialization.data(withJSONObject: receipt).write(to: path)
+
+    await model.refreshExternalAgentRegistrations(force: true)
+    #expect(await counter.count == 0)
+    #expect(model.visibleAgents(for: "ECC-101").contains { $0.id == launchID })
+    #expect(!model.visibleAgents(for: "ECC-101").contains { $0.id == "inherited-agent" })
+
+    receipt["reference"] = ["name": "fq-codex-\(launchID)", "serverPID": 10,
+      "createdAt": 20, "paneID": "%3", "panePID": 30, "tty": "/dev/ttys099",
+      "executable": "/mock/tmux"]
+    try JSONSerialization.data(withJSONObject: receipt).write(to: path)
+    await model.refreshExternalAgentRegistrations(force: true)
+    await model.refreshExternalAgentRegistrations(force: true)
+    #expect(await counter.count == 1)
+  }
+
+  @Test("Dismissed launches stay dismissed and blocked launches remain until acknowledged")
+  func provisionalLaunchDismissalPersists() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let launchID = UUID().uuidString.lowercased()
+    func intake(phase: String) throws -> AgentIntakeReceipt {
+      try JSONDecoder().decode(AgentIntakeReceipt.self,
+        from: JSONSerialization.data(withJSONObject: [
+          "launchID": launchID, "taskID": "ECC-101", "cwd": fixture.root.path,
+          "phase": phase, "title": "Dismiss me",
+        ]))
+    }
+    let preparing = try intake(phase: "preparing")
+    try await model.importProvisionalAgentIntakes([preparing])
+    let provisional = try #require(model.visibleAgents(for: "ECC-101").first { $0.id == launchID })
+    model.removeAgent(provisional, from: fixture.tickets[0])
+    try await eventually { model.visibleAgents(for: "ECC-101").isEmpty }
+
+    try await model.importProvisionalAgentIntakes([preparing])
+    #expect(model.visibleAgents(for: "ECC-101").isEmpty)
+    let blockedID = UUID().uuidString.lowercased()
+    let blocked = try JSONDecoder().decode(AgentIntakeReceipt.self,
+      from: JSONSerialization.data(withJSONObject: [
+        "launchID": blockedID, "taskID": "ECC-101", "cwd": fixture.root.path,
+        "phase": "blocked", "note": "Workspace setup failed",
+    ]))
+    try await model.importProvisionalAgentIntakes([blocked])
+    let blockedAgent = try #require(model.visibleAgents(for: "ECC-101").first { $0.id == blockedID })
+    #expect(blockedAgent.status == .blocked)
+    #expect(blockedAgent.progressSummary == "Workspace setup failed")
+    model.removeAgent(blockedAgent, from: fixture.tickets[0])
+    try await eventually { !model.visibleAgents(for: "ECC-101").contains { $0.id == blockedID } }
+    let terminalContext = try #require(try await store.load(ticketID: "ECC-101"))
+    #expect(terminalContext.hasDismissedLaunch(blockedID))
+    try await model.importProvisionalAgentIntakes([blocked])
+    #expect(try await store.load(ticketID: "ECC-101")?.updatedAt == terminalContext.updatedAt)
+  }
+
+  @Test("A launch initializes an existing task directory when its context is missing")
+  func provisionalLaunchInitializesMissingContext() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let taskID = "ECC-404"
+    try FileManager.default.createDirectory(
+      at: fixture.root.appendingPathComponent("tasks/\(taskID)"),
+      withIntermediateDirectories: true)
+    let launchID = UUID().uuidString.lowercased()
+    let receipt = try JSONDecoder().decode(AgentIntakeReceipt.self,
+      from: JSONSerialization.data(withJSONObject: [
+        "launchID": launchID, "taskID": taskID, "cwd": fixture.root.path,
+        "phase": "ready", "title": "Recover missing context",
+      ]))
+
+    try await model.importProvisionalAgentIntakes([receipt])
+
+    let context = try #require(try await TaskContextStore(root: fixture.root).load(ticketID: taskID))
+    #expect(context.subtasks.contains { $0.id == launchID })
+    #expect(FileManager.default.fileExists(atPath: context.planPath))
+  }
+
   private func eventually(_ condition: @MainActor () async throws -> Bool) async throws {
     for _ in 0..<200 {
       if try await condition() { return }
@@ -1373,6 +1572,11 @@ private final class ObservationCounter: @unchecked Sendable {
   private var value = 0
   var count: Int { lock.withLock { value } }
   func record() { lock.withLock { value += 1 } }
+}
+
+private func externalWorkspace(for supportRoot: URL, suffix: String = "repo") -> URL {
+  supportRoot.deletingLastPathComponent().appendingPathComponent(
+    "\(supportRoot.lastPathComponent)-\(suffix)")
 }
 
 @MainActor
@@ -1402,12 +1606,16 @@ private struct Fixture {
              terminalController: (any WezTermControlling)? = nil,
              taskAgentLauncher: TaskAgentLauncher = TaskAgentLauncher(),
              connectorDiagnosticsRunner: any ProcessRunning = FoundationProcessRunner(),
+             discoverExternalAgents: @escaping @Sendable () async throws -> [KnownProviderProcess] = { [] },
+             labelTmuxPane: @escaping @Sendable (TmuxSessionReference, String) async -> Void = { _, _ in },
              locateExistingAgent: @escaping @Sendable (AgentProvider, String) async throws -> KnownProviderProcess? = { _, _ in nil }) async -> QueueViewModel {
     let boundary = ForbiddenExternalActions()
     let model = QueueViewModel(paths: paths, terminalController: terminalController ?? boundary,
       verifier: verifier ?? boundary, queueAgent: agent, pullRequestQueueLoader: boundary,
       taskAgentLauncher: taskAgentLauncher,
-      connectorDiagnosticsRunner: connectorDiagnosticsRunner, discoverExternalAgents: { [] },
+      connectorDiagnosticsRunner: connectorDiagnosticsRunner,
+      discoverExternalAgents: discoverExternalAgents,
+      labelTmuxPane: labelTmuxPane,
       maintenanceEnabled: false,
       locateExistingAgent: locateExistingAgent)
     await model.bootstrap()
@@ -1426,6 +1634,12 @@ private struct Fixture {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     try JSONEncoder().encode(report).write(to: directory.appendingPathComponent("\(report.runID).json"))
   }
+}
+
+private actor DiscoveryCounter {
+  private(set) var count = 0
+  func record() { count += 1 }
+  func reset() { count = 0 }
 }
 
 private actor DirectCreationRunner: ProcessRunning {
@@ -1500,6 +1714,35 @@ private actor DirectViewRecorder: WezTermControlling {
   }
   func focusOrSpawn(directory: String, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     throw TestFailure.unexpectedExternalAction
+  }
+}
+
+private actor LabelRecorder: WezTermControlling {
+  private(set) var labels: [TaskAgentSession] = []
+  func labelTmuxClients(session: TaskAgentSession,
+    configuration: WezTermConfiguration) async throws { labels.append(session) }
+  func listAttachablePanes(configuration: WezTermConfiguration) async throws -> [WezTermPane] { [] }
+  func listRunningAgents(configuration: WezTermConfiguration) async throws -> [RunningAgentSession] { [] }
+  func attach(paneID: Int, tabTitle: String, windowTitle: String,
+    configuration: WezTermConfiguration) async throws { throw TestFailure.unexpectedExternalAction }
+  func focusOrResume(session: TaskAgentSession, taskID: String,
+    configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    throw TestFailure.unexpectedExternalAction
+  }
+  func focusOrSpawn(directory: String, taskID: String,
+    configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    throw TestFailure.unexpectedExternalAction
+  }
+}
+
+private actor PaneLabelRecorder {
+  struct Label: Sendable {
+    let reference: TmuxSessionReference
+    let title: String
+  }
+  private(set) var labels: [Label] = []
+  func record(reference: TmuxSessionReference, title: String) {
+    labels.append(.init(reference: reference, title: title))
   }
 }
 

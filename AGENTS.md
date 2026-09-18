@@ -23,9 +23,12 @@
   the agent environment. Do not search transcript history unless direct
   registration is unavailable.
 - After association, ECC Focus Queue owns the terminal labels. Keep the window
-  title exactly equal to the ticket ID and each agent tab labeled
-  `<TICKET-ID> · <Provider> · <last 6 session UUID characters>`. Do not run
-  `tabname` again or otherwise overwrite those labels after attachment.
+  title exactly equal to the ticket ID. A shared task tmux session uses one
+  stable WezTerm tab label, `<TICKET-ID> · tmux`. Keep tmux pane presentation
+  plain: no Focus Queue pane-border label row or status padding beyond the
+  managed usage bar and native tmux window tabs. A direct terminal without
+  shared tmux may use `<TICKET-ID> · <Provider> · <last 6 session UUID characters>`.
+  Do not run `tabname` again or otherwise overwrite those labels after attachment.
 
 ## Delivery checkpoints
 

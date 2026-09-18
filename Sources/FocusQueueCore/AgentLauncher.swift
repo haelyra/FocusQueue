@@ -184,11 +184,10 @@ public actor TaskAgentLauncher {
       executable: tmuxExecutable)
     try? await runtime.label(reference, title: "\(subtask.provider.displayName): \(subtask.title)")
     if let persistence {
+      // Persistence is supplementary. Once the provider is live, a setup
+      // warning must never turn success into a retry that can duplicate it.
       do { try await persistence.enable(runner: runner) }
-      catch {
-        throw TmuxError.startedButUnconfirmed(name: reference.name, executable: tmuxExecutable, attempts: 3,
-          lastDetail: "The agent is running, but automatic layout saving needs attention. \(error.localizedDescription)")
-      }
+      catch { NSLog("Focus Queue tmux persistence setup warning: %@", error.localizedDescription) }
     }
     let bundledHelper = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/focus-queue-session").path
     if let helper = [bundledHelper, SetupEnvironment.executable("focus-queue-session")].compactMap({ $0 })

@@ -84,6 +84,21 @@ func liveManagedProviderSanity() async throws {
       }
       #expect(paneProcesses.contains { $0.contains("codex-wrapper") && $0.contains("--yolo") },
         "The installed Codex alias and usage bar must run inside the tmux pane")
+      let statusRows = try await fixture.tmux(["show-options", "-v", "-t", reference.name, "status"])
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      #expect(statusRows == "4", "The live usage bar must reserve its four tmux status rows")
+      let renderer = try await fixture.tmux([
+        "show-environment", "-t", reference.name, "FOCUS_QUEUE_USAGE_BAR_PATH",
+      ])
+      #expect(renderer.hasPrefix("FOCUS_QUEUE_USAGE_BAR_PATH=") && renderer.hasSuffix("/codex-bar.js"),
+        "The task session must retain the installed usage renderer path")
+      for line in 1...3 {
+        let format = try await fixture.tmux([
+          "show-options", "-v", "-t", reference.name, "status-format[\(line)]",
+        ])
+        #expect(format.contains("$FOCUS_QUEUE_USAGE_BAR_PATH") && format.contains("--line \(line)"),
+          "Usage row \(line) must render through the installed Codex bar")
+      }
       let persistence = try TmuxPersistence.prepare(executable: fixture.executable,
         serverName: fixture.server, supportDirectory: fixture.support)
       let actualSaveDirectory = try await fixture.tmux(["show-options", "-gqv", "@resurrect-dir"])
@@ -169,6 +184,7 @@ private final class LiveAgentFixture: @unchecked Sendable {
   let taskID: String
   let sibling = "legacy-sibling"
   let repository: URL
+  var primaryRepository: URL?
   var siblingReference: TmuxSessionReference?
   var source: URL { root.appendingPathComponent("source") }
   var support: URL { root.appendingPathComponent("support") }
@@ -194,6 +210,9 @@ private final class LiveAgentFixture: @unchecked Sendable {
     // A linked checkout inherits the user's existing repository trust, while all
     // writable files and task support state remain in this test's unique root.
     _ = try await git(["worktree", "add", "--detach", source.path, "HEAD"], at: repository.path)
+    let commonDirectory = try await git(
+      ["rev-parse", "--path-format=absolute", "--git-common-dir"], at: source.path)
+    primaryRepository = URL(fileURLWithPath: commonDirectory).deletingLastPathComponent()
     // Reproduce the real first-launch condition: another session already exists.
     siblingReference = try await controller.start(name: sibling, directory: root.path,
       command: ["/bin/sleep", "600"], executable: executable)
@@ -230,7 +249,13 @@ private final class LiveAgentFixture: @unchecked Sendable {
       return process.terminationStatus == 0
     }
     _ = command(executable, ["-f", "/dev/null", "-L", server, "kill-server"])
-    let agentsRoot = support.appendingPathComponent("worktrees/agents")
+    // Managed isolation resolves linked worktrees back to the primary checkout.
+    // Teardown must use that same root or its clean agent worktrees are left
+    // registered beside the repository after a successful live sanity run.
+    let managedRoot = TaskWorktreeManager.managedRoot(
+      repositoryPath: primaryRepository?.path ?? repository.path)
+    let taskRoot = managedRoot.appendingPathComponent(taskID.lowercased())
+    let agentsRoot = taskRoot.appendingPathComponent("agents")
     let agentWorktrees = (try? FileManager.default.contentsOfDirectory(at: agentsRoot, includingPropertiesForKeys: nil)) ?? []
     var retained = false
     for worktree in agentWorktrees + [source] where FileManager.default.fileExists(atPath: worktree.path) {
@@ -239,6 +264,9 @@ private final class LiveAgentFixture: @unchecked Sendable {
     for worktree in agentWorktrees {
       let branch = "focus-queue/\(taskID.lowercased())-\(worktree.lastPathComponent.lowercased())"
       _ = command("/usr/bin/git", ["branch", "-d", branch])
+    }
+    if agentWorktrees.allSatisfy({ !FileManager.default.fileExists(atPath: $0.path) }) {
+      try? FileManager.default.removeItem(at: taskRoot)
     }
     if retained { Issue.record("Sanity cleanup retained changed fixture work at \(root.path)") }
     else { try? FileManager.default.removeItem(at: root) }

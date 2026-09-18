@@ -29,6 +29,15 @@ if [[ "$action" == sanitize ]]; then
   [[ "$snapshot" == "$snapshots"/tmux_resurrect_*.txt ]] || exit 64
   # Save layout and folders, without storing the agents' launch prompts/argv.
   /usr/bin/awk 'BEGIN { FS="\t"; OFS="\t" } $1 == "pane" { $10="shell"; $11=":" } { print }' "$snapshot" > "$snapshot.clean"
+  "$FQ_TMUX_EXECUTABLE" -u -L "$FQ_TMUX_SERVER" list-panes -a \
+    -F $'focus_queue\t#{session_name}\t#{window_index}\t#{pane_index}\t#{@focus-queue-task}\t#{@focus-queue-agent}\t#{@focus-queue-restored-agent}' \
+    | /usr/bin/awk 'BEGIN { FS="\t"; OFS="\t" }
+      $1 == "focus_queue" && $2 ~ /^fq-task-[A-Za-z0-9_-]+$/ && $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ &&
+      $5 ~ /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/ && ($6 == "" || $6 ~ /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/) &&
+      ($7 == "" || $7 ~ /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/) {
+        if ($6 == "") $6=$7; NF=6; print
+      }' \
+    >> "$snapshot.clean"
   /bin/mv "$snapshot.clean" "$snapshot"
   exit 0
 fi
@@ -153,7 +162,9 @@ case "$action" in
     if [[ -s "$snapshots/recovery/last" ]]; then restore_directory="$snapshots/recovery"; fi
     [[ -s "$restore_directory/last" ]] || { printf '%s\n' 'There is no saved layout to restore.' >&2; exit 1; }
     before=$(tmux list-panes -a -F '#{pane_id}')
+    before_sessions=$(tmux list-sessions -F '#{session_name}')
     expected_targets=$(/usr/bin/awk 'BEGIN { FS="\t" } $1 == "pane" { print $2 ":" $3 "." $6 }' "$restore_directory/last")
+    expected_sessions=$(/usr/bin/awk 'BEGIN { FS="\t" } $1 == "pane" { print $2 }' "$restore_directory/last" | /usr/bin/sort -u)
     [[ -n "$expected_targets" ]] || { printf '%s\n' 'The saved layout contains no panes.' >&2; exit 1; }
     tmux set-option -g @resurrect-dir "$restore_directory"
     # Never let a custom default-command replay an old provider invocation.
@@ -170,6 +181,37 @@ case "$action" in
         exit 1
       }
     done <<< "$expected_targets"
+    # Apply ownership only after resurrect has finished replacing its bootstrap
+    # pane. Earlier assignment can land on the pane that restore then removes.
+    while IFS=$'\t' read -r kind session window pane task agent extra; do
+      [[ "$kind" == focus_queue ]] || continue
+      [[ "$session" =~ ^fq-task-[A-Za-z0-9_-]+$ && "$window" =~ ^[0-9]+$ && "$pane" =~ ^[0-9]+$ ]] || continue
+      [[ "$task" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$ ]] || continue
+      [[ -z "$agent" || "$agent" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$ ]] || continue
+      # Never adopt a reserved-name session that belonged to another caller
+      # before this restore. This also protects preexisting panes if resurrect
+      # adds a saved window to a colliding session name.
+      printf '%s\n' "$before_sessions" | /usr/bin/grep -Fqx -- "$session" && continue
+      target="=$session:$window.$pane"
+      pane_id=$(tmux display-message -p -t "$target" '#{pane_id}') || continue
+      tmux set-option -t "=$session:" @focus-queue-task "$task"
+      if ! printf '%s\n' "$before" | /usr/bin/grep -Fqx -- "$pane_id"; then
+        tmux set-option -p -u -t "$target" @focus-queue-agent 2>/dev/null || true
+        if [[ -n "$agent" ]]; then
+          tmux set-option -p -t "$target" @focus-queue-restored-agent "$agent"
+        fi
+      fi
+    done < "$restore_directory/last"
+    # Older snapshots have no Focus Queue metadata. Only a reserved session
+    # named in the snapshot and newly created by this restore may infer task
+    # ownership. Panes remain unassigned shells.
+    while IFS=$'\t' read -r session owner; do
+      [[ "$session" =~ ^fq-task-[A-Za-z0-9_-]+$ && -z "$owner" ]] || continue
+      printf '%s\n' "$expected_sessions" | /usr/bin/grep -Fqx -- "$session" || continue
+      printf '%s\n' "$before_sessions" | /usr/bin/grep -Fqx -- "$session" && continue
+      task=$(printf '%s' "${session#fq-task-}" | /usr/bin/tr '[:lower:]' '[:upper:]')
+      tmux set-option -t "=$session:" @focus-queue-task "$task"
+    done < <(tmux list-sessions -F $'#{session_name}\t#{@focus-queue-task}')
     while IFS= read -r pane; do
       if ! printf '%s\n' "$before" | /usr/bin/grep -Fqx -- "$pane"; then
         tmux set-option -p -t "$pane" @focus-queue-restored 1

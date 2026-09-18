@@ -53,6 +53,7 @@ class InstallerTests(unittest.TestCase):
         shell = path / "Contents/Resources/shell"
         shell.mkdir()
         (shell / "focus_queue_codex_entry.py").write_bytes(b"entry:" + content)
+        (shell / "focus_queue_usage_wrapper.sh").write_bytes(b"wrapper:" + content)
         automation = path / "Contents/Resources/automation"
         for relative in self.automation_files:
             destination = automation / relative
@@ -100,6 +101,8 @@ class InstallerTests(unittest.TestCase):
         entry = self.installer.codex_entry
         entry.parent.mkdir(parents=True)
         entry.write_bytes(b"entry:previous")
+        usage_wrapper = self.installer.codex_usage_wrapper
+        usage_wrapper.write_bytes(b"wrapper:previous")
         shell = entry.parent / "codex.zsh"
         shell.write_text("my configured aliases and flags")
         prompt = self.installer.codex_prompt
@@ -107,6 +110,7 @@ class InstallerTests(unittest.TestCase):
         prompt.write_text("Personal text\n")
         self.installer.install()
         self.assertEqual(entry.read_bytes(), b"entry:new executable")
+        self.assertEqual(usage_wrapper.read_bytes(), b"wrapper:new executable")
         self.assertEqual(shell.read_text(), "my configured aliases and flags")
         installed_prompt = prompt.read_bytes()
         MODULE.uninstall(self.home, stop=False)

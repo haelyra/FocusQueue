@@ -15,6 +15,43 @@ struct ExternalAgentRegistrationTests {
         return (root, store)
     }
 
+    @Test("Launch metadata resolves an exact pane inside a shared task session and keeps legacy names")
+    func launchMetadataMatchesExactReference() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("launch-metadata-test-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("shell/launch-metadata")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let first = TmuxSessionReference(name: "fq-task-ecc-101", serverPID: 10,
+            createdAt: 20, paneID: "%3", panePID: 30, tty: "/dev/ttys003",
+            executable: "/mock/tmux")
+        let second = TmuxSessionReference(name: first.name, serverPID: first.serverPID,
+            createdAt: first.createdAt, paneID: "%4", panePID: 40,
+            tty: "/dev/ttys004", executable: first.executable)
+        func write(_ name: String, prompt: String, reference: TmuxSessionReference) throws {
+            let payload: [String: Any] = [
+                "initialPrompt": prompt,
+                "reference": ["name": reference.name, "serverPID": reference.serverPID,
+                    "createdAt": reference.createdAt, "paneID": reference.paneID,
+                    "panePID": reference.panePID, "tty": reference.tty,
+                    "executable": reference.executable],
+            ]
+            try JSONSerialization.data(withJSONObject: payload)
+                .write(to: directory.appendingPathComponent(name + ".json"))
+        }
+        try write("fq-task-ecc-101-agent-one", prompt: "First pane", reference: first)
+        try write("fq-task-ecc-101-agent-two", prompt: "Second pane", reference: second)
+
+        #expect(try ExternalAgentLaunchMetadata.load(
+            matching: second, supportDirectory: root)?.initialPrompt == "Second pane")
+
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("fq-task-ecc-101-agent-one.json"))
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("fq-task-ecc-101-agent-two.json"))
+        try write(first.name, prompt: "Legacy pane", reference: first)
+        #expect(try ExternalAgentLaunchMetadata.load(
+            matching: first, supportDirectory: root)?.initialPrompt == "Legacy pane")
+    }
+
     @Test("Explicit attachment replaces a deleted association without reviving its old work")
     func clearedAssociation() async throws {
         let (root, store) = try await fixture()

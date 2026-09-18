@@ -45,7 +45,7 @@ class TrackingSanityTests(unittest.TestCase):
                 "commit", "-qm", "initial", "--allow-empty")
             agent_id = str(uuid.uuid4())
             branch = "focus-queue/sanity-" + agent_id
-            workspace = support / "worktrees/agents" / agent_id
+            workspace = root / "repo-worktrees/ecc-sanity/agents" / agent_id.lower()
             workspace.parent.mkdir(parents=True)
             git("worktree", "add", "-b", branch, str(workspace))
             context = json.loads(context_file.read_text())

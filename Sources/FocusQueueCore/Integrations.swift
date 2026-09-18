@@ -257,6 +257,19 @@ public protocol WezTermControlling: Sendable {
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult
 
+    func openManagedAgentRuntime(
+        _ tmux: TmuxSessionReference,
+        taskID: String,
+        subtaskID: String,
+        provider: AgentProvider,
+        configuration: WezTermConfiguration
+    ) async throws -> TerminalActionResult
+
+    func labelTmuxClients(
+        session: TaskAgentSession,
+        configuration: WezTermConfiguration
+    ) async throws
+
     func openAgentRuntime(_ subtask: TaskSubtask, taskID: String,
                           configuration: WezTermConfiguration) async throws -> TerminalActionResult
 
@@ -270,10 +283,16 @@ public protocol WezTermControlling: Sendable {
 }
 
 public extension WezTermControlling {
+    func labelTmuxClients(
+        session: TaskAgentSession,
+        configuration: WezTermConfiguration
+    ) async throws {}
+
     func openAgentRuntime(_ subtask: TaskSubtask, taskID: String,
                           configuration: WezTermConfiguration) async throws -> TerminalActionResult {
         if let tmux = subtask.tmux {
-            return try await openManagedRuntime(tmux, taskID: taskID, provider: subtask.provider, configuration: configuration)
+            return try await openManagedAgentRuntime(tmux, taskID: taskID,
+                subtaskID: subtask.id, provider: subtask.provider, configuration: configuration)
         }
         guard let paneID = subtask.terminalPaneID else { throw WezTermError.runtimeClosed }
         return try await openDirectRuntime(paneID: paneID, socketPath: subtask.terminalSocketPath,
@@ -291,6 +310,17 @@ public extension WezTermControlling {
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult {
         throw TmuxError.unavailable("This terminal integration cannot open managed sessions.")
+    }
+
+    func openManagedAgentRuntime(
+        _ tmux: TmuxSessionReference,
+        taskID: String,
+        subtaskID: String,
+        provider: AgentProvider,
+        configuration: WezTermConfiguration
+    ) async throws -> TerminalActionResult {
+        try await openManagedRuntime(
+            tmux, taskID: taskID, provider: provider, configuration: configuration)
     }
 
     func openDirectRuntime(
@@ -323,12 +353,13 @@ public enum WezTermError: Error, LocalizedError {
 public actor WezTermController: WezTermControlling {
     private let runner: any ProcessRunning
     private let candidateSockets: [String]?
+    private let labelAttempts: Int
 
     public init(runner: any ProcessRunning = FoundationProcessRunner(), candidateSockets: [String]? = nil,
                 verificationAttempts: Int = 10) {
         self.runner = runner
         self.candidateSockets = candidateSockets
-        _ = verificationAttempts
+        self.labelAttempts = max(1, min(verificationAttempts, 10))
     }
 
     public func focusPane(_ pane: WezTermPane, configuration: WezTermConfiguration) async throws {
@@ -510,6 +541,11 @@ public actor WezTermController: WezTermControlling {
             throw TmuxError.unavailable(
                 "This entry predates managed sessions and cannot be reopened. Start a new, clearly named agent from Focus Queue.")
         }
+        if let subtaskID = session.subtaskID {
+            return try await openManagedAgentRuntime(
+                tmux, taskID: taskID, subtaskID: subtaskID,
+                provider: session.provider, configuration: configuration)
+        }
         return try await openManagedRuntime(
             tmux, taskID: taskID, provider: session.provider, configuration: configuration)
     }
@@ -518,7 +554,8 @@ public actor WezTermController: WezTermControlling {
                                  configuration: WezTermConfiguration) async throws -> TerminalActionResult {
         let title = subtask.sessionID.map { AgentTerminalLabels.tabTitle(ticketID: taskID, provider: subtask.provider, sessionID: $0) }
         if let tmux = subtask.tmux {
-            return try await openManagedRuntime(tmux, taskID: taskID, provider: subtask.provider,
+            return try await openManagedRuntime(tmux, taskID: taskID,
+                subtaskID: subtask.id, provider: subtask.provider,
                 configuration: configuration, tabTitle: title)
         }
         guard let paneID = subtask.terminalPaneID else { throw WezTermError.runtimeClosed }
@@ -532,16 +569,36 @@ public actor WezTermController: WezTermControlling {
         provider: AgentProvider,
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult {
-        try await openManagedRuntime(saved, taskID: taskID, provider: provider, configuration: configuration, tabTitle: nil)
+        try await openManagedRuntime(saved, taskID: taskID, subtaskID: nil,
+            provider: provider, configuration: configuration, tabTitle: nil)
     }
 
-    private func openManagedRuntime(_ saved: TmuxSessionReference, taskID: String, provider: AgentProvider,
+    public func openManagedAgentRuntime(
+        _ saved: TmuxSessionReference,
+        taskID: String,
+        subtaskID: String,
+        provider: AgentProvider,
+        configuration: WezTermConfiguration
+    ) async throws -> TerminalActionResult {
+        try await openManagedRuntime(saved, taskID: taskID, subtaskID: subtaskID,
+            provider: provider, configuration: configuration, tabTitle: nil)
+    }
+
+    private func openManagedRuntime(_ saved: TmuxSessionReference, taskID: String,
+                                    subtaskID: String?, provider: AgentProvider,
                                     configuration: WezTermConfiguration, tabTitle: String?) async throws -> TerminalActionResult {
         if saved.name.hasPrefix("fq-task-"), saved.name != (try TmuxController.taskSessionName(taskID: taskID)) {
             throw TmuxError.changed
         }
         let runtime = TmuxController(runner: runner)
-        let live = try await runtime.verify(saved)
+        let live: TmuxSessionReference
+        if saved.name.hasPrefix("fq-task-") {
+            guard let subtaskID else { throw TmuxError.changed }
+            live = try await runtime.verifyAgent(
+                saved, taskID: taskID, subtaskID: subtaskID, executable: saved.executable)
+        } else {
+            live = try await runtime.verify(saved)
+        }
         // Externally created sessions can also have several panes or windows.
         // Selecting the saved identity is required before attaching its view.
         try await runtime.select(live)
@@ -574,7 +631,9 @@ public actor WezTermController: WezTermControlling {
         let pinned = connection.configuration
         let panes = try Self.decodePanes(from: connection.result)
         let clients = try await runtime.clientTTYs(for: live)
-        let tabTitle = tabTitle ?? "\(taskID.uppercased()) · \(provider.displayName) · managed"
+        let tabTitle = live.name.hasPrefix("fq-task-")
+            ? "\(taskID.uppercased()) · tmux"
+            : tabTitle ?? "\(taskID.uppercased()) · \(provider.displayName) · managed"
         if let pane = panes.first(where: { $0.ttyName.map(clients.contains) == true }) {
             try await focus(
                 pane: pane, tabTitle: tabTitle, windowTitle: taskID.uppercased(),
@@ -582,8 +641,7 @@ public actor WezTermController: WezTermControlling {
             return .focused(paneID: pane.paneID)
         }
 
-        let command = try TmuxController.attachCommand(
-            name: live.name, executable: live.executable)
+        let command = try TmuxController.attachCommand(reference: live)
         let spawn = try await runner.run(ProcessSpecification(
             executable: pinned.executable,
             arguments: ["cli", "spawn", "--new-window", "--domain-name", "local", "--"] + command,
@@ -911,15 +969,35 @@ public actor WezTermController: WezTermControlling {
 
     public func labelTmuxClients(session: TaskAgentSession, configuration: WezTermConfiguration) async throws {
         guard let reference = session.tmux else { return }
-        let clients = try await TmuxController(runner: runner).clientTTYs(for: reference)
-        guard !clients.isEmpty else { return }
-        let connection = try await WezTermConnection.resolve(configuration: configuration,
-            runner: runner, candidateSockets: candidateSockets)
-        guard connection.result.succeeded else { return }
-        for pane in try Self.decodePanes(from: connection.result) where pane.ttyName.map(clients.contains) == true {
-            try await attach(paneID: pane.paneID, tabTitle: session.terminalTabTitle,
-                windowTitle: session.terminalWindowTitle, configuration: connection.configuration)
+        var lastError: (any Error)?
+        for attempt in 0..<labelAttempts {
+            do {
+                let clients = try await TmuxController(runner: runner).clientTTYs(for: reference)
+                if !clients.isEmpty {
+                    let connection = try await WezTermConnection.resolve(configuration: configuration,
+                        runner: runner, candidateSockets: candidateSockets)
+                    if connection.result.succeeded {
+                        let panes = try Self.decodePanes(from: connection.result).filter {
+                            $0.ttyName.map(clients.contains) == true
+                        }
+                        if !panes.isEmpty {
+                            let tabTitle = reference.name.hasPrefix("fq-task-")
+                                ? "\(session.ticketID.uppercased()) · tmux"
+                                : session.terminalTabTitle
+                            for pane in panes {
+                                try await attach(paneID: pane.paneID,
+                                    tabTitle: tabTitle,
+                                    windowTitle: session.terminalWindowTitle,
+                                    configuration: connection.configuration)
+                            }
+                            return
+                        }
+                    }
+                }
+            } catch { lastError = error }
+            if attempt + 1 < labelAttempts { try await Task.sleep(for: .milliseconds(200)) }
         }
+        if let lastError { throw lastError }
     }
 
     private func discoverAgents(

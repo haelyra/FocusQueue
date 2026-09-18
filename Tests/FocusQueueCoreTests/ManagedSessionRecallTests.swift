@@ -75,6 +75,25 @@ struct ManagedSessionRecallTests {
     #expect(await runner.calls.isEmpty)
   }
 
+  @Test("A shared task pane must carry the exact agent tag before recall")
+  func wrongAgentPane() async throws {
+    let pane = "fq-task-ecc-1|123|1000|%0|124|/dev/ttys099|0|@1|0|160|50|0|0|80|24|other-agent||1|auto\n"
+    let runner = ManagedRecallRunner([result("ECC-1\n"), result(pane)])
+    let reference = TmuxSessionReference(name: "fq-task-ecc-1", serverPID: 123,
+      createdAt: 1000, paneID: "%0", panePID: 124, tty: "/dev/ttys099",
+      executable: "/mock/tmux")
+    let subtask = TaskSubtask(id: "expected-agent", title: "Expected", provider: .codex,
+      tmux: reference, runtimeMode: .tmux)
+    await #expect(throws: TmuxError.self) {
+      try await WezTermController(runner: runner, candidateSockets: []).openAgentRuntime(
+        subtask, taskID: "ECC-1", configuration: .init(executable: "/mock/wezterm"))
+    }
+    let calls = await runner.calls
+    #expect(calls.first?.arguments.contains("show-options") == true)
+    #expect(!calls.flatMap(\.arguments).contains("activate-pane"))
+    #expect(!calls.flatMap(\.arguments).contains("spawn"))
+  }
+
   @Test("A stopped or replaced runtime never starts a provider fallback")
   func endedRuntime() async throws {
     let runner = ManagedRecallRunner([result(exit: 1)])

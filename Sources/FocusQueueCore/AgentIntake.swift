@@ -4,6 +4,7 @@ import Foundation
 /// metadata never grants permission to resume, complete, or delete anything.
 public struct AgentIntakeReceipt: Decodable, Identifiable, Sendable {
     public let launchID: String
+    public let createdAt: String?
     public let cwd: String
     public let title: String?
     public let role: String?
@@ -14,15 +15,22 @@ public struct AgentIntakeReceipt: Decodable, Identifiable, Sendable {
     public let sessionID: String?
     public let taskID: String?
     public let agentID: String?
+    public let repositoryPath: String?
+    public let branch: String?
+    public let baseBranch: String?
+    public let baseCommit: String?
+    public let workspacePolicy: String?
     public let reference: TmuxSessionReference?
     public var id: String { "intake-" + launchID }
 
     private enum CodingKeys: String, CodingKey {
-        case launchID, cwd, title, role, phase, note, processID, processStartedAt, sessionID, taskID, agentID, reference
+        case launchID, createdAt, cwd, title, role, phase, note, processID, processStartedAt, sessionID, taskID, agentID
+        case repositoryPath, branch, baseBranch, baseCommit, workspacePolicy, reference
     }
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         launchID = try values.decode(String.self, forKey: .launchID)
+        createdAt = try? values.decodeIfPresent(String.self, forKey: .createdAt)
         cwd = (try? values.decodeIfPresent(String.self, forKey: .cwd)) ?? ""
         title = try? values.decodeIfPresent(String.self, forKey: .title)
         role = try? values.decodeIfPresent(String.self, forKey: .role)
@@ -33,14 +41,101 @@ public struct AgentIntakeReceipt: Decodable, Identifiable, Sendable {
         sessionID = try? values.decodeIfPresent(String.self, forKey: .sessionID)
         taskID = try? values.decodeIfPresent(String.self, forKey: .taskID)
         agentID = try? values.decodeIfPresent(String.self, forKey: .agentID)
+        repositoryPath = try? values.decodeIfPresent(String.self, forKey: .repositoryPath)
+        branch = try? values.decodeIfPresent(String.self, forKey: .branch)
+        baseBranch = try? values.decodeIfPresent(String.self, forKey: .baseBranch)
+        baseCommit = try? values.decodeIfPresent(String.self, forKey: .baseCommit)
+        workspacePolicy = try? values.decodeIfPresent(String.self, forKey: .workspacePolicy)
         reference = try? values.decodeIfPresent(TmuxSessionReference.self, forKey: .reference)
+    }
+
+    /// App-created launches already have a task-owned agent row. Trust that
+    /// identity only while it still names an active Codex agent in the exact
+    /// task from this receipt. Inherited or stale shell variables must not
+    /// attach a new process to an unrelated row.
+    public func effectiveSubtaskID(in context: TaskContext?) -> String {
+        guard let context, let taskID,
+            context.ticketID.caseInsensitiveCompare(taskID) == .orderedSame,
+            let agentID,
+            context.subtasks.contains(where: {
+                guard $0.id == agentID, $0.provider == .codex, !$0.isAssignmentOnly,
+                    $0.agentRemovedAt == nil, $0.status != .completed else { return false }
+                guard let existingSessionID = $0.sessionID, let sessionID else { return true }
+                return existingSessionID.caseInsensitiveCompare(sessionID) == .orderedSame
+            }) else { return launchID }
+        return agentID
+    }
+
+    public func discoveryEnvironment(in context: TaskContext?) -> [String: String] {
+        guard let taskID else { return [:] }
+        return ["FOCUS_QUEUE_TASK_ID": taskID,
+            "FOCUS_QUEUE_SUBTASK_ID": effectiveSubtaskID(in: context)]
+    }
+
+    public func provisionalSubtask(
+        subtaskID: String? = nil, merging existing: TaskSubtask? = nil,
+        now: Date = Date()
+    ) -> TaskSubtask {
+        let name = TaskSubtask.agentName(prompt: title ?? "Codex agent", provider: .codex)
+        var subtask = existing ?? TaskSubtask(id: subtaskID ?? launchID, title: name, provider: .codex,
+            status: phase == "blocked" ? .blocked : .working,
+            progressSummary: phase == "blocked" ? (note ?? "Launch needs attention.")
+                : phase == "ready" ? "Codex started; waiting for its session ID."
+                : "Preparing the isolated workspace.",
+            lastHeartbeatAt: now, includeInitializationPrompt: false, tmux: reference,
+            runtimeMode: reference == nil ? nil : .tmux)
+        if existing == nil { subtask.tracksCompletion = false }
+        if subtask.lastHeartbeatAt == nil { subtask.lastHeartbeatAt = now }
+        if subtask.status != .completed { subtask.status = phase == "blocked" ? .blocked : .working }
+        if subtask.progressSummary.isEmpty {
+            subtask.progressSummary = phase == "blocked" ? (note ?? "Launch needs attention.")
+                : phase == "ready" ? "Codex started; waiting for its session ID."
+                : "Preparing the isolated workspace."
+        }
+        if let sessionID, let exact = UUID(uuidString: sessionID)?.uuidString.lowercased() {
+            subtask.sessionID = exact
+        }
+        if let reference { subtask.tmux = reference; subtask.runtimeMode = .tmux }
+        if subtask.workspace == nil, cwd.hasPrefix("/") {
+            subtask.workspace = AgentWorkspace(path: cwd, repositoryPath: repositoryPath ?? cwd,
+                branch: branch, baseBranch: baseBranch, baseCommit: baseCommit,
+                managed: workspacePolicy == "isolated")
+        }
+        return subtask
     }
 
     public var pendingRegistration: ExternalAgentRegistration {
         ExternalAgentRegistration(id: id, provider: .codex, sessionID: nil, agentID: launchID,
             cwd: cwd, title: title?.isEmpty == false ? title! : "Codex agent",
+            taskID: taskID, subtaskID: launchID,
             reason: note ?? "Tracked launch. Waiting for provider identity and optional task details.",
             eventName: phase ?? "pending", updatedAt: .distantPast, tmux: reference)
+    }
+
+    /// Unresolved launch receipts remain visible until the user dismisses them
+    /// or an exact provider identity resolves them. Age and a failed phase do
+    /// not prove that the recorded process or its workspace is safe to forget.
+    public var isTerminal: Bool { isTerminal(at: Date()) }
+
+    public func isTerminal(at now: Date, staleAfter: TimeInterval = 300) -> Bool {
+        _ = now; _ = staleAfter
+        return false
+    }
+
+    public var isReadyForDiscovery: Bool { reference != nil && phase != "blocked" }
+
+    public var discoveryKey: String? {
+        guard let reference, isReadyForDiscovery else { return nil }
+        return [launchID, reference.name, String(reference.serverPID), String(reference.createdAt),
+            reference.paneID, String(reference.panePID), reference.tty, reference.executable]
+            .joined(separator: "|")
+    }
+
+    private static func date(_ value: String) -> Date? {
+        let precise = ISO8601DateFormatter()
+        precise.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let result = precise.date(from: value) { return result }
+        return ISO8601DateFormatter().date(from: value)
     }
 }
 
@@ -59,8 +154,8 @@ public enum AgentIntakeStore {
         }
     }
 
-    /// Exact pane identity or process ancestry connects the provisional receipt
-    /// to an already verified native session ID. CWD alone is never sufficient.
+    /// Exact pane identity connects the provisional receipt to an already
+    /// verified native session ID. CWD or process ancestry is never sufficient.
     public static func match(_ process: KnownProviderProcess, tmux: TmuxSessionReference?,
                              receipts: [AgentIntakeReceipt], parents: [Int32: ProcessIdentity],
                              candidateSessionsForProcess: Set<String> = []) -> AgentIntakeReceipt? {
@@ -71,18 +166,10 @@ public enum AgentIntakeStore {
             // A provider can own a parent and several child threads in one PID.
             // Process/pane identity alone cannot select the launch's root UUID.
             if candidateSessionsForProcess.count > 1 && receipt.sessionID == nil { return false }
-            if let reference = receipt.reference { return reference == tmux }
-            guard let ancestor = receipt.processID, let started = receipt.processStartedAt,
-                parents[ancestor]?.startedAt == started else { return false }
-            var pid = process.processID
-            var visited = Set<Int32>()
-            for _ in 0..<64 {
-                if pid == ancestor { return ExternalAgentRegistry.normalized(receipt.cwd) == ExternalAgentRegistry.normalized(process.cwd) }
-                guard visited.insert(pid).inserted, let parent = parents[pid]?.parent, parent > 1 else { return false }
-                pid = parent
-            }
-            return false
+            guard let reference = receipt.reference else { return false }
+            return reference == tmux
         }
+        _ = parents // Retained for source compatibility with older callers.
         return matches.count == 1 ? matches[0] : nil
     }
 
@@ -135,6 +222,6 @@ public enum AgentIntakeStore {
     }
 
     public static func pending(root: URL) -> [ExternalAgentRegistration] {
-        unresolved(root: root).map(\.pendingRegistration)
+        unresolved(root: root).filter { !$0.isTerminal }.map(\.pendingRegistration)
     }
 }

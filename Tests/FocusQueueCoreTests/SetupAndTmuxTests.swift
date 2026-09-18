@@ -80,6 +80,10 @@ struct SetupAndTmuxTests {
     #expect(Array(args.suffix(2)) == command)
     #expect(args.contains("/tmp/with spaces"))
     #expect(args.contains("WEZTERM_PANE"))
+    let reference = TmuxSessionReference(name: "fq-test", serverPID: 1, createdAt: 2,
+      paneID: "%3", panePID: 4, tty: "/dev/ttys001", executable: "/opt/tmux")
+    let attach = try TmuxController.attachCommand(reference: reference)
+    #expect(Array(attach.suffix(11)) == ["select-window", "-t", "%3", ";", "select-pane", "-t", "%3", ";", "attach-session", "-t", "=fq-test"])
     for name in ["-flag", "a:b", "a.b", "a;kill-server", "$(id)", "a\nb", "", String(repeating: "a", count: 81)] {
       #expect(throws: TmuxError.self) { try TmuxController.validateName(name) }
     }
@@ -90,6 +94,19 @@ struct SetupAndTmuxTests {
     for host in ["-oProxyCommand=id", "a;id", "a b", "user@host\ncommand", "user@$(id)"] {
       #expect(throws: TmuxError.self) { try TmuxController.sshCommand(host: host, name: "fq-test") }
     }
+  }
+
+  @Test("Generic tmux start cannot claim a reserved task session")
+  func genericStartRejectsTaskNamespace() async throws {
+    let runner = TmuxSequenceRunner([
+      .init(exitCode: 1, standardOutput: "", standardError: "must not run", timedOut: false),
+    ])
+    await #expect(throws: TmuxError.self) {
+      try await TmuxController(runner: runner).start(
+        name: "fq-task-ecc-35", directory: "/tmp",
+        command: ["/bin/sleep", "30"], executable: "/mock/tmux")
+    }
+    #expect(await runner.calls.isEmpty)
   }
 
   @Test("tmux identity survives registration updates and rejects a reused runtime")

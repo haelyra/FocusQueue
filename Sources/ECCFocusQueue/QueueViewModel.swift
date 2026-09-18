@@ -153,7 +153,10 @@ final class QueueViewModel {
   @ObservationIgnored private var planPresentationID = UUID()
   @ObservationIgnored private var planReadID = UUID()
   @ObservationIgnored private var lastExternalAgentDiscovery: Date?
+  @ObservationIgnored private var forcedIntakeReferenceKeys: Set<String> = []
+  @ObservationIgnored private var labeledIntakeReferenceKeys: Set<String> = []
   @ObservationIgnored private let discoverExternalAgents: @Sendable () async throws -> [KnownProviderProcess]
+  @ObservationIgnored private let labelTmuxPane: @Sendable (TmuxSessionReference, String) async -> Void
   @ObservationIgnored private let locateExistingAgent: @Sendable (AgentProvider, String) async throws -> KnownProviderProcess?
 
   @ObservationIgnored var placementHandler: ((QueueWindowPlacement) -> Void)?
@@ -191,6 +194,9 @@ final class QueueViewModel {
     discoverExternalAgents: @escaping @Sendable () async throws -> [KnownProviderProcess] = {
       try await WezTermController().knownProviderProcesses()
     },
+    labelTmuxPane: @escaping @Sendable (TmuxSessionReference, String) async -> Void = { reference, title in
+      _ = try? await TmuxController().label(reference, title: title)
+    },
     maintenanceEnabled: Bool = true,
     locateExistingAgent: @escaping @Sendable (AgentProvider, String) async throws -> KnownProviderProcess? = { provider, sessionID in
       try await WezTermController().locateProviderProcess(provider: provider, sessionID: sessionID)
@@ -199,6 +205,7 @@ final class QueueViewModel {
     self.paths = paths
     self.maintenanceEnabled = maintenanceEnabled
     self.discoverExternalAgents = discoverExternalAgents
+    self.labelTmuxPane = labelTmuxPane
     self.locateExistingAgent = locateExistingAgent
     self.taskContextStore = TaskContextStore(root: paths.supportDirectory)
     self.reportHistoryRepository = JSONDailyReportHistoryRepository(runtimeDirectory: paths.ingestionRuntimeDirectory)
@@ -1339,8 +1346,9 @@ final class QueueViewModel {
       .withContext(context, subtask: subtask, supportDirectory: paths.supportDirectory)
   }
 
-  func proposedAgentWorktreePath(subtaskID: String) -> String {
-    paths.supportDirectory.appendingPathComponent("worktrees/agents/\(subtaskID)").path
+  func proposedAgentWorktreePath(repositoryPath: String, ticketID: String, subtaskID: String) -> String {
+    TaskWorktreeManager.agentDestination(repositoryPath: repositoryPath,
+      ticketID: ticketID, subtaskID: subtaskID).path
   }
 
   func visibleAgents(for ticketID: String) -> [TaskSubtask] {
@@ -1416,7 +1424,8 @@ final class QueueViewModel {
                 taskID: ticket.id, subtaskID: subtask.id, executable: executable)
               taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
                 ticketID: ticket.id, subtaskID: subtask.id, tmux: runtime)
-              _ = try await terminalController.openManagedRuntime(runtime, taskID: ticket.id,
+              _ = try await terminalController.openManagedAgentRuntime(runtime,
+                taskID: ticket.id, subtaskID: subtask.id,
                 provider: subtask.provider, configuration: config.wezTerm)
               try await agentTerminalFocusHandler?(config.wezTerm.applicationName, ticket.id)
               try await acknowledgeViewedAgent(subtask, ticketID: ticket.id)
@@ -1444,7 +1453,8 @@ final class QueueViewModel {
           assignment.workspace = try await taskWorktreeManager.workspace(at: path)
           if let branch = context.branch, context.worktreePath == path { assignment.workspace?.branch = branch }
         }
-        try await taskWorktreeManager.restoreIfNeeded(assignment.workspace!, subtaskID: assignment.id, store: taskContextStore)
+        try await taskWorktreeManager.restoreIfNeeded(assignment.workspace!, ticketID: ticket.id,
+          subtaskID: assignment.id, store: taskContextStore)
         try await taskWorktreeManager.validate(assignment.workspace!)
         assignment.agentRemovedAt = nil
         context = try await taskContextStore.upsertSubtask(ticketID: ticket.id, subtask: assignment)
@@ -1584,8 +1594,9 @@ final class QueueViewModel {
               "pane": tmux.paneID, "panePID": String(tmux.panePID), "terminal": tmux.tty,
             ])
           phase = "opening the WezTerm view"
-          _ = try await terminalController.openManagedRuntime(
-            tmux, taskID: ticket.id, provider: provider, configuration: config.wezTerm)
+          _ = try await terminalController.openManagedAgentRuntime(
+            tmux, taskID: ticket.id, subtaskID: subtask.id,
+            provider: provider, configuration: config.wezTerm)
         } else {
           phase = "starting the direct WezTerm process"
           actionMessages[ticket.id] =
@@ -1633,8 +1644,9 @@ final class QueueViewModel {
                 "panePID": String(saved.panePID), "terminal": saved.tty,
               ])
             do {
-              let result = try await terminalController.openManagedRuntime(
-                saved, taskID: ticket.id, provider: provider, configuration: config.wezTerm)
+              let result = try await terminalController.openManagedAgentRuntime(
+                saved, taskID: ticket.id, subtaskID: subtask.id,
+                provider: provider, configuration: config.wezTerm)
               actionMessages[ticket.id] =
                 "\(result.message) The provider process registered while tmux was still confirming its pane."
             } catch {
@@ -1864,16 +1876,80 @@ final class QueueViewModel {
     }
   }
 
-  func refreshExternalAgentRegistrations() async {
+  func importProvisionalAgentIntakes(_ receipts: [AgentIntakeReceipt]) async throws {
+    for receipt in receipts {
+      guard let taskID = receipt.taskID?.uppercased() else { continue }
+      var context = try await taskContextStore.load(ticketID: taskID)
+      if receipt.isTerminal {
+        guard context != nil else { continue }
+        context = try await taskContextStore.dismissTrackedLaunch(
+          ticketID: taskID, launchID: receipt.launchID)
+        taskContexts[taskID] = context
+        continue
+      }
+      if context == nil {
+        let ticket = dashboard.tickets.first { $0.id.caseInsensitiveCompare(taskID) == .orderedSame }
+        context = try await taskContextStore.ensureTrackedLaunchContext(
+          ticketID: taskID, title: ticket?.title ?? receipt.title ?? taskID,
+          summary: ticket?.summary ?? "Tracked external agent launch.")
+      }
+      guard var context else { continue }
+      guard !context.hasDismissedLaunch(receipt.launchID) else { continue }
+      let effectiveSubtaskID = receipt.effectiveSubtaskID(in: context)
+      if let sessionID = receipt.sessionID?.lowercased(), context.subtasks.contains(where: {
+        $0.provider == .codex && $0.sessionID?.lowercased() == sessionID
+          && $0.agentRemovedAt == nil && $0.id != effectiveSubtaskID
+      }) { continue }
+      let existing = context.subtasks.first(where: { $0.id == effectiveSubtaskID })
+      let provisional = receipt.provisionalSubtask(
+        subtaskID: effectiveSubtaskID, merging: existing,
+        now: existing?.lastHeartbeatAt ?? Date())
+      if let existing,
+        existing.agentRemovedAt != nil
+          || (existing.sessionID != nil
+            && existing.sessionID?.caseInsensitiveCompare(receipt.sessionID ?? "") != .orderedSame)
+      { continue }
+      context = try await taskContextStore.upsertSubtask(ticketID: taskID, subtask: provisional)
+      taskContexts[taskID] = context
+      if let referenceKey = receipt.discoveryKey,
+        labeledIntakeReferenceKeys.insert(referenceKey).inserted,
+        let sessionID = provisional.sessionID
+          ?? UUID(uuidString: effectiveSubtaskID)?.uuidString {
+        let session = TaskAgentSession(ticketID: taskID, provider: .codex,
+          sessionID: sessionID, tabTitle: provisional.title,
+          workingDirectory: receipt.cwd, subtaskID: provisional.id,
+          tmux: receipt.reference)
+        if let reference = receipt.reference {
+          await labelTmuxPane(reference, "Codex: \(provisional.title)")
+        }
+        try? await terminalController.labelTmuxClients(session: session,
+          configuration: config.wezTerm)
+      }
+    }
+  }
+
+  func refreshExternalAgentRegistrations(force: Bool = false) async {
     let registry = ExternalAgentRegistry(root: paths.supportDirectory)
     do {
-      if lastExternalAgentDiscovery == nil || Date().timeIntervalSince(lastExternalAgentDiscovery!) >= 15 {
+      let receipts = AgentIntakeStore.unresolved(root: paths.supportDirectory)
+      try await importProvisionalAgentIntakes(receipts)
+      let discoverableReceipts = receipts.filter(\.isReadyForDiscovery)
+      let currentReferenceKeys = Set(discoverableReceipts.compactMap(\.discoveryKey))
+      forcedIntakeReferenceKeys.formIntersection(currentReferenceKeys)
+      labeledIntakeReferenceKeys.formIntersection(currentReferenceKeys)
+      let unseenReferenceKeys = currentReferenceKeys.subtracting(forcedIntakeReferenceKeys)
+      let shouldForceReferenceDiscovery = force && !unseenReferenceKeys.isEmpty
+      if shouldForceReferenceDiscovery { forcedIntakeReferenceKeys.formUnion(unseenReferenceKeys) }
+      let recoveryDue = lastExternalAgentDiscovery == nil
+        || Date().timeIntervalSince(lastExternalAgentDiscovery!) >= 15
+      if shouldForceReferenceDiscovery || (!force && recoveryDue) {
+        // A reference gets one immediate attempt. If it is too early to find
+        // the provider UUID, the normal bounded recovery interval takes over.
+        forcedIntakeReferenceKeys.formUnion(currentReferenceKeys)
         lastExternalAgentDiscovery = Date()
         let discovered = try await discoverExternalAgents()
-        let receipts = AgentIntakeStore.unresolved(root: paths.supportDirectory)
         let sessionsByProcess = Dictionary(grouping: discovered, by: \.processID)
           .mapValues { Set($0.map { $0.sessionID.lowercased() }) }
-        let parents = receipts.isEmpty ? [:] : ((try? await AgentIntakeStore.processParents()) ?? [:])
         let tmuxPanes: [TmuxPaneSnapshot]
         if !discovered.isEmpty, let executable = config.tmuxExecutable ?? SetupEnvironment.executable("tmux") {
           tmuxPanes = (try? await TmuxController().panes(executable: executable)) ?? []
@@ -1883,30 +1959,41 @@ final class QueueViewModel {
           let tmux = process.tty.flatMap { tty in tmuxPanes.first { $0.reference.tty == tty }?.reference }
           let terminal = tmux == nil ? process.tty.flatMap { tty in terminals.first { $0.ttyName == tty } } : nil
           var prompt: String?
-          let intake = AgentIntakeStore.match(process, tmux: tmux, receipts: receipts, parents: parents,
+          let intake = AgentIntakeStore.match(process, tmux: tmux,
+            receipts: discoverableReceipts, parents: [:],
             candidateSessionsForProcess: sessionsByProcess[process.processID] ?? [])
           if let intake { prompt = intake.title }
           if let tmux {
-            let metadataURL = paths.supportDirectory.appendingPathComponent("shell/launch-metadata/\(tmux.name).json")
-            if let data = try? Data(contentsOf: metadataURL),
-              let metadata = try? JSONDecoder().decode(ExternalAgentLaunchMetadata.self, from: data),
-              metadata.reference == tmux { prompt = metadata.initialPrompt }
+            if let metadata = try? ExternalAgentLaunchMetadata.load(
+              matching: tmux, supportDirectory: paths.supportDirectory)
+            { prompt = metadata.initialPrompt }
           }
-          _ = try await registry.register(ExternalAgentEvent(sessionID: process.sessionID,
+          let environment: [String: String] = intake.map { receipt in
+            receipt.discoveryEnvironment(in:
+              receipt.taskID.flatMap { taskContexts[$0.uppercased()] })
+          } ?? [:]
+          let registration = try await registry.register(ExternalAgentEvent(sessionID: process.sessionID,
             cwd: process.cwd, hookEventName: "ProcessDiscovery", prompt: prompt), provider: process.provider,
+            explicitTaskID: intake?.taskID, environment: environment,
             tmux: tmux, paneID: terminal?.paneID, socketPath: terminal?.socketPath)
+          if let session = registration.session {
+            try? await terminalController.labelTmuxClients(session: session,
+              configuration: config.wezTerm)
+          }
           if let intake { try AgentIntakeStore.resolve(intake, sessionID: process.sessionID, root: paths.supportDirectory) }
         }
       }
       let records = try await registry.registrations()
-      let unassigned = records.filter { $0.taskID == nil } + AgentIntakeStore.pending(root: paths.supportDirectory)
+      let unassigned = records.filter { $0.taskID == nil }
+        + AgentIntakeStore.pending(root: paths.supportDirectory).filter { $0.taskID == nil }
       if unassignedAgentRegistrations != unassigned { unassignedAgentRegistrations = unassigned }
       if externalAgentRegistrationError != nil { externalAgentRegistrationError = nil }
       await importAgentRegistrations()
     } catch {
       // Existing hook receipts remain useful when process inspection is unavailable.
       if let records = try? await registry.registrations() {
-        let unassigned = records.filter { $0.taskID == nil } + AgentIntakeStore.pending(root: paths.supportDirectory)
+        let unassigned = records.filter { $0.taskID == nil }
+          + AgentIntakeStore.pending(root: paths.supportDirectory).filter { $0.taskID == nil }
         if unassignedAgentRegistrations != unassigned { unassignedAgentRegistrations = unassigned }
       }
       if externalAgentRegistrationError != error.localizedDescription {

@@ -110,6 +110,9 @@ private actor TaskPaneLaunchRunner: ProcessRunning {
   init(timeout: Bool = false) { self.timeout = timeout }
   func run(_ specification: ProcessSpecification) -> ProcessResult {
     specifications.append(specification)
+    if specification.arguments.contains("has-session") {
+      return .init(exitCode: 1, standardOutput: "", standardError: "can't find session", timedOut: false)
+    }
     if specification.arguments.contains("new-session") {
       return .init(exitCode: timeout ? 1 : 0,
         standardOutput: "fq-task-ecc-1|123|1000|%0|||0\n", standardError: "", timedOut: timeout)
@@ -135,8 +138,12 @@ private actor TaskPaneLaunchRunner: ProcessRunning {
     planPath: root.appendingPathComponent("plan.md").path, worktreePath: root.path,
     updatedAt: Date())
   let subtask = TaskSubtask(id: "implement", title: "Implement session ownership")
+  let server = "managed-agent-" + UUID().uuidString.lowercased()
+  let receipts = FileManager.default.temporaryDirectory.appendingPathComponent(
+    "focus-queue-launches-\(server)", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: receipts) }
 
-  let reference = try await TaskAgentLauncher(runner: runner).startManagedSession(
+  let reference = try await TaskAgentLauncher(runner: runner, tmuxServerName: server).startManagedSession(
     context: context, subtask: subtask,
     supportDirectory: root.appendingPathComponent("support"), tmuxExecutable: "/test/tmux")
 
@@ -146,6 +153,7 @@ private actor TaskPaneLaunchRunner: ProcessRunning {
   #expect(calls.allSatisfy { $0.executable == "/test/tmux" })
   #expect(calls.filter { $0.arguments.contains("new-session") }.count == 1)
   #expect(calls.filter { $0.arguments.contains("display-message") }.count >= 4)
+  #expect(calls.first { $0.arguments.contains("new-session") }?.arguments.contains("FOCUS_QUEUE_MANAGED_TMUX=1") == true)
   #expect(!calls.flatMap(\.arguments).contains("resume"))
   #expect(!calls.flatMap(\.arguments).contains("spawn"))
 }
@@ -156,13 +164,17 @@ private actor TaskPaneLaunchRunner: ProcessRunning {
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
   defer { try? FileManager.default.removeItem(at: root) }
   let runner = TaskPaneLaunchRunner(timeout: true)
+  let server = "managed-timeout-" + UUID().uuidString.lowercased()
+  let receipts = FileManager.default.temporaryDirectory.appendingPathComponent(
+    "focus-queue-launches-\(server)", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: receipts) }
   let context = TaskContext(
     ticketID: "ECC-1", title: "Launch", summary: "", successCriteria: "Checks pass",
     planPath: root.appendingPathComponent("plan.md").path, worktreePath: root.path,
     updatedAt: Date())
 
   await #expect(throws: TmuxError.self) {
-    try await TaskAgentLauncher(runner: runner).startManagedSession(
+    try await TaskAgentLauncher(runner: runner, tmuxServerName: server).startManagedSession(
       context: context, subtask: .init(id: "implement", title: "Implement session ownership"),
       supportDirectory: root.appendingPathComponent("support"), tmuxExecutable: "/test/tmux")
   }

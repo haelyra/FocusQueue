@@ -13,7 +13,7 @@ enum SessionRegistrationError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .usage:
-            "Usage: focus-queue-session queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reset | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude> <title> | rename <TASK-ID> <SUBTASK-ID> <title> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
+            "Usage: focus-queue-session intake-changed | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reset | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude> <title> | rename <TASK-ID> <SUBTASK-ID> <title> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
         case .missingSessionIdentity:
             "No Codex or Claude session ID was found in the environment or current WezTerm pane."
         case .missingManagedRuntime:
@@ -37,7 +37,7 @@ enum SessionRegistrationError: Error, LocalizedError {
                 print(SessionRegistrationError.usage.localizedDescription)
                 print("Agent log: log <TASK-ID> <AGENT-ID> <entry> (append-only, task-locked)")
                 print("Maintenance: reconcile <TASK-ID> [--no-cleanup] (repair documents and save a receipt; optional workspace cleanup)")
-                print("Persistent terminals: tmux list | tmux start <name> [--cwd <directory>] [-- <command> ...] | tmux attach <name> | tmux ssh-command <user@host> <name>")
+                print("Persistent terminals: tmux list | tmux start <name> [--cwd <directory>] [-- <command> ...] | tmux start-agent <TASK-ID> <AGENT-ID> [--cwd <directory>] -- <command> ... | tmux attach <name> | tmux ssh-command <user@host> <name>")
                 print("Task layouts: tmux panes <name> | tmux arrange <name> | tmux manual <name> | tmux save | tmux restore | tmux persistence")
             }
             else if arguments.first == "queue" { try await queueCommand(arguments: arguments) }
@@ -47,6 +47,10 @@ enum SessionRegistrationError: Error, LocalizedError {
             else if arguments.first == "architecture" { try await architectureCommand(arguments: arguments) }
             else if arguments.first == "diagnose" { try await diagnose(arguments: arguments) }
             else if arguments.first == "register-event" { try await registerEvent(arguments: arguments) }
+            else if arguments == ["intake-changed"] {
+                notifyContextChanged()
+                try emit(["status": "notified"])
+            }
             else if arguments.first == "attach" { try await register() }
             else if arguments.first == "reconcile", (2...3).contains(arguments.count) {
                 guard arguments.count == 2 || arguments[2] == "--no-cleanup" else { throw SessionRegistrationError.usage }
@@ -183,12 +187,14 @@ enum SessionRegistrationError: Error, LocalizedError {
         guard let executable = configuration.tmuxExecutable ?? SetupEnvironment.executable("tmux") else {
             throw TmuxError.unavailable("Install tmux on this host, then choose its executable in setup.")
         }
-        let persistence = ["start", "save", "restore", "persistence"].contains(arguments[1])
+        let persistence = ["start", "start-agent", "save", "restore", "persistence"].contains(arguments[1])
             ? try TmuxPersistence.prepare(executable: executable, supportDirectory: supportDirectory(environment: environment)) : nil
         let serverName: String
         if arguments[1] == "reflow", arguments.count == 5, arguments[3] == "--server" {
-            try TmuxController.validateName(arguments[4])
-            serverName = arguments[4]
+            try TmuxController.validateName(arguments[4]); serverName = arguments[4]
+        } else if arguments[1] == "reference", [6, 10].contains(arguments.count),
+                  arguments[arguments.count - 2] == "--server" {
+            try TmuxController.validateName(arguments.last!); serverName = arguments.last!
         } else { serverName = TmuxController.serverName }
         let controller = TmuxController(serverName: serverName, configurationPath: persistence?.configurationURL.path ?? "/dev/null")
         switch arguments[1] {
@@ -215,6 +221,41 @@ enum SessionRegistrationError: Error, LocalizedError {
             try await controller.setAutomatic(name: arguments[2], executable: executable, enabled: false)
         case "list" where arguments.count == 2:
             try emit(try await controller.list(executable: executable))
+        case "reference" where arguments.count == 6 || arguments.count == 10:
+            guard arguments[arguments.count - 2] == "--server",
+                  arguments[3].range(of: "^%[0-9]+$", options: .regularExpression) != nil,
+                  let pane = try await controller.panes(name: arguments[2], executable: executable)
+                    .first(where: { $0.id == arguments[3] }) else { throw TmuxError.changed }
+            if arguments.count == 10 {
+                guard arguments[4] == "--task", arguments[6] == "--agent" else {
+                    throw SessionRegistrationError.usage
+                }
+                _ = try await controller.verifyAgent(pane.reference, taskID: arguments[5],
+                    subtaskID: arguments[7], executable: executable)
+            } else { _ = try await controller.verify(pane.reference) }
+            try emit(pane.reference)
+        case "attach-reference" where arguments.count == 3 || arguments.count == 7:
+            guard let data = arguments[2].data(using: .utf8),
+                  let saved = try? JSONDecoder().decode(TmuxSessionReference.self, from: data),
+                  saved.executable == executable else { throw TmuxError.changed }
+            if arguments.count == 7 {
+                guard arguments[3] == "--task", arguments[5] == "--agent" else {
+                    throw SessionRegistrationError.usage
+                }
+                _ = try await controller.verifyAgent(
+                    saved, taskID: arguments[4], subtaskID: arguments[6], executable: executable)
+            } else {
+                _ = try await controller.verify(saved)
+            }
+            try await controller.select(saved)
+            guard isatty(STDIN_FILENO) != 0, isatty(STDOUT_FILENO) != 0 else {
+                throw TmuxError.unavailable("Attach needs an interactive terminal. Use ssh -t when connecting remotely.")
+            }
+            let command = try TmuxController.attachCommand(reference: saved)
+            let pointers = command.map { strdup($0) } + [nil]
+            defer { for pointer in pointers { free(pointer) } }
+            _ = pointers.withUnsafeBufferPointer { execv(command[0], $0.baseAddress!) }
+            throw TmuxError.unavailable("Could not execute tmux: \(String(cString: strerror(errno)))")
         case "attach" where arguments.count == 3 || (arguments.count == 5 && arguments[3] == "--pane"):
             if arguments.count == 5 {
                 guard arguments[4].range(of: "^%[0-9]+$", options: .regularExpression) != nil,
@@ -230,6 +271,42 @@ enum SessionRegistrationError: Error, LocalizedError {
             defer { for pointer in pointers { free(pointer) } }
             _ = pointers.withUnsafeBufferPointer { execv(command[0], $0.baseAddress!) }
             throw TmuxError.unavailable("Could not execute tmux: \(String(cString: strerror(errno)))")
+        case "start-agent" where arguments.count >= 6:
+            let taskID = arguments[2]
+            let agentID = arguments[3]
+            var remaining = Array(arguments.dropFirst(4))
+            var directory = FileManager.default.currentDirectoryPath
+            if remaining.first == "--cwd" {
+                guard remaining.count >= 3 else { throw SessionRegistrationError.usage }
+                directory = remaining[1]
+                remaining.removeFirst(2)
+            }
+            guard remaining.first == "--", remaining.count >= 2 else {
+                throw SessionRegistrationError.usage
+            }
+            remaining.removeFirst()
+            let reference = try await controller.startAgent(
+                taskID: taskID, subtaskID: agentID, directory: directory,
+                command: remaining, executable: executable)
+            var warnings: [String] = []
+            do { try await persistence!.enable() }
+            catch { warnings.append("persistence: \(error.localizedDescription)") }
+            let rawHelper = CommandLine.arguments[0]
+            let helper = rawHelper.hasPrefix("/") ? rawHelper
+                : URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                    .appendingPathComponent(rawHelper).standardizedFileURL.path
+            do {
+                try await controller.configureTask(
+                    name: reference.name, executable: executable, helper: helper,
+                    supportDirectory: supportDirectory(environment: environment))
+            } catch { warnings.append("layout hooks: \(error.localizedDescription)") }
+            do { try await controller.reflow(name: reference.name, executable: executable) }
+            catch { warnings.append("initial layout: \(error.localizedDescription)") }
+            try emit(reference)
+            if !warnings.isEmpty {
+                FileHandle.standardError.write(Data(
+                    "Agent pane started; optional tmux setup needs attention: \(warnings.joined(separator: "; "))\n".utf8))
+            }
         case "start" where arguments.count >= 3:
             var remaining = Array(arguments.dropFirst(3))
             var directory = FileManager.default.currentDirectoryPath
@@ -446,19 +523,33 @@ enum SessionRegistrationError: Error, LocalizedError {
             guard let process = processes.first(where: { $0.sessionID == sessionID }) else {
                 let complete = try await controller.knownProviderProcesses(provider: provider, requireComplete: true)
                 if let appeared = complete.first(where: { $0.sessionID == sessionID }) {
-                    try emit(["status": "running", "sessionID": sessionID, "processID": String(appeared.processID)])
+                    try emit(RuntimeLocationResult(
+                        status: "running", sessionID: sessionID, processID: Int(appeared.processID)))
                     return
                 }
-                try emit(["status": "stopped", "sessionID": sessionID]); return
+                try emit(RuntimeLocationResult(status: "stopped", sessionID: sessionID)); return
             }
-            var result = ["status": "running", "sessionID": sessionID, "processID": String(process.processID)]
+            var result = RuntimeLocationResult(
+                status: "running", sessionID: sessionID, processID: Int(process.processID))
             let config = try loadConfiguration(from: supportDirectory(environment: ProcessInfo.processInfo.environment))
             if let tty = process.tty, let executable = config.tmuxExecutable ?? SetupEnvironment.executable("tmux"),
                let pane = try? await TmuxController().panes(executable: executable).first(where: { $0.reference.tty == tty }) {
-                result["tmuxName"] = pane.reference.name; result["paneID"] = pane.id; result["runtime"] = "tmux"
+                result.runtime = "tmux"
+                result.tmuxName = pane.reference.name
+                result.name = pane.reference.name
+                result.serverPID = pane.reference.serverPID
+                result.createdAt = pane.reference.createdAt
+                result.paneID = pane.reference.paneID
+                result.panePID = pane.reference.panePID
+                result.tty = pane.reference.tty
+                result.executable = pane.reference.executable
+                result.agentID = pane.subtaskID
             }
             try emit(result)
-        } catch { try emit(["status": "unknown", "sessionID": sessionID, "reason": error.localizedDescription]) }
+        } catch {
+            try emit(RuntimeLocationResult(
+                status: "unknown", sessionID: sessionID, reason: error.localizedDescription))
+        }
     }
 
     private static func supportDirectory(environment: [String: String]) -> URL {
@@ -612,6 +703,30 @@ private struct RuntimeRepairResult: Encodable {
     let taskID: String
     let subtaskID: String
     let runtime: TmuxSessionReference
+}
+
+private struct RuntimeLocationResult: Encodable {
+    let status: String
+    let sessionID: String
+    var processID: Int?
+    var reason: String?
+    var runtime: String?
+    var tmuxName: String?
+    var name: String?
+    var serverPID: Int?
+    var createdAt: Int?
+    var paneID: String?
+    var panePID: Int?
+    var tty: String?
+    var executable: String?
+    var agentID: String?
+
+    init(status: String, sessionID: String, processID: Int? = nil, reason: String? = nil) {
+        self.status = status
+        self.sessionID = sessionID
+        self.processID = processID
+        self.reason = reason
+    }
 }
 
 private struct ArchitectureCLIResult: Encodable {

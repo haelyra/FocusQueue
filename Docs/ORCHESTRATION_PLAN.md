@@ -121,8 +121,14 @@ These are product readiness work, separate from the requested local revisions.
   Search retrieves message bodies only for the selected page. The report harness
   accepts dotted Codex feature names and passed the installed Codex 0.154 preflight.
 
-Git cleanup uses the documented non-forced worktree removal operation after the
-application's additional checks. [Git worktree documentation](https://git-scm.com/docs/git-worktree).
+Git cleanup first applies the documented worktree cleanliness and merge checks,
+then binds de-registration to the verified worktree inode. The app moves that
+directory to a no-follow retained sibling, rechecks tracked, untracked and ignored
+content, and moves only its exact Git administration directory out of Git's active
+worktree registry. It does not recursively delete checkout files. The branch,
+retained checkout and recovery metadata remain available. Locked worktrees,
+submodule metadata and incomplete Git administration cleanup remain registered.
+[Git worktree documentation](https://git-scm.com/docs/git-worktree).
 The embedded renderer uses WebKit's explicit JavaScript policy.
 [Apple WebKit documentation](https://developer.apple.com/documentation/webkit/wkwebpagepreferences/allowscontentjavascript).
 

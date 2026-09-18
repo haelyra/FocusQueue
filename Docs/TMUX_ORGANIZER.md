@@ -29,6 +29,8 @@ The layout uses terminal cells, with a target minimum of 72 columns and 20 rows 
 
 Available height excludes the actual configured status-bar rows, including multi-row usage bars. Creating a task session also works when the server already contains older per-agent sessions.
 
+Focus Queue currently keeps tmux presentation deliberately plain. The managed usage bar and native tmux window tabs remain visible, while custom pane-border label rows and extra left/right status text are disabled. Agent names remain available in the app's session map and in nonvisual pane metadata.
+
 Client attachment and resize hooks invoke the helper. A size-and-pane signature avoids repeating unchanged layouts. A task lock serializes launches, rearrangement and swaps across the app and helper. Reflow preserves the selected pane and never starts or kills an agent process. A user arrangement remains in effect until automatic layout is selected again.
 
 Pane identity includes the server, session creation time, pane ID, process PID and TTY. Closing an agent kills only that verified pane. An unresolved launch receipt blocks duplicate starts and permits recovery of the original pane. A runtime belonging to another task cannot be opened through a misbound task record.

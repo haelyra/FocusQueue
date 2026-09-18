@@ -5,11 +5,25 @@ import Foundation
 struct TmuxOrganizerLock {
   let descriptor: Int32
 
-  static func acquire(name: String) async throws -> Self {
+  static func acquire(name: String, root: URL? = nil) async throws -> Self {
     try TmuxController.validateName(name)
-    let path = "/tmp/focus-queue-tmux-\(getuid())-\(name).lock"
-    let fd = Darwin.open(path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR)
-    guard fd >= 0 else { throw TmuxError.unavailable("Could not lock the task layout.") }
+    let root = root ?? FileManager.default.temporaryDirectory.appendingPathComponent(
+      "focus-queue-tmux-\(geteuid())", isDirectory: true)
+    let fd = try withSecureTmuxTemporaryDirectory(at: root, purpose: "task layout lock") { directory in
+      let leaf = "\(name).lock"
+      var descriptor = Darwin.openat(directory, leaf,
+        O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR)
+      if descriptor < 0, errno == EEXIST {
+        descriptor = Darwin.openat(directory, leaf, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+      }
+      guard descriptor >= 0 else {
+        throw TmuxError.unavailable(
+          "Could not open the task layout lock securely: \(String(cString: strerror(errno))).")
+      }
+      do { try validateSecureTmuxFile(descriptor, purpose: "task layout lock") }
+      catch { Darwin.close(descriptor); throw error }
+      return descriptor
+    }
     for _ in 0..<400 {
       if flock(fd, LOCK_EX | LOCK_NB) == 0 { return Self(descriptor: fd) }
       do { try await Task.sleep(for: .milliseconds(25)) }
@@ -20,6 +34,40 @@ struct TmuxOrganizerLock {
   }
 
   func release() { flock(descriptor, LOCK_UN); Darwin.close(descriptor) }
+}
+
+private func withSecureTmuxTemporaryDirectory<T>(
+  at root: URL, purpose: String, _ body: (Int32) throws -> T
+) throws -> T {
+  if Darwin.mkdir(root.path, mode_t(0o700)) != 0, errno != EEXIST {
+    throw TmuxError.unavailable("Could not create the \(purpose) directory securely.")
+  }
+  let descriptor = Darwin.open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+  guard descriptor >= 0 else {
+    throw TmuxError.unavailable("Could not open the \(purpose) directory securely.")
+  }
+  defer { Darwin.close(descriptor) }
+  var metadata = stat()
+  guard Darwin.fstat(descriptor, &metadata) == 0,
+        metadata.st_mode & S_IFMT == S_IFDIR,
+        metadata.st_uid == Darwin.geteuid(),
+        metadata.st_mode & mode_t(0o777) == mode_t(0o700) else {
+    throw TmuxError.unavailable("The \(purpose) directory has unsafe ownership, type, or permissions.")
+  }
+  return try body(descriptor)
+}
+
+@discardableResult
+private func validateSecureTmuxFile(_ descriptor: Int32, purpose: String) throws -> stat {
+  var metadata = stat()
+  guard Darwin.fstat(descriptor, &metadata) == 0,
+        metadata.st_mode & S_IFMT == S_IFREG,
+        metadata.st_uid == Darwin.geteuid(),
+        metadata.st_mode & mode_t(0o777) == mode_t(0o600),
+        metadata.st_nlink == 1 else {
+    throw TmuxError.unavailable("The \(purpose) file has unsafe ownership, type, permissions, or links.")
+  }
+  return metadata
 }
 
 public struct TmuxPaneSnapshot: Identifiable, Equatable, Sendable {
@@ -34,15 +82,16 @@ public struct TmuxPaneSnapshot: Identifiable, Equatable, Sendable {
   public let width: Int
   public let height: Int
   public let subtaskID: String
+  public let restoredSubtaskID: String
   public let isActive: Bool
   public let automatic: Bool
 
-  static let format = TmuxController.format + "|#{window_id}|#{window_index}|#{window_width}|#{window_height}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{@focus-queue-agent}|#{pane_active}|#{@focus-queue-layout}"
+  static let format = TmuxController.format + "|#{window_id}|#{window_index}|#{window_width}|#{window_height}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{@focus-queue-agent}|#{@focus-queue-restored-agent}|#{pane_active}|#{@focus-queue-layout}"
 
   static func decode(_ output: String, executable: String) throws -> [Self] {
     try output.split(separator: "\n").map { line in
       let f = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-      guard f.count == 18, f[7].range(of: "^@[0-9]+$", options: .regularExpression) != nil,
+      guard f.count == 19, f[7].range(of: "^@[0-9]+$", options: .regularExpression) != nil,
             let index = Int(f[8]), let ww = Int(f[9]), let wh = Int(f[10]),
             let x = Int(f[11]), let y = Int(f[12]), let w = Int(f[13]), let h = Int(f[14]),
             ww > 0, wh > 0, w > 0, h > 0,
@@ -51,7 +100,8 @@ public struct TmuxPaneSnapshot: Identifiable, Equatable, Sendable {
       }
       return Self(reference: reference, windowID: f[7], windowIndex: index,
         windowWidth: ww, windowHeight: wh, left: x, top: y, width: w, height: h,
-        subtaskID: f[15], isActive: f[16] == "1", automatic: f[17] != "manual")
+        subtaskID: f[15], restoredSubtaskID: f[16], isActive: f[17] == "1",
+        automatic: f[18] != "manual")
     }
   }
 }
@@ -132,13 +182,16 @@ extension TmuxController {
     // A retained dead pane should not hide the other running agents.
     let live = result.standardOutput.split(separator: "\n").filter {
       let fields = $0.split(separator: "|", omittingEmptySubsequences: false)
-      return fields.count != 18 || fields[6] == "0"
+      return fields.count != 19 || fields[6] == "0"
     }.joined(separator: "\n")
     return try TmuxPaneSnapshot.decode(live, executable: executable)
   }
 
   public func inspectAgent(taskID: String, subtaskID: String, executable: String) async throws -> TmuxSessionReference {
     let name = try Self.taskSessionName(taskID: taskID)
+    if try await taskSessionExists(name: name, executable: executable) {
+      try await requireTaskSessionOwnership(name: name, taskID: taskID, executable: executable)
+    }
     let all = try await panes(name: name, executable: executable)
     let matches = all.filter { $0.subtaskID == subtaskID }
     guard matches.count <= 1 else { throw TmuxError.unavailable("More than one pane claims this agent. Check the task panes before retrying.") }
@@ -158,6 +211,22 @@ extension TmuxController {
     return try await inspect(name: Self.sessionName(subtaskID: subtaskID), executable: executable)
   }
 
+  /// Verifies the complete pane process identity and its exact task ownership
+  /// immediately before an interactive client attaches.
+  public func verifyAgent(
+    _ saved: TmuxSessionReference, taskID: String, subtaskID: String, executable: String
+  ) async throws -> TmuxSessionReference {
+    let name = try Self.taskSessionName(taskID: taskID)
+    try Self.validateName(subtaskID)
+    guard saved.name == name, saved.executable == executable else { throw TmuxError.changed }
+    try await requireTaskSessionOwnership(name: name, taskID: taskID, executable: executable)
+    let matches = try await panes(name: name, executable: executable).filter {
+      $0.subtaskID == subtaskID && $0.reference == saved
+    }
+    guard matches.count == 1 else { throw TmuxError.changed }
+    return try await verify(saved)
+  }
+
   public func startAgent(taskID: String, subtaskID: String, directory: String,
                          command: [String], executable: String) async throws -> TmuxSessionReference {
     let name = try Self.taskSessionName(taskID: taskID)
@@ -168,17 +237,32 @@ extension TmuxController {
     }
     let lock = try await TmuxOrganizerLock.acquire(name: name)
     defer { lock.release() }
+    let sessionExists = try await taskSessionExists(name: name, executable: executable)
+    if sessionExists {
+      try await requireTaskSessionOwnership(name: name, taskID: taskID, executable: executable)
+    }
     let existing = try await panes(name: name, executable: executable)
     guard !existing.contains(where: { $0.subtaskID == subtaskID }) else {
       throw TmuxError.unavailable("This agent already has a pane. Open it from the task to continue.")
     }
-    if try pendingLaunch(taskID: taskID, subtaskID: subtaskID) != nil, !existing.isEmpty {
+    let restored = existing.filter { $0.restoredSubtaskID == subtaskID }
+    guard restored.count <= 1 else {
+      throw TmuxError.unavailable("More than one restored pane claims this agent. Resolve the task layout before retrying.")
+    }
+    if try pendingLaunch(taskID: taskID, subtaskID: subtaskID) != nil,
+       !existing.isEmpty, restored.count != 1 {
       throw TmuxError.unavailable("A previous launch needs to be recalled from its task before retrying.")
     }
     let launchWindow = "fq-launch-" + UUID().uuidString.lowercased()
-    let receipt = try launchReceiptURL(taskID: taskID, subtaskID: subtaskID)
-    try Data(launchWindow.utf8).write(to: receipt, options: .atomic)
-    let base = try Self.startArguments(name: name, directory: directory, command: command)
+    try writeLaunchReceipt(launchWindow, taskID: taskID, subtaskID: subtaskID)
+    let managedCommand = [
+      "/usr/bin/env", "FOCUS_QUEUE_MANAGED_TMUX=1",
+      "FOCUS_QUEUE_TASK_ID=\(taskID.uppercased())",
+      "FOCUS_QUEUE_SUBTASK_ID=\(subtaskID)",
+      "FOCUS_QUEUE_RUNTIME_MODE=tmux",
+      "FOCUS_QUEUE_TMUX_SERVER=\(serverName)",
+    ] + command
+    let base = try Self.startArguments(name: name, directory: directory, command: managedCommand)
     let arguments: [String]
     if existing.isEmpty {
       arguments = Array(base.prefix(1)) + ["-n", launchWindow] + base.dropFirst()
@@ -197,13 +281,22 @@ extension TmuxController {
       throw TmuxError.startedButUnconfirmed(name: name, executable: executable, attempts: 1, lastDetail: "No pane ID in the launch receipt.")
     }
     let paneID = String(fields[3])
+    // Claim the reserved session before tagging its first pane. If the pane
+    // update response is lost, recovery can still prove task ownership.
+    do {
+      try await checked(executable, ["set-option", "-t", name, "@focus-queue-task", taskID.uppercased()])
+    } catch {
+      throw TmuxError.startedButUnconfirmed(name: name, executable: executable, attempts: 1,
+        lastDetail: "The launch receipt is retained, but task ownership was not confirmed. \(error.localizedDescription)")
+    }
     do {
       try await checked(executable, ["set-option", "-p", "-t", paneID, "@focus-queue-agent", subtaskID])
+      try await checked(executable, ["set-option", "-p", "-u", "-t", paneID, "@focus-queue-restored-agent"])
+      try await checked(executable, ["set-option", "-p", "-u", "-t", paneID, "@focus-queue-restored"])
     } catch {
       throw TmuxError.startedButUnconfirmed(name: name, executable: executable, attempts: 1,
         lastDetail: "The launch receipt is retained. Open this task to recover pane \(paneID). \(error.localizedDescription)")
     }
-    try await checked(executable, ["set-option", "-t", name, "@focus-queue-task", taskID.uppercased()])
     try await checked(executable, ["set-option", "-t", name, "mouse", "on"])
     try await checked(executable, ["set-window-option", "-t", paneID, "window-size", "latest"])
     var previous: TmuxSessionReference?
@@ -215,7 +308,14 @@ extension TmuxController {
         stable = current == previous ? stable + 1 : 1
         previous = current
         if stable >= 3 {
-          try? FileManager.default.removeItem(at: receipt)
+          try? removeLaunchReceipt(taskID: taskID, subtaskID: subtaskID)
+          // A restored shell may have been repurposed by the user after
+          // restore. Never kill or respawn it. Once the provider is confirmed
+          // in a fresh pane, retire only its assignment marker.
+          if let placeholder = restored.first {
+            try? await checked(executable, ["set-option", "-p", "-u", "-t",
+              placeholder.id, "@focus-queue-restored-agent"])
+          }
           // Layout failures never turn a successful process launch into a retryable launch.
           try? await reflowUnlocked(name: name, executable: executable, force: false)
           return current
@@ -228,19 +328,113 @@ extension TmuxController {
     throw TmuxError.startedButUnconfirmed(name: name, executable: executable, attempts: 120, lastDetail: detail)
   }
 
-  private func launchReceiptURL(taskID: String, subtaskID: String) throws -> URL {
+  private func taskSessionExists(name: String, executable: String) async throws -> Bool {
+    let result = try await run(executable, ["has-session", "-t", "=\(name)"])
+    if result.succeeded { return true }
+    if !result.timedOut,
+       ["no server running", "No such file or directory", "can't find session", "no sessions"]
+        .contains(where: result.standardError.contains) { return false }
+    throw TmuxError.unavailable("Could not verify ownership of the task session.")
+  }
+
+  private func requireTaskSessionOwnership(
+    name: String, taskID: String, executable: String
+  ) async throws {
+    let result = try await run(executable, [
+      "show-options", "-qv", "-t", "=\(name):", "@focus-queue-task",
+    ])
+    let owner = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard result.succeeded, owner == taskID.uppercased() else {
+      throw TmuxError.unavailable(
+        "The reserved task session already exists without matching Focus Queue ownership.")
+    }
+  }
+
+  private func launchReceiptRoot() throws -> URL {
+    try Self.validateName(serverName)
+    return FileManager.default.temporaryDirectory.appendingPathComponent(
+      "focus-queue-launches-\(serverName)", isDirectory: true)
+  }
+
+  private func launchReceiptLeaf(taskID: String, subtaskID: String) throws -> String {
     try Self.validateName(serverName); try Self.validateName(taskID); try Self.validateName(subtaskID)
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent("focus-queue-launches-\(serverName)", isDirectory: true)
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-    return root.appendingPathComponent("\(taskID.lowercased())-\(subtaskID).receipt")
+    return "\(taskID.lowercased())-\(subtaskID).receipt"
+  }
+
+  private func writeLaunchReceipt(_ value: String, taskID: String, subtaskID: String) throws {
+    let root = try launchReceiptRoot()
+    let leaf = try launchReceiptLeaf(taskID: taskID, subtaskID: subtaskID)
+    try withSecureTmuxTemporaryDirectory(at: root, purpose: "launch receipt") { directory in
+      var descriptor = Darwin.openat(directory, leaf,
+        O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR)
+      if descriptor < 0, errno == EEXIST {
+        descriptor = Darwin.openat(directory, leaf, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+      }
+      guard descriptor >= 0 else {
+        throw TmuxError.unavailable("Could not open the launch receipt securely.")
+      }
+      defer { Darwin.close(descriptor) }
+      try validateSecureTmuxFile(descriptor, purpose: "launch receipt")
+      guard Darwin.ftruncate(descriptor, 0) == 0 else {
+        throw TmuxError.unavailable("Could not reset the launch receipt securely.")
+      }
+      let data = Data(value.utf8)
+      try data.withUnsafeBytes { raw in
+        guard let base = raw.baseAddress else { return }
+        var offset = 0
+        while offset < raw.count {
+          let count = Darwin.write(descriptor, base.advanced(by: offset), raw.count - offset)
+          if count < 0, errno == EINTR { continue }
+          guard count > 0 else {
+            throw TmuxError.unavailable("Could not write the launch receipt securely.")
+          }
+          offset += count
+        }
+      }
+    }
   }
 
   private func pendingLaunch(taskID: String, subtaskID: String) throws -> String? {
-    let url = try launchReceiptURL(taskID: taskID, subtaskID: subtaskID)
-    guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-    let value = try String(contentsOf: url, encoding: .utf8)
-    try Self.validateName(value)
-    return value
+    let root = try launchReceiptRoot()
+    let leaf = try launchReceiptLeaf(taskID: taskID, subtaskID: subtaskID)
+    return try withSecureTmuxTemporaryDirectory(at: root, purpose: "launch receipt") { directory in
+      let descriptor = Darwin.openat(directory, leaf, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+      if descriptor < 0, errno == ENOENT { return nil }
+      guard descriptor >= 0 else {
+        throw TmuxError.unavailable("Could not read the launch receipt securely.")
+      }
+      defer { Darwin.close(descriptor) }
+      let metadata = try validateSecureTmuxFile(descriptor, purpose: "launch receipt")
+      guard metadata.st_size > 0, metadata.st_size <= 256 else {
+        throw TmuxError.unavailable("The launch receipt has an invalid size.")
+      }
+      var data = Data(count: Int(metadata.st_size))
+      let count = data.withUnsafeMutableBytes { raw in
+        Darwin.read(descriptor, raw.baseAddress, raw.count)
+      }
+      guard count == data.count, let value = String(data: data, encoding: .utf8) else {
+        throw TmuxError.unavailable("Could not decode the launch receipt securely.")
+      }
+      try Self.validateName(value)
+      return value
+    }
+  }
+
+  private func removeLaunchReceipt(taskID: String, subtaskID: String) throws {
+    let root = try launchReceiptRoot()
+    let leaf = try launchReceiptLeaf(taskID: taskID, subtaskID: subtaskID)
+    try withSecureTmuxTemporaryDirectory(at: root, purpose: "launch receipt") { directory in
+      let descriptor = Darwin.openat(directory, leaf, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+      if descriptor < 0, errno == ENOENT { return }
+      guard descriptor >= 0 else {
+        throw TmuxError.unavailable("Could not remove the launch receipt securely.")
+      }
+      defer { Darwin.close(descriptor) }
+      try validateSecureTmuxFile(descriptor, purpose: "launch receipt")
+      guard Darwin.unlinkat(directory, leaf, 0) == 0 else {
+        throw TmuxError.unavailable("Could not remove the launch receipt securely.")
+      }
+    }
   }
 
   func checked(_ executable: String, _ arguments: [String]) async throws {
@@ -261,8 +455,9 @@ extension TmuxController {
     let shellQuote: (String) -> String = { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }
     let command = ["/usr/bin/env", "FOCUS_QUEUE_SUPPORT_DIR=\(supportDirectory.path)", helper, "tmux", "reflow", name, "--server", serverName]
       .map(shellQuote).joined(separator: " ")
+    let formattedCommand = shellQuote(command).replacingOccurrences(of: "#", with: "##")
     for hook in ["client-attached", "client-resized", "client-session-changed"] {
-      try await checked(executable, ["set-hook", "-t", name, "\(hook)[35]", "run-shell -b \(shellQuote(command))"])
+      try await checked(executable, ["set-hook", "-t", name, "\(hook)[35]", "run-shell -b \(formattedCommand)"])
     }
     // A deliberate border resize opts out of the next automatic rearrangement.
     try await checked(executable, ["set-hook", "-t", name, "after-resize-pane[35]",
@@ -273,10 +468,11 @@ extension TmuxController {
     _ = try await verify(saved)
     let readable = String(title.filter { !$0.isNewline && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }.prefix(100))
     try await checked(saved.executable, ["set-option", "-p", "-t", saved.paneID, "@focus-queue-label", readable])
-    try await checked(saved.executable, ["set-option", "-t", saved.name, "status-left", "#{@focus-queue-task} "])
-    try await checked(saved.executable, ["set-option", "-t", saved.name, "status-right", "Click tabs | Drag borders"])
-    try await checked(saved.executable, ["set-window-option", "-t", saved.paneID, "pane-border-status", "top"])
-    try await checked(saved.executable, ["set-window-option", "-t", saved.paneID, "pane-border-format", " #{@focus-queue-label} "])
+    // Keep tmux presentation plain while retaining internal labels for the app.
+    // The managed usage adapter owns its rows, and tmux's native window list
+    // remains the only other status-line content.
+    try await resetPlainPresentation(
+      name: saved.name, paneID: saved.paneID, executable: saved.executable)
   }
 
   public func setAutomatic(name: String, executable: String, enabled: Bool) async throws {
@@ -330,6 +526,8 @@ extension TmuxController {
     let previous = try await run(executable, ["show-options", "-qv", "-t", name, "@focus-queue-size"])
     if !force, previous.succeeded, previous.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines) == signature { return }
     let groups = TmuxPaneLayout.groups(ordered, width: width, height: height)
+    try await checked(executable, ["set-option", "-t", name, "status-left", ""])
+    try await checked(executable, ["set-option", "-t", name, "status-right", ""])
     // Give every group a distinct window, preserving pane IDs and processes.
     for (index, group) in groups.enumerated() {
       guard let anchor = group.first else { continue }
@@ -353,14 +551,23 @@ extension TmuxController {
       try await checked(executable, ["rename-window", "-t", anchor.id, "Agents \(index + 1)"])
       try await checked(executable, ["set-window-option", "-t", anchor.id, "automatic-rename", "off"])
       try await checked(executable, ["set-window-option", "-t", anchor.id, "window-size", "latest"])
-      try await checked(executable, ["set-window-option", "-t", anchor.id, "pane-border-status", "top"])
-      try await checked(executable, ["set-window-option", "-t", anchor.id, "pane-border-format", " #{@focus-queue-label} "])
+      try await checked(executable, ["set-window-option", "-t", anchor.id, "pane-border-status", "off"])
+      try await checked(executable, ["set-window-option", "-u", "-t", anchor.id, "pane-border-format"])
     }
     try await checked(executable, ["set-option", "-t", name, "@focus-queue-size", signature])
     if all.contains(where: { $0.id == activePane }) {
       try await checked(executable, ["select-window", "-t", activePane])
       try await checked(executable, ["select-pane", "-t", activePane])
     }
+  }
+
+  private func resetPlainPresentation(
+    name: String, paneID: String, executable: String
+  ) async throws {
+    try await checked(executable, ["set-option", "-t", name, "status-left", ""])
+    try await checked(executable, ["set-option", "-t", name, "status-right", ""])
+    try await checked(executable, ["set-window-option", "-t", paneID, "pane-border-status", "off"])
+    try await checked(executable, ["set-window-option", "-u", "-t", paneID, "pane-border-format"])
   }
 }
 

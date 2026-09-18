@@ -491,7 +491,8 @@ struct NewTaskAgentView: View {
 
   private var proposedWorkspace: AgentWorkspace {
     var workspace = sourceWorkspace ?? AgentWorkspace(path: repository, repositoryPath: repository)
-    workspace.path = model.proposedAgentWorktreePath(subtaskID: assignmentID)
+    workspace.path = model.proposedAgentWorktreePath(repositoryPath: workspace.repositoryPath,
+      ticketID: ticket.id, subtaskID: assignmentID)
     workspace.branch = "focus-queue/\(ticket.id.lowercased())-\(assignmentID.lowercased())"
     workspace.managed = true
     return workspace

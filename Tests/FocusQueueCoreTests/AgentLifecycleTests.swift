@@ -149,7 +149,8 @@ struct AgentLifecycleTests {
         _ = try await store.ensureContext(ticket: DashboardTicket(
             id: "ECC-778", title: "Workspace identity", status: "open", summary: ""))
         let id = UUID().uuidString
-        let managedPath = support.appendingPathComponent("worktrees/agents/\(id)")
+        let managedPath = TaskWorktreeManager.agentDestination(repositoryPath: repo.path,
+            ticketID: "ECC-778", subtaskID: id)
         let runner = WorkspaceReplacingRunner(target: managedPath)
         let manager = TaskWorktreeManager(runner: runner)
         let workspace = try await manager.provisionAgent(
@@ -168,6 +169,321 @@ struct AgentLifecycleTests {
         }
         #expect(FileManager.default.fileExists(
             atPath: managedPath.appendingPathComponent("preserve.txt").path))
+    }
+
+    @Test("Cleanup never follows a last-moment worktree symlink")
+    func workspaceSymlinkRaceSafety() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repo = root.appendingPathComponent("repo")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        let git = FoundationProcessRunner()
+        for arguments in [
+            ["init", "-q", "-b", "main"],
+            ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+             "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Base", "--allow-empty"],
+        ] {
+            #expect(try await git.run(.init(
+                executable: "/usr/bin/git", arguments: arguments,
+                workingDirectory: repo.path)).succeeded)
+        }
+        let support = root.appendingPathComponent("support")
+        let store = TaskContextStore(root: support)
+        _ = try await store.ensureContext(ticket: DashboardTicket(
+            id: "ECC-779", title: "Workspace race", status: "open", summary: ""))
+        let id = UUID().uuidString
+        let managed = TaskWorktreeManager.agentDestination(
+            repositoryPath: repo.path, ticketID: "ECC-779", subtaskID: id)
+        let retained = managed.appendingPathExtension("retained-worktree")
+        let victim = root.appendingPathComponent("outside-victim")
+        try FileManager.default.createDirectory(at: victim, withIntermediateDirectories: true)
+        let sentinel = victim.appendingPathComponent("keep.txt")
+        try Data("must survive".utf8).write(to: sentinel)
+
+        let manager = TaskWorktreeManager(beforeCleanupQuarantine: { target in
+            try FileManager.default.moveItem(at: target, to: retained)
+            try FileManager.default.createSymbolicLink(at: target, withDestinationURL: victim)
+        })
+        let workspace = try await manager.provisionAgent(
+            ticketID: "ECC-779", subtaskID: id, path: repo.path,
+            createWorktree: true, store: store)
+        var agent = TaskSubtask(id: id, title: "Completed", status: .completed)
+        agent.workspace = workspace
+        _ = try await store.upsertSubtask(ticketID: "ECC-779", subtask: agent)
+
+        do {
+            _ = try await manager.cleanupAgent(
+                ticketID: "ECC-779", subtask: agent, store: store)
+            Issue.record("Cleanup followed a replacement symlink")
+        } catch {
+            #expect(error.localizedDescription.contains("identity changed"))
+        }
+        #expect(try String(contentsOf: sentinel, encoding: .utf8) == "must survive")
+        #expect(FileManager.default.fileExists(atPath: retained.path))
+        let listing = try await git.run(.init(
+            executable: "/usr/bin/git", arguments: ["worktree", "list", "--porcelain"],
+            workingDirectory: repo.path))
+        #expect(listing.standardOutput.contains(
+            "/repo-worktrees/ecc-779/agents/\(id.lowercased())"))
+        #expect(!listing.standardOutput.contains(victim.path))
+    }
+
+    @Test("Cleanup restores a worktree that gains files at the quarantine boundary")
+    func workspaceLateWriteSafety() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repo = root.appendingPathComponent("repo")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        let git = FoundationProcessRunner()
+        for arguments in [
+            ["init", "-q", "-b", "main"],
+            ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+             "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Base", "--allow-empty"],
+        ] {
+            #expect(try await git.run(.init(
+                executable: "/usr/bin/git", arguments: arguments,
+                workingDirectory: repo.path)).succeeded)
+        }
+        let support = root.appendingPathComponent("support")
+        let store = TaskContextStore(root: support)
+        _ = try await store.ensureContext(ticket: DashboardTicket(
+            id: "ECC-780", title: "Workspace late write", status: "open", summary: ""))
+        let id = UUID().uuidString
+        let managed = TaskWorktreeManager.agentDestination(
+            repositoryPath: repo.path, ticketID: "ECC-780", subtaskID: id)
+        let lateFile = managed.appendingPathComponent("late-work.txt")
+        let manager = TaskWorktreeManager(beforeCleanupQuarantine: { target in
+            try Data("preserve me".utf8).write(
+                to: target.appendingPathComponent("late-work.txt"))
+        })
+        let workspace = try await manager.provisionAgent(
+            ticketID: "ECC-780", subtaskID: id, path: repo.path,
+            createWorktree: true, store: store)
+        var agent = TaskSubtask(id: id, title: "Completed", status: .completed)
+        agent.workspace = workspace
+        _ = try await store.upsertSubtask(ticketID: "ECC-780", subtask: agent)
+
+        do {
+            _ = try await manager.cleanupAgent(
+                ticketID: "ECC-780", subtask: agent, store: store)
+            Issue.record("Cleanup deleted work written at the quarantine boundary")
+        } catch {
+            #expect(error.localizedDescription.contains("changed during cleanup"))
+        }
+        #expect(try String(contentsOf: lateFile, encoding: .utf8) == "preserve me")
+        #expect(FileManager.default.fileExists(atPath: managed.path))
+        let quarantines = try FileManager.default.contentsOfDirectory(
+            atPath: managed.deletingLastPathComponent().path)
+            .filter { $0.hasPrefix(".focus-queue-removing-") }
+        #expect(quarantines.isEmpty)
+    }
+
+    @Test("Cleanup honors an explicit Git worktree lock")
+    func workspaceLockSafety() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repo = root.appendingPathComponent("repo")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        let git = FoundationProcessRunner()
+        for arguments in [
+            ["init", "-q", "-b", "main"],
+            ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+             "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Base", "--allow-empty"],
+        ] {
+            #expect(try await git.run(.init(
+                executable: "/usr/bin/git", arguments: arguments,
+                workingDirectory: repo.path)).succeeded)
+        }
+        let support = root.appendingPathComponent("support")
+        let store = TaskContextStore(root: support)
+        _ = try await store.ensureContext(ticket: DashboardTicket(
+            id: "ECC-781", title: "Workspace lock", status: "open", summary: ""))
+        let id = UUID().uuidString
+        let manager = TaskWorktreeManager()
+        let workspace = try await manager.provisionAgent(
+            ticketID: "ECC-781", subtaskID: id, path: repo.path,
+            createWorktree: true, store: store)
+        #expect(try await git.run(.init(
+            executable: "/usr/bin/git",
+            arguments: ["worktree", "lock", "--reason", "preserve", workspace.path],
+            workingDirectory: repo.path)).succeeded)
+        var agent = TaskSubtask(id: id, title: "Completed", status: .completed)
+        agent.workspace = workspace
+        _ = try await store.upsertSubtask(ticketID: "ECC-781", subtask: agent)
+
+        do {
+            _ = try await manager.cleanupAgent(
+                ticketID: "ECC-781", subtask: agent, store: store)
+            Issue.record("Cleanup ignored the worktree lock")
+        } catch {
+            #expect(error.localizedDescription.contains("locked"))
+        }
+        #expect(FileManager.default.fileExists(atPath: workspace.path))
+    }
+
+    @Test("Cleanup unregisters but retains a worktree when a write lands after the final scan")
+    func workspacePostScanWriteIsRetained() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repo = root.appendingPathComponent("repo")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        let git = FoundationProcessRunner()
+        for arguments in [
+            ["init", "-q", "-b", "main"],
+            ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+             "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Base", "--allow-empty"],
+        ] {
+            #expect(try await git.run(.init(
+                executable: "/usr/bin/git", arguments: arguments,
+                workingDirectory: repo.path)).succeeded)
+        }
+        try Data("tracked baseline".utf8).write(to: repo.appendingPathComponent("baseline.txt"))
+        #expect(try await git.run(.init(
+            executable: "/usr/bin/git", arguments: ["add", "baseline.txt"],
+            workingDirectory: repo.path)).succeeded)
+        #expect(try await git.run(.init(
+            executable: "/usr/bin/git",
+            arguments: ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Tracked baseline"],
+            workingDirectory: repo.path)).succeeded)
+        let support = root.appendingPathComponent("support")
+        let store = TaskContextStore(root: support)
+        _ = try await store.ensureContext(ticket: DashboardTicket(
+            id: "ECC-782", title: "Post-scan write", status: "open", summary: ""))
+        let id = UUID().uuidString
+        let runner = PostScanWritingRunner()
+        let manager = TaskWorktreeManager(runner: runner)
+        let workspace = try await manager.provisionAgent(
+            ticketID: "ECC-782", subtaskID: id, path: repo.path,
+            createWorktree: true, store: store)
+        var agent = TaskSubtask(id: id, title: "Completed", status: .completed)
+        agent.workspace = workspace
+        _ = try await store.upsertSubtask(ticketID: "ECC-782", subtask: agent)
+
+        let result = try await manager.cleanupAgent(
+            ticketID: "ECC-782", subtask: agent, store: store)
+        #expect(result.removed)
+        #expect(result.message.contains("retained"))
+        #expect(!FileManager.default.fileExists(atPath: workspace.path))
+        let parent = URL(fileURLWithPath: workspace.path).deletingLastPathComponent()
+        let retained = try FileManager.default.contentsOfDirectory(
+            at: parent, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix(".focus-queue-retained-") }
+        #expect(retained.count == 1)
+        let retainedPath = try #require(retained.first)
+        #expect(try String(contentsOf: retainedPath.appendingPathComponent("late.tmp"),
+            encoding: .utf8) == "preserve late work")
+        #expect(try String(contentsOf: retainedPath.appendingPathComponent("baseline.txt"),
+            encoding: .utf8) == "tracked baseline")
+        let listing = try await git.run(.init(
+            executable: "/usr/bin/git", arguments: ["worktree", "list", "--porcelain"],
+            workingDirectory: repo.path))
+        #expect(!listing.standardOutput.contains(workspace.path))
+        let activeAdmin = try #require(workspace.gitDirectory)
+        #expect(!FileManager.default.fileExists(atPath: activeAdmin))
+        let retainedAdmins = try FileManager.default.contentsOfDirectory(
+            at: repo.appendingPathComponent(".git/focus-queue-retired-worktrees"),
+            includingPropertiesForKeys: nil)
+        #expect(retainedAdmins.count == 1)
+        #expect(FileManager.default.fileExists(
+            atPath: try #require(retainedAdmins.first).appendingPathComponent("HEAD").path))
+    }
+
+    @Test("Cleanup restores a worktree locked after its final content scan")
+    func workspacePostScanLockIsHonored() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repo = root.appendingPathComponent("repo")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        let git = FoundationProcessRunner()
+        for arguments in [
+            ["init", "-q", "-b", "main"],
+            ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+             "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Base", "--allow-empty"],
+        ] {
+            #expect(try await git.run(.init(
+                executable: "/usr/bin/git", arguments: arguments,
+                workingDirectory: repo.path)).succeeded)
+        }
+        let support = root.appendingPathComponent("support")
+        let store = TaskContextStore(root: support)
+        _ = try await store.ensureContext(ticket: DashboardTicket(
+            id: "ECC-783", title: "Post-scan lock", status: "open", summary: ""))
+        let id = UUID().uuidString
+        let target = TaskWorktreeManager.agentDestination(
+            repositoryPath: repo.path, ticketID: "ECC-783", subtaskID: id)
+        let runner = PostScanLockingRunner(repository: repo, target: target)
+        let manager = TaskWorktreeManager(runner: runner)
+        let workspace = try await manager.provisionAgent(
+            ticketID: "ECC-783", subtaskID: id, path: repo.path,
+            createWorktree: true, store: store)
+        var agent = TaskSubtask(id: id, title: "Completed", status: .completed)
+        agent.workspace = workspace
+        _ = try await store.upsertSubtask(ticketID: "ECC-783", subtask: agent)
+
+        do {
+            _ = try await manager.cleanupAgent(
+                ticketID: "ECC-783", subtask: agent, store: store)
+            Issue.record("Cleanup ignored a lock added after the final scan")
+        } catch {
+            #expect(error.localizedDescription.contains("locked"))
+        }
+        #expect(FileManager.default.fileExists(atPath: workspace.path))
+        let listing = try await git.run(.init(
+            executable: "/usr/bin/git", arguments: ["worktree", "list", "--porcelain"],
+            workingDirectory: repo.path))
+        #expect(listing.standardOutput.contains(workspace.path))
+    }
+}
+
+private actor PostScanWritingRunner: ProcessRunning {
+    private let delegate = FoundationProcessRunner()
+    private var wrote = false
+
+    func run(_ specification: ProcessSpecification) async throws -> ProcessResult {
+        let result = try await delegate.run(specification)
+        if !wrote,
+           result.succeeded,
+           specification.arguments.contains("--work-tree"),
+           specification.arguments.contains("ls-files"),
+           let marker = specification.arguments.firstIndex(of: "--work-tree"),
+           specification.arguments.indices.contains(marker + 1) {
+            wrote = true
+            let worktree = URL(fileURLWithPath: specification.arguments[marker + 1])
+            try Data("preserve late work".utf8).write(
+                to: worktree.appendingPathComponent("late.tmp"))
+        }
+        return result
+    }
+}
+
+private actor PostScanLockingRunner: ProcessRunning {
+    private let repository: URL
+    private let target: URL
+    private let delegate = FoundationProcessRunner()
+    private var locked = false
+
+    init(repository: URL, target: URL) {
+        self.repository = repository
+        self.target = target
+    }
+
+    func run(_ specification: ProcessSpecification) async throws -> ProcessResult {
+        let result = try await delegate.run(specification)
+        if !locked,
+           result.succeeded,
+           specification.arguments.contains("--work-tree"),
+           specification.arguments.contains("ls-files") {
+            locked = true
+            let lock = try await delegate.run(.init(
+                executable: "/usr/bin/git",
+                arguments: ["worktree", "lock", "--reason", "late lock", target.path],
+                workingDirectory: repository.path))
+            guard lock.succeeded else {
+                throw TaskContextError.commandFailed(lock.standardError)
+            }
+        }
+        return result
     }
 }
 

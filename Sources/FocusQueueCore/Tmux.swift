@@ -189,6 +189,10 @@ public actor TmuxController {
   }
 
   public func start(name: String, directory: String, command: [String], executable: String) async throws -> TmuxSessionReference {
+    try Self.validateName(name)
+    guard !name.lowercased().hasPrefix("fq-task-") else {
+      throw TmuxError.unavailable("Task session names are reserved for tracked agent launches.")
+    }
     var isDirectory: ObjCBool = false
     guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory), isDirectory.boolValue else {
       throw ProcessRunnerError.invalidWorkingDirectory(directory)
@@ -230,6 +234,21 @@ public actor TmuxController {
   public static func attachCommand(name: String, executable: String) throws -> [String] {
     try validateName(name)
     return ["/usr/bin/env", "-u", "TMUX", "TMUX_TMPDIR=/tmp", executable, "-L", serverName, "attach-session", "-t", "=\(name)"]
+  }
+
+  /// Selects and attaches the exact verified pane in one tmux command queue.
+  /// This keeps a sibling pane from silently replacing the requested agent
+  /// between verification and client attachment.
+  public static func attachCommand(reference: TmuxSessionReference) throws -> [String] {
+    try validateName(reference.name)
+    guard reference.paneID.range(of: "^%[0-9]+$", options: .regularExpression) != nil else {
+      throw TmuxError.changed
+    }
+    return ["/usr/bin/env", "-u", "TMUX", "TMUX_TMPDIR=/tmp", reference.executable,
+      "-L", serverName,
+      "select-window", "-t", reference.paneID, ";",
+      "select-pane", "-t", reference.paneID, ";",
+      "attach-session", "-t", "=\(reference.name)"]
   }
 
   /// The complete remote command is quoted as one SSH argument. Unknown/changed host keys fail closed.

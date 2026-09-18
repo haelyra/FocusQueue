@@ -79,17 +79,79 @@ struct TrackingMaintenanceTests {
         let ready = try receipt(["cwd":"/tmp/repo", "processID":100, "processStartedAt":"start A", "phase":"ready"])
         let process = KnownProviderProcess(provider: .codex, sessionID: session, processID: 101, tty: nil, cwd: "/tmp/repo")
         var parents: [Int32: AgentIntakeStore.ProcessIdentity] = [100: .init(parent: 1, startedAt: "start A"), 101: .init(parent: 100, startedAt: "start B")]
-        #expect(AgentIntakeStore.match(process, tmux: nil, receipts: [ready], parents: parents)?.launchID == launch)
+        #expect(AgentIntakeStore.match(process, tmux: nil, receipts: [ready], parents: parents) == nil)
+        let reference = TmuxSessionReference(name: "fq-codex-" + launch, serverPID: 10,
+            createdAt: 20, paneID: "%3", panePID: 30, tty: "/dev/ttys099", executable: "/mock/tmux")
+        let referenced = try receipt(["cwd":"/tmp/repo", "processID":100,
+            "processStartedAt":"start A", "phase":"ready",
+            "reference": ["name": reference.name, "serverPID": reference.serverPID,
+                "createdAt": reference.createdAt, "paneID": reference.paneID,
+                "panePID": reference.panePID, "tty": reference.tty,
+                "executable": reference.executable]])
+        #expect(AgentIntakeStore.match(process, tmux: reference, receipts: [referenced], parents: parents)?.launchID == launch)
         #expect(AgentIntakeStore.match(process, tmux: nil, receipts: [ready], parents: parents,
             candidateSessionsForProcess: [session, UUID().uuidString]) == nil)
         parents[100] = .init(parent: 1, startedAt: "reused PID")
-        #expect(AgentIntakeStore.match(process, tmux: nil, receipts: [ready], parents: parents) == nil)
+        #expect(AgentIntakeStore.match(process, tmux: reference, receipts: [referenced], parents: parents)?.launchID == launch)
         #expect(AgentIntakeStore.match(process, tmux: nil, receipts: [ready], parents: [:]) == nil)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("intake-resolution-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         try AgentIntakeStore.resolve(ready, sessionID: session, root: root)
         try AgentIntakeStore.resolve(ready, sessionID: session, root: root)
         #expect(throws: (any Error).self) { try AgentIntakeStore.resolve(ready, sessionID: UUID().uuidString, root: root) }
+    }
+
+    @Test("Blocked and expired launch receipts remain visible until acknowledged")
+    func terminalIntakeReceipts() throws {
+        func receipt(_ value: [String: Any]) throws -> AgentIntakeReceipt {
+            try JSONDecoder().decode(AgentIntakeReceipt.self,
+                from: JSONSerialization.data(withJSONObject: value))
+        }
+        let blocked = try receipt(["launchID": UUID().uuidString, "phase": "blocked"])
+        #expect(!blocked.isTerminal)
+        #expect(!blocked.isReadyForDiscovery)
+        let old = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-600))
+        let crashed = try receipt(["launchID": UUID().uuidString, "phase": "preparing",
+            "createdAt": old])
+        #expect(!crashed.isTerminal)
+        let incomplete = try receipt(["launchID": UUID().uuidString, "phase": "preparing"])
+        #expect(!incomplete.isTerminal)
+        #expect(!incomplete.isReadyForDiscovery)
+    }
+
+    @Test("Provider discovery enriches the provisional queue row with the exact Codex session ID")
+    func intakeSessionIdentityEnrichment() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("intake-enrichment-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = root.appendingPathComponent("repo-worktrees/ecc-35/agents/launch")
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        let store = TaskContextStore(root: root)
+        _ = try await store.ensureContext(ticket: DashboardTicket(
+            id: "ECC-35", title: "Session identity", status: "open", summary: ""))
+        let launchID = UUID().uuidString.lowercased()
+        let data = try JSONSerialization.data(withJSONObject: [
+            "launchID": launchID, "agentID": "inherited-agent", "taskID": "ECC-35",
+            "cwd": workspace.path, "repositoryPath": root.path,
+            "workspacePolicy": "isolated", "phase": "ready", "title": "Track session",
+        ])
+        let receipt = try JSONDecoder().decode(AgentIntakeReceipt.self, from: data)
+        _ = try await store.upsertSubtask(ticketID: "ECC-35", subtask: receipt.provisionalSubtask())
+        let sessionID = UUID().uuidString.lowercased()
+
+        let registration = try await ExternalAgentRegistry(root: root).register(
+            .init(sessionID: sessionID, cwd: workspace.path,
+                hookEventName: "ProcessDiscovery", prompt: receipt.title),
+            provider: .codex, explicitTaskID: "ECC-35",
+            environment: ["FOCUS_QUEUE_TASK_ID": "ECC-35",
+                "FOCUS_QUEUE_SUBTASK_ID": launchID])
+
+        #expect(registration.taskID == "ECC-35")
+        #expect(registration.subtaskID == launchID)
+        let context = try #require(try await store.load(ticketID: "ECC-35"))
+        #expect(context.subtasks.count == 1)
+        #expect(context.subtasks[0].id == launchID)
+        #expect(context.subtasks[0].sessionID == sessionID)
     }
 
     @Test("Unchanged maintenance is idempotent and missing UUID never authorizes cleanup")

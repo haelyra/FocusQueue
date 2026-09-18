@@ -4,6 +4,35 @@ import Foundation
 public struct ExternalAgentLaunchMetadata: Decodable, Sendable {
     public let initialPrompt: String?
     public let reference: TmuxSessionReference
+
+    /// Shared task sessions store one metadata file per pane/agent, while
+    /// older single-agent sessions used only the tmux session name. Resolve
+    /// by the full immutable pane reference and retain the legacy fast path.
+    public static func load(
+        matching reference: TmuxSessionReference, supportDirectory: URL
+    ) throws -> Self? {
+        try TmuxController.validateName(reference.name)
+        let directory = supportDirectory.appendingPathComponent("shell/launch-metadata", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: directory.path) else { return nil }
+        guard (try directory.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else {
+            throw TaskContextError.commandFailed("Launch metadata storage is redirected.")
+        }
+        func decode(_ url: URL) -> Self? {
+            guard url.pathExtension == "json",
+                (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
+                let data = try? Data(contentsOf: url),
+                let metadata = try? JSONDecoder().decode(Self.self, from: data),
+                metadata.reference == reference else { return nil }
+            return metadata
+        }
+        let legacy = directory.appendingPathComponent(reference.name + ".json")
+        if let metadata = decode(legacy) { return metadata }
+        let matches = try FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.isSymbolicLinkKey])
+            .filter { $0.lastPathComponent != legacy.lastPathComponent }
+            .compactMap(decode)
+        return matches.count == 1 ? matches[0] : nil
+    }
 }
 
 public struct ExternalAgentEvent: Codable, Sendable {

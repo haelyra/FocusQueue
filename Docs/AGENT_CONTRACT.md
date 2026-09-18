@@ -4,11 +4,13 @@ Task identity, writer isolation, a brief plan, and an append-only log form the c
 
 ## New Agent and resume
 
-New Agent automatically creates an owned branch/worktree from the selected checkout's committed HEAD. Local edits remain in the source and are excluded from the new workspace. The sheet shows this explicitly; there is no worktree toggle. The model retains explicit existing-workspace and strict-clean APIs for compatibility. Resuming a saved agent reuses its workspace and exact provider UUID.
+New Agent automatically creates an owned branch/worktree from the selected checkout's committed HEAD. Managed paths live beside the canonical repository under `<repository>-worktrees/<task>/agents/<agent-id>`; Application Support stores task metadata and evidence, never a coding checkout. Local edits remain in the source and are excluded from the new workspace. The sheet shows this explicitly; there is no worktree toggle. The model retains explicit existing-workspace and strict-clean APIs for compatibility. Resuming a saved agent reuses its exact assigned workspace and provider UUID.
 
 Resume rechecks transient provider ownership up to four times while a process starts or exits. An unresolved final scan still prevents a duplicate process.
 
 Every new app launch includes a compact task ID, agent ID, workspace, plan/log pointers, and reporting instructions. Detailed task initialization remains optional. An empty prompt asks the agent to prepare context and wait, rather than starting the whole task. Low-level launches that explicitly suppress all prompts and saved-conversation resumes remain prompt-free.
+
+Task-associated agents share one `fq-task-<task-id>` tmux session with one exact pane per agent. Shell launches persist their provisional queue row before starting, save the exact pane reference afterward, and notify the app at both boundaries. The managed usage bar follows the active pane and remains session-owned when another agent exits. Unassigned launches stay in isolated `fq-codex-*` sessions until placement is unambiguous.
 
 ## Documents and reports
 
@@ -25,7 +27,7 @@ The installable, coworker-shareable Codex payload is [CODEX_GLOBAL_INSTRUCTIONS.
 
 Agents explain their assignment and configuration briefly, then report at meaningful milestones. A lightweight orchestrator maintains authorized context and behavior, reconciles records, and answers questions. Coding, agent deployment, merging, remote delivery, priority changes, and destructive cleanup require their own authority.
 
-Response-ready, assignment-complete, merged, and cleaned are separate states. The deterministic reconciler reacts to semantic state changes and runs a slow recovery sweep, using a per-task lease and changed-only audit receipts. It repairs missing context documents, explains incomplete fields, and rechecks eligible completed workspaces after merge. Existing task closure and agent removal also check runtime inactivity under the same lease. Missing ownership, uncertain process discovery, active agents, dirty files and unmerged commits retain work. Shell-created external worktrees remain retained for review; broad document deletion stays disabled.
+Response-ready, assignment-complete, merged, and cleaned are separate states. The deterministic reconciler reacts to semantic state changes and runs a slow recovery sweep, using a per-task lease and changed-only audit receipts. It repairs missing context documents, explains incomplete fields, and rechecks eligible completed workspaces after merge. Existing task closure and agent removal also check runtime inactivity under the same lease. Cleanup uses repository identity markers, exact inode checks and a no-follow rename. After a final cleanliness check, it retains the checkout at a recoverable sibling and moves the exact Git administration directory out of the active registry. It never recursively deletes checkout files. Missing ownership, uncertain process discovery, active agents, locked worktrees, submodule metadata, dirty or ignored files, changed identities and unmerged commits retain the registered worktree. Shell-created external worktrees remain retained for review; broad document deletion stays disabled.
 
 The configured entry persists launch intent before starting Codex. Task/session/label metadata can remain provisional; unknown identities never authorize resume or cleanup. New interactive coding starts and forks in committed repositories get a separate worktree; read-only research/orchestration and explicit existing-workspace modes retain their checkout and record the policy. Noninteractive calls are tracked in their existing checkout. A native-executable bypass remains discoverable on a best-effort basis rather than an OS-wide launch gate.
 

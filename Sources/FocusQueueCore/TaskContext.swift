@@ -253,6 +253,14 @@ public struct TaskContext: Codable, Equatable, Sendable {
 
     public var agentLogURL: URL { contextDirectory.appendingPathComponent("agent-log.md") }
 
+    public static func launchRemovalKey(_ launchID: String) -> String {
+        "launch:" + launchID.lowercased()
+    }
+
+    public func hasDismissedLaunch(_ launchID: String) -> Bool {
+        (removedAgentSessionKeys ?? []).contains(Self.launchRemovalKey(launchID))
+    }
+
     /// Identity and document pointers survive the optional detailed-prompt switch.
     /// Document contents and history are deliberately excluded from launch arguments.
     public func agentBootstrap(subtask: TaskSubtask) -> String {
@@ -526,6 +534,26 @@ public actor TaskContextStore {
         }
     }
 
+    /// Launch inference only names task directories that already exist. This
+    /// narrow recovery path fills in a missing context without creating a new
+    /// task from untrusted receipt text.
+    @discardableResult public func ensureTrackedLaunchContext(
+        ticketID: String, title: String, summary: String = "Tracked external agent launch."
+    ) throws -> TaskContext? {
+        let directory = try directory(ticketID: ticketID)
+        var isDirectory: ObjCBool = false
+        guard files.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+              isDirectory.boolValue,
+              (try directory.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true
+        else { return nil }
+        if let existing = try load(ticketID: ticketID) { return existing }
+        return try ensureContext(ticket: DashboardTicket(
+            id: ticketID.uppercased(),
+            title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? ticketID.uppercased() : String(title.prefix(200)),
+            status: "open", summary: String(summary.prefix(2_000))))
+    }
+
     /// Called under the task lock. Existing authored documents are never replaced.
     private func ensureDocuments(context: TaskContext, ticket: DashboardTicket) throws {
         let planURL = URL(fileURLWithPath: context.planPath)
@@ -636,6 +664,7 @@ public actor TaskContextStore {
             var index = context.subtasks.firstIndex {
                 sameSession($0) && $0.agentRemovedAt == nil && $0.status != .completed
             }
+            let dismissedLaunch = preferredSubtaskID.map(context.hasDismissedLaunch) ?? false
             if index == nil, let preferredSubtaskID {
                 index = context.subtasks.firstIndex {
                     $0.id == preferredSubtaskID && $0.provider == provider && !$0.isAssignmentOnly
@@ -646,7 +675,8 @@ public actor TaskContextStore {
             }
             if index == nil {
                 let key = provider.rawValue + ":" + sessionID.lowercased()
-                guard allowFreshAssociation || (!context.subtasks.contains(where: sameSession)
+                guard !dismissedLaunch,
+                    allowFreshAssociation || (!context.subtasks.contains(where: sameSession)
                     && !(context.removedAgentSessionKeys ?? []).contains(key)) else { return }
                 var agent = TaskSubtask(title: title, provider: provider, sessionID: sessionID,
                     status: .idle, includeInitializationPrompt: false, runtimeMode: nil)
@@ -738,8 +768,9 @@ public actor TaskContextStore {
         try mutate(
             ticketID: ticketID, archiveChanges: true, archiveBeforeChanges: true
         ) { context in
-            let keys = context.subtasks.compactMap { subtask in
-                subtask.sessionID.map { subtask.provider.rawValue + ":" + $0.lowercased() }
+            let keys = context.subtasks.flatMap { subtask in
+                [subtask.sessionID.map { subtask.provider.rawValue + ":" + $0.lowercased() },
+                 subtask.hasAgent ? TaskContext.launchRemovalKey(subtask.id) : nil].compactMap { $0 }
             }
             context.removedAgentSessionKeys = Array(Set((context.removedAgentSessionKeys ?? []) + keys)).sorted()
             context.subtasks.removeAll()
@@ -765,7 +796,10 @@ public actor TaskContextStore {
             })
             let removedSessionKeys = context.subtasks.filter { candidate in
                 candidate.id == removed.id || linkedAgentIDs.contains(candidate.id)
-            }.compactMap { agent in agent.sessionID.map { agent.provider.rawValue + ":" + $0.lowercased() } }
+            }.flatMap { agent in
+                [agent.sessionID.map { agent.provider.rawValue + ":" + $0.lowercased() },
+                 agent.hasAgent ? TaskContext.launchRemovalKey(agent.id) : nil].compactMap { $0 }
+            }
             context.removedAgentSessionKeys = Array(Set((context.removedAgentSessionKeys ?? []) + removedSessionKeys)).sorted()
             context.subtasks.removeAll { candidate in
                 candidate.id == removed.id || linkedAgentIDs.contains(candidate.id)
@@ -828,9 +862,29 @@ public actor TaskContextStore {
             guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
             let session = context.subtasks[index].sessionID
             let provider = context.subtasks[index].provider
+            context.removedAgentSessionKeys = Array(Set((context.removedAgentSessionKeys ?? [])
+                + [TaskContext.launchRemovalKey(context.subtasks[index].id)])).sorted()
             for i in context.subtasks.indices where i == index || (session != nil && context.subtasks[i].provider == provider && context.subtasks[i].sessionID?.lowercased() == session?.lowercased()) {
                 context.subtasks[i].agentRemovedAt = Date()
                 if !automatically { context.subtasks[i].completionUnread = false }
+            }
+        }
+    }
+
+    /// Terminal launch receipts can arrive after a provisional row was shown.
+    /// Hide that row and retain its launch identity so later polling cannot
+    /// recreate it under either a provisional or provider session identity.
+    @discardableResult public func dismissTrackedLaunch(
+        ticketID: String, launchID: String
+    ) throws -> TaskContext {
+        try mutate(ticketID: ticketID, archiveChanges: true) { context in
+            let key = TaskContext.launchRemovalKey(launchID)
+            context.removedAgentSessionKeys = Array(Set((context.removedAgentSessionKeys ?? []) + [key])).sorted()
+            if let index = context.subtasks.firstIndex(where: { $0.id == launchID }) {
+                if context.subtasks[index].agentRemovedAt == nil {
+                    context.subtasks[index].agentRemovedAt = Date()
+                }
+                context.subtasks[index].completionUnread = false
             }
         }
     }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 from datetime import datetime, timezone
 import json
 import os
@@ -10,6 +11,8 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import subprocess
+import stat
 import tempfile
 
 START = "# >>> ECC Focus Queue Codex entry >>>"
@@ -61,6 +64,86 @@ def merge_hooks(original, helper):
     return json.dumps(value, indent=2, ensure_ascii=False) + "\n"
 
 
+def require_task_session_helper(helper, home):
+    safe_destination(helper, home)
+    if helper.is_symlink() or not helper.is_file() or not os.access(helper, os.X_OK):
+        raise ValueError("Install the current Focus Queue helper before configuring the Codex shell entry.")
+    try:
+        result = subprocess.run([str(helper), "--help"], capture_output=True, text=True,
+                                timeout=5, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError("Focus Queue could not verify the installed session helper.") from error
+    if result.returncode or "tmux start-agent <TASK-ID> <AGENT-ID>" not in result.stdout:
+        raise ValueError("The installed Focus Queue helper lacks tmux start-agent support. Upgrade the app first.")
+
+
+def file_snapshot(path):
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise ValueError(f"Integration target changed or is unsafe: {path}") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"Integration target is not a regular file: {path}")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            content = stream.read()
+        return (content, stat.S_IMODE(metadata.st_mode), metadata.st_uid,
+                metadata.st_gid, metadata.st_dev, metadata.st_ino,
+                metadata.st_size, metadata.st_mtime_ns)
+    finally:
+        os.close(descriptor)
+
+
+def atomic_swap(left, right):
+    """Atomically exchange two same-directory paths on the supported macOS host."""
+    rename = ctypes.CDLL(None, use_errno=True).renameatx_np
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(-2, os.fsencode(left), -2, os.fsencode(right), 0x00000002) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(right))
+
+
+def atomic_move_no_replace(source, destination):
+    """Move one directory entry only when the destination is still absent."""
+    rename = ctypes.CDLL(None, use_errno=True).renameatx_np
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(-2, os.fsencode(source), -2, os.fsencode(destination), 0x00000004) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(destination))
+
+
+def install_staging(staging, destination, expected):
+    if expected is None:
+        try:
+            os.link(staging, destination, follow_symlinks=False)
+        except FileExistsError as error:
+            raise ValueError(f"Integration target changed during installation: {destination}") from error
+        os.unlink(staging)
+        return
+    os.chmod(staging, expected[1])
+    atomic_swap(staging, destination)
+    restored = False
+    try:
+        if file_snapshot(Path(staging)) != expected:
+            atomic_swap(staging, destination)
+            restored = True
+            raise ValueError(f"Integration target changed during installation: {destination}")
+    except BaseException:
+        # If validation itself failed after the exchange, restore the exact old
+        # directory entry before reporting the error.
+        if not restored:
+            try:
+                atomic_swap(staging, destination)
+            except OSError:
+                pass
+        raise
+
+
 def plan(home, usage_wrapper, flags, *, source_directory=None, install_hooks=False):
     home = home.absolute()
     source_directory = source_directory or Path(__file__).resolve().parent
@@ -68,6 +151,7 @@ def plan(home, usage_wrapper, flags, *, source_directory=None, install_hooks=Fal
     directory = support / "shell"
     helper = home / ".local/bin/focus-queue-session"
     entry = directory / "focus_queue_codex_entry.py"
+    managed_usage_wrapper = directory / "focus_queue_usage_wrapper.sh"
     shell = directory / "codex.zsh"
     zshrc = home / ".zshrc"
     hook_file = home / ".codex/hooks.json"
@@ -75,7 +159,9 @@ def plan(home, usage_wrapper, flags, *, source_directory=None, install_hooks=Fal
         raise ValueError("Choose the existing usage wrapper with an absolute file path.")
     if "--dangerously-bypass-hook-trust" in flags:
         raise ValueError("This integration uses native /hooks review and cannot bypass hook trust.")
-    destinations = (entry, shell, zshrc, hook_file) if install_hooks else (entry, shell, zshrc)
+    require_task_session_helper(helper, home)
+    destinations = ((entry, managed_usage_wrapper, shell, zshrc, hook_file) if install_hooks
+                    else (entry, managed_usage_wrapper, shell, zshrc))
     for path in destinations:
         safe_destination(path, home)
     command = ["/usr/bin/python3", str(entry), "--usage-wrapper", str(usage_wrapper)]
@@ -88,6 +174,7 @@ def plan(home, usage_wrapper, flags, *, source_directory=None, install_hooks=Fal
     )
     files = {
         entry: (source_directory / "focus_queue_codex_entry.py").read_bytes(),
+        managed_usage_wrapper: (source_directory / "focus_queue_usage_wrapper.sh").read_bytes(),
         shell: shell_source.encode(),
         zshrc: merge_shell(zshrc.read_text() if zshrc.exists() else "", shell).encode(),
     }
@@ -98,8 +185,10 @@ def plan(home, usage_wrapper, flags, *, source_directory=None, install_hooks=Fal
 
 def install(home, usage_wrapper, flags, *, check=False, source_directory=None, install_hooks=False):
     support, files = plan(home, usage_wrapper, flags, source_directory=source_directory, install_hooks=install_hooks)
+    observed = {path: file_snapshot(path) for path in files}
     changed = {path: content for path, content in files.items()
-               if not path.exists() or path.read_bytes() != content}
+               if observed[path] is None or observed[path][0] != content}
+    expected = {path: observed[path] for path in changed}
     result = {"mode": "preview" if check else "installed", "paths": [str(path) for path in changed],
         "tracking": "process discovery and verified launch metadata",
         "nativeHooks": "requested" if install_hooks else "unchanged",
@@ -115,14 +204,16 @@ def install(home, usage_wrapper, flags, *, check=False, source_directory=None, i
     saved = []
     for index, path in enumerate(changed):
         previous = None
-        if path.exists():
+        if expected[path] is not None:
             previous = backup / str(index)
-            shutil.copy2(path, previous)
-        saved.append({"path": str(path), "backup": str(previous) if previous else None})
+            previous.write_bytes(expected[path][0])
+            previous.chmod(expected[path][1])
+        saved.append({"path": str(path), "backup": str(previous) if previous else None,
+                      "index": index})
     manifest = {"createdAt": datetime.now(timezone.utc).isoformat(), "status": "prepared", "files": saved}
     manifest_path = backup / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
-    applied = []
+    applied = {}
     try:
         for path, content in changed.items():
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -130,24 +221,58 @@ def install(home, usage_wrapper, flags, *, check=False, source_directory=None, i
             try:
                 with os.fdopen(descriptor, "wb") as stream:
                     stream.write(content)
-                if path.exists():
-                    os.chmod(staging, path.stat().st_mode & 0o777)
-                os.replace(staging, path)
-                applied.append(path)
+                install_staging(staging, path, expected[path])
+                installed = file_snapshot(path)
+                if installed is None or installed[0] != content:
+                    raise ValueError(f"Integration target changed after installation: {path}")
+                applied[path] = installed
             finally:
                 if os.path.exists(staging):
                     os.unlink(staging)
-    except BaseException:
+    except BaseException as install_error:
+        conflicts = []
         for item in reversed(saved):
             path = Path(item["path"])
             if path not in applied:
                 continue
-            if item["backup"]:
-                shutil.copy2(item["backup"], path)
-            elif path.exists():
-                path.unlink()
-        manifest["status"] = "rolled-back"
+            installed = applied[path]
+            try:
+                if item["backup"]:
+                    descriptor, staging = tempfile.mkstemp(prefix=".codex-rollback-", dir=path.parent)
+                    try:
+                        with os.fdopen(descriptor, "wb") as stream:
+                            stream.write(Path(item["backup"]).read_bytes())
+                        install_staging(staging, path, installed)
+                    finally:
+                        if os.path.exists(staging):
+                            os.unlink(staging)
+                else:
+                    # Move newly installed files into the retained backup rather
+                    # than unlinking a name that could have changed after the
+                    # last check. If its bytes changed, link that user version
+                    # back without replacing any newer directory entry.
+                    retained = backup / f"rollback-installed-{item['index']}"
+                    os.rename(path, retained)
+                    mismatch = False
+                    try:
+                        mismatch = file_snapshot(retained) != installed
+                    except BaseException:
+                        mismatch = True
+                    if mismatch:
+                        try:
+                            atomic_move_no_replace(retained, path)
+                            conflicts.append(f"{path} (newer directory entry restored)")
+                        except OSError:
+                            conflicts.append(f"{path} (newer directory entry retained at {retained})")
+            except BaseException as rollback_error:
+                conflicts.append(f"{path} ({rollback_error})")
+        manifest["status"] = "rollback-incomplete" if conflicts else "rolled-back"
+        if conflicts:
+            manifest["rollbackConflicts"] = conflicts
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+        if conflicts:
+            raise RuntimeError("Installation failed and newer files were retained for recovery: "
+                               + "; ".join(conflicts)) from install_error
         raise
     manifest["status"] = "installed"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")

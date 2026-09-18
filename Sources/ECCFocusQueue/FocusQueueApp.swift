@@ -245,7 +245,7 @@ import UserNotifications
   }
 
   @objc private func importAgentRegistration(_ notification: Notification) {
-    Task { await model.importAgentRegistrations() }
+    Task { await model.refreshExternalAgentRegistrations(force: true) }
   }
 
   @objc private func centerPanel() {

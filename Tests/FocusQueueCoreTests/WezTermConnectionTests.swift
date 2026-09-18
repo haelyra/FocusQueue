@@ -51,6 +51,34 @@ private final class SocketFixtures {
 
 @Suite("WezTerm connection recovery")
 struct WezTermConnectionTests {
+  @Test("Task labels retry until the tmux client attaches")
+  func taskLabelsRetryAfterClientAttach() async throws {
+    let paneJSON = #"[{"window_id":12,"tab_id":21,"pane_id":41,"cwd":"file:///tmp/worktree","tty_name":"/dev/ttys028"}]"#
+    let success = ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false)
+    let runner = ConnectionProbeRunner([
+      success,
+      ProcessResult(exitCode: 0, standardOutput: "/dev/ttys028\n", standardError: "", timedOut: false),
+      ProcessResult(exitCode: 0, standardOutput: paneJSON, standardError: "", timedOut: false),
+      success,
+      success,
+    ])
+    let controller = WezTermController(runner: runner, candidateSockets: [], verificationAttempts: 2)
+    let reference = TmuxSessionReference(name: "fq-task-ecc-35", serverPID: 10,
+      createdAt: 20, paneID: "%3", panePID: 30, tty: "/dev/ttys099",
+      executable: "/mock/tmux")
+    let session = TaskAgentSession(ticketID: "ECC-35", provider: .codex,
+      sessionID: UUID().uuidString, tabTitle: "Tracked launch",
+      workingDirectory: "/tmp/worktree", subtaskID: UUID().uuidString, tmux: reference)
+
+    try await controller.labelTmuxClients(session: session,
+      configuration: .init(executable: "/mock/wezterm"))
+
+    let calls = await runner.specifications
+    #expect(calls.filter { $0.arguments.contains("list-clients") }.count == 2)
+    #expect(calls.contains { $0.arguments == ["cli", "set-tab-title", "--pane-id", "41", "ECC-35 · tmux"] })
+    #expect(calls.contains { $0.arguments == ["cli", "set-window-title", "--pane-id", "41", "ECC-35"] })
+  }
+
   @Test("Local terminal discovery pins the live GUI connection using read-only probes",
     .enabled(if: ProcessInfo.processInfo.environment["ECC_FOCUS_QUEUE_LOCAL_TRANSPORT_TESTS"] == "1"))
   func localConnectionIdentity() async throws {

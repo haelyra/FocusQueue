@@ -181,6 +181,49 @@ func taskContextSingleSubtaskRemoval() async throws {
     })
 }
 
+@Test("A tracked launch can safely initialize an existing task directory with missing context")
+func taskContextTrackedLaunchInitialization() async throws {
+    let root = try contextFixture(); defer { try? FileManager.default.removeItem(at: root) }
+    let store = TaskContextStore(root: root)
+    let directory = root.appendingPathComponent("tasks/ECC-404")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+    let initialized = try #require(try await store.ensureTrackedLaunchContext(
+        ticketID: "ECC-404", title: "Recovered tracked launch"))
+
+    #expect(initialized.ticketID == "ECC-404")
+    #expect(initialized.title == "Recovered tracked launch")
+    #expect(FileManager.default.fileExists(atPath: initialized.planPath))
+    #expect(FileManager.default.fileExists(atPath: initialized.agentLogURL.path))
+    #expect(try await store.ensureTrackedLaunchContext(
+        ticketID: "ECC-405", title: "Must not create an unknown task") == nil)
+}
+
+@Test("Removing a provisional launch records its launch identity tombstone")
+func provisionalLaunchRemovalTombstone() async throws {
+    let root = try contextFixture(); defer { try? FileManager.default.removeItem(at: root) }
+    let store = TaskContextStore(root: root)
+    let initial = try await store.ensureContext(ticket: contextTicket())
+    let launchID = UUID().uuidString.lowercased()
+    _ = try await store.upsertSubtask(ticketID: initial.ticketID,
+        subtask: .init(id: launchID, title: "Provisional", status: .working))
+
+    let removed = try await store.removeAgent(ticketID: initial.ticketID,
+        subtaskID: launchID)
+
+    #expect(removed.subtasks.first?.agentRemovedAt != nil)
+    #expect(removed.hasDismissedLaunch(launchID))
+    let registered = try await store.registerExternalSession(
+        ticketID: initial.ticketID, provider: .codex,
+        sessionID: UUID().uuidString.lowercased(), title: "Late discovery",
+        cwd: root.path, preferredSubtaskID: launchID,
+        allowFreshAssociation: true, tmux: nil, paneID: nil,
+        socketPath: nil, eventName: "ProcessDiscovery")
+    #expect(registered.subtasks.count == 1)
+    #expect(registered.subtasks[0].agentRemovedAt != nil)
+    #expect(registered.subtasks[0].sessionID == nil)
+}
+
 @Test("Deleting an assignment removes only exclusive agents and reparents shared agents")
 func taskContextAssignmentRemoval() async throws {
     let root = try contextFixture(); defer { try? FileManager.default.removeItem(at: root) }
@@ -332,11 +375,20 @@ func taskContextPreservesUnmanagedWorktree() async throws {
 @Test("Cleanup of an already missing managed worktree preserves context and resets ownership")
 func taskContextMissingWorktreeCleanup() async throws {
     let root = try contextFixture(); defer { try? FileManager.default.removeItem(at: root) }
-    let store = TaskContextStore(root: root)
-    _ = try await store.ensureContext(ticket: contextTicket())
-    let path = root.resolvingSymlinksInPath().appendingPathComponent("worktrees/ECC-901").path
-    _ = try await store.setWorktree(ticketID: "ECC-901", path: path, branch: "focus-queue/ecc-901", baseBranch: "main", managed: true, repositoryPath: root.path)
-    let result = try await TaskWorktreeManager().cleanup(ticketID: "ECC-901", store: store)
+    let repository = root.appendingPathComponent("repo")
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    _ = try await runFixtureGit(["init", "-b", "main"], in: repository)
+    _ = try await runFixtureGit(["config", "user.email", "test@example.com"], in: repository)
+    _ = try await runFixtureGit(["config", "user.name", "Focus Queue Test"], in: repository)
+    _ = try await runFixtureGit(["commit", "--allow-empty", "-m", "Initial"], in: repository)
+    let store = TaskContextStore(root: root.appendingPathComponent("support"))
+    let manager = TaskWorktreeManager()
+    let context = try await manager.provision(
+        ticket: contextTicket(worktree: repository.path),
+        repositoryPath: repository.path, store: store)
+    let path = try #require(context.worktreePath)
+    _ = try await runFixtureGit(["worktree", "remove", path], in: repository)
+    let result = try await manager.cleanup(ticketID: "ECC-901", store: store)
     #expect(result.removed)
     #expect(result.message.contains("already removed"))
     #expect(try await store.load(ticketID: "ECC-901")?.managedWorktree == false)

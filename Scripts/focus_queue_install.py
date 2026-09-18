@@ -173,6 +173,7 @@ class Installer:
         self.manifest = self.support / "install-manifest.json"
         self.codex_prompt = self.home / ".codex/AGENTS.md"
         self.codex_entry = self.support / "shell/focus_queue_codex_entry.py"
+        self.codex_usage_wrapper = self.support / "shell/focus_queue_usage_wrapper.sh"
         self.login, self.shortcut, self.start = login, desktop, start
         self.service = f"gui/{os.getuid()}/{IDENTIFIER}"
 
@@ -191,10 +192,17 @@ class Installer:
             raise ValueError("The built app is missing its shareable Codex instructions.")
         merge_codex_prompt(self.codex_prompt.read_text() if self.codex_prompt.exists() else "", payload.read_text())
         safe_destination(self.codex_entry, self.home)
+        safe_destination(self.codex_usage_wrapper, self.home)
         if self.codex_entry.exists():
             candidates = [app / "Contents/Resources/shell/focus_queue_codex_entry.py" for app in (self.app, self.bundle)]
             if not self.codex_entry.is_file() or not any(p.is_file() and digest(p) == digest(self.codex_entry) for p in candidates):
                 raise ValueError("The installed Codex entry has local changes; retained for review.")
+        if self.codex_usage_wrapper.exists():
+            candidates = [app / "Contents/Resources/shell/focus_queue_usage_wrapper.sh" for app in (self.app, self.bundle)]
+            if not self.codex_usage_wrapper.is_file() or not any(
+                p.is_file() and digest(p) == digest(self.codex_usage_wrapper) for p in candidates
+            ):
+                raise ValueError("The installed Codex usage adapter has local changes; retained for review.")
         validate_automation_tree(bundled_automation)
         subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(self.bundle)], check=True, capture_output=True)
         for path in (self.app, self.helper, self.agent, self.support, self.automation, self.manifest):
@@ -306,11 +314,19 @@ class Installer:
             planned.append((staged_prompt, self.codex_prompt))
             # Refresh an already configured entry without changing aliases, flags or hook trust.
             original_entry = self.codex_entry.read_bytes() if self.codex_entry.exists() else None
+            original_usage_wrapper = (self.codex_usage_wrapper.read_bytes()
+                                      if self.codex_usage_wrapper.exists() else None)
             if original_entry is not None:
                 staged_entry = stage / "codex-entry.py"
                 shutil.copy2(staged_app / "Contents/Resources/shell/focus_queue_codex_entry.py", staged_entry)
                 staged_entry.chmod(self.codex_entry.stat().st_mode & 0o777)
                 planned.append((staged_entry, self.codex_entry))
+                staged_usage_wrapper = stage / "codex-usage-wrapper.sh"
+                shutil.copy2(staged_app / "Contents/Resources/shell/focus_queue_usage_wrapper.sh", staged_usage_wrapper)
+                staged_usage_wrapper.chmod(
+                    self.codex_usage_wrapper.stat().st_mode & 0o777
+                    if self.codex_usage_wrapper.exists() else 0o600)
+                planned.append((staged_usage_wrapper, self.codex_usage_wrapper))
             if self.login:
                 staged_agent = stage / self.agent.name
                 staged_agent.write_bytes(plistlib.dumps({"Label": IDENTIFIER,
@@ -330,9 +346,11 @@ class Installer:
                                else tree_digest(source) if target == self.automation else None,
                                **({"digestAlgorithm": TREE_DIGEST_ALGORITHM}
                                   if target == self.automation else {})}
-                              for source, target in planned if target not in {self.codex_prompt, self.codex_entry}],
+                              for source, target in planned if target not in {
+                                  self.codex_prompt, self.codex_entry, self.codex_usage_wrapper}],
                 "managedSettings": [{"path": str(self.codex_prompt), "ownership": "delimited-block-only"},
-                    {"path": str(self.codex_entry), "ownership": "configured-entry-only"}],
+                    {"path": str(self.codex_entry), "ownership": "configured-entry-only"},
+                    {"path": str(self.codex_usage_wrapper), "ownership": "configured-entry-support"}],
                 "launchAtLogin": self.login, "desktopShortcut": self.shortcut}
             staged_manifest = stage / "manifest.json"
             staged_manifest.write_text(json.dumps(manifest, indent=2) + "\n")
@@ -350,6 +368,10 @@ class Installer:
                     raise ValueError("Codex instructions changed during installation; retry to preserve the newer edit.")
                 if target == self.codex_entry and (target.read_bytes() if target.exists() else None) != original_entry:
                     raise ValueError("Codex entry changed during installation; retry to preserve the newer edit.")
+                if target == self.codex_usage_wrapper and (
+                    target.read_bytes() if target.exists() else None
+                ) != original_usage_wrapper:
+                    raise ValueError("Codex usage adapter changed during installation; retry to preserve the newer edit.")
                 target.parent.mkdir(parents=True, exist_ok=True)
                 previous = backup / str(index)
                 existed = target.exists() or target.is_symlink()

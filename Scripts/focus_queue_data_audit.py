@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only inventory of ECC Focus Queue's local support data.
+"""Read-only inventory of Focus Queue's local support data.
 
 The audit reports structure, counts, and missing metadata. It deliberately omits
 stored text, message bodies, and secrets so its output can be shared safely.
@@ -120,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
 def render_report(result: dict[str, Any]) -> str:
     tasks = result.get("tasks", {})
     ingestion = result.get("ingestion", {})
-    return "\n".join(["# ECC Focus Queue data audit", "", f"Support directory: `{result['support_dir']}`", "", "## Counts", "", f"- Files: {result.get('files', {}).get('total', 0)}", f"- Task directories: {tasks.get('count', 0)}", f"- Tasks with conversations: {tasks.get('with_conversation', 0)}", f"- Tasks with plans: {tasks.get('with_plan', 0)}", f"- Archived report files: {ingestion.get('archived_report_files', 0)}", "", "## Gaps", "", *([f"- {gap}" for gap in result.get("gaps", [])] or ["- None detected by this structural audit."]), "", "This report contains counts and field names only; it does not claim that missing data can be recovered.", ""])
+    return "\n".join(["# Focus Queue data audit", "", f"Support directory: `{result['support_dir']}`", "", "## Counts", "", f"- Files: {result.get('files', {}).get('total', 0)}", f"- Task directories: {tasks.get('count', 0)}", f"- Tasks with conversations: {tasks.get('with_conversation', 0)}", f"- Tasks with plans: {tasks.get('with_plan', 0)}", f"- Archived report files: {ingestion.get('archived_report_files', 0)}", "", "## Gaps", "", *([f"- {gap}" for gap in result.get("gaps", [])] or ["- None detected by this structural audit."]), "", "This report contains counts and field names only; it does not claim that missing data can be recovered.", ""])
 
 
 if __name__ == "__main__":

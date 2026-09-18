@@ -68,7 +68,7 @@ enum SessionRegistrationError: Error, LocalizedError {
         let root = supportDirectory(environment: ProcessInfo.processInfo.environment)
         let config = try loadConfiguration(from: root)
         let dashboard = try await JSONDashboardRepository().load(from: URL(fileURLWithPath: config.dashboardPath))
-        let store = QueueOrderStore(root: root)
+        let store = QueueOrderStore(root: root, projectID: config.selectedProjectID)
         let state = try await JSONLocalStateStore(url: root.appendingPathComponent("state.json")).load()
         let fallback = DashboardOrdering.openTickets(in: dashboard.tickets,
             deferredTicketIDs: state.deferredTicketIDs).map(\.id)

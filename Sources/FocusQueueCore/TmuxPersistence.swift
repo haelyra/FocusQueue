@@ -82,10 +82,17 @@ public struct TmuxPersistence: Sendable {
     let candidates = [
       Bundle.main.resourceURL?.appendingPathComponent("tmux", isDirectory: true),
       executableURL.deletingLastPathComponent().appendingPathComponent("Resources/tmux", isDirectory: true),
-      FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/ECC Focus Queue.app/Contents/Resources/tmux", isDirectory: true),
-      sourceRoot.appendingPathComponent("Vendor/Tmux", isDirectory: true)
     ].compactMap { $0 }
+      + installedResourceCandidates(homeDirectory: FileManager.default.homeDirectoryForCurrentUser)
+      + [sourceRoot.appendingPathComponent("Vendor/Tmux", isDirectory: true)]
     return candidates.first { FileManager.default.fileExists(atPath: $0.appendingPathComponent("focus-queue-persistence.sh").path) }
+  }
+
+  static func installedResourceCandidates(homeDirectory: URL) -> [URL] {
+    [
+      "Applications/Focus Queue.app/Contents/Resources/tmux",
+      "Applications/ECC Focus Queue.app/Contents/Resources/tmux",
+    ].map { homeDirectory.appendingPathComponent($0, isDirectory: true) }
   }
 
   public func enable(runner: any ProcessRunning = FoundationProcessRunner()) async throws {

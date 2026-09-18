@@ -1,6 +1,6 @@
 # Focus Queue Agent
 
-The ECC Focus Queue manager runs as a persistent Codex thread named
+The Focus Queue manager runs as a persistent Codex thread named
 `ecc-focus-queue-codex-v1`. The Focus Queue app invokes it through the bounded
 local `/Users/hira/.local/bin/focus-queue-codex` harness. Mail and Discord are
 exposed through narrow read-only commands with private evidence receipts. Codex
@@ -8,7 +8,7 @@ never receives those source credentials in its prompt or connector output.
 
 ## Daily reconciliation and report
 
-The always-running `ECC Focus Queue.app` checks every five minutes and runs the
+The always-running `Focus Queue.app` checks every five minutes and runs the
 reconciliation at the configured local time when no successful or partial
 report exists for the current day. A poll in the first ten minutes runs
 automatically. A later start creates one portable JSON approval request and a

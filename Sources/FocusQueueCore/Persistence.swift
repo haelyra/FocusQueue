@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public protocol FileAccessing: Sendable {
@@ -155,7 +156,89 @@ public protocol DashboardLoading: Sendable {
     func modificationDate(at url: URL) async throws -> Date?
 }
 
-public actor JSONDashboardRepository: DashboardLoading {
+public struct DashboardRevision: Equatable, Sendable {
+    fileprivate let contents: Data
+
+    fileprivate init(contents: Data) {
+        self.contents = contents
+    }
+}
+
+public struct DashboardSnapshot: Equatable, Sendable {
+    public let document: DashboardDocument
+    public let revision: DashboardRevision
+
+    public init(document: DashboardDocument, revision: DashboardRevision) {
+        self.document = document
+        self.revision = revision
+    }
+}
+
+public enum DashboardMutationError: Error, LocalizedError, Equatable {
+    case concurrentModification
+    case duplicateTicketID(String)
+    case ticketNotFound(String)
+    case invalidTicketID
+    case invalidTitle
+    case invalidDocument
+
+    public var errorDescription: String? {
+        switch self {
+        case .concurrentModification:
+            "The dashboard changed before this edit could be saved. Refresh and try again."
+        case .duplicateTicketID(let id):
+            "A task with the identifier \(id) already exists."
+        case .ticketNotFound(let id):
+            "Task \(id) no longer exists in this project."
+        case .invalidTicketID:
+            "A task identifier cannot be empty or contain surrounding whitespace."
+        case .invalidTitle:
+            "A task title cannot be empty."
+        case .invalidDocument:
+            "The dashboard must be a JSON object containing a tickets array."
+        }
+    }
+}
+
+public protocol DashboardManaging: DashboardLoading {
+    func loadSnapshot(from url: URL) async throws -> DashboardSnapshot
+    func createTicket(
+        _ ticket: DashboardTicket,
+        in url: URL,
+        expectedRevision: DashboardRevision,
+        checking otherDashboardURLs: [URL]
+    ) async throws -> DashboardSnapshot
+    func renameTicket(
+        id: String,
+        to title: String,
+        in url: URL,
+        expectedRevision: DashboardRevision
+    ) async throws -> DashboardSnapshot
+}
+
+public extension DashboardManaging {
+    func createTicket(
+        _ ticket: DashboardTicket,
+        in url: URL,
+        expectedRevision: DashboardRevision
+    ) async throws -> DashboardSnapshot {
+        try await createTicket(
+            ticket,
+            in: url,
+            expectedRevision: expectedRevision,
+            checking: []
+        )
+    }
+}
+
+enum DashboardFileLock {
+    static func url(for dashboardURL: URL) -> URL {
+        dashboardURL.deletingLastPathComponent()
+            .appendingPathComponent(".\(dashboardURL.lastPathComponent).focus-queue.lock")
+    }
+}
+
+public actor JSONDashboardRepository: DashboardManaging {
     private let files: any FileAccessing
 
     public init(files: any FileAccessing = SystemFileAccessor()) {
@@ -167,8 +250,170 @@ public actor JSONDashboardRepository: DashboardLoading {
         return try JSONDecoder().decode(DashboardDocument.self, from: data)
     }
 
+    public func loadSnapshot(from url: URL) throws -> DashboardSnapshot {
+        let data = try files.read(from: url)
+        return DashboardSnapshot(
+            document: try JSONDecoder().decode(DashboardDocument.self, from: data),
+            revision: DashboardRevision(contents: data)
+        )
+    }
+
+    public func createTicket(
+        _ ticket: DashboardTicket,
+        in url: URL,
+        expectedRevision: DashboardRevision,
+        checking otherDashboardURLs: [URL] = []
+    ) throws -> DashboardSnapshot {
+        try locked(url: url) {
+            try createTicketLocked(
+                ticket,
+                in: url,
+                expectedRevision: expectedRevision,
+                checking: otherDashboardURLs
+            )
+        }
+    }
+
+    private func createTicketLocked(
+        _ ticket: DashboardTicket,
+        in url: URL,
+        expectedRevision: DashboardRevision,
+        checking otherDashboardURLs: [URL]
+    ) throws -> DashboardSnapshot {
+        let normalizedID = ticket.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedID.isEmpty, normalizedID == ticket.id else {
+            throw DashboardMutationError.invalidTicketID
+        }
+        guard !ticket.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw DashboardMutationError.invalidTitle
+        }
+
+        let currentData = try currentData(at: url, expectedRevision: expectedRevision)
+        var object = try dashboardObject(from: currentData)
+        var tickets = try ticketObjects(in: object)
+        guard !tickets.contains(where: { ticketID(in: $0).caseInsensitiveCompare(ticket.id) == .orderedSame }) else {
+            throw DashboardMutationError.duplicateTicketID(ticket.id)
+        }
+
+        let target = url.standardizedFileURL
+        for otherURL in otherDashboardURLs where otherURL.standardizedFileURL != target {
+            let otherObject = try dashboardObject(from: files.read(from: otherURL))
+            let duplicateExists = try ticketObjects(in: otherObject).contains {
+                ticketID(in: $0).caseInsensitiveCompare(ticket.id) == .orderedSame
+            }
+            guard !duplicateExists else {
+                throw DashboardMutationError.duplicateTicketID(ticket.id)
+            }
+        }
+
+        let encodedTicket = try JSONEncoder().encode(ticket)
+        guard let ticketObject = try JSONSerialization.jsonObject(with: encodedTicket) as? [String: Any] else {
+            throw DashboardMutationError.invalidDocument
+        }
+        tickets.append(ticketObject)
+        object["tickets"] = tickets
+        return try save(object, to: url, expectedRevision: expectedRevision)
+    }
+
+    public func renameTicket(
+        id: String,
+        to title: String,
+        in url: URL,
+        expectedRevision: DashboardRevision
+    ) throws -> DashboardSnapshot {
+        try locked(url: url) {
+            try renameTicketLocked(
+                id: id,
+                to: title,
+                in: url,
+                expectedRevision: expectedRevision
+            )
+        }
+    }
+
+    private func renameTicketLocked(
+        id: String,
+        to title: String,
+        in url: URL,
+        expectedRevision: DashboardRevision
+    ) throws -> DashboardSnapshot {
+        let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedTitle.isEmpty else { throw DashboardMutationError.invalidTitle }
+
+        let currentData = try currentData(at: url, expectedRevision: expectedRevision)
+        var object = try dashboardObject(from: currentData)
+        var tickets = try ticketObjects(in: object)
+        guard let index = tickets.firstIndex(where: {
+            ticketID(in: $0).caseInsensitiveCompare(id) == .orderedSame
+        }) else {
+            throw DashboardMutationError.ticketNotFound(id)
+        }
+        tickets[index]["title"] = normalizedTitle
+        object["tickets"] = tickets
+        return try save(object, to: url, expectedRevision: expectedRevision)
+    }
+
     public func modificationDate(at url: URL) throws -> Date? {
         try files.modificationDate(at: url)
+    }
+
+    private func currentData(
+        at url: URL,
+        expectedRevision: DashboardRevision
+    ) throws -> Data {
+        let currentData = try files.read(from: url)
+        guard DashboardRevision(contents: currentData) == expectedRevision else {
+            throw DashboardMutationError.concurrentModification
+        }
+        return currentData
+    }
+
+    private func dashboardObject(from data: Data) throws -> [String: Any] {
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object["tickets"] is [[String: Any]]
+        else {
+            throw DashboardMutationError.invalidDocument
+        }
+        return object
+    }
+
+    private func ticketObjects(in object: [String: Any]) throws -> [[String: Any]] {
+        guard let tickets = object["tickets"] as? [[String: Any]] else {
+            throw DashboardMutationError.invalidDocument
+        }
+        return tickets
+    }
+
+    private func ticketID(in object: [String: Any]) -> String {
+        object["id"] as? String ?? ""
+    }
+
+    private func save(
+        _ object: [String: Any],
+        to url: URL,
+        expectedRevision: DashboardRevision
+    ) throws -> DashboardSnapshot {
+        let data = try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        )
+        let document = try JSONDecoder().decode(DashboardDocument.self, from: data)
+        _ = try currentData(at: url, expectedRevision: expectedRevision)
+        try files.write(data, to: url)
+        return DashboardSnapshot(
+            document: document,
+            revision: DashboardRevision(contents: data)
+        )
+    }
+
+    private func locked<T>(url: URL, _ operation: () throws -> T) throws -> T {
+        let lockURL = DashboardFileLock.url(for: url)
+        let descriptor = Darwin.open(lockURL.path, O_CREAT | O_RDWR, 0o600)
+        guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown) }
+        defer { Darwin.close(descriptor) }
+        guard flock(descriptor, LOCK_EX) == 0 else { throw CocoaError(.fileWriteUnknown) }
+        defer { flock(descriptor, LOCK_UN) }
+        return try operation()
     }
 }
 

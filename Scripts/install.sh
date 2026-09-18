@@ -21,4 +21,4 @@ if (( build )); then
   "$script_dir/build-app.sh"
 fi
 exec /usr/bin/python3 "$script_dir/focus_queue_install.py" \
-  --bundle "$project_dir/dist/ECC Focus Queue.app" "${installer_arguments[@]}"
+  --bundle "$project_dir/dist/Focus Queue.app" "${installer_arguments[@]}"

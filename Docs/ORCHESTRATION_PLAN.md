@@ -1,4 +1,4 @@
-# ECC Focus Queue orchestration redesign
+# Focus Queue orchestration redesign
 
 Status: implemented and verified on September 10, 2026.
 

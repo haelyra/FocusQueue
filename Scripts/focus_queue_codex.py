@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded local Codex harness for ECC Focus Queue."""
+"""Bounded local Codex harness for Focus Queue."""
 
 from __future__ import annotations
 

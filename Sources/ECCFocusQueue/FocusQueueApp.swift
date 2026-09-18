@@ -89,6 +89,10 @@ import UserNotifications
     model.dailyReportApprovalHandler = { [weak self] shouldRun in
       await self?.respondToDailyReportApproval(shouldRun: shouldRun)
     }
+    model.dailyReportsEnabledHandler = { [weak self] enabled in
+      guard !enabled else { return }
+      self?.disableAutomaticDailyReports()
+    }
     model.terminalFocusHandler = { [weak self] applicationName, windowTitleHint in
       guard let self, let terminalFocusController else {
         throw TerminalFocusModeError.applicationUnavailable(applicationName)
@@ -124,6 +128,9 @@ import UserNotifications
     Task { [weak self] in
       guard let self else { return }
       await model.bootstrap()
+      if !model.config.dailyReport.enabled {
+        disableAutomaticDailyReports()
+      }
       Task {
         if let executable = model.config.tmuxExecutable ?? SetupEnvironment.executable("tmux") {
           do {
@@ -296,7 +303,7 @@ import UserNotifications
     process.arguments = ["kickstart", "-k", "gui/\(getuid())/com.haelyra.ecc-focus-queue"]
     do { try process.run() } catch {
       let alert = NSAlert()
-      alert.messageText = "Could not restart ECC Focus Queue"
+      alert.messageText = "Could not restart Focus Queue"
       alert.informativeText = error.localizedDescription
       alert.runModal()
     }
@@ -315,6 +322,7 @@ import UserNotifications
   }
 
   private func runMorningReconciliationIfDue() async {
+    guard model.config.dailyReport.enabled else { return }
     guard FileManager.default.fileExists(atPath: paths.ingestionConfigurationFile.path),
       FileManager.default.isReadableFile(atPath: paths.dailyReportScript.path) else { return }
     let now = Date()
@@ -526,6 +534,7 @@ import UserNotifications
   }
 
   private func requestMissedDailyReportApproval(now: Date) async {
+    guard model.config.dailyReport.enabled else { return }
     let reportDate = Self.reportDayFormatter.string(from: now)
     if let existing = try? await dailyReportApprovalRepository.load(),
       existing.reportDate == reportDate
@@ -568,6 +577,10 @@ import UserNotifications
   ) async {
     guard isModelReady else {
       pendingDailyReportDecision = (shouldRun, expectedApprovalID)
+      return
+    }
+    guard model.config.dailyReport.enabled else {
+      disableAutomaticDailyReports()
       return
     }
     guard !isResolvingDailyReportApproval else { return }
@@ -783,7 +796,7 @@ import UserNotifications
       contentRect: NSRect(x: 0, y: 0, width: 440, height: 780),
       styleMask: [.titled, .resizable, .miniaturizable, .nonactivatingPanel, .fullSizeContentView],
       backing: .buffered, defer: false)
-    panel.title = "ECC Focus Queue"
+    panel.title = "Focus Queue"
     panel.titleVisibility = .hidden
     panel.titlebarAppearsTransparent = true
     panel.standardWindowButton(.closeButton)?.isHidden = true
@@ -821,16 +834,16 @@ import UserNotifications
   private func createStatusItem() {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     item.button?.image = NSImage(
-      systemSymbolName: "checklist", accessibilityDescription: "ECC Focus Queue")
-    item.button?.toolTip = "ECC Focus Queue"
+      systemSymbolName: "checklist", accessibilityDescription: "Focus Queue")
+    item.button?.toolTip = "Focus Queue"
 
     let menu = NSMenu()
     let showItem = NSMenuItem(
-      title: "Show ECC Focus Queue", action: #selector(showPanel), keyEquivalent: "")
+      title: "Show Focus Queue", action: #selector(showPanel), keyEquivalent: "")
     showItem.target = self
     menu.addItem(showItem)
     let hideItem = NSMenuItem(
-      title: "Hide ECC Focus Queue", action: #selector(hidePanel), keyEquivalent: "")
+      title: "Hide Focus Queue", action: #selector(hidePanel), keyEquivalent: "")
     hideItem.target = self
     menu.addItem(hideItem)
     let exitFocusItem = NSMenuItem(
@@ -840,7 +853,7 @@ import UserNotifications
     menu.addItem(exitFocusItem)
     exitTerminalFocusItem = exitFocusItem
     let restartItem = NSMenuItem(
-      title: "Restart ECC Focus Queue", action: #selector(restartApplication), keyEquivalent: "")
+      title: "Restart Focus Queue", action: #selector(restartApplication), keyEquivalent: "")
     restartItem.target = self
     menu.addItem(restartItem)
     menu.addItem(.separator())
@@ -867,7 +880,7 @@ import UserNotifications
     menu.addItem(configItem)
     menu.addItem(.separator())
     let quitItem = NSMenuItem(
-      title: "Quit ECC Focus Queue", action: #selector(quitApplication), keyEquivalent: "q")
+      title: "Quit Focus Queue", action: #selector(quitApplication), keyEquivalent: "q")
     quitItem.target = self
     menu.addItem(quitItem)
     item.menu = menu
@@ -1152,6 +1165,21 @@ import UserNotifications
     let center = UNUserNotificationCenter.current()
     center.removeDeliveredNotifications(withIdentifiers: [identifier])
     center.removePendingNotificationRequests(withIdentifiers: [identifier])
+  }
+
+  private func disableAutomaticDailyReports() {
+    pendingDailyReportDecision = nil
+    model.setPendingDailyReportApproval(nil)
+    let center = UNUserNotificationCenter.current()
+    center.removeAllDeliveredNotifications()
+    center.removeAllPendingNotificationRequests()
+    Task { [dailyReportApprovalRepository] in
+      guard var request = try? await dailyReportApprovalRepository.load(),
+        request.status == .pending
+      else { return }
+      request.status = .declined
+      try? await dailyReportApprovalRepository.save(request)
+    }
   }
 
   nonisolated func userNotificationCenter(

@@ -38,7 +38,9 @@ final class QueueViewModel {
   private(set) var dashboard = DashboardDocument(tickets: [])
   private(set) var localState = LocalState()
   private(set) var savedQueueOrder: [String]?
-  private var queueOrderStore: QueueOrderStore { QueueOrderStore(root: paths.supportDirectory) }
+  private var queueOrderStore: QueueOrderStore {
+    QueueOrderStore(root: paths.supportDirectory, projectID: config.selectedProjectID)
+  }
   private(set) var lastSync: Date?
   private(set) var sourceModificationDate: Date?
   private(set) var loadError: String?
@@ -107,7 +109,7 @@ final class QueueViewModel {
   @ObservationIgnored private let configurationRepository: any ConfigurationLoading
   @ObservationIgnored private let dailyReportRepository: any DailyReportStoring
   @ObservationIgnored private let dailyReportApprovalRepository: any DailyReportApprovalStoring
-  @ObservationIgnored private let dashboardRepository: any DashboardLoading
+  @ObservationIgnored private let dashboardRepository: any DashboardManaging
   @ObservationIgnored private let stateStore: any LocalStateStoring
   @ObservationIgnored private let reviewArtifacts: ReviewArtifactStore
   @ObservationIgnored private let terminalController: any WezTermControlling
@@ -137,12 +139,14 @@ final class QueueViewModel {
   @ObservationIgnored private var refreshTask: Task<Void, Never>?
   @ObservationIgnored private var reviewTasks: [UUID: Task<Void, Never>] = [:]
   @ObservationIgnored private var windowSaveTask: Task<Void, Never>?
+  @ObservationIgnored private var localStateSaveTask: Task<Void, Never>?
   @ObservationIgnored private var queueChatTask: Task<Void, Never>?
   @ObservationIgnored private var documentConversations: [String: DocumentConversation] = [:]
   @ObservationIgnored private var configurationSaveTask: Task<Void, Never>?
   @ObservationIgnored private var lastRecurringPRRefresh: Date?
   @ObservationIgnored private var bootstrapped = false
   @ObservationIgnored private var refreshInFlight = false
+  @ObservationIgnored private var projectRefreshPending = false
   @ObservationIgnored private var lastActivityCheck = Date()
   @ObservationIgnored private let agentActivityObserver = AgentActivityObserver()
   @ObservationIgnored private var lastIdentityRefresh: Date?
@@ -164,6 +168,7 @@ final class QueueViewModel {
   )?
   @ObservationIgnored var dailyReportCancelHandler: (() -> Void)?
   @ObservationIgnored var dailyReportApprovalHandler: (@MainActor (Bool) async -> Void)?
+  @ObservationIgnored var dailyReportsEnabledHandler: ((Bool) -> Void)?
   @ObservationIgnored var agentTerminalFocusHandler: (@MainActor (String, String) async throws -> Void)?
   @ObservationIgnored var terminalFocusHandler: (
     @MainActor (String, String?) async throws -> Void
@@ -175,7 +180,7 @@ final class QueueViewModel {
     configurationRepository: (any ConfigurationLoading)? = nil,
     dailyReportRepository: (any DailyReportStoring)? = nil,
     dailyReportApprovalRepository: (any DailyReportApprovalStoring)? = nil,
-    dashboardRepository: any DashboardLoading = JSONDashboardRepository(),
+    dashboardRepository: any DashboardManaging = JSONDashboardRepository(),
     stateStore: (any LocalStateStoring)? = nil,
     reviewArtifacts: ReviewArtifactStore? = nil,
     terminalController: any WezTermControlling = WezTermController(),
@@ -274,6 +279,8 @@ final class QueueViewModel {
   }
 
   var configurationURL: URL { paths.configurationFile }
+  var projects: [ProjectConfiguration] { config.projects }
+  var selectedProject: ProjectConfiguration? { config.selectedProject }
   var windowSnapshot: WindowSnapshot? { localState.window }
   var appearance: QueueAppearance { localState.appearance ?? .light }
   var accentStyle: QueueAccentStyle { localState.accentStyle ?? .vibrant }
@@ -283,6 +290,19 @@ final class QueueViewModel {
 
   var isPanelCollapsed: Bool { panelMode == .collapsed }
   var isTopTaskOnly: Bool { panelMode == .topTask }
+  var minimizationPreference: QueueMinimizationPreference {
+    localState.minimizationPreference
+  }
+
+  var terminalCount: Int {
+    var identities = Set(localState.agentSessions.map {
+      "\($0.provider.rawValue):\($0.sessionID.lowercased())"
+    })
+    identities.formUnion(unassignedAgentRegistrations.map {
+      "\($0.provider.rawValue):\(($0.sessionID ?? $0.agentID ?? $0.id).lowercased())"
+    })
+    return identities.count
+  }
 
   func bootstrap() async {
     guard !bootstrapped else { return }
@@ -307,7 +327,8 @@ final class QueueViewModel {
       }
       isRecoveredDailyReportRunning = try await reportHistoryRepository.reconcileInactiveRuns()
       await reloadDailyReport()
-      if let approval = try await dailyReportApprovalRepository.load(),
+      if config.dailyReport.enabled,
+        let approval = try await dailyReportApprovalRepository.load(),
         approval.status == .pending,
         approval.reportDate == Self.dayFormatter.string(from: Date())
       {
@@ -363,6 +384,205 @@ final class QueueViewModel {
     }
   }
 
+  @discardableResult
+  func selectProject(id: String) async -> Bool {
+    guard config.selectedProjectID != id,
+      let project = config.projects.first(where: { $0.id == id })
+    else { return config.selectedProjectID == id }
+
+    configurationSaveTask?.cancel()
+    await configurationSaveTask?.value
+    do {
+      // Validate the destination before changing the persisted selection. A
+      // damaged project must leave the current queue intact and selected.
+      let snapshot = try await dashboardRepository.loadSnapshot(
+        from: URL(fileURLWithPath: project.dashboardPath))
+      var updated = config
+      guard updated.selectProject(id: id) else { return false }
+      try await configurationRepository.save(updated)
+      config = updated
+
+      closeAgentUpdate()
+      closePlan()
+      setQueueChatInspectorPresented(false)
+      setDailyReportPresented(false)
+      dashboard = snapshot.document
+      loadError = nil
+      savedQueueOrder = nil
+      sourceModificationDate = nil
+      lastSync = nil
+      taskContexts.removeAll()
+      maintenanceReceipts.removeAll()
+      maintenanceSignatures.removeAll()
+      cleanupSignatures.removeAll()
+      recurringPRProgressByTicketID.removeAll()
+      recurringPRProgressErrors.removeAll()
+      expandedTicketIDs.removeAll()
+      documentConversations.removeAll()
+      lastContextRefresh = nil
+      lastDurableDashboard = nil
+      await captureDurableDashboard(snapshot.document)
+      if refreshInFlight {
+        projectRefreshPending = true
+      } else {
+        await refresh(forceRecurringPRProgress: true, userInitiated: true)
+      }
+      return loadError == nil
+    } catch {
+      loadError = "Could not switch projects: \(error.localizedDescription)"
+      return false
+    }
+  }
+
+  @discardableResult
+  func createTask(
+    title: String, summary: String, doneWhen: String, priority: String,
+    projectID: String? = nil
+  ) async -> Bool {
+    let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !title.isEmpty else {
+      loadError = "Give the task a readable title."
+      return false
+    }
+    let targetID = projectID ?? config.selectedProjectID
+    guard let project = config.projects.first(where: { $0.id == targetID }) else {
+      loadError = "The selected project is no longer configured."
+      return false
+    }
+    do {
+      let url = URL(fileURLWithPath: project.dashboardPath)
+      let snapshot = try await dashboardRepository.loadSnapshot(from: url)
+      let otherDashboards = config.projects.filter { $0.id != project.id }.map {
+        URL(fileURLWithPath: $0.dashboardPath)
+      }
+      var knownTickets = snapshot.document.tickets
+      for otherDashboard in otherDashboards {
+        knownTickets.append(contentsOf: try await dashboardRepository.load(from: otherDashboard).tickets)
+      }
+      let ticketID = Self.nextTicketID(
+        project: project, projectTickets: snapshot.document.tickets, allTickets: knownTickets)
+      let trimmedSummary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+      let trimmedDoneWhen = doneWhen.trimmingCharacters(in: .whitespacesAndNewlines)
+      let ticket = DashboardTicket(
+        id: ticketID,
+        title: title,
+        category: project.name,
+        priority: Self.allowedPriority(priority),
+        status: "backlog",
+        summary: String((trimmedSummary.isEmpty ? title : trimmedSummary).prefix(1_200)),
+        next: "Clarify the next implementation step.",
+        doneWhen: String(
+          (trimmedDoneWhen.isEmpty
+            ? "Confirm the requested behavior and record verification results."
+            : trimmedDoneWhen).prefix(900)),
+        updatedAt: Self.dayFormatter.string(from: Date())
+      )
+      let updated = try await dashboardRepository.createTicket(
+        ticket, in: url, expectedRevision: snapshot.revision,
+        checking: otherDashboards)
+      if config.selectedProjectID == project.id {
+        dashboard = updated.document
+        await captureDurableDashboard(updated.document)
+      }
+      actionMessages[ticket.id] = "Task added to \(project.name)."
+      loadError = nil
+      return true
+    } catch {
+      loadError = "Could not create task: \(error.localizedDescription)"
+      return false
+    }
+  }
+
+  @discardableResult
+  func renameTask(_ ticket: DashboardTicket, to title: String) async -> Bool {
+    let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !title.isEmpty, let project = selectedProject else {
+      actionMessages[ticket.id] = "Give the task a readable title."
+      return false
+    }
+    do {
+      let projectID = project.id
+      let url = URL(fileURLWithPath: project.dashboardPath)
+      let snapshot = try await dashboardRepository.loadSnapshot(from: url)
+      let updated = try await dashboardRepository.renameTicket(
+        id: ticket.id, to: title, in: url, expectedRevision: snapshot.revision)
+      let renamed = updated.document.tickets.first(where: { $0.id == ticket.id })
+      if config.selectedProjectID == projectID {
+        dashboard = updated.document
+        if var liveContext = taskContexts[ticket.id] {
+          liveContext.title = title
+          taskContexts[ticket.id] = liveContext
+        }
+      }
+
+      var contextRepairError: String?
+      if let renamed {
+        var contextExists = taskContexts[ticket.id] != nil
+        if !contextExists {
+          do {
+            contextExists = try await taskContextStore.load(ticketID: ticket.id) != nil
+          } catch {
+            contextRepairError = error.localizedDescription
+          }
+        }
+        if contextExists {
+          do {
+            let repaired = try await taskContextStore.ensureContext(ticket: renamed)
+            if config.selectedProjectID == projectID {
+              taskContexts[ticket.id] = repaired
+              await captureDurableContexts(Array(taskContexts.values))
+            }
+          } catch {
+            contextRepairError = error.localizedDescription
+          }
+        }
+      }
+      if config.selectedProjectID == projectID {
+        await captureDurableDashboard(updated.document)
+        actionMessages[ticket.id] = contextRepairError.map {
+          "Task title updated. Context repair will retry: \($0)"
+        } ?? "Task title updated."
+        loadError = nil
+      }
+      return true
+    } catch {
+      actionMessages[ticket.id] = "Could not rename task: \(error.localizedDescription)"
+      return false
+    }
+  }
+
+  private static func nextTicketID(
+    project: ProjectConfiguration,
+    projectTickets: [DashboardTicket],
+    allTickets: [DashboardTicket]
+  ) -> String {
+    func parse(_ tickets: [DashboardTicket]) -> [(String, Int, Int)] {
+      tickets.compactMap { ticket -> (String, Int, Int)? in
+        let parts = ticket.id.split(separator: "-", maxSplits: 1).map(String.init)
+        guard parts.count == 2, let number = Int(parts[1]) else { return nil }
+        return (parts[0].uppercased(), number, parts[1].count)
+      }
+    }
+    let projectIDs = parse(projectTickets)
+    let allIDs = parse(allTickets)
+    let grouped = Dictionary(grouping: projectIDs, by: { $0.0 })
+    let existingPrefix = grouped.max {
+      if $0.value.count == $1.value.count { return $0.key > $1.key }
+      return $0.value.count < $1.value.count
+    }?.key
+    let fallback = project.id.uppercased().filter { $0.isLetter || $0.isNumber }
+    let prefix = existingPrefix ?? (fallback.isEmpty ? "TASK" : fallback)
+    let matching = allIDs.filter { $0.0 == prefix }
+    let next = (matching.map { $0.1 }.max() ?? 0) + 1
+    let width = max(3, matching.map { $0.2 }.max() ?? 0)
+    return "\(prefix)-\(String(format: "%0\(width)d", next))"
+  }
+
+  private static func allowedPriority(_ rawValue: String) -> String {
+    let value = rawValue.lowercased()
+    return ["low", "medium", "high", "critical"].contains(value) ? value : "medium"
+  }
+
   func refresh(forceRecurringPRProgress: Bool = false, userInitiated: Bool = false) async {
     guard !refreshInFlight else { return }
     refreshInFlight = true
@@ -371,14 +591,23 @@ final class QueueViewModel {
     defer {
       refreshInFlight = false
       if showsActivity { isRefreshing = false }
+      if projectRefreshPending {
+        projectRefreshPending = false
+        Task { @MainActor [weak self] in
+          await self?.refresh(forceRecurringPRProgress: true, userInitiated: true)
+        }
+      }
     }
     do {
+      let projectID = config.selectedProjectID
       let dashboardURL = URL(fileURLWithPath: config.dashboardPath)
       async let document = dashboardRepository.load(from: dashboardURL)
       async let modificationDate = dashboardRepository.modificationDate(at: dashboardURL)
       let updatedDashboard = try await document
+      guard projectID == config.selectedProjectID else { return }
       if dashboard != updatedDashboard { dashboard = updatedDashboard }
       await captureDurableDashboard(updatedDashboard)
+      guard projectID == config.selectedProjectID else { return }
       let updatedOrder = try queueOrderStore.load()
       if savedQueueOrder != updatedOrder { savedQueueOrder = updatedOrder }
       pruneDeferredTickets()
@@ -596,7 +825,8 @@ final class QueueViewModel {
   }
 
   var showsReportNotification: Bool {
-    reportNeedsAttention && !localState.dismissedNotificationIDs.contains(reportNotificationID)
+    config.dailyReport.enabled && reportNeedsAttention
+      && !localState.dismissedNotificationIDs.contains(reportNotificationID)
   }
 
   var reportAttentionDocument: DailyReportDocument? {
@@ -2200,6 +2430,17 @@ final class QueueViewModel {
     persistConfiguration()
   }
 
+  func setDailyReportsEnabled(_ enabled: Bool) {
+    guard config.dailyReport.enabled != enabled else { return }
+    config.dailyReport.enabled = enabled
+    if !enabled {
+      pendingDailyReportApproval = nil
+      if isDailyReportPresented { setDailyReportPresented(false) }
+    }
+    dailyReportsEnabledHandler?(enabled)
+    persistConfiguration()
+  }
+
   func setDailyReportMaximumTokens(_ maximumTokens: Int) {
     config.dailyReport.maximumTokens = min(max(maximumTokens, 10_000), 1_000_000)
     persistConfiguration()
@@ -2294,6 +2535,29 @@ final class QueueViewModel {
 
   func showTopTaskOnly() {
     setPanelMode(.topTask)
+  }
+
+  func minimize(using preference: QueueMinimizationPreference) {
+    if localState.minimizationPreference != preference {
+      localState.minimizationPreference = preference
+      persistLocalState()
+    }
+    applyMinimization(preference)
+  }
+
+  func performPreferredMinimization() {
+    applyMinimization(localState.minimizationPreference)
+  }
+
+  private func applyMinimization(_ preference: QueueMinimizationPreference) {
+    switch preference {
+    case .dock:
+      minimizeHandler?()
+    case .fq:
+      setPanelMode(.collapsed)
+    case .topTask:
+      setPanelMode(.topTask)
+    }
   }
 
   func setPanelMode(_ mode: QueuePanelMode) {
@@ -2532,7 +2796,9 @@ final class QueueViewModel {
 
   private func persistLocalState() {
     let snapshot = localState
-    Task {
+    let priorSave = localStateSaveTask
+    localStateSaveTask = Task {
+      await priorSave?.value
       do {
         try await stateStore.save(snapshot)
         await captureDurableState(snapshot)

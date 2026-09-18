@@ -1,4 +1,4 @@
-# ECC Focus Queue module map
+# Focus Queue module map
 
 Start with the module matching the task, then follow its concrete source entry points. The cards contain recorded source checksums; run the explicit architecture index command to compare those baselines with the current checkout. Summary semantics remain unverified even when source checksums match.
 

@@ -12,7 +12,8 @@ import sys
 from typing import Any, Iterable
 
 
-PRODUCT = "ECC Focus Queue"
+PRODUCT = "Focus Queue"
+SUPPORT_DIRECTORY_NAME = "ECC Focus Queue"
 SYSTEM_BIN_DIRECTORIES = (Path("/opt/homebrew/bin"), Path("/usr/local/bin"), Path("/usr/bin"))
 TOOL_NAMES = ("codex", "claude", "kimi", "wezterm", "ghostty", "kitty", "python3", "gh", "tmux", "tailscale", "code", "cursor")
 APP_EXECUTABLES = {
@@ -112,7 +113,7 @@ def destination_status(path: Path, home: Path) -> tuple[str, str | None]:
 
 
 def planned_paths(home: Path, selected: set[str]) -> list[dict[str, Any]]:
-    support = home / "Library/Application Support" / PRODUCT
+    support = home / "Library/Application Support" / SUPPORT_DIRECTORY_NAME
     launch_agents = home / "Library/LaunchAgents"
     specifications = [
         (home / "Applications" / f"{PRODUCT}.app", "application", None),

@@ -1,4 +1,4 @@
-# ECC Focus Queue
+# Focus Queue
 
 A macOS operator panel that projects a local JSON task dashboard into an
 always-on-top, all-Spaces queue. First launch offers a setup wizard with an empty
@@ -352,8 +352,15 @@ remains a developer-specific fixture and is not seeded by installation.
 All process arguments are passed directly to `Process`; task content is never
 assembled into a shell command.
 
-The `dailyReport` object sets `scheduleHour`, `scheduleMinute`, `maximumTokens`,
-and `enabledPlatforms`. The report engine is Python plus JSON so its scheduling,
+The `projects` array defines each named dashboard and workspace, while
+`selectedProjectID` records the working project. Existing configurations with only
+`dashboardPath` and `workspacePath` migrate to one selected project without moving
+their files.
+
+The `dailyReport` object sets `enabled`, `scheduleHour`, `scheduleMinute`,
+`maximumTokens`, and `enabledPlatforms`. Disabling it stops automatic and missed-run
+processing while keeping manual runs and report history available. The report engine
+is Python plus JSON so its scheduling,
 deduplication, task linkage, and approval contracts can be reused by a future
 Windows host. Swift is limited to the current macOS panel and notification
 bridge. The token budget is enforced conservatively before classification;

@@ -12,7 +12,7 @@ enum TerminalFocusModeError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .accessibilityPermissionRequired:
-            "Confirm ECC Focus Queue is enabled in System Settings > Privacy & Security > Accessibility, then click View Agent again."
+            "Confirm Focus Queue is enabled in System Settings > Privacy & Security > Accessibility, then click View Agent again."
         case .applicationUnavailable(let name):
             "\(name) did not become available after the terminal was activated."
         case .focusedWindowUnavailable:

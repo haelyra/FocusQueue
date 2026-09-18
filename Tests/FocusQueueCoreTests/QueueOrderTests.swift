@@ -2,6 +2,28 @@ import Foundation
 import Testing
 @testable import FocusQueueCore
 
+@Test("Project queue orders stay isolated and can read the legacy order until first save")
+func projectScopedQueueOrder() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("queue-order-project-test-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let tickets = [
+        DashboardTicket(id: "APP-1", title: "One", status: "open", summary: ""),
+        DashboardTicket(id: "APP-2", title: "Two", status: "open", summary: ""),
+    ]
+    let legacy = QueueOrderStore(root: root)
+    _ = try legacy.move("APP-2", to: .top, tickets: tickets, fallbackIDs: ["APP-1", "APP-2"])
+
+    let first = QueueOrderStore(root: root, projectID: "first/project")
+    let second = QueueOrderStore(root: root, projectID: "second/project")
+    #expect(try first.load() == ["APP-2", "APP-1"])
+    #expect(try second.load() == ["APP-2", "APP-1"])
+
+    _ = try first.move("APP-1", to: .top, tickets: tickets, fallbackIDs: ["APP-2", "APP-1"])
+    #expect(try first.load() == ["APP-1", "APP-2"])
+    #expect(try second.load() == ["APP-2", "APP-1"])
+}
+
 @Suite("Saved queue order")
 struct QueueOrderTests {
     private let tickets = (1...8).map {

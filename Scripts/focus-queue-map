@@ -5,6 +5,7 @@ project_dir=${0:A:h:h}
 for helper in \
   "$project_dir/.build/debug/focus-queue-map" \
   "$project_dir/.build/release/focus-queue-map" \
+  "$HOME/Applications/Focus Queue.app/Contents/MacOS/focus-queue-map" \
   "$HOME/Applications/ECC Focus Queue.app/Contents/MacOS/focus-queue-map"; do
   if [[ -x "$helper" ]]; then
     exec "$helper" "$@"

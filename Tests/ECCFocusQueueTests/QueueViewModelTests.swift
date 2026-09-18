@@ -9,6 +9,209 @@ import Darwin
 @Suite("Queue app state integration")
 @MainActor
 struct QueueViewModelTests {
+  @Test("Project selection scopes task creation, task rename, and survives restart")
+  func projectSelectionAndTaskMutation() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let secondWorkspace = fixture.root.appendingPathComponent("second-project")
+    let secondDashboard = secondWorkspace.appendingPathComponent("dashboard.json")
+    let archiveWorkspace = fixture.root.appendingPathComponent("archive-project")
+    let archiveDashboard = archiveWorkspace.appendingPathComponent("dashboard.json")
+    try FileManager.default.createDirectory(at: secondWorkspace, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: archiveWorkspace, withIntermediateDirectories: true)
+    let secondTicket = DashboardTicket(
+      id: "APP-001", title: "Existing app task", status: "open",
+      summary: "Keep this task in the app project")
+    try JSONEncoder().encode(DashboardDocument(tickets: [secondTicket])).write(to: secondDashboard)
+    try JSONEncoder().encode(DashboardDocument(tickets: [
+      DashboardTicket(
+        id: "APP-002", title: "Reserved task ID", status: "open",
+        summary: "Keep task IDs globally unique")
+    ])).write(to: archiveDashboard)
+
+    var config = try JSONDecoder().decode(
+      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    config.projects = [
+      ProjectConfiguration(
+        id: "ecc", name: "ECC", dashboardPath: config.dashboardPath,
+        workspacePath: config.workspacePath),
+      ProjectConfiguration(
+        id: "app", name: "App", dashboardPath: secondDashboard.path,
+        workspacePath: secondWorkspace.path),
+      ProjectConfiguration(
+        id: "archive", name: "Archive", dashboardPath: archiveDashboard.path,
+        workspacePath: archiveWorkspace.path),
+    ]
+    config.selectedProjectID = "ecc"
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(config)
+
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(model.selectedProject?.name == "ECC")
+    #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
+    #expect(model.moveTicket("ECC-102", to: .top))
+
+    #expect(await model.selectProject(id: "app"))
+    #expect(model.selectedProject?.name == "App")
+    #expect(model.openTickets.map(\.id) == ["APP-001"])
+
+    #expect(await model.createTask(
+      title: "Project-scoped task", summary: "Created from the detached plus button",
+      doneWhen: "The task remains in the selected project", priority: "high"))
+    let created = try #require(model.openTickets.first { $0.title == "Project-scoped task" })
+    #expect(created.id == "APP-003")
+    #expect(await model.renameTask(created, to: "Renamed everywhere"))
+    #expect(model.dashboard.tickets.first { $0.id == created.id }?.title == "Renamed everywhere")
+    #expect(model.moveTicket("APP-001", to: .top))
+    #expect(await model.selectProject(id: "ecc"))
+    #expect(model.openTickets.first?.id == "ECC-102")
+    #expect(await model.selectProject(id: "app"))
+    #expect(model.openTickets.first?.id == "APP-001")
+
+    let firstSaved = try JSONDecoder().decode(
+      DashboardDocument.self,
+      from: Data(contentsOf: URL(fileURLWithPath: config.projects[0].dashboardPath)))
+    let secondSaved = try JSONDecoder().decode(
+      DashboardDocument.self, from: Data(contentsOf: secondDashboard))
+    let archiveSaved = try JSONDecoder().decode(
+      DashboardDocument.self, from: Data(contentsOf: archiveDashboard))
+    #expect(firstSaved.tickets.map(\.id) == ["ECC-101", "ECC-102"])
+    #expect(secondSaved.tickets.first { $0.id == created.id }?.title == "Renamed everywhere")
+    #expect(archiveSaved.tickets.map(\.id) == ["APP-002"])
+
+    let restarted = await fixture.model(agent: ControlledQueueAgent())
+    #expect(restarted.selectedProject?.id == "app")
+    #expect(restarted.openTickets.contains { $0.title == "Renamed everywhere" })
+  }
+
+  @Test("Task rename updates a loaded context and rejects an empty replacement")
+  func taskRenamePropagation() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let ticket = try #require(model.openTickets.first)
+    model.openPlan(for: ticket)
+    try await eventually { model.taskContexts[ticket.id] != nil }
+
+    #expect(await model.renameTask(ticket, to: "A clearer task title"))
+    #expect(model.openTickets.first { $0.id == ticket.id }?.title == "A clearer task title")
+    #expect(model.taskContexts[ticket.id]?.title == "A clearer task title")
+    #expect(model.presentedPlanTicket?.title == "A clearer task title")
+    let plan = try String(contentsOf: URL(fileURLWithPath: model.taskContexts[ticket.id]!.planPath))
+    #expect(plan.hasPrefix("# \(ticket.id): A clearer task title\n"))
+    #expect(!(await model.renameTask(ticket, to: "   ")))
+    #expect(model.openTickets.first { $0.id == ticket.id }?.title == "A clearer task title")
+  }
+
+  @Test("A rename finishing after a project switch never repaints the prior project")
+  func renameProjectSwitchRace() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let secondWorkspace = fixture.root.appendingPathComponent("rename-race-project")
+    let secondDashboard = secondWorkspace.appendingPathComponent("dashboard.json")
+    try FileManager.default.createDirectory(at: secondWorkspace, withIntermediateDirectories: true)
+    try JSONEncoder().encode(DashboardDocument(tickets: [
+      DashboardTicket(id: "APP-001", title: "Selected app task", status: "open", summary: "")
+    ])).write(to: secondDashboard)
+    var config = try JSONDecoder().decode(
+      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    config.projects.append(ProjectConfiguration(
+      id: "app", name: "App", dashboardPath: secondDashboard.path,
+      workspacePath: secondWorkspace.path))
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(config)
+
+    let repository = SuspendedRenameDashboardRepository()
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(), dashboardRepository: repository)
+    let original = try #require(model.openTickets.first { $0.id == "ECC-101" })
+    let rename = Task { await model.renameTask(original, to: "Renamed in ECC") }
+    try await eventually { await repository.hasPendingRename }
+    #expect(await model.selectProject(id: "app"))
+    await repository.resumeRename()
+    #expect(await rename.value)
+    #expect(model.selectedProject?.id == "app")
+    #expect(model.dashboard.tickets.map(\.id) == ["APP-001"])
+    let ecc = try JSONDecoder().decode(
+      DashboardDocument.self,
+      from: Data(contentsOf: URL(fileURLWithPath: config.projects[0].dashboardPath)))
+    #expect(ecc.tickets.first { $0.id == "ECC-101" }?.title == "Renamed in ECC")
+  }
+
+  @Test("A canonical rename remains successful and visible when context repair must retry")
+  func renameWithDamagedContext() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let ticket = try #require(model.openTickets.first)
+    model.openPlan(for: ticket)
+    try await eventually { model.taskContexts[ticket.id] != nil }
+    let contextURL = fixture.root.appendingPathComponent("tasks/\(ticket.id)/context.json")
+    try Data("not-json".utf8).write(to: contextURL, options: .atomic)
+
+    #expect(await model.renameTask(ticket, to: "Canonical rename"))
+    #expect(model.openTickets.first { $0.id == ticket.id }?.title == "Canonical rename")
+    #expect(model.taskContexts[ticket.id]?.title == "Canonical rename")
+    #expect(model.actionMessages[ticket.id]?.contains("Context repair will retry") == true)
+    let saved = try JSONDecoder().decode(
+      DashboardDocument.self,
+      from: Data(contentsOf: URL(fileURLWithPath: model.config.dashboardPath)))
+    #expect(saved.tickets.first { $0.id == ticket.id }?.title == "Canonical rename")
+  }
+
+  @Test("The collapse button repeats and persists the selected minimization behavior")
+  func preferredMinimization() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    var dockMinimizations = 0
+    model.minimizeHandler = { dockMinimizations += 1 }
+
+    model.minimize(using: .topTask)
+    #expect(model.isTopTaskOnly)
+    model.setPanelMode(.expanded)
+    model.performPreferredMinimization()
+    #expect(model.isTopTaskOnly)
+
+    model.setPanelMode(.expanded)
+    model.minimize(using: .fq)
+    #expect(model.isPanelCollapsed)
+
+    model.setPanelMode(.expanded)
+    model.minimize(using: .dock)
+    #expect(dockMinimizations == 1)
+    #expect(model.panelMode == .expanded)
+    try await eventually {
+      try await JSONLocalStateStore(url: fixture.paths.stateFile).load()
+        .minimizationPreference == .dock
+    }
+    let restarted = await fixture.model(agent: ControlledQueueAgent())
+    restarted.minimizeHandler = { dockMinimizations += 1 }
+    restarted.performPreferredMinimization()
+    #expect(dockMinimizations == 2)
+  }
+
+  @Test("Disabling automatic reports suppresses missing-report attention and persists")
+  func disabledAutomaticReports() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(model.showsReportNotification)
+    var reportedEnabledValue: Bool?
+    model.dailyReportsEnabledHandler = { reportedEnabledValue = $0 }
+
+    model.setDailyReportsEnabled(false)
+    #expect(!model.config.dailyReport.enabled)
+    #expect(!model.showsReportNotification)
+    #expect(reportedEnabledValue == false)
+    try await eventually {
+      let saved = try JSONDecoder().decode(
+        AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+      return !saved.dailyReport.enabled
+    }
+    let restarted = await fixture.model(agent: ControlledQueueAgent())
+    #expect(!restarted.config.dailyReport.enabled)
+    #expect(!restarted.showsReportNotification)
+  }
+
   @Test("App and agent share queue moves across refreshes, state saves, and restarts")
   func sharedQueueOrder() async throws {
     let fixture = try await Fixture()
@@ -21,7 +224,8 @@ struct QueueViewModelTests {
     #expect(model.openTickets.first?.id == "ECC-102")
     let restarted = await fixture.model(agent: ControlledQueueAgent())
     #expect(restarted.openTickets.first?.id == "ECC-102")
-    let external = QueueOrderStore(root: fixture.root)
+    let external = QueueOrderStore(
+      root: fixture.root, projectID: model.config.selectedProjectID)
     try external.move("ECC-101", to: .top, tickets: fixture.tickets, fallbackIDs: [])
     model.setPanelCollapsed(true)
     await model.refresh()
@@ -1368,6 +1572,54 @@ struct QueueViewModelTests {
 
 private enum TestFailure: Error { case unexpectedExternalAction, conditionTimedOut }
 
+private actor SuspendedRenameDashboardRepository: DashboardManaging {
+  private let base = JSONDashboardRepository()
+  private var renameContinuation: CheckedContinuation<Void, Never>?
+
+  var hasPendingRename: Bool { renameContinuation != nil }
+
+  func load(from url: URL) async throws -> DashboardDocument {
+    try await base.load(from: url)
+  }
+
+  func modificationDate(at url: URL) async throws -> Date? {
+    try await base.modificationDate(at: url)
+  }
+
+  func loadSnapshot(from url: URL) async throws -> DashboardSnapshot {
+    try await base.loadSnapshot(from: url)
+  }
+
+  func createTicket(
+    _ ticket: DashboardTicket,
+    in url: URL,
+    expectedRevision: DashboardRevision,
+    checking otherDashboardURLs: [URL]
+  ) async throws -> DashboardSnapshot {
+    try await base.createTicket(
+      ticket, in: url, expectedRevision: expectedRevision, checking: otherDashboardURLs)
+  }
+
+  func renameTicket(
+    id: String,
+    to title: String,
+    in url: URL,
+    expectedRevision: DashboardRevision
+  ) async throws -> DashboardSnapshot {
+    let updated = try await base.renameTicket(
+      id: id, to: title, in: url, expectedRevision: expectedRevision)
+    await withCheckedContinuation { continuation in
+      renameContinuation = continuation
+    }
+    return updated
+  }
+
+  func resumeRename() {
+    renameContinuation?.resume()
+    renameContinuation = nil
+  }
+}
+
 private final class ObservationCounter: @unchecked Sendable {
   private let lock = NSLock()
   private var value = 0
@@ -1400,11 +1652,13 @@ private struct Fixture {
 
   func model(agent: ControlledQueueAgent, verifier: (any CompletionVerifying)? = nil,
              terminalController: (any WezTermControlling)? = nil,
+             dashboardRepository: any DashboardManaging = JSONDashboardRepository(),
              taskAgentLauncher: TaskAgentLauncher = TaskAgentLauncher(),
              connectorDiagnosticsRunner: any ProcessRunning = FoundationProcessRunner(),
              locateExistingAgent: @escaping @Sendable (AgentProvider, String) async throws -> KnownProviderProcess? = { _, _ in nil }) async -> QueueViewModel {
     let boundary = ForbiddenExternalActions()
-    let model = QueueViewModel(paths: paths, terminalController: terminalController ?? boundary,
+    let model = QueueViewModel(paths: paths, dashboardRepository: dashboardRepository,
+      terminalController: terminalController ?? boundary,
       verifier: verifier ?? boundary, queueAgent: agent, pullRequestQueueLoader: boundary,
       taskAgentLauncher: taskAgentLauncher,
       connectorDiagnosticsRunner: connectorDiagnosticsRunner, discoverExternalAgents: { [] },

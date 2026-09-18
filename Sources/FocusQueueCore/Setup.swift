@@ -13,7 +13,7 @@ public enum SetupEnvironment {
 
   public static func starter(supportDirectory: URL,
                              home: URL = FileManager.default.homeDirectoryForCurrentUser) -> AppConfiguration {
-    var configuration = AppConfiguration(appName: "ECC Focus Queue",
+    var configuration = AppConfiguration(appName: "Focus Queue",
       dashboardPath: supportDirectory.appendingPathComponent("workspace/dashboard.json").path,
       workspacePath: supportDirectory.appendingPathComponent("workspace").path,
       defaultPlacement: .upperRight, refreshIntervalSeconds: 2, dailyRoutines: [],

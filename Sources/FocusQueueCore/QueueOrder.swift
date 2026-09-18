@@ -9,15 +9,29 @@ public enum QueuePlacement: Sendable {
 /// cached app state from overwriting an agent's queue changes.
 public struct QueueOrderStore: Sendable {
     public let directory: URL
-    private var file: URL { directory.appendingPathComponent("order.json") }
+    private let projectID: String?
+    private var legacyFile: URL { directory.appendingPathComponent("order.json") }
+    private var file: URL {
+        guard let projectID else { return legacyFile }
+        let encoded = Data(projectID.utf8).base64EncodedString()
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "=", with: "")
+        return directory.appendingPathComponent("order-\(encoded).json")
+    }
 
-    public init(root: URL) {
+    public init(root: URL, projectID: String? = nil) {
         directory = root.appendingPathComponent("queue-order", isDirectory: true)
+        self.projectID = projectID
     }
 
     public func load() throws -> [String]? {
-        guard FileManager.default.fileExists(atPath: file.path) else { return nil }
-        return try JSONDecoder().decode([String].self, from: Data(contentsOf: file))
+        let source = FileManager.default.fileExists(atPath: file.path)
+            ? file
+            : (projectID != nil && FileManager.default.fileExists(atPath: legacyFile.path)
+                ? legacyFile : nil)
+        guard let source else { return nil }
+        return try JSONDecoder().decode([String].self, from: Data(contentsOf: source))
     }
 
     /// Saved tasks retain their positions; new tasks append in priority order.

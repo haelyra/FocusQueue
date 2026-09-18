@@ -1,4 +1,4 @@
-# Nielsen heuristic evaluation of ECC Focus Queue
+# Nielsen heuristic evaluation of Focus Queue
 
 Evaluation date: 2026-09-16
 

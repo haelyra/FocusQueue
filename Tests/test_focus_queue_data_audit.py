@@ -43,7 +43,7 @@ class DataAuditTests(unittest.TestCase):
             parsed = json.loads(output.read_text())
             self.assertEqual(parsed["support_dir"], str(support.resolve()))
             self.assertIn("Files:", report.read_text())
-            self.assertTrue(render_report(parsed).startswith("# ECC Focus Queue data audit"))
+            self.assertTrue(render_report(parsed).startswith("# Focus Queue data audit"))
 
     def test_symlink_is_not_traversed(self):
         with tempfile.TemporaryDirectory() as directory:

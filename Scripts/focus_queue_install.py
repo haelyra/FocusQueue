@@ -16,7 +16,8 @@ import tempfile
 import time
 import sys
 
-PRODUCT = "ECC Focus Queue"
+PRODUCT = "Focus Queue"
+LEGACY_PRODUCT = "ECC Focus Queue"
 IDENTIFIER = "com.haelyra.ecc-focus-queue"
 TREE_DIGEST_ALGORITHM = "sha256-tree-v1"
 PROMPT_START = "<!-- BEGIN ECC FOCUS QUEUE AGENT CONTRACT v1 -->"
@@ -160,27 +161,52 @@ def app_identity(path):
         return None
 
 
+def verify_installed_app(path, description):
+    if path.is_symlink() or app_identity(path) != IDENTIFIER:
+        raise ValueError(f"The {description} has an unexpected identity and was preserved: {path}")
+    try:
+        subprocess.run(
+            ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(path)],
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.SubprocessError as error:
+        raise ValueError(
+            f"The {description} has an invalid code signature and was preserved: {path}"
+        ) from error
+
+
 class Installer:
     def __init__(self, bundle, home, *, login=False, desktop=False, start=True):
         self.bundle = bundle.absolute()
         self.home = home.absolute()
-        self.support = self.home / "Library/Application Support" / PRODUCT
+        self.support = self.home / "Library/Application Support" / LEGACY_PRODUCT
         self.automation = self.support / "automation"
         self.app = self.home / "Applications" / f"{PRODUCT}.app"
+        self.legacy_app = self.home / "Applications" / f"{LEGACY_PRODUCT}.app"
         self.helper = self.home / ".local/bin/focus-queue-session"
         self.agent = self.home / "Library/LaunchAgents" / f"{IDENTIFIER}.plist"
         self.desktop = self.home / "Desktop" / f"{PRODUCT}.app"
+        self.legacy_desktop = self.home / "Desktop" / f"{LEGACY_PRODUCT}.app"
         self.manifest = self.support / "install-manifest.json"
         self.codex_prompt = self.home / ".codex/AGENTS.md"
         self.codex_entry = self.support / "shell/focus_queue_codex_entry.py"
         self.login, self.shortcut, self.start = login, desktop, start
         self.service = f"gui/{os.getuid()}/{IDENTIFIER}"
+        self.legacy_shortcut_owned = False
 
     def preflight(self):
         if os.uname().sysname != "Darwin":
             raise ValueError("The app installer supports macOS only.")
         if self.bundle.is_symlink() or app_identity(self.bundle) != IDENTIFIER:
             raise ValueError("Built bundle has an unexpected identity or is a symlink.")
+        bundle_info = plistlib.loads((self.bundle / "Contents/Info.plist").read_bytes())
+        if (
+            bundle_info.get("CFBundleDisplayName") != PRODUCT
+            or bundle_info.get("CFBundleName") != PRODUCT
+            or bundle_info.get("CFBundleExecutable") != "ECCFocusQueue"
+        ):
+            raise ValueError("Built bundle has an unexpected display identity.")
         for name in ("ECCFocusQueue", "focus-queue-session"):
             if not os.access(self.bundle / "Contents/MacOS" / name, os.X_OK):
                 raise ValueError(f"Built app is incomplete: missing executable {name}.")
@@ -192,24 +218,57 @@ class Installer:
         merge_codex_prompt(self.codex_prompt.read_text() if self.codex_prompt.exists() else "", payload.read_text())
         safe_destination(self.codex_entry, self.home)
         if self.codex_entry.exists():
-            candidates = [app / "Contents/Resources/shell/focus_queue_codex_entry.py" for app in (self.app, self.bundle)]
+            candidates = [
+                app / "Contents/Resources/shell/focus_queue_codex_entry.py"
+                for app in (self.app, self.legacy_app, self.bundle)
+            ]
             if not self.codex_entry.is_file() or not any(p.is_file() and digest(p) == digest(self.codex_entry) for p in candidates):
                 raise ValueError("The installed Codex entry has local changes; retained for review.")
         validate_automation_tree(bundled_automation)
         subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(self.bundle)], check=True, capture_output=True)
-        for path in (self.app, self.helper, self.agent, self.support, self.automation, self.manifest):
+        for path in (
+            self.app,
+            self.legacy_app,
+            self.helper,
+            self.agent,
+            self.support,
+            self.automation,
+            self.manifest,
+        ):
             safe_destination(path, self.home)
-        if self.app.exists() and app_identity(self.app) != IDENTIFIER:
-            raise ValueError(f"Installation target belongs to another app: {self.app}")
+        if self.app.exists():
+            verify_installed_app(self.app, "installation target")
+        if self.legacy_app.exists():
+            verify_installed_app(self.legacy_app, "legacy app")
         if self.helper.exists():
-            candidates = [app / "Contents/MacOS/focus-queue-session" for app in (self.app, self.bundle)]
+            candidates = [
+                app / "Contents/MacOS/focus-queue-session"
+                for app in (self.app, self.legacy_app, self.bundle)
+            ]
             if not self.helper.is_file() or not any(p.is_file() and digest(self.helper) == digest(p) for p in candidates):
                 raise ValueError(f"Existing session helper is unrecognized: {self.helper}")
         if self.agent.exists():
             value = plistlib.loads(self.agent.read_bytes())
-            if value.get("Label") != IDENTIFIER or value.get("ProgramArguments") != [str(self.app / "Contents/MacOS/ECCFocusQueue")]:
+            known_executables = {
+                str(app / "Contents/MacOS/ECCFocusQueue")
+                for app in (self.app, self.legacy_app)
+            }
+            arguments = value.get("ProgramArguments")
+            if (
+                value.get("Label") != IDENTIFIER
+                or not isinstance(arguments, list)
+                or len(arguments) != 1
+                or arguments[0] not in known_executables
+            ):
                 raise ValueError(f"Existing login service is unrecognized: {self.agent}")
             self.login = True
+        self.legacy_shortcut_owned = (
+            self.legacy_desktop.is_symlink()
+            and self.legacy_desktop.readlink() == self.legacy_app
+        )
+        if self.legacy_shortcut_owned:
+            self.shortcut = True
+            safe_destination(self.legacy_desktop.parent / "ownership-check", self.home)
         if self.desktop.is_symlink():
             if self.desktop.readlink() == self.app:
                 self.shortcut = True
@@ -243,16 +302,39 @@ class Installer:
 
     def stop(self):
         subprocess.run(["/bin/launchctl", "bootout", self.service], capture_output=True)
-        result = subprocess.run(["/bin/ps", "-axo", "pid=,comm="], capture_output=True, text=True, check=True)
-        for line in result.stdout.splitlines():
-            values = line.strip().split(None, 1)
-            if len(values) == 2 and values[1] == str(self.app / "Contents/MacOS/ECCFocusQueue"):
-                try:
-                    os.kill(int(values[0]), 15)
-                except ProcessLookupError:
-                    pass
+        executables = {
+            str(app / "Contents/MacOS/ECCFocusQueue")
+            for app in (self.app, self.legacy_app)
+        }
 
-    def start_app(self, *, login):
+        def running_processes():
+            result = subprocess.run(
+                ["/bin/ps", "-axo", "pid=,comm="],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            processes = []
+            for line in result.stdout.splitlines():
+                values = line.strip().split(None, 1)
+                if len(values) == 2 and values[1] in executables:
+                    processes.append((int(values[0]), values[1]))
+            return processes
+
+        processes = running_processes()
+        for process, _ in processes:
+            try:
+                os.kill(process, 15)
+            except ProcessLookupError:
+                pass
+        for attempt in range(50):
+            if not running_processes():
+                return
+            if attempt < 49:
+                time.sleep(0.1)
+        raise RuntimeError("The previous Focus Queue app is still running; installation stopped.")
+
+    def start_app(self, *, login, application=None):
         if login:
             for attempt in range(5):
                 result = subprocess.run(["/bin/launchctl", "bootstrap", f"gui/{os.getuid()}", str(self.agent)], capture_output=True, text=True)
@@ -263,7 +345,11 @@ class Installer:
                 raise RuntimeError(f"Login service failed to start: {result.stderr.strip()}")
             subprocess.run(["/bin/launchctl", "kickstart", self.service], check=True, capture_output=True)
         else:
-            subprocess.run(["/usr/bin/open", "-g", str(self.app)], check=True, capture_output=True)
+            subprocess.run(
+                ["/usr/bin/open", "-g", str(application or self.app)],
+                check=True,
+                capture_output=True,
+            )
 
     def install(self):
         self.preflight()
@@ -279,7 +365,13 @@ class Installer:
         self.app.parent.mkdir(parents=True, exist_ok=True)
         stage = Path(tempfile.mkdtemp(prefix=".focus-queue-stage-", dir=self.app.parent))
         changes = []
-        old_app, old_login, stopped = self.app.exists(), self.agent.exists(), False
+        old_application = (
+            self.app if self.app.exists()
+            else self.legacy_app if self.legacy_app.exists()
+            else None
+        )
+        old_login, stopped = self.agent.exists(), False
+        legacy_application_migrated = self.legacy_app.exists()
         try:
             staged_app = stage / self.app.name
             subprocess.run(["/usr/bin/ditto", str(self.bundle), str(staged_app)], check=True, capture_output=True)
@@ -338,37 +430,50 @@ class Installer:
             staged_manifest.write_text(json.dumps(manifest, indent=2) + "\n")
             staged_manifest.chmod(0o600)
             planned.append((staged_manifest, self.manifest))
+            obsolete = []
+            if self.legacy_app.exists():
+                obsolete.append(self.legacy_app)
+            if self.legacy_shortcut_owned:
+                obsolete.append(self.legacy_desktop)
+            operations = [
+                (None, target) for target in obsolete
+            ] + planned
             recovery = {"version": 1, "status": "prepared", "paths": [
                 {"destination": str(target), "backup": str(backup / str(index))}
-                for index, (_, target) in enumerate(planned)]}
+                for index, (_, target) in enumerate(operations)]}
             (backup / "recovery.json").write_text(json.dumps(recovery, indent=2) + "\n")
             if self.start:
                 self.stop()
                 stopped = True
-            for index, (source, target) in enumerate(planned):
+            for index, (source, target) in enumerate(operations):
                 if target == self.codex_prompt and (target.read_bytes() if target.exists() else b"") != original_prompt:
                     raise ValueError("Codex instructions changed during installation; retry to preserve the newer edit.")
                 if target == self.codex_entry and (target.read_bytes() if target.exists() else None) != original_entry:
                     raise ValueError("Codex entry changed during installation; retry to preserve the newer edit.")
-                target.parent.mkdir(parents=True, exist_ok=True)
+                if source is not None:
+                    target.parent.mkdir(parents=True, exist_ok=True)
                 previous = backup / str(index)
                 existed = target.exists() or target.is_symlink()
                 if existed:
                     target.rename(previous)
                 changes.append((target, previous if existed else None))
-                source.rename(target)
+                if source is not None:
+                    source.rename(target)
             if self.start:
                 self.start_app(login=self.login)
             recovery["status"] = "installed"
             (backup / "recovery.json").write_text(json.dumps(recovery, indent=2) + "\n")
             return {"status": "installed", "application": str(self.app), "backupDirectory": str(backup),
-                    "manifest": str(self.manifest), "started": self.start}
+                    "manifest": str(self.manifest), "started": self.start,
+                    "legacyApplicationMigrated": legacy_application_migrated}
         except BaseException:
+            shutdown_error = None
             if stopped:
                 try:
                     self.stop()
-                except Exception:
-                    pass  # File restoration must still run if service shutdown fails.
+                except Exception as error:
+                    # File restoration must still run if service shutdown fails.
+                    shutdown_error = error
             for index, (target, previous) in enumerate(reversed(changes)):
                 if target.exists() or target.is_symlink():
                     target.rename(backup / f"failed-new-{index}")
@@ -378,9 +483,15 @@ class Installer:
             if recovery_file.exists():
                 recovery["status"] = "rolled_back"
                 recovery_file.write_text(json.dumps(recovery, indent=2) + "\n")
-            if stopped and old_app:
+            if stopped and old_application is not None:
+                if shutdown_error is not None:
+                    raise RuntimeError(
+                        f"Files restored, but the replacement app did not stop; the previous "
+                        f"app was not restarted to avoid a duplicate. Recovery: {backup}. "
+                        f"{shutdown_error}"
+                    ) from shutdown_error
                 try:
-                    self.start_app(login=old_login)
+                    self.start_app(login=old_login, application=old_application)
                 except Exception as error:
                     raise RuntimeError(f"Files restored, but restarting the previous app failed. Recovery: {backup}. {error}") from error
             raise
@@ -396,8 +507,8 @@ def _uninstall_locked(installer, home, *, check, stop):
     if manifest.get("product") != IDENTIFIER or manifest.get("version") != 1:
         raise ValueError("Unrecognized installation manifest.")
     allowed = {
-        installer.app, installer.helper, installer.agent,
-        installer.desktop, installer.automation,
+        installer.app, installer.legacy_app, installer.helper, installer.agent,
+        installer.desktop, installer.legacy_desktop, installer.automation,
     }
     targets = []
     for item in manifest["artifacts"]:
@@ -406,15 +517,17 @@ def _uninstall_locked(installer, home, *, check, stop):
             raise ValueError(f"Manifest path is outside the app installation: {path}")
         if not path.exists() and not path.is_symlink():
             continue
-        if path == installer.desktop:
+        if path in {installer.desktop, installer.legacy_desktop}:
             safe_destination(path.parent / "ownership-check", home)
-            if not path.is_symlink() or path.readlink() != installer.app:
+            expected_app = (
+                installer.app if path == installer.desktop else installer.legacy_app
+            )
+            if not path.is_symlink() or path.readlink() != expected_app:
                 raise ValueError(f"Desktop shortcut changed; retained: {path}")
         else:
             safe_destination(path, home)
-            if path == installer.app:
-                if app_identity(path) != IDENTIFIER:
-                    raise ValueError(f"App identity changed; retained: {path}")
+            if path in {installer.app, installer.legacy_app}:
+                verify_installed_app(path, "installed app")
             elif path == installer.automation:
                 if (path.is_symlink() or not path.is_dir()
                         or not automation_digest_matches(path, item)):

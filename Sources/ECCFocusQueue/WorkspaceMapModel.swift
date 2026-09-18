@@ -55,6 +55,7 @@ final class WorkspaceMapModel {
     @ObservationIgnored private let collector: WorkspaceCollector
     @ObservationIgnored private let cache = MapSnapshotCache()
     @ObservationIgnored private var loadedTask: String?
+    @ObservationIgnored private var lastSuccessfulSnapshot: MapSnapshot?
 
     init(collector: WorkspaceCollector = WorkspaceCollector()) { self.collector = collector }
 
@@ -65,22 +66,32 @@ final class WorkspaceMapModel {
         let cacheURL = context.contextDirectory.appendingPathComponent("workspace-map/snapshot.json")
         if loadedTask != context.ticketID {
             loadedTask = context.ticketID
+            lastSuccessfulSnapshot = nil
             snapshot = nil; expanded = []; collapsed = []; focusedBranchID = nil; selection = nil; mode = .typical
-            do { snapshot = try await cache.load(from: cacheURL, taskID: context.ticketID) }
+            do {
+                snapshot = try await cache.load(from: cacheURL, taskID: context.ticketID)
+                if snapshot?.warnings.isEmpty == true { lastSuccessfulSnapshot = snapshot }
+            }
             catch { message = "Saved map unavailable. Collecting a fresh map." }
             seedExpansion()
         }
         do {
             let fresh = try await collector.collect(context: context, sessions: sessions)
             try Task.checkCancellation()
-            if !fresh.warnings.isEmpty, let snapshot, snapshot.warnings.isEmpty {
+            let hasLiveWorkspace = fresh.nodes.contains {
+                $0.kind == .workspace && $0.observedAt == fresh.generatedAt
+            }
+            if !fresh.warnings.isEmpty, !hasLiveWorkspace, let lastSuccessfulSnapshot {
+                snapshot = lastSuccessfulSnapshot
                 message = "Showing the last successful map. " + fresh.warnings.joined(separator: " ")
+                seedExpansion()
             } else {
                 snapshot = fresh
                 message = fresh.warnings.isEmpty ? nil : fresh.warnings.joined(separator: " ")
                 seedExpansion()
             }
             if fresh.warnings.isEmpty {
+                lastSuccessfulSnapshot = fresh
                 do { try await cache.save(fresh, to: cacheURL) }
                 catch { message = "Live map available; its cache could not be saved: \(error.localizedDescription)" }
             }

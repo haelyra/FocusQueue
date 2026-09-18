@@ -86,7 +86,77 @@ public actor JSONConfigurationRepository: ConfigurationLoading {
 
     public func save(_ configuration: AppConfiguration) throws {
         let validated = try configuration.validated()
-        try files.write(try Self.encoder.encode(validated), to: url)
+        let encoded = try Self.encoder.encode(validated)
+        guard files.fileExists(at: url) else {
+            try files.write(encoded, to: url)
+            return
+        }
+        let existingValue = try JSONSerialization.jsonObject(with: files.read(from: url))
+        guard let existing = existingValue as? [String: Any] else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        let legacyProjects = Self.classifyLegacyProjects(in: existing)
+        guard legacyProjects != .ambiguous else { throw CocoaError(.fileReadCorruptFile) }
+        guard var updated = try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        else { throw CocoaError(.fileWriteUnknown) }
+        for (key, value) in existing
+        where updated[key] == nil
+            && Self.shouldPreserveConfigurationValue(
+                value, forKey: key, legacyProjects: legacyProjects)
+        {
+            updated[key] = value
+        }
+        let merged = try JSONSerialization.data(
+            withJSONObject: updated,
+            options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        )
+        try files.write(merged, to: url)
+    }
+
+    private static let knownConfigurationKeys: Set<String> = [
+        "appName", "dashboardPath", "workspacePath", "defaultPlacement",
+        "refreshIntervalSeconds", "dailyRoutines", "wezTerm", "verifier", "dailyReport",
+        "persistentTerminals", "tmuxExecutable", "setupCompleted", "focusQueueProjects",
+        "focusQueueSelectedProjectID", "projects", "selectedProjectID",
+    ]
+
+    private enum LegacyProjectMetadata: Equatable {
+        case absent, empty, repository, queue, ambiguous
+    }
+
+    private static func classifyLegacyProjects(in configuration: [String: Any])
+        -> LegacyProjectMetadata
+    {
+        guard let value = configuration["projects"] else { return .absent }
+        guard let projects = value as? [[String: Any]] else { return .ambiguous }
+        guard !projects.isEmpty else { return .empty }
+        let isRepositoryCatalog = projects.allSatisfy {
+            $0["id"] is String
+                && $0["name"] is String
+                && $0["repositoryPath"] is String
+                && $0["dashboardPath"] == nil
+                && $0["workspacePath"] == nil
+        }
+        if isRepositoryCatalog { return .repository }
+        let isQueueCatalog = projects.allSatisfy {
+            $0["id"] is String
+                && $0["name"] is String
+                && $0["dashboardPath"] is String
+                && $0["workspacePath"] is String
+                && $0["repositoryPath"] == nil
+        }
+        return isQueueCatalog ? .queue : .ambiguous
+    }
+
+    private static func shouldPreserveConfigurationValue(
+        _ value: Any,
+        forKey key: String,
+        legacyProjects: LegacyProjectMetadata
+    ) -> Bool {
+        if key == "projects" || key == "selectedProjectID" {
+            return legacyProjects == .repository
+        }
+        return !knownConfigurationKeys.contains(key)
     }
 
     private static var encoder: JSONEncoder {

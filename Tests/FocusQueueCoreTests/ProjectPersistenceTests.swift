@@ -38,6 +38,224 @@ func legacyConfigurationCreatesEffectiveProject() throws {
   #expect(configuration.appName == "ECC Focus Queue")
 }
 
+@Test("Legacy repository project catalog does not shadow queue project migration")
+func legacyRepositoryProjectCatalogIsPreserved() async throws {
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent("focus-queue-legacy-project-catalog-\(UUID().uuidString)", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  let url = root.appendingPathComponent("config.json")
+  try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+  try Data(
+    """
+    {
+      "appName": "ECC Focus Queue",
+      "dashboardPath": "/tmp/ECC/dashboard.json",
+      "workspacePath": "/tmp/ECC",
+      "defaultPlacement": "upper-right",
+      "refreshIntervalSeconds": 2,
+      "dailyRoutines": [],
+      "wezTerm": {"executable": "/tmp/wezterm", "applicationName": "WezTerm"},
+      "verifier": {
+        "enabled": true,
+        "executable": "/tmp/focus-queue-codex",
+        "sessionName": "queue",
+        "timeoutSeconds": 120,
+        "maxTurns": 24
+      },
+      "selectedProjectID": "focus-queue",
+      "projects": [
+        {
+          "id": "focus-queue",
+          "name": "Focus Queue",
+          "repositoryPath": "/tmp/FocusQueue",
+          "remoteAliases": []
+        },
+        {
+          "id": "ecc",
+          "name": "ECC",
+          "repositoryPath": "/tmp/ECC/repository",
+          "remote": "https://example.test/ecc",
+          "remoteAliases": ["https://example.test/ecc-fork"]
+        }
+      ],
+      "vendorMetadata": {"owner": "external", "revision": 7}
+    }
+    """.utf8
+  ).write(to: url)
+
+  let repository = JSONConfigurationRepository(url: url)
+  let configuration = try await repository.loadOrCreate(
+    default: .eccDefault(homeDirectory: root))
+  let selected = try #require(configuration.selectedProject)
+
+  #expect(configuration.projects.count == 1)
+  #expect(configuration.selectedProjectID == selected.id)
+  #expect(selected.name == "ECC")
+  #expect(selected.dashboardPath == "/tmp/ECC/dashboard.json")
+  #expect(selected.workspacePath == "/tmp/ECC")
+
+  try await repository.save(configuration)
+  let object = try #require(
+    JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+  let preserved = try #require(object["projects"] as? [[String: Any]])
+  let focusProjects = try #require(object["focusQueueProjects"] as? [[String: Any]])
+  let vendorMetadata = try #require(object["vendorMetadata"] as? [String: Any])
+
+  #expect(preserved.count == 2)
+  #expect(preserved[1]["repositoryPath"] as? String == "/tmp/ECC/repository")
+  #expect(preserved[1]["remote"] as? String == "https://example.test/ecc")
+  #expect(focusProjects.count == 1)
+  #expect(focusProjects[0]["dashboardPath"] as? String == "/tmp/ECC/dashboard.json")
+  #expect(object["selectedProjectID"] as? String == "focus-queue")
+  #expect(object["focusQueueSelectedProjectID"] as? String == selected.id)
+  #expect(vendorMetadata["owner"] as? String == "external")
+  #expect(vendorMetadata["revision"] as? Int == 7)
+}
+
+@Test("Valid legacy queue projects migrate to the new key and retain selection")
+func validLegacyQueueProjectsMigrate() async throws {
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent("focus-queue-valid-legacy-projects-\(UUID().uuidString)", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  let url = root.appendingPathComponent("config.json")
+  try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+  try legacyQueueProjectConfigurationData(
+    projects: [
+      [
+        "id": "first", "name": "First",
+        "dashboardPath": "/tmp/first/dashboard.json", "workspacePath": "/tmp/first",
+      ],
+      [
+        "id": "second", "name": "Second",
+        "dashboardPath": "/tmp/second/dashboard.json", "workspacePath": "/tmp/second",
+      ],
+    ],
+    selectedProjectID: "second"
+  ).write(to: url)
+
+  let repository = JSONConfigurationRepository(url: url)
+  let migrated = try await repository.loadOrCreate(default: .eccDefault(homeDirectory: root))
+  #expect(migrated.projects.map(\.id) == ["first", "second"])
+  #expect(migrated.selectedProjectID == "second")
+  #expect(migrated.dashboardPath == "/tmp/second/dashboard.json")
+
+  try await repository.save(migrated)
+  let object = try #require(
+    JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+  #expect((object["focusQueueProjects"] as? [[String: Any]])?.count == 2)
+  #expect(object["projects"] == nil)
+  #expect(object["selectedProjectID"] == nil)
+  #expect(object["focusQueueSelectedProjectID"] as? String == "second")
+  let reloaded = try await repository.loadOrCreate(default: .eccDefault(homeDirectory: root))
+  #expect(reloaded.selectedProjectID == "second")
+  #expect(reloaded.selectedProject?.dashboardPath == "/tmp/second/dashboard.json")
+}
+
+@Test("Invalid legacy queue projects fail instead of silently collapsing the catalog")
+func invalidLegacyQueueProjectsFail() throws {
+  let data = try legacyQueueProjectConfigurationData(
+    projects: [[
+      "id": "invalid", "name": "Invalid",
+      "dashboardPath": "relative/dashboard.json", "workspacePath": "/tmp/invalid",
+    ]],
+    selectedProjectID: "invalid"
+  )
+
+  #expect(throws: ConfigurationError.self) {
+    try JSONDecoder().decode(AppConfiguration.self, from: data).validated()
+  }
+}
+
+@Test("Partially malformed legacy queue projects report the damaged catalog")
+func partiallyMalformedLegacyQueueProjectsFail() throws {
+  let data = try legacyQueueProjectConfigurationData(
+    projects: [
+      [
+        "id": "valid", "name": "Valid",
+        "dashboardPath": "/tmp/valid/dashboard.json", "workspacePath": "/tmp/valid",
+      ],
+      [
+        "id": "damaged", "name": "Damaged",
+        "dashboardPath": "/tmp/damaged/dashboard.json",
+      ],
+    ],
+    selectedProjectID: "valid"
+  )
+
+  #expect(throws: DecodingError.self) {
+    try JSONDecoder().decode(AppConfiguration.self, from: data)
+  }
+}
+
+@Test("Saving configuration does not resurrect cleared known optional settings")
+func clearedOptionalConfigurationStaysCleared() async throws {
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent("focus-queue-cleared-options-\(UUID().uuidString)", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  let url = root.appendingPathComponent("config.json")
+  let repository = JSONConfigurationRepository(url: url)
+  var configuration = AppConfiguration.eccDefault(homeDirectory: root)
+  configuration.persistentTerminals = true
+  configuration.tmuxExecutable = "/tmp/tmux"
+  configuration.setupCompleted = true
+  try await repository.save(configuration)
+
+  configuration.persistentTerminals = nil
+  configuration.tmuxExecutable = nil
+  configuration.setupCompleted = nil
+  try await repository.save(configuration)
+
+  let object = try #require(
+    JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+  #expect(object["persistentTerminals"] == nil)
+  #expect(object["tmuxExecutable"] == nil)
+  #expect(object["setupCompleted"] == nil)
+}
+
+@Test("Saving over a non-object configuration preserves its bytes and fails")
+func nonObjectConfigurationIsNotOverwritten() async throws {
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent("focus-queue-non-object-config-\(UUID().uuidString)", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  let url = root.appendingPathComponent("config.json")
+  try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+  let original = Data("[]\n".utf8)
+  try original.write(to: url)
+  let repository = JSONConfigurationRepository(url: url)
+
+  await #expect(throws: CocoaError.self) {
+    try await repository.save(.eccDefault(homeDirectory: root))
+  }
+  #expect(try Data(contentsOf: url) == original)
+}
+
+@Test("Ambiguous legacy project metadata is retained by rejecting the save")
+func ambiguousLegacyProjectsAreNotDeleted() async throws {
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent("focus-queue-ambiguous-projects-\(UUID().uuidString)", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  let url = root.appendingPathComponent("config.json")
+  try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+  let configuration = AppConfiguration.eccDefault(homeDirectory: root)
+  var object = try #require(
+    JSONSerialization.jsonObject(with: JSONEncoder().encode(configuration)) as? [String: Any])
+  object["projects"] = [
+    ["id": "one", "name": "One", "repositoryPath": "/tmp/one"],
+    ["id": "two", "name": "Two"],
+  ]
+  object["selectedProjectID"] = "one"
+  let original = try JSONSerialization.data(
+    withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+  try original.write(to: url)
+  let repository = JSONConfigurationRepository(url: url)
+  let loaded = try await repository.loadOrCreate(default: .eccDefault(homeDirectory: root))
+
+  await #expect(throws: CocoaError.self) {
+    try await repository.save(loaded)
+  }
+  #expect(try Data(contentsOf: url) == original)
+}
+
 @Test("Selecting a project keeps legacy paths aligned and survives persistence")
 func projectSelectionSynchronizesLegacyPaths() async throws {
   let root = FileManager.default.temporaryDirectory
@@ -315,4 +533,21 @@ private func renameSucceeded(
   } catch {
     return false
   }
+}
+
+private func legacyQueueProjectConfigurationData(
+  projects: [[String: Any]],
+  selectedProjectID: String?
+) throws -> Data {
+  let encoder = JSONEncoder()
+  var object = try #require(
+    JSONSerialization.jsonObject(
+      with: encoder.encode(
+        AppConfiguration.eccDefault(homeDirectory: URL(fileURLWithPath: "/tmp/test-home"))))
+      as? [String: Any])
+  object["projects"] = projects
+  object.removeValue(forKey: "focusQueueProjects")
+  object.removeValue(forKey: "focusQueueSelectedProjectID")
+  object["selectedProjectID"] = selectedProjectID
+  return try JSONSerialization.data(withJSONObject: object)
 }

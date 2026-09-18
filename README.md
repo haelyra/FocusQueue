@@ -352,10 +352,10 @@ remains a developer-specific fixture and is not seeded by installation.
 All process arguments are passed directly to `Process`; task content is never
 assembled into a shell command.
 
-The `projects` array defines each named dashboard and workspace, while
-`selectedProjectID` records the working project. Existing configurations with only
+The `focusQueueProjects` array defines each named dashboard and workspace, while
+`focusQueueSelectedProjectID` records the working project. Existing configurations with only
 `dashboardPath` and `workspacePath` migrate to one selected project without moving
-their files.
+their files. Unrelated legacy `projects` metadata is preserved when settings are saved.
 
 The `dailyReport` object sets `enabled`, `scheduleHour`, `scheduleMinute`,
 `maximumTokens`, and `enabledPlatforms`. Disabling it stops automatic and missed-run

@@ -168,6 +168,12 @@ public struct ProjectConfiguration: Codable, Identifiable, Equatable, Sendable {
   }
 }
 
+private struct LegacyProjectConfigurationShape: Decodable {
+  var dashboardPath: String?
+  var workspacePath: String?
+  var repositoryPath: String?
+}
+
 public struct AppConfiguration: Codable, Equatable, Sendable {
   public var appName: String
   public var dashboardPath: String {
@@ -225,7 +231,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   private enum CodingKeys: String, CodingKey {
     case appName, dashboardPath, workspacePath, defaultPlacement, refreshIntervalSeconds
     case dailyRoutines, wezTerm, verifier, dailyReport, persistentTerminals, tmuxExecutable, setupCompleted
-    case projects, selectedProjectID
+    case focusQueueProjects, focusQueueSelectedProjectID, projects, selectedProjectID
   }
 
   public init(from decoder: any Decoder) throws {
@@ -244,17 +250,44 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     dailyReport =
       try container.decodeIfPresent(DailyReportConfiguration.self, forKey: .dailyReport)
       ?? DailyReportConfiguration()
-    projects = try container.decodeIfPresent([ProjectConfiguration].self, forKey: .projects) ?? []
+    if let configuredProjects =
+      try container.decodeIfPresent([ProjectConfiguration].self, forKey: .focusQueueProjects)
+    {
+      projects = configuredProjects
+      let requestedProjectID =
+        try container.decodeIfPresent(String.self, forKey: .focusQueueSelectedProjectID)
+      selectedProjectID = requestedProjectID.flatMap { requested in
+        projects.contains(where: { $0.id == requested }) ? requested : nil
+      } ?? projects.first?.id
+    } else {
+      let legacyShapes =
+        try container.decodeIfPresent([LegacyProjectConfigurationShape].self, forKey: .projects)
+        ?? []
+      let isRepositoryCatalog = !legacyShapes.isEmpty && legacyShapes.allSatisfy {
+        $0.repositoryPath != nil && $0.dashboardPath == nil && $0.workspacePath == nil
+      }
+      if !legacyShapes.isEmpty && !isRepositoryCatalog {
+        projects = try container.decode([ProjectConfiguration].self, forKey: .projects)
+      } else {
+        projects = []
+      }
+      let requestedProjectID =
+        try container.decodeIfPresent(String.self, forKey: .focusQueueSelectedProjectID)
+        ?? (!legacyShapes.isEmpty && !isRepositoryCatalog
+          ? try container.decodeIfPresent(String.self, forKey: .selectedProjectID)
+          : nil)
+      selectedProjectID = requestedProjectID.flatMap { requested in
+        projects.contains(where: { $0.id == requested }) ? requested : nil
+      } ?? projects.first?.id
+    }
     if projects.isEmpty {
       projects = [Self.legacyProject(
         appName: appName,
         dashboardPath: dashboardPath,
         workspacePath: workspacePath
       )]
+      selectedProjectID = projects.first?.id
     }
-    selectedProjectID =
-      try container.decodeIfPresent(String.self, forKey: .selectedProjectID)
-      ?? projects.first?.id
     alignLegacyPathsWithSelection()
   }
 
@@ -270,8 +303,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encode(wezTerm, forKey: .wezTerm)
     try container.encode(verifier, forKey: .verifier)
     try container.encode(dailyReport, forKey: .dailyReport)
-    try container.encode(projects, forKey: .projects)
-    try container.encodeIfPresent(selectedProjectID, forKey: .selectedProjectID)
+    try container.encode(projects, forKey: .focusQueueProjects)
+    try container.encodeIfPresent(selectedProjectID, forKey: .focusQueueSelectedProjectID)
     try container.encodeIfPresent(persistentTerminals, forKey: .persistentTerminals)
     try container.encodeIfPresent(tmuxExecutable, forKey: .tmuxExecutable)
     try container.encodeIfPresent(setupCompleted, forKey: .setupCompleted)

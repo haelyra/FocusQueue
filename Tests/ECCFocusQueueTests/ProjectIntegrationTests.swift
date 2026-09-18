@@ -70,7 +70,7 @@ struct ProjectIntegrationTests {
         #expect(restarted.selectedProjectID == "ecc")
         #expect(restarted.openTickets.map(\.id) == ["ECC-044"])
         #expect(restarted.defaultRepository(for: f.tickets[1]) == "/existing-cross-repository-worktree")
-        restarted.selectProject(ProjectCatalog.unassignedID)
+        restarted.selectProject(ProjectCatalog.otherID)
         #expect(Set(restarted.openTickets.map(\.id)) == ["ECC-040", "ECC-041"])
         restarted.selectProject(nil)
         #expect(restarted.agentUpdates.count == 2)
@@ -95,7 +95,7 @@ struct ProjectIntegrationTests {
         #expect(context.projectName == "Focus renamed")
         #expect(context.projectRepositoryPath == f.root.path)
         #expect(await model.createTask(title: "New project task", summary: "", projectID: "focus"))
-        #expect(model.openTickets.contains { $0.title == "New project task" && $0.projectID == "focus" })
+        #expect(model.openTickets.contains { $0.id == "FOC-001" && $0.title == "New project task" && $0.projectID == "focus" })
         #expect(await model.assignProject("ecc", to: "ECC-035"))
         #expect(!model.openTickets.contains { $0.id == "ECC-035" })
         var archived = f.projects[1]; archived.archivedAt = Date()
@@ -113,7 +113,7 @@ struct ProjectIntegrationTests {
         let f = try await ProjectFixture()
         defer { try? FileManager.default.removeItem(at: f.root) }
         let model = await f.model()
-        for scope in [nil, "focus", "ecc", ProjectCatalog.unassignedID] as [String?] {
+        for scope in [nil, "focus", "ecc", ProjectCatalog.otherID] as [String?] {
             model.selectProject(scope)
             for width in [CGFloat(440), CGFloat(620)] {
                 let host = NSHostingView(rootView: QueueView(model: model).frame(width: width, height: 900))

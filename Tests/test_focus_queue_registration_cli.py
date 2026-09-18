@@ -87,6 +87,31 @@ class RegistrationCLITests(unittest.TestCase):
         self.command("register-event", "--provider", "codex", payload=self.event("not-a-uuid"), expected=1)
         self.assertEqual(len(self.context()["subtasks"]), 2)
 
+    def test_placement_cli_creates_other_task_and_private_capsule(self):
+        dashboard = self.support / "dashboard.json"
+        dashboard.write_text('{"tickets":[]}\n')
+        config = json.loads((Path(__file__).parents[1] / "Config/config.example.json").read_text())
+        config["dashboardPath"] = str(dashboard)
+        config["workspacePath"] = str(self.repository)
+        config["projects"] = [{
+            "id":"other", "name":"Other", "taskPrefix":"OTH",
+            "repositoryPath":"", "remoteAliases":[],
+        }]
+        config["wezTerm"]["executable"] = "/missing/wezterm"
+        config["verifier"]["executable"] = "/missing/codex"
+        self.support.mkdir(parents=True, exist_ok=True)
+        (self.support / "config.json").write_text(json.dumps(config))
+        launch_id = str(uuid.uuid4())
+        result = self.command("placement", "--launch", launch_id,
+            "--cwd", str(self.repository), "--prompt", "Review a miscellaneous note")
+        self.assertEqual(result["status"], "placed")
+        self.assertEqual(result["projectID"], "other")
+        self.assertEqual(result["taskID"], "OTH-001")
+        capsule = Path(result["capsulePath"])
+        self.assertEqual(capsule.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(capsule.read_text())["launchID"], launch_id)
+        self.assertEqual(json.loads(dashboard.read_text())["tickets"][0]["projectID"], "other")
+
 
 if __name__ == "__main__":
     unittest.main()

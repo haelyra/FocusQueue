@@ -4,22 +4,28 @@ import Foundation
 public struct ProjectDefinition: Codable, Equatable, Identifiable, Sendable {
     public var id: String
     public var name: String
+    public var taskPrefix: String
     public var repositoryPath: String
     public var remote: String?
     public var remoteAliases: [String]
     public var archivedAt: Date?
 
-    public init(id: String = UUID().uuidString.lowercased(), name: String, repositoryPath: String,
+    public init(id: String = UUID().uuidString.lowercased(), name: String, taskPrefix: String? = nil,
+                repositoryPath: String,
                 remote: String? = nil, remoteAliases: [String] = [], archivedAt: Date? = nil) {
-        self.id = id; self.name = name; self.repositoryPath = repositoryPath
+        self.id = id; self.name = name
+        self.taskPrefix = (taskPrefix ?? ProjectCatalog.suggestedPrefix(name: name, id: id)).uppercased()
+        self.repositoryPath = repositoryPath
         self.remote = remote; self.remoteAliases = remoteAliases; self.archivedAt = archivedAt
     }
 
-    private enum CodingKeys: String, CodingKey { case id, name, repositoryPath, remote, remoteAliases, archivedAt }
+    private enum CodingKeys: String, CodingKey { case id, name, taskPrefix, repositoryPath, remote, remoteAliases, archivedAt }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         name = try c.decode(String.self, forKey: .name)
+        taskPrefix = (try c.decodeIfPresent(String.self, forKey: .taskPrefix)
+            ?? ProjectCatalog.suggestedPrefix(name: name, id: id)).uppercased()
         repositoryPath = try c.decode(String.self, forKey: .repositoryPath)
         remote = try c.decodeIfPresent(String.self, forKey: .remote)
         remoteAliases = try c.decodeIfPresent([String].self, forKey: .remoteAliases) ?? []
@@ -33,6 +39,29 @@ public struct ProjectDefinition: Codable, Equatable, Identifiable, Sendable {
 
 public enum ProjectCatalog {
     public static let unassignedID = "__unassigned__"
+    public static let otherID = "other"
+
+    public static var other: ProjectDefinition {
+        ProjectDefinition(id: otherID, name: "Other", taskPrefix: "OTH", repositoryPath: "")
+    }
+
+    public static func suggestedPrefix(name: String, id: String = "") -> String {
+        let words = name.uppercased().split { !$0.isLetter && !$0.isNumber }
+        if name.localizedCaseInsensitiveContains("focus queue") { return "FOC" }
+        if words.count == 1, let word = words.first, word.count >= 2 { return String(word.prefix(3)) }
+        let initials = words.compactMap(\.first)
+        if initials.count >= 2 { return String(initials.prefix(5)) }
+        if let first = words.first, first.count >= 3 { return String(first.prefix(3)) }
+        var fallback = id.uppercased().filter { $0.isLetter || $0.isNumber }
+        if fallback.first?.isLetter != true { fallback = "P" + fallback }
+        if fallback.isEmpty { fallback = "PRJ" }
+        return String(fallback.prefix(5)).padding(toLength: 2, withPad: "X", startingAt: 0)
+    }
+
+    public static func ensuringOther(in projects: [ProjectDefinition]) -> [ProjectDefinition] {
+        guard !projects.contains(where: { $0.id == otherID }) else { return projects }
+        return projects + [other]
+    }
 
     public static func normalizedRemote(_ raw: String) -> String? {
         var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -51,14 +80,16 @@ public enum ProjectCatalog {
     }
 
     public static func validate(_ projects: [ProjectDefinition]) throws {
-        var ids = Set<String>(), remotes = Set<String>()
+        var ids = Set<String>(), prefixes = Set<String>(), remotes = Set<String>()
         for project in projects {
             guard !project.id.isEmpty, project.id != unassignedID,
                   project.id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }),
                   ids.insert(project.id).inserted,
                   !project.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  project.repositoryPath.hasPrefix("/") else {
-                throw TaskContextError.commandFailed("Projects need unique IDs, a name and an absolute repository folder.")
+                  project.taskPrefix.range(of: "^[A-Z][A-Z0-9]{1,4}$", options: .regularExpression) != nil,
+                  prefixes.insert(project.taskPrefix).inserted,
+                  project.repositoryPath.isEmpty || project.repositoryPath.hasPrefix("/") else {
+                throw TaskContextError.commandFailed("Projects need unique IDs and task prefixes, a name, and an optional absolute repository folder.")
             }
             for remote in [project.remote].compactMap({ $0 }) + project.remoteAliases {
                 guard let normalized = normalizedRemote(remote) else {
@@ -74,6 +105,12 @@ public enum ProjectCatalog {
 
     public static func project(for ticket: DashboardTicket, in projects: [ProjectDefinition]) -> ProjectDefinition? {
         projects.first { $0.id == ticket.projectID }
+            ?? projects.first { $0.id == otherID && $0.archivedAt == nil }
+    }
+
+    public static func project(forTaskID taskID: String, in projects: [ProjectDefinition]) -> ProjectDefinition? {
+        let prefix = taskID.uppercased().split(separator: "-", maxSplits: 1).first.map(String.init)
+        return projects.first { $0.archivedAt == nil && $0.taskPrefix == prefix }
     }
 
     public static func normalizedSelection(_ id: String?, projects: [ProjectDefinition]) -> String? {
@@ -84,7 +121,7 @@ public enum ProjectCatalog {
     public static func includes(_ ticket: DashboardTicket, selection: String?, projects: [ProjectDefinition]) -> Bool {
         guard let selection else { return true }
         if selection == unassignedID { return project(for: ticket, in: projects) == nil }
-        return ticket.projectID == selection
+        return project(for: ticket, in: projects)?.id == selection
     }
 }
 
@@ -93,6 +130,7 @@ public struct ProjectRepositoryResolver: Sendable {
     private let runner: any ProcessRunning
     public init(runner: any ProcessRunning = FoundationProcessRunner()) { self.runner = runner }
     public func matches(path: String, project: ProjectDefinition) async throws -> Bool {
+        guard !project.repositoryPath.isEmpty else { return false }
         func git(_ args: [String], at path: String) async throws -> String? {
             let result = try await runner.run(.init(executable: "/usr/bin/git", arguments: args, workingDirectory: path))
             guard result.succeeded else { return nil }
@@ -137,15 +175,17 @@ public struct ProjectTaskStore: Sendable {
         }
     }
 
-    public func create(title: String, summary: String, projectID: String?) throws -> String {
+    public func create(title: String, summary: String, project: ProjectDefinition) throws -> String {
         var taskID = ""
         try update { tickets in
-            let last = tickets.compactMap { ($0["id"] as? String).flatMap { $0.hasPrefix("ECC-") ? Int($0.dropFirst(4)) : nil } }.max() ?? 0
-            taskID = String(format: "ECC-%03d", last + 1)
-            var task: [String: Any] = ["id": taskID, "title": title, "summary": summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? title : summary,
+            let prefix = project.taskPrefix + "-"
+            let last = tickets.compactMap { ($0["id"] as? String).flatMap {
+                $0.uppercased().hasPrefix(prefix) ? Int($0.dropFirst(prefix.count)) : nil
+            } }.max() ?? 0
+            taskID = String(format: "%@-%03d", project.taskPrefix, last + 1)
+            let task: [String: Any] = ["id": taskID, "title": title, "summary": summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? title : summary,
                 "status": "backlog", "priority": "medium", "updatedAt": ISO8601DateFormatter().string(from: Date()),
-                "links": [], "prs": [], "steps": []]
-            if let projectID { task["projectID"] = projectID }
+                "links": [], "prs": [], "steps": [], "projectID": project.id]
             tickets.append(task)
         }
         return taskID
@@ -172,5 +212,52 @@ public struct ProjectTaskStore: Sendable {
             try data.write(to: dashboardURL, options: .atomic)
             if let mode { try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: dashboardURL.path) }
         }
+    }
+}
+
+public struct ProjectContextStore: Sendable {
+    public let root: URL
+    public init(root: URL) { self.root = root }
+
+    public func planURL(projectID: String) throws -> URL {
+        guard !projectID.isEmpty,
+              projectID.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }) else {
+            throw TaskContextError.invalidIdentifier
+        }
+        return root.appendingPathComponent("projects", isDirectory: true)
+            .appendingPathComponent(projectID, isDirectory: true)
+            .appendingPathComponent("plan.md")
+    }
+
+    @discardableResult public func ensurePlan(for project: ProjectDefinition) throws -> URL {
+        let url = try planURL(projectID: project.id)
+        let directory = url.deletingLastPathComponent()
+        guard (try? directory.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
+              (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else {
+            throw TaskContextError.commandFailed("Project guidance storage is redirected.")
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        if !FileManager.default.fileExists(atPath: url.path) {
+            let repository = project.repositoryPath.isEmpty ? "Not configured" : project.repositoryPath
+            let markdown = """
+            # \(project.name)
+
+            Objective: Keep work for \(project.name) correctly scoped and recoverable.
+
+            ## Required practices
+            - Work only in the assigned repository and agent workspace.
+            - Use task IDs with the `\(project.taskPrefix)-###` prefix.
+
+            ## Project commands
+            - Repository: \(repository)
+
+            ## Avoid
+            - Add only durable, project-specific prevention rules here. Put incidents and evidence in the task agent log.
+            """
+            try Data((markdown + "\n").utf8).write(to: url, options: .withoutOverwriting)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        }
+        return url
     }
 }

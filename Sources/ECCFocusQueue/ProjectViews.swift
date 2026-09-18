@@ -40,7 +40,6 @@ struct TaskProjectMenu: View {
     let ticket: DashboardTicket
     var body: some View {
         Menu {
-            Button("Unassigned") { Task { await model.assignProject(nil, to: ticket.id) } }
             ForEach(model.activeProjects) { project in
                 Button(project.name) { Task { await model.assignProject(project.id, to: ticket.id) } }
             }
@@ -63,7 +62,9 @@ struct ProjectSettingsView: View {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(project.name).font(.headline)
-                        Text(project.repositoryPath).font(.caption).foregroundStyle(.secondary)
+                        Text("Task IDs: \(project.taskPrefix)-###").font(.caption).foregroundStyle(.secondary)
+                        Text(project.repositoryPath.isEmpty ? "No repository binding" : project.repositoryPath)
+                            .font(.caption).foregroundStyle(.secondary)
                             .lineLimit(2).truncationMode(.middle).textSelection(.enabled)
                         if project.archivedAt != nil { Text("Archived · history remains in All projects").font(.caption) }
                     }
@@ -73,7 +74,7 @@ struct ProjectSettingsView: View {
             }
             if model.config.projects.isEmpty { Text("Add a project to organize tasks by repository.").foregroundStyle(.secondary) }
             Button("Add project", systemImage: "folder.badge.plus") {
-                editor = ProjectDefinition(name: "", repositoryPath: "")
+                editor = ProjectDefinition(name: "", taskPrefix: "PRJ", repositoryPath: "")
             }
             if let error = model.projectError { Text(error).font(.caption).foregroundStyle(.orange) }
         }.sheet(item: $editor) { ProjectEditor(model: model, project: $0) }
@@ -110,6 +111,9 @@ private struct ProjectEditor: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Project details").font(.title2.bold())
             TextField("Project name", text: $project.name)
+            TextField("Task prefix", text: $project.taskPrefix)
+            Text("Tasks use \(project.taskPrefix.uppercased())-001, \(project.taskPrefix.uppercased())-002, and so on. Use 2 to 5 uppercase letters or numbers.")
+                .font(.caption).foregroundStyle(.secondary)
             HStack {
                 TextField("Repository folder", text: $project.repositoryPath)
                 Button("Choose…") {
@@ -121,11 +125,12 @@ private struct ProjectEditor: View {
             }
             TextField("GitHub repository URL (optional)", text: $remote)
             TextField("Repository aliases, one URL per line (optional)", text: $aliases, axis: .vertical).lineLimit(2...4)
-            Text("Aliases let this project recognize another clone or fork. Existing agent workspaces stay in place.")
+            Text("The repository is optional. Aliases let this project recognize another clone or fork. Existing agent workspaces stay in place.")
                 .font(.caption).foregroundStyle(.secondary)
             if let error = model.projectError { Text(error).font(.caption).foregroundStyle(.orange) }
             HStack {
-                if model.config.projects.contains(where: { $0.id == project.id }) {
+                if project.id != ProjectCatalog.otherID,
+                   model.config.projects.contains(where: { $0.id == project.id }) {
                     Button(project.archivedAt == nil ? "Archive project" : "Restore project") {
                         var updated = project
                         updated.archivedAt = project.archivedAt == nil ? Date() : nil
@@ -136,12 +141,15 @@ private struct ProjectEditor: View {
                 Button("Cancel") { dismiss() }
                 Button("Save") {
                     project.name = project.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    project.taskPrefix = project.taskPrefix.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
                     let url = remote.trimmingCharacters(in: .whitespacesAndNewlines)
                     project.remote = url.isEmpty ? nil : url
                     project.remoteAliases = aliases.split(whereSeparator: \.isNewline).map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
                     Task { if await model.saveProject(project) { dismiss() } }
                 }.buttonStyle(.borderedProminent)
-                    .disabled(project.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !project.repositoryPath.hasPrefix("/"))
+                    .disabled(project.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || project.taskPrefix.range(of: "^[A-Za-z][A-Za-z0-9]{1,4}$", options: .regularExpression) == nil
+                        || (!project.repositoryPath.isEmpty && !project.repositoryPath.hasPrefix("/")))
             }.disabled(model.isSavingProject)
         }.textFieldStyle(.roundedBorder).padding(22).frame(width: 560)
     }
@@ -160,7 +168,6 @@ private struct ProjectTaskEditor: View {
             TextField("Task title", text: $title)
             TextField("Description", text: $summary, axis: .vertical).lineLimit(3...6)
             Picker("Project", selection: $projectID) {
-                Text("Unassigned").tag("")
                 ForEach(model.activeProjects) { Text($0.name).tag($0.id) }
             }
             if let error = model.projectError { Text(error).font(.caption).foregroundStyle(.orange) }
@@ -170,12 +177,12 @@ private struct ProjectTaskEditor: View {
                 Button("Create task") {
                     saving = true
                     Task {
-                        if await model.createTask(title: title, summary: summary, projectID: projectID.isEmpty ? nil : projectID) { dismiss() }
+                        if await model.createTask(title: title, summary: summary, projectID: projectID) { dismiss() }
                         saving = false
                     }
                 }.buttonStyle(.borderedProminent).disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }.disabled(saving)
         }.textFieldStyle(.roundedBorder).padding(22).frame(width: 480)
-            .onAppear { projectID = model.selectedProject?.id ?? "" }
+            .onAppear { projectID = model.selectedProject?.id ?? ProjectCatalog.otherID }
     }
 }

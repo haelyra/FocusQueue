@@ -56,9 +56,11 @@ def preview(config_path: Path, focus_repo: Path, ecc_repo: Path) -> dict:
     if len(ids) != len(set(ids)) or "ECC-035" not in ids:
         raise ValueError("Migration requires unique task IDs and the existing ECC-035 task")
     projects = [
-        {"id": "ecc-focus-queue", "name": "ECC Focus Queue", "repositoryPath": str(focus_repo.resolve()), "remoteAliases": []},
-        {"id": "ecc", "name": "ECC", "repositoryPath": str(ecc_repo.resolve()),
+        {"id": "ecc-focus-queue", "name": "ECC Focus Queue", "taskPrefix": "FOC",
+         "repositoryPath": str(focus_repo.resolve()), "remoteAliases": []},
+        {"id": "ecc", "name": "ECC", "taskPrefix": "ECC", "repositoryPath": str(ecc_repo.resolve()),
          "remote": "https://github.com/affaan-m/ECC", "remoteAliases": ["https://github.com/haelyra/ECC"]},
+        {"id": "other", "name": "Other", "taskPrefix": "OTH", "repositoryPath": "", "remoteAliases": []},
     ]
     existing = {project["id"]: project for project in config.get("projects", [])}
     for project in projects:
@@ -78,7 +80,7 @@ def preview(config_path: Path, focus_repo: Path, ecc_repo: Path) -> dict:
             "dashboardSHA256": digest(dashboard_bytes), "projects": projects,
             "addedProjectIDs": [p["id"] for p in projects if p["id"] not in existing],
             "assignments": assignments, "routines": routines,
-            "counts": {"ecc-focus-queue": 1, "ecc": len(tickets) - 1},
+            "counts": {"ecc-focus-queue": 1, "ecc": len(tickets) - 1, "other": 0},
             "workspaceExceptions": [{"id": "ECC-044", "projectID": "ecc", "worktree": t.get("worktree")}
                                     for t in tickets if t["id"] == "ECC-044"]}
 

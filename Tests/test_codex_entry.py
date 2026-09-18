@@ -37,7 +37,18 @@ args = sys.argv[1:]
 with (root / "calls.jsonl").open("a") as stream: stream.write(json.dumps(args) + "\\n")
 panes_file = root / "panes.json"
 panes = json.loads(panes_file.read_text()) if panes_file.exists() else []
-if args[:2] == ["runtime", "locate"]:
+if args[:1] == ["placement"]:
+    launch = args[args.index("--launch") + 1]
+    support = Path(os.environ["FOCUS_QUEUE_SUPPORT_DIR"])
+    custom_path = root / "placement.json"
+    custom = json.loads(custom_path.read_text()) if custom_path.exists() else {}
+    task = custom.get("taskID") or (args[args.index("--task") + 1] if "--task" in args else None)
+    value = {"launchID":launch, "status":"placed" if task else "project-inbox",
+             "projectID":custom.get("projectID", "other"), "taskID":task,
+             "capsulePath":str(support / "tracking/placements" / (launch + ".json"))}
+    value.update(custom)
+    print(json.dumps(value))
+elif args[:2] == ["runtime", "locate"]:
     location = root / "location.json"
     print(location.read_text() if location.exists() else '{"status":"stopped"}')
 elif args[:2] == ["tmux", "list"]:
@@ -84,7 +95,7 @@ else:
     def install_session_helper(self, home, *, start_agent=True):
         helper = home / ".local/bin/focus-queue-session"
         helper.parent.mkdir(parents=True, exist_ok=True)
-        capability = " | tmux start-agent <TASK-ID> <AGENT-ID>" if start_agent else ""
+        capability = " | tmux start-agent <TASK-ID> <AGENT-ID> | placement" if start_agent else ""
         helper.write_text(f"#!/bin/bash\nprintf '%s\\n' 'Persistent terminals: tmux start <name>{capability}'\n")
         helper.chmod(0o700)
         return helper
@@ -278,7 +289,7 @@ else:
         clean = {**os.environ, "FOCUS_QUEUE_SUPPORT_DIR":str(self.support), "FOCUS_QUEUE_WORKSPACE_MODE":"existing"}
         for key in ("TMUX", "FOCUS_QUEUE_RUNTIME_MODE", "FOCUS_QUEUE_CODEX_TMUX",
                     "FOCUS_QUEUE_TASK_ID", "FOCUS_QUEUE_SUBTASK_ID", "FOCUS_QUEUE_AGENT_ROLE",
-                    "FOCUS_QUEUE_LAUNCH_ID", "FOCUS_QUEUE_MANAGED_TMUX"):
+                    "FOCUS_QUEUE_LAUNCH_ID", "FOCUS_QUEUE_AGENT_CONTEXT", "FOCUS_QUEUE_MANAGED_TMUX"):
             clean.pop(key, None)
         clean.update(environment or {})
         with mock.patch.dict(os.environ, clean, clear=True), mock.patch.object(ENTRY.sys.stdin, "isatty", return_value=interactive), \
@@ -301,6 +312,21 @@ else:
         start = next(call for call in self.calls() if call[:2] == ["tmux", "start"])
         self.assertEqual(start[3:5], ["--cwd", os.getcwd()])
         self.assertEqual(start[-4:], ["--yolo", "--cd", str(source.resolve()), prompt])
+
+    def test_resolved_prompt_launch_enters_its_task_tmux_and_updates_receipt(self):
+        (self.root / "placement.json").write_text(json.dumps({
+            "status":"placed", "projectID":"focus", "taskID":"FOC-001",
+        }))
+        path, arguments = self.invoke_main(["Implement placement"])
+        self.assertEqual(path, str(self.helper))
+        start = next(call for call in self.calls() if call[:2] == ["tmux", "start-agent"])
+        self.assertEqual(start[2], "FOC-001")
+        receipt = json.loads(next((self.support / "tracking/launches").glob("*.json")).read_text())
+        self.assertEqual(start[3], receipt["launchID"])
+        self.assertEqual(receipt["taskID"], "FOC-001")
+        self.assertEqual(receipt["projectID"], "focus")
+        self.assertEqual(receipt["placementStatus"], "placed")
+        self.assertEqual(arguments[4:], ["--task", "FOC-001", "--agent", receipt["launchID"]])
 
     def test_bare_interactive_codex_enters_managed_tmux_even_from_external_tmux(self):
         path, arguments = self.invoke_main([], {"TMUX":"/tmp/users-server,1,0"})
@@ -396,7 +422,7 @@ else:
                 path, args = self.invoke_main(["hello"], environment, interactive)
                 self.assertEqual(args, ["/bin/bash", str(self.adapter), str(self.wrapper), "--", "--yolo",
                                         "--cd", str(Path.cwd().resolve()), "hello"])
-        self.assertTrue(all(call == ["intake-changed"] for call in self.calls()))
+        self.assertTrue(all(call == ["intake-changed"] or call[:1] == ["placement"] for call in self.calls()))
         self.assertEqual(len(list((self.support / "tracking/launches").glob("*.json"))), 3)
 
     def test_managed_tmux_bypass_persists_exact_current_reference(self):
@@ -447,6 +473,8 @@ else:
         self.assertFalse(marker_path.is_symlink())
         self.assertEqual(marker_path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(json.loads(path.read_text())["launchID"], receipt["launchID"])
+        self.assertEqual(Path(receipt["placementPath"]),
+                         (self.support / "tracking/placements" / (receipt["launchID"] + ".json")).resolve())
         self.assertEqual((workspace / "work.txt").read_text(), "committed")
         self.assertEqual((source / "work.txt").read_text(), "user edits")
         self.assertEqual(arguments[:2], ["--cd", str(workspace)])
@@ -597,7 +625,7 @@ else:
 
     def test_actual_noninteractive_entry_persists_receipt_without_task_or_uuid(self):
         result = subprocess.run(["/usr/bin/python3", str(ROOT / "Scripts/focus_queue_codex_entry.py"),
-            "--usage-wrapper", str(self.wrapper), "--", "hello"], cwd=self.root,
+            "--helper", str(self.helper), "--usage-wrapper", str(self.wrapper), "--", "hello"], cwd=self.root,
             env={"PATH":os.environ["PATH"], "FOCUS_QUEUE_SUPPORT_DIR":str(self.support)},
             capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)

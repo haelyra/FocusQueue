@@ -2,6 +2,30 @@
   "appName": "ECC Focus Queue",
   "dashboardPath": "/Users/hira/Documents/ECC/ecc-dashboard/data/dashboard.json",
   "workspacePath": "/Users/hira/Documents/ECC",
+  "projects": [
+    {
+      "id": "ecc-focus-queue",
+      "name": "ECC Focus Queue",
+      "taskPrefix": "FOC",
+      "repositoryPath": "/Users/hira/Documents/Github/ECCFocusQueue",
+      "remoteAliases": []
+    },
+    {
+      "id": "ecc",
+      "name": "ECC",
+      "taskPrefix": "ECC",
+      "repositoryPath": "/Users/hira/Documents/ECC",
+      "remote": "https://github.com/affaan-m/ECC",
+      "remoteAliases": ["https://github.com/haelyra/ECC"]
+    },
+    {
+      "id": "other",
+      "name": "Other",
+      "taskPrefix": "OTH",
+      "repositoryPath": "",
+      "remoteAliases": []
+    }
+  ],
   "defaultPlacement": "upper-right",
   "refreshIntervalSeconds": 2,
   "dailyRoutines": [

@@ -73,8 +73,9 @@ def require_task_session_helper(helper, home):
                                 timeout=5, check=False)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ValueError("Focus Queue could not verify the installed session helper.") from error
-    if result.returncode or "tmux start-agent <TASK-ID> <AGENT-ID>" not in result.stdout:
-        raise ValueError("The installed Focus Queue helper lacks tmux start-agent support. Upgrade the app first.")
+    if (result.returncode or "tmux start-agent <TASK-ID> <AGENT-ID>" not in result.stdout
+            or "placement" not in result.stdout):
+        raise ValueError("The installed Focus Queue helper lacks placement or tmux start-agent support. Upgrade the app first.")
 
 
 def file_snapshot(path):

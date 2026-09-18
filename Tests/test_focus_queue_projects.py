@@ -37,7 +37,7 @@ class ProjectMigrationTests(unittest.TestCase):
         state = self.state.read_bytes()
         original_config = self.config.read_bytes()
         manifest = self.prepare()
-        self.assertEqual(manifest["counts"], {"ecc-focus-queue": 1, "ecc": 2})
+        self.assertEqual(manifest["counts"], {"ecc-focus-queue": 1, "ecc": 2, "other": 0})
         self.assertEqual(json.loads(self.dashboard.read_bytes()), self.original)
         projects.apply(self.manifest)
         migrated = json.loads(self.dashboard.read_bytes())

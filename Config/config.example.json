@@ -2,6 +2,22 @@
   "appName": "My Focus Queue",
   "dashboardPath": "/absolute/path/to/dashboard.json",
   "workspacePath": "/absolute/path/to/workspace",
+  "projects": [
+    {
+      "id": "main-project",
+      "name": "Main Project",
+      "taskPrefix": "MAI",
+      "repositoryPath": "/absolute/path/to/repository",
+      "remoteAliases": []
+    },
+    {
+      "id": "other",
+      "name": "Other",
+      "taskPrefix": "OTH",
+      "repositoryPath": "",
+      "remoteAliases": []
+    }
+  ],
   "defaultPlacement": "upper-right",
   "refreshIntervalSeconds": 2,
   "dailyRoutines": [

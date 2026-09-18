@@ -233,6 +233,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
     public var projectID: String?
     public var projectName: String?
     public var projectRepositoryPath: String?
+    public var projectPlanPath: String?
     public static let currentSchemaVersion = 2
     public var schemaVersion = TaskContext.currentSchemaVersion
     public var ticketID: String
@@ -268,7 +269,8 @@ public struct TaskContext: Codable, Equatable, Sendable {
         return """
         \(prompt.isEmpty ? "Prepare the task context, then wait for my instruction before implementing anything." : prompt)
 
-        Project: \(projectName ?? projectID ?? "Unassigned"). Primary repository: \(projectRepositoryPath ?? "not configured"). Keep assigned agent workspaces unchanged.
+        Project: \(projectName ?? projectID ?? "Other"). Primary repository: \(projectRepositoryPath ?? "not configured"). Keep assigned agent workspaces unchanged.
+        Read project guidance at \(projectPlanPath ?? "the projectPlanPath in $FOCUS_QUEUE_AGENT_CONTEXT") and the placement capsule at $FOCUS_QUEUE_AGENT_CONTEXT before acting.
 
         Focus Queue task: \(ticketID). Agent: \(subtask.id) (\(subtask.provider.rawValue)).
         Assigned workspace: \(subtask.workspace?.path ?? worktreePath ?? "not configured").
@@ -305,7 +307,8 @@ public struct TaskContext: Codable, Equatable, Sendable {
         \(subtask.initialPrompt.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Prepare the task context, then wait for my instruction before implementing anything." : $0 } ?? subtask.title)
 
         Work on \(ticketID): \(title). Your subtask is \(subtask.title) (\(subtask.id)).
-        Project: \(projectName ?? projectID ?? "Unassigned"). Primary repository: \(projectRepositoryPath ?? "not configured").
+        Project: \(projectName ?? projectID ?? "Other"). Primary repository: \(projectRepositoryPath ?? "not configured").
+        Read project guidance at \(projectPlanPath ?? "the projectPlanPath in $FOCUS_QUEUE_AGENT_CONTEXT") and the placement capsule at $FOCUS_QUEUE_AGENT_CONTEXT before acting.
         \(assignmentLine)Read the central plan at \(planPath) and context at \(contextDirectory.appendingPathComponent("context.json").path) before acting. If the plan is missing, create a brief goal, scope, implementation outline, success criteria, and next step. Keep it concise; re-read before edits and preserve concurrent changes. Link supporting canvases from it.
         Keep decisions, detailed progress, configuration, research, and verification evidence in \(agentLogURL.path). Append with \(command) log \(ticketID) \(subtask.id) "entry". Read only relevant entries when needed; do not inject the whole log or put decision history in the central plan.
         Briefly state your assignment, provider, workspace, branch, and intended outputs. Reuse this assigned worktree on resume. Create an isolated worktree before coding if no dedicated writer workspace is assigned; preserve the source checkout's local edits.
@@ -373,6 +376,8 @@ public actor TaskContextStore {
         refreshCache = refreshCache.filter { activeIDs.contains($0.key) }
         for ticket in tickets {
             do {
+                let displayedProject = ProjectCatalog.project(for: ticket, in: projects)
+                let contextProject = displayedProject?.id == ticket.projectID ? displayedProject : nil
                 let url = try directory(ticketID: ticket.id).appendingPathComponent("context.json")
                 let version = try fileVersion(at: url)
                 let planURL = refreshCache[ticket.id]?.context.map { URL(fileURLWithPath: $0.planPath) }
@@ -380,15 +385,17 @@ public actor TaskContextStore {
                 let planVersion = try fileVersion(at: planURL)
                 if let cached = refreshCache[ticket.id], cached.ticket == ticket,
                    cached.version == version, cached.planVersion == planVersion,
-                   cached.context?.projectName == ProjectCatalog.project(for: ticket, in: projects)?.name,
-                   cached.context?.projectRepositoryPath == ProjectCatalog.project(for: ticket, in: projects)?.repositoryPath,
+                   cached.context?.projectName == contextProject?.name,
+                   cached.context?.projectRepositoryPath == contextProject?.repositoryPath,
+                   cached.context?.projectPlanPath == contextProject.flatMap(
+                    { try? ProjectContextStore(root: root).planURL(projectID: $0.id).path }),
                    now.timeIntervalSince(cached.readAt) < 60 {
                     contexts[ticket.id] = cached.context
                     continue
                 }
                 let context: TaskContext?
                 if ticket.isCompleted, version == nil { context = nil }
-                else { context = try ensureContext(ticket: ticket, project: ProjectCatalog.project(for: ticket, in: projects)) }
+                else { context = try ensureContext(ticket: ticket, project: contextProject) }
                 // An agent may edit the Markdown or JSON directly. Retain the
                 // changed source even when no dashboard fields require merging.
                 if context != nil { try archive(ticketID: ticket.id) }
@@ -497,18 +504,24 @@ public actor TaskContextStore {
 
     @discardableResult public func ensureContext(ticket: DashboardTicket, worktreePath: String? = nil, project: ProjectDefinition? = nil) throws -> TaskContext {
         try locked(ticketID: ticket.id) {
+            // Other is the display fallback for legacy unassigned tasks. Only
+            // persist project context after the dashboard owns that project.
+            let project = project?.id == ticket.projectID ? project : nil
             if var existing = try load(ticketID: ticket.id) {
                 let previous = existing
                 existing.separateLegacyAgentAssignments()
                 existing.title = ticket.title
-                if existing.projectID != ticket.projectID {
-                    existing.projectID = ticket.projectID
+                let effectiveProjectID = project?.id ?? ticket.projectID
+                if existing.projectID != effectiveProjectID {
+                    existing.projectID = effectiveProjectID
                     existing.projectName = nil
                     existing.projectRepositoryPath = nil
+                    existing.projectPlanPath = nil
                 }
                 if let project {
                     existing.projectName = project.name
                     existing.projectRepositoryPath = project.repositoryPath
+                    existing.projectPlanPath = try ProjectContextStore(root: root).ensurePlan(for: project).path
                 }
                 existing.summary = ticket.summary
                 existing.successCriteria = ticket.doneWhen ?? existing.successCriteria
@@ -522,8 +535,10 @@ public actor TaskContextStore {
             }
             let directory = try directory(ticketID: ticket.id)
             let planURL = directory.appendingPathComponent("plan.md")
-            let context = TaskContext(projectID: ticket.projectID, projectName: project?.name,
+            let projectPlanPath = try project.map { try ProjectContextStore(root: root).ensurePlan(for: $0).path }
+            let context = TaskContext(projectID: project?.id ?? ticket.projectID, projectName: project?.name,
                                       projectRepositoryPath: project?.repositoryPath,
+                                      projectPlanPath: projectPlanPath,
                                       ticketID: ticket.id.uppercased(), title: ticket.title,
                                       summary: ticket.summary, successCriteria: ticket.doneWhen ?? "Confirm the requested behavior and record verification results.",
                                       planPath: planURL.path, worktreePath: worktreePath ?? ticket.worktree, updatedAt: Date())

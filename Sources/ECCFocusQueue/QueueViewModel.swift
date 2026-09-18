@@ -322,8 +322,9 @@ final class QueueViewModel {
   }
   func defaultRepository(for ticket: DashboardTicket) -> String {
     let context = taskContexts[ticket.id]
-    return context?.worktreePath ?? context?.repositoryPath ?? ticket.worktree
-      ?? project(for: ticket)?.repositoryPath ?? config.workspacePath
+    return [context?.worktreePath, context?.repositoryPath, ticket.worktree,
+            project(for: ticket)?.repositoryPath]
+      .compactMap { $0 }.first { !$0.isEmpty } ?? config.workspacePath
   }
   private var projectTaskStore: ProjectTaskStore {
     ProjectTaskStore(dashboardURL: URL(fileURLWithPath: config.dashboardPath), supportDirectory: paths.supportDirectory)
@@ -334,6 +335,9 @@ final class QueueViewModel {
     isSavingProject = true
     defer { isSavingProject = false }
     do {
+      if project.id == ProjectCatalog.otherID, project.archivedAt != nil {
+        throw TaskContextError.commandFailed("Other is the fallback project and cannot be archived.")
+      }
       if project.archivedAt != nil {
         let current = try await dashboardRepository.load(from: URL(fileURLWithPath: config.dashboardPath))
         guard !current.tickets.contains(where: { $0.projectID == project.id && $0.isOpen }) else {
@@ -358,8 +362,9 @@ final class QueueViewModel {
   @discardableResult
   func assignProject(_ projectID: String?, to ticketID: String) async -> Bool {
     do {
-      guard projectID == nil || activeProjects.contains(where: { $0.id == projectID }) else {
-        throw TaskContextError.commandFailed("Choose an active project or Unassigned.")
+      let projectID = projectID ?? ProjectCatalog.otherID
+      guard activeProjects.contains(where: { $0.id == projectID }) else {
+        throw TaskContextError.commandFailed("Choose an active project.")
       }
       try projectTaskStore.assign(ticketID: ticketID, projectID: projectID)
       lastContextRefresh = nil
@@ -371,10 +376,11 @@ final class QueueViewModel {
   func createTask(title: String, summary: String, projectID: String?) async -> Bool {
     do {
       let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !title.isEmpty, projectID == nil || activeProjects.contains(where: { $0.id == projectID }) else {
-        throw TaskContextError.commandFailed("Enter a title and choose an active project or Unassigned.")
+      let projectID = projectID ?? ProjectCatalog.otherID
+      guard !title.isEmpty, let project = activeProjects.first(where: { $0.id == projectID }) else {
+        throw TaskContextError.commandFailed("Enter a title and choose an active project.")
       }
-      let id = try projectTaskStore.create(title: title, summary: summary, projectID: projectID)
+      let id = try projectTaskStore.create(title: title, summary: summary, project: project)
       await refresh()
       revealReportTask(id)
       projectError = nil
@@ -400,6 +406,14 @@ final class QueueViewModel {
       let firstRun = !FileManager.default.fileExists(atPath: paths.configurationFile.path)
       if firstRun { try SetupEnvironment.createStarterWorkspace(supportDirectory: paths.supportDirectory) }
       config = try await configurationRepository.loadOrCreate(default: SetupEnvironment.starter(supportDirectory: paths.supportDirectory))
+      let projects = ProjectCatalog.ensuringOther(in: config.projects)
+      if projects != config.projects {
+        config.projects = projects
+        try await configurationRepository.save(config)
+      }
+      for project in config.projects {
+        _ = try ProjectContextStore(root: paths.supportDirectory).ensurePlan(for: project)
+      }
       if let tmux = SetupEnvironment.executable("tmux"),
         config.tmuxExecutable != tmux
       {
@@ -651,7 +665,7 @@ final class QueueViewModel {
       scopedMessage = taskScope + "Project: \(context.projectName ?? context.projectID ?? "Unassigned"). " + contextScope + contextualMessage
     } else {
       let scope = "Project scope: \(projectScopeName). Project ID: \(selectedProjectID ?? "all"). Allowed task IDs: \(projectTickets.map(\.id).joined(separator: ", ")). "
-      let rules = "Preserve projectID on edits. New tasks use \(selectedProject?.id ?? "no projectID (Unassigned) unless explicitly assigned"). Restrict actions to this scope. Ask the user to select All projects before acting on hidden tasks.\n\n"
+      let rules = "Preserve projectID on edits. New tasks use \(selectedProject?.id ?? "the Other project unless explicitly assigned"). Restrict actions to this scope. Ask the user to select All projects before acting on hidden tasks.\n\n"
       scopedMessage = scope + rules + contextualMessage
     }
     queueChatTask = Task { [weak self] in
@@ -1516,7 +1530,8 @@ final class QueueViewModel {
       }
       do {
         let context = try await taskContextStore.ensureContext(ticket: ticket, project: project(for: ticket))
-        if let project = project(for: ticket), !allowProjectRepositoryMismatch,
+        if let project = project(for: ticket), !project.repositoryPath.isEmpty,
+           !allowProjectRepositoryMismatch,
            try await !ProjectRepositoryResolver().matches(path: repositoryPath, project: project) {
           throw TaskContextError.commandFailed("This checkout could not be matched to \(project.name). Confirm the repository choice in New Agent before starting it.")
         }

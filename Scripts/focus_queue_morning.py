@@ -2015,7 +2015,7 @@ TASK POLICY
 - GitHub data is authoritative for issue and PR facts. Never claim completion from prose.
 - Use critical only for active security, broken default branch, failed release/deploy, or an owner-blocking emergency. Use high for same-day maintainer work, medium for normal actionable work, and low for optional cleanup.
 - Return at most {maximum_tasks} new tasks.
-- Set projectID only when a supplied project repository matches the trusted source links. Otherwise use null (Unassigned). Preserve the existing project for task updates.
+- Set projectID when a supplied project repository matches the trusted source links. Otherwise use the reserved Other project. Preserve the existing project for task updates.
 
 OUTPUT SCHEMA
 {{

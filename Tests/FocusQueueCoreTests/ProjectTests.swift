@@ -17,6 +17,9 @@ struct ProjectTests {
         let ticket = try JSONDecoder().decode(DashboardTicket.self, from: Data("{\"id\":\"ECC-001\"}".utf8))
         #expect(ticket.projectID == nil)
         #expect(ProjectCatalog.includes(ticket, selection: ProjectCatalog.unassignedID, projects: [project]))
+        let catalog = ProjectCatalog.ensuringOther(in: [project])
+        #expect(ProjectCatalog.project(for: ticket, in: catalog)?.id == ProjectCatalog.otherID)
+        #expect(ProjectCatalog.includes(ticket, selection: ProjectCatalog.otherID, projects: catalog))
         #expect(ProjectCatalog.normalizedSelection("missing", projects: [project]) == nil)
     }
 
@@ -51,11 +54,31 @@ struct ProjectTests {
         #expect(tickets[0]["worktree"] as? String == "/existing")
         #expect(tickets[0]["unknown"] != nil && document["meta"] != nil)
         #expect(tickets[0]["projectID"] as? String == "focus")
-        #expect(try store.create(title: "New", summary: "", projectID: nil) == "ECC-036")
+        let project = ProjectDefinition(id: "focus", name: "Focus Queue", taskPrefix: "FOC", repositoryPath: root.path)
+        #expect(try store.create(title: "New", summary: "", project: project) == "FOC-001")
         try store.assign(ticketID: "ECC-035", projectID: nil)
         let decoded = try JSONDecoder().decode(DashboardDocument.self, from: Data(contentsOf: path))
-        #expect(decoded.tickets.allSatisfy { $0.projectID == nil })
+        #expect(decoded.tickets[0].projectID == nil)
+        #expect(decoded.tickets[1].projectID == "focus")
         #expect(decoded.tickets[1].summary == "New")
+    }
+
+    @Test func fallbackProjectPrefixAndPlanAreStable() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projects = ProjectCatalog.ensuringOther(in: [
+            ProjectDefinition(id: "focus", name: "Focus Queue Project", repositoryPath: "/tmp/focus")
+        ])
+        try ProjectCatalog.validate(projects)
+        #expect(projects[0].taskPrefix == "FOC")
+        #expect(projects[1] == ProjectCatalog.other)
+        #expect(ProjectCatalog.suggestedPrefix(name: "My App") == "MA")
+        #expect(ProjectCatalog.suggestedPrefix(name: "Queue") == "QUE")
+        #expect(ProjectCatalog.project(forTaskID: "foc-009", in: projects)?.id == "focus")
+        #expect(ProjectCatalog.project(forTaskID: "OTH-001", in: projects)?.id == ProjectCatalog.otherID)
+        let plan = try ProjectContextStore(root: root).ensurePlan(for: projects[0])
+        #expect(try String(contentsOf: plan, encoding: .utf8).contains("FOC-###"))
+        #expect((try FileManager.default.attributesOfItem(atPath: plan.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600)
     }
 
     @Test func worktreeRepositoryIdentity() async throws {

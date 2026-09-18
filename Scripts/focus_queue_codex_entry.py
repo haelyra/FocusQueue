@@ -359,12 +359,14 @@ def begin_tracking(arguments, mode, session_id, support, *, isolate=True, on_cha
     """Persist intent first. Unknown task/session/configuration fields stay optional."""
     support = support.resolve()
     directory = support / "tracking/launches"
-    for path in (support / "tracking", directory):
+    placement_directory = support / "tracking/placements"
+    for path in (support / "tracking", directory, placement_directory):
         if path.is_symlink():
             raise EntryError("Tracking storage is redirected. Restore it before launching an agent.")
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
     launch_id = str(uuid.uuid4())
     path = directory / (launch_id + ".json")
+    placement_path = placement_directory / (launch_id + ".json")
     source = selected_directory(arguments)
     role = os.environ.get("FOCUS_QUEUE_AGENT_ROLE", "coding")
     if role not in {"coding", "research", "orchestrator"}:
@@ -372,7 +374,9 @@ def begin_tracking(arguments, mode, session_id, support, *, isolate=True, on_cha
     record = {"schemaVersion": 1, "launchID": launch_id, "provider": "codex", "mode": mode,
               "role": role, "sourceCwd": source, "cwd": source, "processID": os.getpid(),
               "createdAt": datetime.now(timezone.utc).isoformat(), "phase": "preparing",
-              "title": (initial_prompt(arguments) or "Codex agent").splitlines()[0][:120]}
+              "title": (initial_prompt(arguments) or "Codex agent").splitlines()[0][:120],
+              "placementPath": str(placement_path)}
+    os.environ["FOCUS_QUEUE_AGENT_CONTEXT"] = str(placement_path)
     started = subprocess.run(["/bin/ps", "-p", str(os.getpid()), "-o", "lstart="],
                              capture_output=True, text=True, timeout=5)
     record["processStartedAt"] = " ".join(started.stdout.split()) if started.returncode == 0 else None
@@ -538,6 +542,45 @@ def run_json(helper, arguments):
         return json.loads(result.stdout)
     except ValueError as error:
         raise EntryError("Focus Queue returned an incomplete terminal record. Check the app before retrying.") from error
+
+
+def apply_placement(helper, intake_path, intake, prompt):
+    """Resolve project/task ownership before the provider starts."""
+    launch_id = canonical_uuid(intake.get("launchID"))
+    if not launch_id:
+        raise EntryError("The launch receipt has no valid placement identity.")
+    provisional_agent = intake.get("agentID") or launch_id
+    os.environ["FOCUS_QUEUE_SUBTASK_ID"] = provisional_agent
+    arguments = ["placement", "--launch", launch_id, "--cwd", intake["cwd"]]
+    if intake.get("taskID"):
+        arguments.extend(["--task", intake["taskID"]])
+    if prompt:
+        arguments.extend(["--prompt", prompt])
+    else:
+        arguments.append("--no-create")
+    placement = run_json(helper, arguments)
+    if not isinstance(placement, dict) or placement.get("launchID") != launch_id:
+        raise EntryError("Focus Queue returned a placement for a different launch.")
+    expected_path = str(Path(intake["placementPath"]).resolve())
+    if str(Path(placement.get("capsulePath", "")).resolve()) != expected_path:
+        raise EntryError("Focus Queue returned an unexpected placement capsule path.")
+    if placement.get("status") == "blocked-conflict":
+        raise EntryError(placement.get("reason") or
+                         "The requested task and working directory identify different projects.")
+    task_id = placement.get("taskID")
+    if task_id is not None and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*-[0-9]+", task_id):
+        raise EntryError("Focus Queue returned an invalid task ID.")
+    existing_task = intake.get("taskID")
+    if existing_task and task_id and existing_task.casefold() != task_id.casefold():
+        raise EntryError("Focus Queue tried to replace the launch's existing task assignment.")
+    intake["placementStatus"] = placement.get("status")
+    intake["projectID"] = placement.get("projectID")
+    if task_id:
+        intake["taskID"] = task_id.upper()
+        intake["agentID"] = provisional_agent
+        os.environ["FOCUS_QUEUE_TASK_ID"] = intake["taskID"]
+    write_private_json(intake_path, intake)
+    return placement
 
 
 @contextmanager
@@ -843,6 +886,13 @@ def main(argv=None):
     intake_path, intake, arguments = begin_tracking(arguments, mode, session_id,
         support_directory(os.environ), isolate=interactive,
         on_change=lambda _: notify_intake_changed(options.helper))
+    try:
+        apply_placement(options.helper, intake_path, intake, initial_prompt(arguments))
+    except BaseException as error:
+        intake.update(phase="blocked", note=str(error)[:500])
+        write_private_json(intake_path, intake)
+        notify_intake_changed(options.helper)
+        raise
     command = usage_command(options.usage_wrapper, options.default_flag, arguments)
     os.chdir(intake["cwd"])
     if not interactive:

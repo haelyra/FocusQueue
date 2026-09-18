@@ -13,7 +13,7 @@ enum SessionRegistrationError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .usage:
-            "Usage: focus-queue-session intake-changed | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reset | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude> <title> | rename <TASK-ID> <SUBTASK-ID> <title> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
+            "Usage: focus-queue-session intake-changed | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reset | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude> <title> | rename <TASK-ID> <SUBTASK-ID> <title> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
         case .missingSessionIdentity:
             "No Codex or Claude session ID was found in the environment or current WezTerm pane."
         case .missingManagedRuntime:
@@ -41,6 +41,7 @@ enum SessionRegistrationError: Error, LocalizedError {
                 print("Task layouts: tmux panes <name> | tmux arrange <name> | tmux manual <name> | tmux save | tmux restore | tmux persistence")
             }
             else if arguments.first == "queue" { try await queueCommand(arguments: arguments) }
+            else if arguments.first == "placement" { try await placementCommand(arguments: arguments) }
             else if arguments.first == "agents" { try await agentsCommand(arguments: arguments) }
             else if arguments.first == "runtime" { try await runtimeCommand(arguments: arguments) }
             else if arguments.first == "library" { try await libraryCommand(arguments: arguments) }
@@ -102,6 +103,51 @@ enum SessionRegistrationError: Error, LocalizedError {
         }
         let order = QueueOrderStore.orderedTickets(dashboard.tickets, savedIDs: try store.load() ?? fallback)
         try emit(["order": order.filter { visible?.contains($0.id) ?? true }.map(\.id)])
+        notifyContextChanged()
+    }
+
+    private static func placementCommand(arguments: [String]) async throws {
+        let environment = ProcessInfo.processInfo.environment
+        let root = supportDirectory(environment: environment)
+        var launchID = environment["FOCUS_QUEUE_LAUNCH_ID"]
+        var cwd = FileManager.default.currentDirectoryPath
+        var prompt: String?
+        var taskID: String?
+        var createTask = true
+        var index = 1
+        while index < arguments.count {
+            switch arguments[index] {
+            case "--no-create":
+                createTask = false; index += 1
+            case "--launch", "--cwd", "--prompt", "--task":
+                guard index + 1 < arguments.count else { throw SessionRegistrationError.usage }
+                let value = arguments[index + 1]
+                switch arguments[index] {
+                case "--launch": launchID = value
+                case "--cwd": cwd = value
+                case "--prompt": prompt = value
+                case "--task": taskID = value
+                default: break
+                }
+                index += 2
+            default: throw SessionRegistrationError.usage
+            }
+        }
+        let identity = TaskSessionBinding.providerSession(environment: environment)
+        if launchID == nil { launchID = identity?.1 ?? UUID().uuidString.lowercased() }
+        if prompt == nil, let receipt = AgentIntakeStore.load(root: root).first(where: { $0.launchID == launchID }),
+           receipt.title?.localizedCaseInsensitiveCompare("Codex agent") != .orderedSame {
+            prompt = receipt.title
+        }
+        let provider = identity?.0 ?? environment["FOCUS_QUEUE_PROVIDER"].flatMap(AgentProvider.init(rawValue:)) ?? .codex
+        let capsule = try await AgentPlacementResolver(root: root).resolve(AgentPlacementRequest(
+            launchID: launchID!, cwd: cwd, prompt: prompt, explicitTaskID: taskID,
+            inheritedTaskID: environment["FOCUS_QUEUE_TASK_ID"],
+            assignmentID: environment["FOCUS_QUEUE_SUBTASK_ID"], provider: provider,
+            sessionID: identity?.1, tmuxName: environment["FOCUS_QUEUE_TMUX_NAME"],
+            tmuxPaneID: environment["TMUX_PANE"], createTaskIfNeeded: createTask),
+            configuration: try loadConfiguration(from: root))
+        try emit(capsule)
         notifyContextChanged()
     }
 
@@ -481,6 +527,19 @@ enum SessionRegistrationError: Error, LocalizedError {
                                       explicitTaskID: String?, environment: [String: String]) async throws {
         let root = supportDirectory(environment: environment)
         let config = try loadConfiguration(from: root)
+        let launchID = environment["FOCUS_QUEUE_LAUNCH_ID"]
+            ?? event.providerSessionID ?? UUID().uuidString.lowercased()
+        let placement = try? await AgentPlacementResolver(root: root).resolve(AgentPlacementRequest(
+            launchID: launchID, cwd: event.cwd, prompt: event.prompt,
+            explicitTaskID: explicitTaskID, inheritedTaskID: environment["FOCUS_QUEUE_TASK_ID"],
+            assignmentID: event.isSubagent ? nil : environment["FOCUS_QUEUE_SUBTASK_ID"],
+            provider: provider, sessionID: event.providerSessionID,
+            tmuxName: environment["FOCUS_QUEUE_TMUX_NAME"], tmuxPaneID: environment["TMUX_PANE"],
+            createTaskIfNeeded: event.prompt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false),
+            configuration: config)
+        if placement?.status == .blockedConflict {
+            throw TaskContextError.commandFailed(placement?.reason ?? "Agent placement conflicts with its working directory.")
+        }
         var runtime: TmuxSessionReference?
         var directPane: Int?
         if !event.isSubagent, let name = environment["FOCUS_QUEUE_TMUX_NAME"],
@@ -492,9 +551,13 @@ enum SessionRegistrationError: Error, LocalizedError {
             directPane = pane
         }
         let registry = ExternalAgentRegistry(root: root)
-        let record = try await registry.register(event, provider: provider, explicitTaskID: explicitTaskID,
+        let record = try await registry.register(event, provider: provider,
+            explicitTaskID: explicitTaskID ?? placement?.taskID,
             environment: environment, tmux: runtime, paneID: directPane,
             socketPath: environment["WEZTERM_UNIX_SOCKET"])
+        _ = try? AgentPlacementCapsuleStore(root: root).finalize(
+            launchID: launchID, taskID: record.taskID, agentID: record.subtaskID,
+            sessionID: record.sessionID)
         if let session = record.session, FileManager.default.isExecutableFile(atPath: config.wezTerm.executable) {
             do {
                 let controller = WezTermController()
@@ -513,6 +576,7 @@ enum SessionRegistrationError: Error, LocalizedError {
         var output: [String: String] = ["status": record.status, "registrationID": record.id, "provider": provider.rawValue]
         output["sessionID"] = record.sessionID; output["taskID"] = record.taskID; output["subtaskID"] = record.subtaskID
         output["agentID"] = record.agentID; output["parentSessionID"] = record.parentSessionID
+        output["placementPath"] = placement?.capsulePath
         try emit(output)
     }
 

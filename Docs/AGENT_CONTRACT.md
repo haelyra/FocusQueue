@@ -4,17 +4,26 @@ Task identity, writer isolation, a brief plan, and an append-only log form the c
 
 ## New Agent and resume
 
-New Agent automatically creates an owned branch/worktree from the selected checkout's committed HEAD. Managed paths live beside the canonical repository under `<repository>-worktrees/<task>/agents/<agent-id>`; Application Support stores task metadata and evidence, never a coding checkout. Local edits remain in the source and are excluded from the new workspace. The sheet shows this explicitly; there is no worktree toggle. The model retains explicit existing-workspace and strict-clean APIs for compatibility. Resuming a saved agent reuses its exact assigned workspace and provider UUID.
+New Agent and the installed `codex` shell entry automatically create an owned branch/worktree from the selected checkout's committed HEAD. Managed paths live beside the canonical repository under `<repository>-worktrees/<task>/agents/<agent-id>` when the task is known, with provisional isolated paths permitted during placement. Application Support stores task metadata and evidence, never a coding checkout. Local edits remain in the source and are excluded from the new workspace. There is no worktree toggle. Resuming a saved agent reuses its exact assigned workspace and provider UUID.
 
 Resume rechecks transient provider ownership up to four times while a process starts or exits. An unresolved final scan still prevents a duplicate process.
 
 Every new app launch includes a compact task ID, agent ID, workspace, plan/log pointers, and reporting instructions. Detailed task initialization remains optional. An empty prompt asks the agent to prepare context and wait, rather than starting the whole task. Low-level launches that explicitly suppress all prompts and saved-conversation resumes remain prompt-free.
 
-Task-associated agents share one `fq-task-<task-id>` tmux session with one exact pane per agent. Shell launches persist their provisional queue row before starting, save the exact pane reference afterward, and notify the app at both boundaries. The managed usage bar follows the active pane and remains session-owned when another agent exits. Unassigned launches stay in isolated `fq-codex-*` sessions until placement is unambiguous.
+Task-associated agents share one `fq-task-<task-id>` tmux session with one exact pane per agent. Shell launches persist a launch receipt, resolve placement, persist a provisional queue row, save the exact pane reference afterward, and notify the app at each boundary. The managed usage bar follows the active pane and remains session-owned when another agent exits. A launch without a task objective stays in its project's inbox and an isolated `fq-codex-*` session until placement is unambiguous.
+
+## Placement capsule
+
+The placement resolver is local deterministic code in `focus-queue-session`, not an orchestrator or an LLM. It evaluates saved session ownership, explicit task identity, project task prefix, and Git repository identity in that order. Normal launches call it automatically. An agent can recover missing placement with `focus-queue-session placement --prompt "<objective>"` from its intended repository.
+
+Each launch receives `FOCUS_QUEUE_AGENT_CONTEXT`, pointing to a private JSON capsule at `~/Library/Application Support/ECC Focus Queue/tracking/placements/<launch-uuid>.json`. The capsule lives outside Git because it must exist before a task is known, survive branch/worktree cleanup, and be shared by the launcher, app, hooks, and agent without polluting a repository. Writes are private and atomic. The capsule contains only routing context: project, task, agent, provider session when known, workspace, branch, tmux identity, and plan/log pointers.
+
+Projects own unique 2 to 5 character task prefixes. Focus Queue uses `FOC-###`; the reserved `Other` project uses `OTH-###`. Repository matching selects a configured project. If no project matches, task creation uses Other instead of leaving project ownership empty. Conflicting task and repository evidence produces `blocked-conflict` and prevents the launch from starting source work. Normal placement does not call the orchestrator; reconciliation can correct exceptions later.
 
 ## Documents and reports
 
-- `plan.md`: goal, scope, success criteria, implementation outline, current focus, next step, and links. Read on association and before edits. Exclude decision history and verbose evidence.
+- Project `plan.md`: concise project-only practices, commands, and repeated mistake-prevention rules. Read from the capsule's `projectPlanPath`.
+- Task `plan.md`: goal, scope, success criteria, implementation outline, current focus, next step, and links. Read on association and before edits. Exclude decision history and verbose evidence.
 - `agent-log.md`: timestamped decisions, configuration, progress detail, research/evidence links, and handoffs. Read relevant entries on demand. Append with `focus-queue-session log <TASK-ID> <AGENT-ID> "entry"`.
 - Supporting artifacts: store beside task context and link from the plan or log. Context lives outside disposable worktrees.
 - Structured state: use helper commands for progress, result, attention, and verified completion. Preserve user queue order, cleared subtasks, and other agents' identities.

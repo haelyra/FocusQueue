@@ -1,38 +1,22 @@
 import Darwin
 import Foundation
 
-public struct ProjectDefinition: Codable, Equatable, Identifiable, Sendable {
-    public var id: String
-    public var name: String
-    public var taskPrefix: String
-    public var repositoryPath: String
-    public var remote: String?
-    public var remoteAliases: [String]
-    public var archivedAt: Date?
+public typealias ProjectDefinition = ProjectConfiguration
 
-    public init(id: String = UUID().uuidString.lowercased(), name: String, taskPrefix: String? = nil,
-                repositoryPath: String,
-                remote: String? = nil, remoteAliases: [String] = [], archivedAt: Date? = nil) {
-        self.id = id; self.name = name
-        self.taskPrefix = (taskPrefix ?? ProjectCatalog.suggestedPrefix(name: name, id: id)).uppercased()
-        self.repositoryPath = repositoryPath
-        self.remote = remote; self.remoteAliases = remoteAliases; self.archivedAt = archivedAt
+public extension ProjectConfiguration {
+    init(id: String = UUID().uuidString.lowercased(), name: String, taskPrefix: String? = nil,
+         repositoryPath: String, remote: String? = nil,
+         remoteAliases: [String] = [], archivedAt: Date? = nil) {
+        let workspace = repositoryPath.isEmpty
+            ? FileManager.default.temporaryDirectory.appendingPathComponent("focus-queue-project-\(id)").path
+            : repositoryPath
+        self.init(id: id, name: name,
+            dashboardPath: URL(fileURLWithPath: workspace).appendingPathComponent("dashboard.json").path,
+            workspacePath: workspace, taskPrefix: taskPrefix, repositoryPath: repositoryPath,
+            remote: remote, remoteAliases: remoteAliases, archivedAt: archivedAt)
     }
 
-    private enum CodingKeys: String, CodingKey { case id, name, taskPrefix, repositoryPath, remote, remoteAliases, archivedAt }
-    public init(from decoder: any Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(String.self, forKey: .id)
-        name = try c.decode(String.self, forKey: .name)
-        taskPrefix = (try c.decodeIfPresent(String.self, forKey: .taskPrefix)
-            ?? ProjectCatalog.suggestedPrefix(name: name, id: id)).uppercased()
-        repositoryPath = try c.decode(String.self, forKey: .repositoryPath)
-        remote = try c.decodeIfPresent(String.self, forKey: .remote)
-        remoteAliases = try c.decodeIfPresent([String].self, forKey: .remoteAliases) ?? []
-        archivedAt = try c.decodeIfPresent(Date.self, forKey: .archivedAt)
-    }
-
-    public var repositoryRemotes: Set<String> {
+    var repositoryRemotes: Set<String> {
         Set(([remote].compactMap { $0 } + remoteAliases).compactMap(ProjectCatalog.normalizedRemote))
     }
 }
@@ -42,7 +26,12 @@ public enum ProjectCatalog {
     public static let otherID = "other"
 
     public static var other: ProjectDefinition {
-        ProjectDefinition(id: otherID, name: "Other", taskPrefix: "OTH", repositoryPath: "")
+        let root = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/ECC Focus Queue/projects/other", isDirectory: true)
+        return ProjectDefinition(id: otherID, name: "Other",
+            dashboardPath: root.appendingPathComponent("dashboard.json").path,
+            workspacePath: root.appendingPathComponent("workspace", isDirectory: true).path,
+            taskPrefix: "OTH", repositoryPath: "")
     }
 
     public static func suggestedPrefix(name: String, id: String = "") -> String {
@@ -58,9 +47,31 @@ public enum ProjectCatalog {
         return String(fallback.prefix(5)).padding(toLength: 2, withPad: "X", startingAt: 0)
     }
 
-    public static func ensuringOther(in projects: [ProjectDefinition]) -> [ProjectDefinition] {
+    public static func ensuringOther(
+        in projects: [ProjectDefinition], supportDirectory: URL? = nil
+    ) -> [ProjectDefinition] {
         guard !projects.contains(where: { $0.id == otherID }) else { return projects }
-        return projects + [other]
+        guard let supportDirectory else { return projects + [other] }
+        let root = supportDirectory.appendingPathComponent("projects/other", isDirectory: true)
+        return projects + [ProjectDefinition(id: otherID, name: "Other",
+            dashboardPath: root.appendingPathComponent("dashboard.json").path,
+            workspacePath: root.appendingPathComponent("workspace", isDirectory: true).path,
+            taskPrefix: "OTH", repositoryPath: "")]
+    }
+
+    public static func prepareFallbackStorage(for project: ProjectDefinition) throws {
+        guard project.id == otherID else { return }
+        let workspace = URL(fileURLWithPath: project.workspacePath, isDirectory: true)
+        let dashboard = URL(fileURLWithPath: project.dashboardPath)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        try FileManager.default.createDirectory(at: dashboard.deletingLastPathComponent(),
+            withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        if !FileManager.default.fileExists(atPath: dashboard.path) {
+            try Data("{\"tickets\":[]}\n".utf8).write(to: dashboard, options: .withoutOverwriting)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600],
+                ofItemAtPath: dashboard.path)
+        }
     }
 
     public static func normalizedRemote(_ raw: String) -> String? {
@@ -148,7 +159,9 @@ public struct ProjectRepositoryResolver: Sendable {
 /// Shared with the daily-report writer and project migration script.
 public enum ProjectFileLock {
     public static func withLock<T>(file: URL, _ operation: () throws -> T) throws -> T {
-        let descriptor = Darwin.open(file.path + ".focus-queue.lock", O_CREAT | O_RDWR, 0o600)
+        let lock = file.deletingLastPathComponent()
+            .appendingPathComponent(".\(file.lastPathComponent).focus-queue.lock")
+        let descriptor = Darwin.open(lock.path, O_CREAT | O_RDWR, 0o600)
         guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown) }
         defer { Darwin.close(descriptor) }
         guard flock(descriptor, LOCK_EX) == 0 else { throw CocoaError(.fileWriteUnknown) }

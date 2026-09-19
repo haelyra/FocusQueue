@@ -73,16 +73,16 @@ enum SessionRegistrationError: Error, LocalizedError {
         let root = supportDirectory(environment: ProcessInfo.processInfo.environment)
         let config = try loadConfiguration(from: root)
         let dashboard = try await JSONDashboardRepository().load(from: URL(fileURLWithPath: config.dashboardPath))
-        let store = QueueOrderStore(root: root)
+        let store = QueueOrderStore(root: root, projectID: config.selectedProjectID)
         let state = try await JSONLocalStateStore(url: root.appendingPathComponent("state.json")).load()
         let fallback = DashboardOrdering.openTickets(in: dashboard.tickets,
             deferredTicketIDs: state.deferredTicketIDs).map(\.id)
         let requestedScope = ProcessInfo.processInfo.environment["FOCUS_QUEUE_PROJECT_ID"].flatMap { $0.isEmpty ? nil : $0 }
-        let selection = ProjectCatalog.normalizedSelection(requestedScope, projects: config.projects)
-        guard selection == requestedScope else { throw TaskContextError.commandFailed("The requested project is unavailable. Select a current project before changing its queue.") }
-        let visible = selection.map { scope in Set(dashboard.tickets.filter {
-            ProjectCatalog.includes($0, selection: scope, projects: config.projects)
-        }.map(\.id)) }
+        guard requestedScope == nil || requestedScope == config.selectedProjectID else {
+            throw TaskContextError.commandFailed(
+                "The requested project is not the active dashboard. Select it before changing its queue.")
+        }
+        let visible: Set<String>? = nil
         switch arguments.dropFirst().first {
         case "list" where arguments.count == 2: break
         case "reset" where arguments.count == 2:
@@ -532,7 +532,10 @@ enum SessionRegistrationError: Error, LocalizedError {
         let placement = try? await AgentPlacementResolver(root: root).resolve(AgentPlacementRequest(
             launchID: launchID, cwd: event.cwd, prompt: event.prompt,
             explicitTaskID: explicitTaskID, inheritedTaskID: environment["FOCUS_QUEUE_TASK_ID"],
-            assignmentID: event.isSubagent ? nil : environment["FOCUS_QUEUE_SUBTASK_ID"],
+            // An explicit attach is recovery authority for the task only. Do not
+            // recreate a stale inherited assignment that the queue has removed.
+            assignmentID: explicitTaskID == nil && !event.isSubagent
+                ? environment["FOCUS_QUEUE_SUBTASK_ID"] : nil,
             provider: provider, sessionID: event.providerSessionID,
             tmuxName: environment["FOCUS_QUEUE_TMUX_NAME"], tmuxPaneID: environment["TMUX_PANE"],
             createTaskIfNeeded: event.prompt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false),

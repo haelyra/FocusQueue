@@ -30,23 +30,37 @@ class QueueOrderCLITests(unittest.TestCase):
         self.assertEqual(result.returncode, expected, result.stderr)
         return json.loads(result.stdout)["order"] if expected == 0 else result.stderr
 
-    def test_project_commands_preserve_hidden_positions_and_reject_hidden_targets(self):
+    def test_project_commands_require_the_active_dashboard_and_keep_orders_isolated(self):
         config = json.loads((self.root / "config.json").read_text())
-        config["projects"] = [{"id": "ecc", "name": "ECC", "repositoryPath": str(self.root)},
-                              {"id": "focus", "name": "Focus", "repositoryPath": str(self.root)}]
-        (self.root / "config.json").write_text(json.dumps(config))
+        focus_dashboard = self.root / "focus-dashboard.json"
+        focus_dashboard.write_text(json.dumps({"tickets": [
+            {"id": ticket, "title": ticket, "status": "open", "priority": "critical", "summary": ""}
+            for ticket in ["FOC-001", "FOC-002"]
+        ]}))
+        config["focusQueueProjects"] = [
+            {"id": "ecc", "name": "ECC", "taskPrefix": "ECC",
+             "dashboardPath": str(self.dashboard), "workspacePath": str(self.root),
+             "repositoryPath": ""},
+            {"id": "focus", "name": "Focus", "taskPrefix": "FOC",
+             "dashboardPath": str(focus_dashboard), "workspacePath": str(self.root),
+             "repositoryPath": ""},
+        ]
+        config["focusQueueSelectedProjectID"] = "ecc"
         dashboard = json.loads(self.dashboard.read_text())
         for ticket in dashboard["tickets"]:
-            ticket["projectID"] = "focus" if ticket["id"] == "ECC-035" else "ecc"
+            ticket["projectID"] = "ecc"
         self.dashboard.write_text(json.dumps(dashboard))
-        self.command("move", "ECC-029", "top")
-        self.assertEqual(self.command("list"), ["ECC-029", "ECC-035", "ECC-040"])
-        self.assertEqual(self.command("list", project="ecc"), ["ECC-029", "ECC-040"])
-        self.assertEqual(self.command("move", "ECC-040", "top", project="ecc"), ["ECC-040", "ECC-029"])
-        self.assertEqual(self.command("list"), ["ECC-040", "ECC-035", "ECC-029"])
-        self.command("move", "ECC-035", "top", project="ecc", expected=1)
-        self.command("move", "ECC-040", "before", "ECC-035", project="ecc", expected=1)
+        (self.root / "config.json").write_text(json.dumps(config))
+        self.assertEqual(self.command("move", "ECC-029", "top", project="ecc"),
+                         ["ECC-029", "ECC-035", "ECC-040"])
+        self.command("list", project="focus", expected=1)
         self.command("list", project="missing", expected=1)
+        config["focusQueueSelectedProjectID"] = "focus"
+        (self.root / "config.json").write_text(json.dumps(config))
+        self.assertEqual(self.command("list", project="focus"), ["FOC-001", "FOC-002"])
+        self.assertEqual(self.command("move", "FOC-002", "top", project="focus"),
+                         ["FOC-002", "FOC-001"])
+        self.command("list", project="ecc", expected=1)
 
     def test_moves_preserve_other_tasks_and_do_not_edit_dashboard_or_app_state(self):
         original = {name: (self.root / name).read_bytes() for name in ["dashboard.json", "state.json"]}

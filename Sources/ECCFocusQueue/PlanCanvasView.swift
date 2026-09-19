@@ -33,8 +33,13 @@ struct PlanCanvasView: View {
         VStack(alignment: .leading, spacing: 3) {
           Text(showsWorkspaceMap ? "Workspace map" : (model.presentedPlanURL == nil ? "Central plan" : "Supporting document"))
             .font(.system(size: 20, weight: .bold, design: .rounded))
-          Text("\(ticket.id) · \(ticket.title)").font(.caption).foregroundStyle(.secondary)
-            .lineLimit(2)
+          HStack(spacing: 4) {
+            Text("\(ticket.id) ·")
+            RenamableTaskTitle(
+              ticket: ticket, model: model, size: 11, weight: .regular,
+              maximumLines: 2)
+          }
+          .foregroundStyle(.secondary)
         }
         Spacer()
         Button("Sessions", systemImage: "rectangle.split.2x2") { showsTaskSessions = true }

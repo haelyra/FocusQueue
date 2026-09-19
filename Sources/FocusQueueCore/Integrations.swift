@@ -93,10 +93,10 @@ public enum DailyReportAutomation {
         }
         if normalized.contains("mail_reader_not_installed")
             || normalized.contains("mail reader app is not installed") {
-            return "the protected Mail reader is missing. Reinstall ECC Focus Queue, then retry"
+            return "the protected Mail reader is missing. Reinstall Focus Queue, then retry"
         }
         if normalized.contains("codex") || normalized.contains("classification failed") {
-            return "the message classifier failed its safety or compatibility check. Update ECC Focus Queue or Codex, then retry"
+            return "the message classifier failed its safety or compatibility check. Update Focus Queue or Codex, then retry"
         }
         if normalized.contains("missing ingestion settings") || normalized.contains("configuration") {
             return "the daily report configuration is incomplete or invalid. Review its settings, then retry"
@@ -1770,10 +1770,10 @@ public actor CodexQueueAgent: QueueAgentChatting {
         }
         if normalized.contains("mail_reader_not_installed")
             || normalized.contains("mail reader app is not installed") {
-            return "the protected Mail reader is missing. Reinstall ECC Focus Queue, then retry"
+            return "the protected Mail reader is missing. Reinstall Focus Queue, then retry"
         }
         if normalized.contains("codex") || normalized.contains("classification failed") {
-            return "the Queue assistant failed its safety or compatibility check. Update ECC Focus Queue or Codex, then retry"
+            return "the Queue assistant failed its safety or compatibility check. Update Focus Queue or Codex, then retry"
         }
         if normalized.contains("configuration") {
             return "the Queue assistant configuration is incomplete or invalid. Review its settings, then retry"
@@ -2015,12 +2015,12 @@ public actor CodexQueueAgent: QueueAgentChatting {
             ? "none"
             : deferredTicketIDs.joined(separator: ", ")
         return """
-        You are the Codex Queue agent for ECC Focus Queue.
+        You are the Codex Queue agent for Focus Queue.
 
         The user controls the local queue order. You are authorized to reorder tasks when the user requests it, including choosing an order when they ask you to prioritize the queue. Use `focus-queue-session queue list` to read the current order, then `focus-queue-session queue move <TASK-ID> top|bottom` or `focus-queue-session queue move <TASK-ID> before|after <TARGET-ID>`. Use `focus-queue-session queue reset` only when asked to restore priority sorting. Run queue list afterward to verify. These commands save positions on this Mac and the app refreshes automatically. Moving a task preserves the relative order of all other tasks. Saved positions take precedence over priority, timestamps, and automatic recurring-task placement. New tasks append in priority order. Do not edit state.json or the canonical dashboard to reorder tasks.
 
         Canonical dashboard: \(dashboardPath)
-        Preserve projectID and every unknown field when editing tasks. Project ownership is explicit and independent of a task's worktree. When a project scope is supplied, restrict edits and new tasks to that scope. Use its projectID for new tasks; otherwise use the reserved Other project. Use the dashboard's adjacent .focus-queue.lock for an exclusive flock, re-read under the lock, and write atomically. A project-scoped helper inherits FOCUS_QUEUE_PROJECT_ID; never clear or override it to reach hidden tasks. Ask the user to switch to All projects for cross-project changes.
+        Preserve projectID and every unknown field when editing tasks. This dashboard belongs to the selected project and is independent of an agent's worktree. Restrict edits and new tasks to this dashboard. Use its projectID for new tasks; otherwise use the reserved Other project. Use the dashboard's adjacent hidden lock for an exclusive flock, re-read under the lock, and write atomically. A project-scoped helper inherits FOCUS_QUEUE_PROJECT_ID; never clear or override it to reach another project's dashboard. Ask the user to switch projects for cross-project changes.
         Workspace: \(workspace)
         Current visible open-task order: \(order)
         Current local deferred task IDs: \(deferred)

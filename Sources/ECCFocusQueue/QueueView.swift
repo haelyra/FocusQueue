@@ -17,8 +17,10 @@ struct QueueView: View {
   @State private var queueAgentDraft = ""
   @State private var taskAgentDrafts: [String: String] = [:]
   @State private var showsTerminals = false
+  @State private var showsNewTask = false
+  @State private var newTaskProjectID: String?
   @State private var updateDrafts: [String: String] = [:]
-  @State private var notificationsExpanded = true
+  @State private var notificationsExpanded = false
   @State private var settingsTarget: QueueSettingsTarget?
 
   private let completedPageSize = 12
@@ -39,12 +41,13 @@ struct QueueView: View {
     }
     .preferredColorScheme(model.appearance == .dark ? .dark : .light)
     .environment(\.queueAccentStyle, model.accentStyle)
-    .onChange(of: model.selectedProjectID) { _, _ in
-      showsMoreTasks = false
-      showsPastCompletedTasks = false
-      visiblePastCompletedCount = 0
+    .onChange(of: notificationCount) { _, count in
+      if count == 0 { notificationsExpanded = false }
     }
     .sheet(isPresented: $showsTerminals) { TerminalBrowserView(model: model) }
+    .sheet(isPresented: $showsNewTask) {
+      NewTaskSheet(model: model, projectID: newTaskProjectID)
+    }
     .sheet(item: Binding(get: { model.launchDiagnostics }, set: { model.launchDiagnostics = $0 })) { log in
       VStack(alignment: .leading, spacing: 12) {
         Text("Launch diagnostics").font(.headline)
@@ -141,9 +144,11 @@ struct QueueView: View {
       } else if model.isTopTaskOnly {
         topTaskPanel
       } else if screen == .settings {
-        QueueSettingsView(model: model, focusedSection: settingsTarget) {
-          withAnimation(.easeInOut(duration: 0.18)) { screen = .queue }
-        }
+        QueueSettingsView(
+          model: model,
+          focusedSection: settingsTarget,
+          openTerminals: { showsTerminals = true }
+        ) { withAnimation(.easeInOut(duration: 0.18)) { screen = .queue } }
       } else {
         queueContent
       }
@@ -153,12 +158,10 @@ struct QueueView: View {
   private var queueContent: some View {
     VStack(spacing: 10) {
       header
-      ProjectSelectorView(model: model)
-      if let error = model.projectError { Text(error).font(.caption).foregroundStyle(.orange) }
       if model.pendingDailyReportApproval != nil {
         missedReportApprovalBanner
       }
-      if notificationCount > 0 { notificationFeed }
+      if notificationsExpanded, notificationCount > 0 { notificationFeed }
       queueTabs
       switch selectedTab {
       case .focus:
@@ -177,33 +180,8 @@ struct QueueView: View {
 
   private var notificationFeed: some View {
     VStack(spacing: 8) {
-      Button {
-        withAnimation(.easeInOut(duration: 0.18)) { notificationsExpanded.toggle() }
-      } label: {
-        HStack(spacing: 8) {
-          Label("Notifications", systemImage: "bell.fill")
-            .font(.system(size: 12, weight: .semibold))
-          Text("\(notificationCount)")
-            .font(.system(size: 11, weight: .bold).monospacedDigit())
-            .foregroundStyle(.secondary)
-          Spacer()
-          Text(notificationsExpanded ? "Hide" : "Show")
-            .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
-          Image(systemName: notificationsExpanded ? "chevron.up" : "chevron.down")
-            .font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 11).frame(height: 32).contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .notificationSurface(radius: 12)
-      .accessibilityLabel(
-        notificationsExpanded ? "Collapse notifications" : "Expand notifications"
-      )
-
-      if notificationsExpanded {
-        if model.showsReportNotification { reportStatusBanner }
-        ForEach(model.agentUpdates) { attention in attentionBanner(attention) }
-      }
+      if model.showsReportNotification { reportStatusBanner }
+      ForEach(model.agentUpdates) { attention in attentionBanner(attention) }
     }
   }
 
@@ -317,9 +295,8 @@ struct QueueView: View {
       if focusTickets.isEmpty {
         ContentUnavailableView(
           "Queue is clear", systemImage: "checkmark.circle",
-          description: Text(model.selectedProjectID == nil ? "No open tasks are present in the dashboard." : "No open tasks in \(model.projectScopeName).")
+          description: Text("No open tasks are present in \(model.selectedProject?.name ?? "the selected project").")
         ).frame(maxWidth: .infinity).notificationSurface(radius: 18)
-        if model.selectedProjectID != nil { Button("View all projects") { model.selectProject(nil) } }
       } else {
         ForEach(focusTickets) { ticket in TicketCard(ticket: ticket, model: model) }
       }
@@ -378,6 +355,18 @@ struct QueueView: View {
 
   private var queueTabs: some View {
     HStack(spacing: 6) {
+      Button {
+        newTaskProjectID = model.selectedProject?.id
+        showsNewTask = true
+      } label: {
+        Image(systemName: "plus").font(.system(size: 13, weight: .semibold))
+      }
+      .buttonStyle(.bordered)
+      .minimumHitTarget()
+      .accessibilityLabel("New task in \(model.selectedProject?.name ?? "selected project")")
+      .help("Add a task to \(model.selectedProject?.name ?? "the selected project")")
+      .disabled(model.selectedProject == nil)
+
       Picker("Queue section", selection: $selectedTab) {
         Text("Focus \(model.openTickets.count)").tag(QueueTab.focus)
         Text("Completed \(model.completedTodayTickets.count)").tag(QueueTab.completed)
@@ -434,10 +423,13 @@ struct QueueView: View {
         LazyVStack(alignment: .leading, spacing: 8) {
           ForEach(completedSubtaskTickets) { ticket in
             VStack(alignment: .leading, spacing: 6) {
-              Text("\(ticket.id) · \(ticket.title)")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
+              HStack(spacing: 4) {
+                Text("\(ticket.id) ·")
+                RenamableTaskTitle(
+                  ticket: ticket, model: model, size: 11, weight: .semibold,
+                  maximumLines: 2)
+              }
+              .foregroundStyle(.secondary)
               ForEach(model.focusSubtasks(for: ticket.id).filter { $0.status == .completed }) {
                 subtask in
                 ArchivedSubtaskRow(ticket: ticket, subtask: subtask, model: model)
@@ -466,10 +458,14 @@ struct QueueView: View {
         Text("\(model.openTickets.count)").font(.system(size: 10, weight: .medium).monospacedDigit())
       }.frame(width: 52, height: 44).contentShape(Rectangle())
     }.buttonStyle(.plain).notificationSurface(radius: 12)
-      .accessibilityLabel("Expand ECC Focus Queue: \(model.projectScopeName), \(model.openTickets.count) tasks").help("\(model.projectScopeName) · \(model.openTickets.count) tasks")
+      .accessibilityLabel("Expand Focus Queue: \(model.selectedProject?.name ?? "no project"), \(model.openTickets.count) tasks")
+      .help("\(model.selectedProject?.name ?? "Focus Queue") · \(model.openTickets.count) tasks")
       .contextMenu {
+        Button("Fully minimize", systemImage: "minus") {
+          model.minimize(using: .dock)
+        }
         Button("Show top task", systemImage: "rectangle.topthird.inset.filled") {
-          model.showTopTaskOnly()
+          model.minimize(using: .topTask)
         }
       }
   }
@@ -495,10 +491,9 @@ struct QueueView: View {
           Image(systemName: "rectangle.compress.vertical")
         }
         .buttonStyle(.plain).minimumHitTarget(width: 32, height: 32)
-        .accessibilityLabel("Collapse ECC Focus Queue to FQ").help("Collapse to FQ")
+        .accessibilityLabel("Collapse Focus Queue to FQ").help("Collapse to FQ")
       }
 
-      Text(model.projectScopeName).font(.caption).foregroundStyle(.secondary).lineLimit(1)
       if let ticket = model.openTickets.first {
         Button {
           model.setPanelMode(.expanded)
@@ -511,8 +506,9 @@ struct QueueView: View {
               Spacer()
               StatusPill(text: ticket.status, color: Color.accentColor)
             }
-            Text(ticket.title).font(.system(size: 16, weight: .semibold)).lineLimit(2)
-              .frame(maxWidth: .infinity, alignment: .leading)
+            RenamableTaskTitle(
+              ticket: ticket, model: model, size: 16, weight: .semibold,
+              maximumLines: 2)
             if !ticket.summary.isEmpty {
               Text(ticket.summary).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -543,7 +539,31 @@ struct QueueView: View {
   private var header: some View {
     VStack(alignment: .leading, spacing: 3) {
       HStack(alignment: .firstTextBaseline) {
-        Text("ECC Focus Queue").font(.system(size: 19, weight: .bold, design: .rounded))
+        Menu {
+          ForEach(model.projects) { project in
+            Button {
+              Task { _ = await model.selectProject(id: project.id) }
+            } label: {
+              if project.id == model.selectedProject?.id {
+                Label(project.name, systemImage: "checkmark")
+              } else {
+                Text(project.name)
+              }
+            }
+          }
+        } label: {
+          HStack(spacing: 5) {
+            Text(model.selectedProject?.name ?? "Select project")
+              .font(.system(size: 19, weight: .bold, design: .rounded))
+            Image(systemName: "chevron.down")
+              .font(.system(size: 10, weight: .bold))
+              .foregroundStyle(.secondary)
+          }
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityLabel("Working project: \(model.selectedProject?.name ?? "none")")
+        .help("Choose the working project")
         Spacer()
         Text(headerCountLabel).font(
           .system(size: 11, weight: .semibold).monospacedDigit()
@@ -561,14 +581,15 @@ struct QueueView: View {
         Button { showsTerminals = true } label: {
           HStack(spacing: 4) {
             Image(systemName: "terminal").font(.system(size: 12, weight: .semibold))
-            if !model.unassignedAgentRegistrations.isEmpty {
-              Text(String(model.unassignedAgentRegistrations.count))
-                .font(.caption2.monospacedDigit()).foregroundStyle(.orange)
-            }
+            Text(String(model.terminalCount))
+              .font(.caption2.monospacedDigit())
+              .foregroundStyle(model.unassignedAgentRegistrations.isEmpty ? Color.secondary : .orange)
           }
         }
         .buttonStyle(.plain).minimumHitTarget(width: 30, height: 34)
-        .accessibilityLabel("Browse terminals, \(model.unassignedAgentRegistrations.count) agents to place")
+        .accessibilityLabel(
+          "Browse terminals, \(model.terminalCount) tracked, \(model.unassignedAgentRegistrations.count) agents to place"
+        )
         .help("Review tracked agents, assign tasks, and open terminal panes")
         Button {
           if model.dailyReport == nil {
@@ -582,43 +603,54 @@ struct QueueView: View {
           model.isDailyReportPresented ? "Close daily report" : "Open daily report"
         ).help("Daily message report")
         Button {
+          withAnimation(.easeInOut(duration: 0.18)) {
+            notificationsExpanded.toggle()
+          }
+        } label: {
+          HStack(spacing: 3) {
+            Image(systemName: notificationsExpanded ? "bell.fill" : "bell")
+              .font(.system(size: 13, weight: .semibold))
+            if notificationCount > 0 {
+              Text(String(notificationCount))
+                .font(.caption2.bold().monospacedDigit())
+                .foregroundStyle(.secondary)
+            }
+          }
+        }
+        .buttonStyle(.plain)
+        .minimumHitTarget(width: 30, height: 34)
+        .disabled(notificationCount == 0)
+        .accessibilityLabel(
+          notificationsExpanded
+            ? "Close \(notificationCount) notifications"
+            : "Open \(notificationCount) notifications"
+        )
+        .help(notificationsExpanded ? "Close notifications" : "Show notifications")
+        Button {
           settingsTarget = nil
           withAnimation(.easeInOut(duration: 0.18)) { screen = .settings }
         } label: {
           Image(systemName: "gearshape.fill").font(.system(size: 13, weight: .semibold))
         }.buttonStyle(.plain).minimumHitTarget(width: 30, height: 34).accessibilityLabel(
-          "Open ECC Focus Queue settings"
+          "Open Focus Queue settings"
         ).help("Settings")
         Button {
-          Task { await model.refresh(forceRecurringPRProgress: true, userInitiated: true) }
-        } label: {
-          if model.isRefreshing {
-            ProgressView().controlSize(.small)
-          } else {
-            Image(systemName: "arrow.clockwise").font(.system(size: 13, weight: .semibold))
-          }
-        }.buttonStyle(.plain).minimumHitTarget(width: 30, height: 34).disabled(model.isRefreshing)
-          .accessibilityLabel(model.isRefreshing ? "Synchronizing queue data" : "Synchronize queue data now")
-          .help(
-            model.isRefreshing
-              ? "Synchronizing queue data"
-              : "Reload tasks, agent activity, report status, terminal registrations, and GitHub progress"
-          )
-        Button { model.minimizeHandler?() } label: {
-          Image(systemName: "minus").font(.system(size: 13, weight: .semibold))
-        }.buttonStyle(.plain).minimumHitTarget(width: 30, height: 34)
-          .accessibilityLabel("Minimize ECC Focus Queue to Dock").help("Minimize to Dock")
-        Button {
-          model.setPanelCollapsed(true)
+          model.performPreferredMinimization()
         } label: {
           Image(systemName: "rectangle.compress.vertical").font(
             .system(size: 13, weight: .semibold))
         }.buttonStyle(.plain).minimumHitTarget(width: 30, height: 34).accessibilityLabel(
-          "Collapse ECC Focus Queue to FQ"
-        ).help("Collapse queue; right-click to show only the top task")
+          "Minimize Focus Queue using the saved option"
+        ).help("Minimize queue; right-click to choose how")
           .contextMenu {
+            Button("Fully minimize", systemImage: "minus") {
+              model.minimize(using: .dock)
+            }
+            Button("Minimize to FQ", systemImage: "rectangle.compress.vertical") {
+              model.minimize(using: .fq)
+            }
             Button("Show top task", systemImage: "rectangle.topthird.inset.filled") {
-              model.showTopTaskOnly()
+              model.minimize(using: .topTask)
             }
           }
       }
@@ -809,7 +841,7 @@ struct QueueView: View {
     } label: {
       Image(systemName: "display.2").font(.system(size: 13, weight: .semibold))
     }.buttonStyle(.plain).minimumHitTarget(width: 30, height: 34).disabled(!model.canSwitchMonitor)
-      .accessibilityLabel("Move ECC Focus Queue to the next display")
+      .accessibilityLabel("Move Focus Queue to the next display")
       .help(monitorButtonHelp)
   }
 
@@ -832,6 +864,70 @@ private enum QueueTab: Hashable {
   case focus
   case completed
   case agent
+}
+
+private struct NewTaskSheet: View {
+  let model: QueueViewModel
+  let projectID: String?
+  @Environment(\.dismiss) private var dismiss
+  @State private var title = ""
+  @State private var summary = ""
+  @State private var doneWhen = ""
+  @State private var priority = "medium"
+  @State private var isSaving = false
+
+  private var project: ProjectConfiguration? {
+    model.projects.first { $0.id == projectID }
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      VStack(alignment: .leading, spacing: 3) {
+        Text("New task").font(.title2.bold())
+        Text("Add to \(project?.name ?? "the selected project")")
+          .font(.callout).foregroundStyle(.secondary)
+      }
+
+      Form {
+        TextField("Task title", text: $title)
+        TextField("Summary", text: $summary, axis: .vertical).lineLimit(2...5)
+        TextField("Done when", text: $doneWhen, axis: .vertical).lineLimit(2...5)
+        Picker("Priority", selection: $priority) {
+          Text("Low").tag("low")
+          Text("Medium").tag("medium")
+          Text("High").tag("high")
+          Text("Critical").tag("critical")
+        }
+      }
+      .formStyle(.grouped)
+
+      if let error = model.loadError, !error.isEmpty {
+        Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+      }
+
+      HStack {
+        Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+        Spacer()
+        Button(isSaving ? "Adding…" : "Add task") {
+          isSaving = true
+          Task {
+            let saved = await model.createTask(
+              title: title, summary: summary, doneWhen: doneWhen,
+              priority: priority, projectID: projectID)
+            isSaving = false
+            if saved { dismiss() }
+          }
+        }
+        .buttonStyle(.borderedProminent)
+        .keyboardShortcut(.defaultAction)
+        .disabled(
+          isSaving || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || project == nil)
+      }
+    }
+    .padding(22)
+    .frame(width: 500, height: 430)
+  }
 }
 
 struct QueueAgentChatView: View {
@@ -1278,6 +1374,7 @@ private struct DailyReportView: View {
 private struct QueueSettingsView: View {
   let model: QueueViewModel
   let focusedSection: QueueSettingsTarget?
+  let openTerminals: () -> Void
   let close: () -> Void
 
   var body: some View {
@@ -1286,24 +1383,43 @@ private struct QueueSettingsView: View {
         Button(action: close) {
           Image(systemName: "chevron.left").font(.system(size: 13, weight: .bold))
         }.buttonStyle(.plain).minimumHitTarget(width: 46, height: 46).accessibilityLabel(
-          "Back to ECC Focus Queue").help("Return to the task queue")
+          "Back to Focus Queue").help("Return to the task queue")
         Text("Settings").font(.system(size: 21, weight: .bold, design: .rounded))
         Spacer()
-        Text("ECC Focus Queue").font(.system(size: 12, weight: .semibold)).foregroundStyle(
+        Text("Focus Queue").font(.system(size: 12, weight: .semibold)).foregroundStyle(
           .secondary)
       }.padding(.horizontal, 14).padding(.vertical, 10).notificationSurface(radius: 18)
 
       ScrollView {
         VStack(alignment: .leading, spacing: 14) {
           if focusedSection == .connectors { connectorDiagnosticsSection }
-          settingsSection(title: "Projects", detail: "Organize tasks by repository and choose a project from the queue.") {
-            ProjectSettingsView(model: model)
-          }
-
-          settingsSection(title: "Workspace and terminals", detail: "Configure the queue, review terminal support, and set up persistent sessions.") {
-            Button("Open setup wizard", systemImage: "wand.and.stars") {
-              model.isSetupPresented = true
-            }.buttonStyle(.borderedProminent)
+          settingsSection(
+            title: "Projects",
+            detail: "The selected project controls which dashboard and workspace Focus Queue uses."
+          ) {
+            VStack(alignment: .leading, spacing: 10) {
+              ForEach(model.projects) { project in
+                HStack {
+                  Image(systemName: project.id == model.selectedProject?.id ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(project.id == model.selectedProject?.id ? Color.accentColor : .secondary)
+                  VStack(alignment: .leading, spacing: 2) {
+                    Text(project.name).font(.system(size: 13, weight: .semibold))
+                    Text(project.workspacePath).font(.caption).foregroundStyle(.secondary)
+                      .lineLimit(1).textSelection(.enabled)
+                  }
+                  Spacer()
+                  if project.id != model.selectedProject?.id {
+                    Button("Select") { Task { _ = await model.selectProject(id: project.id) } }
+                      .buttonStyle(.bordered).controlSize(.small)
+                  }
+                }
+              }
+              Divider()
+              ProjectSettingsView(model: model)
+              Button("Open setup wizard", systemImage: "wand.and.stars") {
+                model.isSetupPresented = true
+              }.buttonStyle(.borderedProminent)
+            }
           }
           settingsSection(
             title: "Appearance", detail: "Dark uses your WezTerm #1A1D23 background color."
@@ -1351,14 +1467,22 @@ private struct QueueSettingsView: View {
           settingsSection(
             title: "Daily message report",
             detail:
-              "Runs once per day. The target limits message input conservatively, while the report records exact Codex usage."
+              "Automatic reports run once per day when enabled. Manual reports and history remain available."
           ) {
             VStack(alignment: .leading, spacing: 12) {
+              Toggle(
+                "Run daily reports automatically",
+                isOn: Binding(
+                  get: { model.config.dailyReport.enabled },
+                  set: { model.setDailyReportsEnabled($0) }
+                )
+              )
+
               DatePicker(
                 "Run time",
                 selection: dailyReportTimeBinding,
                 displayedComponents: .hourAndMinute
-              )
+              ).disabled(!model.config.dailyReport.enabled)
 
               Stepper(
                 value: dailyReportTokenBinding,
@@ -1413,6 +1537,20 @@ private struct QueueSettingsView: View {
                 Text(message).font(.system(size: 12))
                   .foregroundStyle(model.dailyReportRunFailed ? Color.orange : Color.secondary)
               }
+            }
+          }
+
+          settingsSection(
+            title: "Terminals",
+            detail: "Review tracked task sessions, agents waiting for placement, and other open terminals."
+          ) {
+            Button(action: openTerminals) {
+              Label("Browse terminals (\(model.terminalCount))", systemImage: "terminal")
+            }
+            .buttonStyle(.bordered)
+            if !model.unassignedAgentRegistrations.isEmpty {
+              Text("\(model.unassignedAgentRegistrations.count) tracked agent(s) still need a task.")
+                .font(.caption).foregroundStyle(.orange)
             }
           }
 
@@ -1565,6 +1703,45 @@ private struct SectionHeading: View {
   }
 }
 
+struct RenamableTaskTitle: View {
+  let ticket: DashboardTicket
+  let model: QueueViewModel
+  let size: CGFloat
+  let weight: Font.Weight
+  let maximumLines: Int
+  @State private var isRenaming = false
+  @State private var draft = ""
+
+  var body: some View {
+    Text(ticket.title)
+      .font(.system(size: size, weight: weight))
+      .lineLimit(maximumLines)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .contentShape(Rectangle())
+      .highPriorityGesture(TapGesture(count: 2).onEnded { beginRename() })
+      .contextMenu {
+        Button("Rename task", systemImage: "pencil") { beginRename() }
+      }
+      .accessibilityAction(named: "Rename task", beginRename)
+      .help("Double-click to rename this task")
+      .alert("Rename task", isPresented: $isRenaming) {
+        TextField("Task title", text: $draft)
+        Button("Save") {
+          Task { _ = await model.renameTask(ticket, to: draft) }
+        }
+        .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        Button("Cancel", role: .cancel) {}
+      } message: {
+        Text("The updated title will be used everywhere this task is currently shown.")
+      }
+  }
+
+  private func beginRename() {
+    draft = ticket.title
+    isRenaming = true
+  }
+}
+
 private struct ConnectorDiagnosticRow: View {
   let platform: DailyReportPlatform
   let diagnostic: ConnectorDiagnostic?
@@ -1654,10 +1831,6 @@ private struct CompletedTicketCard: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       summary
-      if model.selectedProjectID == nil, !model.config.projects.isEmpty {
-        Text(model.project(for: ticket)?.name ?? "Unassigned")
-          .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.bottom, 6)
-      }
       Button { model.openPlan(for: ticket) } label: {
         Label("Central plan and history", systemImage: "doc.text")
           .font(.system(size: 12, weight: .medium))
@@ -1665,7 +1838,6 @@ private struct CompletedTicketCard: View {
       }.buttonStyle(.plain).padding(.horizontal, 14).padding(.bottom, 12)
         .help("Read the retained plan and conversation for this completed task")
       if model.isExpanded(ticket.id) {
-        TaskProjectMenu(model: model, ticket: ticket).padding(.horizontal, 14).padding(.vertical, 6)
         Divider().opacity(0.45).padding(.horizontal, 14)
         details.padding(.top, 11).transition(.opacity.combined(with: .move(edge: .top)))
       }
@@ -1684,8 +1856,9 @@ private struct CompletedTicketCard: View {
       Button(action: toggleExpansion) {
         VStack(alignment: .leading, spacing: 6) {
           HStack(alignment: .top, spacing: 8) {
-            Text(ticket.title).font(.system(size: 15, weight: .semibold)).lineLimit(3)
-              .frame(maxWidth: .infinity, alignment: .leading)
+            RenamableTaskTitle(
+              ticket: ticket, model: model, size: 15, weight: .semibold,
+              maximumLines: 3)
             Text(ticket.id).font(.system(size: 11, weight: .bold, design: .monospaced))
               .foregroundStyle(.secondary).fixedSize()
           }
@@ -2072,10 +2245,6 @@ private struct TicketCard: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       summary
-      if model.selectedProjectID == nil, !model.config.projects.isEmpty {
-        Text(model.project(for: ticket)?.name ?? "Unassigned")
-          .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14)
-      }
       taskOverview
       agentControls
       Button(action: toggleCardDisclosure) {
@@ -2087,7 +2256,6 @@ private struct TicketCard: View {
           .frame(minHeight: 36).contentShape(Rectangle())
       }.buttonStyle(.plain).accessibilityLabel("\(model.isExpanded(ticket.id) ? "Collapse" : "Expand") \(ticket.id) details")
       if model.isExpanded(ticket.id) {
-        TaskProjectMenu(model: model, ticket: ticket).padding(.horizontal, 14).padding(.vertical, 6)
         Divider().opacity(0.45).padding(.horizontal, 14)
         details.padding(.top, 11).transition(.opacity.combined(with: .move(edge: .top)))
       }
@@ -2238,8 +2406,9 @@ private struct TicketCard: View {
 
       VStack(alignment: .leading, spacing: 7) {
         HStack(alignment: .top, spacing: 10) {
-          Text(ticket.title).font(.system(size: 16, weight: .semibold)).lineLimit(3).frame(
-            maxWidth: .infinity, alignment: .leading)
+          RenamableTaskTitle(
+            ticket: ticket, model: model, size: 16, weight: .semibold,
+            maximumLines: 3)
           VStack(alignment: .trailing, spacing: 3) {
             Text(summaryProgressLabel).font(
               .system(size: 12, weight: .semibold).monospacedDigit()

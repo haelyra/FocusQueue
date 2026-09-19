@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir=${0:A:h}
 project_dir=${script_dir:h}
-product_name="ECC Focus Queue"
+product_name="Focus Queue"
 release_bundle="$project_dir/dist/$product_name.app"
 build_dir="${ECC_FOCUS_QUEUE_BUILD_DIR:-$project_dir/.build}"
 executable_path="$build_dir/release/ECCFocusQueue"
@@ -52,7 +52,7 @@ info_plist="$bundle_path/Contents/Info.plist"
 /usr/bin/plutil -insert LSUIElement -bool true "$info_plist"
 /usr/bin/plutil -insert NSHighResolutionCapable -bool true "$info_plist"
 /usr/bin/plutil -insert NSDocumentsFolderUsageDescription -string \
-  "ECC Focus Queue reads your local task dashboard from the Documents folder." "$info_plist"
+  "Focus Queue reads your local task dashboard from the Documents folder." "$info_plist"
 
 sign_identity="${ECC_FOCUS_QUEUE_SIGN_IDENTITY:--}"
 sign_options=()

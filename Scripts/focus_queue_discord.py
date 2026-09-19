@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verified read-only Discord access for the ECC Focus Queue Codex agent."""
+"""Verified read-only Discord access for the Focus Queue Codex agent."""
 
 from __future__ import annotations
 

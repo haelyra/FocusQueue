@@ -751,6 +751,51 @@ except module.TerminationRequested:
             self.assertIn("email:one", ledger["messages"])
             self.assertFalse((runtime / "pending-classification.json").exists())
 
+    def test_recovery_rollback_locks_and_rechecks_before_replacing_dashboard(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            dashboard = root / "dashboard.json"
+            original = b'{"tickets":[]}\n'
+            applied = b'{"tickets":[{"id":"ECC-001","title":"Applied"}]}\n'
+            external = b'{"tickets":[{"id":"ECC-001","title":"External"}]}\n'
+            dashboard.write_bytes(applied)
+            MODULE.write_private_json(runtime / "pending-classification.json", {
+                "version": 1,
+                "stage": "applying",
+                "proposals": {"newTasks": [], "updates": []},
+                "applicationResult": {"created": ["ECC-001"], "updated": []},
+                "appliedDashboardSHA256": MODULE.hashlib.sha256(applied).hexdigest(),
+                "originalDashboardBase64": MODULE.base64.b64encode(original).decode("ascii"),
+                "originalDashboardMode": 0o600,
+                "recoveryContext": {},
+            })
+            config = {
+                "dashboardPath": str(dashboard),
+                "dashboardDirectory": str(root),
+                "maxNewTasksPerRun": 20,
+            }
+            acquire = MODULE.acquire_exclusive_file_lock
+
+            def change_after_lock(handle):
+                acquire(handle)
+                dashboard.write_bytes(external)
+
+            with mock.patch.object(
+                MODULE,
+                "run_command",
+                side_effect=RuntimeError("validation failed"),
+            ), mock.patch.object(
+                MODULE,
+                "acquire_exclusive_file_lock",
+                side_effect=change_after_lock,
+            ):
+                with self.assertRaises(MODULE.ReconciliationError):
+                    MODULE.recover_applied_classification(config, runtime)
+
+            self.assertEqual(dashboard.read_bytes(), external)
+
     def test_recovered_run_only_satisfies_the_exact_original_request(self):
         today = MODULE.dt.datetime.now().astimezone().date().isoformat()
         pending = {"report": {
@@ -1126,6 +1171,14 @@ except module.TerminationRequested:
 
             references = result["taskReferencesBySourceKey"]["email:<one@example.test>"]
             self.assertEqual(references, [{"id": "ECC-001", "title": "Review release request"}])
+
+    def test_dashboard_lock_path_matches_the_swift_writer_contract(self):
+        dashboard = Path("/tmp/project/dashboard.json")
+
+        self.assertEqual(
+            MODULE.dashboard_lock_path(dashboard),
+            Path("/tmp/project/.dashboard.json.focus-queue.lock"),
+        )
 
     def test_reconciliation_writes_report_and_ledger_after_one_classification(self):
         with tempfile.TemporaryDirectory() as temporary:

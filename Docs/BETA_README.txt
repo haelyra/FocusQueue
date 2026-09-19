@@ -1,11 +1,11 @@
-ECC Focus Queue 0.3.0 private beta
+Focus Queue 0.3.0 private beta
 
 Requires macOS 14 or later. This archive is built for the architecture in its filename.
 The local development build uses an ad hoc signature. Public distribution requires
 Developer ID signing, notarization and a downloaded-artifact Gatekeeper check.
 
 INSTALL
-Drag ECC Focus Queue.app to your Applications folder and open it. The native setup
+Drag Focus Queue.app to your Applications folder and open it. The native setup
 wizard creates an empty local queue or lets you select an existing JSON dashboard.
 The packaged app does not need Python, Xcode, provider credentials or model calls
 for basic setup. Settings > Open setup wizard reopens setup at any time.

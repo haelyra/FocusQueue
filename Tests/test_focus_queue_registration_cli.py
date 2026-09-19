@@ -51,7 +51,7 @@ class RegistrationCLITests(unittest.TestCase):
 
     def test_exact_identity_repeated_events_and_stale_attach(self):
         session_id = str(uuid.uuid4())
-        first = self.command("register-event", "--provider", "codex",
+        first = self.command("register-event", "--provider", "codex", "--task", "ECC-401",
             payload=self.event(session_id, "UserPromptSubmit", prompt="Fix pane recall"),
             extra_environment={"CODEX_THREAD_ID": str(uuid.uuid4())})
         again = self.command("register-event", "--provider", "codex",
@@ -66,12 +66,13 @@ class RegistrationCLITests(unittest.TestCase):
         self.assertEqual(attached["status"], "registered")
         self.assertNotEqual(attached["subtaskID"], "deleted-inherited-id")
 
-    def test_ambiguous_location_stays_unassigned_until_explicitly_placed(self):
+    def test_manual_prompt_creates_a_tracked_task_until_explicitly_reassigned(self):
         self.add_task("ECC-402")
         session_id = str(uuid.uuid4())
         event = self.event(session_id, prompt="ECC-401 in text is not assignment authority")
-        unassigned = self.command("register-event", "--provider", "codex", payload=event)
-        self.assertEqual(unassigned["status"], "unassigned")
+        registered = self.command("register-event", "--provider", "codex", payload=event)
+        self.assertEqual(registered["status"], "registered")
+        self.assertTrue(registered["taskID"].startswith("OTH-"))
         self.assertEqual(self.context()["subtasks"], [])
         assigned = self.command("register-event", "--provider", "codex", "--task", "ECC-402", payload=event)
         self.assertEqual(assigned["taskID"], "ECC-402")
@@ -93,10 +94,12 @@ class RegistrationCLITests(unittest.TestCase):
         config = json.loads((Path(__file__).parents[1] / "Config/config.example.json").read_text())
         config["dashboardPath"] = str(dashboard)
         config["workspacePath"] = str(self.repository)
-        config["projects"] = [{
+        config["focusQueueProjects"] = [{
             "id":"other", "name":"Other", "taskPrefix":"OTH",
+            "dashboardPath":str(dashboard), "workspacePath":str(self.repository),
             "repositoryPath":"", "remoteAliases":[],
         }]
+        config["focusQueueSelectedProjectID"] = "other"
         config["wezTerm"]["executable"] = "/missing/wezterm"
         config["verifier"]["executable"] = "/missing/codex"
         self.support.mkdir(parents=True, exist_ok=True)

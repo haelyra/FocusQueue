@@ -35,6 +35,14 @@ public enum QueueAccentStyle: String, Codable, CaseIterable, Identifiable, Senda
   }
 }
 
+public enum QueueMinimizationPreference: String, Codable, CaseIterable, Identifiable, Sendable {
+  case dock
+  case fq
+  case topTask = "top-task"
+
+  public var id: String { rawValue }
+}
+
 public struct DailyRoutine: Codable, Identifiable, Equatable, Sendable {
   public let id: String
   public let title: String
@@ -113,35 +121,126 @@ public enum DailyReportPlatform: String, Codable, CaseIterable, Identifiable, Se
 }
 
 public struct DailyReportConfiguration: Codable, Equatable, Sendable {
+  public var enabled: Bool
   public var scheduleHour: Int
   public var scheduleMinute: Int
   public var maximumTokens: Int
   public var enabledPlatforms: [DailyReportPlatform]
 
   public init(
+    enabled: Bool = true,
     scheduleHour: Int = 8,
     scheduleMinute: Int = 0,
     maximumTokens: Int = 75_000,
     enabledPlatforms: [DailyReportPlatform] = DailyReportPlatform.allCases
   ) {
+    self.enabled = enabled
     self.scheduleHour = scheduleHour
     self.scheduleMinute = scheduleMinute
     self.maximumTokens = maximumTokens
     self.enabledPlatforms = enabledPlatforms
   }
+
+  private enum CodingKeys: String, CodingKey {
+    case enabled, scheduleHour, scheduleMinute, maximumTokens, enabledPlatforms
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+    scheduleHour = try container.decodeIfPresent(Int.self, forKey: .scheduleHour) ?? 8
+    scheduleMinute = try container.decodeIfPresent(Int.self, forKey: .scheduleMinute) ?? 0
+    maximumTokens = try container.decodeIfPresent(Int.self, forKey: .maximumTokens) ?? 75_000
+    enabledPlatforms =
+      try container.decodeIfPresent([DailyReportPlatform].self, forKey: .enabledPlatforms)
+      ?? DailyReportPlatform.allCases
+  }
+}
+
+public struct ProjectConfiguration: Codable, Identifiable, Equatable, Sendable {
+  public var id: String
+  public var name: String
+  public var dashboardPath: String
+  public var workspacePath: String
+  public var taskPrefix: String
+  public var repositoryPath: String
+  public var remote: String?
+  public var remoteAliases: [String]
+  public var archivedAt: Date?
+
+  public init(
+    id: String, name: String, dashboardPath: String, workspacePath: String,
+    taskPrefix: String? = nil, repositoryPath: String? = nil,
+    remote: String? = nil, remoteAliases: [String] = [], archivedAt: Date? = nil
+  ) {
+    self.id = id
+    self.name = name
+    self.dashboardPath = dashboardPath
+    self.workspacePath = workspacePath
+    self.taskPrefix = (taskPrefix ?? ProjectCatalog.suggestedPrefix(name: name, id: id)).uppercased()
+    self.repositoryPath = repositoryPath ?? Self.inferredRepositoryPath(workspacePath)
+    self.remote = remote
+    self.remoteAliases = remoteAliases
+    self.archivedAt = archivedAt
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id, name, dashboardPath, workspacePath, taskPrefix, repositoryPath
+    case remote, remoteAliases, archivedAt
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    id = try container.decode(String.self, forKey: .id)
+    name = try container.decode(String.self, forKey: .name)
+    dashboardPath = try container.decode(String.self, forKey: .dashboardPath)
+    workspacePath = try container.decode(String.self, forKey: .workspacePath)
+    taskPrefix = (try container.decodeIfPresent(String.self, forKey: .taskPrefix)
+      ?? ProjectCatalog.suggestedPrefix(name: name, id: id)).uppercased()
+    repositoryPath = try container.decodeIfPresent(String.self, forKey: .repositoryPath)
+      ?? Self.inferredRepositoryPath(workspacePath)
+    remote = try container.decodeIfPresent(String.self, forKey: .remote)
+    remoteAliases = try container.decodeIfPresent([String].self, forKey: .remoteAliases) ?? []
+    archivedAt = try container.decodeIfPresent(Date.self, forKey: .archivedAt)
+  }
+
+  private static func inferredRepositoryPath(_ workspacePath: String) -> String {
+    let gitEntry = URL(fileURLWithPath: workspacePath, isDirectory: true)
+      .appendingPathComponent(".git")
+    return FileManager.default.fileExists(atPath: gitEntry.path) ? workspacePath : ""
+  }
+}
+
+private struct LegacyProjectConfigurationShape: Decodable {
+  var dashboardPath: String?
+  var workspacePath: String?
+  var repositoryPath: String?
 }
 
 public struct AppConfiguration: Codable, Equatable, Sendable {
-  public var projects: [ProjectDefinition] = []
   public var appName: String
-  public var dashboardPath: String
-  public var workspacePath: String
+  public var dashboardPath: String {
+    didSet { alignSelectedProjectWithLegacyPaths() }
+  }
+  public var workspacePath: String {
+    didSet { alignSelectedProjectWithLegacyPaths(previousWorkspacePath: oldValue) }
+  }
   public var defaultPlacement: QueueWindowPlacement
   public var refreshIntervalSeconds: Int
   public var dailyRoutines: [DailyRoutine]
   public var wezTerm: WezTermConfiguration
   public var verifier: VerifierConfiguration
   public var dailyReport: DailyReportConfiguration
+  public var projects: [ProjectConfiguration] {
+    didSet {
+      if selectedProjectID == nil || !projects.contains(where: { $0.id == selectedProjectID }) {
+        selectedProjectID = projects.first?.id
+      }
+    }
+  }
+  public var selectedProjectID: String? {
+    didSet { alignLegacyPathsWithSelection() }
+  }
   public var persistentTerminals: Bool?
   public var tmuxExecutable: String?
   public var setupCompleted: Bool?
@@ -155,7 +254,9 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     dailyRoutines: [DailyRoutine],
     wezTerm: WezTermConfiguration,
     verifier: VerifierConfiguration,
-    dailyReport: DailyReportConfiguration = DailyReportConfiguration()
+    dailyReport: DailyReportConfiguration = DailyReportConfiguration(),
+    projects: [ProjectConfiguration]? = nil,
+    selectedProjectID: String? = nil
   ) {
     self.appName = appName
     self.dashboardPath = dashboardPath
@@ -166,18 +267,25 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.wezTerm = wezTerm
     self.verifier = verifier
     self.dailyReport = dailyReport
+    let effectiveProjects = projects ?? [Self.legacyProject(
+      appName: appName,
+      dashboardPath: dashboardPath,
+      workspacePath: workspacePath
+    )]
+    self.projects = effectiveProjects
+    self.selectedProjectID = selectedProjectID ?? effectiveProjects.first?.id
+    alignLegacyPathsWithSelection()
   }
 
   private enum CodingKeys: String, CodingKey {
     case appName, dashboardPath, workspacePath, defaultPlacement, refreshIntervalSeconds
-    case projects
     case dailyRoutines, wezTerm, verifier, dailyReport, persistentTerminals, tmuxExecutable, setupCompleted
+    case focusQueueProjects, focusQueueSelectedProjectID, projects, selectedProjectID
   }
 
   public init(from decoder: any Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     appName = try container.decode(String.self, forKey: .appName)
-    projects = try container.decodeIfPresent([ProjectDefinition].self, forKey: .projects) ?? []
     dashboardPath = try container.decode(String.self, forKey: .dashboardPath)
     workspacePath = try container.decode(String.self, forKey: .workspacePath)
     defaultPlacement = try container.decode(QueueWindowPlacement.self, forKey: .defaultPlacement)
@@ -191,6 +299,116 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     dailyReport =
       try container.decodeIfPresent(DailyReportConfiguration.self, forKey: .dailyReport)
       ?? DailyReportConfiguration()
+    if let configuredProjects =
+      try container.decodeIfPresent([ProjectConfiguration].self, forKey: .focusQueueProjects)
+    {
+      projects = configuredProjects
+      let requestedProjectID =
+        try container.decodeIfPresent(String.self, forKey: .focusQueueSelectedProjectID)
+      selectedProjectID = requestedProjectID.flatMap { requested in
+        projects.contains(where: { $0.id == requested }) ? requested : nil
+      } ?? projects.first?.id
+    } else {
+      let legacyShapes =
+        try container.decodeIfPresent([LegacyProjectConfigurationShape].self, forKey: .projects)
+        ?? []
+      let isRepositoryCatalog = !legacyShapes.isEmpty && legacyShapes.allSatisfy {
+        $0.repositoryPath != nil && $0.dashboardPath == nil && $0.workspacePath == nil
+      }
+      if !legacyShapes.isEmpty && !isRepositoryCatalog {
+        projects = try container.decode([ProjectConfiguration].self, forKey: .projects)
+      } else {
+        projects = []
+      }
+      let requestedProjectID =
+        try container.decodeIfPresent(String.self, forKey: .focusQueueSelectedProjectID)
+        ?? (!legacyShapes.isEmpty && !isRepositoryCatalog
+          ? try container.decodeIfPresent(String.self, forKey: .selectedProjectID)
+          : nil)
+      selectedProjectID = requestedProjectID.flatMap { requested in
+        projects.contains(where: { $0.id == requested }) ? requested : nil
+      } ?? projects.first?.id
+    }
+    if projects.isEmpty {
+      projects = [Self.legacyProject(
+        appName: appName,
+        dashboardPath: dashboardPath,
+        workspacePath: workspacePath
+      )]
+      selectedProjectID = projects.first?.id
+    }
+    alignLegacyPathsWithSelection()
+  }
+
+  public func encode(to encoder: any Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    let effectiveProject = selectedProject
+    try container.encode(appName, forKey: .appName)
+    try container.encode(effectiveProject?.dashboardPath ?? dashboardPath, forKey: .dashboardPath)
+    try container.encode(effectiveProject?.workspacePath ?? workspacePath, forKey: .workspacePath)
+    try container.encode(defaultPlacement, forKey: .defaultPlacement)
+    try container.encode(refreshIntervalSeconds, forKey: .refreshIntervalSeconds)
+    try container.encode(dailyRoutines, forKey: .dailyRoutines)
+    try container.encode(wezTerm, forKey: .wezTerm)
+    try container.encode(verifier, forKey: .verifier)
+    try container.encode(dailyReport, forKey: .dailyReport)
+    try container.encode(projects, forKey: .focusQueueProjects)
+    try container.encodeIfPresent(selectedProjectID, forKey: .focusQueueSelectedProjectID)
+    try container.encodeIfPresent(persistentTerminals, forKey: .persistentTerminals)
+    try container.encodeIfPresent(tmuxExecutable, forKey: .tmuxExecutable)
+    try container.encodeIfPresent(setupCompleted, forKey: .setupCompleted)
+  }
+
+  public var selectedProject: ProjectConfiguration? {
+    guard let selectedProjectID else { return nil }
+    return projects.first { $0.id == selectedProjectID }
+  }
+
+  @discardableResult
+  public mutating func selectProject(id: String) -> Bool {
+    guard projects.contains(where: { $0.id == id }) else { return false }
+    selectedProjectID = id
+    return true
+  }
+
+  private mutating func alignLegacyPathsWithSelection() {
+    guard let selectedProject else { return }
+    dashboardPath = selectedProject.dashboardPath
+    workspacePath = selectedProject.workspacePath
+  }
+
+  private mutating func alignSelectedProjectWithLegacyPaths(
+    previousWorkspacePath: String? = nil
+  ) {
+    guard let selectedProjectID,
+      let index = projects.firstIndex(where: { $0.id == selectedProjectID })
+    else { return }
+    if let previousWorkspacePath,
+      projects[index].repositoryPath == previousWorkspacePath
+    {
+      projects[index].repositoryPath = workspacePath
+    }
+    projects[index].dashboardPath = dashboardPath
+    projects[index].workspacePath = workspacePath
+  }
+
+  private static func legacyProject(
+    appName: String,
+    dashboardPath: String,
+    workspacePath: String
+  ) -> ProjectConfiguration {
+    let workspaceName = URL(fileURLWithPath: workspacePath).lastPathComponent
+    let name = workspaceName.isEmpty ? appName : workspaceName
+    let slug = name.lowercased()
+      .components(separatedBy: CharacterSet.alphanumerics.inverted)
+      .filter { !$0.isEmpty }
+      .joined(separator: "-")
+    return ProjectConfiguration(
+      id: slug.isEmpty ? "default" : slug,
+      name: name,
+      dashboardPath: dashboardPath,
+      workspacePath: workspacePath
+    )
   }
 
   public static func eccDefault(
@@ -199,7 +417,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     let home = homeDirectory.path
     let workspace = "\(home)/Documents/ECC"
     return Self(
-      appName: "ECC Focus Queue",
+      appName: "Focus Queue",
       dashboardPath: "\(workspace)/ecc-dashboard/data/dashboard.json",
       workspacePath: workspace,
       defaultPlacement: .upperRight,
@@ -228,12 +446,30 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   }
 
   public func validated() throws -> Self {
-    try ProjectCatalog.validate(projects)
     guard dashboardPath.hasPrefix("/"), workspacePath.hasPrefix("/") else {
       throw ConfigurationError.pathsMustBeAbsolute
     }
     guard (1...300).contains(refreshIntervalSeconds) else {
       throw ConfigurationError.invalidRefreshInterval
+    }
+    guard !projects.isEmpty,
+      projects.allSatisfy({
+        !$0.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+          && !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+          && $0.dashboardPath.hasPrefix("/")
+          && $0.workspacePath.hasPrefix("/")
+      })
+    else {
+      throw ConfigurationError.invalidProject
+    }
+    guard Set(projects.map { $0.id.lowercased() }).count == projects.count else {
+      throw ConfigurationError.duplicateProjectID
+    }
+    try ProjectCatalog.validate(projects)
+    guard let selectedProjectID,
+      projects.contains(where: { $0.id == selectedProjectID })
+    else {
+      throw ConfigurationError.invalidSelectedProject
     }
     if persistentTerminals == true, tmuxExecutable?.hasPrefix("/") != true {
       throw ConfigurationError.invalidTerminalSettings
@@ -259,6 +495,9 @@ public enum ConfigurationError: Error, LocalizedError, Equatable {
   case invalidVerifierBudget
   case invalidDailyReportSettings
   case invalidTerminalSettings
+  case invalidProject
+  case duplicateProjectID
+  case invalidSelectedProject
 
   public var errorDescription: String? {
     switch self {
@@ -272,6 +511,12 @@ public enum ConfigurationError: Error, LocalizedError, Equatable {
       "Daily report time, token target, or enabled platforms are invalid."
     case .invalidTerminalSettings:
       "Persistent terminals require an absolute path to the tmux executable."
+    case .invalidProject:
+      "Projects require a name, identifier, and absolute dashboard and workspace paths."
+    case .duplicateProjectID:
+      "Project identifiers must be unique."
+    case .invalidSelectedProject:
+      "The selected project must refer to a configured project."
     }
   }
 }
@@ -1203,6 +1448,7 @@ public struct LocalState: Codable, Equatable, Sendable {
   public var window: WindowSnapshot?
   public var appearance: QueueAppearance?
   public var accentStyle: QueueAccentStyle?
+  public var minimizationPreference: QueueMinimizationPreference
   public var agentSessions: [TaskAgentSession]
 
   public init(
@@ -1214,6 +1460,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     window: WindowSnapshot? = nil,
     appearance: QueueAppearance? = nil,
     accentStyle: QueueAccentStyle? = nil,
+    minimizationPreference: QueueMinimizationPreference = .fq,
     agentSessions: [TaskAgentSession] = []
   ) {
     self.routineDate = routineDate
@@ -1224,6 +1471,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     self.window = window
     self.appearance = appearance
     self.accentStyle = accentStyle
+    self.minimizationPreference = minimizationPreference
     self.agentSessions = agentSessions
   }
 
@@ -1264,6 +1512,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     case window
     case appearance
     case accentStyle
+    case minimizationPreference
     case agentSessions
   }
 
@@ -1282,6 +1531,9 @@ public struct LocalState: Codable, Equatable, Sendable {
     window = try container.decodeIfPresent(WindowSnapshot.self, forKey: .window)
     appearance = try container.decodeIfPresent(QueueAppearance.self, forKey: .appearance)
     accentStyle = try container.decodeIfPresent(QueueAccentStyle.self, forKey: .accentStyle)
+    minimizationPreference =
+      try container.decodeIfPresent(QueueMinimizationPreference.self, forKey: .minimizationPreference)
+      ?? .fq
     agentSessions =
       try container.decodeIfPresent([TaskAgentSession].self, forKey: .agentSessions) ?? []
   }
@@ -1297,6 +1549,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     try container.encodeIfPresent(window, forKey: .window)
     try container.encodeIfPresent(appearance, forKey: .appearance)
     try container.encodeIfPresent(accentStyle, forKey: .accentStyle)
+    try container.encode(minimizationPreference, forKey: .minimizationPreference)
     try container.encode(agentSessions, forKey: .agentSessions)
   }
 }

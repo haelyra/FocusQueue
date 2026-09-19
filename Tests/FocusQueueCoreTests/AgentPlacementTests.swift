@@ -34,10 +34,16 @@ struct AgentPlacementTests {
         #expect(other.projectID == ProjectCatalog.otherID)
         #expect(other.taskID == "OTH-001")
 
-        let dashboard = try JSONDecoder().decode(DashboardDocument.self,
-            from: Data(contentsOf: URL(fileURLWithPath: fixture.configuration.dashboardPath)))
-        #expect(dashboard.tickets.map(\.id) == ["FOC-001", "OTH-001"])
-        #expect(dashboard.tickets.map(\.projectID) == ["focus", ProjectCatalog.otherID])
+        let focusProject = try #require(fixture.configuration.projects.first { $0.id == "focus" })
+        let otherProject = try #require(fixture.configuration.projects.first { $0.id == ProjectCatalog.otherID })
+        let focusDashboard = try JSONDecoder().decode(DashboardDocument.self,
+            from: Data(contentsOf: URL(fileURLWithPath: focusProject.dashboardPath)))
+        let otherDashboard = try JSONDecoder().decode(DashboardDocument.self,
+            from: Data(contentsOf: URL(fileURLWithPath: otherProject.dashboardPath)))
+        #expect(focusDashboard.tickets.map(\.id) == ["FOC-001"])
+        #expect(otherDashboard.tickets.map(\.id) == ["OTH-001"])
+        #expect(focusDashboard.tickets.map(\.projectID) == ["focus"])
+        #expect(otherDashboard.tickets.map(\.projectID) == [ProjectCatalog.otherID])
     }
 
     @Test func missingObjectiveWaitsInProjectInboxAndConflictingPathBlocksWriting() async throws {
@@ -91,11 +97,24 @@ private struct PlacementFixture {
         try await Self.initializeRepository(focus)
         if let second { try await Self.initializeRepository(second) }
         var config = SetupEnvironment.starter(supportDirectory: support)
-        config.projects = [
-            ProjectDefinition(id: "focus", name: "Focus Queue", taskPrefix: "FOC", repositoryPath: focus.path),
-            second.map { ProjectDefinition(id: "second", name: "Second", taskPrefix: "SEC", repositoryPath: $0.path) },
-            ProjectCatalog.other,
-        ].compactMap { $0 }
+        let secondDashboard = support.appendingPathComponent("second/dashboard.json")
+        if second != nil {
+            try FileManager.default.createDirectory(
+                at: secondDashboard.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("{\"tickets\":[]}\n".utf8).write(to: secondDashboard)
+        }
+        config.projects = ProjectCatalog.ensuringOther(in: [
+            ProjectDefinition(id: "focus", name: "Focus Queue",
+                dashboardPath: config.dashboardPath, workspacePath: focus.path,
+                taskPrefix: "FOC", repositoryPath: focus.path),
+            second.map { ProjectDefinition(id: "second", name: "Second",
+                dashboardPath: secondDashboard.path, workspacePath: $0.path,
+                taskPrefix: "SEC", repositoryPath: $0.path) },
+        ].compactMap { $0 }, supportDirectory: support)
+        config.selectedProjectID = "focus"
+        if let other = config.projects.first(where: { $0.id == ProjectCatalog.otherID }) {
+            try ProjectCatalog.prepareFallbackStorage(for: other)
+        }
         config.setupCompleted = true
         configuration = try config.validated()
     }

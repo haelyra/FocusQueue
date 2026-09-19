@@ -59,7 +59,12 @@ class InstallerTests(unittest.TestCase):
             destination = automation / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(b"worker:" + content + b":" + relative.encode())
-        (path / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": MODULE.IDENTIFIER}))
+        (path / "Contents/Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleDisplayName": MODULE.PRODUCT,
+            "CFBundleExecutable": "ECCFocusQueue",
+            "CFBundleIdentifier": MODULE.IDENTIFIER,
+            "CFBundleName": MODULE.PRODUCT,
+        }))
         for name in ("ECCFocusQueue", "focus-queue-session"):
             binary = path / "Contents/MacOS" / name
             binary.write_bytes(content)
@@ -71,6 +76,79 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(result["launchAtLogin"])
         self.assertFalse(result["desktopShortcut"])
         self.assertEqual([call[0] for call in self.calls], ["/usr/bin/codesign"])
+
+    def test_source_bundle_must_have_the_renamed_display_identity(self):
+        info_path = self.bundle / "Contents/Info.plist"
+        info = plistlib.loads(info_path.read_bytes())
+        info["CFBundleDisplayName"] = MODULE.LEGACY_PRODUCT
+        info_path.write_bytes(plistlib.dumps(info))
+
+        with self.assertRaisesRegex(ValueError, "display identity"):
+            self.installer.preflight()
+
+    def test_paths_use_new_app_name_and_preserve_legacy_support_directory(self):
+        self.assertEqual(self.installer.app, self.home / "Applications/Focus Queue.app")
+        self.assertEqual(
+            self.installer.legacy_app,
+            self.home / "Applications/ECC Focus Queue.app",
+        )
+        self.assertEqual(
+            self.installer.support,
+            self.home / "Library/Application Support/ECC Focus Queue",
+        )
+
+    def test_verified_legacy_app_and_shortcut_are_migrated(self):
+        self.make_app(self.installer.legacy_app, b"legacy executable")
+        self.installer.legacy_desktop.parent.mkdir(parents=True)
+        self.installer.legacy_desktop.symlink_to(self.installer.legacy_app)
+        self.installer.agent.parent.mkdir(parents=True)
+        self.installer.agent.write_bytes(plistlib.dumps({
+            "Label": MODULE.IDENTIFIER,
+            "ProgramArguments": [
+                str(self.installer.legacy_app / "Contents/MacOS/ECCFocusQueue")
+            ],
+        }))
+
+        result = self.installer.install()
+
+        self.assertFalse(self.installer.legacy_app.exists())
+        self.assertFalse(self.installer.legacy_desktop.exists())
+        self.assertTrue(self.installer.app.exists())
+        self.assertEqual(self.installer.desktop.readlink(), self.installer.app)
+        agent = plistlib.loads(self.installer.agent.read_bytes())
+        self.assertEqual(
+            agent["ProgramArguments"],
+            [str(self.installer.app / "Contents/MacOS/ECCFocusQueue")],
+        )
+        self.assertTrue(result["legacyApplicationMigrated"])
+
+    def test_unverified_legacy_app_is_preserved_and_blocks_install(self):
+        self.installer.legacy_app.parent.mkdir(parents=True)
+        self.installer.legacy_app.write_text("unrelated application")
+
+        with self.assertRaisesRegex(ValueError, "legacy app"):
+            self.installer.install()
+
+        self.assertEqual(self.installer.legacy_app.read_text(), "unrelated application")
+        self.assertFalse(self.installer.app.exists())
+
+    def test_legacy_app_with_invalid_code_signature_is_preserved(self):
+        self.make_app(self.installer.legacy_app, b"legacy executable")
+
+        def reject_legacy_signature(args, **kwargs):
+            if args[0] == "/usr/bin/codesign" and args[-1] == str(self.installer.legacy_app):
+                raise subprocess.CalledProcessError(1, args)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with mock.patch.object(
+            MODULE.subprocess,
+            "run",
+            side_effect=reject_legacy_signature,
+        ), self.assertRaisesRegex(ValueError, "legacy app"):
+            self.installer.install()
+
+        self.assertTrue(self.installer.legacy_app.exists())
+        self.assertFalse(self.installer.app.exists())
 
     def test_global_prompt_install_is_idempotent_and_preserves_personal_text(self):
         prompt = self.home / ".codex/AGENTS.md"
@@ -264,6 +342,93 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.installer.manifest.read_bytes(), before)
         self.assertEqual(start.call_count, 2)
 
+    def test_legacy_upgrade_failure_restores_and_restarts_legacy_app(self):
+        self.make_app(self.installer.legacy_app, b"legacy executable")
+        self.installer.start = True
+        with mock.patch.object(self.installer, "stop"), mock.patch.object(
+            self.installer,
+            "start_app",
+            side_effect=[RuntimeError("injected start failure"), None],
+        ) as start:
+            with self.assertRaisesRegex(RuntimeError, "injected start failure"):
+                self.installer.install()
+
+        self.assertTrue(self.installer.legacy_app.exists())
+        self.assertFalse(self.installer.app.exists())
+        self.assertEqual(
+            start.call_args_list[-1],
+            mock.call(login=False, application=self.installer.legacy_app),
+        )
+
+    def test_rollback_does_not_restart_legacy_app_if_replacement_will_not_stop(self):
+        self.make_app(self.installer.legacy_app, b"legacy executable")
+        self.installer.start = True
+        with mock.patch.object(
+            self.installer,
+            "stop",
+            side_effect=[None, RuntimeError("replacement is still running")],
+        ), mock.patch.object(
+            self.installer,
+            "start_app",
+            side_effect=RuntimeError("ambiguous launch failure"),
+        ) as start:
+            with self.assertRaisesRegex(RuntimeError, "not restarted"):
+                self.installer.install()
+
+        self.assertTrue(self.installer.legacy_app.exists())
+        self.assertFalse(self.installer.app.exists())
+        self.assertEqual(start.call_count, 1)
+
+    def test_stop_terminates_new_and_legacy_app_executables(self):
+        renamed_executable = self.installer.app / "Contents/MacOS/ECCFocusQueue"
+        legacy_executable = self.installer.legacy_app / "Contents/MacOS/ECCFocusQueue"
+        process_checks = 0
+
+        def run(args, **kwargs):
+            nonlocal process_checks
+            if args[:2] == ["/bin/ps", "-axo"]:
+                process_checks += 1
+                return subprocess.CompletedProcess(
+                    args,
+                    0,
+                    (
+                        f"123 {renamed_executable}\n456 {legacy_executable}\n"
+                        if process_checks == 1
+                        else ""
+                    ),
+                    "",
+                )
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with mock.patch.object(MODULE.subprocess, "run", side_effect=run), mock.patch.object(
+            MODULE.os,
+            "kill",
+        ) as kill:
+            self.installer.stop()
+
+        self.assertEqual(kill.call_args_list, [mock.call(123, 15), mock.call(456, 15)])
+        self.assertEqual(process_checks, 2)
+
+    def test_stop_fails_closed_when_a_legacy_process_does_not_exit(self):
+        legacy_executable = self.installer.legacy_app / "Contents/MacOS/ECCFocusQueue"
+
+        def run(args, **kwargs):
+            if args[:2] == ["/bin/ps", "-axo"]:
+                return subprocess.CompletedProcess(
+                    args,
+                    0,
+                    f"456 {legacy_executable}\n",
+                    "",
+                )
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with mock.patch.object(MODULE.subprocess, "run", side_effect=run), mock.patch.object(
+            MODULE.os,
+            "kill",
+        ), mock.patch.object(MODULE.time, "sleep"):
+            with self.assertRaisesRegex(RuntimeError, "still running"):
+                self.installer.stop()
+
     def test_copy_failure_does_not_stop_app(self):
         original = MODULE.subprocess.run.side_effect
         def fail_copy(args, **kwargs):
@@ -310,6 +475,23 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(config.read_text(), "saved tasks and settings")
         self.assertFalse(self.installer.app.exists())
         self.assertTrue(Path(result["backupDirectory"]).exists())
+
+    def test_uninstall_accepts_verified_manifest_owned_legacy_app(self):
+        self.installer.install()
+        self.installer.app.rename(self.installer.legacy_app)
+        manifest = json.loads(self.installer.manifest.read_text())
+        app_artifact = next(
+            artifact
+            for artifact in manifest["artifacts"]
+            if artifact["path"] == str(self.installer.app)
+        )
+        app_artifact["path"] = str(self.installer.legacy_app)
+        self.installer.manifest.write_text(json.dumps(manifest))
+
+        result = MODULE.uninstall(self.home, stop=False)
+
+        self.assertEqual(result["mode"], "uninstalled")
+        self.assertFalse(self.installer.legacy_app.exists())
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verified read-only Apple Mail access for the ECC Focus Queue agent."""
+"""Verified read-only Apple Mail access for the Focus Queue agent."""
 
 from __future__ import annotations
 
@@ -531,7 +531,7 @@ def invoke_reader(config: dict[str, Any], request: dict[str, Any]) -> dict[str, 
         application = Path(config["mailReaderApplication"]).expanduser()
         if not application.exists():
             raise MailAccessError(
-                f"Mail reader app is not installed at {application}. Reinstall ECC Focus Queue and retry.",
+                f"Mail reader app is not installed at {application}. Reinstall Focus Queue and retry.",
                 code="mail_reader_not_installed",
             )
         service = str(
@@ -582,7 +582,7 @@ def invoke_reader(config: dict[str, Any], request: dict[str, Any]) -> dict[str, 
         raise MailAccessError(
             "Mail reader timed out after 90 seconds including queue wait while waiting for a response in "
             f"{response_path.parent}. The installed helper may be stale or unresponsive. "
-            "Reinstall ECC Focus Queue to refresh the helper, then retry.",
+            "Reinstall Focus Queue to refresh the helper, then retry.",
             code="mail_reader_timeout",
         )
 

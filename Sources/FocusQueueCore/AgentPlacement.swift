@@ -119,10 +119,18 @@ public actor AgentPlacementResolver {
               request.cwd.hasPrefix("/"), !request.cwd.contains("\0") else {
             throw TaskContextError.commandFailed("Placement requires a launch UUID and absolute working directory.")
         }
-        let projects = ProjectCatalog.ensuringOther(in: configuration.projects).filter { $0.archivedAt == nil }
+        let projects = ProjectCatalog.ensuringOther(
+            in: configuration.projects, supportDirectory: root).filter { $0.archivedAt == nil }
         try ProjectCatalog.validate(projects)
-        let dashboardURL = URL(fileURLWithPath: configuration.dashboardPath)
-        let dashboard = try JSONDecoder().decode(DashboardDocument.self, from: Data(contentsOf: dashboardURL))
+        for project in projects { try ProjectCatalog.prepareFallbackStorage(for: project) }
+        var dashboards: [(project: ProjectDefinition, url: URL, document: DashboardDocument)] = []
+        for project in projects {
+            let url = URL(fileURLWithPath: project.dashboardPath)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            let document = try JSONDecoder().decode(
+                DashboardDocument.self, from: Data(contentsOf: url))
+            dashboards.append((project, url, document))
+        }
         let contextStore = TaskContextStore(root: root)
         let contexts = try await contextStore.loadAvailableForDiscovery()
         let normalizedSession = request.sessionID?.lowercased()
@@ -132,7 +140,15 @@ public actor AgentPlacementResolver {
             }
         }
         let requestedTaskID = (sessionContext?.ticketID ?? request.explicitTaskID ?? request.inheritedTaskID)?.uppercased()
-        var ticket = requestedTaskID.flatMap { id in dashboard.tickets.first { $0.id.caseInsensitiveCompare(id) == .orderedSame } }
+        let taskMatches = requestedTaskID.map { id in dashboards.flatMap { entry in
+            entry.document.tickets.filter { $0.id.caseInsensitiveCompare(id) == .orderedSame }
+                .map { (entry.project, entry.url, $0) }
+        }} ?? []
+        guard taskMatches.count <= 1 else {
+            throw TaskContextError.commandFailed(
+                "The task ID appears in more than one project dashboard. Resolve the duplicate before launching.")
+        }
+        var ticket = taskMatches.first?.2
         var context = sessionContext ?? requestedTaskID.flatMap { id in contexts.first { $0.ticketID.caseInsensitiveCompare(id) == .orderedSame } }
 
         var pathMatches: [ProjectDefinition] = []
@@ -141,7 +157,7 @@ public actor AgentPlacementResolver {
                 pathMatches.append(project)
             }
         }
-        let explicitProject = ticket?.projectID.flatMap { id in projects.first { $0.id == id } }
+        let explicitProject = taskMatches.first?.0
             ?? context?.projectID.flatMap { id in projects.first { $0.id == id } }
             ?? requestedTaskID.flatMap { ProjectCatalog.project(forTaskID: $0, in: projects) }
         let project = explicitProject ?? (pathMatches.count == 1 ? pathMatches[0] : nil)
@@ -155,16 +171,13 @@ public actor AgentPlacementResolver {
         if !placementBlocked, ticket == nil, context == nil, request.createTaskIfNeeded, !prompt.isEmpty,
            prompt.localizedCaseInsensitiveCompare("Codex agent") != .orderedSame {
             let title = TaskSubtask.agentName(prompt: prompt, provider: request.provider)
+            let dashboardURL = URL(fileURLWithPath: project.dashboardPath)
             let taskID = try ProjectTaskStore(dashboardURL: dashboardURL, supportDirectory: root)
                 .create(title: title, summary: String(prompt.prefix(2_000)), project: project)
             ticket = DashboardTicket(id: taskID, title: title, projectID: project.id,
                 status: "backlog", summary: String(prompt.prefix(2_000)))
         }
         if let ticket, !placementBlocked {
-            if ticket.projectID != project.id {
-                try ProjectTaskStore(dashboardURL: dashboardURL, supportDirectory: root)
-                    .assign(ticketID: ticket.id, projectID: project.id)
-            }
             context = try await contextStore.ensureContext(ticket: DashboardTicket(
                 id: ticket.id, title: ticket.title, projectID: project.id, category: ticket.category,
                 priority: ticket.priority, status: ticket.status, summary: ticket.summary,

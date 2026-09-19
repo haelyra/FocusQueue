@@ -31,6 +31,20 @@ class SetupPreviewTests(unittest.TestCase):
             self.assertEqual(list(home.iterdir()), [])
             self.assertFalse(result["installationReady"])
 
+    def test_preview_uses_new_app_name_and_preserves_existing_support_location(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            paths = {path["purpose"]: path for path in self.preview(home)["plannedPaths"]}
+
+            self.assertEqual(
+                paths["application"]["path"],
+                str(home / "Applications/Focus Queue.app"),
+            )
+            self.assertEqual(
+                paths["support_directory"]["path"],
+                str(home / "Library/Application Support/ECC Focus Queue"),
+            )
+
     def test_optional_features_are_unselected_and_missing_dependencies_are_explicit(self):
         with tempfile.TemporaryDirectory() as temporary:
             result = self.preview(Path(temporary))
@@ -84,19 +98,19 @@ class SetupPreviewTests(unittest.TestCase):
     def test_existing_unrelated_destinations_and_symlinks_are_preserved(self):
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)
-            app = home / "Applications/ECC Focus Queue.app"
+            app = home / "Applications/Focus Queue.app"
             app.parent.mkdir()
             app.write_text("unrelated app contents")
             desktop = home / "Desktop"
             desktop.mkdir()
-            (desktop / "ECC Focus Queue.app").symlink_to(home / "missing-target")
+            (desktop / "Focus Queue.app").symlink_to(home / "missing-target")
             result = self.preview(home, selected=["desktop_shortcut"])
             paths = {path["purpose"]: path for path in result["plannedPaths"]}
             self.assertEqual(paths["application"]["status"], "existing_unverified")
             self.assertEqual(paths["desktop_shortcut"]["status"], "symlink_conflict")
             self.assertEqual(result["selectedConflictCount"], 2)
             self.assertEqual(app.read_text(), "unrelated app contents")
-            self.assertTrue((desktop / "ECC Focus Queue.app").is_symlink())
+            self.assertTrue((desktop / "Focus Queue.app").is_symlink())
 
     def test_symlink_or_file_parent_blocks_child_destinations(self):
         for kind in ["symlink", "file"]:

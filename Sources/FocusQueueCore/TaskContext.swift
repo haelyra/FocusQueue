@@ -284,13 +284,17 @@ public struct TaskContext: Codable, Equatable, Sendable {
         let support = contextDirectory.deletingLastPathComponent().deletingLastPathComponent().path
         let quotedSupport = "'" + support.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
         let command = "FOCUS_QUEUE_SUPPORT_DIR=\(quotedSupport) focus-queue-session"
-        let mapHelper = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Applications/ECC Focus Queue.app/Contents/MacOS/focus-queue-map").path
-        let quotedMapHelper = "'" + mapHelper.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
-        let scopeInstruction = FileManager.default.isExecutableFile(atPath: mapHelper) ? """
-        Keep your map scope current after registration and when your files change: FOCUS_QUEUE_SUPPORT_DIR=\(quotedSupport) \(quotedMapHelper) scope \(ticketID) \(subtask.id) --input <context-file> --output <output-file>
-        Repeat --input/--output for multiple files; each call replaces your previous scope. Declare only your actual context and intended outputs. Git changes alone do not establish ownership.
-        """ : ""
+        let mapHelper = Self.installedMapHelper()
+        let scopeInstruction: String
+        if let mapHelper {
+            let quotedMapHelper = "'" + mapHelper.path.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+            scopeInstruction = """
+            Keep your map scope current after registration and when your files change: FOCUS_QUEUE_SUPPORT_DIR=\(quotedSupport) \(quotedMapHelper) scope \(ticketID) \(subtask.id) --input <context-file> --output <output-file>
+            Repeat --input/--output for multiple files; each call replaces your previous scope. Declare only your actual context and intended outputs. Git changes alone do not establish ownership.
+            """
+        } else {
+            scopeInstruction = ""
+        }
         if subtask.status == .completed {
             return """
             Resume \(ticketID): \(title). Your subtask \(subtask.title) (\(subtask.id)) is already completed.
@@ -324,6 +328,21 @@ public struct TaskContext: Codable, Equatable, Sendable {
         Update the plan within the agreed scope without an extra approval loop. Ask before materially changing scope, ownership, branch strategy, or external delivery. Record approved workspace changes with \(command) workspace \(ticketID) \(subtask.id) <absolute-path>.
         Complete only your assigned subtask. Preserve other agents' changes. Never force-remove a worktree or merge a branch without the task's approval terms. Task closure requires verification and safe cleanup.
         """
+    }
+
+    static func installedMapHelperCandidates(homeDirectory: URL) -> [URL] {
+        [
+            "Applications/Focus Queue.app/Contents/MacOS/focus-queue-map",
+            "Applications/ECC Focus Queue.app/Contents/MacOS/focus-queue-map",
+        ].map { homeDirectory.appendingPathComponent($0) }
+    }
+
+    private static func installedMapHelper(
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> URL? {
+        installedMapHelperCandidates(homeDirectory: homeDirectory).first {
+            FileManager.default.isExecutableFile(atPath: $0.path)
+        }
     }
 }
 
@@ -376,8 +395,9 @@ public actor TaskContextStore {
         refreshCache = refreshCache.filter { activeIDs.contains($0.key) }
         for ticket in tickets {
             do {
-                let displayedProject = ProjectCatalog.project(for: ticket, in: projects)
-                let contextProject = displayedProject?.id == ticket.projectID ? displayedProject : nil
+                let contextProject = ticket.projectID.flatMap { projectID in
+                    projects.first { $0.id == projectID }
+                } ?? (projects.count == 1 ? projects[0] : nil)
                 let url = try directory(ticketID: ticket.id).appendingPathComponent("context.json")
                 let version = try fileVersion(at: url)
                 let planURL = refreshCache[ticket.id]?.context.map { URL(fileURLWithPath: $0.planPath) }
@@ -504,14 +524,13 @@ public actor TaskContextStore {
 
     @discardableResult public func ensureContext(ticket: DashboardTicket, worktreePath: String? = nil, project: ProjectDefinition? = nil) throws -> TaskContext {
         try locked(ticketID: ticket.id) {
-            // Other is the display fallback for legacy unassigned tasks. Only
-            // persist project context after the dashboard owns that project.
-            let project = project?.id == ticket.projectID ? project : nil
             if var existing = try load(ticketID: ticket.id) {
                 let previous = existing
                 existing.separateLegacyAgentAssignments()
                 existing.title = ticket.title
-                let effectiveProjectID = project?.id ?? ticket.projectID
+                // Callers that only know the task must not erase placement that
+                // was established by the owning project dashboard.
+                let effectiveProjectID = project?.id ?? ticket.projectID ?? existing.projectID
                 if existing.projectID != effectiveProjectID {
                     existing.projectID = effectiveProjectID
                     existing.projectName = nil
@@ -528,7 +547,11 @@ public actor TaskContextStore {
                 // A retained branch with no workspace records completed cleanup. Dashboard
                 // metadata may still mention the former workspace until its next refresh.
                 if existing.worktreePath == nil, existing.branch == nil { existing.worktreePath = worktreePath ?? ticket.worktree }
-                try ensureDocuments(context: existing, ticket: ticket)
+                try ensureDocuments(
+                    context: existing,
+                    ticket: ticket,
+                    previousTitle: previous.title
+                )
                 if previous != existing { existing.updatedAt = Date(); try write(existing); try snapshot(existing) }
                 else if !files.fileExists(atPath: existing.contextDirectory.appendingPathComponent("archive").path) { try snapshot(existing) }
                 return existing
@@ -569,8 +592,12 @@ public actor TaskContextStore {
             status: "open", summary: String(summary.prefix(2_000))))
     }
 
-    /// Called under the task lock. Existing authored documents are never replaced.
-    private func ensureDocuments(context: TaskContext, ticket: DashboardTicket) throws {
+    /// Called under the task lock. Authored bodies remain intact; only an exact generated heading is synchronized.
+    private func ensureDocuments(
+        context: TaskContext,
+        ticket: DashboardTicket,
+        previousTitle: String? = nil
+    ) throws {
         let planURL = URL(fileURLWithPath: context.planPath)
         if !files.fileExists(atPath: planURL.path) || (try? files.attributesOfItem(atPath: planURL.path)[.size] as? NSNumber)?.intValue == 0 {
             let links = ticket.links.map { "- [\($0.label)](\($0.url))" }.joined(separator: "\n")
@@ -605,6 +632,19 @@ public actor TaskContextStore {
 
             """
             try Data(markdown.utf8).write(to: planURL, options: .atomic)
+        } else if let previousTitle, previousTitle != ticket.title,
+                  (try? planURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true {
+            let data = try Data(contentsOf: planURL)
+            if var markdown = String(data: data, encoding: .utf8) {
+                let oldHeading = "# \(ticket.id): \(previousTitle)"
+                if markdown == oldHeading || markdown.hasPrefix(oldHeading + "\n") {
+                    markdown.replaceSubrange(
+                        markdown.startIndex..<markdown.index(markdown.startIndex, offsetBy: oldHeading.count),
+                        with: "# \(ticket.id): \(ticket.title)"
+                    )
+                    try Data(markdown.utf8).write(to: planURL, options: .atomic)
+                }
+            }
         }
         try ensureAgentLog(context)
     }

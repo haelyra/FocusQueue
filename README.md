@@ -1,4 +1,4 @@
-# ECC Focus Queue
+# Focus Queue
 
 A macOS operator panel that projects a local JSON task dashboard into an
 always-on-top, all-Spaces queue. First launch offers a setup wizard with an empty
@@ -10,33 +10,20 @@ for compatibility, installation, reconnect instructions and remaining public-lau
 
 ## Projects
 
-Use the project menu below the header to show **All projects**, one project, or
-**Unassigned** tasks. The selection survives relaunch and applies to tasks,
-completed history, task notifications, counts and project routines. Daily reports
-remain global. Filtering preserves queue order; dragging within one project keeps
-hidden tasks in their existing positions.
+The project menu switches complete queue workspaces. Each project owns its dashboard,
+workspace, optional Git repository, and 2 to 5 character task prefix. Focus Queue
+uses `FOC-###`; the built-in fallback project uses `OTH-###`. Selection survives
+relaunch and scopes tasks, completed history, notifications, ordering, and queue chat.
 
-**Manage projects…** in the menu, or **Settings > Projects**, adds and edits project
-names, repository folders and optional GitHub URLs/aliases. Archived projects keep
-their history in All projects; reassign open tasks before archiving. **New task**
-shows the project assignment before saving. A task's expanded details also include
-an assignment menu. Project ownership is separate from agent workspaces, so moving
-a task between projects never relocates an existing agent.
+**Settings > Projects** adds or edits a project. Repository aliases can identify
+other clones or forks. A manual Codex launch is matched from its Git common directory,
+so a launch from a project checkout or one of its worktrees is routed to that project.
+An unmatched launch goes to **Other** instead of being left untracked.
 
-Projects are stored in configuration and tasks have an optional `projectID` in
-the shared dashboard. Older and unknown-project tasks remain visible. New agent
-workspaces default to the project repository when the task has no existing
-workspace. Imported tasks use a unique trusted repository match or stay Unassigned.
-Queue chat displays its scope; its queue helper uses `FOCUS_QUEUE_PROJECT_ID` for
-scoped list, move and reset operations. Select All projects for cross-project work.
-
-The operator migration script `Scripts/focus_queue_projects.py` supports `preview`,
-`apply` and `rollback` with a `--manifest` path. Preview requires `--config`,
-`--focus-queue-repository` and `--ecc-repository`; it proposes ECC-035 for Focus
-Queue and the other existing tasks for ECC. Apply refuses changed source hashes
-and backs up the dashboard, configuration and local state. Rollback restores only
-project fields and retains subsequent task edits. Run the dashboard's own data
-checks after migration. This migration never runs automatically for other users.
+Every launch receives a private placement capsule under the Focus Queue support
+directory. The launcher and app use it to share only the resolved project, task,
+workspace, tmux identity, and plan pointers. Project source and worktrees remain next
+to the configured repository, never under Application Support.
 
 ## Reliable session recall
 
@@ -382,8 +369,15 @@ remains a developer-specific fixture and is not seeded by installation.
 All process arguments are passed directly to `Process`; task content is never
 assembled into a shell command.
 
-The `dailyReport` object sets `scheduleHour`, `scheduleMinute`, `maximumTokens`,
-and `enabledPlatforms`. The report engine is Python plus JSON so its scheduling,
+The `focusQueueProjects` array defines each named dashboard and workspace, while
+`focusQueueSelectedProjectID` records the working project. Existing configurations with only
+`dashboardPath` and `workspacePath` migrate to one selected project without moving
+their files. Unrelated legacy `projects` metadata is preserved when settings are saved.
+
+The `dailyReport` object sets `enabled`, `scheduleHour`, `scheduleMinute`,
+`maximumTokens`, and `enabledPlatforms`. Disabling it stops automatic and missed-run
+processing while keeping manual runs and report history available. The report engine
+is Python plus JSON so its scheduling,
 deduplication, task linkage, and approval contracts can be reused by a future
 Windows host. Swift is limited to the current macOS panel and notification
 bridge. The token budget is enforced conservatively before classification;

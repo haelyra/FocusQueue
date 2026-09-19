@@ -38,7 +38,9 @@ final class QueueViewModel {
   private(set) var dashboard = DashboardDocument(tickets: [])
   private(set) var localState = LocalState()
   private(set) var savedQueueOrder: [String]?
-  private var queueOrderStore: QueueOrderStore { QueueOrderStore(root: paths.supportDirectory) }
+  private var queueOrderStore: QueueOrderStore {
+    QueueOrderStore(root: paths.supportDirectory, projectID: config.selectedProjectID)
+  }
   private(set) var lastSync: Date?
   private(set) var sourceModificationDate: Date?
   private(set) var loadError: String?
@@ -109,7 +111,7 @@ final class QueueViewModel {
   @ObservationIgnored private let configurationRepository: any ConfigurationLoading
   @ObservationIgnored private let dailyReportRepository: any DailyReportStoring
   @ObservationIgnored private let dailyReportApprovalRepository: any DailyReportApprovalStoring
-  @ObservationIgnored private let dashboardRepository: any DashboardLoading
+  @ObservationIgnored private let dashboardRepository: any DashboardManaging
   @ObservationIgnored private let stateStore: any LocalStateStoring
   @ObservationIgnored private let reviewArtifacts: ReviewArtifactStore
   @ObservationIgnored private let terminalController: any WezTermControlling
@@ -139,12 +141,14 @@ final class QueueViewModel {
   @ObservationIgnored private var refreshTask: Task<Void, Never>?
   @ObservationIgnored private var reviewTasks: [UUID: Task<Void, Never>] = [:]
   @ObservationIgnored private var windowSaveTask: Task<Void, Never>?
+  @ObservationIgnored private var localStateSaveTask: Task<Void, Never>?
   @ObservationIgnored private var queueChatTask: Task<Void, Never>?
   @ObservationIgnored private var documentConversations: [String: DocumentConversation] = [:]
   @ObservationIgnored private var configurationSaveTask: Task<Void, Never>?
   @ObservationIgnored private var lastRecurringPRRefresh: Date?
   @ObservationIgnored private var bootstrapped = false
   @ObservationIgnored private var refreshInFlight = false
+  @ObservationIgnored private var projectRefreshPending = false
   @ObservationIgnored private var lastActivityCheck = Date()
   @ObservationIgnored private let agentActivityObserver = AgentActivityObserver()
   @ObservationIgnored private var lastIdentityRefresh: Date?
@@ -169,6 +173,7 @@ final class QueueViewModel {
   )?
   @ObservationIgnored var dailyReportCancelHandler: (() -> Void)?
   @ObservationIgnored var dailyReportApprovalHandler: (@MainActor (Bool) async -> Void)?
+  @ObservationIgnored var dailyReportsEnabledHandler: ((Bool) -> Void)?
   @ObservationIgnored var agentTerminalFocusHandler: (@MainActor (String, String) async throws -> Void)?
   @ObservationIgnored var terminalFocusHandler: (
     @MainActor (String, String?) async throws -> Void
@@ -180,7 +185,7 @@ final class QueueViewModel {
     configurationRepository: (any ConfigurationLoading)? = nil,
     dailyReportRepository: (any DailyReportStoring)? = nil,
     dailyReportApprovalRepository: (any DailyReportApprovalStoring)? = nil,
-    dashboardRepository: any DashboardLoading = JSONDashboardRepository(),
+    dashboardRepository: any DashboardManaging = JSONDashboardRepository(),
     stateStore: (any LocalStateStoring)? = nil,
     reviewArtifacts: ReviewArtifactStore? = nil,
     terminalController: any WezTermControlling = WezTermController(),
@@ -287,47 +292,26 @@ final class QueueViewModel {
   }
 
   var selectedProjectID: String? {
-    ProjectCatalog.normalizedSelection(localState.selectedProjectID, projects: config.projects)
+    config.selectedProjectID
   }
-  var selectedProject: ProjectDefinition? { config.projects.first { $0.id == selectedProjectID } }
-  var projectScopeName: String {
-    selectedProjectID == ProjectCatalog.unassignedID ? "Unassigned" : selectedProject?.name ?? "All projects"
-  }
+  var projectScopeName: String { selectedProject?.name ?? "No project" }
   var activeProjects: [ProjectDefinition] { config.projects.filter { $0.archivedAt == nil } }
-  var projectTickets: [DashboardTicket] { dashboard.tickets.filter { includesInProject($0) } }
-  var hasUnassignedTasks: Bool { dashboard.tickets.contains { project(for: $0) == nil } }
+  var projectTickets: [DashboardTicket] { dashboard.tickets }
+  var hasUnassignedTasks: Bool { false }
   var visibleRoutines: [DailyRoutine] {
     config.dailyRoutines.filter { routine in
-      guard let selection = selectedProjectID, let owner = routine.projectID else { return true }
-      return owner == selection
+      guard let owner = routine.projectID else { return true }
+      return owner == selectedProjectID
     }
   }
-  func project(for ticket: DashboardTicket) -> ProjectDefinition? { ProjectCatalog.project(for: ticket, in: config.projects) }
-  func includesInProject(_ ticket: DashboardTicket) -> Bool {
-    ProjectCatalog.includes(ticket, selection: selectedProjectID, projects: config.projects)
-  }
-  func selectProject(_ id: String?) {
-    let selection = ProjectCatalog.normalizedSelection(id, projects: config.projects)
-    guard localState.selectedProjectID != selection else { return }
-    localState.selectedProjectID = selection
-    if let ticket = presentedPlanTicket, !includesInProject(ticket) { closePlan() }
-    if let update = presentedAgentUpdate,
-       let ticket = dashboard.tickets.first(where: { $0.id == update.ticketID }), !includesInProject(ticket) { closeAgentUpdate() }
-    persistLocalState()
-  }
-  func revealProject(for ticketID: String) {
-    guard let ticket = dashboard.tickets.first(where: { $0.id == ticketID }), !includesInProject(ticket) else { return }
-    let owner = project(for: ticket)
-    selectProject(owner?.archivedAt == nil ? owner?.id ?? ProjectCatalog.unassignedID : nil)
-  }
+  func project(for ticket: DashboardTicket) -> ProjectDefinition? { selectedProject }
+  func includesInProject(_ ticket: DashboardTicket) -> Bool { true }
+  func revealProject(for ticketID: String) {}
   func defaultRepository(for ticket: DashboardTicket) -> String {
     let context = taskContexts[ticket.id]
     return [context?.worktreePath, context?.repositoryPath, ticket.worktree,
-            project(for: ticket)?.repositoryPath]
+            selectedProject?.repositoryPath, selectedProject?.workspacePath]
       .compactMap { $0 }.first { !$0.isEmpty } ?? config.workspacePath
-  }
-  private var projectTaskStore: ProjectTaskStore {
-    ProjectTaskStore(dashboardURL: URL(fileURLWithPath: config.dashboardPath), supportDirectory: paths.supportDirectory)
   }
   @discardableResult
   func saveProject(_ project: ProjectDefinition) async -> Bool {
@@ -338,21 +322,22 @@ final class QueueViewModel {
       if project.id == ProjectCatalog.otherID, project.archivedAt != nil {
         throw TaskContextError.commandFailed("Other is the fallback project and cannot be archived.")
       }
-      if project.archivedAt != nil {
-        let current = try await dashboardRepository.load(from: URL(fileURLWithPath: config.dashboardPath))
-        guard !current.tickets.contains(where: { $0.projectID == project.id && $0.isOpen }) else {
-          throw TaskContextError.commandFailed("Reassign this project's open tasks before archiving it. Completed history stays in All projects.")
-        }
-      }
       var next = config
+      let isNew = next.projects.contains(where: { $0.id == project.id }) == false
       if let index = next.projects.firstIndex(where: { $0.id == project.id }) { next.projects[index] = project }
       else { next.projects.append(project) }
       _ = try next.validated()
+      if isNew {
+        var prepared = next
+        guard prepared.selectProject(id: project.id) else {
+          throw TaskContextError.commandFailed("The new project could not be selected.")
+        }
+        try SetupEnvironment.prepareWorkspace(configuration: prepared)
+      }
       configurationSaveTask?.cancel()
       await configurationSaveTask?.value
       try await configurationRepository.save(next)
       config = next
-      selectProject(selectedProjectID)
       lastContextRefresh = nil
       await refresh()
       projectError = nil
@@ -361,34 +346,17 @@ final class QueueViewModel {
   }
   @discardableResult
   func assignProject(_ projectID: String?, to ticketID: String) async -> Bool {
-    do {
-      let projectID = projectID ?? ProjectCatalog.otherID
-      guard activeProjects.contains(where: { $0.id == projectID }) else {
-        throw TaskContextError.commandFailed("Choose an active project.")
-      }
-      try projectTaskStore.assign(ticketID: ticketID, projectID: projectID)
-      lastContextRefresh = nil
-      await refresh()
-      projectError = nil
-      return true
-    } catch { projectError = error.localizedDescription; return false }
+    projectError = "Move the task from its project dashboard after finishing active agent work."
+    return false
   }
   func createTask(title: String, summary: String, projectID: String?) async -> Bool {
-    do {
-      let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
-      let projectID = projectID ?? ProjectCatalog.otherID
-      guard !title.isEmpty, let project = activeProjects.first(where: { $0.id == projectID }) else {
-        throw TaskContextError.commandFailed("Enter a title and choose an active project.")
-      }
-      let id = try projectTaskStore.create(title: title, summary: summary, project: project)
-      await refresh()
-      revealReportTask(id)
-      projectError = nil
-      return true
-    } catch { projectError = error.localizedDescription; return false }
+    await createTask(title: title, summary: summary, doneWhen: "", priority: "medium",
+      projectID: projectID)
   }
 
   var configurationURL: URL { paths.configurationFile }
+  var projects: [ProjectConfiguration] { config.projects }
+  var selectedProject: ProjectConfiguration? { config.selectedProject }
   var windowSnapshot: WindowSnapshot? { localState.window }
   var appearance: QueueAppearance { localState.appearance ?? .light }
   var accentStyle: QueueAccentStyle { localState.accentStyle ?? .vibrant }
@@ -398,6 +366,19 @@ final class QueueViewModel {
 
   var isPanelCollapsed: Bool { panelMode == .collapsed }
   var isTopTaskOnly: Bool { panelMode == .topTask }
+  var minimizationPreference: QueueMinimizationPreference {
+    localState.minimizationPreference
+  }
+
+  var terminalCount: Int {
+    var identities = Set(localState.agentSessions.map {
+      "\($0.provider.rawValue):\($0.sessionID.lowercased())"
+    })
+    identities.formUnion(unassignedAgentRegistrations.map {
+      "\($0.provider.rawValue):\(($0.sessionID ?? $0.agentID ?? $0.id).lowercased())"
+    })
+    return identities.count
+  }
 
   func bootstrap() async {
     guard !bootstrapped else { return }
@@ -406,12 +387,14 @@ final class QueueViewModel {
       let firstRun = !FileManager.default.fileExists(atPath: paths.configurationFile.path)
       if firstRun { try SetupEnvironment.createStarterWorkspace(supportDirectory: paths.supportDirectory) }
       config = try await configurationRepository.loadOrCreate(default: SetupEnvironment.starter(supportDirectory: paths.supportDirectory))
-      let projects = ProjectCatalog.ensuringOther(in: config.projects)
+      let projects = ProjectCatalog.ensuringOther(
+        in: config.projects, supportDirectory: paths.supportDirectory)
       if projects != config.projects {
         config.projects = projects
         try await configurationRepository.save(config)
       }
       for project in config.projects {
+        try ProjectCatalog.prepareFallbackStorage(for: project)
         _ = try ProjectContextStore(root: paths.supportDirectory).ensurePlan(for: project)
       }
       if let tmux = SetupEnvironment.executable("tmux"),
@@ -431,7 +414,8 @@ final class QueueViewModel {
       }
       isRecoveredDailyReportRunning = try await reportHistoryRepository.reconcileInactiveRuns()
       await reloadDailyReport()
-      if let approval = try await dailyReportApprovalRepository.load(),
+      if config.dailyReport.enabled,
+        let approval = try await dailyReportApprovalRepository.load(),
         approval.status == .pending,
         approval.reportDate == Self.dayFormatter.string(from: Date())
       {
@@ -487,6 +471,199 @@ final class QueueViewModel {
     }
   }
 
+  @discardableResult
+  func selectProject(id: String) async -> Bool {
+    guard config.selectedProjectID != id,
+      let project = config.projects.first(where: { $0.id == id })
+    else { return config.selectedProjectID == id }
+
+    configurationSaveTask?.cancel()
+    await configurationSaveTask?.value
+    do {
+      // Validate the destination before changing the persisted selection. A
+      // damaged project must leave the current queue intact and selected.
+      let snapshot = try await dashboardRepository.loadSnapshot(
+        from: URL(fileURLWithPath: project.dashboardPath))
+      var updated = config
+      guard updated.selectProject(id: id) else { return false }
+      try await configurationRepository.save(updated)
+      config = updated
+
+      closeAgentUpdate()
+      closePlan()
+      setQueueChatInspectorPresented(false)
+      setDailyReportPresented(false)
+      dashboard = snapshot.document
+      loadError = nil
+      savedQueueOrder = nil
+      sourceModificationDate = nil
+      lastSync = nil
+      taskContexts.removeAll()
+      maintenanceReceipts.removeAll()
+      maintenanceSignatures.removeAll()
+      cleanupSignatures.removeAll()
+      recurringPRProgressByTicketID.removeAll()
+      recurringPRProgressErrors.removeAll()
+      expandedTicketIDs.removeAll()
+      documentConversations.removeAll()
+      lastContextRefresh = nil
+      lastDurableDashboard = nil
+      await captureDurableDashboard(snapshot.document)
+      if refreshInFlight {
+        projectRefreshPending = true
+      } else {
+        await refresh(forceRecurringPRProgress: true, userInitiated: true)
+      }
+      return loadError == nil
+    } catch {
+      loadError = "Could not switch projects: \(error.localizedDescription)"
+      return false
+    }
+  }
+
+  @discardableResult
+  func createTask(
+    title: String, summary: String, doneWhen: String, priority: String,
+    projectID: String? = nil
+  ) async -> Bool {
+    let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !title.isEmpty else {
+      loadError = "Give the task a readable title."
+      return false
+    }
+    let targetID = projectID ?? config.selectedProjectID
+    guard let project = config.projects.first(where: { $0.id == targetID }) else {
+      loadError = "The selected project is no longer configured."
+      return false
+    }
+    do {
+      let url = URL(fileURLWithPath: project.dashboardPath)
+      let snapshot = try await dashboardRepository.loadSnapshot(from: url)
+      let otherDashboards = config.projects.filter { $0.id != project.id }.map {
+        URL(fileURLWithPath: $0.dashboardPath)
+      }
+      var knownTickets = snapshot.document.tickets
+      for otherDashboard in otherDashboards {
+        knownTickets.append(contentsOf: try await dashboardRepository.load(from: otherDashboard).tickets)
+      }
+      let ticketID = Self.nextTicketID(
+        project: project, projectTickets: snapshot.document.tickets, allTickets: knownTickets)
+      let trimmedSummary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+      let trimmedDoneWhen = doneWhen.trimmingCharacters(in: .whitespacesAndNewlines)
+      let ticket = DashboardTicket(
+        id: ticketID,
+        title: title,
+        projectID: project.id,
+        category: project.name,
+        priority: Self.allowedPriority(priority),
+        status: "backlog",
+        summary: String((trimmedSummary.isEmpty ? title : trimmedSummary).prefix(1_200)),
+        next: "Clarify the next implementation step.",
+        doneWhen: String(
+          (trimmedDoneWhen.isEmpty
+            ? "Confirm the requested behavior and record verification results."
+            : trimmedDoneWhen).prefix(900)),
+        updatedAt: Self.dayFormatter.string(from: Date())
+      )
+      let updated = try await dashboardRepository.createTicket(
+        ticket, in: url, expectedRevision: snapshot.revision,
+        checking: otherDashboards)
+      if config.selectedProjectID == project.id {
+        dashboard = updated.document
+        await captureDurableDashboard(updated.document)
+      }
+      actionMessages[ticket.id] = "Task added to \(project.name)."
+      loadError = nil
+      return true
+    } catch {
+      loadError = "Could not create task: \(error.localizedDescription)"
+      return false
+    }
+  }
+
+  @discardableResult
+  func renameTask(_ ticket: DashboardTicket, to title: String) async -> Bool {
+    let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !title.isEmpty, let project = selectedProject else {
+      actionMessages[ticket.id] = "Give the task a readable title."
+      return false
+    }
+    do {
+      let projectID = project.id
+      let url = URL(fileURLWithPath: project.dashboardPath)
+      let snapshot = try await dashboardRepository.loadSnapshot(from: url)
+      let updated = try await dashboardRepository.renameTicket(
+        id: ticket.id, to: title, in: url, expectedRevision: snapshot.revision)
+      let renamed = updated.document.tickets.first(where: { $0.id == ticket.id })
+      if config.selectedProjectID == projectID {
+        dashboard = updated.document
+        if var liveContext = taskContexts[ticket.id] {
+          liveContext.title = title
+          taskContexts[ticket.id] = liveContext
+        }
+      }
+
+      var contextRepairError: String?
+      if let renamed {
+        var contextExists = taskContexts[ticket.id] != nil
+        if !contextExists {
+          do {
+            contextExists = try await taskContextStore.load(ticketID: ticket.id) != nil
+          } catch {
+            contextRepairError = error.localizedDescription
+          }
+        }
+        if contextExists {
+          do {
+            let repaired = try await taskContextStore.ensureContext(ticket: renamed)
+            if config.selectedProjectID == projectID {
+              taskContexts[ticket.id] = repaired
+              await captureDurableContexts(Array(taskContexts.values))
+            }
+          } catch {
+            contextRepairError = error.localizedDescription
+          }
+        }
+      }
+      if config.selectedProjectID == projectID {
+        await captureDurableDashboard(updated.document)
+        actionMessages[ticket.id] = contextRepairError.map {
+          "Task title updated. Context repair will retry: \($0)"
+        } ?? "Task title updated."
+        loadError = nil
+      }
+      return true
+    } catch {
+      actionMessages[ticket.id] = "Could not rename task: \(error.localizedDescription)"
+      return false
+    }
+  }
+
+  private static func nextTicketID(
+    project: ProjectConfiguration,
+    projectTickets: [DashboardTicket],
+    allTickets: [DashboardTicket]
+  ) -> String {
+    func parse(_ tickets: [DashboardTicket]) -> [(String, Int, Int)] {
+      tickets.compactMap { ticket -> (String, Int, Int)? in
+        let parts = ticket.id.split(separator: "-", maxSplits: 1).map(String.init)
+        guard parts.count == 2, let number = Int(parts[1]) else { return nil }
+        return (parts[0].uppercased(), number, parts[1].count)
+      }
+    }
+    let allIDs = parse(allTickets)
+    let prefix = project.taskPrefix
+    let matching = allIDs.filter { $0.0 == prefix }
+    let next = (matching.map { $0.1 }.max() ?? 0) + 1
+    let width = max(3, matching.map { $0.2 }.max() ?? 0)
+    return "\(prefix)-\(String(format: "%0\(width)d", next))"
+  }
+
+  private static func allowedPriority(_ rawValue: String) -> String {
+    let value = rawValue.lowercased()
+    return ["low", "medium", "high", "critical"].contains(value) ? value : "medium"
+  }
+
   func refresh(forceRecurringPRProgress: Bool = false, userInitiated: Bool = false) async {
     guard !refreshInFlight else { return }
     refreshInFlight = true
@@ -495,14 +672,23 @@ final class QueueViewModel {
     defer {
       refreshInFlight = false
       if showsActivity { isRefreshing = false }
+      if projectRefreshPending {
+        projectRefreshPending = false
+        Task { @MainActor [weak self] in
+          await self?.refresh(forceRecurringPRProgress: true, userInitiated: true)
+        }
+      }
     }
     do {
+      let projectID = config.selectedProjectID
       let dashboardURL = URL(fileURLWithPath: config.dashboardPath)
       async let document = dashboardRepository.load(from: dashboardURL)
       async let modificationDate = dashboardRepository.modificationDate(at: dashboardURL)
       let updatedDashboard = try await document
+      guard projectID == config.selectedProjectID else { return }
       if dashboard != updatedDashboard { dashboard = updatedDashboard }
       await captureDurableDashboard(updatedDashboard)
+      guard projectID == config.selectedProjectID else { return }
       let updatedOrder = try queueOrderStore.load()
       if savedQueueOrder != updatedOrder { savedQueueOrder = updatedOrder }
       pruneDeferredTickets()
@@ -593,13 +779,8 @@ final class QueueViewModel {
 
   func resetQueueOrder() {
     do {
-      if selectedProjectID != nil {
-        savedQueueOrder = try queueOrderStore.reset(tickets: dashboard.tickets,
-          visibleIDs: Set(projectTickets.map(\.id)), fallbackIDs: allOpenTickets.map(\.id))
-      } else {
-        try queueOrderStore.reset()
-        savedQueueOrder = []
-      }
+      try queueOrderStore.reset()
+      savedQueueOrder = []
     } catch { loadError = error.localizedDescription }
   }
 
@@ -664,8 +845,8 @@ final class QueueViewModel {
         """
       scopedMessage = taskScope + "Project: \(context.projectName ?? context.projectID ?? "Unassigned"). " + contextScope + contextualMessage
     } else {
-      let scope = "Project scope: \(projectScopeName). Project ID: \(selectedProjectID ?? "all"). Allowed task IDs: \(projectTickets.map(\.id).joined(separator: ", ")). "
-      let rules = "Preserve projectID on edits. New tasks use \(selectedProject?.id ?? "the Other project unless explicitly assigned"). Restrict actions to this scope. Ask the user to select All projects before acting on hidden tasks.\n\n"
+      let scope = "Project scope: \(projectScopeName). Project ID: \(selectedProjectID ?? ProjectCatalog.otherID). Allowed task IDs: \(projectTickets.map(\.id).joined(separator: ", ")). "
+      let rules = "Preserve projectID and unknown fields on edits. New tasks use \(selectedProject?.id ?? "the Other project"). Restrict actions to this project's dashboard. Ask the user to switch projects before acting on another dashboard.\n\n"
       scopedMessage = scope + rules + contextualMessage
     }
     queueChatTask = Task { [weak self] in
@@ -732,7 +913,8 @@ final class QueueViewModel {
   }
 
   var showsReportNotification: Bool {
-    reportNeedsAttention && !localState.dismissedNotificationIDs.contains(reportNotificationID)
+    config.dailyReport.enabled && reportNeedsAttention
+      && !localState.dismissedNotificationIDs.contains(reportNotificationID)
   }
 
   var reportAttentionDocument: DailyReportDocument? {
@@ -867,7 +1049,8 @@ final class QueueViewModel {
     lastContextRefresh = Date()
     let tickets = dashboard.tickets
     let baseline = taskContexts
-    let snapshot = await taskContextStore.refreshContexts(tickets: tickets, projects: config.projects)
+    let snapshot = await taskContextStore.refreshContexts(
+      tickets: tickets, projects: selectedProject.map { [$0] } ?? [])
     var merged = taskContexts
     for (ticketID, context) in snapshot.contexts where merged[ticketID] == baseline[ticketID] {
       merged[ticketID] = context
@@ -1530,6 +1713,12 @@ final class QueueViewModel {
       }
       do {
         let context = try await taskContextStore.ensureContext(ticket: ticket, project: project(for: ticket))
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: repositoryPath, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+          throw TaskContextError.unsafeWorktree(
+            "The saved workspace is missing: \(repositoryPath)")
+        }
         if let project = project(for: ticket), !project.repositoryPath.isEmpty,
            !allowProjectRepositoryMismatch,
            try await !ProjectRepositoryResolver().matches(path: repositoryPath, project: project) {
@@ -2425,6 +2614,17 @@ final class QueueViewModel {
     persistConfiguration()
   }
 
+  func setDailyReportsEnabled(_ enabled: Bool) {
+    guard config.dailyReport.enabled != enabled else { return }
+    config.dailyReport.enabled = enabled
+    if !enabled {
+      pendingDailyReportApproval = nil
+      if isDailyReportPresented { setDailyReportPresented(false) }
+    }
+    dailyReportsEnabledHandler?(enabled)
+    persistConfiguration()
+  }
+
   func setDailyReportMaximumTokens(_ maximumTokens: Int) {
     config.dailyReport.maximumTokens = min(max(maximumTokens, 10_000), 1_000_000)
     persistConfiguration()
@@ -2519,6 +2719,29 @@ final class QueueViewModel {
 
   func showTopTaskOnly() {
     setPanelMode(.topTask)
+  }
+
+  func minimize(using preference: QueueMinimizationPreference) {
+    if localState.minimizationPreference != preference {
+      localState.minimizationPreference = preference
+      persistLocalState()
+    }
+    applyMinimization(preference)
+  }
+
+  func performPreferredMinimization() {
+    applyMinimization(localState.minimizationPreference)
+  }
+
+  private func applyMinimization(_ preference: QueueMinimizationPreference) {
+    switch preference {
+    case .dock:
+      minimizeHandler?()
+    case .fq:
+      setPanelMode(.collapsed)
+    case .topTask:
+      setPanelMode(.topTask)
+    }
   }
 
   func setPanelMode(_ mode: QueuePanelMode) {
@@ -2758,7 +2981,9 @@ final class QueueViewModel {
 
   private func persistLocalState() {
     let snapshot = localState
-    Task {
+    let priorSave = localStateSaveTask
+    localStateSaveTask = Task {
+      await priorSave?.value
       do {
         try await stateStore.save(snapshot)
         await captureDurableState(snapshot)

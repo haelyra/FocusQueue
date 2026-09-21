@@ -36,11 +36,13 @@ import UserNotifications
   UNUserNotificationCenterDelegate
 {
   private let paths = AppPaths.live()
-  private lazy var model = QueueViewModel(paths: paths)
+  private let programLog = ProgramLogStore()
+  private lazy var model = QueueViewModel(paths: paths, programLog: programLog)
   private lazy var dailyReportApprovalRepository = JSONDailyReportApprovalRepository(
     url: paths.dailyReportApprovalFile
   )
   private var panel: FocusPanel?
+  private var programLogWindow: NSWindow?
   private var statusItem: NSStatusItem?
   private var exitTerminalFocusItem: NSMenuItem?
   private var terminalFocusController: TerminalFocusModeController?
@@ -65,6 +67,7 @@ import UserNotifications
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.regular)
+    programLog.record("Focus Queue launched.", category: "Lifecycle")
     DistributedNotificationCenter.default().addObserver(
       self,
       selector: #selector(importAgentRegistration(_:)),
@@ -92,6 +95,9 @@ import UserNotifications
     model.dailyReportsEnabledHandler = { [weak self] enabled in
       guard !enabled else { return }
       self?.disableAutomaticDailyReports()
+    }
+    model.programLogVisibilityHandler = { [weak self] visible in
+      self?.setProgramLogWindowVisible(visible)
     }
     model.terminalFocusHandler = { [weak self] applicationName, windowTitleHint in
       guard let self, let terminalFocusController else {
@@ -139,7 +145,11 @@ import UserNotifications
                 supportDirectory: model.configurationURL.deletingLastPathComponent())
               try await persistence.enable()
             }
-          } catch { NSLog("Managed tmux persistence: %@", error.localizedDescription) }
+          } catch {
+            let message = "Managed tmux persistence: \(error.localizedDescription)"
+            programLog.record(message, level: .warning, category: "Terminals")
+            NSLog("%@", message)
+          }
         }
       }
       if let snapshot = model.windowSnapshot {
@@ -171,6 +181,7 @@ import UserNotifications
       }
       panel?.orderFrontRegardless()
       isModelReady = model.configurationIsLoaded
+      setProgramLogWindowVisible(model.isProgramLogWindowVisible)
       if isModelReady, let decision = pendingDailyReportDecision {
         pendingDailyReportDecision = nil
         await respondToDailyReportApproval(
@@ -187,6 +198,7 @@ import UserNotifications
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
   func applicationWillTerminate(_ notification: Notification) {
+    programLog.record("Focus Queue is terminating.", category: "Lifecycle")
     morningReconciliationTask?.cancel()
     _ = try? DailyReportWorkerControl.requestCancellation(
       runtimeDirectory: paths.ingestionRuntimeDirectory)
@@ -225,6 +237,13 @@ import UserNotifications
     }
     saveWindowFrame()
     scheduleFocusChromeRefresh()
+  }
+
+  func windowWillClose(_ notification: Notification) {
+    guard notification.object as? NSWindow === programLogWindow,
+      model.isProgramLogWindowVisible
+    else { return }
+    model.setProgramLogWindowVisible(false)
   }
 
   @objc private func showPanel() {
@@ -829,6 +848,36 @@ import UserNotifications
       self?.exitTerminalFocusItem?.isHidden = !isActive
     }
     self.terminalFocusController = terminalFocusController
+  }
+
+  private func setProgramLogWindowVisible(_ visible: Bool) {
+    if visible {
+      let window = programLogWindow ?? createProgramLogWindow()
+      programLogWindow = window
+      window.makeKeyAndOrderFront(nil)
+    } else {
+      programLogWindow?.orderOut(nil)
+    }
+  }
+
+  private func createProgramLogWindow() -> NSWindow {
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 820, height: 520),
+      styleMask: [.titled, .closable, .miniaturizable, .resizable],
+      backing: .buffered,
+      defer: false
+    )
+    window.title = "Focus Queue Program Log"
+    window.minSize = NSSize(width: 640, height: 360)
+    window.isReleasedWhenClosed = false
+    window.tabbingMode = .disallowed
+    window.delegate = self
+    window.contentView = NSHostingView(rootView: ProgramLogView(store: programLog))
+    if !window.setFrameUsingName("ECCFocusQueue.ProgramLog") {
+      window.center()
+    }
+    window.setFrameAutosaveName("ECCFocusQueue.ProgramLog")
+    return window
   }
 
   private func createStatusItem() {

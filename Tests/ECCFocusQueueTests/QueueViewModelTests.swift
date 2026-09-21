@@ -189,6 +189,32 @@ struct QueueViewModelTests {
     #expect(dockMinimizations == 2)
   }
 
+  @Test("Program Log visibility persists while each process receives a fresh log")
+  func programLogVisibility() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let firstLog = ProgramLogStore()
+    let model = await fixture.model(agent: ControlledQueueAgent(), programLog: firstLog)
+    var visibilityChanges: [Bool] = []
+    model.programLogVisibilityHandler = { visibilityChanges.append($0) }
+
+    model.setProgramLogWindowVisible(true)
+
+    #expect(model.isProgramLogWindowVisible)
+    #expect(visibilityChanges == [true])
+    #expect(firstLog.entries.last?.message == "Program Log window shown.")
+    try await eventually {
+      (try? await JSONLocalStateStore(url: fixture.paths.stateFile).load()
+        .programLogWindowVisible) == true
+    }
+
+    let restartedLog = ProgramLogStore()
+    let restarted = await fixture.model(
+      agent: ControlledQueueAgent(), programLog: restartedLog)
+    #expect(restarted.isProgramLogWindowVisible)
+    #expect(!restartedLog.entries.contains { $0.message == "Program Log window shown." })
+  }
+
   @Test("Disabling automatic reports suppresses missing-report attention and persists")
   func disabledAutomaticReports() async throws {
     let fixture = try await Fixture()
@@ -1858,7 +1884,8 @@ private struct Fixture {
     try await JSONConfigurationRepository(url: paths.configurationFile).save(config)
   }
 
-  func model(agent: ControlledQueueAgent, verifier: (any CompletionVerifying)? = nil,
+  func model(agent: ControlledQueueAgent, programLog: ProgramLogStore = ProgramLogStore(),
+             verifier: (any CompletionVerifying)? = nil,
              terminalController: (any WezTermControlling)? = nil,
              dashboardRepository: any DashboardManaging = JSONDashboardRepository(),
              taskAgentLauncher: TaskAgentLauncher = TaskAgentLauncher(),
@@ -1867,7 +1894,8 @@ private struct Fixture {
              labelTmuxPane: @escaping @Sendable (TmuxSessionReference, String) async -> Void = { _, _ in },
              locateExistingAgent: @escaping @Sendable (AgentProvider, String) async throws -> KnownProviderProcess? = { _, _ in nil }) async -> QueueViewModel {
     let boundary = ForbiddenExternalActions()
-    let model = QueueViewModel(paths: paths, dashboardRepository: dashboardRepository,
+    let model = QueueViewModel(paths: paths, programLog: programLog,
+      dashboardRepository: dashboardRepository,
       terminalController: terminalController ?? boundary,
       verifier: verifier ?? boundary, queueAgent: agent, pullRequestQueueLoader: boundary,
       taskAgentLauncher: taskAgentLauncher,

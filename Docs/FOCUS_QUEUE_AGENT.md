@@ -142,6 +142,13 @@ focus-mail search "sender, customer, subject, or text" --days 30 --limit 10
 focus-mail read "gmail:MESSAGE_ID"
 ```
 
+For persistent automation, do not leave an External OAuth consent screen in
+**Testing**. Google expires those refresh tokens after seven days when scopes
+such as `gmail.readonly` are requested. Prefer an **Internal** app for accounts
+in the same Google Workspace organization. Otherwise move the app to
+**Production** and complete the verification or administrator approval Google
+requires for the restricted Gmail scope.
+
 Without `--open-browser`, `authorize` prints the Google authorization URL and
 waits for the loopback callback. Authorization rejects a different Google
 account than `emailAddress`. The offline connector diagnostic checks only that

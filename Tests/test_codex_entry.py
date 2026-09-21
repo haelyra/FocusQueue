@@ -114,6 +114,12 @@ else:
         self.assertEqual(ENTRY.invocation(["-m", "model", "exec", "hello"], classify_agents=True)[0], "noninteractive")
         self.assertEqual(ENTRY.invocation(["-m", "model", "exec", "--help"], classify_agents=True)[0], "utility")
 
+    def test_repository_identity_accepts_macos_tmp_alias_only_for_same_inode(self):
+        self.assertTrue(ENTRY.same_repository_identity(
+            "/tmp/project/.git:123:456", "/private/tmp/project/.git:123:456"))
+        self.assertFalse(ENTRY.same_repository_identity(
+            "/tmp/project/.git:123:456", "/private/tmp/project/.git:123:999"))
+
     def test_automatic_routing_only_claims_fresh_unassigned_interactive_agents(self):
         self.support.mkdir(parents=True)
         (self.support / "config.json").write_text(json.dumps({"automaticAgentRouting":True}))

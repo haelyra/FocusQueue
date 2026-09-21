@@ -929,6 +929,16 @@ func wezTermAttachArguments() async throws {
 @Test("Running WezTerm agents resolve exact Codex session IDs from their TTY")
 func wezTermAgentDiscovery() async throws {
   let sessionID = "01a064d7-3bc1-7681-8fb5-ca280b1aac96"
+  let fixtureRoot = FileManager.default.temporaryDirectory
+    .appendingPathComponent("wezterm-agent-\(UUID().uuidString)", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+  let transcript = fixtureRoot
+    .appendingPathComponent(".codex/sessions/2026/09/02", isDirectory: true)
+    .appendingPathComponent("rollout-2026-09-02T21-17-02-\(sessionID).jsonl")
+  try FileManager.default.createDirectory(
+    at: transcript.deletingLastPathComponent(), withIntermediateDirectories: true)
+  try Data("{\"type\":\"session_meta\",\"payload\":{\"id\":\"\(sessionID)\"}}\n".utf8)
+    .write(to: transcript)
   let panes = """
     [{"window_id":11,"tab_id":20,"pane_id":33,
       "cwd":"file:///Users/hira/Documents/Github/ECCFocusQueue",
@@ -937,7 +947,7 @@ func wezTermAgentDiscovery() async throws {
   let processList = "30447 ttys027  codex\n"
   let lsof = """
     p30447
-    n/Users/hira/.codex/sessions/2026/09/02/rollout-2026-09-02T21-17-02-\(sessionID).jsonl
+    n\(transcript.path)
     """
   let runner = MockProcessRunner(results: [
     ProcessResult(exitCode: 0, standardOutput: panes, standardError: "", timedOut: false),

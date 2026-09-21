@@ -8,10 +8,8 @@ public enum MarkdownHTMLRenderer {
     let parser = MarkdownParser(modifiers: [headingModifier, mermaidModifier, taskListModifier])
     let body = parser.html(from: markdown)
     let title = escapeHTML(sourceURL.lastPathComponent)
-    let baseURL = escapeHTML(
-      sourceURL.deletingLastPathComponent().appendingPathComponent("", isDirectory: true)
-        .absoluteString
-    )
+    let directoryURL = sourceURL.deletingLastPathComponent().absoluteString
+    let baseURL = escapeHTML(directoryURL.hasSuffix("/") ? directoryURL : directoryURL + "/")
     let accentTokens = accentTokens(for: accentStyle)
 
     return """

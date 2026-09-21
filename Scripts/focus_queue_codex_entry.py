@@ -129,6 +129,29 @@ def support_directory(environment):
                 str(Path.home() / "Library/Application Support/ECC Focus Queue")).absolute()
 
 
+def automatic_routing_enabled(support):
+    """Read only the opt-in flag. An unsafe or malformed file fails closed."""
+    path = Path(support) / "config.json"
+    try:
+        metadata = path.lstat()
+        if (path.is_symlink() or not stat_module.S_ISREG(metadata.st_mode)
+                or metadata.st_size > 1_048_576):
+            return False
+        return json.loads(path.read_text()).get("automaticAgentRouting") is True
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
+def should_route_automatically(mode, interactive, environment, support):
+    """Only a fresh, unassigned top-level agent can become an intake router."""
+    return (mode == "new" and interactive
+            and environment.get("FOCUS_QUEUE_ROUTER") != "1"
+            and environment.get("FOCUS_QUEUE_RUNTIME_MODE") not in {"tmux", "terminal"}
+            and not environment.get("FOCUS_QUEUE_TASK_ID")
+            and not environment.get("FOCUS_QUEUE_SUBTASK_ID")
+            and automatic_routing_enabled(support))
+
+
 def selected_directory(arguments):
     directory = os.getcwd()
     index = 0
@@ -211,6 +234,19 @@ def repository_identity(source):
     if not stat_module.S_ISDIR(metadata.st_mode) or path.is_symlink():
         raise EntryError("The repository identity is redirected or is not a directory.")
     return f"{path}:{metadata.st_dev}:{metadata.st_ino}"
+
+
+def same_repository_identity(left, right):
+    """Compare canonical filesystem identity across macOS path aliases."""
+    if not isinstance(left, str) or not isinstance(right, str):
+        return False
+    try:
+        left_path, left_device, left_inode = left.rsplit(":", 2)
+        right_path, right_device, right_inode = right.rsplit(":", 2)
+    except ValueError:
+        return False
+    return (left_device == right_device and left_inode == right_inode
+            and Path(left_path).resolve() == Path(right_path).resolve())
 
 
 def path_within(path, root):
@@ -311,7 +347,12 @@ def prepare_managed_root(primary, *, create=True):
             or marker_metadata.st_uid != os.geteuid() or marker_metadata.st_mode & 0o022):
         raise EntryError("Managed worktree ownership marker must be owned by the current user, "
                          "not writable by other users, and not redirected.")
-    if read_managed_marker(marker) != expected:
+    actual = read_managed_marker(marker)
+    if (not isinstance(actual, dict)
+            or actual.get("schemaVersion") != expected["schemaVersion"]
+            or not isinstance(actual.get("repositoryPath"), str)
+            or Path(actual["repositoryPath"]).resolve() != Path(expected["repositoryPath"]).resolve()
+            or not same_repository_identity(actual.get("repositoryIdentity"), expected["repositoryIdentity"])):
         raise EntryError("Managed worktree storage belongs to a different repository.")
     return root
 
@@ -477,7 +518,8 @@ def begin_tracking(arguments, mode, session_id, support, *, isolate=True, on_cha
                 expected_identity = repository_identity(saved_primary)
                 if actual_primary != saved_primary or repository_identity(workspace) != expected_identity:
                     raise EntryError("The managed workspace belongs to a different repository.")
-                if saved.get("repositoryIdentity") not in {None, expected_identity}:
+                if (saved.get("repositoryIdentity") is not None
+                        and not same_repository_identity(saved["repositoryIdentity"], expected_identity)):
                     raise EntryError("The managed workspace repository identity changed.")
             if mode in {"new", "fork"} and workspace != source:
                 raise EntryError("The launch directory differs from this agent's assigned workspace.")
@@ -883,8 +925,14 @@ def main(argv=None):
         interactive = False
     if not creates_agent:
         os.execv(command[0], command)
+    support = support_directory(os.environ)
+    if should_route_automatically(mode, interactive, os.environ, support):
+        # The router stays in the user's current terminal and performs no source
+        # writes. Its two Focus Queue commands create and verify the successor.
+        os.environ["FOCUS_QUEUE_ROUTER"] = "1"
+        os.execv(command[0], command)
     intake_path, intake, arguments = begin_tracking(arguments, mode, session_id,
-        support_directory(os.environ), isolate=interactive,
+        support, isolate=interactive,
         on_change=lambda _: notify_intake_changed(options.helper))
     try:
         apply_placement(options.helper, intake_path, intake, initial_prompt(arguments))

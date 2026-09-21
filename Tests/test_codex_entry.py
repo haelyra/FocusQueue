@@ -114,6 +114,28 @@ else:
         self.assertEqual(ENTRY.invocation(["-m", "model", "exec", "hello"], classify_agents=True)[0], "noninteractive")
         self.assertEqual(ENTRY.invocation(["-m", "model", "exec", "--help"], classify_agents=True)[0], "utility")
 
+    def test_repository_identity_accepts_macos_tmp_alias_only_for_same_inode(self):
+        self.assertTrue(ENTRY.same_repository_identity(
+            "/tmp/project/.git:123:456", "/private/tmp/project/.git:123:456"))
+        self.assertFalse(ENTRY.same_repository_identity(
+            "/tmp/project/.git:123:456", "/private/tmp/project/.git:123:999"))
+
+    def test_automatic_routing_only_claims_fresh_unassigned_interactive_agents(self):
+        self.support.mkdir(parents=True)
+        (self.support / "config.json").write_text(json.dumps({"automaticAgentRouting":True}))
+        base = {"FOCUS_QUEUE_SUPPORT_DIR":str(self.support)}
+        self.assertTrue(ENTRY.should_route_automatically("new", True, base, self.support))
+        self.assertFalse(ENTRY.should_route_automatically("resume", True, base, self.support))
+        self.assertFalse(ENTRY.should_route_automatically("new", False, base, self.support))
+        self.assertFalse(ENTRY.should_route_automatically(
+            "new", True, {**base, "FOCUS_QUEUE_TASK_ID":"ECC-035"}, self.support))
+        self.assertFalse(ENTRY.should_route_automatically(
+            "new", True, {**base, "FOCUS_QUEUE_RUNTIME_MODE":"tmux"}, self.support))
+        self.assertFalse(ENTRY.should_route_automatically(
+            "new", True, {**base, "FOCUS_QUEUE_ROUTER":"1"}, self.support))
+        (self.support / "config.json").unlink()
+        self.assertFalse(ENTRY.should_route_automatically("new", True, base, self.support))
+
     def test_resume_uses_exact_saved_workspace_without_task_environment(self):
         saved = self.root / "assigned"
         saved.mkdir()

@@ -54,7 +54,18 @@ public actor TaskAgentLauncher {
     guard let directory = (subtask.workspace?.path ?? context.worktreePath), directory.hasPrefix("/") else {
       throw TaskContextError.unsafeWorktree("Choose a task worktree before launching an agent.")
     }
-    var providerArguments = ["--add-dir", context.contextDirectory.path]
+    var providerArguments: [String] = []
+    if let model = subtask.launchConfiguration?.model?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !model.isEmpty {
+      providerArguments += ["--model", model]
+    }
+    if let effort = subtask.launchConfiguration?.effort?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !effort.isEmpty {
+      providerArguments += subtask.provider == .codex
+        ? ["-c", "model_reasoning_effort=\(effort)"]
+        : ["--effort", effort]
+    }
+    providerArguments += ["--add-dir", context.contextDirectory.path]
     if let sessionID = subtask.sessionID {
       guard UUID(uuidString: sessionID) != nil else {
         throw TaskContextError.commandFailed("The saved provider session ID is invalid.")
@@ -69,11 +80,18 @@ public actor TaskAgentLauncher {
       if subtask.provider == .claude { providerArguments.append("--") }
       providerArguments.append(context.agentBootstrap(subtask: subtask))
     }
-    return ["/usr/bin/env", "FOCUS_QUEUE_SUPPORT_DIR=\(supportDirectory.path)",
+    var focusEnvironment = ["/usr/bin/env", "FOCUS_QUEUE_SUPPORT_DIR=\(supportDirectory.path)",
             "FOCUS_QUEUE_PROVIDER=\(subtask.provider.rawValue)",
             "FOCUS_QUEUE_SUBTASK_ID=\(subtask.id)", "FOCUS_QUEUE_TASK_ID=\(context.ticketID)"]
-      + ["FOCUS_QUEUE_RUNTIME_MODE=\(subtask.runtimeMode?.rawValue ?? "legacy")"]
-      + InteractiveAgentShell.command(provider: subtask.provider, arguments: providerArguments,
+    focusEnvironment.append("FOCUS_QUEUE_RUNTIME_MODE=\(subtask.runtimeMode?.rawValue ?? "legacy")")
+    if let routeID = subtask.launchConfiguration?.routeID,
+       UUID(uuidString: routeID) != nil {
+      let capsule = supportDirectory.appendingPathComponent("tracking/placements")
+        .appendingPathComponent(routeID.lowercased() + ".json")
+      focusEnvironment += ["FOCUS_QUEUE_LAUNCH_ID=\(routeID.lowercased())",
+                           "FOCUS_QUEUE_AGENT_CONTEXT=\(capsule.path)"]
+    }
+    return focusEnvironment + InteractiveAgentShell.command(provider: subtask.provider, arguments: providerArguments,
           shellPath: shellPath, workingDirectory: directory)
   }
 

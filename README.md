@@ -242,8 +242,10 @@ rewrite of the scheduler or report engine.
   requested wording or link changes before the dashboard refreshes. Unsent
   drafts survive tab changes for the life of the app, and the composer grows
   upward for long messages while preserving transcript space.
-- Verified read-only Queue chat access to `haley@ecc.tools`, including search,
-  full-message read, and explicit Apple Mail open operations. Every displayed
+- Verified read-only Queue chat access through the selected Apple Mail or Gmail
+  provider, including search and full-message read. Apple Mail also supports an
+  explicit open operation. Gmail uses provider-native OAuth and automatic token
+  refresh without Apple Mail, Apple Events, or Full Disk Access. Every displayed
   mail answer must match a fresh local proof receipt containing the connector,
   account, operation, retrieval time, and stable message identifiers. Missing
   or stale evidence causes the entire answer to be withheld.
@@ -418,7 +420,7 @@ only after an explicit user request.
 
 The dedicated Codex Queue harness performs a read-first daily reconciliation
 across the ECC Discord server, the configured Telegram archive transport,
-`haley@ecc.tools` through Apple Mail, and new ECC GitHub issues. The running Focus
+the selected Apple Mail or Gmail provider, and new ECC GitHub issues. The running Focus
 Queue app starts it at the configured local time from an installed automation copy; the old
 standalone LaunchAgent and Hermes cron are paused. It
 refreshes deterministic PR facts before a read-only Codex classification step

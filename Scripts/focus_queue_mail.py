@@ -549,6 +549,7 @@ def invoke_reader(config: dict[str, Any], request: dict[str, Any]) -> dict[str, 
             )
         except OSError as error:
             launched = subprocess.CompletedProcess([], 1, "", str(error))
+        launch_failure_detail = ""
         if launched.returncode != 0:
             # Codex's workspace sandbox can deny launchctl process replacement.
             # LaunchServices can still start this signed, permission-stable app
@@ -565,10 +566,9 @@ def invoke_reader(config: dict[str, Any], request: dict[str, Any]) -> dict[str, 
             if opened.returncode != 0:
                 launch_detail = (launched.stderr or launched.stdout).strip()
                 open_detail = (opened.stderr or opened.stdout).strip()
-                raise MailAccessError(
-                    "Mail reader could not start through launchd or LaunchServices: "
-                    f"{launch_detail[:250]}; {open_detail[:250]}",
-                    code="mail_reader_launch_failed",
+                launch_failure_detail = (
+                    " The direct launch triggers were denied and the automatic request watcher "
+                    f"also did not respond: {launch_detail[:120]}; {open_detail[:120]}."
                 )
         while time.monotonic() < deadline:
             try:
@@ -582,7 +582,7 @@ def invoke_reader(config: dict[str, Any], request: dict[str, Any]) -> dict[str, 
         raise MailAccessError(
             "Mail reader timed out after 90 seconds including queue wait while waiting for a response in "
             f"{response_path.parent}. The installed helper may be stale or unresponsive. "
-            "Reinstall Focus Queue to refresh the helper, then retry.",
+            f"Reinstall Focus Queue to refresh the helper, then retry.{launch_failure_detail}",
             code="mail_reader_timeout",
         )
 
@@ -596,6 +596,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     subparsers = parser.add_subparsers(dest="command", required=True)
+    authorize_parser = subparsers.add_parser("authorize")
+    authorize_parser.add_argument("--open-browser", action="store_true")
+    authorize_parser.add_argument("--timeout", type=int, default=300)
     subparsers.add_parser("status")
     search_parser = subparsers.add_parser("search")
     search_parser.add_argument("query")
@@ -614,6 +617,29 @@ def main() -> int:
 
     try:
         config = morning.load_config(arguments.config)
+        if config.get("emailProvider", "apple_mail") == "gmail":
+            import focus_queue_gmail
+
+            if arguments.command == "serve":
+                return focus_queue_gmail.serve(config)
+            if arguments.command == "authorize":
+                return emit(
+                    focus_queue_gmail.authorize(
+                        config,
+                        open_browser=arguments.open_browser,
+                        timeout=arguments.timeout,
+                    )
+                )
+            if arguments.command == "open":
+                raise MailAccessError(
+                    "Gmail open is not enabled; use the verified message URL",
+                    code="mail_open_unsupported",
+                )
+        if arguments.command == "authorize":
+            raise MailAccessError(
+                "Authorization is managed by Apple Mail for the selected provider",
+                code="mail_authorization_unsupported",
+            )
         if arguments.command == "serve":
             return serve(config)
         if arguments.command == "status":
@@ -669,6 +695,15 @@ def main() -> int:
         }
         if isinstance(error, MailAccessError):
             payload["errorCode"] = error.code
+        else:
+            try:
+                import focus_queue_gmail
+
+                if isinstance(error, focus_queue_gmail.GmailAccessError):
+                    payload["errorCode"] = error.code
+                    payload["provider"] = "gmail"
+            except ImportError:
+                pass
         return emit(payload)
 
 

@@ -78,7 +78,25 @@ public enum DailyReportAutomation {
             return "the Mail reader is busy with another request. The current request will continue; retry after it finishes"
         }
         if normalized.contains("mail_reader_timeout") || normalized.contains("mail reader timed out") {
-            return "the protected Mail reader timed out. Confirm Apple Mail is running, then retry"
+            return "the protected Mail reader timed out. Confirm the configured mail provider is available, then retry"
+        }
+        if normalized.contains("gmail_authorization_required") {
+            return "Gmail authorization expired or is missing. Run focus-mail authorize, then retry"
+        }
+        if normalized.contains("gmail_permission_denied") {
+            return "Gmail denied the read-only request. Reauthorize the configured account and confirm Gmail API access"
+        }
+        if normalized.contains("gmail_rate_limited") {
+            return "Gmail temporarily rate-limited the connector. Retry after a short delay"
+        }
+        if normalized.contains("gmail_account_mismatch") {
+            return "the authorized Gmail account does not match the configured emailAddress"
+        }
+        if normalized.contains("gmail_oauth_client") {
+            return "the Gmail Desktop-app OAuth client is missing, invalid, or not private"
+        }
+        if normalized.contains("gmail_network_failed") {
+            return "the Gmail API could not be reached. Check the network connection and retry"
         }
         if normalized.contains("mail_permission_required")
             || normalized.contains("not authorized to send apple events")
@@ -1694,7 +1712,25 @@ public actor CodexQueueAgent: QueueAgentChatting {
             return "the Mail reader is busy with another request. The current request will continue; retry after it finishes"
         }
         if normalized.contains("mail_reader_timeout") || normalized.contains("mail reader timed out") {
-            return "the protected Mail reader timed out. Confirm Apple Mail is running, then retry"
+            return "the protected Mail reader timed out. Confirm the configured mail provider is available, then retry"
+        }
+        if normalized.contains("gmail_authorization_required") {
+            return "Gmail authorization expired or is missing. Run focus-mail authorize, then retry"
+        }
+        if normalized.contains("gmail_permission_denied") {
+            return "Gmail denied the read-only request. Reauthorize the configured account and confirm Gmail API access"
+        }
+        if normalized.contains("gmail_rate_limited") {
+            return "Gmail temporarily rate-limited the connector. Retry after a short delay"
+        }
+        if normalized.contains("gmail_account_mismatch") {
+            return "the authorized Gmail account does not match the configured emailAddress"
+        }
+        if normalized.contains("gmail_oauth_client") {
+            return "the Gmail Desktop-app OAuth client is missing, invalid, or not private"
+        }
+        if normalized.contains("gmail_network_failed") {
+            return "the Gmail API could not be reached. Check the network connection and retry"
         }
         if normalized.contains("mail_permission_required")
             || normalized.contains("not authorized to send apple events")
@@ -1829,7 +1865,7 @@ public actor CodexQueueAgent: QueueAgentChatting {
               receipt.status == "ok",
               receipt.verified,
               receipt.connector == "ecc-focus-mail-reader",
-              receipt.account == "haley@ecc.tools"
+              !receipt.account.isEmpty
         else {
             throw QueueAgentError.failed(
                 "mail answer withheld because its proof receipt was missing, stale, or invalid"
@@ -1981,7 +2017,7 @@ public actor CodexQueueAgent: QueueAgentChatting {
         The host app owns terminal labels and progress UI. Do not call `tabname`, inspect unrelated configuration, or run setup commands. Call only the narrow source command needed for the user's request, plus workspace reads or explicitly requested dashboard edits.
 
         <mail-evidence-contract>
-        For every question involving email, mail, an inbox, a sender, a customer message, or a message link for haley@ecc.tools, load the `ecc-focus-mail` skill and use `/Users/hira/.local/bin/focus-mail`. Do not use Himalaya for this mailbox. Search results are excerpts only: call `focus-mail read` before describing or quoting a message body. Call `focus-mail open` only when the user explicitly asks to open a message. A mail claim is verified only when the current-turn result contains `status: ok`, `verified: true`, `connector: ecc-focus-mail-reader`, `account: haley@ecc.tools`, and `retrievedAt`; read/open claims also require the stable message `id` and `messageId`, and open requires `opened: true`. Include account, mailbox, received time, and message ID when reporting a message as read.
+        For every question involving email, mail, an inbox, a sender, a customer message, or a message link, load the `ecc-focus-mail` skill and use `/Users/hira/.local/bin/focus-mail`. Use the provider selected in ingestion settings and do not use Himalaya. Search results are excerpts only: call `focus-mail read` before describing or quoting a message body. Call `focus-mail open` only when the user explicitly asks and the selected provider supports it. A mail claim is verified only when the current-turn result contains `status: ok`, `verified: true`, `connector: ecc-focus-mail-reader`, a nonempty `account`, and `retrievedAt`; read/open claims also require the stable message `id` and `messageId`, and open requires `opened: true`. Include account, mailbox, received time, and message ID when reporting a message as read.
         On every successful mail-related request, copy the exact `nonce` from the final successful `focus-mail` result into a standalone final line formatted exactly as `MAIL_PROOF: <nonce>`. Never invent or reuse a nonce. The app will withhold the entire mail answer unless that nonce matches a fresh local proof receipt. If the user asks what a message said, to read it, for its contents, response, reply, or a quote, the final operation must be `read`. If the user asks to open it, the final operation must be `open` with `opened: true`. If the user asks whether the connector is available or working, the final operation must be `status`. Every other mail or inbox check must end with `search`.
         </mail-evidence-contract>
 

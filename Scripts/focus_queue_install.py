@@ -41,6 +41,7 @@ AUTOMATION_FILES = (
     "Scripts/focus_queue_codex.py",
     "Scripts/focus_queue_lock.py",
     "Scripts/focus_queue_mail.py",
+    "Scripts/focus_queue_gmail.py",
     "Scripts/focus_queue_discord.py",
     "Scripts/focus_queue_connectors.py",
     "Scripts/focus-queue-mail.js",
@@ -97,7 +98,7 @@ def legacy_tree_digest(path):
     return value.hexdigest()
 
 
-def validate_automation_tree(path):
+def validate_automation_tree(path, *, expected_files=AUTOMATION_FILES):
     if path.is_symlink() or not path.is_dir():
         raise ValueError(f"Built app automation is not a regular directory: {path}")
     found = set()
@@ -109,18 +110,22 @@ def validate_automation_tree(path):
         if not item.is_file():
             raise ValueError(f"Built app automation contains a special file: {item}")
         found.add(item.relative_to(path).as_posix())
-    expected = set(AUTOMATION_FILES)
-    if found != expected:
-        missing = sorted(expected - found)
-        extra = sorted(found - expected)
-        raise ValueError(
-            f"Built app automation payload is incomplete or unexpected; "
-            f"missing={missing}, extra={extra}."
-        )
+    if expected_files is not None:
+        expected = set(expected_files)
+        if found != expected:
+            missing = sorted(expected - found)
+            extra = sorted(found - expected)
+            raise ValueError(
+                f"Built app automation payload is incomplete or unexpected; "
+                f"missing={missing}, extra={extra}."
+            )
 
 
 def automation_digest_matches(path, artifact):
-    validate_automation_tree(path)
+    # An installed payload may be from an older release with a different exact
+    # file manifest. Its recorded digest still proves ownership. The incoming
+    # bundle is validated separately against the current exact manifest.
+    validate_automation_tree(path, expected_files=None)
     recorded = artifact.get("sha256")
     algorithm = artifact.get("digestAlgorithm")
     if algorithm == TREE_DIGEST_ALGORITHM:

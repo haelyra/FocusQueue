@@ -1369,7 +1369,7 @@ func codexQueueAgentAcceptsVerifiedMailProof() async throws {
       "verified":true,
       "operation":"read",
       "connector":"ecc-focus-mail-reader",
-      "account":"haley@ecc.tools",
+      "account":"reader@gmail.com",
       "retrievedAt":"2026-09-03T00:50:43Z",
       "nonce":"proof-123",
       "message":{
@@ -1410,7 +1410,7 @@ func codexQueueAgentAcceptsVerifiedMailProof() async throws {
   )
 
   #expect(!reply.message.contains("MAIL_PROOF"))
-  #expect(reply.message.contains("Verified mail evidence: haley@ecc.tools"))
+  #expect(reply.message.contains("Verified mail evidence: reader@gmail.com"))
   #expect(reply.message.contains("<message@example.com>"))
 }
 

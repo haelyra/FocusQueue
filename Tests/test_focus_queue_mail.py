@@ -1,4 +1,6 @@
 import importlib.util
+import contextlib
+import io
 import json
 import shutil
 import sqlite3
@@ -77,6 +79,50 @@ class FocusQueueMailTests(unittest.TestCase):
 
     def tearDown(self):
         self.temporary.cleanup()
+
+    def test_unified_mail_command_dispatches_to_gmail_provider(self):
+        expected = {
+            "status": "ok",
+            "verified": True,
+            "operation": "status",
+            "connector": "ecc-focus-mail-reader",
+            "provider": "gmail",
+        }
+        with mock.patch.object(
+            MODULE.morning,
+            "load_config",
+            return_value={"emailProvider": "gmail"},
+        ), mock.patch.object(
+            MODULE,
+            "invoke_reader",
+            return_value=expected,
+        ), mock.patch.object(
+            sys,
+            "argv",
+            ["focus-mail", "status"],
+        ), contextlib.redirect_stdout(io.StringIO()) as output:
+            result = MODULE.main()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(json.loads(output.getvalue()), expected)
+
+    def test_unified_mail_service_dispatches_to_gmail_provider(self):
+        with mock.patch.object(
+            MODULE.morning,
+            "load_config",
+            return_value={"emailProvider": "gmail"},
+        ), mock.patch(
+            "focus_queue_gmail.serve",
+            return_value=0,
+        ) as serve, mock.patch.object(
+            sys,
+            "argv",
+            ["focus-mail", "serve"],
+        ):
+            result = MODULE.main()
+
+        self.assertEqual(result, 0)
+        serve.assert_called_once_with({"emailProvider": "gmail"})
 
     def test_search_returns_current_verified_evidence_without_full_body(self):
         with mock.patch.object(
@@ -339,6 +385,8 @@ process.stdout.write(JSON.stringify(result));
         helper_install = (SCRIPTS / "install-mail-reader.sh").read_text()
         self.assertIn("for attempt in 1 2 3 4 5", helper_install)
         self.assertIn('if [[ "$bootstrapped" -ne 1 ]]', helper_install)
+        self.assertIn("WatchPaths", helper_install)
+        self.assertIn("connector-commands/mail-request.json", helper_install)
 
     def test_reader_timeout_has_actionable_error_code_and_runtime_path(self):
         application = self.root / "ECC Focus Mail Reader.app"
@@ -456,11 +504,60 @@ process.stdout.write(JSON.stringify(result));
             response = MODULE.invoke_reader(config, {"operation": "status"})
         self.assertEqual(response["status"], "ok")
         self.assertEqual(run.call_args.args[0], ["/usr/bin/open", "-g", "-n", str(application)])
-        with mock.patch.object(
-            MODULE.subprocess, "run", side_effect=[denied, PermissionError(1, "Operation not permitted", "/usr/bin/open")]
-        ), self.assertRaises(MODULE.MailAccessError) as captured:
-            MODULE.invoke_reader(config, {"operation": "status"})
-        self.assertEqual(captured.exception.code, "mail_reader_launch_failed")
+        with mock.patch.object(MODULE.uuid, "uuid4", return_value=nonce), mock.patch.object(
+            MODULE.subprocess,
+            "run",
+            side_effect=[denied, PermissionError(1, "Operation not permitted", "/usr/bin/open")],
+        ):
+            response = MODULE.invoke_reader(config, {"operation": "status"})
+        self.assertEqual(response["status"], "ok")
+
+    def test_javascript_helper_brokers_gmail_without_opening_apple_mail(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is required for the JavaScript reader contract")
+        harness = r"""
+const fs = require("fs");
+globalThis.ObjC = {import() {}};
+globalThis.$ = (value) => value;
+eval(fs.readFileSync(process.argv[1], "utf8") + `
+const commands = [];
+readJSON = function(path) {
+  if (String(path) === CONFIG_PATH) return {
+    emailProvider: "gmail",
+    emailAddress: "reader@example.com"
+  };
+  if (String(path).endsWith("mail-request.json")) return {
+    operation: "status", nonce: "gmail-nonce"
+  };
+  return {
+    status: "ok", operation: "status", nonce: "gmail-nonce",
+    connector: "ecc-focus-mail-reader", provider: "gmail"
+  };
+};
+writePrivateJSON = function() { throw new Error("JXA must not forge the Gmail response"); };
+globalThis.Application = function(name) {
+  if (name === "Mail") throw new Error("Apple Mail must not be opened for Gmail");
+  return {doShellScript(command) { commands.push(command); }};
+};
+Application.currentApplication = function() {
+  return {doShellScript(command) { commands.push(command); }};
+};
+const result = JSON.parse(run());
+process.stdout.write(JSON.stringify({result, commands}));
+`);
+"""
+        completed = subprocess.run(
+            [node, "-e", harness, str(SCRIPTS / "focus-queue-mail-reader.js")],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["result"]["status"], "ok")
+        self.assertEqual(len(result["commands"]), 1)
+        self.assertIn("focus_queue_gmail.py", result["commands"][0])
+        self.assertIn(" serve", result["commands"][0])
 
     def test_unconfigured_mailbox_explains_scope_without_permission_error(self):
         connection = sqlite3.connect(self.index)

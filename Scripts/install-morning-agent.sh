@@ -20,7 +20,7 @@ service="gui/$(/usr/bin/id -u)/com.haelyra.ecc-focus-queue-morning"
   "/Users/hira/Library/LaunchAgents"
 /bin/chmod 700 "$runtime_dir" "$proof_dir" "$mail_command_dir" "$mail_proof_dir"
 for script in \
-  focus_queue_morning.py focus_queue_codex.py focus_queue_lock.py focus_queue_mail.py \
+  focus_queue_morning.py focus_queue_codex.py focus_queue_lock.py focus_queue_mail.py focus_queue_gmail.py \
   focus_queue_discord.py focus_queue_connectors.py focus-queue-mail.js; do
   /bin/cp "$project_dir/Scripts/$script" "$automation_scripts/$script"
 done

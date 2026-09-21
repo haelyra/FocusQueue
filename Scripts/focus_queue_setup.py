@@ -35,7 +35,7 @@ CAPABILITIES = {
     "agent_chat": ("Answer queue questions with Codex", (("codex",), ("python3",)), "Agent execution can spend tokens; budgets require separate configuration."),
     "agent_launch": ("Launch task agents", (("wezterm",), ("codex", "claude")), "Provider sign-in and installed versions remain unverified."),
     "daily_reports": ("Schedule source reviews", (("codex",), ("python3",)), "Requires explicit source scopes, schedule, and token budget."),
-    "mail_connector": ("Read a selected Apple Mail account", (("python3",),), "Requires account selection and read permissions; no inbox access in this preview."),
+    "mail_connector": ("Read a selected Apple Mail or Gmail account", (("python3",),), "Requires provider configuration and explicit account authorization; no inbox access in this preview."),
     "discord_connector": ("Read selected Discord server channels", (("python3",),), "Requires an authorized bot account and verified channel scope."),
     "telegram_connector": ("Configure Telegram coverage", (), "Personal inbox integration remains unavailable; archive coverage must be labeled separately."),
     "github_connector": ("Read selected GitHub repositories", (("gh",),), "Requires explicit account and repository selection."),

@@ -27,7 +27,7 @@ a selected push provider or companion client. The versioned
 can deliver and resolve the same request without changing scheduling policy.
 
 ```text
-Discord + Telegram + Apple Mail + GitHub
+Discord + Telegram + selected email provider + GitHub
                   |
           read-only collection
                   |
@@ -105,8 +105,9 @@ needed, and allowlisting the intended chats.
 
 ### Email
 
-`haley@ecc.tools` is read through its already-authenticated iCloud account in
-Apple Mail. The collector includes Inbox, Junk, Archive, and Deleted Messages,
+The email collector selects one provider with `emailProvider`. The default,
+`apple_mail`, reads `haley@ecc.tools` through its already-authenticated iCloud
+account in Apple Mail. The collector includes Inbox, Junk, Archive, and Deleted Messages,
 filters every result for the ECC address, and never marks mail read, moves,
 deletes, drafts, or sends messages. Drafts, Sent, Outbox, and Notes are excluded
 because they are not inbound requests. It first reads Mail's synchronized local
@@ -117,9 +118,50 @@ separate macOS privacy identity and writes a private local snapshot by invoking
 the same read-only collector.
 No email password or session token is copied into Codex.
 
-#### Interactive Queue mail
+#### Gmail provider
 
-Queue chat uses the same permission-stable reader through the local
+Set `emailProvider` to `gmail` to use the Gmail REST API without Apple Mail,
+Apple Events, or Full Disk Access. The connector uses an installed-application
+OAuth client, PKCE, the fixed `gmail.readonly` scope, a refresh token stored in
+macOS Keychain, and short-lived access tokens held only in process memory. It
+supports status, bounded paginated search, full-message reads, attachments as
+metadata, and normalized daily-report ingestion. Sent messages and drafts are
+excluded from collection.
+
+1. In Google Cloud, enable the Gmail API, configure the OAuth consent screen,
+   and create a **Desktop app** OAuth client.
+2. Save the downloaded client JSON outside the repository with mode `0600`.
+3. Set `emailAddress`, `emailProvider: "gmail"`, and the absolute
+   `gmailOAuthClientPath` in `ingestion.json`.
+4. Reinstall the automation payload, then run the explicit user-controlled flow:
+
+```bash
+focus-mail authorize --open-browser
+focus-mail status
+focus-mail search "sender, customer, subject, or text" --days 30 --limit 10
+focus-mail read "gmail:MESSAGE_ID"
+```
+
+Without `--open-browser`, `authorize` prints the Google authorization URL and
+waits for the loopback callback. Authorization rejects a different Google
+account than `emailAddress`. The offline connector diagnostic checks only that
+the account and OAuth client path are configured; `focus-mail status` performs
+the authenticated verification.
+
+Draft, send, and reply are declared as planned capabilities but are disabled.
+They require a separate consent flow using write scopes plus an explicit
+host-owned action gate, recipient/subject/body review, idempotency, and an audit
+receipt. The read connector never requests `gmail.modify`, `gmail.compose`, or
+`gmail.send`.
+
+Google documents the installed-app OAuth flow and refresh-token lifecycle in
+[OAuth 2.0 for desktop apps](https://developers.google.com/identity/protocols/oauth2/native-app),
+and the message query/pagination contract in
+[List Gmail messages](https://developers.google.com/workspace/gmail/api/guides/list-messages).
+
+#### Interactive Apple Mail
+
+When `apple_mail` is selected, Queue chat uses the same permission-stable reader through the local
 `/Users/hira/.local/bin/focus-mail` command. It supports four read-only
 operations:
 

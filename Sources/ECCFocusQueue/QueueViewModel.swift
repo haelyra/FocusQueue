@@ -2706,6 +2706,12 @@ final class QueueViewModel {
     persistConfiguration()
   }
 
+  func setAutomaticAgentRouting(_ enabled: Bool) {
+    guard config.automaticAgentRouting != enabled else { return }
+    config.automaticAgentRouting = enabled
+    persistConfiguration()
+  }
+
   func setDailyReportsEnabled(_ enabled: Bool) {
     guard config.dailyReport.enabled != enabled else { return }
     config.dailyReport.enabled = enabled

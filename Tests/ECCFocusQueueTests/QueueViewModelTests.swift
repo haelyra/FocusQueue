@@ -261,6 +261,25 @@ struct QueueViewModelTests {
     #expect(!restarted.showsReportNotification)
   }
 
+  @Test("Automatic agent routing can be enabled from Settings and persists")
+  func automaticAgentRoutingSetting() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(!model.config.automaticAgentRouting)
+
+    model.setAutomaticAgentRouting(true)
+    #expect(model.config.automaticAgentRouting)
+    try await eventually {
+      let saved = try JSONDecoder().decode(
+        AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+      return saved.automaticAgentRouting
+    }
+
+    let restarted = await fixture.model(agent: ControlledQueueAgent())
+    #expect(restarted.config.automaticAgentRouting)
+  }
+
   @Test("App and agent share queue moves across refreshes, state saves, and restarts")
   func sharedQueueOrder() async throws {
     let fixture = try await Fixture()

@@ -4,6 +4,36 @@ import Testing
 
 @Suite("Independent agent lifecycle")
 struct AgentLifecycleTests {
+    @Test("An agent workspace is immutable after its first assignment")
+    func immutableWorkspaceAssignment() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = TaskContextStore(root: root)
+        let ticket = DashboardTicket(id: "ECC-778", title: "Workspace ownership", status: "open", summary: "")
+        _ = try await store.ensureContext(ticket: ticket)
+        let subtask = TaskSubtask(title: "Implement safely", sessionID: UUID().uuidString, status: .working)
+        _ = try await store.upsertSubtask(ticketID: ticket.id, subtask: subtask)
+
+        let assigned = AgentWorkspace(path: "/tmp/agent-a", repositoryPath: "/tmp/repo", branch: "agent-a")
+        _ = try await store.setAgentWorkspace(ticketID: ticket.id, subtaskID: subtask.id, workspace: assigned)
+
+        var refreshed = assigned
+        refreshed.baseCommit = "abc123"
+        refreshed.repositoryIdentity = "repo-id"
+        let samePath = try await store.setAgentWorkspace(
+            ticketID: ticket.id, subtaskID: subtask.id, workspace: refreshed)
+        #expect(samePath.subtasks[0].workspace == refreshed)
+        #expect(samePath.subtasks[0].workspaceHistory.isEmpty)
+
+        let replacement = AgentWorkspace(path: "/tmp/agent-b", repositoryPath: "/tmp/repo", branch: "agent-b")
+        await #expect(throws: TaskContextError.self) {
+            try await store.setAgentWorkspace(ticketID: ticket.id, subtaskID: subtask.id, workspace: replacement)
+        }
+        let preserved = try #require(try await store.load(ticketID: ticket.id))
+        #expect(preserved.subtasks[0].workspace == refreshed)
+        #expect(preserved.subtasks[0].workspaceHistory.isEmpty)
+    }
+
     @Test("Removal preserves assignment and provider identity across reload; override resists late reports")
     func removeAndOverride() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

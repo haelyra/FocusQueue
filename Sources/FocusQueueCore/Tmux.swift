@@ -17,6 +17,10 @@ public enum TmuxError: Error, LocalizedError {
   case unavailable(String)
   case startedButUnconfirmed(name: String, executable: String, attempts: Int, lastDetail: String)
   case changed
+  public var mayHaveStarted: Bool {
+    if case .startedButUnconfirmed = self { return true }
+    return false
+  }
   public var errorDescription: String? {
     switch self {
     case .stopped: "The tmux agent has stopped."

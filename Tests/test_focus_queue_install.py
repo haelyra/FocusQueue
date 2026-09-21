@@ -16,6 +16,8 @@ SPEC.loader.exec_module(MODULE)
 
 
 class InstallerTests(unittest.TestCase):
+    repository_identity = "github.com/haelyra/eccfocusqueue"
+    first_revision = "a" * 40
     automation_files = (
         "Scripts/focus_queue_morning.py",
         "Scripts/focus_queue_codex.py",
@@ -65,10 +67,39 @@ class InstallerTests(unittest.TestCase):
             "CFBundleIdentifier": MODULE.IDENTIFIER,
             "CFBundleName": MODULE.PRODUCT,
         }))
-        for name in ("ECCFocusQueue", "focus-queue-session"):
+        self.write_provenance(path)
+        for name in ("ECCFocusQueue", "focus-queue-session", "focus-queue-map"):
             binary = path / "Contents/MacOS" / name
             binary.write_bytes(content)
             binary.chmod(0o755)
+
+    def write_provenance(
+        self,
+        path,
+        *,
+        revision=None,
+        reachable=None,
+        integration_revision=None,
+        integration_ref="origin/main",
+        repository_identity=None,
+        dirty=False,
+    ):
+        revision = revision or self.first_revision
+        provenance = {
+            "schemaVersion": 1,
+            "repositoryIdentity": repository_identity or self.repository_identity,
+            "originURL": "https://github.com/haelyra/ECCFocusQueue.git",
+            "revision": revision,
+            "branch": "main",
+            "dirty": dirty,
+            "integrationRef": integration_ref,
+            "integrationRevision": integration_revision or revision,
+            "reachableRevisions": reachable or [revision],
+            "builtAt": "2026-09-21T21:00:00Z",
+        }
+        target = path / "Contents/Resources/source-provenance.json"
+        target.write_text(json.dumps(provenance, indent=2) + "\n")
+        return provenance
 
     def test_check_is_read_only_and_services_are_optional(self):
         result = self.installer.preflight()
@@ -76,6 +107,151 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(result["launchAtLogin"])
         self.assertFalse(result["desktopShortcut"])
         self.assertEqual([call[0] for call in self.calls], ["/usr/bin/codesign"])
+
+    def test_first_install_records_source_provenance_in_v2_receipt(self):
+        self.installer.install()
+
+        manifest = json.loads(self.installer.manifest.read_text())
+        self.assertEqual(manifest["version"], 2)
+        self.assertEqual(
+            manifest["sourceProvenance"]["revision"], self.first_revision
+        )
+        self.assertEqual(
+            manifest["sourceProvenance"]["repositoryIdentity"],
+            self.repository_identity,
+        )
+
+    def test_integrated_descendant_replaces_installed_revision(self):
+        self.installer.install()
+        second_revision = "b" * 40
+        replacement_bundle = self.root / "Integrated.app"
+        self.make_app(replacement_bundle, b"integrated executable")
+        self.write_provenance(
+            replacement_bundle,
+            revision=second_revision,
+            reachable=[second_revision, self.first_revision],
+            integration_revision=second_revision,
+        )
+
+        MODULE.Installer(replacement_bundle, self.home, start=False).install()
+
+        manifest = json.loads(self.installer.manifest.read_text())
+        self.assertEqual(manifest["sourceProvenance"]["revision"], second_revision)
+        self.assertEqual(
+            (self.installer.app / "Contents/MacOS/ECCFocusQueue").read_bytes(),
+            b"integrated executable",
+        )
+
+    def test_divergent_release_is_rejected_before_stop_or_replacement(self):
+        self.installer.install()
+        before_app = (self.installer.app / "Contents/MacOS/ECCFocusQueue").read_bytes()
+        before_manifest = self.installer.manifest.read_bytes()
+        sibling_revision = "c" * 40
+        replacement_bundle = self.root / "Sibling.app"
+        self.make_app(replacement_bundle, b"sibling executable")
+        self.write_provenance(
+            replacement_bundle,
+            revision=sibling_revision,
+            reachable=[sibling_revision],
+            integration_revision=sibling_revision,
+        )
+        replacement = MODULE.Installer(replacement_bundle, self.home, start=True)
+
+        with mock.patch.object(replacement, "stop") as stop, self.assertRaisesRegex(
+            ValueError, "does not contain the installed revision"
+        ):
+            replacement.install()
+
+        stop.assert_not_called()
+        self.assertEqual(
+            (self.installer.app / "Contents/MacOS/ECCFocusQueue").read_bytes(),
+            before_app,
+        )
+        self.assertEqual(self.installer.manifest.read_bytes(), before_manifest)
+
+    def test_feature_branch_build_is_rejected_until_revision_reaches_integration_ref(self):
+        self.installer.install()
+        feature_revision = "d" * 40
+        replacement_bundle = self.root / "Feature.app"
+        self.make_app(replacement_bundle, b"feature executable")
+        self.write_provenance(
+            replacement_bundle,
+            revision=feature_revision,
+            reachable=[feature_revision, self.first_revision],
+            integration_revision=self.first_revision,
+        )
+
+        with self.assertRaisesRegex(ValueError, "canonical integration revision"):
+            MODULE.Installer(replacement_bundle, self.home, start=False).install()
+
+    def test_candidate_cannot_select_a_different_integration_ref(self):
+        self.write_provenance(self.bundle, integration_ref="HEAD")
+
+        with self.assertRaisesRegex(ValueError, "canonical integration ref"):
+            self.installer.install()
+
+    def test_dirty_missing_and_mismatched_provenance_are_rejected(self):
+        scenarios = ("dirty", "missing", "repository")
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                bundle = root / "Candidate.app"
+                self.make_app(bundle, b"candidate")
+                if scenario == "dirty":
+                    self.write_provenance(bundle, dirty=True)
+                elif scenario == "missing":
+                    (bundle / "Contents/Resources/source-provenance.json").unlink()
+                else:
+                    self.write_provenance(
+                        bundle, repository_identity="github.com/example/other"
+                    )
+                home = root / "home"
+                installed = root / "Installed.app"
+                self.make_app(installed, b"installed")
+                first = MODULE.Installer(installed, home, start=False)
+                first.install()
+
+                expected = {
+                    "dirty": "uncommitted changes",
+                    "missing": "source provenance",
+                    "repository": "official repository",
+                }[scenario]
+                with self.assertRaisesRegex(ValueError, expected):
+                    MODULE.Installer(bundle, home, start=False).install()
+
+    def test_foreign_repository_cannot_seed_the_first_receipt(self):
+        self.write_provenance(
+            self.bundle, repository_identity="github.com/example/impostor"
+        )
+
+        with self.assertRaisesRegex(ValueError, "official repository"):
+            self.installer.install()
+
+    def test_provenance_rejects_a_symlinked_resources_parent(self):
+        resources = self.bundle / "Contents/Resources"
+        external = self.root / "ExternalResources"
+        resources.rename(external)
+        resources.symlink_to(external, target_is_directory=True)
+
+        with self.assertRaisesRegex(ValueError, "symlinked bundle path"):
+            self.installer.preflight()
+
+    def test_installer_rejects_a_symlinked_shell_resource_parent(self):
+        shell = self.bundle / "Contents/Resources/shell"
+        external = self.root / "ExternalShell"
+        shell.rename(external)
+        shell.symlink_to(external, target_is_directory=True)
+
+        with self.assertRaisesRegex(ValueError, "symlinked bundle path"):
+            self.installer.preflight()
+
+    def test_installer_rejects_a_symlinked_map_executable(self):
+        executable = self.bundle / "Contents/MacOS/focus-queue-map"
+        executable.unlink()
+        executable.symlink_to(self.root / "external-map")
+
+        with self.assertRaisesRegex(ValueError, "symlinked bundle path"):
+            self.installer.preflight()
 
     def test_source_bundle_must_have_the_renamed_display_identity(self):
         info_path = self.bundle / "Contents/Info.plist"

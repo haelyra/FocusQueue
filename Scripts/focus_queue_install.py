@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import subprocess
 import tempfile
 import time
 import sys
+from urllib.parse import urlparse
 
 PRODUCT = "Focus Queue"
 LEGACY_PRODUCT = "ECC Focus Queue"
@@ -22,6 +25,193 @@ IDENTIFIER = "com.haelyra.ecc-focus-queue"
 TREE_DIGEST_ALGORITHM = "sha256-tree-v1"
 PROMPT_START = "<!-- BEGIN ECC FOCUS QUEUE AGENT CONTRACT v1 -->"
 PROMPT_END = "<!-- END ECC FOCUS QUEUE AGENT CONTRACT v1 -->"
+PROVENANCE_SCHEMA_VERSION = 1
+MANIFEST_VERSION = 2
+DEFAULT_INTEGRATION_REF = "origin/main"
+OFFICIAL_REPOSITORY_IDENTITY = "github.com/haelyra/eccfocusqueue"
+PROVENANCE_FIELDS = {
+    "schemaVersion",
+    "repositoryIdentity",
+    "originURL",
+    "revision",
+    "branch",
+    "dirty",
+    "integrationRef",
+    "integrationRevision",
+    "reachableRevisions",
+    "builtAt",
+}
+REVISION_PATTERN = re.compile(r"[0-9a-f]{40}")
+
+
+def utc_timestamp():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def normalize_repository_identity(remote):
+    """Return a stable, credential-free identity for a Git remote."""
+    if not isinstance(remote, str) or not remote.strip():
+        raise ValueError("Git origin URL is missing.")
+    value = remote.strip()
+    scp_match = re.fullmatch(r"(?:[^@/]+@)?([^:/]+):(.+)", value)
+    if scp_match and "://" not in value:
+        host, repository_path = scp_match.groups()
+    else:
+        parsed = urlparse(value)
+        if parsed.scheme and parsed.hostname:
+            host = parsed.hostname
+            repository_path = parsed.path
+        else:
+            path = Path(value).expanduser().resolve()
+            return path.with_suffix("").as_posix().rstrip("/").lower()
+    repository_path = repository_path.strip("/")
+    if repository_path.lower().endswith(".git"):
+        repository_path = repository_path[:-4]
+    if not host or not repository_path:
+        raise ValueError("Git origin URL does not identify a repository.")
+    return f"{host.lower()}/{repository_path.lower()}"
+
+
+def sanitize_repository_url(remote):
+    """Remove credentials and URL parameters before embedding a remote."""
+    if not isinstance(remote, str) or not remote.strip():
+        raise ValueError("Git origin URL is missing.")
+    value = remote.strip()
+    scp_match = re.fullmatch(r"(?:[^@/]+@)?([^:/]+):(.+)", value)
+    if scp_match and "://" not in value:
+        host, repository_path = scp_match.groups()
+        return f"{host}:{repository_path}"
+    parsed = urlparse(value)
+    if parsed.scheme and parsed.hostname:
+        authority = parsed.hostname
+        if parsed.port is not None:
+            authority += f":{parsed.port}"
+        return f"{parsed.scheme}://{authority}{parsed.path}"
+    return value
+
+
+def _git(repository, *arguments):
+    try:
+        result = subprocess.run(
+            ["/usr/bin/git", *arguments],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.SubprocessError as error:
+        detail = getattr(error, "stderr", "") or str(error)
+        raise ValueError(f"Could not capture Git source provenance: {detail.strip()}") from error
+    return result.stdout.strip()
+
+
+def remote_integration_revision(repository, integration_ref):
+    try:
+        remote, branch = integration_ref.split("/", 1)
+    except ValueError as error:
+        raise ValueError("The integration ref must name a remote branch.") from error
+    if not remote or not branch:
+        raise ValueError("The integration ref must name a remote branch.")
+    output = _git(repository, "ls-remote", "--exit-code", remote, f"refs/heads/{branch}")
+    rows = [line.split() for line in output.splitlines() if line.strip()]
+    if len(rows) != 1 or len(rows[0]) != 2 or rows[0][1] != f"refs/heads/{branch}":
+        raise ValueError("The canonical integration revision is unavailable from the remote.")
+    revision = rows[0][0]
+    if not REVISION_PATTERN.fullmatch(revision):
+        raise ValueError("The remote returned an invalid integration revision.")
+    return revision
+
+
+def capture_source_provenance(repository, integration_ref=DEFAULT_INTEGRATION_REF):
+    repository = Path(repository).resolve()
+    origin_url = _git(repository, "config", "--get", "remote.origin.url")
+    revision = _git(repository, "rev-parse", "HEAD")
+    integration_revision = remote_integration_revision(repository, integration_ref)
+    branch = _git(repository, "branch", "--show-current") or "HEAD"
+    reachable = _git(repository, "rev-list", "HEAD").splitlines()
+    dirty = bool(_git(repository, "status", "--porcelain", "--untracked-files=normal"))
+    provenance = {
+        "schemaVersion": PROVENANCE_SCHEMA_VERSION,
+        "repositoryIdentity": normalize_repository_identity(origin_url),
+        "originURL": sanitize_repository_url(origin_url),
+        "revision": revision,
+        "branch": branch,
+        "dirty": dirty,
+        "integrationRef": integration_ref,
+        "integrationRevision": integration_revision,
+        "reachableRevisions": reachable,
+        "builtAt": utc_timestamp(),
+    }
+    validate_source_provenance(provenance)
+    return provenance
+
+
+def _validate_timestamp(value, description):
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise ValueError(f"{description} must be a UTC timestamp.")
+    try:
+        datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as error:
+        raise ValueError(f"{description} must be a UTC timestamp.") from error
+
+
+def validate_source_provenance(value, *, require_integrated=False):
+    if not isinstance(value, dict) or set(value) != PROVENANCE_FIELDS:
+        raise ValueError("The source provenance has an unrecognized schema.")
+    if value.get("schemaVersion") != PROVENANCE_SCHEMA_VERSION:
+        raise ValueError("The source provenance has an unrecognized schema version.")
+    for field in ("repositoryIdentity", "originURL", "branch", "integrationRef"):
+        if not isinstance(value.get(field), str) or not value[field].strip():
+            raise ValueError(f"The source provenance field {field} is invalid.")
+    for field in ("revision", "integrationRevision"):
+        if not isinstance(value.get(field), str) or not REVISION_PATTERN.fullmatch(value[field]):
+            raise ValueError(f"The source provenance field {field} is not a Git revision.")
+    reachable = value.get("reachableRevisions")
+    if (
+        not isinstance(reachable, list)
+        or not reachable
+        or any(not isinstance(item, str) or not REVISION_PATTERN.fullmatch(item) for item in reachable)
+        or len(set(reachable)) != len(reachable)
+        or value["revision"] not in reachable
+    ):
+        raise ValueError("The source provenance reachable revisions are invalid.")
+    if type(value.get("dirty")) is not bool:
+        raise ValueError("The source provenance dirty state is invalid.")
+    _validate_timestamp(value.get("builtAt"), "The source provenance build time")
+    if require_integrated:
+        if value["integrationRef"] != DEFAULT_INTEGRATION_REF:
+            raise ValueError("The candidate build does not use the canonical integration ref.")
+        if value["repositoryIdentity"] != OFFICIAL_REPOSITORY_IDENTITY:
+            raise ValueError("The candidate build does not come from the official repository.")
+        if value["dirty"]:
+            raise ValueError("The candidate build contains uncommitted changes.")
+        if value["revision"] != value["integrationRevision"]:
+            raise ValueError("The candidate revision is not the canonical integration revision.")
+    return value
+
+
+def validate_bundle_member(bundle, path):
+    if not path.is_relative_to(bundle):
+        raise ValueError("The built app resource is outside its bundle.")
+    current = path
+    while current != bundle:
+        if current.is_symlink():
+            raise ValueError(f"The built app contains a symlinked bundle path: {current}.")
+        current = current.parent
+    if bundle.is_symlink() or not path.resolve().is_relative_to(bundle.resolve()):
+        raise ValueError("The built app resource escapes its bundle.")
+
+
+def read_source_provenance(bundle, *, require_integrated=False):
+    path = bundle / "Contents/Resources/source-provenance.json"
+    validate_bundle_member(bundle, path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("The built app is missing signed source provenance.")
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("The built app source provenance is unreadable.") from error
+    return validate_source_provenance(value, require_integrated=require_integrated)
 
 
 def merge_codex_prompt(original, payload):
@@ -195,6 +385,7 @@ class Installer:
         self.login, self.shortcut, self.start = login, desktop, start
         self.service = f"gui/{os.getuid()}/{IDENTIFIER}"
         self.legacy_shortcut_owned = False
+        self.source_provenance = None
 
     def preflight(self):
         if os.uname().sysname != "Darwin":
@@ -208,17 +399,26 @@ class Installer:
             or bundle_info.get("CFBundleExecutable") != "ECCFocusQueue"
         ):
             raise ValueError("Built bundle has an unexpected display identity.")
-        for name in ("ECCFocusQueue", "focus-queue-session"):
-            if not os.access(self.bundle / "Contents/MacOS" / name, os.X_OK):
+        for name in ("ECCFocusQueue", "focus-queue-session", "focus-queue-map"):
+            executable = self.bundle / "Contents/MacOS" / name
+            validate_bundle_member(self.bundle, executable)
+            if not os.access(executable, os.X_OK):
                 raise ValueError(f"Built app is incomplete: missing executable {name}.")
         bundled_automation = self.bundle / "Contents/Resources/automation"
+        validate_bundle_member(self.bundle, bundled_automation)
         safe_destination(self.codex_prompt, self.home)
         payload = self.bundle / "Contents/Resources/CODEX_GLOBAL_INSTRUCTIONS.md"
+        validate_bundle_member(self.bundle, payload)
         if not payload.is_file() or payload.is_symlink():
             raise ValueError("The built app is missing its shareable Codex instructions.")
         merge_codex_prompt(self.codex_prompt.read_text() if self.codex_prompt.exists() else "", payload.read_text())
         safe_destination(self.codex_entry, self.home)
         safe_destination(self.codex_usage_wrapper, self.home)
+        for relative in (
+            "Contents/Resources/shell/focus_queue_codex_entry.py",
+            "Contents/Resources/shell/focus_queue_usage_wrapper.sh",
+        ):
+            validate_bundle_member(self.bundle, self.bundle / relative)
         if self.codex_entry.exists():
             candidates = [
                 app / "Contents/Resources/shell/focus_queue_codex_entry.py"
@@ -234,6 +434,9 @@ class Installer:
                 raise ValueError("The installed Codex usage adapter has local changes; retained for review.")
         validate_automation_tree(bundled_automation)
         subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(self.bundle)], check=True, capture_output=True)
+        self.source_provenance = read_source_provenance(
+            self.bundle, require_integrated=True
+        )
         for path in (
             self.app,
             self.legacy_app,
@@ -289,8 +492,27 @@ class Installer:
                 raise ValueError(f"Desktop item already exists: {self.desktop}")
         if self.manifest.exists():
             value = json.loads(self.manifest.read_text())
-            if value.get("product") != IDENTIFIER or value.get("version") != 1:
+            if value.get("product") != IDENTIFIER or value.get("version") not in (1, 2):
                 raise ValueError("Existing installation manifest is unrecognized.")
+            if value["version"] == 2:
+                installed_provenance = validate_source_provenance(
+                    value.get("sourceProvenance"), require_integrated=True
+                )
+                _validate_timestamp(value.get("installedAt"), "The installation time")
+                if (
+                    installed_provenance["repositoryIdentity"]
+                    != self.source_provenance["repositoryIdentity"]
+                ):
+                    raise ValueError(
+                        "The candidate build comes from a different repository."
+                    )
+                if (
+                    installed_provenance["revision"]
+                    not in self.source_provenance["reachableRevisions"]
+                ):
+                    raise ValueError(
+                        "The candidate build does not contain the installed revision."
+                    )
             automation_entry = next(
                 (item for item in value.get("artifacts", [])
                  if item.get("path") == str(self.automation)),
@@ -384,6 +606,18 @@ class Installer:
             staged_app = stage / self.app.name
             subprocess.run(["/usr/bin/ditto", str(self.bundle), str(staged_app)], check=True, capture_output=True)
             subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(staged_app)], check=True, capture_output=True)
+            if read_source_provenance(staged_app, require_integrated=True) != self.source_provenance:
+                raise ValueError("The candidate bundle changed while installation was being prepared.")
+            for relative in (
+                "Contents/MacOS/ECCFocusQueue",
+                "Contents/MacOS/focus-queue-session",
+                "Contents/MacOS/focus-queue-map",
+                "Contents/Resources/CODEX_GLOBAL_INSTRUCTIONS.md",
+                "Contents/Resources/shell/focus_queue_codex_entry.py",
+                "Contents/Resources/shell/focus_queue_usage_wrapper.sh",
+                "Contents/Resources/automation",
+            ):
+                validate_bundle_member(staged_app, staged_app / relative)
             staged_helper = stage / self.helper.name
             shutil.copy2(staged_app / "Contents/MacOS/focus-queue-session", staged_helper)
             staged_automation = stage / "automation-payload"
@@ -431,7 +665,10 @@ class Installer:
                 staged_link = stage / "desktop-link"
                 staged_link.symlink_to(self.app)
                 planned.append((staged_link, self.desktop))
-            manifest = {"version": 1, "product": IDENTIFIER, "backupDirectory": str(backup),
+            manifest = {"version": MANIFEST_VERSION, "product": IDENTIFIER,
+                "installedAt": utc_timestamp(),
+                "sourceProvenance": self.source_provenance,
+                "backupDirectory": str(backup),
                 "artifacts": [{"path": str(target),
                                "kind": "symlink" if source.is_symlink() else "directory" if source.is_dir() else "file",
                                "sha256": digest(source) if source.is_file() and not source.is_symlink()
@@ -526,8 +763,13 @@ def _uninstall_locked(installer, home, *, check, stop):
     if not installer.manifest.is_file():
         raise ValueError("No installation ownership manifest exists. Install the current version before using managed uninstall.")
     manifest = json.loads(installer.manifest.read_text())
-    if manifest.get("product") != IDENTIFIER or manifest.get("version") != 1:
+    if manifest.get("product") != IDENTIFIER or manifest.get("version") not in (1, 2):
         raise ValueError("Unrecognized installation manifest.")
+    if manifest["version"] == 2:
+        validate_source_provenance(
+            manifest.get("sourceProvenance"), require_integrated=True
+        )
+        _validate_timestamp(manifest.get("installedAt"), "The installation time")
     allowed = {
         installer.app, installer.legacy_app, installer.helper, installer.agent,
         installer.desktop, installer.legacy_desktop, installer.automation,
@@ -593,6 +835,17 @@ def uninstall(home, *, check=False, stop=True):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", type=Path)
+    parser.add_argument(
+        "--write-provenance",
+        type=Path,
+        help="Write source provenance JSON for inclusion in a bundle before signing.",
+    )
+    parser.add_argument("--repository", type=Path, help="Source Git repository.")
+    parser.add_argument(
+        "--integration-ref",
+        default=DEFAULT_INTEGRATION_REF,
+        help="Canonical Git ref that is allowed to ship.",
+    )
     parser.add_argument("--uninstall", action="store_true", help="Move only manifest-owned installation files to a retained backup.")
     parser.add_argument("--check", action="store_true", help="Read-only preflight.")
     parser.add_argument("--login", action="store_true", help="Enable login launch; existing choice is retained.")
@@ -600,6 +853,18 @@ def main():
     parser.add_argument("--no-start", action="store_true", help="Install files without stopping or starting services.")
     args = parser.parse_args()
     try:
+        if args.write_provenance is not None:
+            if args.uninstall or args.bundle is not None or args.check:
+                parser.error("--write-provenance cannot be combined with install modes")
+            if args.repository is None:
+                parser.error("--repository is required with --write-provenance")
+            provenance = capture_source_provenance(
+                args.repository, integration_ref=args.integration_ref
+            )
+            args.write_provenance.parent.mkdir(parents=True, exist_ok=True)
+            args.write_provenance.write_text(json.dumps(provenance, indent=2) + "\n")
+            print(json.dumps(provenance, indent=2))
+            return 0
         if args.uninstall:
             print(json.dumps(uninstall(Path.home(), check=args.check, stop=not args.no_start), indent=2))
             return 0

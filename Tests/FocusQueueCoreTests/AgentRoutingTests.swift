@@ -127,6 +127,39 @@ struct AgentRoutingTests {
         #expect(claimed.taskID == "FOC-1")
     }
 
+    @Test("A pre-receipt launch failure can retry without changing its destination or agent")
+    func failedClaimRetry() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("route-retry-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let routeID = UUID().uuidString
+        let store = AgentRouteStore(root: root)
+        _ = try store.save(AgentRouteIntent(
+            routeID: routeID, prompt: "Retry safely", provider: .codex,
+            source: .init(cwd: "/tmp/repo"), inferredProjectID: "focus",
+            repositoryPath: "/tmp/repo"))
+
+        try store.claim(routeID: routeID, subtaskID: "agent-one")
+        try store.setDestination(routeID: routeID, taskID: "FOC-1")
+        try store.releaseClaim(routeID: routeID, subtaskID: "another-agent")
+        #expect(try store.load(routeID: routeID)?.startedAt != nil)
+        try store.releaseClaim(routeID: routeID, subtaskID: "agent-one")
+
+        let released = try #require(try store.load(routeID: routeID))
+        #expect(released.startedAt == nil)
+        #expect(released.taskID == "FOC-1")
+        #expect(released.subtaskID == "agent-one")
+        try store.claim(routeID: routeID, subtaskID: "agent-one")
+        #expect(try store.load(routeID: routeID)?.startedAt != nil)
+    }
+
+    @Test("An unconfirmed tmux start retains its route claim to prevent duplicate agents")
+    func uncertainStartRetainsClaim() {
+        #expect(TmuxError.startedButUnconfirmed(
+            name: "fq-task", executable: "/opt/homebrew/bin/tmux",
+            attempts: 1, lastDetail: "pane still starting").mayHaveStarted)
+        #expect(!TmuxError.unavailable("tmux is missing").mayHaveStarted)
+    }
+
     @Test("The concise startup receipt becomes an exact recovery locator at registration")
     func startupReceipt() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("route-receipt-\(UUID())")
@@ -169,7 +202,7 @@ struct AgentRoutingTests {
         #expect(registered.projectID == "focus")
         #expect(registered.taskTitle == "Exact recall")
         #expect(registered.providerResumeCommand?.prefix(3) == ["codex", "resume", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"])
-        #expect(registered.runtime.attachCommand == receipt.runtime.attachCommand)
+        #expect(registered.runtime?.attachCommand == receipt.runtime?.attachCommand)
         #expect(registered.context == context)
         #expect(AgentStartupReceipt.promptDigest("abc")
             == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")

@@ -6,6 +6,11 @@ Task identity, writer isolation, a brief plan, and an append-only log form the c
 
 New Agent and the installed `codex` shell entry automatically create an owned branch/worktree from the selected checkout's committed HEAD. Managed paths live beside the canonical repository under `<repository>-worktrees/<task>/agents/<agent-id>` when the task is known, with provisional isolated paths permitted during placement. Application Support stores task metadata and evidence, never a coding checkout. Local edits remain in the source and are excluded from the new workspace. There is no worktree toggle. Resuming a saved agent reuses its exact assigned workspace and provider UUID.
 
+The first recorded workspace path is immutable for that agent. Same-path updates
+may enrich Git metadata, but a different checkout requires a new agent assignment.
+This prevents a running writer from following another task into a newly created
+worktree.
+
 Automatic agent routing is an opt-in setup preference. When enabled, a fresh, unassigned interactive Codex starts as a short-lived router in the current terminal. `focus-queue-session route inspect` saves the complete initial prompt and returns a compact repository-matched packet with project, existing task choices, and canonical context paths. The router interprets that packet and calls `focus-queue-session route start` with an explicit existing task or new project task, subtask title and description, provider, model, effort, repository, and workspace policy. Assigned launches and resumes bypass routing, which prevents successor recursion.
 
 `route start` claims its route UUID before changing the dashboard or starting a provider, so replay cannot create a second process. It creates or associates the task, provisions the isolated worktree, writes the task and subtask records, creates the placement capsule, starts the provider in the task-owned tmux pane, opens a fresh WezTerm or macOS Terminal client, discovers the real provider conversation UUID, and writes one concise JSON startup receipt. A successful result authorizes router exit only after registration. macOS Terminal uses tmux because it has no direct pane API; closing the router's user-opened Terminal window remains a user action because Focus Queue does not automate Terminal UI.
@@ -41,6 +46,18 @@ The installable, coworker-shareable Codex payload is [CODEX_GLOBAL_INSTRUCTIONS.
 Agents explain their assignment and configuration briefly, then report at meaningful milestones. A lightweight orchestrator maintains authorized context and behavior, reconciles records, and answers questions. Coding, agent deployment, merging, remote delivery, priority changes, and destructive cleanup require their own authority.
 
 Response-ready, assignment-complete, merged, and cleaned are separate states. The deterministic reconciler reacts to semantic state changes and runs a slow recovery sweep, using a per-task lease and changed-only audit receipts. It repairs missing context documents, explains incomplete fields, and rechecks eligible completed workspaces after merge. Existing task closure and agent removal also check runtime inactivity under the same lease. Cleanup uses repository identity markers, exact inode checks and a no-follow rename. After a final cleanliness check, it retains the checkout at a recoverable sibling and moves the exact Git administration directory out of the active registry. It never recursively deletes checkout files. Missing ownership, uncertain process discovery, active agents, locked worktrees, submodule metadata, dirty or ignored files, changed identities and unmerged commits retain the registered worktree. Shell-created external worktrees remain retained for review; broad document deletion stays disabled.
+
+Implemented, reviewed, merged, installed, and released are also separate states.
+Feature agents commit in their owned branches and hand off for review. They never
+replace the shared application. The shared installer accepts only a signed,
+clean build from the current remote integration revision and refuses older,
+divergent, dirty, feature-branch, or mismatched-repository artifacts before it
+stops the running app or mutates installation files.
+
+Local ad-hoc signing protects bundle integrity and prevents accidental sibling
+branch installs. It does not authenticate a publisher against a malicious
+same-user process. Public release artifacts require protected CI, Developer ID
+signing, and notarization.
 
 The configured entry persists launch intent before starting Codex. Task/session/label metadata can remain provisional; unknown identities never authorize resume or cleanup. New interactive coding starts and forks in committed repositories get a separate worktree; read-only research/orchestration and explicit existing-workspace modes retain their checkout and record the policy. Noninteractive calls are tracked in their existing checkout. A native-executable bypass remains discoverable on a best-effort basis rather than an OS-wide launch gate.
 

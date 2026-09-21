@@ -54,6 +54,12 @@ info_plist="$bundle_path/Contents/Info.plist"
 /usr/bin/plutil -insert NSDocumentsFolderUsageDescription -string \
   "Focus Queue reads your local task dashboard from the Documents folder." "$info_plist"
 
+integration_ref="${ECC_FOCUS_QUEUE_INTEGRATION_REF:-origin/main}"
+/usr/bin/python3 "$project_dir/Scripts/focus_queue_install.py" \
+  --write-provenance "$bundle_path/Contents/Resources/source-provenance.json" \
+  --repository "$project_dir" \
+  --integration-ref "$integration_ref" >/dev/null
+
 sign_identity="${ECC_FOCUS_QUEUE_SIGN_IDENTITY:--}"
 sign_options=()
 app_requirements=()

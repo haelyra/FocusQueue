@@ -349,7 +349,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
         Report approval requests with \(command) attention \(ticketID) \(subtask.id) approval "what needs approval", and questions with \(command) attention \(ticketID) \(subtask.id) question "what needs an answer". Report working when resuming. Report a finished response that leaves the assignment open with \(command) result \(ticketID) \(subtask.id) "short result".
         Use idle or blocked when waiting. On completion: \(command) complete \(ticketID) \(subtask.id) "what changed and verification result"
         Before any push, run \(command) review-push \(ticketID) \(subtask.id). The orchestrator scans the committed diff for accidental files, unrelated additions, generated output, and missing checks. If rejected, correct only your changes and run review-push again. Push only after acceptance and only when the user authorized remote delivery. Never push directly to main unless explicitly requested.
-        Update the plan within the agreed scope without an extra approval loop. Ask before materially changing scope, ownership, branch strategy, or external delivery. Record approved workspace changes with \(command) workspace \(ticketID) \(subtask.id) <absolute-path>.
+        Update the plan within the agreed scope without an extra approval loop. Ask before materially changing scope, ownership, branch strategy, or external delivery. Your assigned workspace path is immutable; a different checkout requires a new agent assignment. Use \(command) workspace \(ticketID) \(subtask.id) <absolute-path> only to record the first assignment or refresh metadata for the same path.
         Complete only your assigned subtask. Preserve other agents' changes. Never force-remove a worktree or merge a branch without the task's approval terms. Task closure requires verification and safe cleanup.
         """
     }
@@ -997,17 +997,14 @@ public actor TaskContextStore {
         try mutate(ticketID: ticketID, archiveChanges: true) { context in
             guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
             let previousWorkspace = context.subtasks[index].workspace
+            if let previousWorkspace, previousWorkspace.path != workspace.path {
+                throw TaskContextError.unsafeWorktree(
+                    "Agent workspace assignments are immutable. Create a new agent assignment instead of moving \(subtaskID) from \(previousWorkspace.path) to \(workspace.path).")
+            }
             let parentIDs = context.assignmentIDs(for: context.subtasks[index])
             for i in context.subtasks.indices where i != index && parentIDs.contains(context.subtasks[i].id)
                 && (context.subtasks[i].workspace == nil || context.subtasks[i].workspace == previousWorkspace) {
-                if let old = context.subtasks[i].workspace, old != workspace, !context.subtasks[i].workspaceHistory.contains(old) {
-                    context.subtasks[i].workspaceHistory.append(old)
-                }
                 context.subtasks[i].workspace = workspace
-            }
-            if let previous = context.subtasks[index].workspace, previous != workspace,
-               !context.subtasks[index].workspaceHistory.contains(previous) {
-                context.subtasks[index].workspaceHistory.append(previous)
             }
             context.subtasks[index].workspace = workspace
         }

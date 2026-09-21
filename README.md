@@ -190,8 +190,20 @@ returns a commit-specific receipt and concrete correction instructions. Rejectio
 returns a failing status to the calling agent, which must correct its changes and
 retry. A checkout change during review invalidates acceptance. This is an agent
 workflow gate; it does not install or replace Git hooks or grant push permission.
-Use `focus-queue-session workspace <TASK-ID> <SUBTASK-ID> <absolute-path>` to record
-an approved workspace change, retaining the prior location in history.
+Use `focus-queue-session workspace <TASK-ID> <SUBTASK-ID> <absolute-path>` only to
+record the first workspace or refresh metadata for that exact path. Workspace
+ownership is immutable after assignment; create a new agent for a different
+checkout.
+
+Feature branches are development lanes, not deployment lanes. Agents commit and
+hand off their branches for review. After merge and remote synchronization, a
+clean checkout at the exact `origin/main` revision may build and replace the
+shared app. The bundle carries signed source provenance, and the installer
+rejects missing, dirty, older, divergent, feature-branch, or foreign-repository
+builds before stopping the installed app. During local development the app uses
+ad-hoc signing, so this is an accidental-overwrite guard, not a defense against
+a malicious same-user process. Public releases must use a CI-produced Developer
+ID signed and notarized artifact.
 
 ## What works
 

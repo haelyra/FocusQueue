@@ -213,6 +213,23 @@ public struct AgentRouteStore: Sendable {
         intent.taskID = taskID.uppercased()
         try save(intent)
     }
+
+    /// A launch that failed before writing a durable startup receipt may retry
+    /// with the same task and subtask identities. Once a receipt exists, callers
+    /// must replay it instead of releasing the claim.
+    public func releaseClaim(routeID: String, subtaskID: String) throws {
+        let intentURL = try url(routeID: routeID)
+        let lock = intentURL.appendingPathExtension("lock")
+        let descriptor = Darwin.open(lock.path, O_CREAT | O_RDWR, 0o600)
+        guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown) }
+        defer { Darwin.close(descriptor) }
+        guard flock(descriptor, LOCK_EX) == 0 else { throw CocoaError(.fileWriteUnknown) }
+        defer { flock(descriptor, LOCK_UN) }
+        guard var intent = try load(routeID: routeID), intent.startedAt != nil,
+              intent.subtaskID == subtaskID else { return }
+        intent.startedAt = nil
+        try save(intent)
+    }
 }
 
 public actor AgentRouteCoordinator {
@@ -327,6 +344,7 @@ public struct AgentStartupRuntime: Codable, Equatable, Sendable {
 }
 
 public enum AgentStartupStatus: String, Codable, Equatable, Sendable {
+    case starting
     case launched
     case registered
     case failed
@@ -353,7 +371,7 @@ public struct AgentStartupReceipt: Codable, Equatable, Sendable {
     public var promptByteCount: Int
     public var promptSHA256: String
     public var workspace: AgentWorkspace
-    public var runtime: AgentStartupRuntime
+    public var runtime: AgentStartupRuntime?
     public var context: AgentStartupContextPaths
     public var source: AgentRouteSource
     public var createdAt: Date
@@ -367,7 +385,7 @@ public struct AgentStartupReceipt: Codable, Equatable, Sendable {
                 providerVersion: String? = nil, providerSessionID: String? = nil,
                 providerLaunchCommand: [String] = [], providerResumeCommand: [String]? = nil,
                 promptByteCount: Int, promptSHA256: String, workspace: AgentWorkspace,
-                runtime: AgentStartupRuntime, context: AgentStartupContextPaths,
+                runtime: AgentStartupRuntime? = nil, context: AgentStartupContextPaths,
                 source: AgentRouteSource, createdAt: Date = Date(), updatedAt: Date = Date()) {
         schemaVersion = 1
         self.routeID = routeID
@@ -438,6 +456,13 @@ public struct AgentStartupReceiptStore: Sendable {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return try decoder.decode(AgentStartupReceipt.self, from: Data(contentsOf: source))
+    }
+
+    public func remove(taskID: String, subtaskID: String) throws {
+        let source = try url(taskID: taskID, subtaskID: subtaskID)
+        if FileManager.default.fileExists(atPath: source.path) {
+            try FileManager.default.removeItem(at: source)
+        }
     }
 
     public func register(taskID: String, subtaskID: String, providerSessionID: String) throws {

@@ -273,7 +273,12 @@ extension TmuxController {
     }
     let result = try await run(executable, arguments)
     guard result.succeeded else {
-      throw TmuxError.unavailable(result.timedOut ? "Launch is still unconfirmed. Open the task before retrying." : String(result.standardError.prefix(800)))
+      if result.timedOut {
+        throw TmuxError.startedButUnconfirmed(
+          name: name, executable: executable, attempts: 1,
+          lastDetail: "The tmux launch command timed out; inspect the reserved session before retrying.")
+      }
+      throw TmuxError.unavailable(String(result.standardError.prefix(800)))
     }
     let fields = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
       .split(separator: result.standardOutput.contains("|") ? "|" : "\t", omittingEmptySubsequences: false)

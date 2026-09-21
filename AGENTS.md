@@ -35,8 +35,11 @@
 - After a requested application change passes its appropriate tests, commit the
   cohesive repository changes before reporting completion. Do not leave verified
   work only in the working tree.
-- When the user needs to manually assess the change, build and install from that
-  commit, restart ECC Focus Queue, and verify the running executable matches the
-  built artifact by hash and process start time.
+- Feature agents must not install or replace the shared app from isolated
+  branches. Commit and hand off the branch for review. Only the clean canonical
+  integration checkout at the current `origin/main` commit may install the
+  shared app, restart it, and verify its executable hash and process start time.
+- An assigned agent workspace is immutable. Refresh metadata only for the same
+  path; create a new agent assignment for a different checkout.
 - Push commits only when the user explicitly requests remote delivery or the
   active task already includes it.

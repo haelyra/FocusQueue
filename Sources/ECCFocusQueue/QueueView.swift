@@ -1422,6 +1422,18 @@ private struct QueueSettingsView: View {
             }
           }
           settingsSection(
+            title: "Agent routing",
+            detail: "Automatically place fresh agents into the matching project, task, isolated workspace, and managed tmux session."
+          ) {
+            Toggle(
+              "Automatically route new agents",
+              isOn: Binding(
+                get: { model.config.automaticAgentRouting },
+                set: { model.setAutomaticAgentRouting($0) }
+              )
+            )
+          }
+          settingsSection(
             title: "Appearance", detail: "Dark uses your WezTerm #1A1D23 background color."
           ) {
             Picker("Appearance", selection: appearanceBinding) {

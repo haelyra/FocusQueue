@@ -20,7 +20,10 @@ jobs:
       - name: Install fixture dependency
         run: brew install tmux
       - name: Swift build and headless tests
-        run: swift test
+        # Several suites intentionally exercise process-global tmux, locale, and
+        # observation state. Explicit serialization prevents cross-test fixtures
+        # from impersonating live agents or delaying heartbeat transitions.
+        run: swift test --no-parallel
       - name: Python tests
         run: python3 -m unittest discover -s Tests -p 'test_*.py'
       - name: Shell syntax

@@ -198,7 +198,8 @@ private final class LiveAgentFixture: @unchecked Sendable {
   init() throws {
     let token = UUID().uuidString.lowercased()
     server = "fq-live-\(token)"
-    taskID = "SANITY-\(token.prefix(8))"
+    let numericTicket = try #require(UInt32(token.prefix(8), radix: 16))
+    taskID = "SANITY-\(numericTicket)"
     executable = try #require(SetupEnvironment.executable("tmux"))
     root = FileManager.default.temporaryDirectory.appendingPathComponent("focus-queue-live-\(token)")
     repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent()

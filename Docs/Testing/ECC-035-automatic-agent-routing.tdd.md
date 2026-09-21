@@ -29,6 +29,8 @@
 
 The complete repository suites pass: 407 Swift tests and 222 Python tests. `AgentRouting.swift` has 87.13% region, 87.18% function, and 98.26% line coverage under the focused suite.
 
+Installed inspection exposed a legacy cross-prefix case: ECC-035 is owned by the Focus Queue dashboard despite its `ECC` prefix. RED `f17c353` captured the failure. The locator now searches all active project dashboards and accepts exactly one owner instead of guessing from the task ID prefix; the focused regression passes.
+
 ## Workflow sanity
 
 Pending.

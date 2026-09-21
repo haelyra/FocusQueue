@@ -53,6 +53,38 @@ public struct AgentRouteCandidate: Codable, Equatable, Sendable {
     }
 }
 
+public struct AgentRouteTaskLocation: Equatable, Sendable {
+    public let project: ProjectDefinition
+    public let ticket: DashboardTicket
+
+    public init(project: ProjectDefinition, ticket: DashboardTicket) {
+        self.project = project
+        self.ticket = ticket
+    }
+}
+
+public enum AgentRouteTaskLocator {
+    public static func locate(taskID: String,
+                              projects: [ProjectDefinition]) async throws -> AgentRouteTaskLocation {
+        let requested = taskID.uppercased()
+        var matches: [AgentRouteTaskLocation] = []
+        for project in projects where project.archivedAt == nil {
+            let dashboardURL = URL(fileURLWithPath: project.dashboardPath)
+            guard FileManager.default.fileExists(atPath: dashboardURL.path) else { continue }
+            let dashboard = try await JSONDashboardRepository().load(from: dashboardURL)
+            matches += dashboard.tickets.filter {
+                $0.id.caseInsensitiveCompare(requested) == .orderedSame
+            }.map { AgentRouteTaskLocation(project: project, ticket: $0) }
+        }
+        guard matches.count == 1, let match = matches.first else {
+            throw TaskContextError.commandFailed(matches.isEmpty
+                ? "The selected task does not exist."
+                : "The selected task appears in more than one project dashboard.")
+        }
+        return match
+    }
+}
+
 public enum AgentRouteInspectionStatus: String, Codable, Equatable, Sendable {
     case disabled
     case ready

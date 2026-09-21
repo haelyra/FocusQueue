@@ -268,8 +268,15 @@ enum SessionRegistrationError: Error, LocalizedError {
 
         let projects = ProjectCatalog.ensuringOther(
             in: configuration.projects, supportDirectory: root).filter { $0.archivedAt == nil }
+        let existingLocation: AgentRouteTaskLocation?
+        if let requestedTaskID {
+            existingLocation = try await AgentRouteTaskLocator.locate(
+                taskID: requestedTaskID, projects: projects)
+        } else {
+            existingLocation = nil
+        }
         let project = requestedProjectID.flatMap { requested in projects.first { $0.id == requested } }
-            ?? requestedTaskID.flatMap { ProjectCatalog.project(forTaskID: $0, in: projects) }
+            ?? existingLocation?.project
         guard let project else { throw TaskContextError.commandFailed("The selected project is unavailable.") }
         let dashboardURL = URL(fileURLWithPath: project.dashboardPath)
         let repositoryPath = URL(fileURLWithPath:
@@ -286,10 +293,10 @@ enum SessionRegistrationError: Error, LocalizedError {
         var ticket: DashboardTicket?
         var newTaskTitle: String?
         if let requestedTaskID {
-            let dashboard = try await JSONDashboardRepository().load(from: dashboardURL)
-            guard let saved = dashboard.tickets.first(where: {
-                $0.id.caseInsensitiveCompare(requestedTaskID) == .orderedSame
-            }) else { throw TaskContextError.commandFailed("The selected task does not exist.") }
+            guard let saved = existingLocation?.ticket,
+                  saved.id.caseInsensitiveCompare(requestedTaskID) == .orderedSame else {
+                throw TaskContextError.commandFailed("The selected task does not exist.")
+            }
             taskID = saved.id.uppercased()
             ticket = saved
         } else {

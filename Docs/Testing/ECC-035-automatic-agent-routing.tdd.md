@@ -31,6 +31,8 @@ The complete repository suites pass: 407 Swift tests and 222 Python tests. `Agen
 
 Installed inspection exposed a legacy cross-prefix case: ECC-035 is owned by the Focus Queue dashboard despite its `ECC` prefix. RED `f17c353` captured the failure. The locator now searches all active project dashboards and accepts exactly one owner instead of guessing from the task ID prefix; the focused regression passes.
 
+The first isolated live launch stopped safely before provider creation because Swift recorded `/tmp` while Python canonicalized the same macOS path to `/private/tmp`. RED `c6e87a1` captures the alias mismatch. Repository identity comparison now requires equal resolved paths, device IDs, and inode IDs; the focused check and all 49 shell-entry tests pass.
+
 ## Workflow sanity
 
 Pending.

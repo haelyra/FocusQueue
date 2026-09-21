@@ -236,6 +236,19 @@ def repository_identity(source):
     return f"{path}:{metadata.st_dev}:{metadata.st_ino}"
 
 
+def same_repository_identity(left, right):
+    """Compare canonical filesystem identity across macOS path aliases."""
+    if not isinstance(left, str) or not isinstance(right, str):
+        return False
+    try:
+        left_path, left_device, left_inode = left.rsplit(":", 2)
+        right_path, right_device, right_inode = right.rsplit(":", 2)
+    except ValueError:
+        return False
+    return (left_device == right_device and left_inode == right_inode
+            and Path(left_path).resolve() == Path(right_path).resolve())
+
+
 def path_within(path, root):
     candidate = str(Path(path).resolve()).casefold()
     boundary = str(Path(root).resolve()).casefold()
@@ -334,7 +347,12 @@ def prepare_managed_root(primary, *, create=True):
             or marker_metadata.st_uid != os.geteuid() or marker_metadata.st_mode & 0o022):
         raise EntryError("Managed worktree ownership marker must be owned by the current user, "
                          "not writable by other users, and not redirected.")
-    if read_managed_marker(marker) != expected:
+    actual = read_managed_marker(marker)
+    if (not isinstance(actual, dict)
+            or actual.get("schemaVersion") != expected["schemaVersion"]
+            or not isinstance(actual.get("repositoryPath"), str)
+            or Path(actual["repositoryPath"]).resolve() != Path(expected["repositoryPath"]).resolve()
+            or not same_repository_identity(actual.get("repositoryIdentity"), expected["repositoryIdentity"])):
         raise EntryError("Managed worktree storage belongs to a different repository.")
     return root
 
@@ -500,7 +518,8 @@ def begin_tracking(arguments, mode, session_id, support, *, isolate=True, on_cha
                 expected_identity = repository_identity(saved_primary)
                 if actual_primary != saved_primary or repository_identity(workspace) != expected_identity:
                     raise EntryError("The managed workspace belongs to a different repository.")
-                if saved.get("repositoryIdentity") not in {None, expected_identity}:
+                if (saved.get("repositoryIdentity") is not None
+                        and not same_repository_identity(saved["repositoryIdentity"], expected_identity)):
                     raise EntryError("The managed workspace repository identity changed.")
             if mode in {"new", "fork"} and workspace != source:
                 raise EntryError("The launch directory differs from this agent's assigned workspace.")

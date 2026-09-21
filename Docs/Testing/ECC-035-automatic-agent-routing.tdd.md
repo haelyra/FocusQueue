@@ -23,11 +23,11 @@
 
 ## GREEN
 
-`swift test --filter AgentRoutingTests` passes 5 tests. The suite covers opt-in configuration compatibility, read-only repository-scoped inspection, literal provider model/effort arguments and injected paths, one-time route claims, and registered recovery receipts.
+`swift test --filter AgentRoutingTests` passes 6 tests. The suite covers opt-in configuration compatibility, read-only repository-scoped inspection, cross-prefix dashboard ownership, literal provider model/effort arguments and injected paths, one-time route claims, and registered recovery receipts.
 
-`python3 -m unittest Tests.test_codex_entry` passes 48 tests. The shell entry routes only fresh, unassigned interactive agents when opted in; resumes, assigned runtimes, noninteractive commands, utilities, and nested successors retain their existing paths.
+`python3 -m unittest Tests.test_codex_entry` passes 49 tests. The shell entry routes only fresh, unassigned interactive agents when opted in; resumes, assigned runtimes, noninteractive commands, utilities, and nested successors retain their existing paths.
 
-The complete repository suites pass: 407 Swift tests and 222 Python tests. `AgentRouting.swift` has 87.13% region, 87.18% function, and 98.26% line coverage under the focused suite.
+The complete repository suites pass: 408 Swift tests and 223 Python tests. `AgentRouting.swift` has 87.13% region, 87.18% function, and 98.26% line coverage under the focused suite.
 
 Installed inspection exposed a legacy cross-prefix case: ECC-035 is owned by the Focus Queue dashboard despite its `ECC` prefix. RED `f17c353` captured the failure. The locator now searches all active project dashboards and accepts exactly one owner instead of guessing from the task ID prefix; the focused regression passes.
 
@@ -35,4 +35,13 @@ The first isolated live launch stopped safely before provider creation because S
 
 ## Workflow sanity
 
-Pending.
+The installed two-command workflow passed against an isolated support directory and the already trusted ECC Focus Queue repository:
+
+- `route inspect` returned `SAN-901`, the repository, project plan, task plan/context/log paths, source Codex UUID, source WezTerm pane/socket, and exact existing/new-task command templates without creating an agent.
+- `route start` created one isolated worktree and branch, one task-owned tmux pane, and one successor. It returned `registered`, `routerAction: exit`, and real Codex UUID `01a0c5d2-5fff-7871-80c1-b06082ccd2d9` in 3.7 seconds.
+- The successor read the injected capsule/plans, registered the same UUID, verified its workspace/branch, wrote no source files, and reported `SANITY_OK`.
+- Replaying the identical start command returned the same receipt with `replayed: true`; the task still had exactly one pane.
+- After killing the owned test pane, the receipt's saved resume locator restarted the exact UUID in a new managed pane. `runtime locate` proved the same conversation, task, subtask, tmux session, and full prior transcript.
+- Cleanup verified a clean worktree and merged base, stopped the test pane, removed the worktree and branch, and moved both temporary fixtures to Trash.
+
+An intentionally untrusted temporary repository reached Codex's native trust confirmation before inference. Routing stopped with one owned pane and no duplicate; the fixture was cleanly removed. This is an expected provider safety gate, not bypassed by Focus Queue.

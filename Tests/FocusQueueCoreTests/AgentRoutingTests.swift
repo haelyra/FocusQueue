@@ -42,6 +42,8 @@ struct AgentRoutingTests {
         #expect(packet.candidates.first?.taskPlanPath.hasSuffix("tasks/FOC-001/plan.md") == true)
         #expect(packet.projectPlanPath?.hasSuffix("projects/focus/plan.md") == true)
         #expect(packet.startCommand.hasPrefix("focus-queue-session route start \(packet.routeID) "))
+        #expect(packet.newTaskCommand.contains("--project focus"))
+        #expect(packet.requiredParameters == ["task-or-project", "title", "description", "provider", "workspace"])
         #expect(try Data(contentsOf: fixture.dashboard) == beforeDashboard)
         #expect(try await TaskContextStore(root: fixture.support).loadAll() == beforeContexts)
         #expect(try AgentRouteStore(root: fixture.support).load(routeID: packet.routeID)?.prompt == "Fix exact session recall")
@@ -55,7 +57,8 @@ struct AgentRoutingTests {
             updatedAt: Date())
         var codex = TaskSubtask(title: "Route Codex", provider: .codex)
         codex.launchConfiguration = AgentLaunchConfiguration(
-            routeID: "route-1", model: "gpt-5", effort: "high", providerVersion: "codex-cli 1.2.3")
+            routeID: "11111111-2222-4333-8444-555555555555", model: "gpt-5", effort: "high",
+            providerVersion: "codex-cli 1.2.3")
         let persisted = try JSONDecoder().decode(
             TaskSubtask.self, from: JSONEncoder().encode(codex))
         #expect(persisted.launchConfiguration == codex.launchConfiguration)
@@ -64,15 +67,40 @@ struct AgentRoutingTests {
             supportDirectory: URL(fileURLWithPath: "/tmp/support"))
         #expect(codexCommand.contains(["--model", "gpt-5"]))
         #expect(codexCommand.contains(["-c", "model_reasoning_effort=high"]))
+        #expect(codexCommand.contains("FOCUS_QUEUE_LAUNCH_ID=11111111-2222-4333-8444-555555555555"))
+        #expect(codexCommand.contains("FOCUS_QUEUE_AGENT_CONTEXT=/tmp/support/tracking/placements/11111111-2222-4333-8444-555555555555.json"))
+        #expect(context.agentPrompt(subtask: persisted).contains(
+            "/tmp/focus/logs/agent-startups/FOC-1/\(persisted.id.lowercased()).json"))
 
         var claude = TaskSubtask(title: "Route Claude", provider: .claude)
         claude.launchConfiguration = .init(
-            routeID: "route-2", model: "opus", effort: "max", providerVersion: "2.1.0")
+            routeID: "22222222-3333-4444-8555-666666666666", model: "opus", effort: "max",
+            providerVersion: "2.1.0")
         let claudeCommand = try TaskAgentLauncher.command(
             context: context, subtask: claude,
             supportDirectory: URL(fileURLWithPath: "/tmp/support"))
         #expect(claudeCommand.contains(["--model", "opus"]))
         #expect(claudeCommand.contains(["--effort", "max"]))
+    }
+
+    @Test("A route can be claimed only once before any provider starts")
+    func routeClaim() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("route-claim-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let routeID = UUID().uuidString.lowercased()
+        let store = AgentRouteStore(root: root)
+        try store.save(.init(routeID: routeID, prompt: "Route once", provider: .codex,
+                             source: .init(cwd: "/repo"), inferredProjectID: "focus",
+                             repositoryPath: "/repo"))
+        try store.claim(routeID: routeID, subtaskID: "agent-one")
+        #expect(throws: TaskContextError.self) {
+            try store.claim(routeID: routeID, subtaskID: "agent-two")
+        }
+        try store.setDestination(routeID: routeID, taskID: "FOC-1")
+        let loaded = try store.load(routeID: routeID)
+        let claimed = try #require(loaded)
+        #expect(claimed.subtaskID == "agent-one")
+        #expect(claimed.taskID == "FOC-1")
     }
 
     @Test("The concise startup receipt becomes an exact recovery locator at registration")
@@ -89,12 +117,14 @@ struct AgentRoutingTests {
             taskPlan: "/support/tasks/FOC-1/plan.md", taskContext: "/support/tasks/FOC-1/context.json",
             taskLog: "/support/tasks/FOC-1/agent-log.md")
         let receipt = AgentStartupReceipt(
-            routeID: "r1", status: .launched, taskID: "FOC-1", subtaskID: "a1",
+            routeID: "r1", status: .launched, projectID: "focus", projectName: "Focus Queue",
+            taskID: "FOC-1", taskTitle: "Exact recall", subtaskID: "a1",
             title: "Fix recall", description: "Make exact recovery deterministic",
             provider: .codex, model: "gpt-5", effort: "high", providerVersion: "codex-cli 1.2.3",
             promptByteCount: 19, promptSHA256: String(repeating: "a", count: 64),
             workspace: workspace, runtime: .init(
-                mode: .tmux, tmuxServerName: "focus-queue", tmuxName: "fq-task-foc-1",
+                mode: .tmux, tmuxExecutable: "/opt/homebrew/bin/tmux",
+                tmuxServerName: "focus-queue", tmuxName: "fq-task-foc-1",
                 tmuxPaneID: "%3", tmuxPanePID: 111, tty: "/dev/ttys003",
                 terminalApplication: "Terminal", terminalPaneID: nil, terminalSocketPath: nil,
                 attachCommand: ["tmux", "-L", "focus-queue", "attach", "-t", "fq-task-foc-1"]),
@@ -108,9 +138,13 @@ struct AgentRoutingTests {
         try store.register(
             taskID: "FOC-1", subtaskID: "a1",
             providerSessionID: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
-        let registered = try #require(store.load(taskID: "FOC-1", subtaskID: "a1"))
+        let loaded = try store.load(taskID: "FOC-1", subtaskID: "a1")
+        let registered = try #require(loaded)
         #expect(registered.status == .registered)
         #expect(registered.providerSessionID == "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+        #expect(registered.projectID == "focus")
+        #expect(registered.taskTitle == "Exact recall")
+        #expect(registered.providerResumeCommand?.prefix(3) == ["codex", "resume", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"])
         #expect(registered.runtime.attachCommand == receipt.runtime.attachCommand)
         #expect(registered.context == context)
     }

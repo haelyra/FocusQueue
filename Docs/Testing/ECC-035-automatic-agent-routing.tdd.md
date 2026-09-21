@@ -23,7 +23,9 @@
 
 ## GREEN
 
-Pending.
+`swift test --filter AgentRoutingTests` passes 5 tests. The suite covers opt-in configuration compatibility, read-only repository-scoped inspection, literal provider model/effort arguments and injected paths, one-time route claims, and registered recovery receipts.
+
+`python3 -m unittest Tests.test_codex_entry` passes 48 tests. The shell entry routes only fresh, unassigned interactive agents when opted in; resumes, assigned runtimes, noninteractive commands, utilities, and nested successors retain their existing paths.
 
 ## Workflow sanity
 

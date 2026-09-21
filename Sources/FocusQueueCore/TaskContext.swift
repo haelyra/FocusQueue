@@ -54,6 +54,21 @@ public struct AgentWorkspace: Codable, Equatable, Sendable {
     }
 }
 
+public struct AgentLaunchConfiguration: Codable, Equatable, Sendable {
+    public var routeID: String?
+    public var model: String?
+    public var effort: String?
+    public var providerVersion: String?
+
+    public init(routeID: String? = nil, model: String? = nil, effort: String? = nil,
+                providerVersion: String? = nil) {
+        self.routeID = routeID
+        self.model = model
+        self.effort = effort
+        self.providerVersion = providerVersion
+    }
+}
+
 public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     public var id: String
     public var title: String
@@ -87,6 +102,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     public var observedEventID: String?
     public var observedEventAt: Date?
     public var completedRuntimeOpenedAt: Date?
+    public var launchConfiguration: AgentLaunchConfiguration?
 
     public var hasAgent: Bool {
         !isAssignmentOnly && (parentSubtaskID != nil || sessionID != nil || tmux != nil || terminalPaneID != nil || lastHeartbeatAt != nil || status == .completed)
@@ -181,6 +197,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         case id, title, assignmentDescription, provider, sessionID, status, progressSummary, lastHeartbeatAt, completionUnread, includeInitializationPrompt, tmux
         case runtimeMode, terminalPaneID, terminalSocketPath, workspace, workspaceHistory, initialPrompt, agentRemovedAt, tracksCompletion, completionOverrideAt
         case isAssignmentOnly, parentSubtaskID, associatedSubtaskIDs, mergedIntoSubtaskID, attention, resultID, resultSummary, resultAt, observedEventID, observedEventAt, completedRuntimeOpenedAt
+        case launchConfiguration
     }
 
     public init(from decoder: any Decoder) throws {
@@ -219,6 +236,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         observedEventID = try values.decodeIfPresent(String.self, forKey: .observedEventID)
         observedEventAt = try values.decodeIfPresent(Date.self, forKey: .observedEventAt)
         completedRuntimeOpenedAt = try values.decodeIfPresent(Date.self, forKey: .completedRuntimeOpenedAt)
+        launchConfiguration = try values.decodeIfPresent(AgentLaunchConfiguration.self, forKey: .launchConfiguration)
     }
 
     /// A live terminal is not proof of activity. Only a recent explicit heartbeat is.
@@ -307,6 +325,12 @@ public struct TaskContext: Codable, Equatable, Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let assignmentLine = assignmentDetails.isEmpty
             ? "" : "Assignment details: \(assignmentDetails)\n"
+        let startupReceiptLine: String
+        if subtask.launchConfiguration?.routeID != nil {
+            startupReceiptLine = "Startup and recovery receipt: \(support)/logs/agent-startups/\(ticketID.uppercased())/\(subtask.id.lowercased()).json\n"
+        } else {
+            startupReceiptLine = ""
+        }
         return """
         \(subtask.initialPrompt.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Prepare the task context, then wait for my instruction before implementing anything." : $0 } ?? subtask.title)
 
@@ -318,7 +342,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
         Briefly state your assignment, provider, workspace, branch, and intended outputs. Reuse this assigned worktree on resume. Create an isolated worktree before coding if no dedicated writer workspace is assigned; preserve the source checkout's local edits.
         Workspace: \(subtask.workspace?.path ?? worktreePath ?? repositoryPath ?? "not configured")
         Assigned branch: \(subtask.workspace?.branch ?? branch ?? "not configured")
-        Success criteria: \(successCriteria)
+        \(startupReceiptLine)Success criteria: \(successCriteria)
         Register this pane: FOCUS_QUEUE_PROVIDER=\(subtask.provider.rawValue) FOCUS_QUEUE_TASK_ID=\(ticketID) FOCUS_QUEUE_SUBTASK_ID=\(subtask.id) \(command) attach \(ticketID)
         Report concise progress and refresh activity at meaningful milestones (at least every 5 minutes while working): \(command) progress \(ticketID) \(subtask.id) working "short progress summary"
         \(scopeInstruction)

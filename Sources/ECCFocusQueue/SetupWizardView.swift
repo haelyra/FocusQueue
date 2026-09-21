@@ -99,6 +99,9 @@ struct SetupWizardView: View {
         set: { draft.tmuxExecutable = $0; draft.persistentTerminals = true }))
       Text("New Agent uses tmux by default when this executable is available. Each launch can turn it off. With tmux enabled, closing the terminal view leaves the process running and clicking the named subtask reattaches that exact session. Reboot ends running processes.")
         .font(.callout)
+      Toggle("Automatically route new agents", isOn: $draft.automaticAgentRouting)
+      Text("An intake agent may inspect the initial prompt, choose an existing or new task, and hand off to a registered agent in the matched repository and task-owned tmux session. The intake agent exits only after the successor's real conversation ID is saved.")
+        .font(.caption).foregroundStyle(.secondary)
       DisclosureGroup("Connect from another location") {
         VStack(alignment: .leading, spacing: 10) {
           Text("Connect both devices to your tailnet. On the host Mac, configure Remote Login for your account and verify its SSH host key from your other device. The standard Tailscale macOS app uses ordinary SSH over the private network.")

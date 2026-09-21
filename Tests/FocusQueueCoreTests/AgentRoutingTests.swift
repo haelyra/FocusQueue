@@ -54,6 +54,22 @@ struct AgentRoutingTests {
         }
     }
 
+    @Test("Existing task routing trusts its unique dashboard project instead of its ID prefix")
+    func dashboardOwnsTaskPlacement() async throws {
+        let fixture = try await RoutingFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        var mismatched = try #require(
+            fixture.configuration.projects.first { $0.id == "focus" })
+        mismatched.taskPrefix = "ECC"
+
+        let location = try await AgentRouteTaskLocator.locate(
+            taskID: "FOC-001", projects: [mismatched])
+
+        #expect(location.project.id == "focus")
+        #expect(location.ticket.id == "FOC-001")
+        #expect(location.ticket.title == "Exact session recall")
+    }
+
     @Test("Provider model and effort are persisted and passed as literal arguments")
     func launchProfile() throws {
         let context = TaskContext(

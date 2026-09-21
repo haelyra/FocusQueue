@@ -12,7 +12,11 @@ completion records protect their workspace from automatic cleanup.
 
 ## Verification
 
-- Full Swift suite: 413 tests passed across 42 suites.
+- Final integrated Swift suite on delivered base 7838afd: 410 tests passed across 42 suites.
+- Installer regression suite: 27 tests passed.
+- The integration preserves the installed Gmail provider and program log; one
+  stale Gmail prompt assertion now checks provider selection and the same
+  prohibition on Himalaya.
 - Final focused regression: 6 tests passed after the cleanup-record adjustment.
 - Actual detached tmux workflow: started a disposable provider stand-in and sibling,
   invoked the production completion method, captured the completion message and

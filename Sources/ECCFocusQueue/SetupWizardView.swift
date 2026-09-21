@@ -71,6 +71,12 @@ struct SetupWizardView: View {
           Text(item.support).font(.callout).foregroundStyle(.secondary)
         }
       }
+      Picker("Managed session terminal", selection: $draft.wezTerm.applicationName) {
+        Text("WezTerm").tag("WezTerm")
+        Text("macOS Terminal").tag("Terminal")
+      }
+      Text("Open agent always launches a fresh terminal view attached to the exact verified tmux pane. macOS Terminal requires tmux; direct pane browsing remains a WezTerm-only feature.")
+        .font(.caption).foregroundStyle(.secondary)
       TextField("WezTerm executable", text: $draft.wezTerm.executable)
       Button("Install command-line helper") {
         do {
@@ -80,9 +86,11 @@ struct SetupWizardView: View {
           terminalMessage = "Helper available at \(destination.path). Add $HOME/.local/bin to PATH in your terminal, or use the full path below."
         } catch { terminalMessage = error.localizedDescription }
       }
-      Text(FileManager.default.isExecutableFile(atPath: draft.wezTerm.executable)
-        ? "WezTerm executable detected. Live connection is checked when used."
-        : "WezTerm is optional for viewing your queue. Install it to use desktop agent controls.")
+      Text(draft.wezTerm.applicationName == "Terminal"
+        ? "macOS Terminal is selected for managed agent recall."
+        : FileManager.default.isExecutableFile(atPath: draft.wezTerm.executable)
+          ? "WezTerm executable detected. Live connection is checked when used."
+          : "Install WezTerm or select macOS Terminal for managed agent recall.")
         .font(.caption).foregroundStyle(.secondary)
       Label("Optional tmux persistence", systemImage: "rectangle.stack.badge.play")
         .font(.headline)

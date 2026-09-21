@@ -76,8 +76,9 @@ public enum SetupEnvironment {
   }
 
   public static let terminalCapabilities: [(name: String, support: String)] = [
-    ("WezTerm", "App launch, pane browsing, task labels and verified agent recall."),
-    ("Terminal.app, iTerm2, Ghostty, kitty", "Use the session helper inside the terminal to create and attach tmux sessions. Desktop pane control is available in WezTerm."),
+    ("WezTerm", "Deterministic managed-session recall, pane browsing and direct-session control."),
+    ("Terminal.app", "Deterministic managed-session recall through a private one-use command file."),
+    ("iTerm2, Ghostty, kitty", "Use the session helper inside the terminal to create and attach tmux sessions. Automated desktop opening is not configured."),
     ("VS Code / Cursor terminals", "The tmux command-line path is available inside integrated terminals. Editor pane discovery is not implemented."),
     ("SSH clients", "Reconnect to tmux on the original Mac. Tailscale supplies private network access; SSH access must be configured separately.")
   ]

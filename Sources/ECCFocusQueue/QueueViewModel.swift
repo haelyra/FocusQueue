@@ -162,6 +162,7 @@ final class QueueViewModel {
   @ObservationIgnored private let discoverExternalAgents: @Sendable () async throws -> [KnownProviderProcess]
   @ObservationIgnored private let labelTmuxPane: @Sendable (TmuxSessionReference, String) async -> Void
   @ObservationIgnored private let locateExistingAgent: @Sendable (AgentProvider, String) async throws -> KnownProviderProcess?
+  @ObservationIgnored private let identifyManagedAgent: (@Sendable (TaskSubtask, WezTermConfiguration) async throws -> String?)?
 
   @ObservationIgnored var placementHandler: ((QueueWindowPlacement) -> Void)?
   @ObservationIgnored var monitorSwitchHandler: (() -> Void)?
@@ -203,6 +204,7 @@ final class QueueViewModel {
       _ = try? await TmuxController().label(reference, title: title)
     },
     maintenanceEnabled: Bool = true,
+    identifyManagedAgent: (@Sendable (TaskSubtask, WezTermConfiguration) async throws -> String?)? = nil,
     locateExistingAgent: @escaping @Sendable (AgentProvider, String) async throws -> KnownProviderProcess? = { provider, sessionID in
       try await WezTermController().locateProviderProcess(provider: provider, sessionID: sessionID)
     }
@@ -211,6 +213,7 @@ final class QueueViewModel {
     self.maintenanceEnabled = maintenanceEnabled
     self.discoverExternalAgents = discoverExternalAgents
     self.labelTmuxPane = labelTmuxPane
+    self.identifyManagedAgent = identifyManagedAgent
     self.locateExistingAgent = locateExistingAgent
     self.taskContextStore = TaskContextStore(root: paths.supportDirectory)
     self.reportHistoryRepository = JSONDailyReportHistoryRepository(runtimeDirectory: paths.ingestionRuntimeDirectory)
@@ -1600,11 +1603,29 @@ final class QueueViewModel {
         defer { workspaceLease.release() }
         if subtask.tmux != nil {
           do {
-            _ = try await terminalController.openAgentRuntime(subtask, taskID: ticket.id, configuration: config.wezTerm)
-            try await agentTerminalFocusHandler?(config.wezTerm.applicationName, ticket.id)
-            try await acknowledgeViewedAgent(subtask, ticketID: ticket.id)
-            actionMessages[ticket.id] = "Opened \(subtask.title)."
-            return
+            let expectedIdentity = subtask.sessionID?.lowercased()
+            let observedIdentity: String?
+            if expectedIdentity == nil {
+              observedIdentity = nil
+            } else if let identifyManagedAgent {
+              observedIdentity = try await identifyManagedAgent(subtask, config.wezTerm)
+            } else {
+              observedIdentity = try await taskAgentLauncher.identify(
+                subtask: subtask, configuration: config.wezTerm)
+            }
+            if expectedIdentity == nil || observedIdentity?.lowercased() == expectedIdentity {
+              _ = try await terminalController.openAgentRuntime(subtask, taskID: ticket.id, configuration: config.wezTerm)
+              try await acknowledgeViewedAgent(subtask, ticketID: ticket.id)
+              actionMessages[ticket.id] = "Opened \(subtask.title)."
+              return
+            }
+            if subtask.tmux?.name.hasPrefix("fq-task-") == true, observedIdentity != nil {
+              throw TaskContextError.commandFailed(
+                "This task pane belongs to a different provider conversation. Focus Queue did not open or replace it.")
+            }
+            // A legacy pane can be shared by stale historical records. Never
+            // attach it when its live provider UUID differs from this row.
+            // Continue below and resume the clicked UUID in a new owned pane.
           } catch TmuxError.stopped { /* Resume the durable provider conversation below. */ }
         } else if subtask.terminalPaneID != nil {
           do {
@@ -1624,7 +1645,6 @@ final class QueueViewModel {
               _ = try await terminalController.openManagedAgentRuntime(runtime,
                 taskID: ticket.id, subtaskID: subtask.id,
                 provider: subtask.provider, configuration: config.wezTerm)
-              try await agentTerminalFocusHandler?(config.wezTerm.applicationName, ticket.id)
               try await acknowledgeViewedAgent(subtask, ticketID: ticket.id)
               actionMessages[ticket.id] = "Opened \(subtask.title)."
               return
@@ -1677,7 +1697,9 @@ final class QueueViewModel {
           assignment.terminalSocketPath = receipt.socketPath
           _ = try await terminalController.openAgentRuntime(assignment, taskID: ticket.id, configuration: config.wezTerm)
         }
-        try await agentTerminalFocusHandler?(config.wezTerm.applicationName, ticket.id)
+        if assignment.runtimeMode == .terminal {
+          try await agentTerminalFocusHandler?(config.wezTerm.applicationName, ticket.id)
+        }
         try await acknowledgeViewedAgent(subtask, ticketID: ticket.id)
         actionMessages[ticket.id] = assignment.sessionID == nil ? "New agent opened in its assigned workspace." : "Resumed the saved agent conversation in its assigned workspace."
       } catch {
@@ -1698,6 +1720,11 @@ final class QueueViewModel {
     completion: (@MainActor (Bool) -> Void)? = nil
   ) {
     let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard useTmux || config.wezTerm.applicationName.caseInsensitiveCompare("Terminal") != .orderedSame else {
+      actionMessages[ticket.id] = "macOS Terminal requires tmux for reliable agent launch and recall. Configure tmux or select WezTerm."
+      completion?(false)
+      return
+    }
     guard !title.isEmpty, launchingTaskIDs.insert(ticket.id).inserted else {
       completion?(false)
       return

@@ -93,6 +93,36 @@ import Testing
   #expect(legacySubtask.assignmentDescription.isEmpty)
 }
 
+@Test("Exact Codex resume keeps the saved workspace, UUID, alias, and native argument order")
+func exactCodexResumeRecipe() async throws {
+  let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+    "exact-resume path 'quoted' \(UUID().uuidString)")
+  try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  let zshrc = root.appendingPathComponent(".zshrc")
+  try Data("alias codex='printf \"%s\\\\0\"'\n".utf8).write(to: zshrc)
+  let sessionID = "11111111-2222-4333-8444-555555555555"
+  let context = TaskContext(ticketID: "ECC-1", title: "Resume", summary: "",
+    successCriteria: "Exact conversation", planPath: root.appendingPathComponent("plan.md").path,
+    worktreePath: root.path, updatedAt: Date())
+  var subtask = TaskSubtask(id: "resume-agent", title: "Resume exact", provider: .codex,
+    sessionID: sessionID, includeInitializationPrompt: false, runtimeMode: .tmux)
+  subtask.workspace = AgentWorkspace(path: root.path, repositoryPath: root.path)
+  let launch = try TaskAgentLauncher.command(
+    context: context, subtask: subtask, supportDirectory: root,
+    includePrompt: false, shellPath: "/bin/zsh")
+  let shellIndex = try #require(launch.firstIndex(of: "/bin/zsh"))
+  let result = try await FoundationProcessRunner().run(.init(
+    executable: "/bin/zsh", arguments: Array(launch.dropFirst(shellIndex + 1)),
+    environment: ["ZDOTDIR": root.path], timeoutSeconds: 10))
+
+  #expect(result.succeeded, "\(result.standardError)")
+  let arguments = result.standardOutput.split(separator: "\0", omittingEmptySubsequences: false)
+    .dropLast().map(String.init)
+  #expect(arguments == ["resume", sessionID, "--cd", root.path,
+    "--add-dir", context.contextDirectory.path])
+}
+
 private actor AgentLaunchRunner: ProcessRunning {
   var results: [ProcessResult]
   var specifications: [ProcessSpecification] = []

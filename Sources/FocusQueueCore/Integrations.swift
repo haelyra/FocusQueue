@@ -602,67 +602,12 @@ public actor WezTermController: WezTermControlling {
         // Externally created sessions can also have several panes or windows.
         // Selecting the saved identity is required before attaching its view.
         try await runtime.select(live)
-
-        var connection = try await WezTermConnection.resolve(
-            configuration: configuration, runner: runner, candidateSockets: candidateSockets)
-        guard !connection.result.timedOut else {
-            throw WezTermError.actionFailed(
-                "WezTerm lookup timed out. The managed session remains running in tmux.")
-        }
-        if !connection.result.succeeded {
-            let started = try await runner.run(ProcessSpecification(
-                executable: "/usr/bin/open", arguments: ["-a", configuration.applicationName],
-                timeoutSeconds: 15))
-            guard started.succeeded else {
-                throw WezTermError.actionFailed(Self.failureDetail(started))
-            }
-            for _ in 0..<5 {
-                connection = try await WezTermConnection.resolve(
-                    configuration: configuration, runner: runner, candidateSockets: candidateSockets)
-                if connection.result.succeeded || connection.result.timedOut { break }
-                try await Task.sleep(for: .milliseconds(300))
-            }
-            guard connection.result.succeeded else {
-                throw WezTermError.actionFailed(
-                    "WezTerm opened without a usable connection. The managed session remains running in tmux.")
-            }
-        }
-
-        let pinned = connection.configuration
-        let panes = try Self.decodePanes(from: connection.result)
-        let clients = try await runtime.clientTTYs(for: live)
-        let tabTitle = live.name.hasPrefix("fq-task-")
-            ? "\(taskID.uppercased()) · tmux"
-            : tabTitle ?? "\(taskID.uppercased()) · \(provider.displayName) · managed"
-        if let pane = panes.first(where: { $0.ttyName.map(clients.contains) == true }) {
-            try await focus(
-                pane: pane, tabTitle: tabTitle, windowTitle: taskID.uppercased(),
-                configuration: pinned)
-            return .focused(paneID: pane.paneID)
-        }
-
-        let command = try TmuxController.attachCommand(reference: live)
-        let spawn = try await runner.run(ProcessSpecification(
-            executable: pinned.executable,
-            arguments: ["cli", "spawn", "--new-window", "--domain-name", "local", "--"] + command,
-            environment: pinned.cliEnvironment, timeoutSeconds: 15))
-        guard spawn.succeeded,
-              let paneID = Int(spawn.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)),
-              paneID >= 0 else {
-            throw TmuxError.unavailable(
-                "The process is still running, but its terminal view could not be opened. Use focus-queue-session tmux attach \(live.name).")
-        }
-        _ = try await runtime.verify(saved)
-        let snapshot = try await listPanes(using: pinned)
-        guard snapshot.succeeded,
-              let pane = try Self.decodePanes(from: snapshot).first(where: { $0.paneID == paneID }) else {
-            throw TmuxError.unavailable(
-                "The new terminal view closed. The managed session remains running in tmux.")
-        }
-        try await focus(
-            pane: pane, tabTitle: tabTitle, windowTitle: taskID.uppercased(),
-            configuration: pinned)
-        return .focused(paneID: paneID)
+        let result = try await ManagedTerminalLauncher.open(
+            reference: live, configuration: configuration, runner: runner)
+        // Opening a desktop view is not allowed to weaken runtime identity.
+        // If the pane changed during launch, report that exact conflict.
+        _ = try await runtime.verify(live)
+        return result
     }
 
     public func openDirectRuntime(

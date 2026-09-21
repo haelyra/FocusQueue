@@ -485,6 +485,9 @@ struct NewTaskAgentView: View {
     guard let executable = model.config.tmuxExecutable ?? SetupEnvironment.executable("tmux") else { return false }
     return FileManager.default.isExecutableFile(atPath: executable)
   }
+  private var requiresTmux: Bool {
+    model.config.wezTerm.applicationName.caseInsensitiveCompare("Terminal") == .orderedSame
+  }
   private var name: String { TaskSubtask.agentName(prompt: prompt, provider: provider) }
   private var preview: String {
     guard let context = model.taskContexts[ticket.id] else { return "Task context will be prepared at launch." }
@@ -553,10 +556,16 @@ struct NewTaskAgentView: View {
                 .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
             }
           }
-          Toggle("Open in tmux", isOn: Binding(get: { useTmux && tmuxAvailable }, set: { useTmux = $0 }))
-            .disabled(!tmuxAvailable)
+          Toggle("Open in tmux", isOn: Binding(
+            get: { tmuxAvailable && (requiresTmux || useTmux) },
+            set: { useTmux = $0 }))
+            .disabled(!tmuxAvailable || requiresTmux)
           Text("tmux keeps the process alive after closing its terminal. A stopped agent can resume its saved conversation in a new terminal.")
             .font(.caption).foregroundStyle(.secondary)
+          if requiresTmux {
+            Text("macOS Terminal uses tmux for reliable launch and recall.")
+              .font(.caption).foregroundStyle(.secondary)
+          }
           Text("Uses your login shell's codex or claude alias, function, or command and custom flags.")
             .font(.caption).foregroundStyle(.secondary)
         }.padding(2).disabled(isStarting)
@@ -573,7 +582,7 @@ struct NewTaskAgentView: View {
           isStarting = true
           launchError = nil
           model.launchAgent(for: ticket, title: name, provider: provider, repositoryPath: repository,
-            includePrompt: includePrompt, useTmux: useTmux && tmuxAvailable,
+            includePrompt: includePrompt, useTmux: tmuxAvailable && (requiresTmux || useTmux),
             initialPrompt: prompt, tracksCompletion: true, subtaskID: assignmentID,
             allowProjectRepositoryMismatch: allowsOtherRepository,
             parentSubtaskID: targetSubtask?.id, createAssignment: targetSubtask == nil,
@@ -584,6 +593,7 @@ struct NewTaskAgentView: View {
             }
         }.buttonStyle(.borderedProminent)
           .disabled(isStarting || model.launchingTaskIDs.contains(ticket.id) || workspaceBlockReason != nil
+            || (requiresTmux && !tmuxAvailable)
             || (model.project(for: ticket) != nil && repositoryMatchesProject != true && !allowsOtherRepository))
       }
     }.padding(24).frame(width: 540, height: 660)

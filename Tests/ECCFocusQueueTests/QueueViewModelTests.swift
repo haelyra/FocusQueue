@@ -9,6 +9,29 @@ import Darwin
 @Suite("Queue app state integration")
 @MainActor
 struct QueueViewModelTests {
+  @Test("macOS Terminal rejects direct agents before any launch side effect")
+  func macTerminalRequiresTmux() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let launcher = DirectCreationRunner()
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(), taskAgentLauncher: TaskAgentLauncher(runner: launcher))
+    var configuration = model.config
+    configuration.wezTerm.applicationName = "Terminal"
+    #expect(await model.finishSetup(configuration))
+    var started: Bool?
+
+    model.launchAgent(
+      for: fixture.tickets[0], title: "Must use tmux", provider: .codex,
+      repositoryPath: fixture.root.path, useTmux: false
+    ) { started = $0 }
+
+    #expect(started == false)
+    #expect(model.actionMessages["ECC-101"]?.contains("requires tmux") == true)
+    #expect(await launcher.commands.isEmpty)
+    #expect(model.launchingTaskIDs.isEmpty)
+  }
+
   @Test("Project selection scopes task creation, task rename, and survives restart")
   func projectSelectionAndTaskMutation() async throws {
     let fixture = try await Fixture()
@@ -1281,7 +1304,9 @@ struct QueueViewModelTests {
       sessionID: sessionID, status: .working, lastHeartbeatAt: Date(),
       tmux: try TmuxController.decode("fq-window-finder|123|1000|%0|124|/dev/ttys099|0\n", executable: "/mock/tmux").first))
     let terminal = HoldingRecallRecorder(fails: fails)
-    let model = await fixture.model(agent: ControlledQueueAgent(), terminalController: terminal)
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(), terminalController: terminal,
+      identifyManagedAgent: { subtask, _ in subtask.sessionID })
     let subtask = try #require(model.subtasks(for: "ECC-101").first)
 
     model.openSubtask(subtask, for: fixture.tickets[0])
@@ -1313,7 +1338,9 @@ struct QueueViewModelTests {
         tmux: try TmuxController.decode("fq-worker|123|1000|%0|124|/dev/ttys099|0\n", executable: "/mock/tmux").first))
     }
     let terminal = HoldingRecallRecorder(fails: false)
-    let model = await fixture.model(agent: ControlledQueueAgent(), terminalController: terminal)
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(), terminalController: terminal,
+      identifyManagedAgent: { subtask, _ in subtask.sessionID })
     let first = try #require(model.subtasks(for: "ECC-101").first)
     let second = try #require(model.subtasks(for: "ECC-102").first)
 
@@ -1538,6 +1565,62 @@ struct QueueViewModelTests {
       #expect(model.subtasks(for: "ECC-101").first?.terminalPaneID == 42)
       #expect(model.subtasks(for: "ECC-101").first?.sessionID == identity)
     }
+  }
+
+  @Test("A legacy tmux record never opens another conversation and resumes the clicked UUID once")
+  func legacyTmuxConversationMismatch() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let repository = externalWorkspace(for: fixture.root, suffix: "managed-resume")
+    defer { try? FileManager.default.removeItem(at: repository) }
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    let git = FoundationProcessRunner()
+    for arguments in [["init", "-q", "-b", "feature"], ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+      "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Fixture", "--allow-empty"]] {
+      #expect(try await git.run(.init(executable: "/usr/bin/git", arguments: arguments, workingDirectory: repository.path)).succeeded)
+    }
+    let expectedID = UUID().uuidString.lowercased()
+    let wrongLiveID = UUID().uuidString.lowercased()
+    let agentID = "legacy-agent"
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    var subtask = TaskSubtask(id: agentID, title: "Resume the clicked conversation",
+      sessionID: expectedID, runtimeMode: .tmux)
+    subtask.workspace = try await TaskWorktreeManager().workspace(at: repository.path)
+    let legacyRuntime = try TmuxController.decode(
+      "fq-codex-shared-history|9|10|%1|11|/dev/ttys099|0\n",
+      executable: "/mock/legacy-tmux")
+    #expect(legacyRuntime.count == 1)
+    subtask.tmux = legacyRuntime.first
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: subtask)
+    let runner = ManagedResumeRunner(taskID: "ECC-101", agentID: agentID)
+    let terminal = ManagedResumeRecorder()
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(), terminalController: terminal,
+      taskAgentLauncher: TaskAgentLauncher(runner: runner),
+      identifyManagedAgent: { requested, _ in
+        #expect(requested.id == agentID)
+        return wrongLiveID
+      })
+
+    model.openSubtask(subtask, for: fixture.tickets[0], showResult: false)
+    try await eventually { model.launchingTaskIDs.isEmpty }
+
+    let opened = try #require(await terminal.opened.last)
+    #expect(opened.name == "fq-task-ecc-101")
+    #expect(opened.paneID == "%9")
+    #expect(await terminal.opened.count == 1)
+    let calls = await runner.commands
+    let launch = try #require(calls.first { $0.arguments.contains("new-session") })
+    #expect(launch.arguments.contains("resume"))
+    #expect(launch.arguments.contains(expectedID))
+    #expect(!launch.arguments.contains(wrongLiveID))
+    #expect(launch.arguments.contains("--cd"))
+    #expect(launch.arguments.contains(repository.path))
+    let saved = try #require(model.subtasks(for: "ECC-101").first { $0.id == agentID })
+    #expect(saved.sessionID == expectedID)
+    #expect(saved.tmux == opened)
+    #expect(saved.workspace?.path == repository.path)
   }
 
   @Test("Runtime-less external sessions never duplicate a live or unverified provider", arguments: [false, true])
@@ -1865,6 +1948,7 @@ private struct Fixture {
              connectorDiagnosticsRunner: any ProcessRunning = FoundationProcessRunner(),
              discoverExternalAgents: @escaping @Sendable () async throws -> [KnownProviderProcess] = { [] },
              labelTmuxPane: @escaping @Sendable (TmuxSessionReference, String) async -> Void = { _, _ in },
+             identifyManagedAgent: (@Sendable (TaskSubtask, WezTermConfiguration) async throws -> String?)? = nil,
              locateExistingAgent: @escaping @Sendable (AgentProvider, String) async throws -> KnownProviderProcess? = { _, _ in nil }) async -> QueueViewModel {
     let boundary = ForbiddenExternalActions()
     let model = QueueViewModel(paths: paths, dashboardRepository: dashboardRepository,
@@ -1875,6 +1959,7 @@ private struct Fixture {
       discoverExternalAgents: discoverExternalAgents,
       labelTmuxPane: labelTmuxPane,
       maintenanceEnabled: false,
+      identifyManagedAgent: identifyManagedAgent,
       locateExistingAgent: locateExistingAgent)
     await model.bootstrap()
     #expect(model.loadError == nil)
@@ -1918,6 +2003,72 @@ private actor DirectCreationRunner: ProcessRunning {
       return .init(exitCode: 1, standardOutput: "", standardError: "Fixture launch unavailable", timedOut: false)
     }
     return .init(exitCode: 0, standardOutput: "42\n", standardError: "", timedOut: false)
+  }
+}
+
+private actor ManagedResumeRunner: ProcessRunning {
+  private(set) var commands: [ProcessSpecification] = []
+  private var started = false
+  let taskID: String
+  let agentID: String
+
+  init(taskID: String, agentID: String) {
+    self.taskID = taskID
+    self.agentID = agentID
+  }
+
+  func run(_ specification: ProcessSpecification) throws -> ProcessResult {
+    commands.append(specification)
+    let arguments = specification.arguments
+    if arguments.contains("has-session") {
+      return result(exit: 1, error: "no server running")
+    }
+    if arguments.contains("new-session") {
+      started = true
+      return result("fq-task-\(taskID.lowercased())|123|1000|%9|||0\n")
+    }
+    if arguments.contains("display-message") {
+      return result("fq-task-\(taskID.lowercased())|123|1000|%9|456|/dev/ttys099|0\n")
+    }
+    if arguments.contains("list-panes") {
+      guard started else { return result(exit: 1, error: "no server running") }
+      return result("fq-task-\(taskID.lowercased())|123|1000|%9|456|/dev/ttys099|0|@1|0|160|50|0|0|80|24|\(agentID)||1|auto\n")
+    }
+    if arguments.contains("show-options"), arguments.contains("status") {
+      return result("off\n")
+    }
+    if arguments.contains("list-clients") {
+      return result()
+    }
+    return result()
+  }
+
+  private func result(_ output: String = "", exit: Int32 = 0, error: String = "") -> ProcessResult {
+    .init(exitCode: exit, standardOutput: output, standardError: error, timedOut: false)
+  }
+}
+
+private actor ManagedResumeRecorder: WezTermControlling {
+  private(set) var opened: [TmuxSessionReference] = []
+
+  func openManagedAgentRuntime(_ tmux: TmuxSessionReference, taskID: String,
+    subtaskID: String, provider: AgentProvider,
+    configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    opened.append(tmux)
+    return .spawned(paneID: nil)
+  }
+
+  func listAttachablePanes(configuration: WezTermConfiguration) async throws -> [WezTermPane] { [] }
+  func listRunningAgents(configuration: WezTermConfiguration) async throws -> [RunningAgentSession] { [] }
+  func attach(paneID: Int, tabTitle: String, windowTitle: String,
+    configuration: WezTermConfiguration) async throws { throw TestFailure.unexpectedExternalAction }
+  func focusOrSpawn(directory: String, taskID: String,
+    configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    throw TestFailure.unexpectedExternalAction
+  }
+  func focusOrResume(session: TaskAgentSession, taskID: String,
+    configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    throw TestFailure.unexpectedExternalAction
   }
 }
 

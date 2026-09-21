@@ -136,6 +136,48 @@ public actor TaskAgentLauncher {
     return prompt && choices ? .approval : nil
   }
 
+  /// Completion preserves a terminal shell and exact resume instructions. Explicit
+  /// removal continues to use closeRuntime instead.
+  public func finishRuntime(context: TaskContext, subtask: TaskSubtask, taskCompleted: Bool,
+                            configuration: WezTermConfiguration) async throws -> AgentCompletionTerminal {
+    guard subtask.tmux != nil || subtask.terminalPaneID != nil else { return .absent }
+    let message = try AgentCompletionMessage(context: context, subtask: subtask, taskCompleted: taskCompleted)
+    if let saved = subtask.tmux {
+      do {
+        return .managed(try await TmuxController(runner: runner, serverName: tmuxServerName)
+          .finish(saved, message: message))
+      } catch TmuxError.stopped { return .absent }
+    }
+    guard let paneID = subtask.terminalPaneID else { return .absent }
+    var requested = configuration
+    requested.socketPath = subtask.terminalSocketPath ?? configuration.socketPath
+    let connection = try await WezTermConnection.resolve(configuration: requested, runner: runner, candidateSockets: candidateSockets)
+    guard connection.result.succeeded,
+          subtask.terminalSocketPath == nil || connection.configuration.socketPath == subtask.terminalSocketPath else {
+      throw WezTermError.actionFailed("Could not verify the completed agent terminal; it was retained.")
+    }
+    let panes = try JSONDecoder().decode([WezTermPane].self, from: Data(connection.result.standardOutput.utf8))
+    guard let pane = panes.first(where: { $0.paneID == paneID }) else { return .absent }
+    guard let tty = pane.ttyName, let session = subtask.sessionID else {
+      throw WezTermError.actionFailed("The completed terminal has no verifiable provider identity; it was retained.")
+    }
+    let agents = try await WezTermController(runner: runner).agents(onTTY: tty)
+    guard agents.contains(where: { $0.provider == subtask.provider && $0.sessionID.caseInsensitiveCompare(session) == .orderedSame }) else {
+      throw WezTermError.actionFailed("The terminal's conversation changed; it was retained.")
+    }
+    // Direct WezTerm panes cannot be respawned. Create the completion shell in
+    // the same window before removing the verified provider pane.
+    let result = try await runner.run(.init(executable: connection.configuration.executable,
+      arguments: ["cli", "split-pane", "--pane-id", String(paneID), "--cwd", message.directory, "--"] + message.command(),
+      environment: connection.configuration.cliEnvironment))
+    guard result.succeeded, let completionPane = Int(result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)),
+          completionPane >= 0, completionPane != paneID else {
+      throw WezTermError.actionFailed("Could not open the completion shell; the agent terminal was retained.")
+    }
+    try await closeRuntime(subtask: subtask, configuration: connection.configuration)
+    return .direct(.init(paneID: completionPane, socketPath: connection.configuration.socketPath))
+  }
+
   /// Close only a verified runtime; a reused terminal identity is never sufficient.
   public func closeRuntime(subtask: TaskSubtask, configuration: WezTermConfiguration) async throws {
     if let tmux = subtask.tmux {

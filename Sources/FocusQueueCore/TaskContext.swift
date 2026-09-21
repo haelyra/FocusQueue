@@ -86,6 +86,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     public var resultAt: Date?
     public var observedEventID: String?
     public var observedEventAt: Date?
+    public var completionTerminalRetained: Bool?
     public var completedRuntimeOpenedAt: Date?
 
     public var hasAgent: Bool {
@@ -180,6 +181,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, title, assignmentDescription, provider, sessionID, status, progressSummary, lastHeartbeatAt, completionUnread, includeInitializationPrompt, tmux
         case runtimeMode, terminalPaneID, terminalSocketPath, workspace, workspaceHistory, initialPrompt, agentRemovedAt, tracksCompletion, completionOverrideAt
+        case completionTerminalRetained
         case isAssignmentOnly, parentSubtaskID, associatedSubtaskIDs, mergedIntoSubtaskID, attention, resultID, resultSummary, resultAt, observedEventID, observedEventAt, completedRuntimeOpenedAt
     }
 
@@ -218,6 +220,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         resultAt = try values.decodeIfPresent(Date.self, forKey: .resultAt)
         observedEventID = try values.decodeIfPresent(String.self, forKey: .observedEventID)
         observedEventAt = try values.decodeIfPresent(Date.self, forKey: .observedEventAt)
+        completionTerminalRetained = try values.decodeIfPresent(Bool.self, forKey: .completionTerminalRetained)
         completedRuntimeOpenedAt = try values.decodeIfPresent(Date.self, forKey: .completedRuntimeOpenedAt)
     }
 
@@ -920,6 +923,7 @@ public actor TaskContextStore {
             context.removedAgentSessionKeys = Array(Set((context.removedAgentSessionKeys ?? [])
                 + [TaskContext.launchRemovalKey(context.subtasks[index].id)])).sorted()
             for i in context.subtasks.indices where i == index || (session != nil && context.subtasks[i].provider == provider && context.subtasks[i].sessionID?.lowercased() == session?.lowercased()) {
+                context.subtasks[i].completionTerminalRetained = automatically && context.subtasks[i].status == .completed
                 context.subtasks[i].agentRemovedAt = Date()
                 if !automatically { context.subtasks[i].completionUnread = false }
             }

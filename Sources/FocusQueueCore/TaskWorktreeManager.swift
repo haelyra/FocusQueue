@@ -210,6 +210,9 @@ public actor TaskWorktreeManager {
     }
 
     public func cleanupAgent(ticketID: String, subtask: TaskSubtask, store: TaskContextStore) async throws -> TaskWorktreeCleanupResult {
+        guard subtask.completionTerminalRetained != true else {
+            return .init(removed: false, message: "Workspace retained for the completed conversation and its resume command.")
+        }
         let workspaces = (subtask.workspaceHistory + [subtask.workspace].compactMap { $0 }).filter(\.managed)
         var result = TaskWorktreeCleanupResult(removed: false, message: "Existing workspace retained.")
         var cleanedPaths = Set<String>()
@@ -331,6 +334,9 @@ public actor TaskWorktreeManager {
     }
 
     public func cleanup(ticketID: String, store: TaskContextStore) async throws -> TaskWorktreeCleanupResult {
+        if let saved = try await store.load(ticketID: ticketID), saved.subtasks.contains(where: { $0.completionTerminalRetained == true }) {
+            return .init(removed: false, message: "Workspace retained for completed conversations and their resume commands.")
+        }
         guard let context = try await store.load(ticketID: ticketID) else { throw TaskContextError.missingContext(ticketID) }
         guard context.managedWorktree, let path = context.worktreePath, let repository = context.repositoryPath,
               let branch = context.branch, let base = context.baseBranch else {

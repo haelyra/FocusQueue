@@ -164,6 +164,16 @@ public actor TmuxController {
     return current
   }
 
+  /// Replace only the verified provider pane, preserving its window and siblings.
+  public func finish(_ saved: TmuxSessionReference, message: AgentCompletionMessage) async throws -> TmuxSessionReference {
+    _ = try await verify(saved)
+    let result = try await run(saved.executable,
+      ["respawn-pane", "-k", "-t", saved.paneID, "-c",
+       message.directory.replacingOccurrences(of: "#", with: "##"), "--"] + message.command())
+    guard result.succeeded else { throw TmuxError.unavailable("Could not show the completed agent terminal. Its record was retained.") }
+    return try await inspectTarget(saved.paneID, name: saved.name, executable: saved.executable, allowDifferentSession: true)
+  }
+
   public func stop(_ saved: TmuxSessionReference) async throws {
     do { _ = try await verify(saved) } catch TmuxError.stopped { return }
     let result = try await run(saved.executable, ["kill-pane", "-t", saved.paneID])

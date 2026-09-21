@@ -321,6 +321,15 @@ Selected-platform chat runs remain in report history, return in chat, and stay
 available in the panel for that app session. They do not replace the persisted
 latest comprehensive report used by the once-a-day scheduler.
 
+## Completed agent terminals
+
+Settings → Agent completion → **Automatically exit completed agents** is enabled
+by default. When an assignment is marked complete, Focus Queue exits its agent
+and leaves the terminal window open with a completion message and an exact
+conversation resume command. The assignment's workspace is retained for that
+command. Disable the setting to keep completed agents running. Explicitly
+removing an agent still closes its runtime.
+
 ## Build and install
 
 ```bash

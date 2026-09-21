@@ -2400,9 +2400,25 @@ final class QueueViewModel {
   }
 
   private func retireAgent(_ subtask: TaskSubtask, for ticket: DashboardTicket, automatically: Bool = false) async {
+    if automatically && !config.autoExitCompletedAgents { return }
     do {
       let lease = try await TaskMaintenance.lease(ticketID: ticket.id, root: paths.supportDirectory)
       defer { lease.release() }
+      if automatically {
+        guard let context = taskContexts[ticket.id], context.canAutomaticallyRetire(subtask) else { return }
+        let terminal = try await taskAgentLauncher.finishRuntime(
+          context: context, subtask: subtask, taskCompleted: ticket.isCompleted,
+          configuration: config.wezTerm)
+        switch terminal {
+        case .managed(let reference):
+          taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
+            ticketID: ticket.id, subtaskID: subtask.id, tmux: reference)
+        case .direct(let receipt):
+          taskContexts[ticket.id] = try await taskContextStore.setDirectRuntime(
+            ticketID: ticket.id, subtaskID: subtask.id, paneID: receipt.paneID, socketPath: receipt.socketPath)
+        case .absent: break
+        }
+      }
       taskContexts[ticket.id] = try await taskContextStore.removeAgent(ticketID: ticket.id, subtaskID: subtask.id, automatically: automatically)
       localState.agentSessions.removeAll {
         $0.ticketID == ticket.id && ($0.subtaskID == subtask.id ||
@@ -2411,12 +2427,17 @@ final class QueueViewModel {
       agentSessionErrors[Self.subtaskKey(ticketID: ticket.id, subtaskID: subtask.id)] = nil
       persistLocalState()
       actionMessages[ticket.id] = "Agent removed. Its assignment, conversation, and workspace history are retained."
+      if automatically {
+        actionMessages[ticket.id] = "Agent exited. Its terminal and workspace remain available to continue the conversation."
+        return
+      }
       // List removal is independent of process cleanup and completion approval.
       do { try await taskAgentLauncher.closeRuntime(subtask: subtask, configuration: config.wezTerm) }
       catch { actionMessages[ticket.id] = "Agent removed. \(error.localizedDescription)" }
       if subtask.status == .completed {
-        try await TaskMaintenance(root: paths.supportDirectory).requireInactive(subtask)
-        let result = try await taskWorktreeManager.cleanupAgent(ticketID: ticket.id, subtask: subtask, store: taskContextStore)
+        let removed = taskContexts[ticket.id]?.subtasks.first { $0.id == subtask.id } ?? subtask
+        try await TaskMaintenance(root: paths.supportDirectory).requireInactive(removed)
+        let result = try await taskWorktreeManager.cleanupAgent(ticketID: ticket.id, subtask: removed, store: taskContextStore)
         if subtask.hasManagedWorkspaces && !result.removed { closureMessages[ticket.id] = result.message }
       }
     } catch { actionMessages[ticket.id] = error.localizedDescription }
@@ -2440,7 +2461,7 @@ final class QueueViewModel {
         closureMessages[ticket.id] = nil
         let completedAgents = taskContexts[ticket.id]?.agents(for: subtask.id, includingRemoved: true) ?? []
         for completed in completedAgents where completed.status == .completed {
-          await retireAgent(completed, for: ticket)
+          await retireAgent(completed, for: ticket, automatically: true)
         }
         actionMessages[ticket.id] = "Subtask marked complete. Review history saved."
         if presentedAgentUpdate?.ticketID == ticket.id { closeAgentUpdate() }
@@ -3200,6 +3221,11 @@ final class QueueViewModel {
     let warning = warnings.isEmpty ? nil : NSError(domain: "ECCFocusQueue.DurableImport", code: 1,
       userInfo: [NSLocalizedDescriptionKey: warnings.prefix(3).joined(separator: "\n")])
     recordDurableError(warning, scope: "import-warnings")
+  }
+
+  func setAutoExitCompletedAgents(_ enabled: Bool) {
+    config.autoExitCompletedAgents = enabled
+    persistConfiguration()
   }
 
   private func persistConfiguration() {

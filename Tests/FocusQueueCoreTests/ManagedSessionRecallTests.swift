@@ -18,6 +18,46 @@ private actor ManagedRecallRunner: ProcessRunning {
   }
 }
 
+private actor DeterministicRecallRunner: ProcessRunning {
+  private(set) var calls: [ProcessSpecification] = []
+  let reference: TmuxSessionReference
+  let agentID: String
+
+  init(reference: TmuxSessionReference, agentID: String) {
+    self.reference = reference
+    self.agentID = agentID
+  }
+
+  func run(_ specification: ProcessSpecification) throws -> ProcessResult {
+    calls.append(specification)
+    if specification.executable == reference.executable {
+      if specification.arguments.contains("show-options") {
+        return success("ECC-1\n")
+      }
+      if specification.arguments.contains("list-panes") {
+        return success(
+          "\(reference.name)|\(reference.serverPID)|\(reference.createdAt)|\(reference.paneID)|\(reference.panePID)|\(reference.tty)|0|@1|0|160|50|0|0|80|24|\(agentID)||1|auto\n")
+      }
+      if specification.arguments.contains("display-message") {
+        return success(
+          "\(reference.name)|\(reference.serverPID)|\(reference.createdAt)|\(reference.paneID)|\(reference.panePID)|\(reference.tty)|0\n")
+      }
+      return success()
+    }
+    if specification.executable == "/usr/bin/open" {
+      return success()
+    }
+    return .init(
+      exitCode: 1, standardOutput: "",
+      standardError: "Unexpected GUI-specific command: \(specification.executable) \(specification.arguments)",
+      timedOut: false)
+  }
+
+  private func success(_ output: String = "") -> ProcessResult {
+    .init(exitCode: 0, standardOutput: output, standardError: "", timedOut: false)
+  }
+}
+
 @Suite("Managed session recall")
 struct ManagedSessionRecallTests {
   private let tmuxOutput = "fq-implement\t123\t1000\t%0\t124\t/dev/ttys099\t0\n"
@@ -36,6 +76,62 @@ struct ManagedSessionRecallTests {
       sessionID: "11111111-2222-4333-8444-555555555555",
       tabTitle: "Implement managed session recall", workingDirectory: "/tmp/worktree",
       subtaskID: "implement", tmux: reference)
+  }
+
+  private func taskReference() -> TmuxSessionReference {
+    .init(name: "fq-task-ecc-1", serverPID: 123, createdAt: 1000,
+      paneID: "%7", panePID: 124, tty: "/dev/ttys099", executable: "/mock/tmux")
+  }
+
+  @Test("WezTerm recall opens one fresh terminal with the exact verified tmux pane command")
+  func deterministicWezTermRecipe() async throws {
+    let agentID = "agent-one"
+    let reference = taskReference()
+    let runner = DeterministicRecallRunner(reference: reference, agentID: agentID)
+    let subtask = TaskSubtask(id: agentID, title: "Exact agent", provider: .codex,
+      tmux: reference, runtimeMode: .tmux)
+
+    let result = try await WezTermController(
+      runner: runner, candidateSockets: []).openAgentRuntime(
+        subtask, taskID: "ECC-1",
+        configuration: .init(executable: "/mock/wezterm", applicationName: "WezTerm"))
+
+    #expect(result == .spawned(paneID: nil))
+    let calls = await runner.calls
+    let opened = try #require(calls.first { $0.executable == "/usr/bin/open" })
+    #expect(opened.arguments.starts(with: ["-na", "WezTerm", "--args", "start", "--always-new-process", "--"]))
+    #expect(opened.arguments.contains("attach-session"))
+    #expect(opened.arguments.contains("=fq-task-ecc-1"))
+    #expect(opened.arguments.contains("%7"))
+    #expect(!calls.contains { $0.executable == "/mock/wezterm" })
+  }
+
+  @Test("macOS Terminal recall opens a command file for the exact verified tmux pane")
+  func deterministicMacTerminalRecipe() async throws {
+    let agentID = "agent-two"
+    let reference = taskReference()
+    let runner = DeterministicRecallRunner(reference: reference, agentID: agentID)
+    let subtask = TaskSubtask(id: agentID, title: "Terminal agent", provider: .codex,
+      tmux: reference, runtimeMode: .tmux)
+
+    let result = try await WezTermController(
+      runner: runner, candidateSockets: []).openAgentRuntime(
+        subtask, taskID: "ECC-1",
+        configuration: .init(executable: "/mock/wezterm", applicationName: "Terminal"))
+
+    #expect(result == .spawned(paneID: nil))
+    let calls = await runner.calls
+    let opened = try #require(calls.first { $0.executable == "/usr/bin/open" })
+    #expect(opened.arguments.starts(with: ["-na", "Terminal"]))
+    let scriptPath = try #require(opened.arguments.last)
+    let script = try String(contentsOfFile: scriptPath, encoding: .utf8)
+    #expect(script.hasPrefix("#!/bin/zsh\n"))
+    #expect(script.contains("'/mock/tmux'"))
+    #expect(script.contains("'attach-session'"))
+    #expect(script.contains("'=fq-task-ecc-1'"))
+    #expect(script.contains("'%7'"))
+    #expect(!calls.contains { $0.executable == "/mock/wezterm" })
+    try? FileManager.default.removeItem(atPath: scriptPath)
   }
 
   @Test("Legacy entries are rejected without provider reconstruction")

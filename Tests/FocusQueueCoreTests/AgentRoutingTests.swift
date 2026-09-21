@@ -47,6 +47,11 @@ struct AgentRoutingTests {
         #expect(try Data(contentsOf: fixture.dashboard) == beforeDashboard)
         #expect(try await TaskContextStore(root: fixture.support).loadAll() == beforeContexts)
         #expect(try AgentRouteStore(root: fixture.support).load(routeID: packet.routeID)?.prompt == "Fix exact session recall")
+        await #expect(throws: TaskContextError.self) {
+            try await AgentRouteCoordinator(root: fixture.support).inspect(
+                .init(prompt: "  ", provider: .codex, source: source),
+                configuration: fixture.configuration)
+        }
     }
 
     @Test("Provider model and effort are persisted and passed as literal arguments")
@@ -97,6 +102,9 @@ struct AgentRoutingTests {
             try store.claim(routeID: routeID, subtaskID: "agent-two")
         }
         try store.setDestination(routeID: routeID, taskID: "FOC-1")
+        #expect(throws: TaskContextError.self) {
+            try store.setDestination(routeID: routeID, taskID: "FOC-2")
+        }
         let loaded = try store.load(routeID: routeID)
         let claimed = try #require(loaded)
         #expect(claimed.subtaskID == "agent-one")
@@ -147,6 +155,25 @@ struct AgentRoutingTests {
         #expect(registered.providerResumeCommand?.prefix(3) == ["codex", "resume", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"])
         #expect(registered.runtime.attachCommand == receipt.runtime.attachCommand)
         #expect(registered.context == context)
+        #expect(AgentStartupReceipt.promptDigest("abc")
+            == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        #expect(throws: TaskContextError.self) {
+            _ = try store.url(taskID: "../FOC-1", subtaskID: "a1")
+        }
+
+        var claude = receipt
+        claude.subtaskID = "a2"
+        claude.provider = .claude
+        claude.model = "opus"
+        claude.effort = "max"
+        try store.save(claude)
+        try store.register(
+            taskID: "FOC-1", subtaskID: "a2",
+            providerSessionID: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff")
+        let loadedClaude = try store.load(taskID: "FOC-1", subtaskID: "a2")
+        let claudeLoaded = try #require(loadedClaude)
+        #expect(claudeLoaded.providerResumeCommand?.prefix(3)
+            == ["claude", "--resume", "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"])
     }
 }
 

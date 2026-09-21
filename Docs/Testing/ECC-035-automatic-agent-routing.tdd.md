@@ -27,6 +27,8 @@
 
 `python3 -m unittest Tests.test_codex_entry` passes 48 tests. The shell entry routes only fresh, unassigned interactive agents when opted in; resumes, assigned runtimes, noninteractive commands, utilities, and nested successors retain their existing paths.
 
+The complete repository suites pass: 407 Swift tests and 222 Python tests. `AgentRouting.swift` has 87.13% region, 87.18% function, and 98.26% line coverage under the focused suite.
+
 ## Workflow sanity
 
 Pending.

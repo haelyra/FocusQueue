@@ -1471,7 +1471,7 @@ private struct QueueSettingsView: View {
           ) {
             VStack(alignment: .leading, spacing: 12) {
               Toggle(
-                "Run daily reports automatically",
+                "Enable Daily Reports",
                 isOn: Binding(
                   get: { model.config.dailyReport.enabled },
                   set: { model.setDailyReportsEnabled($0) }

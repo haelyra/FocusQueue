@@ -675,7 +675,7 @@ struct QueueViewModelTests {
     try await Task.sleep(for: .milliseconds(3100))
     await model.refresh()
     #expect(model.effectiveStatus(for: subtask) == .idle)
-    #expect(activity.count == 1)
+    try await eventually { activity.count == 1 }
     #expect(contexts.count == 0)
     #expect(model.subtasks(for: "ECC-101").first?.status == .working)
   }

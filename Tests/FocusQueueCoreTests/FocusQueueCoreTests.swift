@@ -704,6 +704,7 @@ func localStatePersistence() async throws {
     ),
     appearance: .dark,
     accentStyle: .pastel,
+    programLogWindowVisible: true,
     agentSessions: [agentSession]
   )
 
@@ -729,6 +730,7 @@ func legacyLocalStateDecoding() throws {
   let state = try JSONDecoder().decode(LocalState.self, from: data)
   #expect(state.appearance == nil)
   #expect(state.accentStyle == nil)
+  #expect(!state.programLogWindowVisible)
   #expect(state.dismissedNotificationIDs.isEmpty)
   #expect(state.deferredTicketIDs.isEmpty)
   #expect(state.agentSessions.isEmpty)

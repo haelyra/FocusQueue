@@ -1555,6 +1555,20 @@ private struct QueueSettingsView: View {
           }
 
           settingsSection(
+            title: "Program log",
+            detail:
+              "Show a separate live debugging window. Its contents start fresh each time Focus Queue launches."
+          ) {
+            Toggle(
+              "Show Program Log window",
+              isOn: Binding(
+                get: { model.isProgramLogWindowVisible },
+                set: { model.setProgramLogWindowVisible($0) }
+              )
+            )
+          }
+
+          settingsSection(
             title: "Management",
             detail: "The Desktop launcher and menu-bar checklist remain available."
           ) {

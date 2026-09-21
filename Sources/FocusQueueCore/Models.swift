@@ -1449,6 +1449,7 @@ public struct LocalState: Codable, Equatable, Sendable {
   public var appearance: QueueAppearance?
   public var accentStyle: QueueAccentStyle?
   public var minimizationPreference: QueueMinimizationPreference
+  public var programLogWindowVisible: Bool
   public var agentSessions: [TaskAgentSession]
 
   public init(
@@ -1461,6 +1462,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     appearance: QueueAppearance? = nil,
     accentStyle: QueueAccentStyle? = nil,
     minimizationPreference: QueueMinimizationPreference = .fq,
+    programLogWindowVisible: Bool = false,
     agentSessions: [TaskAgentSession] = []
   ) {
     self.routineDate = routineDate
@@ -1472,6 +1474,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     self.appearance = appearance
     self.accentStyle = accentStyle
     self.minimizationPreference = minimizationPreference
+    self.programLogWindowVisible = programLogWindowVisible
     self.agentSessions = agentSessions
   }
 
@@ -1513,6 +1516,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     case appearance
     case accentStyle
     case minimizationPreference
+    case programLogWindowVisible
     case agentSessions
   }
 
@@ -1534,6 +1538,8 @@ public struct LocalState: Codable, Equatable, Sendable {
     minimizationPreference =
       try container.decodeIfPresent(QueueMinimizationPreference.self, forKey: .minimizationPreference)
       ?? .fq
+    programLogWindowVisible =
+      try container.decodeIfPresent(Bool.self, forKey: .programLogWindowVisible) ?? false
     agentSessions =
       try container.decodeIfPresent([TaskAgentSession].self, forKey: .agentSessions) ?? []
   }
@@ -1550,6 +1556,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     try container.encodeIfPresent(appearance, forKey: .appearance)
     try container.encodeIfPresent(accentStyle, forKey: .accentStyle)
     try container.encode(minimizationPreference, forKey: .minimizationPreference)
+    try container.encode(programLogWindowVisible, forKey: .programLogWindowVisible)
     try container.encode(agentSessions, forKey: .agentSessions)
   }
 }

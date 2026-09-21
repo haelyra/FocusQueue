@@ -43,30 +43,54 @@ final class QueueViewModel {
   }
   private(set) var lastSync: Date?
   private(set) var sourceModificationDate: Date?
-  private(set) var loadError: String?
-  private(set) var projectError: String?
+  private(set) var loadError: String? {
+    didSet { logChangedError(loadError, previous: oldValue, category: "Queue") }
+  }
+  private(set) var projectError: String? {
+    didSet { logChangedError(projectError, previous: oldValue, category: "Projects") }
+  }
   private(set) var isSavingProject = false
-  private(set) var durableHistoryError: String?
+  private(set) var durableHistoryError: String? {
+    didSet { logChangedError(durableHistoryError, previous: oldValue, category: "History") }
+  }
   private(set) var configurationIsLoaded = false
   var isSetupPresented = false
-  private(set) var setupError: String?
+  private(set) var setupError: String? {
+    didSet { logChangedError(setupError, previous: oldValue, category: "Setup") }
+  }
   private(set) var isRefreshing = false
   private(set) var dailyReport: DailyReportDocument?
   private(set) var latestDailyReport: DailyReportDocument?
-  private(set) var dailyReportLoadError: String?
+  private(set) var dailyReportLoadError: String? {
+    didSet { logChangedError(dailyReportLoadError, previous: oldValue, category: "Daily report") }
+  }
   private(set) var isDailyReportPresented = false
   private(set) var isDailyReportRunning = false
   private(set) var isRecoveredDailyReportRunning = false
   private(set) var isDailyReportCancellationRequested = false
   private(set) var dailyReportRunMessage: String?
-  private(set) var dailyReportRunFailed = false
+  private(set) var dailyReportRunFailed = false {
+    didSet {
+      if dailyReportRunFailed, let dailyReportRunMessage {
+        programLog.record(dailyReportRunMessage, level: .error, category: "Daily report")
+      }
+    }
+  }
   private(set) var pendingDailyReportApproval: DailyReportApprovalRequest?
   private(set) var requestedReportTaskID: String?
   private(set) var panelMode: QueuePanelMode = .expanded
   private(set) var canSwitchMonitor = false
-  private(set) var actionMessages: [String: String] = [:]
+  private(set) var actionMessages: [String: String] = [:] {
+    didSet { logChangedMessages(actionMessages, previous: oldValue, categoryPrefix: "Task") }
+  }
   private(set) var recurringPRProgressByTicketID: [String: RecurringPullRequestProgress] = [:]
-  private(set) var recurringPRProgressErrors: [String: String] = [:]
+  private(set) var recurringPRProgressErrors: [String: String] = [:] {
+    didSet {
+      for (ticketID, message) in recurringPRProgressErrors where oldValue[ticketID] != message {
+        programLog.record(message, level: .error, category: "Pull request \(ticketID)")
+      }
+    }
+  }
   private(set) var queueChatMessages: [QueueChatMessage] = [
     QueueChatMessage(
       role: .agent,
@@ -79,7 +103,15 @@ final class QueueViewModel {
   private(set) var taskChatMessages: [String: [QueueChatMessage]] = [:]
   private(set) var taskContexts: [String: TaskContext] = [:]
   private(set) var unassignedAgentRegistrations: [ExternalAgentRegistration] = []
-  private(set) var externalAgentRegistrationError: String?
+  private(set) var externalAgentRegistrationError: String? {
+    didSet {
+      logChangedError(
+        externalAgentRegistrationError,
+        previous: oldValue,
+        category: "Agent registration"
+      )
+    }
+  }
   private(set) var maintenanceReceipts: [String: TaskMaintenanceReceipt] = [:]
   @ObservationIgnored private var maintenanceSignatures: [String: String] = [:]
   @ObservationIgnored private var lastMaintenanceAt: Date?
@@ -91,23 +123,44 @@ final class QueueViewModel {
   private(set) var presentedPlanURL: URL?
   private(set) var presentedPlanMarkdown = ""
   private(set) var isPlanLoading = false
-  private(set) var planError: String?
+  private(set) var planError: String? {
+    didSet { logChangedError(planError, previous: oldValue, category: "Plan") }
+  }
   private(set) var planEditDrafts: [String: PlanEditDraft] = [:]
   private(set) var launchingTaskIDs: Set<String> = []
   private(set) var openingSubtaskIDs: Set<String> = []
   private(set) var openingAgentSessionIDs: Set<String> = []
-  private(set) var agentSessionErrors: [String: String] = [:]
+  private(set) var agentSessionErrors: [String: String] = [:] {
+    didSet {
+      for (key, message) in agentSessionErrors where oldValue[key] != message {
+        programLog.record(message, level: .error, category: "Agent \(key)")
+      }
+    }
+  }
   var launchDiagnostics: LaunchDiagnosticsPresentation?
-  private(set) var closureMessages: [String: String] = [:]
+  private(set) var closureMessages: [String: String] = [:] {
+    didSet { logChangedMessages(closureMessages, previous: oldValue, categoryPrefix: "Cleanup") }
+  }
   private(set) var reportHistory = DailyReportHistorySnapshot()
-  private(set) var reportHistoryError: String?
+  private(set) var reportHistoryError: String? {
+    didSet { logChangedError(reportHistoryError, previous: oldValue, category: "Report history") }
+  }
   private(set) var connectorDiagnostics: ConnectorDiagnosticsSnapshot?
-  private(set) var connectorDiagnosticsError: String?
+  private(set) var connectorDiagnosticsError: String? {
+    didSet {
+      logChangedError(
+        connectorDiagnosticsError,
+        previous: oldValue,
+        category: "Connectors"
+      )
+    }
+  }
   private(set) var connectorDiagnosticsCheckedAt: Date?
   private(set) var isDiagnosingConnectors = false
   var expandedTicketIDs: Set<String> = []
 
   @ObservationIgnored private let paths: AppPaths
+  @ObservationIgnored private let programLog: ProgramLogStore
   @ObservationIgnored private let configurationRepository: any ConfigurationLoading
   @ObservationIgnored private let dailyReportRepository: any DailyReportStoring
   @ObservationIgnored private let dailyReportApprovalRepository: any DailyReportApprovalStoring
@@ -175,6 +228,7 @@ final class QueueViewModel {
   @ObservationIgnored var dailyReportCancelHandler: (() -> Void)?
   @ObservationIgnored var dailyReportApprovalHandler: (@MainActor (Bool) async -> Void)?
   @ObservationIgnored var dailyReportsEnabledHandler: ((Bool) -> Void)?
+  @ObservationIgnored var programLogVisibilityHandler: ((Bool) -> Void)?
   @ObservationIgnored var agentTerminalFocusHandler: (@MainActor (String, String) async throws -> Void)?
   @ObservationIgnored var terminalFocusHandler: (
     @MainActor (String, String?) async throws -> Void
@@ -183,6 +237,7 @@ final class QueueViewModel {
 
   init(
     paths: AppPaths = .live(),
+    programLog: ProgramLogStore = ProgramLogStore(),
     configurationRepository: (any ConfigurationLoading)? = nil,
     dailyReportRepository: (any DailyReportStoring)? = nil,
     dailyReportApprovalRepository: (any DailyReportApprovalStoring)? = nil,
@@ -210,6 +265,7 @@ final class QueueViewModel {
     }
   ) {
     self.paths = paths
+    self.programLog = programLog
     self.maintenanceEnabled = maintenanceEnabled
     self.discoverExternalAgents = discoverExternalAgents
     self.labelTmuxPane = labelTmuxPane
@@ -432,6 +488,10 @@ final class QueueViewModel {
       await reconcileDurableLibrary()
       startRefreshLoop()
       resumePendingReviews()
+      programLog.record(
+        "Ready with project \(selectedProject?.name ?? "Unknown").",
+        category: "Lifecycle"
+      )
     } catch {
       loadError = error.localizedDescription
       if !configurationIsLoaded { isSetupPresented = true }
@@ -491,6 +551,7 @@ final class QueueViewModel {
       guard updated.selectProject(id: id) else { return false }
       try await configurationRepository.save(updated)
       config = updated
+      programLog.record("Selected project \(project.name).", category: "Projects")
 
       closeAgentUpdate()
       closePlan()
@@ -576,6 +637,7 @@ final class QueueViewModel {
         await captureDurableDashboard(updated.document)
       }
       actionMessages[ticket.id] = "Task added to \(project.name)."
+      programLog.record("Created task \(ticket.id): \(ticket.title)", category: "Tasks")
       loadError = nil
       return true
     } catch {
@@ -2606,6 +2668,9 @@ final class QueueViewModel {
     if !isRunning || !wasRunning { isDailyReportCancellationRequested = false }
     dailyReportRunMessage = message
     dailyReportRunFailed = isError
+    if !isError, let message {
+      programLog.record(message, category: "Daily report")
+    }
     guard isRunning || wasRunning || isError else { return }
     let priorSave = reportStateSaveTask
     reportStateSaveTask = Task {
@@ -2682,6 +2747,7 @@ final class QueueViewModel {
   func diagnoseConnectors() async {
     guard !isDiagnosingConnectors else { return }
     isDiagnosingConnectors = true
+    programLog.record("Connector diagnostics started.", category: "Connectors")
     connectorDiagnosticsError = nil
     defer { isDiagnosingConnectors = false }
 
@@ -2711,6 +2777,7 @@ final class QueueViewModel {
       )
       connectorDiagnostics = snapshot
       connectorDiagnosticsCheckedAt = Date()
+      programLog.record("Connector diagnostics completed.", category: "Connectors")
     } catch is CancellationError {
       return
     } catch {
@@ -2738,6 +2805,19 @@ final class QueueViewModel {
   func setAccentStyle(_ accentStyle: QueueAccentStyle) {
     localState.accentStyle = accentStyle
     persistLocalState()
+  }
+
+  var isProgramLogWindowVisible: Bool { localState.programLogWindowVisible }
+
+  func setProgramLogWindowVisible(_ visible: Bool) {
+    guard localState.programLogWindowVisible != visible else { return }
+    localState.programLogWindowVisible = visible
+    programLogVisibilityHandler?(visible)
+    persistLocalState()
+    programLog.record(
+      visible ? "Program Log window shown." : "Program Log window hidden.",
+      category: "Lifecycle"
+    )
   }
 
   func setPanelCollapsed(_ collapsed: Bool) {
@@ -3136,6 +3216,29 @@ final class QueueViewModel {
         self.loadError = "Could not save settings: \(error.localizedDescription)"
       }
     }
+  }
+
+  private func logChangedError(_ message: String?, previous: String?, category: String) {
+    guard let message, message != previous else { return }
+    programLog.record(message, level: .error, category: category)
+  }
+
+  private func logChangedMessages(
+    _ messages: [String: String], previous: [String: String], categoryPrefix: String
+  ) {
+    for (identifier, message) in messages where previous[identifier] != message {
+      programLog.record(
+        message,
+        level: Self.logLevel(for: message),
+        category: "\(categoryPrefix) \(identifier)"
+      )
+    }
+  }
+
+  private static func logLevel(for message: String) -> ProgramLogLevel {
+    let normalized = message.lowercased()
+    return ["could not", "failed", "error", "needs attention", "unavailable"]
+      .contains(where: normalized.contains) ? .error : .info
   }
 
   private func runDailyReportFromChat(_ request: DailyReportRunRequest) {

@@ -3,6 +3,7 @@ ObjC.import("Foundation");
 const CONFIG_PATH = "/Users/hira/Library/Application Support/ECC Focus Queue/ingestion.json";
 const DEFAULT_REQUEST_PATH = "/Users/hira/Library/Application Support/ECC Focus Queue/connector-commands";
 const DEFAULT_RESPONSE_PATH = "/Users/hira/Library/Application Support/ECC Focus Queue/mail-proofs";
+const GMAIL_CONNECTOR_PATH = "/Users/hira/Library/Application Support/ECC Focus Queue/automation/Scripts/focus_queue_gmail.py";
 const CONNECTOR = "ecc-focus-mail-reader";
 const MAX_BODY_CHARACTERS = 100000;
 const MAX_SEARCH_CANDIDATES = 5000;
@@ -338,6 +339,18 @@ function run() {
     config = readJSON(CONFIG_PATH);
     paths = mailIPCPaths(config);
     request = readJSON(paths.request);
+    if (String(config.emailProvider || "apple_mail").toLowerCase() === "gmail") {
+      const app = Application.currentApplication();
+      app.includeStandardAdditions = true;
+      app.doShellScript(
+        `/usr/bin/python3 ${shellQuote(GMAIL_CONNECTOR_PATH)} --config ${shellQuote(CONFIG_PATH)} serve`
+      );
+      response = readJSON(paths.response);
+      if (String(response.nonce || "") !== String(request.nonce || "")) {
+        throw new Error("Gmail connector returned a mismatched request nonce");
+      }
+      return JSON.stringify({status: response.status, operation: response.operation});
+    }
     const Mail = Application("Mail");
     const target = String(config.emailAddress || "").toLowerCase();
     const account = resolveAccount(Mail, target);

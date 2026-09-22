@@ -2,6 +2,8 @@
   "dashboardPath": "/absolute/path/to/ecc-dashboard/data/dashboard.json",
   "dashboardDirectory": "/absolute/path/to/ecc-dashboard",
   "emailAddress": "agent@example.com",
+  "emailProvider": "apple_mail",
+  "gmailOAuthClientPath": "/Users/your-account/Library/Application Support/ECC Focus Queue/google-oauth-client.json",
   "appleMailDirectory": "/Users/your-account/Library/Mail",
   "mailReaderApplication": "/Users/your-account/Applications/ECC Focus Mail Reader.app",
   "mailSnapshotPath": "/Users/your-account/Library/Application Support/ECC Focus Queue/ingestion/mail-snapshot.json",

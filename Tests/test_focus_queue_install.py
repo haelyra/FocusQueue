@@ -23,6 +23,7 @@ class InstallerTests(unittest.TestCase):
         "Scripts/focus_queue_codex.py",
         "Scripts/focus_queue_lock.py",
         "Scripts/focus_queue_mail.py",
+        "Scripts/focus_queue_gmail.py",
         "Scripts/focus_queue_discord.py",
         "Scripts/focus_queue_connectors.py",
         "Scripts/focus-queue-mail.js",
@@ -481,6 +482,23 @@ class InstallerTests(unittest.TestCase):
             if item["path"] == str(self.installer.automation)
         )
         self.assertEqual(automation["digestAlgorithm"], "sha256-tree-v1")
+
+    def test_upgrade_accepts_a_verified_previous_automation_file_manifest(self):
+        self.installer.install()
+        gmail = self.installer.automation / "Scripts/focus_queue_gmail.py"
+        gmail.unlink()
+        manifest = json.loads(self.installer.manifest.read_text())
+        automation = next(
+            item for item in manifest["artifacts"]
+            if item["path"] == str(self.installer.automation)
+        )
+        automation["sha256"] = MODULE.tree_digest(self.installer.automation)
+        self.installer.manifest.write_text(json.dumps(manifest))
+
+        self.installer.preflight()
+        self.installer.install()
+
+        self.assertTrue(gmail.is_file())
 
     def test_legacy_automation_digest_rejects_nul_content(self):
         self.installer.install()

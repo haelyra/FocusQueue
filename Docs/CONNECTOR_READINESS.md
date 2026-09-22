@@ -10,6 +10,12 @@ Telegram personal inbox coverage remains a release blocker. The implemented conn
 - The archive export has a shared 120-second budget, 16 MB output cap, and 5,001-record cap. Reaching a cap is surfaced as truncation. The JSONL subprocess reader now enforces its deadline even when a child writes a partial line and stalls.
 - Configured archive database errors remain visible. The collector does not silently revert to a less complete transport.
 - A standalone offline connector diagnostic returns JSON for Telegram, Discord, email, and GitHub. It examines selected configuration fields and file metadata without launching helpers, reading credentials, logging account identities, authenticating, or accessing inboxes. The morning installer includes it.
+- Email now supports an `apple_mail` or `gmail` provider selection. Gmail uses a
+  Desktop-app OAuth client, PKCE, the fixed `gmail.readonly` scope, Keychain
+  refresh-token storage through the Security framework, automatic access-token
+  refresh, bounded Gmail search pagination, full reads, and the existing daily
+  report envelope. Status advertises draft/send/reply as planned while reporting
+  `writesEnabled: false`; no write scope is requested.
 
 Headless verification: 50 morning collector tests and 3 connector diagnostic tests passed. Coverage includes active-session selection, source and timestamp isolation, original database byte preservation, missing database protection, unsupported schema rejection, session limits, visible configured-reader failure, redacted per-session export, identity validation, deadline enforcement, and safe diagnostic output. Installer syntax and diff whitespace checks passed. No UI automation, live inbox collection, messages, login, or account changes were performed.
 

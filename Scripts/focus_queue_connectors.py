@@ -28,7 +28,21 @@ def diagnose(config: dict[str, Any]) -> dict[str, Any]:
         config.get("discordCredentialPath")
         or str(DEFAULT_CONFIG.parent / "credentials.json")
     )
-    email_available = bool(config.get("emailAddress"))
+    email_provider = str(config.get("emailProvider", "apple_mail")).strip().casefold()
+    if email_provider == "gmail":
+        email_available = bool(config.get("emailAddress")) and configured_file(
+            config.get("gmailOAuthClientPath")
+        )
+        email_coverage = "configured_gmail_api_account"
+        email_next_step = (
+            "Run focus-mail authorize, then verify read-only Gmail API access with focus-mail status."
+        )
+    else:
+        email_available = bool(config.get("emailAddress"))
+        email_coverage = "configured_apple_mail_account_and_mailboxes"
+        email_next_step = (
+            "Choose a synchronized Mail account and mailbox scope, then verify reader permissions."
+        )
     repositories = config.get("githubRepositories")
     github_available = (
         isinstance(repositories, list)
@@ -62,9 +76,9 @@ def diagnose(config: dict[str, Any]) -> dict[str, Any]:
             {
                 "id": "email",
                 "status": "configured_unverified" if email_available else "setup_required",
-                "coverage": "configured_apple_mail_account_and_mailboxes",
+                "coverage": email_coverage,
                 "accountSwitchSupported": False,
-                "nextStep": "Choose a synchronized Mail account and mailbox scope, then verify reader permissions.",
+                "nextStep": email_next_step,
             },
             {
                 "id": "github",

@@ -35,6 +35,8 @@ designated_requirement='=designated => identifier "tools.ecc.focus-mail-reader"'
 /usr/bin/plutil -insert Label -string tools.ecc.focus-mail-reader "$launch_agent"
 /usr/bin/plutil -insert ProgramArguments -json "[\"$bundle_path/Contents/MacOS/applet\"]" "$launch_agent"
 /usr/bin/plutil -insert ProcessType -string Interactive "$launch_agent"
+/usr/bin/plutil -insert WatchPaths -json \
+  "[\"$support_dir/connector-commands/mail-request.json\"]" "$launch_agent"
 /usr/bin/plutil -insert StandardOutPath -string "$support_dir/mail-reader.stdout.log" "$launch_agent"
 /usr/bin/plutil -insert StandardErrorPath -string "$support_dir/mail-reader.stderr.log" "$launch_agent"
 

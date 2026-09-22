@@ -33,6 +33,24 @@ class ConnectorDiagnosticsTests(unittest.TestCase):
         self.assertTrue(all(connector["status"] == "setup_required" for connector in result["connectors"]))
         self.assertFalse(result["authenticationVerified"])
 
+    def test_gmail_diagnostics_require_private_client_configuration_without_reading_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            client = Path(temporary) / "oauth.json"
+            client.write_text("sensitive-oauth-client")
+            result = MODULE.diagnose(
+                {
+                    "emailProvider": "gmail",
+                    "emailAddress": "private@example.test",
+                    "gmailOAuthClientPath": str(client),
+                }
+            )
+            email = next(item for item in result["connectors"] if item["id"] == "email")
+            self.assertEqual(email["status"], "configured_unverified")
+            self.assertEqual(email["coverage"], "configured_gmail_api_account")
+            serialized = json.dumps(result)
+            self.assertNotIn("private@example.test", serialized)
+            self.assertNotIn("sensitive-oauth-client", serialized)
+
     def test_invalid_config_cli_returns_safe_structured_error(self):
         with tempfile.TemporaryDirectory() as temporary:
             config = Path(temporary) / "invalid.json"

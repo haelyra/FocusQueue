@@ -324,6 +324,12 @@ def load_config(path: Path) -> dict[str, Any]:
         config["agentExecutable"] = config["profileExecutable"]
     if not config.get("agentExecutable"):
         missing.append("agentExecutable")
+    email_provider = str(config.get("emailProvider", "apple_mail")).strip().casefold()
+    if email_provider not in {"apple_mail", "gmail"}:
+        raise ReconciliationError("emailProvider must be apple_mail or gmail")
+    config["emailProvider"] = email_provider
+    if email_provider == "gmail" and not config.get("gmailOAuthClientPath"):
+        missing.append("gmailOAuthClientPath")
     if missing:
         raise ReconciliationError(f"Missing ingestion settings: {', '.join(missing)}")
     config.setdefault("lookbackHours", 168)
@@ -772,6 +778,11 @@ def collect_mail(config: dict[str, Any]) -> dict[str, Any]:
     local Envelope Index and .emlx files are the same synchronized data Mail shows,
     and this collector only opens them read-only.
     """
+    if config.get("emailProvider", "apple_mail") == "gmail":
+        import focus_queue_gmail
+
+        return focus_queue_gmail.collect_for_daily_report(config)
+
     requested = {
         str(item).casefold()
         for item in config.get("emailMailboxes", ["INBOX", "Junk", "Archive", "Deleted Messages"])

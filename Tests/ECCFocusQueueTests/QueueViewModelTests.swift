@@ -9,6 +9,32 @@ import Darwin
 @Suite("Queue app state integration")
 @MainActor
 struct QueueViewModelTests {
+  @Test("Disabling auto-exit preserves completed agents through refresh and saves the setting")
+  func completedAgentOptOut() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let launcher = DirectCreationRunner()
+    let model = await fixture.model(agent: ControlledQueueAgent(), taskAgentLauncher: TaskAgentLauncher(runner: launcher))
+    model.setAutoExitCompletedAgents(false)
+    try await eventually {
+      try JSONDecoder().decode(AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile)).autoExitCompletedAgents == false
+    }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    let agent = TaskSubtask(id: "completed-worker", title: "Done", sessionID: UUID().uuidString, status: .completed)
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: agent)
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: TaskSubtask(id: "pending", title: "Pending"))
+    try await Task.sleep(for: .seconds(2.1))
+    await model.refresh()
+    let retained = try #require(model.subtasks(for: "ECC-101").first { $0.id == agent.id })
+    #expect(retained.agentRemovedAt == nil)
+    #expect(await launcher.commands.isEmpty)
+    model.setAutoExitCompletedAgents(true)
+    try await Task.sleep(for: .seconds(2.1))
+    await model.refresh()
+    #expect(model.subtasks(for: "ECC-101").first { $0.id == agent.id }?.agentRemovedAt != nil)
+  }
+
   @Test("macOS Terminal rejects direct agents before any launch side effect")
   func macTerminalRequiresTmux() async throws {
     let fixture = try await Fixture()

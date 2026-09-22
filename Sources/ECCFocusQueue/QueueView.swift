@@ -1434,6 +1434,14 @@ private struct QueueSettingsView: View {
             )
           }
           settingsSection(
+            title: "Agent completion",
+            detail: "After completion, leave the terminal open with a command to continue the same conversation. Turn this off to keep the agent running."
+          ) {
+            Toggle("Automatically exit completed agents", isOn: Binding(
+              get: { model.config.autoExitCompletedAgents },
+              set: { model.setAutoExitCompletedAgents($0) }))
+          }
+          settingsSection(
             title: "Appearance", detail: "Dark uses your WezTerm #1A1D23 background color."
           ) {
             Picker("Appearance", selection: appearanceBinding) {

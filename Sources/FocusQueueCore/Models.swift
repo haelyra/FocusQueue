@@ -245,6 +245,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var tmuxExecutable: String?
   public var setupCompleted: Bool?
   public var automaticAgentRouting: Bool
+  public var autoExitCompletedAgents: Bool
 
   public init(
     appName: String,
@@ -269,6 +270,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.verifier = verifier
     self.dailyReport = dailyReport
     self.automaticAgentRouting = false
+    self.autoExitCompletedAgents = true
     let effectiveProjects = projects ?? [Self.legacyProject(
       appName: appName,
       dashboardPath: dashboardPath,
@@ -283,6 +285,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case appName, dashboardPath, workspacePath, defaultPlacement, refreshIntervalSeconds
     case dailyRoutines, wezTerm, verifier, dailyReport, persistentTerminals, tmuxExecutable, setupCompleted
     case automaticAgentRouting
+    case autoExitCompletedAgents
     case focusQueueProjects, focusQueueSelectedProjectID, projects, selectedProjectID
   }
 
@@ -300,6 +303,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     tmuxExecutable = try container.decodeIfPresent(String.self, forKey: .tmuxExecutable)
     setupCompleted = try container.decodeIfPresent(Bool.self, forKey: .setupCompleted)
     automaticAgentRouting = try container.decodeIfPresent(Bool.self, forKey: .automaticAgentRouting) ?? false
+    autoExitCompletedAgents = try container.decodeIfPresent(Bool.self, forKey: .autoExitCompletedAgents) ?? true
     dailyReport =
       try container.decodeIfPresent(DailyReportConfiguration.self, forKey: .dailyReport)
       ?? DailyReportConfiguration()
@@ -362,6 +366,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encodeIfPresent(tmuxExecutable, forKey: .tmuxExecutable)
     try container.encodeIfPresent(setupCompleted, forKey: .setupCompleted)
     try container.encode(automaticAgentRouting, forKey: .automaticAgentRouting)
+    try container.encode(autoExitCompletedAgents, forKey: .autoExitCompletedAgents)
   }
 
   public var selectedProject: ProjectConfiguration? {

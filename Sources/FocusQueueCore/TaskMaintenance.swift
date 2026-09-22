@@ -62,6 +62,9 @@ public actor TaskMaintenance {
     }
 
     public func requireInactive(_ agent: TaskSubtask) async throws {
+        guard agent.completionTerminalRetained != true else {
+            throw TaskContextError.unsafeWorktree("Workspace retained for the completed conversation and its resume command.")
+        }
         guard try await !inspect(agent) else {
             throw TaskContextError.unsafeWorktree("A live agent still owns this workspace; retained.")
         }

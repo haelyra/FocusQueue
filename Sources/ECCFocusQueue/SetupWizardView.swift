@@ -102,6 +102,9 @@ struct SetupWizardView: View {
       Toggle("Automatically route new agents", isOn: $draft.automaticAgentRouting)
       Text("An intake agent may inspect the initial prompt, choose an existing or new task, and hand off to a registered agent in the matched repository and task-owned tmux session. The intake agent exits only after the successor's real conversation ID is saved.")
         .font(.caption).foregroundStyle(.secondary)
+      Toggle("Automatically exit completed agents", isOn: $draft.autoExitCompletedAgents)
+      Text("Keep the terminal open with a completion message and a command to resume the conversation. Turn off to keep completed agents running.")
+        .font(.caption).foregroundStyle(.secondary)
       DisclosureGroup("Connect from another location") {
         VStack(alignment: .leading, spacing: 10) {
           Text("Connect both devices to your tailnet. On the host Mac, configure Remote Login for your account and verify its SSH host key from your other device. The standard Tailscale macOS app uses ordinary SSH over the private network.")

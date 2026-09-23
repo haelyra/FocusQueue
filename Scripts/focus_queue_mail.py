@@ -29,6 +29,7 @@ import focus_queue_morning as morning
 DEFAULT_CONFIG = Path("/Users/hira/Library/Application Support/ECC Focus Queue/ingestion.json")
 MAX_BODY_CHARACTERS = 100_000
 MAX_SEARCH_CANDIDATES = 5_000
+MAX_DAILY_REPORT_RESULTS = 500
 MAIL_REQUEST_TIMEOUT_SECONDS = 90
 MAIL_QUEUE_TIMEOUT_SECONDS = 15
 
@@ -242,7 +243,8 @@ def snippet(text: str, query: str, limit: int = 700) -> str:
 def search_mail(config: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
     query = str(request.get("query", "")).strip()
     days = min(max(int(request.get("days", 30)), 1), 3650)
-    limit = min(max(int(request.get("limit", 10)), 1), 50)
+    limit_cap = MAX_DAILY_REPORT_RESULTS if request.get("dailyReport") else 50
+    limit = min(max(int(request.get("limit", 10)), 1), limit_cap)
     offset = max(int(request.get("offset", 0)), 0)
     requested_mailboxes = request.get("mailboxes")
     if requested_mailboxes is not None and not isinstance(requested_mailboxes, list):
@@ -605,6 +607,7 @@ def main() -> int:
     search_parser.add_argument("--days", type=int, default=30)
     search_parser.add_argument("--limit", type=int, default=10)
     search_parser.add_argument("--offset", type=int, default=0)
+    search_parser.add_argument("--daily-report", action="store_true", help=argparse.SUPPRESS)
     search_parser.add_argument("--mailbox", action="append", dest="mailboxes")
     read_parser = subparsers.add_parser("read")
     read_parser.add_argument("identifier")
@@ -654,6 +657,7 @@ def main() -> int:
                         "days": arguments.days,
                         "limit": arguments.limit,
                         "offset": arguments.offset,
+                        "dailyReport": arguments.daily_report,
                         "mailboxes": arguments.mailboxes,
                     },
                 )

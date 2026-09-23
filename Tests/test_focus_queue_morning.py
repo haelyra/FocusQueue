@@ -356,7 +356,7 @@ except module.TerminationRequested:
         final = {**repeated, "truncated": False}
         config = {
             "lookbackHours": 24,
-            "maxEmailMessages": 1,
+            "maxEmailMessages": 2,
             "_configPath": "/tmp/focus-queue-test-ingestion.json",
             "emailAddress": "haley@example.com",
         }
@@ -428,6 +428,126 @@ except module.TerminationRequested:
         self.assertEqual(len(result["messages"]), 2)
         self.assertTrue(result["truncated"])
         self.assertEqual(run.call_count, 1)
+
+    def test_mail_reader_daily_report_uses_ten_message_body_pages(self):
+        payload = {
+            "status": "ok",
+            "verified": True,
+            "mailboxes": ["INBOX"],
+            "truncated": False,
+            "hardTruncated": True,
+            "bodyResultCount": 1,
+            "bodyTruncated": True,
+            "results": [{"sourceKey": "email:one", "messageId": "one"}],
+        }
+        config = {
+            "lookbackHours": 168,
+            "maxEmailMessages": 1_000,
+            "_configPath": "/tmp/focus-queue-test-ingestion.json",
+            "emailAddress": "reader@example.com",
+        }
+        with mock.patch.object(
+            MODULE,
+            "run_command",
+            return_value=subprocess.CompletedProcess([], 0, json.dumps(payload), ""),
+        ) as run:
+            result = MODULE.collect_mail_via_reader_app(
+                config,
+                PermissionError("Operation not permitted"),
+            )
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--limit") + 1], "10")
+        self.assertIn("--daily-report", command)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual([item["sourceKey"] for item in result["messages"]], ["email:one"])
+        self.assertEqual(result["bodyResultCount"], 1)
+        self.assertTrue(result["bodyTruncated"])
+        self.assertTrue(result["truncated"])
+
+    def test_mail_reader_daily_report_paginates_to_full_body_coverage(self):
+        def page(start, count, truncated):
+            return subprocess.CompletedProcess([], 0, json.dumps({
+                "status": "ok",
+                "verified": True,
+                "mailboxes": ["INBOX"],
+                "truncated": truncated,
+                "hardTruncated": truncated,
+                "bodyResultCount": count,
+                "bodyTruncated": False,
+                "results": [
+                    {"sourceKey": f"email:{index}", "messageId": str(index), "snippet": f"body {index}"}
+                    for index in range(start, start + count)
+                ],
+            }), "")
+
+        config = {
+            "lookbackHours": 168,
+            "maxEmailMessages": 25,
+            "_configPath": "/tmp/focus-queue-test-ingestion.json",
+            "emailAddress": "reader@example.com",
+        }
+        with mock.patch.object(
+            MODULE,
+            "run_command",
+            side_effect=[page(0, 10, True), page(10, 10, True), page(20, 5, False)],
+        ) as run:
+            result = MODULE.collect_mail_via_reader_app(
+                config,
+                PermissionError("Operation not permitted"),
+            )
+
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual([command[command.index("--limit") + 1] for command in commands], ["10", "10", "5"])
+        self.assertEqual([command[command.index("--offset") + 1] for command in commands], ["0", "10", "20"])
+        self.assertEqual(len(result["messages"]), 25)
+        self.assertEqual(result["bodyResultCount"], 25)
+        self.assertFalse(result["bodyTruncated"])
+        self.assertFalse(result["truncated"])
+
+    def test_mail_reader_excludes_uncovered_rows_before_classification_and_ledger(self):
+        payload = {
+            "status": "ok",
+            "verified": True,
+            "mailboxes": ["INBOX"],
+            "truncated": False,
+            "hardTruncated": True,
+            "bodyResultCount": 1,
+            "bodyTruncated": True,
+            "results": [
+                {"sourceKey": "email:covered", "messageId": "covered", "snippet": "body"},
+                {"sourceKey": "email:uncovered-1", "messageId": "uncovered-1", "snippet": ""},
+                {"sourceKey": "email:uncovered-2", "messageId": "uncovered-2", "snippet": ""},
+            ],
+        }
+        config = {
+            "lookbackHours": 168,
+            "maxEmailMessages": 3,
+            "_configPath": "/tmp/focus-queue-test-ingestion.json",
+            "emailAddress": "reader@example.com",
+        }
+        with mock.patch.object(
+            MODULE,
+            "run_command",
+            return_value=subprocess.CompletedProcess([], 0, json.dumps(payload), ""),
+        ):
+            result = MODULE.collect_mail_via_reader_app(
+                config,
+                PermissionError("Operation not permitted"),
+            )
+
+        envelopes = MODULE.message_envelopes({"email": result}, {"email"})
+        ledger = MODULE.record_processed_messages(
+            {"version": 1, "messages": {}},
+            envelopes,
+            report_id="partial-mail",
+            classified_at="2026-09-23T12:00:00Z",
+        )
+        self.assertEqual([item["sourceKey"] for item in result["messages"]], ["email:covered"])
+        self.assertEqual([item["sourceKey"] for item in envelopes], ["email:covered"])
+        self.assertEqual(list(ledger["messages"]), ["email:covered"])
+        self.assertTrue(result["bodyTruncated"])
+        self.assertTrue(result["truncated"])
 
     def test_timed_out_command_terminates_its_descendant_process_group(self):
         if os.name == "nt":
@@ -966,7 +1086,7 @@ except module.TerminationRequested:
         ]
         selected, deferred = MODULE.select_messages_within_budget(
             messages,
-            maximum_source_bytes=1_000_000,
+            maximum_source_tokens=1_000_000,
         )
         self.assertEqual(len(selected), 500)
         self.assertEqual(len(deferred), 1)
@@ -1032,16 +1152,64 @@ except module.TerminationRequested:
         self.assertEqual(unseen, messages)
         self.assertEqual(processed, [])
 
+    def test_token_estimator_is_conservative_for_ascii_and_unicode(self):
+        self.assertEqual(MODULE.estimated_token_count("abcdef"), 6)
+        high_entropy = "https://example.test/a?token=A9+/="
+        self.assertEqual(
+            MODULE.estimated_token_count(high_entropy),
+            len(high_entropy.encode("utf-8")),
+        )
+        self.assertEqual(MODULE.estimated_token_count("💌"), 4)
+        self.assertEqual(MODULE.estimated_token_count("a💌b"), 6)
+
+    def test_budget_reserves_output_and_prompt_envelope_tokens(self):
+        base_prompt = "a" * 1_000
+        self.assertEqual(MODULE.estimated_token_count(base_prompt), 1_000)
+        self.assertEqual(
+            MODULE.maximum_source_tokens_for_report(10_000, base_prompt),
+            5_476,
+        )
+
     def test_budget_selection_defers_oldest_messages_deterministically(self):
         messages = [
             {"sourceKey": "older", "timestamp": "2026-09-03T10:00:00Z", "text": "a" * 40},
             {"sourceKey": "newer", "timestamp": "2026-09-03T11:00:00Z", "text": "b" * 40},
         ]
+        newer_tokens = MODULE.estimated_token_count(json.dumps(
+            messages[1], ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ))
 
-        selected, deferred = MODULE.select_messages_within_budget(messages, maximum_source_bytes=120)
+        selected, deferred = MODULE.select_messages_within_budget(
+            messages,
+            maximum_source_tokens=newer_tokens,
+        )
 
         self.assertEqual([item["sourceKey"] for item in selected], ["newer"])
         self.assertEqual([item["sourceKey"] for item in deferred], ["older"])
+
+    def test_report_warns_when_actual_usage_exceeds_configured_budget(self):
+        checked = [{"sourceKey": "email:1", "platform": "email"}]
+        report = MODULE.build_daily_report(
+            bundle={"email": {"status": "ok", "messages": []}, "collectionErrors": []},
+            all_messages=checked,
+            unseen_messages=checked,
+            already_processed=[],
+            checked_messages=checked,
+            deferred_messages=[],
+            proposals={"runSummary": "Checked mail.", "messageSummaries": []},
+            result={"taskReferencesBySourceKey": {}},
+            trigger="manual",
+            recheck=False,
+            token_budget=10_000,
+            usage={"totalTokens": 10_001},
+            started_at="2026-09-23T12:00:00Z",
+            finished_at="2026-09-23T12:01:00Z",
+            run_id="run-over-budget",
+            platforms={"email"},
+            comprehensive=False,
+        )
+
+        self.assertTrue(any("Observed token usage exceeded" in error for error in report["errors"]))
 
     def test_report_maps_checked_messages_to_created_tasks_without_raw_text(self):
         bundle = {

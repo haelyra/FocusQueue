@@ -50,6 +50,9 @@ MAIL_PROOF_DIRECTORY = Path.home() / "Library/Application Support/ECC Focus Queu
 VALID_PRIORITIES = {"critical", "high", "medium", "low"}
 VALID_LINK_SCHEMES = {"http", "https", "message", "tg", "vscode"}
 MAX_COLLECTED_MESSAGES_PER_SOURCE = 5_000
+MAX_DAILY_REPORT_MESSAGES_PER_SOURCE = 500
+MAX_DAILY_REPORT_MAIL_PAGE_SIZE = 10
+PROMPT_ENVELOPE_TOKEN_RESERVE = 1_024
 
 
 class ReconciliationError(RuntimeError):
@@ -617,12 +620,20 @@ def message_text_from_emlx(path: Path) -> str:
 
 def collect_mail_via_reader_app(config: dict[str, Any], local_error: Exception) -> dict[str, Any]:
     days = max(1, (int(config["lookbackHours"]) + 23) // 24)
-    page_size = min(max(int(config["maxEmailMessages"]), 1), 50)
+    collection_limit = min(
+        max(int(config["maxEmailMessages"]), 1),
+        MAX_DAILY_REPORT_MESSAGES_PER_SOURCE,
+    )
+    page_size = min(collection_limit, MAX_DAILY_REPORT_MAIL_PAGE_SIZE)
     messages: list[dict[str, Any]] = []
     seen_source_keys: set[str] = set()
     offset = 0
     hard_truncated = False
-    while True:
+    body_result_count = 0
+    body_truncated = False
+    uncovered_message_count = 0
+    while offset < collection_limit:
+        request_limit = min(page_size, collection_limit - offset)
         result = run_command(
             [
                 sys.executable,
@@ -634,9 +645,10 @@ def collect_mail_via_reader_app(config: dict[str, Any], local_error: Exception) 
                 "--days",
                 str(days),
                 "--limit",
-                str(page_size),
+                str(request_limit),
                 "--offset",
                 str(offset),
+                "--daily-report",
             ],
             cwd=SCRIPT_DIR.parent,
             timeout=120,
@@ -656,8 +668,7 @@ def collect_mail_via_reader_app(config: dict[str, Any], local_error: Exception) 
         if not isinstance(page, list):
             raise ReconciliationError("Mail reader returned an invalid results page")
         page_count = len(page)
-        if payload.get("hardTruncated"):
-            hard_truncated = True
+        page_hard_truncated = bool(payload.get("hardTruncated"))
         if payload.get("truncated") and page_count == 0:
             raise ReconciliationError("Mail reader reported truncation without a next page")
         page_source_keys = [
@@ -671,11 +682,30 @@ def collect_mail_via_reader_app(config: dict[str, Any], local_error: Exception) 
             value in seen_source_keys for value in page_source_keys
         ):
             raise ReconciliationError("Mail reader pagination repeated results without progress")
-        remaining = MAX_COLLECTED_MESSAGES_PER_SOURCE - len(messages)
+        remaining = collection_limit - offset
         if page_count > remaining:
             hard_truncated = True
             page = page[:remaining]
             page_source_keys = page_source_keys[:remaining]
+        raw_body_result_count = payload.get("bodyResultCount")
+        try:
+            page_body_result_count = int(
+                raw_body_result_count
+                if raw_body_result_count is not None
+                else (0 if payload.get("bodyTruncated") else page_count)
+            )
+        except (TypeError, ValueError):
+            page_body_result_count = 0
+        covered_count = min(max(page_body_result_count, 0), len(page))
+        covered_page = page[:covered_count]
+        body_result_count += covered_count
+        uncovered_message_count += len(page) - covered_count
+        body_truncated = (
+            body_truncated
+            or bool(payload.get("bodyTruncated"))
+            or covered_count < len(page)
+        )
+        hard_truncated = hard_truncated or body_truncated
         seen_source_keys.update(page_source_keys)
         messages.extend(
             {
@@ -690,20 +720,28 @@ def collect_mail_via_reader_app(config: dict[str, Any], local_error: Exception) 
                 "text": item.get("snippet", ""),
                 "url": item.get("url", ""),
             }
-            for item in page
+            for item in covered_page
         )
-        if len(messages) >= MAX_COLLECTED_MESSAGES_PER_SOURCE:
-            hard_truncated = hard_truncated or bool(payload.get("truncated"))
+        offset += page_count
+        if offset >= collection_limit:
+            hard_truncated = (
+                hard_truncated
+                or page_hard_truncated
+                or bool(payload.get("truncated"))
+            )
             break
         if not payload.get("truncated"):
+            hard_truncated = hard_truncated or page_hard_truncated
             break
-        offset += page_count
     return {
         "status": "ok",
         "account": config["emailAddress"],
         "mailboxesScanned": len(payload.get("mailboxes", [])),
         "messages": messages,
         "truncated": hard_truncated,
+        "bodyResultCount": body_result_count,
+        "bodyTruncated": body_truncated,
+        "uncoveredMessageCount": uncovered_message_count,
         "errors": [],
         "reader": "mail-reader-service",
     }
@@ -1298,7 +1336,7 @@ def partition_unseen_messages(
 def select_messages_within_budget(
     messages: list[dict[str, Any]],
     *,
-    maximum_source_bytes: int,
+    maximum_source_tokens: int,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     selected: list[dict[str, Any]] = []
     deferred: list[dict[str, Any]] = []
@@ -1312,18 +1350,34 @@ def select_messages_within_budget(
         if len(selected) >= 500:
             deferred.append(item)
             continue
-        size = len(json.dumps(
+        size = estimated_token_count(json.dumps(
             item,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
-        ).encode("utf-8"))
-        if consumed + size <= max(0, maximum_source_bytes):
+        ))
+        if consumed + size <= max(0, maximum_source_tokens):
             selected.append(item)
             consumed += size
         else:
             deferred.append(item)
     return selected, deferred
+
+
+def estimated_token_count(value: str) -> int:
+    """Return a deterministic hard-safe upper estimate without a tokenizer."""
+    return len(value.encode("utf-8"))
+
+
+def maximum_source_tokens_for_report(token_budget: int, base_prompt: str) -> int:
+    reserved_tokens = min(20_000, max(2_000, token_budget // 4))
+    return max(
+        0,
+        token_budget
+        - reserved_tokens
+        - PROMPT_ENVELOPE_TOKEN_RESERVE
+        - estimated_token_count(base_prompt),
+    )
 
 
 def validate_proposals_for_messages(
@@ -2577,7 +2631,6 @@ def _run_reconciliation(
     )
     candidates = all_messages if recheck else unseen_messages
     token_budget = int(config.get("dailyReport", {}).get("maximumTokens", 75_000))
-    reserved_tokens = min(20_000, max(2_000, token_budget // 4))
     base_classification_bundle = {
         "version": 1,
         "policy": bundle.get("policy", {}),
@@ -2585,15 +2638,13 @@ def _run_reconciliation(
         "projects": bundle.get("projects", []),
         "messages": [],
     }
-    base_prompt_bytes = len(
-        proposal_prompt(
-            base_classification_bundle,
-            int(config["maxNewTasksPerRun"]),
-        ).encode("utf-8")
+    base_prompt = proposal_prompt(
+        base_classification_bundle,
+        int(config["maxNewTasksPerRun"]),
     )
     checked_messages, deferred_messages = select_messages_within_budget(
         candidates,
-        maximum_source_bytes=max(0, token_budget - reserved_tokens - base_prompt_bytes),
+        maximum_source_tokens=maximum_source_tokens_for_report(token_budget, base_prompt),
     )
 
     pending_classification_path = runtime / "pending-classification.json"

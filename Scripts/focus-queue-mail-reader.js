@@ -8,6 +8,8 @@ const CONNECTOR = "ecc-focus-mail-reader";
 const MAX_BODY_CHARACTERS = 100000;
 const MAX_SEARCH_CANDIDATES = 5000;
 const MAX_BODY_SEARCH_CANDIDATES = 250;
+const MAX_DAILY_REPORT_RESULTS = 500;
+const MAX_EMPTY_QUERY_BODY_SNIPPETS = 10;
 
 function safeValue(operation, fallback) {
   try {
@@ -167,6 +169,66 @@ function mailboxIndex(entry) {
   };
 }
 
+function recentMailboxIndex(entry, cutoff, maximumMessages, resolveMessages) {
+  const allMessages = entry.mailbox.messages;
+  // JXA drops one qualifier when whose and slice specifiers are chained. Read
+  // only the lightweight IDs to discover a safe raw range, then apply the
+  // range directly to Mail's mailbox collection. Mail returns messages newest
+  // first, matching the cutoff behavior this reader used before pagination.
+  const allIds = Array.from(safeValue(() => allMessages.id(), []));
+  const selectedCount = Math.min(allIds.length, maximumMessages);
+  if (!selectedCount) {
+    return {
+      entry,
+      messages: [],
+      ids: [],
+      messageIds: [],
+      dates: [],
+      senders: [],
+      subjects: [],
+      readStatuses: [],
+      flaggedStatuses: [],
+      allMessages,
+      rangeTruncated: false
+    };
+  }
+  // JXA range endpoints are inclusive, unlike Array.prototype.slice. Count
+  // first so empty and underfilled mailboxes never produce Invalid index.
+  const specifier = allMessages.slice(0, selectedCount - 1);
+  const values = (property, fallback) => Array.from(safeValue(
+    () => specifier[property](),
+    fallback
+  ));
+  // Each property read is one Apple Event against the bounded range,
+  // independent of the number of matching messages.
+  const ids = allIds.slice(0, selectedCount);
+  const messageIds = values("messageId", []);
+  const dates = values("dateReceived", []);
+  const senders = values("sender", []);
+  const subjects = values("subject", []);
+  const readStatuses = values("readStatus", []);
+  const flaggedStatuses = values("flaggedStatus", []);
+  const resolved = resolveMessages
+    ? (typeof specifier === "function" ? specifier() : specifier)
+    : [];
+  const messages = Array.from(resolved || []);
+  const lastDate = dates[selectedCount - 1] || null;
+  const rangeTruncated = allIds.length > selectedCount && (!lastDate || lastDate >= cutoff);
+  return {
+    entry,
+    messages,
+    ids,
+    messageIds,
+    dates,
+    senders,
+    subjects,
+    readStatuses,
+    flaggedStatuses,
+    allMessages,
+    rangeTruncated
+  };
+}
+
 function metadataAt(index, position) {
   const localId = String(index.ids[position] || "");
   const rawMessageId = String(index.messageIds[position] || "");
@@ -192,6 +254,53 @@ function bodyAt(index, position) {
     safeValue(() => index.messages[position].content(), ""),
     MAX_BODY_CHARACTERS
   );
+}
+
+function bulkBodiesForCandidates(candidates) {
+  const bodyCandidates = candidates.slice(0, MAX_EMPTY_QUERY_BODY_SNIPPETS);
+  const ranges = new Map();
+  for (const candidate of bodyCandidates) {
+    const current = ranges.get(candidate.index);
+    ranges.set(candidate.index, current
+      ? {
+          start: Math.min(current.start, candidate.position),
+          end: Math.max(current.end, candidate.position)
+        }
+      : {start: candidate.position, end: candidate.position});
+  }
+  const bodiesByIndex = new Map();
+  for (const [index, range] of ranges) {
+    // Fetch only the selected window. High-offset pages must not reread every
+    // body before their first result.
+    const specifier = index.allMessages.slice(range.start, range.end);
+    const bodies = Array.from(specifier.content());
+    const expectedCount = range.end - range.start + 1;
+    if (bodies.length !== expectedCount) {
+      throw new Error(
+        `Mail body batch returned ${bodies.length} result(s); expected ${expectedCount}`
+      );
+    }
+    bodiesByIndex.set(
+      index,
+      {
+        start: range.start,
+        bodies
+      }
+    );
+  }
+  const bodies = candidates.map(() => "");
+  bodyCandidates.forEach((candidate, position) => {
+    const selected = bodiesByIndex.get(candidate.index) || {start: 0, bodies: []};
+    bodies[position] = cleanText(
+      selected.bodies[candidate.position - selected.start] || "",
+      MAX_BODY_CHARACTERS
+    );
+  });
+  return {
+    bodies,
+    bodyResultCount: bodyCandidates.length,
+    bodyTruncated: bodyCandidates.length < candidates.length
+  };
 }
 
 function status(config, request, account) {
@@ -224,7 +333,8 @@ function search(config, request, account) {
   const query = String(request.query || "").trim();
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   const days = Math.min(Math.max(Number(request.days || 30), 1), 3650);
-  const limit = Math.min(Math.max(Number(request.limit || 10), 1), 50);
+  const limitCap = request.dailyReport ? MAX_DAILY_REPORT_RESULTS : 50;
+  const limit = Math.min(Math.max(Number(request.limit || 10), 1), limitCap);
   const offset = Math.min(Math.max(Number(request.offset || 0), 0), MAX_SEARCH_CANDIDATES);
   // Let the scan guard observe one more position when a page ends at the cap,
   // so capped mailboxes are reported as incomplete instead of silently done.
@@ -236,7 +346,13 @@ function search(config, request, account) {
   let bodyScanned = 0;
   let scanTruncated = false;
   for (const entry of mailboxes) {
-    const index = mailboxIndex(entry);
+    const index = recentMailboxIndex(
+      entry,
+      cutoff,
+      query ? MAX_SEARCH_CANDIDATES + 1 : requestedCandidateCount,
+      Boolean(query)
+    );
+    scanTruncated = scanTruncated || index.rangeTruncated;
     let mailboxMatches = 0;
     for (let position = 0; position < index.ids.length; position += 1) {
       const received = index.dates[position];
@@ -266,8 +382,14 @@ function search(config, request, account) {
   }
   candidates.sort((left, right) => String(right.item.receivedAt).localeCompare(String(left.item.receivedAt)));
   const pageEnd = offset + limit;
-  const results = candidates.slice(offset, pageEnd).map((candidate) => {
-    const body = candidate.body || bodyAt(candidate.index, candidate.position);
+  const pageCandidates = candidates.slice(offset, pageEnd);
+  const bodyCoverage = query
+    ? {bodies: [], bodyResultCount: pageCandidates.length, bodyTruncated: false}
+    : bulkBodiesForCandidates(pageCandidates);
+  const results = pageCandidates.map((candidate, pagePosition) => {
+    const body = query
+      ? (candidate.body || bodyAt(candidate.index, candidate.position))
+      : bodyCoverage.bodies[pagePosition];
     return {...candidate.item, snippet: snippet(body, query, 700), attachments: []};
   });
   return {
@@ -284,8 +406,10 @@ function search(config, request, account) {
     offset,
     candidateCount: scanned,
     bodyCandidateCount: bodyScanned,
+    bodyResultCount: bodyCoverage.bodyResultCount,
+    bodyTruncated: bodyCoverage.bodyTruncated,
     truncated: candidates.length > pageEnd,
-    hardTruncated: scanTruncated || bodyScanned >= MAX_BODY_SEARCH_CANDIDATES,
+    hardTruncated: scanTruncated || bodyScanned >= MAX_BODY_SEARCH_CANDIDATES || bodyCoverage.bodyTruncated,
     results
   };
 }

@@ -124,6 +124,33 @@ class FocusQueueMailTests(unittest.TestCase):
         self.assertEqual(result, 0)
         serve.assert_called_once_with({"emailProvider": "gmail"})
 
+    def test_daily_report_search_marks_the_trusted_batch_request(self):
+        response = {
+            "status": "ok",
+            "verified": True,
+            "operation": "search",
+            "results": [],
+            "truncated": False,
+        }
+        with mock.patch.object(
+            MODULE.morning,
+            "load_config",
+            return_value={"emailProvider": "apple_mail"},
+        ), mock.patch.object(
+            MODULE,
+            "invoke_reader",
+            return_value=response,
+        ) as invoke, mock.patch.object(
+            sys,
+            "argv",
+            ["focus-mail", "search", "", "--limit", "200", "--daily-report"],
+        ), contextlib.redirect_stdout(io.StringIO()):
+            result = MODULE.main()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(invoke.call_args.args[1]["limit"], 200)
+        self.assertTrue(invoke.call_args.args[1]["dailyReport"])
+
     def test_search_returns_current_verified_evidence_without_full_body(self):
         with mock.patch.object(
             MODULE.morning,
@@ -292,7 +319,12 @@ const values = [
   {id: "2", messageId: "two@example.com", date: new Date("2026-09-09T11:00:00Z")},
   {id: "1", messageId: "one@example.com", date: new Date("2026-09-09T10:00:00Z")}
 ];
-const messages = values.map((item) => ({content() { return `body ${item.id}`; }}));
+const messages = values.map((item) => ({
+  id() { return item.id; }, messageId() { return item.messageId; }, dateReceived() { return item.date; },
+  sender() { return "sender@example.com"; }, subject() { return `subject ${item.id}`; },
+  readStatus() { return false; }, flaggedStatus() { return false; },
+  content() { return `body ${item.id}`; }
+}));
 messages.id = () => values.map((item) => item.id);
 messages.messageId = () => values.map((item) => item.messageId);
 messages.dateReceived = () => values.map((item) => item.date);
@@ -300,6 +332,14 @@ messages.sender = () => values.map(() => "sender@example.com");
 messages.subject = () => values.map((item) => `subject ${item.id}`);
 messages.readStatus = () => values.map(() => false);
 messages.flaggedStatus = () => values.map(() => false);
+messages.slice = (start, end) => {
+  const bounded = Array.prototype.slice.call(messages, start, end + 1);
+  for (const property of ["id", "messageId", "dateReceived", "sender", "subject", "readStatus", "flaggedStatus"]) {
+    bounded[property] = () => bounded.map((message) => message[property]());
+  }
+  bounded.content = () => bounded.map((message) => message.content());
+  return bounded;
+};
 const mailbox = {name() { return "INBOX"; }, messages};
 const account = {mailboxes() { return [mailbox]; }};
 const result = search(
@@ -339,7 +379,12 @@ const values = [4, 3, 2, 1].map((id) => ({
   messageId: `${id}@example.com`,
   date: new Date(`2026-09-09T0${id}:00:00Z`)
 }));
-const messages = values.map((item) => ({content() { return `body ${item.id}`; }}));
+const messages = values.map((item) => ({
+  id() { return item.id; }, messageId() { return item.messageId; }, dateReceived() { return item.date; },
+  sender() { return "sender@example.com"; }, subject() { return `subject ${item.id}`; },
+  readStatus() { return false; }, flaggedStatus() { return false; },
+  content() { return `body ${item.id}`; }
+}));
 messages.id = () => values.map((item) => item.id);
 messages.messageId = () => values.map((item) => item.messageId);
 messages.dateReceived = () => values.map((item) => item.date);
@@ -347,6 +392,14 @@ messages.sender = () => values.map(() => "sender@example.com");
 messages.subject = () => values.map((item) => `subject ${item.id}`);
 messages.readStatus = () => values.map(() => false);
 messages.flaggedStatus = () => values.map(() => false);
+messages.slice = (start, end) => {
+  const bounded = Array.prototype.slice.call(messages, start, end + 1);
+  for (const property of ["id", "messageId", "dateReceived", "sender", "subject", "readStatus", "flaggedStatus"]) {
+    bounded[property] = () => bounded.map((message) => message[property]());
+  }
+  bounded.content = () => bounded.map((message) => message.content());
+  return bounded;
+};
 const mailbox = {name() { return "INBOX"; }, messages};
 const account = {mailboxes() { return [mailbox]; }};
 const result = search(
@@ -636,7 +689,12 @@ globalThis.ObjC = {import() {}};
 eval(fs.readFileSync(process.argv[1], "utf8"));
 const values = Array.from({length: 20}, (_, id) => ({id: String(id + 1), date: new Date(Date.now() - id * 60000)}));
 let bodyReads = [];
-const messages = values.map((item) => ({content() { bodyReads.push(item.id); return `body ${item.id}`; }}));
+const messages = values.map((item) => ({
+  id() { return item.id; }, messageId() { return `${item.id}@example.com`; }, dateReceived() { return item.date; },
+  sender() { return "sender@example.com"; }, subject() { return "topic"; },
+  readStatus() { return false; }, flaggedStatus() { return false; },
+  content() { bodyReads.push(item.id); return `body ${item.id}`; }
+}));
 messages.id = () => values.map((item) => item.id);
 messages.messageId = () => values.map((item) => `${item.id}@example.com`);
 messages.dateReceived = () => values.map((item) => item.date);
@@ -644,6 +702,14 @@ messages.sender = () => values.map(() => "sender@example.com");
 messages.subject = () => values.map(() => "topic");
 messages.readStatus = () => values.map(() => false);
 messages.flaggedStatus = () => values.map(() => false);
+messages.slice = (start, end) => {
+  const bounded = Array.prototype.slice.call(messages, start, end + 1);
+  for (const property of ["id", "messageId", "dateReceived", "sender", "subject", "readStatus", "flaggedStatus"]) {
+    bounded[property] = () => bounded.map((message) => message[property]());
+  }
+  bounded.content = () => bounded.map((message) => message.content());
+  return bounded;
+};
 const account = {mailboxes() { return [{name() { return "INBOX"; }, messages}]; }};
 const results = [];
 for (const query of ["", "topic"]) {
@@ -658,11 +724,318 @@ process.stdout.write(JSON.stringify(results));
             [node, "-e", harness, str(SCRIPTS / "focus-queue-mail-reader.js")],
             capture_output=True, text=True, check=True,
         )
-        for result in json.loads(completed.stdout):
-            self.assertEqual(result["bodyReads"], ["6", "7"])
+        expected = [
+            (["6", "7"], True),
+            (["6", "7"], False),
+        ]
+        for result, (expected_body_reads, expected_hard_truncation) in zip(
+            json.loads(completed.stdout), expected
+        ):
+            self.assertEqual(result["bodyReads"], expected_body_reads)
             self.assertEqual([item["snippet"] for item in result["page"]["results"]], ["body 6", "body 7"])
             self.assertTrue(result["page"]["truncated"])
-            self.assertFalse(result["page"]["hardTruncated"])
+            self.assertEqual(result["page"]["hardTruncated"], expected_hard_truncation)
+
+    def test_reader_filters_large_mailbox_before_bulk_metadata_reads(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is required for the JavaScript reader contract")
+        harness = r"""
+const fs = require("fs");
+globalThis.ObjC = {import() {}};
+eval(fs.readFileSync(process.argv[1], "utf8"));
+
+const now = Date.now();
+const recent = Array.from({length: 3063}, (_, index) => {
+  const id = 3063 - index;
+  return {id: String(id), messageId: `${id}@example.com`, date: new Date(now - index * 1000)};
+});
+let unfilteredMetadataReads = 0;
+let individualMetadataReads = 0;
+let boundedBulkMetadataReads = 0;
+let fullIdWidths = [];
+let bulkWidths = [];
+let bulkContentWidths = [];
+let bulkContentRanges = [];
+let resolutionWidths = [];
+let rangeCalls = [];
+let bodyReads = [];
+
+function collection(values) {
+  const result = values.map((item) => ({
+    id() { individualMetadataReads += 1; return item.id; },
+    messageId() { individualMetadataReads += 1; return item.messageId; },
+    dateReceived() { individualMetadataReads += 1; return item.date; },
+    sender() { individualMetadataReads += 1; return "sender@example.com"; },
+    subject() { individualMetadataReads += 1; return `subject ${item.id}`; },
+    readStatus() { individualMetadataReads += 1; return false; },
+    flaggedStatus() { individualMetadataReads += 1; return false; },
+    content() { bodyReads.push(item.id); return `body ${item.id}`; }
+  }));
+  return result;
+}
+
+function boundedSpecifier(values, rangeStart = 0) {
+  const resolved = collection(values);
+  const read = (result) => {
+    boundedBulkMetadataReads += 1;
+    bulkWidths.push(values.length);
+    return result;
+  };
+  const specifier = () => { resolutionWidths.push(values.length); return resolved; };
+  specifier.id = () => read(values.map((item) => item.id));
+  specifier.messageId = () => read(values.map((item) => item.messageId));
+  specifier.dateReceived = () => read(values.map((item) => item.date));
+  specifier.sender = () => read(values.map(() => "sender@example.com"));
+  specifier.subject = () => read(values.map((item) => `subject ${item.id}`));
+  specifier.readStatus = () => read(values.map(() => false));
+  specifier.flaggedStatus = () => read(values.map(() => false));
+  specifier.content = () => {
+    bulkContentWidths.push(values.length);
+    bulkContentRanges.push([rangeStart, rangeStart + values.length - 1]);
+    return values.map((item) => `body ${item.id}`);
+  };
+  return specifier;
+}
+
+function rawSpecifier(values) {
+  const allMessages = collection(values);
+  allMessages.id = () => {
+    fullIdWidths.push(values.length);
+    return values.map((item) => item.id);
+  };
+  for (const property of ["messageId", "dateReceived", "sender", "subject", "readStatus", "flaggedStatus"]) {
+    allMessages[property] = () => {
+      unfilteredMetadataReads += 1;
+      throw new Error("unbounded expensive mailbox metadata was read");
+    };
+  }
+  allMessages.slice = (start, end) => {
+    rangeCalls.push([start, end]);
+    return boundedSpecifier(values.slice(start, end + 1), start);
+  };
+  allMessages.whose = () => {
+    unfilteredMetadataReads += 1;
+    throw new Error("unsafe whose/range composition was used");
+  };
+  return allMessages;
+}
+
+const inbox = {name() { return "INBOX"; }, messages: rawSpecifier(recent)};
+const sent = {name() { return "Sent"; }, messages: {
+  id() { throw new Error("unconfigured mailbox was searched"); }
+}};
+const result = search(
+  {emailAddress: "reader@example.com", emailMailboxes: ["INBOX"]},
+  {query: "", days: 7, limit: 1, offset: 1},
+  {mailboxes() { return [inbox, sent]; }}
+);
+const queried = search(
+  {emailAddress: "reader@example.com", emailMailboxes: ["INBOX"]},
+  {query: "subject", days: 7, limit: 1, offset: 1},
+  {mailboxes() { return [inbox, sent]; }}
+);
+const empty = search(
+  {emailAddress: "reader@example.com", emailMailboxes: ["INBOX"]},
+  {query: "", days: 7, limit: 5, offset: 0},
+  {mailboxes() { return [{name() { return "INBOX"; }, messages: rawSpecifier([])}]; }}
+);
+const underfilled = search(
+  {emailAddress: "reader@example.com", emailMailboxes: ["INBOX"]},
+  {query: "", days: 7, limit: 5, offset: 0},
+  {mailboxes() { return [{name() { return "INBOX"; }, messages: rawSpecifier(recent.slice(0, 2))}]; }}
+);
+const withOldMessages = search(
+  {emailAddress: "reader@example.com", emailMailboxes: ["INBOX"]},
+  {query: "", days: 7, limit: 5, offset: 0},
+  {mailboxes() { return [{name() { return "INBOX"; }, messages: rawSpecifier([
+    recent[0],
+    {id: "old-2", messageId: "old-2@example.com", date: new Date(now - 40 * 24 * 60 * 60 * 1000)},
+    {id: "old-1", messageId: "old-1@example.com", date: new Date(now - 60 * 24 * 60 * 60 * 1000)}
+  ])}]; }}
+);
+const mailboxA = [
+  {id: "a3", messageId: "a3@example.com", date: new Date(now)},
+  {id: "a2", messageId: "a2@example.com", date: new Date(now - 2 * 60000)},
+  {id: "a1", messageId: "a1@example.com", date: new Date(now - 4 * 60000)}
+];
+const mailboxB = [
+  {id: "b3", messageId: "b3@example.com", date: new Date(now - 60000)},
+  {id: "b2", messageId: "b2@example.com", date: new Date(now - 3 * 60000)},
+  {id: "b1", messageId: "b1@example.com", date: new Date(now - 5 * 60000)}
+];
+const multiMailbox = search(
+  {emailAddress: "reader@example.com", emailMailboxes: ["INBOX", "Archive"]},
+  {query: "", days: 7, limit: 3, offset: 0},
+  {mailboxes() { return [
+    {name() { return "INBOX"; }, messages: rawSpecifier(mailboxA)},
+    {name() { return "Archive"; }, messages: rawSpecifier(mailboxB)}
+  ]; }}
+);
+const cappedPage = search(
+  {emailAddress: "reader@example.com", emailMailboxes: ["INBOX"]},
+  {query: "", days: 7, limit: 200, offset: 0, dailyReport: true},
+  {mailboxes() { return [{name() { return "INBOX"; }, messages: rawSpecifier(recent)}]; }}
+);
+const largeMailboxA = Array.from({length: 20}, (_, index) => ({
+  id: `ca-${index}`,
+  messageId: `ca-${index}@example.com`,
+  date: new Date(now - index * 2000)
+}));
+const largeMailboxB = Array.from({length: 20}, (_, index) => ({
+  id: `cb-${index}`,
+  messageId: `cb-${index}@example.com`,
+  date: new Date(now - (index * 2000 + 1000))
+}));
+const cappedMultiMailbox = search(
+  {emailAddress: "reader@example.com", emailMailboxes: ["INBOX", "Archive"]},
+  {query: "", days: 7, limit: 20, offset: 0, dailyReport: true},
+  {mailboxes() { return [
+    {name() { return "INBOX"; }, messages: rawSpecifier(largeMailboxA)},
+    {name() { return "Archive"; }, messages: rawSpecifier(largeMailboxB)}
+  ]; }}
+);
+const highOffset = search(
+  {emailAddress: "reader@example.com", emailMailboxes: ["INBOX"]},
+  {query: "", days: 7, limit: 10, offset: 150, dailyReport: true},
+  {mailboxes() { return [{name() { return "INBOX"; }, messages: rawSpecifier(recent)}]; }}
+);
+process.stdout.write(JSON.stringify({
+  result, queried, empty, underfilled, withOldMessages, multiMailbox,
+  cappedPage, cappedMultiMailbox, highOffset,
+  unfilteredMetadataReads, individualMetadataReads, boundedBulkMetadataReads,
+  fullIdWidths, bulkWidths, bulkContentWidths, bulkContentRanges,
+  resolutionWidths, rangeCalls, bodyReads
+}));
+"""
+        completed = subprocess.run(
+            [node, "-e", harness, str(SCRIPTS / "focus-queue-mail-reader.js")],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        observed = json.loads(completed.stdout)
+
+        self.assertEqual(observed["unfilteredMetadataReads"], 0)
+        self.assertEqual(observed["individualMetadataReads"], 0)
+        self.assertEqual(
+            observed["fullIdWidths"],
+            [3063, 3063, 0, 2, 3, 3, 3, 3063, 20, 20, 3063],
+        )
+        self.assertEqual(observed["boundedBulkMetadataReads"], 60)
+        self.assertEqual(observed["bulkWidths"][:6], [3] * 6)
+        self.assertEqual(observed["bulkWidths"][6:12], [3063] * 6)
+        self.assertEqual(observed["bulkWidths"][12:18], [2] * 6)
+        self.assertEqual(observed["bulkWidths"][18:36], [3] * 18)
+        self.assertEqual(observed["bulkWidths"][36:42], [201] * 6)
+        self.assertEqual(observed["bulkWidths"][42:54], [20] * 12)
+        self.assertEqual(observed["bulkWidths"][54:], [161] * 6)
+        self.assertEqual(observed["resolutionWidths"], [3063])
+        self.assertEqual(observed["bulkContentWidths"], [1, 2, 1, 2, 1, 10, 5, 5, 10])
+        self.assertEqual(observed["bulkContentRanges"][-1], [150, 159])
+        self.assertEqual(sum(observed["bulkContentWidths"][3:5]), 3)
+        self.assertEqual(sum(observed["bulkContentWidths"][-3:-1]), 10)
+        self.assertEqual(observed["result"]["mailboxes"], ["INBOX"])
+        self.assertEqual(observed["result"]["candidateCount"], 3)
+        self.assertEqual(observed["result"]["results"][0]["id"], "mail:3062")
+        self.assertEqual(observed["result"]["results"][0]["sourceKey"], "email:<3062@example.com>")
+        self.assertEqual(observed["queried"]["candidateCount"], 3063)
+        self.assertEqual(observed["empty"]["results"], [])
+        self.assertEqual(len(observed["underfilled"]["results"]), 2)
+        self.assertEqual(
+            [item["id"] for item in observed["withOldMessages"]["results"]],
+            ["mail:3063"],
+        )
+        self.assertEqual(
+            [item["id"] for item in observed["multiMailbox"]["results"]],
+            ["mail:a3", "mail:b3", "mail:a2"],
+        )
+        self.assertEqual(len(observed["cappedPage"]["results"]), 200)
+        self.assertEqual(observed["cappedPage"]["bodyResultCount"], 10)
+        self.assertTrue(observed["cappedPage"]["bodyTruncated"])
+        self.assertTrue(observed["cappedPage"]["hardTruncated"])
+        self.assertEqual(
+            sum(bool(item["snippet"]) for item in observed["cappedPage"]["results"]),
+            10,
+        )
+        self.assertEqual(len(observed["cappedMultiMailbox"]["results"]), 20)
+        self.assertEqual(observed["cappedMultiMailbox"]["bodyResultCount"], 10)
+        self.assertTrue(observed["cappedMultiMailbox"]["bodyTruncated"])
+        self.assertEqual(
+            sum(bool(item["snippet"]) for item in observed["cappedMultiMailbox"]["results"]),
+            10,
+        )
+        self.assertEqual(len(observed["highOffset"]["results"]), 10)
+        self.assertEqual(observed["highOffset"]["bodyResultCount"], 10)
+        self.assertFalse(observed["highOffset"]["bodyTruncated"])
+        self.assertEqual(observed["bodyReads"], ["3062"])
+        self.assertTrue(observed["result"]["truncated"])
+        self.assertTrue(observed["result"]["hardTruncated"])
+        self.assertFalse(observed["empty"]["hardTruncated"])
+        self.assertFalse(observed["underfilled"]["hardTruncated"])
+        self.assertFalse(observed["withOldMessages"]["hardTruncated"])
+
+    def test_reader_rejects_failed_or_short_bulk_body_batches(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is required for the JavaScript reader contract")
+        harness = r"""
+const fs = require("fs");
+globalThis.ObjC = {import() {}};
+eval(fs.readFileSync(process.argv[1], "utf8"));
+
+const values = Array.from({length: 12}, (_, index) => ({
+  id: String(12 - index),
+  date: new Date(Date.now() - index * 1000)
+}));
+
+function mailbox(mode) {
+  const messages = [];
+  messages.id = () => values.map((item) => item.id);
+  messages.slice = (start, end) => {
+    const selected = values.slice(start, end + 1);
+    return {
+      messageId() { return selected.map((item) => `${item.id}@example.com`); },
+      dateReceived() { return selected.map((item) => item.date); },
+      sender() { return selected.map(() => "sender@example.com"); },
+      subject() { return selected.map((item) => `subject ${item.id}`); },
+      readStatus() { return selected.map(() => false); },
+      flaggedStatus() { return selected.map(() => false); },
+      content() {
+        if (mode === "throw") throw new Error("Mail content batch failed");
+        return selected.slice(0, Math.max(0, selected.length - 1)).map((item) => `body ${item.id}`);
+      }
+    };
+  };
+  return {name() { return "INBOX"; }, messages};
+}
+
+const errors = [];
+for (const mode of ["throw", "short"]) {
+  try {
+    search(
+      {emailAddress: "reader@example.com", emailMailboxes: ["INBOX"]},
+      {query: "", days: 7, limit: 10, offset: 0, dailyReport: true},
+      {mailboxes() { return [mailbox(mode)]; }}
+    );
+    errors.push(null);
+  } catch (error) {
+    errors.push(String(error));
+  }
+}
+process.stdout.write(JSON.stringify(errors));
+"""
+        completed = subprocess.run(
+            [node, "-e", harness, str(SCRIPTS / "focus-queue-mail-reader.js")],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        errors = json.loads(completed.stdout)
+
+        self.assertIn("Mail content batch failed", errors[0])
+        self.assertIn("body batch", errors[1].lower())
+        self.assertIn("expected 10", errors[1].lower())
 
 
 if __name__ == "__main__":

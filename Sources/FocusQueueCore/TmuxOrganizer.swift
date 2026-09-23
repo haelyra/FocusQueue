@@ -108,8 +108,7 @@ public struct TmuxPaneSnapshot: Identifiable, Equatable, Sendable {
 
 /// Terminal cells account for the user's font, zoom and actual window size.
 public enum TmuxPaneLayout {
-  public static let minimumColumns = 72
-  public static let minimumRows = 20
+  public static let maximumPanes = 4
 
   public static func contentHeight(clientHeight: Int, status: String, controlMode: Bool) -> Int {
     // tmux control clients have no status display. Their dimensions already
@@ -119,11 +118,11 @@ public enum TmuxPaneLayout {
   }
 
   public static func capacity(width: Int, height: Int) -> Int {
-    min(4, max(1, (width + 1) / (minimumColumns + 1)) * max(1, (height + 1) / (minimumRows + 1)))
+    width > 0 && height > 0 ? maximumPanes : 0
   }
 
   public static func groups<T>(_ panes: [T], width: Int, height: Int) -> [[T]] {
-    let count = capacity(width: width, height: height)
+    let count = max(1, capacity(width: width, height: height))
     return stride(from: 0, to: panes.count, by: count).map { Array(panes[$0..<min($0 + count, panes.count)]) }
   }
 
@@ -132,8 +131,16 @@ public enum TmuxPaneLayout {
     guard !paneIDs.isEmpty, paneIDs.count <= capacity(width: width, height: height),
       paneIDs.allSatisfy({ $0.range(of: "^%[0-9]+$", options: .regularExpression) != nil }),
       width > 0, height > 0 else { throw TmuxError.unavailable("The panes do not fit this window.") }
-    let columns = min(paneIDs.count, max(1, (width + 1) / (minimumColumns + 1)))
+    let columns: Int
+    switch paneIDs.count {
+    case 1: columns = 1
+    case 2: columns = width >= height * 2 ? 2 : 1
+    default: columns = 2
+    }
     let rows = (paneIDs.count + columns - 1) / columns
+    guard width >= columns * 2 - 1, height >= rows * 2 - 1 else {
+      throw TmuxError.unavailable("The panes do not fit this window.")
+    }
     var offset = 0
     var y = 0
     var rowLayouts: [String] = []
@@ -244,6 +251,10 @@ extension TmuxController {
     let existing = try await panes(name: name, executable: executable)
     guard !existing.contains(where: { $0.subtaskID == subtaskID }) else {
       throw TmuxError.unavailable("This agent already has a pane. Open it from the task to continue.")
+    }
+    guard existing.count < TmuxPaneLayout.maximumPanes else {
+      throw TmuxError.unavailable(
+        "This task already has four agent panes. Complete or remove one before starting another.")
     }
     let restored = existing.filter { $0.restoredSubtaskID == subtaskID }
     guard restored.count <= 1 else {
@@ -510,6 +521,10 @@ extension TmuxController {
     guard let first = all.first, force || first.automatic else { return }
     // Unregistered/restored shells remain under the user's control.
     guard all.allSatisfy({ !$0.subtaskID.isEmpty }) else { return }
+    guard all.count <= TmuxPaneLayout.maximumPanes else {
+      throw TmuxError.unavailable(
+        "This legacy task session has more than four panes. Focus Queue left its layout unchanged.")
+    }
     let focused = try await run(executable, ["display-message", "-p", "-t", "=\(name):", "#{pane_id}"])
     let activePane = focused.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
     let sizes = try await run(executable, ["list-clients", "-t", "=\(name)", "-F", "#{client_width}|#{client_height}|#{client_activity}|#{client_control_mode}"])
@@ -530,17 +545,17 @@ extension TmuxController {
     let signature = "\(width)x\(height):" + ordered.map(\.id).joined(separator: ",")
     let previous = try await run(executable, ["show-options", "-qv", "-t", name, "@focus-queue-size"])
     if !force, previous.succeeded, previous.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines) == signature { return }
-    let groups = TmuxPaneLayout.groups(ordered, width: width, height: height)
+    let groups = [ordered]
     try await checked(executable, ["set-option", "-t", name, "status-left", ""])
     try await checked(executable, ["set-option", "-t", name, "status-right", ""])
-    // Give every group a distinct window, preserving pane IDs and processes.
-    for (index, group) in groups.enumerated() {
+    // Consolidate every managed agent into the task's one window.
+    for group in groups {
       guard let anchor = group.first else { continue }
       let current = try await panes(name: name, executable: executable)
       guard let liveAnchor = current.first(where: { $0.id == anchor.id }) else { throw TmuxError.changed }
       let groupIDs = Set(group.map(\.id))
       if current.contains(where: { $0.windowID == liveAnchor.windowID && !groupIDs.contains($0.id) }) {
-        try await checked(executable, ["break-pane", "-d", "-s", anchor.id, "-t", "=\(name):", "-n", "Agents \(index + 1)"])
+        try await checked(executable, ["break-pane", "-d", "-s", anchor.id, "-t", "=\(name):", "-n", "Agents"])
       }
       try await checked(executable, ["resize-window", "-t", anchor.id, "-x", String(width), "-y", String(height)])
       for member in group.dropFirst() {
@@ -553,7 +568,7 @@ extension TmuxController {
       }
       try await checked(executable, ["select-layout", "-t", anchor.id,
         TmuxPaneLayout.layout(paneIDs: group.map(\.id), width: width, height: height)])
-      try await checked(executable, ["rename-window", "-t", anchor.id, "Agents \(index + 1)"])
+      try await checked(executable, ["rename-window", "-t", anchor.id, "Agents"])
       try await checked(executable, ["set-window-option", "-t", anchor.id, "automatic-rename", "off"])
       try await checked(executable, ["set-window-option", "-t", anchor.id, "window-size", "latest"])
       try await checked(executable, ["set-window-option", "-t", anchor.id, "pane-border-status", "off"])

@@ -69,6 +69,7 @@ public struct ExternalAgentRegistration: Codable, Identifiable, Equatable, Senda
     public var parentSessionID: String?
     public var cwd: String
     public var title: String
+    public var workDescription: String? = nil
     public var taskID: String?
     public var subtaskID: String?
     public var reason: String?
@@ -133,12 +134,15 @@ public actor ExternalAgentRegistry {
         var record = ExternalAgentRegistration(id: id, provider: provider, sessionID: event.providerSessionID,
             agentID: event.agentID ?? previous?.agentID, parentSessionID: parent ?? previous?.parentSessionID, cwd: cwd,
             title: previous?.title ?? "\(event.isSubagent ? "Subagent" : provider.displayName) · \((event.agentID ?? event.sessionID).suffix(6))",
+            workDescription: previous?.workDescription
+                ?? "Continue the \(provider.displayName) session in \(URL(fileURLWithPath: cwd).lastPathComponent).",
             reason: nil, eventName: event.hookEventName, updatedAt: Date(),
             tmux: hasParent ? nil : tmux ?? previous?.tmux,
             paneID: hasParent ? nil : paneID ?? previous?.paneID,
             socketPath: hasParent ? nil : socketPath ?? previous?.socketPath)
         if let prompt = event.prompt?.trimmingCharacters(in: .whitespacesAndNewlines), !prompt.isEmpty {
             record.title = TaskSubtask.agentName(prompt: prompt, provider: provider)
+            record.workDescription = String(prompt.prefix(2_000))
         }
         // Tracking survives an incomplete task or a failed enrichment step.
         if previous == nil { try save(record) }
@@ -194,7 +198,8 @@ public actor ExternalAgentRegistry {
             }
             let context = try await store.registerExternalSession(
                 ticketID: chosen.ticketID, provider: provider, sessionID: sessionID,
-                title: record.title, cwd: cwd, preferredSubtaskID: inheritedTask == chosen.ticketID ? inheritedSubtask : nil,
+                title: record.title, description: record.workDescription ?? record.title,
+                cwd: cwd, preferredSubtaskID: inheritedTask == chosen.ticketID ? inheritedSubtask : nil,
                 allowFreshAssociation: explicit != nil, tmux: record.tmux,
                 paneID: record.paneID, socketPath: record.socketPath,
                 eventName: event.hookEventName)
@@ -202,6 +207,7 @@ public actor ExternalAgentRegistry {
                 && $0.sessionID?.lowercased() == sessionID && $0.agentRemovedAt == nil && $0.status != .completed }) {
                 record.taskID = context.ticketID; record.subtaskID = subtask.id
                 record.title = subtask.title
+                record.workDescription = subtask.workDescription
                 if let session = record.session?.withContext(context, subtask: subtask, supportDirectory: root) {
                     try await AgentRegistrationInbox(directory: root.appendingPathComponent("agent-registrations")).submit(session)
                 }

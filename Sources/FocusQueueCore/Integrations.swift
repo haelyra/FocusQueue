@@ -562,10 +562,12 @@ public actor WezTermController: WezTermControlling {
         if let subtaskID = session.subtaskID {
             return try await openManagedAgentRuntime(
                 tmux, taskID: taskID, subtaskID: subtaskID,
-                provider: session.provider, configuration: configuration)
+                provider: session.provider, configuration: configuration,
+                workingDirectory: session.workingDirectory)
         }
         return try await openManagedRuntime(
-            tmux, taskID: taskID, provider: session.provider, configuration: configuration)
+            tmux, taskID: taskID, provider: session.provider, configuration: configuration,
+            workingDirectory: session.workingDirectory)
     }
 
     public func openAgentRuntime(_ subtask: TaskSubtask, taskID: String,
@@ -574,7 +576,8 @@ public actor WezTermController: WezTermControlling {
         if let tmux = subtask.tmux {
             return try await openManagedRuntime(tmux, taskID: taskID,
                 subtaskID: subtask.id, provider: subtask.provider,
-                configuration: configuration, tabTitle: title)
+                configuration: configuration, tabTitle: title,
+                workingDirectory: subtask.workspace?.path)
         }
         guard let paneID = subtask.terminalPaneID else { throw WezTermError.runtimeClosed }
         return try await openDirectRuntime(paneID: paneID, socketPath: subtask.terminalSocketPath,
@@ -588,7 +591,8 @@ public actor WezTermController: WezTermControlling {
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult {
         try await openManagedRuntime(saved, taskID: taskID, subtaskID: nil,
-            provider: provider, configuration: configuration, tabTitle: nil)
+            provider: provider, configuration: configuration, tabTitle: nil,
+            workingDirectory: nil)
     }
 
     public func openManagedAgentRuntime(
@@ -599,12 +603,39 @@ public actor WezTermController: WezTermControlling {
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult {
         try await openManagedRuntime(saved, taskID: taskID, subtaskID: subtaskID,
-            provider: provider, configuration: configuration, tabTitle: nil)
+            provider: provider, configuration: configuration, tabTitle: nil,
+            workingDirectory: nil)
+    }
+
+    private func openManagedAgentRuntime(
+        _ saved: TmuxSessionReference,
+        taskID: String,
+        subtaskID: String,
+        provider: AgentProvider,
+        configuration: WezTermConfiguration,
+        workingDirectory: String
+    ) async throws -> TerminalActionResult {
+        try await openManagedRuntime(saved, taskID: taskID, subtaskID: subtaskID,
+            provider: provider, configuration: configuration, tabTitle: nil,
+            workingDirectory: workingDirectory)
+    }
+
+    private func openManagedRuntime(
+        _ saved: TmuxSessionReference,
+        taskID: String,
+        provider: AgentProvider,
+        configuration: WezTermConfiguration,
+        workingDirectory: String
+    ) async throws -> TerminalActionResult {
+        try await openManagedRuntime(saved, taskID: taskID, subtaskID: nil,
+            provider: provider, configuration: configuration, tabTitle: nil,
+            workingDirectory: workingDirectory)
     }
 
     private func openManagedRuntime(_ saved: TmuxSessionReference, taskID: String,
                                     subtaskID: String?, provider: AgentProvider,
-                                    configuration: WezTermConfiguration, tabTitle: String?) async throws -> TerminalActionResult {
+                                    configuration: WezTermConfiguration, tabTitle: String?,
+                                    workingDirectory: String?) async throws -> TerminalActionResult {
         if saved.name.hasPrefix("fq-task-"), saved.name != (try TmuxController.taskSessionName(taskID: taskID)) {
             throw TmuxError.changed
         }
@@ -620,12 +651,148 @@ public actor WezTermController: WezTermControlling {
         // Externally created sessions can also have several panes or windows.
         // Selecting the saved identity is required before attaching its view.
         try await runtime.select(live)
-        let result = try await ManagedTerminalLauncher.open(
-            reference: live, configuration: configuration, runner: runner)
+        if configuration.applicationName.caseInsensitiveCompare("Terminal") == .orderedSame {
+            let result = try await ManagedTerminalLauncher.open(
+                reference: live, configuration: configuration, runner: runner)
+            _ = try await runtime.verify(live)
+            return result
+        }
+
+        let directory = try await managedDirectory(
+            workingDirectory, runtime: runtime, reference: live)
+        let result = try await locateOrAttachManagedRuntime(
+            live, taskID: taskID, directory: directory,
+            configuration: configuration, runtime: runtime)
         // Opening a desktop view is not allowed to weaken runtime identity.
         // If the pane changed during launch, report that exact conflict.
         _ = try await runtime.verify(live)
         return result
+    }
+
+    private func managedDirectory(
+        _ preferred: String?, runtime: TmuxController,
+        reference: TmuxSessionReference
+    ) async throws -> String {
+        guard let preferred else { return try await runtime.workingDirectory(for: reference) }
+        let path = URL(fileURLWithPath: preferred).standardizedFileURL.path
+        var isDirectory: ObjCBool = false
+        guard preferred.hasPrefix("/"), !preferred.contains("\0"),
+              FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw ProcessRunnerError.invalidWorkingDirectory(preferred)
+        }
+        return path
+    }
+
+    private func locateOrAttachManagedRuntime(
+        _ reference: TmuxSessionReference,
+        taskID: String,
+        directory: String,
+        configuration: WezTermConfiguration,
+        runtime: TmuxController
+    ) async throws -> TerminalActionResult {
+        let connection = try await WezTermConnection.resolve(
+            configuration: configuration, runner: runner, candidateSockets: candidateSockets)
+        guard !connection.result.timedOut else {
+            throw WezTermError.actionFailed(
+                "WezTerm lookup timed out. The managed agent remains available in tmux.")
+        }
+
+        if connection.result.succeeded {
+            let pinned = connection.configuration
+            let panes = try Self.decodePanes(from: connection.result)
+            let clients = try await runtime.clientTTYs(for: reference)
+            if let pane = Self.managedClientPane(in: panes, clientTTYs: clients, directory: directory) {
+                try await focus(
+                    pane: pane,
+                    tabTitle: AgentTerminalLabels.managedTabTitle(ticketID: taskID),
+                    windowTitle: taskID.uppercased(), configuration: pinned)
+                return .focused(paneID: pane.paneID)
+            }
+
+            let command = try TmuxController.attachCommand(reference: reference)
+            let spawn = try await runner.run(ProcessSpecification(
+                executable: pinned.executable,
+                arguments: ["cli", "spawn", "--new-window", "--domain-name", "local",
+                    "--cwd", directory, "--"] + command,
+                workingDirectory: directory, environment: pinned.cliEnvironment,
+                timeoutSeconds: 15))
+            guard spawn.succeeded,
+                  let paneID = Int(spawn.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  paneID >= 0 else {
+                throw WezTermError.actionFailed(
+                    "The managed agent is still running, but WezTerm could not attach its exact tmux pane.")
+            }
+            if let pane = try await waitForManagedClient(
+                paneID: paneID, reference: reference, directory: directory,
+                configuration: pinned, runtime: runtime) {
+                try await focus(
+                    pane: pane,
+                    tabTitle: AgentTerminalLabels.managedTabTitle(ticketID: taskID),
+                    windowTitle: taskID.uppercased(), configuration: pinned)
+                return .focused(paneID: paneID)
+            }
+            _ = try? await runner.run(ProcessSpecification(
+                executable: pinned.executable,
+                arguments: ["cli", "kill-pane", "--pane-id", String(paneID)],
+                environment: pinned.cliEnvironment, timeoutSeconds: 10))
+            throw WezTermError.actionFailed(
+                "WezTerm did not attach the new view to the saved tmux pane, so Focus Queue closed that view.")
+        }
+
+        let previousClients = try await runtime.clientTTYs(for: reference)
+        let command = try TmuxController.attachCommand(reference: reference)
+        let started = try await runner.run(ProcessSpecification(
+            executable: configuration.executable,
+            arguments: ["--skip-config", "start", "--always-new-process", "--cwd", directory, "--"] + command,
+            workingDirectory: directory, timeoutSeconds: 15))
+        guard started.succeeded else {
+            throw WezTermError.actionFailed(
+                "The managed agent remains in tmux, but WezTerm could not attach it: \(Self.failureDetail(started))")
+        }
+        for _ in 0..<12 {
+            let clients = try await runtime.clientTTYs(for: reference)
+            if !clients.subtracting(previousClients).isEmpty {
+                return .spawned(paneID: nil)
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        throw WezTermError.actionFailed(
+            "WezTerm did not attach to the saved tmux pane. Focus Queue did not open a fallback shell.")
+    }
+
+    private func waitForManagedClient(
+        paneID: Int,
+        reference: TmuxSessionReference,
+        directory: String,
+        configuration: WezTermConfiguration,
+        runtime: TmuxController
+    ) async throws -> WezTermPane? {
+        for _ in 0..<12 {
+            let snapshot = try await listPanes(using: configuration)
+            if snapshot.succeeded {
+                let clients = try await runtime.clientTTYs(for: reference)
+                let panes = try Self.decodePanes(from: snapshot)
+                if let pane = panes.first(where: {
+                    $0.paneID == paneID && $0.ttyName.map(clients.contains) == true
+                }) { return pane }
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        return nil
+    }
+
+    private static func managedClientPane(
+        in panes: [WezTermPane], clientTTYs: Set<String>, directory: String
+    ) -> WezTermPane? {
+        panes.filter { $0.ttyName.map(clientTTYs.contains) == true }.sorted {
+            let leftPath = standardizedPath(pathFromWezTermCWD($0.cwd))
+            let rightPath = standardizedPath(pathFromWezTermCWD($1.cwd))
+            let target = standardizedPath(directory)
+            let left = ($0.isActive == true ? 0 : 1, leftPath == target ? 0 : 1, $0.paneID)
+            let right = ($1.isActive == true ? 0 : 1, rightPath == target ? 0 : 1, $1.paneID)
+            return left < right
+        }.first
     }
 
     public func openDirectRuntime(
@@ -2012,7 +2179,7 @@ public actor CodexQueueAgent: QueueAgentChatting {
 
         Every task has durable context under the Focus Queue support directory's tasks/<ticket-id>/ folder. When the user message includes a Task scope and central plan path, restrict the turn to that task and read its plan before proposing changes. Keep the central plan short: goal, scope, success criteria, implementation outline, current focus, next step, and supporting links. If missing, create that brief outline. Keep decisions and rationale, configuration, detailed progress, checks, and handoffs in the adjacent agent-log.md; read relevant entries on demand instead of injecting the full log. Registered agents append with focus-queue-session log <ticket-id> <agent-id> "entry"; never invent an agent identity to log. Preserve historical plans until safely archived. Use focus-queue-session context <ticket-id> to read context and the helper's add/rename/progress/complete commands for subtask state instead of overwriting context.json. The helper defaults to the standard support directory; use FOCUS_QUEUE_SUPPORT_DIR when provided. Only record completed after evidence has been verified. Task types are task, long-running, subtask, and customer-concern. A customer concern needs the user's response/review before closure. Never send external messages without an explicit request. Worktree merging requires the task's explicit approval terms; leave cleanup to the host. A lightweight orchestrator maintains authorized task context and behavior, and answers questions; application-code changes and autonomous agent deployment require a separate user request.
 
-        Subtasks are assignments, and agents are separately linked runtime records. New runtime records have parentSubtaskID; isAssignmentOnly records never identify a terminal. A single provider conversation may be associated with additional assignments using focus-queue-session associate <ticket-id> <agent-record-id> <subtask-id>. At review boundaries the host combines assignments handled by the same provider conversation and retains mergedIntoSubtaskID aliases, launch locations, and history. Read the refreshed context and reflect combined scope in the central plan when reviewing it. Keep provider session IDs and workspace paths on their own agent records. Never copy one agent's runtime into another assignment. Progress/result/attention reports describe agent activity; a finished response alone does not complete its assignment.
+        Each registered work item is one titled, briefly described record that may own its agent runtime, provider session, and immutable workspace. Do not create a second assignment row for the same launched agent. Legacy isAssignmentOnly and parentSubtaskID pairs remain readable and may be reconciled at review boundaries. A single provider conversation may be associated with additional legacy assignments using focus-queue-session associate <ticket-id> <agent-record-id> <subtask-id>. Retain mergedIntoSubtaskID aliases, launch locations, and history. Never copy one agent's runtime into another work item. Progress/result/attention reports describe agent activity; a finished response alone does not complete its work item.
 
         Truth is a hard operational invariant. Never claim or imply that you checked, searched, found, read, opened, sent, changed, or verified an external source unless a successful tool result in this turn proves that exact action. Earlier chat turns, memory, dashboard text, task links, and plausible inference are not current verification. Name the source actually checked. If a tool fails, state `blocked` and its exact error. If evidence is incomplete, state `unverified`. Never fill a missing fact with a likely answer.
 

@@ -145,7 +145,10 @@ struct ExternalAgentRegistrationTests {
         let records = try await registry.registrations()
         #expect(records.count == 1)
         #expect(records.first?.title == "Fix pane registration")
-        #expect(try await store.load(ticketID: "ECC-101")?.subtasks.count == 1)
+        #expect(records.first?.workDescription == "Fix pane registration")
+        let saved = try await store.load(ticketID: "ECC-101")
+        #expect(saved?.subtasks.count == 1)
+        #expect(saved?.subtasks.first?.workDescription == "Fix pane registration")
         try Data("damaged".utf8).write(to: root.appendingPathComponent("external-agent-sessions/bad.json"))
         #expect(try await registry.registrations().count == 1)
     }

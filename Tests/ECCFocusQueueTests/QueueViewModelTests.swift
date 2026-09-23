@@ -362,7 +362,7 @@ struct QueueViewModelTests {
     #expect(try external.load() == [])
   }
 
-  @Test("Subtasks can exist without agents and retain their own explanation")
+  @Test("Queued work items can exist without agents and retain their description")
   func standaloneSubtaskCreation() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -374,7 +374,8 @@ struct QueueViewModelTests {
 
     try await eventually { model.focusSubtasks(for: "ECC-101").count == 1 }
     let subtask = try #require(model.focusSubtasks(for: "ECC-101").first)
-    #expect(subtask.isAssignmentOnly)
+    #expect(!subtask.isAssignmentOnly)
+    #expect(subtask.title == "Review the session list")
     #expect(subtask.assignmentDescription == "Clarify which agents are active before assigning one.")
     #expect(model.agents(for: subtask, ticketID: "ECC-101").isEmpty)
     #expect(model.visibleAgents(for: "ECC-101").isEmpty)
@@ -430,7 +431,7 @@ struct QueueViewModelTests {
     }
   }
 
-  @Test("New subtask agents and additional agents preserve independent assignments and workspaces")
+  @Test("New agents remain independent titled work items with their own workspaces")
   func nestedAgentLaunch() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -450,22 +451,29 @@ struct QueueViewModelTests {
       initialPrompt: "Do the requested work", subtaskID: "first-agent", createAssignment: true)
     try await eventually { model.launchingTaskIDs.isEmpty }
     let assignment = try #require(model.focusSubtasks(for: "ECC-101").first)
-    #expect(assignment.isAssignmentOnly)
+    #expect(!assignment.isAssignmentOnly)
     #expect(assignment.tracksCompletion)
     #expect(assignment.status == .working)
+    #expect(assignment.title == "New work")
+    #expect(assignment.assignmentDescription == "Do the requested work")
     #expect(assignment.workspace?.path == repository.path)
     #expect(model.agents(for: assignment, ticketID: "ECC-101").map(\.id) == ["first-agent"])
     model.launchAgent(for: fixture.tickets[0], title: "Second worker", provider: .claude,
       repositoryPath: repository.path, includePrompt: false, useTmux: false, createWorktree: false,
-      subtaskID: "second-agent", parentSubtaskID: assignment.id)
+      initialPrompt: "Verify the second independent item", subtaskID: "second-agent")
     try await eventually { model.launchingTaskIDs.isEmpty }
-    #expect(model.focusSubtasks(for: "ECC-101").count == 1)
-    #expect(model.agents(for: assignment, ticketID: "ECC-101").count == 2)
+    #expect(model.focusSubtasks(for: "ECC-101").count == 2)
+    #expect(Set(model.taskItems(for: "ECC-101").map(\.id)) == ["first-agent", "second-agent"])
+    #expect(model.agents(for: assignment, ticketID: "ECC-101").map(\.id) == ["first-agent"])
+    let second = try #require(model.subtasks(for: "ECC-101").first { $0.id == "second-agent" })
+    #expect(second.title == "Second worker")
+    #expect(second.assignmentDescription == "Verify the second independent item")
+    #expect(second.parentSubtaskID == nil)
     let first = try #require(model.subtasks(for: "ECC-101").first { $0.id == "first-agent" })
     model.removeAgent(first, from: fixture.tickets[0])
     try await eventually { model.subtasks(for: "ECC-101").first { $0.id == first.id }?.agentRemovedAt != nil }
-    #expect(model.focusSubtasks(for: "ECC-101").count == 1)
-    #expect(model.agents(for: assignment, ticketID: "ECC-101").map(\.id) == ["second-agent"])
+    #expect(model.focusSubtasks(for: "ECC-101").count == 2)
+    #expect(model.visibleAgents(for: "ECC-101").map(\.id) == ["second-agent"])
   }
 
   @Test("Direct launch persists its pane before revealing it and keeps it on reveal failure", arguments: [false, true])

@@ -97,6 +97,41 @@ extension TaskContext {
             }.map(\.element)
     }
 
+    /// The queue presents assignments and provider runtimes as one item type.
+    /// Legacy split records stay readable, but their assignment metadata is
+    /// folded into the visible runtime instead of producing a second UI row.
+    public var taskItems: [TaskSubtask] {
+        var items: [TaskSubtask] = []
+        var seenRecords = Set<String>()
+        var seenSessions = Set<String>()
+        func append(_ item: TaskSubtask) {
+            guard seenRecords.insert(item.id).inserted else { return }
+            if let sessionID = item.sessionID?.lowercased() {
+                guard seenSessions.insert(item.provider.rawValue + ":" + sessionID).inserted else { return }
+            }
+            items.append(item)
+        }
+        for root in focusSubtasks {
+            let linked = agents(for: root.id)
+            if root.isAssignmentOnly, !linked.isEmpty {
+                for var agent in linked {
+                    if agent.assignmentDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        agent.assignmentDescription = root.workDescription
+                    }
+                    if agent.title.hasPrefix(agent.provider.displayName + " ·")
+                        || agent.title.hasPrefix("Subagent ·") {
+                        agent.title = root.title
+                    }
+                    append(agent)
+                }
+            } else {
+                append(root)
+                for agent in linked where agent.id != root.id { append(agent) }
+            }
+        }
+        return items
+    }
+
     public func agents(for subtaskID: String, includingRemoved: Bool = false) -> [TaskSubtask] {
         var seen = Set<String>()
         return subtasks.sorted { ($0.lastHeartbeatAt ?? .distantPast) > ($1.lastHeartbeatAt ?? .distantPast) }.filter { agent in

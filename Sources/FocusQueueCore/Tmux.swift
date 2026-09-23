@@ -191,6 +191,21 @@ public actor TmuxController {
     return Set(result.standardOutput.split(separator: "\n").map(String.init).filter { $0.hasPrefix("/dev/") })
   }
 
+  public func workingDirectory(for reference: TmuxSessionReference) async throws -> String {
+    _ = try await verify(reference)
+    let result = try await run(reference.executable, [
+      "display-message", "-p", "-t", reference.paneID, "#{pane_current_path}",
+    ])
+    let path = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+    var isDirectory: ObjCBool = false
+    guard result.succeeded, path.hasPrefix("/"), !path.contains("\0"),
+      FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue
+    else {
+      throw TmuxError.unavailable("The managed pane did not report a usable workspace path.")
+    }
+    return URL(fileURLWithPath: path).standardizedFileURL.path
+  }
+
   public static func startArguments(name: String, directory: String, command: [String]) throws -> [String] {
     try validateName(name)
     guard directory.hasPrefix("/"), !command.isEmpty else { throw TmuxError.unavailable("An absolute directory and a command are required.") }

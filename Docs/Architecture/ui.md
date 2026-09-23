@@ -7,7 +7,7 @@ The observable view model coordinates queue state and presentation; AppKit owns 
 ## Follow the code
 
 - [QueueViewModel.swift](../../Sources/ECCFocusQueue/QueueViewModel.swift): opens the requested inspector, coordinates refreshes and async task actions, and persists local decisions.
-- [QueueView.swift](../../Sources/ECCFocusQueue/QueueView.swift): presents independent subtask and agent sections, a separate ellipsis menu on every row, expandable assignment explanations, archived completions, and labeled agent status indicators. Status combines text, icon, and color so unread completion and agent activity remain distinct.
+- [QueueView.swift](../../Sources/ECCFocusQueue/QueueView.swift): presents subtasks and agents in one compact work-item section, with a title, brief description, status, and ellipsis menu on every row. Archived completions remain available, and status combines text, icon, and color so unread completion and agent activity remain distinct.
 - [TerminalBrowserView.swift](../../Sources/ECCFocusQueue/TerminalBrowserView.swift): lists live panes, filters terminal metadata, and exposes progress while an exact pane is activated.
 - [AgentLaunchLog.swift](../../Sources/ECCFocusQueue/AgentLaunchLog.swift): retains bounded, private JSON Lines events for each launch phase without recording provider prompts.
 - [FocusQueueApp.swift](../../Sources/ECCFocusQueue/FocusQueueApp.swift), `AppDelegate`: owns panel sizing, Dock behavior, display placement, and menu-bar integration. Collapsing must reduce the actual window hitbox as well as SwiftUI content.

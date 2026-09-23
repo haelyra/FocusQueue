@@ -22,10 +22,13 @@ private actor DeterministicRecallRunner: ProcessRunning {
   private(set) var calls: [ProcessSpecification] = []
   let reference: TmuxSessionReference
   let agentID: String
+  let hasAttachedClient: Bool
+  var spawnedPane = false
 
-  init(reference: TmuxSessionReference, agentID: String) {
+  init(reference: TmuxSessionReference, agentID: String, hasAttachedClient: Bool = true) {
     self.reference = reference
     self.agentID = agentID
+    self.hasAttachedClient = hasAttachedClient
   }
 
   func run(_ specification: ProcessSpecification) throws -> ProcessResult {
@@ -38,9 +41,27 @@ private actor DeterministicRecallRunner: ProcessRunning {
         return success(
           "\(reference.name)|\(reference.serverPID)|\(reference.createdAt)|\(reference.paneID)|\(reference.panePID)|\(reference.tty)|0|@1|0|160|50|0|0|80|24|\(agentID)||1|auto\n")
       }
+      if specification.arguments.contains("list-clients") {
+        if spawnedPane { return success("/dev/ttys501\n") }
+        return success(hasAttachedClient ? "/dev/ttys500\n" : "")
+      }
       if specification.arguments.contains("display-message") {
+        if specification.arguments.last == "#{pane_current_path}" { return success("/tmp\n") }
         return success(
           "\(reference.name)|\(reference.serverPID)|\(reference.createdAt)|\(reference.paneID)|\(reference.panePID)|\(reference.tty)|0\n")
+      }
+      return success()
+    }
+    if specification.executable == "/mock/wezterm" {
+      if specification.arguments == ["cli", "list", "--format", "json"] {
+        let paneID = spawnedPane ? 73 : 41
+        let tty = spawnedPane ? "/dev/ttys501" : "/dev/ttys500"
+        let listedTTY = hasAttachedClient || spawnedPane ? tty : "/dev/ttys777"
+        return success("[{\"window_id\":12,\"tab_id\":21,\"pane_id\":\(paneID),\"cwd\":\"file:///tmp\",\"is_active\":true,\"tty_name\":\"\(listedTTY)\"}]")
+      }
+      if Array(specification.arguments.prefix(2)) == ["cli", "spawn"] {
+        spawnedPane = true
+        return success("73\n")
       }
       return success()
     }
@@ -74,7 +95,7 @@ struct ManagedSessionRecallTests {
     return .init(
       ticketID: "ECC-1", provider: .codex,
       sessionID: "11111111-2222-4333-8444-555555555555",
-      tabTitle: "Implement managed session recall", workingDirectory: "/tmp/worktree",
+      tabTitle: "Implement managed session recall", workingDirectory: "/tmp",
       subtaskID: "implement", tmux: reference)
   }
 
@@ -83,27 +104,84 @@ struct ManagedSessionRecallTests {
       paneID: "%7", panePID: 124, tty: "/dev/ttys099", executable: "/mock/tmux")
   }
 
-  @Test("WezTerm recall opens one fresh terminal with the exact verified tmux pane command")
+  @Test("WezTerm recall focuses the existing client attached to the exact tmux session")
   func deterministicWezTermRecipe() async throws {
     let agentID = "agent-one"
     let reference = taskReference()
     let runner = DeterministicRecallRunner(reference: reference, agentID: agentID)
-    let subtask = TaskSubtask(id: agentID, title: "Exact agent", provider: .codex,
+    var subtask = TaskSubtask(id: agentID, title: "Exact agent", provider: .codex,
       tmux: reference, runtimeMode: .tmux)
+    subtask.workspace = AgentWorkspace(path: "/tmp", repositoryPath: "/tmp")
 
     let result = try await WezTermController(
       runner: runner, candidateSockets: []).openAgentRuntime(
         subtask, taskID: "ECC-1",
         configuration: .init(executable: "/mock/wezterm", applicationName: "WezTerm"))
 
-    #expect(result == .spawned(paneID: nil))
+    #expect(result == .focused(paneID: 41))
     let calls = await runner.calls
-    let opened = try #require(calls.first { $0.executable == "/usr/bin/open" })
-    #expect(opened.arguments.starts(with: ["-na", "WezTerm", "--args", "start", "--always-new-process", "--"]))
-    #expect(opened.arguments.contains("attach-session"))
-    #expect(opened.arguments.contains("=fq-task-ecc-1"))
-    #expect(opened.arguments.contains("%7"))
-    #expect(!calls.contains { $0.executable == "/mock/wezterm" })
+    #expect(calls.contains { $0.arguments == ["cli", "activate-pane", "--pane-id", "41"] })
+    #expect(calls.contains { $0.arguments == ["cli", "set-tab-title", "--pane-id", "41", "ECC-1 · tmux"] })
+    #expect(!calls.contains { $0.executable == "/usr/bin/open" && $0.arguments.contains("-na") })
+    #expect(!calls.flatMap(\.arguments).contains("spawn"))
+  }
+
+  @Test("A detached task gets one exact WezTerm view in its recorded workspace")
+  func attachDetachedRuntime() async throws {
+    let reference = taskReference()
+    let runner = DeterministicRecallRunner(
+      reference: reference, agentID: "agent-one", hasAttachedClient: false)
+    var subtask = TaskSubtask(id: "agent-one", title: "Exact agent", provider: .codex,
+      tmux: reference, runtimeMode: .tmux)
+    subtask.workspace = AgentWorkspace(path: "/tmp", repositoryPath: "/tmp")
+
+    let result = try await WezTermController(
+      runner: runner, candidateSockets: []).openAgentRuntime(
+        subtask, taskID: "ECC-1",
+        configuration: .init(executable: "/mock/wezterm", applicationName: "WezTerm"))
+
+    #expect(result == .focused(paneID: 73))
+    let calls = await runner.calls
+    let spawn = try #require(calls.first { Array($0.arguments.prefix(2)) == ["cli", "spawn"] })
+    #expect(spawn.workingDirectory == "/tmp")
+    #expect(spawn.arguments.contains("--cwd") && spawn.arguments.contains("/tmp"))
+    #expect(spawn.arguments.contains("attach-session"))
+    #expect(spawn.arguments.contains("=fq-task-ecc-1"))
+    #expect(spawn.arguments.contains("%7"))
+    #expect(!calls.contains { $0.executable == "/usr/bin/open" && $0.arguments.contains("-na") })
+  }
+
+  @Test("With no WezTerm mux, recall starts only the exact tmux attachment and never a blank shell")
+  func startExactAttachmentWithoutMux() async throws {
+    let reference = taskReference()
+    let pane = "\(reference.name)|\(reference.serverPID)|\(reference.createdAt)|\(reference.paneID)|\(reference.panePID)|\(reference.tty)|0|@1|0|160|50|0|0|80|24|agent-one||1|auto\n"
+    let display = "\(reference.name)|\(reference.serverPID)|\(reference.createdAt)|\(reference.paneID)|\(reference.panePID)|\(reference.tty)|0\n"
+    let runner = ManagedRecallRunner([
+      result("ECC-1\n"), result(pane), result(display), result(display), result(), result(),
+      result(exit: 1), result(), result(), result("/dev/ttys501\n"), result(display),
+    ])
+    var subtask = TaskSubtask(id: "agent-one", title: "Exact agent", provider: .codex,
+      tmux: reference, runtimeMode: .tmux)
+    subtask.workspace = AgentWorkspace(path: "/tmp", repositoryPath: "/tmp")
+
+    let action = try await WezTermController(
+      runner: runner, candidateSockets: []).openAgentRuntime(
+        subtask, taskID: "ECC-1",
+        configuration: .init(executable: "/mock/wezterm", applicationName: "WezTerm"))
+
+    #expect(action == .spawned(paneID: nil))
+    let calls = await runner.calls
+    let started = try #require(calls.first {
+      $0.executable == "/mock/wezterm" && $0.arguments.starts(with: ["--skip-config", "start"])
+    })
+    #expect(started.workingDirectory == "/tmp")
+    #expect(started.arguments.starts(with: [
+      "--skip-config", "start", "--always-new-process", "--cwd", "/tmp", "--",
+    ]))
+    #expect(started.arguments.contains("attach-session"))
+    #expect(started.arguments.contains("=fq-task-ecc-1"))
+    #expect(started.arguments.contains("%7"))
+    #expect(!calls.contains { $0.executable == "/usr/bin/open" && $0.arguments.contains("-na") })
   }
 
   @Test("macOS Terminal recall opens a command file for the exact verified tmux pane")
@@ -209,7 +287,7 @@ struct ManagedSessionRecallTests {
     #expect(!calls.flatMap(\.arguments).contains("new-session"))
   }
 
-  @Test("Recall opens the exact pane in a fresh terminal for legacy and external tmux sessions",
+  @Test("Recall focuses the exact attached client for legacy and external tmux sessions",
     arguments: ["fq-implement", "fq-codex-11111111-2222-4333-8444-555555555555"])
   func focusExistingClient(name: String) async throws {
     var saved = try session()
@@ -220,11 +298,12 @@ struct ManagedSessionRecallTests {
     let action = try await WezTermController(runner: runner, candidateSockets: []).focusOrResume(
       session: saved, taskID: "ECC-1", configuration: .init(executable: "/mock/wezterm"))
 
-    #expect(action == .spawned(paneID: nil))
+    #expect(action == .focused(paneID: 41))
     let calls = await runner.calls
     #expect(calls.contains { $0.arguments.suffix(3) == ["select-pane", "-t", "%0"] })
     #expect(calls.contains { $0.arguments.suffix(3) == ["select-window", "-t", "%0"] })
-    #expect(calls.contains { $0.executable == "/usr/bin/open" && $0.arguments.contains("attach-session") })
+    #expect(calls.contains { $0.arguments == ["cli", "activate-pane", "--pane-id", "41"] })
+    #expect(!calls.contains { $0.executable == "/usr/bin/open" && $0.arguments.contains("-na") })
     #expect(!calls.flatMap(\.arguments).contains("resume"))
     #expect(!calls.flatMap(\.arguments).contains("new-session"))
     #expect(!calls.contains { $0.executable == "/usr/sbin/lsof" || $0.executable == "/bin/ps" })
@@ -234,7 +313,7 @@ struct ManagedSessionRecallTests {
   func reopenDetachedRuntime() async throws {
     let output = tmuxOutput
     let runner = ManagedRecallRunner([
-      result(output), result(output), result(), result(), result(exit: 1),
+      result(output), result(output), result(), result(), result(exit: 1), result(), result(exit: 1),
     ])
 
     await #expect(throws: WezTermError.self) {
@@ -242,7 +321,10 @@ struct ManagedSessionRecallTests {
         session: session(), taskID: "ECC-1", configuration: .init(executable: "/mock/wezterm"))
     }
     let calls = await runner.calls
-    #expect(calls.filter { $0.executable == "/usr/bin/open" }.count == 1)
+    #expect(calls.filter { $0.executable == "/usr/bin/open" }.isEmpty)
+    #expect(calls.contains {
+      $0.executable == "/mock/wezterm" && $0.arguments.starts(with: ["--skip-config", "start"])
+    })
     #expect(!calls.flatMap(\.arguments).contains("resume"))
     #expect(!calls.flatMap(\.arguments).contains("new-session"))
     #expect(!calls.contains { $0.executable == "/usr/sbin/lsof" || $0.executable == "/bin/ps" })

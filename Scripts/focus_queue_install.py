@@ -105,14 +105,17 @@ def _git(repository, *arguments):
     return result.stdout.strip()
 
 
-def remote_integration_revision(repository, integration_ref):
+def split_integration_ref(integration_ref):
     try:
         remote, branch = integration_ref.split("/", 1)
     except ValueError as error:
         raise ValueError("The integration ref must name a remote branch.") from error
     if not remote or not branch:
         raise ValueError("The integration ref must name a remote branch.")
-    output = _git(repository, "ls-remote", "--exit-code", remote, f"refs/heads/{branch}")
+    return remote, branch
+
+
+def parse_remote_revision(output, branch):
     rows = [line.split() for line in output.splitlines() if line.strip()]
     if len(rows) != 1 or len(rows[0]) != 2 or rows[0][1] != f"refs/heads/{branch}":
         raise ValueError("The canonical integration revision is unavailable from the remote.")
@@ -122,8 +125,51 @@ def remote_integration_revision(repository, integration_ref):
     return revision
 
 
+def remote_integration_revision(repository, integration_ref):
+    remote, branch = split_integration_ref(integration_ref)
+    output = _git(repository, "ls-remote", "--exit-code", remote, f"refs/heads/{branch}")
+    return parse_remote_revision(output, branch)
+
+
+def live_integration_revision(provenance):
+    _, branch = split_integration_ref(provenance["integrationRef"])
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/git",
+                "ls-remote",
+                "--exit-code",
+                provenance["originURL"],
+                f"refs/heads/{branch}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.SubprocessError as error:
+        detail = getattr(error, "stderr", "") or str(error)
+        raise ValueError(
+            f"Could not verify the live canonical integration revision: {detail.strip()}"
+        ) from error
+    return parse_remote_revision(result.stdout, branch)
+
+
+def validate_primary_checkout(repository):
+    top_level = Path(
+        _git(repository, "rev-parse", "--path-format=absolute", "--show-toplevel")
+    ).resolve()
+    common_directory = Path(
+        _git(repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    ).resolve()
+    if top_level != repository or common_directory != (repository / ".git").resolve():
+        raise ValueError(
+            "Release provenance may only be written from the primary canonical checkout."
+        )
+
+
 def capture_source_provenance(repository, integration_ref=DEFAULT_INTEGRATION_REF):
     repository = Path(repository).resolve()
+    validate_primary_checkout(repository)
     origin_url = _git(repository, "config", "--get", "remote.origin.url")
     revision = _git(repository, "rev-parse", "HEAD")
     integration_revision = remote_integration_revision(repository, integration_ref)
@@ -163,6 +209,8 @@ def validate_source_provenance(value, *, require_integrated=False):
     for field in ("repositoryIdentity", "originURL", "branch", "integrationRef"):
         if not isinstance(value.get(field), str) or not value[field].strip():
             raise ValueError(f"The source provenance field {field} is invalid.")
+    if normalize_repository_identity(value["originURL"]) != value["repositoryIdentity"]:
+        raise ValueError("The source provenance repository identity is inconsistent.")
     for field in ("revision", "integrationRevision"):
         if not isinstance(value.get(field), str) or not REVISION_PATTERN.fullmatch(value[field]):
             raise ValueError(f"The source provenance field {field} is not a Git revision.")
@@ -528,6 +576,10 @@ class Installer:
                         or not automation_digest_matches(self.automation, automation_entry)):
                     raise ValueError(
                         f"Installed automation changed; retained for review: {self.automation}")
+        if live_integration_revision(self.source_provenance) != self.source_provenance["revision"]:
+            raise ValueError(
+                "The candidate revision is no longer the live canonical integration revision."
+            )
         return {"mode": "preflight", "application": str(self.app), "helper": str(self.helper),
                 "launchAtLogin": self.login, "desktopShortcut": self.shortcut,
                 "configuration": "preserve existing; first launch offers setup",

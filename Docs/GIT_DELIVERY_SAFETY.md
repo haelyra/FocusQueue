@@ -15,10 +15,14 @@ paths until their assignments are safely completed and reconciled.
    checks before committing or requesting a push.
 3. Integrate with a pull request or an explicit reviewed merge. Update the
    canonical checkout with a fast-forward-only operation. Never copy one
-   worktree over another checkout and never force-push the integration branch.
+   worktree over another checkout, reset the integration branch to a feature
+   branch, rewrite published integration history, or bypass the repository's
+   push guard. If the remote advances, fetch and review it before retrying.
 4. Build and install the shared app only from a clean canonical checkout at the
-   exact current `origin/main` revision. Feature worktrees may build for
-   verification but must not replace the shared installation.
+   exact current `origin/main` revision. Verify the remote ref equals local
+   `main` after pushing and again during installer preflight. Feature worktrees
+   may build for verification but cannot write release provenance or replace
+   the shared installation.
 5. Keep the bundle provenance and installer preflight enabled. A rejected build
    is evidence to correct the source checkout, not a reason to bypass the gate.
 
@@ -27,6 +31,12 @@ checks, required up-to-date branches, conversation resolution, force-push
 blocking, and branch-deletion blocking. Restrict bypass to an emergency owner
 and keep the audit log. Local `review-push` and signed provenance are additional
 guards, not substitutes for server-side protection.
+
+When host-side protection is unavailable, enable the repository-owned guard in
+the canonical clone with
+`git config core.hooksPath "$(git rev-parse --show-toplevel)/.githooks"`. It rejects
+deletion, non-fast-forward updates, and pushes to `main` from any local ref other
+than canonical `main`. Never bypass it with `--no-verify`.
 
 ## Recovery check
 

@@ -90,6 +90,13 @@ class ReleaseProvenanceTests(unittest.TestCase):
         self.assertEqual(provenance["integrationRevision"], remote_revision)
         self.assertNotEqual(provenance["revision"], provenance["integrationRevision"])
 
+    def test_capture_rejects_a_linked_worktree_even_at_remote_main(self):
+        linked = self.root / "linked-worktree"
+        self.git(self.repository, "worktree", "add", "--detach", str(linked), "main")
+
+        with self.assertRaisesRegex(ValueError, "primary canonical checkout"):
+            MODULE.capture_source_provenance(linked)
+
     def test_github_remote_identity_is_normalized_across_common_urls(self):
         expected = "github.com/haelyra/eccfocusqueue"
         for remote in (

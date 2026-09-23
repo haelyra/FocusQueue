@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+
+zero=0000000000000000000000000000000000000000
+
+while read -r local_ref local_oid remote_ref remote_oid; do
+  [ "$remote_ref" = "refs/heads/main" ] || continue
+
+  if [ "$local_oid" = "$zero" ]; then
+    echo "Push rejected: deleting remote main is forbidden." >&2
+    exit 1
+  fi
+  if [ "$local_ref" != "refs/heads/main" ]; then
+    echo "Push rejected: remote main must be updated from local main." >&2
+    exit 1
+  fi
+  if [ "$remote_oid" != "$zero" ] && ! git merge-base --is-ancestor "$remote_oid" "$local_oid"; then
+    echo "Push rejected: remote main is not an ancestor of local main. Fetch and review it; never force-push." >&2
+    exit 1
+  fi
+done
+
+exit 0

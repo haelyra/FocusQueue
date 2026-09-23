@@ -28,7 +28,7 @@ enum ManagedTerminalLauncher {
       specification = ProcessSpecification(
         executable: "/usr/bin/open",
         arguments: ["-na", configuration.applicationName, "--args",
-          "start", "--always-new-process", "--"] + attach,
+          "--skip-config", "start", "--always-new-process", "--"] + attach,
         timeoutSeconds: 15)
     }
 

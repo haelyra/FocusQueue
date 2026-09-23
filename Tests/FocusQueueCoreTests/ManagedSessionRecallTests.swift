@@ -99,7 +99,9 @@ struct ManagedSessionRecallTests {
     #expect(result == .spawned(paneID: nil))
     let calls = await runner.calls
     let opened = try #require(calls.first { $0.executable == "/usr/bin/open" })
-    #expect(opened.arguments.starts(with: ["-na", "WezTerm", "--args", "start", "--always-new-process", "--"]))
+    #expect(opened.arguments.starts(with: [
+      "-na", "WezTerm", "--args", "--skip-config", "start", "--always-new-process", "--",
+    ]))
     #expect(opened.arguments.contains("attach-session"))
     #expect(opened.arguments.contains("=fq-task-ecc-1"))
     #expect(opened.arguments.contains("%7"))

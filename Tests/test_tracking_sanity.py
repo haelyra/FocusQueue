@@ -45,7 +45,18 @@ class TrackingSanityTests(unittest.TestCase):
                 "commit", "-qm", "initial", "--allow-empty")
             agent_id = str(uuid.uuid4())
             branch = "focus-queue/sanity-" + agent_id
-            workspace = root / "repo-worktrees/ecc-sanity/agents" / agent_id.lower()
+            managed = repository / ".worktrees"
+            managed.mkdir(mode=0o700)
+            git_metadata = (repository / ".git").stat()
+            (managed / ".focus-queue-worktrees.json").write_text(json.dumps({
+                "schemaVersion": 1,
+                "repositoryPath": str(repository),
+                "repositoryIdentity": (
+                    f"{repository / '.git'}:{git_metadata.st_dev}:{git_metadata.st_ino}"
+                ),
+            }))
+            (managed / ".focus-queue-worktrees.json").chmod(0o600)
+            workspace = managed / "ecc-sanity/agents" / agent_id.lower()
             workspace.parent.mkdir(parents=True)
             git("worktree", "add", "-b", branch, str(workspace))
             context = json.loads(context_file.read_text())

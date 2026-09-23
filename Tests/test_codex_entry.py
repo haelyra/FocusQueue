@@ -486,9 +486,9 @@ else:
             path, receipt, arguments = ENTRY.begin_tracking(["--cd", str(source), "fix bug"], "new", None, self.support)
         workspace = Path(receipt["cwd"])
         self.assertEqual(receipt["workspacePolicy"], "isolated")
-        self.assertEqual(workspace.parent, (source.parent / (source.name + "-worktrees") / "unassigned").resolve())
+        self.assertEqual(workspace.parent, (source / ".worktrees/unassigned").resolve())
         self.assertFalse(str(workspace).startswith(str(self.support)))
-        marker_path = source.parent / (source.name + "-worktrees") / ".focus-queue-worktrees.json"
+        marker_path = source / ".worktrees/.focus-queue-worktrees.json"
         marker = json.loads(marker_path.read_text())
         self.assertEqual(marker["repositoryPath"], str(source.resolve()))
         self.assertEqual(marker["repositoryIdentity"], ENTRY.repository_identity(source))
@@ -499,6 +499,7 @@ else:
                          (self.support / "tracking/placements" / (receipt["launchID"] + ".json")).resolve())
         self.assertEqual((workspace / "work.txt").read_text(), "committed")
         self.assertEqual((source / "work.txt").read_text(), "user edits")
+        self.assertEqual(git("check-ignore", ".worktrees"), ".worktrees")
         self.assertEqual(arguments[:2], ["--cd", str(workspace)])
         with mock.patch.dict(os.environ, {"FOCUS_QUEUE_AGENT_ROLE":"research"}, clear=True):
             _, research, _ = ENTRY.begin_tracking(["--cd", str(source)], "new", None, self.support)
@@ -517,7 +518,7 @@ else:
                 "new", None, self.support, on_change=lambda item: changed.append(item["phase"]))
         workspace = Path(record["cwd"])
         self.assertEqual(record["taskID"], "ECC-035")
-        self.assertEqual(workspace, (source.parent / (source.name + "-worktrees") /
+        self.assertEqual(workspace, (source / ".worktrees" /
                          "ecc-035" / "agents" / record["launchID"]).resolve())
         self.assertEqual(changed, ["preparing", "ready"])
         subprocess.run(["/usr/bin/git", "worktree", "remove", str(workspace)], cwd=source, check=True)
@@ -525,7 +526,7 @@ else:
     def test_intermediate_symlink_cannot_redirect_managed_creation(self):
         source = self.root / "repository"
         git = self.initialize_repository(source)
-        managed = source.parent / (source.name + "-worktrees")
+        managed = source / ".worktrees"
         managed.mkdir()
         marker = {"schemaVersion": 1, "repositoryPath": str(source.resolve()),
                   "repositoryIdentity": ENTRY.repository_identity(source)}
@@ -544,7 +545,7 @@ else:
     def test_nonempty_unmarked_managed_root_is_not_adopted(self):
         source = self.root / "repository"
         self.initialize_repository(source)
-        managed = source.parent / (source.name + "-worktrees")
+        managed = source / ".worktrees"
         managed.mkdir()
         (managed / "keep.txt").write_text("someone else's files")
 
@@ -636,6 +637,29 @@ else:
                 ENTRY.EntryError, "exact assigned location"):
             ENTRY.begin_tracking(["resume", self.session_id], "resume", self.session_id, self.support)
 
+    def test_managed_resume_preserves_a_recorded_legacy_sibling_worktree(self):
+        source = self.root / "repository"
+        git = self.initialize_repository(source)
+        managed = ENTRY.legacy_managed_root(source)
+        ENTRY.prepare_managed_root(source, root=managed)
+        saved = managed / "ecc-1/agents/agent"
+        saved.parent.mkdir(parents=True)
+        git("worktree", "add", "-qb", "legacy-agent", str(saved))
+        folder = self.support / "tasks/ECC-1"
+        folder.mkdir(parents=True)
+        (folder / "context.json").write_text(json.dumps({"subtasks":[{
+            "id":"agent", "sessionID":self.session_id,
+            "workspace":{"path":str(saved), "repositoryPath":str(source),
+                         "repositoryIdentity":ENTRY.repository_identity(source),
+                         "branch":"legacy-agent", "managed":True}}]}))
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            _, record, arguments = ENTRY.begin_tracking(
+                ["resume", self.session_id], "resume", self.session_id, self.support)
+
+        self.assertEqual(record["cwd"], str(saved.resolve()))
+        self.assertEqual(arguments[:2], ["--cd", str(saved.resolve())])
+
     def test_multiple_or_unknown_task_hints_stay_unassigned(self):
         (self.support / "tasks/ECC-035").mkdir(parents=True)
         (self.support / "tasks/ECC-036").mkdir(parents=True)
@@ -686,7 +710,13 @@ else:
         self.assertEqual(INSTALL.install(home, self.wrapper, ["--yolo"])["paths"], [])
         self.assertEqual(hooks.read_bytes(), once)
         self.assertEqual(json.loads(once)["hooks"]["SessionStart"][0], custom["hooks"]["SessionStart"][0])
-        completed = subprocess.run(["/bin/zsh", "-fc", 'source "$1"; codex --help', "entry-test", str(zshrc)], capture_output=True, text=True, timeout=10)
+        clean_environment = {
+            key: value for key, value in os.environ.items()
+            if not key.startswith("FOCUS_QUEUE_") and key not in {"TMUX", "TMUX_PANE"}
+        }
+        completed = subprocess.run(["/bin/zsh", "-fc", 'source "$1"; codex --help',
+            "entry-test", str(zshrc)], capture_output=True, text=True, timeout=10,
+            env=clean_environment)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(json.loads(completed.stdout), ["--yolo", "--help"])
         self.assertFalse((home / ".codex/config.toml").exists())

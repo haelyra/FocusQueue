@@ -34,7 +34,7 @@ enum CollapsedQueueGeometry {
     case .center: x = visibleFrame.midX - size.width / 2
     }
     let y = placement == .center
-      ? visibleFrame.midY - size.height / 2 : visibleFrame.maxY - size.height - 12
+      ? visibleFrame.midY - size.height / 2 : visibleFrame.maxY - size.height - 4
     return CGRect(x: x, y: y, width: size.width, height: size.height)
   }
 }
@@ -59,7 +59,7 @@ enum TopTaskQueueGeometry {
     case .center: x = visibleFrame.midX - size.width / 2
     }
     let y = placement == .center
-      ? visibleFrame.midY - size.height / 2 : visibleFrame.maxY - size.height - 12
+      ? visibleFrame.midY - size.height / 2 : visibleFrame.maxY - size.height - 4
     return CGRect(origin: CGPoint(x: x, y: y), size: size)
   }
 }

@@ -59,6 +59,62 @@ public struct SystemFileAccessor: FileAccessing {
     }
 }
 
+/// Cross-process advisory locks shared by the app and command-line helpers.
+/// Every writer locks the canonical target paths in the same sorted order.
+public enum FocusQueueFileLock {
+    public static func url(for targetURL: URL) -> URL {
+        let target = targetURL.standardizedFileURL
+        return target.deletingLastPathComponent()
+            .appendingPathComponent(".\(target.lastPathComponent).focus-queue.lock")
+    }
+
+    public static func withLocks<T>(for targetURLs: [URL], _ operation: () throws -> T) throws -> T {
+        let targets = Dictionary(
+            targetURLs.map { ($0.standardizedFileURL.path, $0.standardizedFileURL) },
+            uniquingKeysWith: { first, _ in first }
+        ).values.sorted { $0.path < $1.path }
+        var descriptors: [Int32] = []
+        do {
+            for target in targets {
+                let lockURL = url(for: target)
+                let lockDirectory = lockURL.deletingLastPathComponent()
+                let directoryAlreadyExisted = FileManager.default.fileExists(
+                    atPath: lockDirectory.path)
+                try FileManager.default.createDirectory(
+                    at: lockDirectory,
+                    withIntermediateDirectories: true
+                )
+                if !directoryAlreadyExisted {
+                    try FileManager.default.setAttributes(
+                        [.posixPermissions: 0o700],
+                        ofItemAtPath: lockDirectory.path
+                    )
+                }
+                let descriptor = Darwin.open(lockURL.path, O_CREAT | O_RDWR, 0o600)
+                guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown) }
+                guard flock(descriptor, LOCK_EX) == 0 else {
+                    Darwin.close(descriptor)
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                descriptors.append(descriptor)
+            }
+        } catch {
+            for descriptor in descriptors.reversed() {
+                flock(descriptor, LOCK_UN)
+                Darwin.close(descriptor)
+            }
+            throw error
+        }
+        defer {
+            for descriptor in descriptors.reversed() {
+                flock(descriptor, LOCK_UN)
+                Darwin.close(descriptor)
+            }
+        }
+        return try operation()
+    }
+}
+
 public protocol ConfigurationLoading: Sendable {
     func loadOrCreate(default defaultConfiguration: AppConfiguration) async throws -> AppConfiguration
     func save(_ configuration: AppConfiguration) async throws
@@ -74,14 +130,16 @@ public actor JSONConfigurationRepository: ConfigurationLoading {
     }
 
     public func loadOrCreate(default defaultConfiguration: AppConfiguration) throws -> AppConfiguration {
-        if !files.fileExists(at: url) {
-            let data = try Self.encoder.encode(defaultConfiguration)
-            try files.write(data, to: url)
-            return try defaultConfiguration.validated()
-        }
+        try FocusQueueFileLock.withLocks(for: [url]) {
+            if !files.fileExists(at: url) {
+                let data = try Self.encoder.encode(defaultConfiguration)
+                try files.write(data, to: url)
+                return try defaultConfiguration.validated()
+            }
 
-        let data = try files.read(from: url)
-        return try JSONDecoder().decode(AppConfiguration.self, from: data).validated()
+            let data = try files.read(from: url)
+            return try JSONDecoder().decode(AppConfiguration.self, from: data).validated()
+        }
     }
 
     public func save(_ configuration: AppConfiguration) throws {
@@ -115,7 +173,7 @@ public actor JSONConfigurationRepository: ConfigurationLoading {
         }
         if files is SystemFileAccessor {
             try files.createDirectory(at: url.deletingLastPathComponent())
-            try ProjectFileLock.withLock(file: url, writePreservingCompatibility)
+            try FocusQueueFileLock.withLocks(for: [url], writePreservingCompatibility)
         } else {
             try writePreservingCompatibility()
         }
@@ -311,8 +369,7 @@ public extension DashboardManaging {
 
 enum DashboardFileLock {
     static func url(for dashboardURL: URL) -> URL {
-        dashboardURL.deletingLastPathComponent()
-            .appendingPathComponent(".\(dashboardURL.lastPathComponent).focus-queue.lock")
+        FocusQueueFileLock.url(for: dashboardURL)
     }
 }
 
@@ -489,13 +546,7 @@ public actor JSONDashboardRepository: DashboardManaging {
     }
 
     private func locked<T>(url: URL, _ operation: () throws -> T) throws -> T {
-        let lockURL = DashboardFileLock.url(for: url)
-        let descriptor = Darwin.open(lockURL.path, O_CREAT | O_RDWR, 0o600)
-        guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown) }
-        defer { Darwin.close(descriptor) }
-        guard flock(descriptor, LOCK_EX) == 0 else { throw CocoaError(.fileWriteUnknown) }
-        defer { flock(descriptor, LOCK_UN) }
-        return try operation()
+        try FocusQueueFileLock.withLocks(for: [url], operation)
     }
 }
 

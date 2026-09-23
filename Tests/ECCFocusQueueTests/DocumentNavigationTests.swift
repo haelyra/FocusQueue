@@ -58,6 +58,7 @@ struct DocumentNavigationTests {
       if placement == .upperRight { #expect(frame.maxX == screen.maxX - 12) }
       if placement == .upperLeft { #expect(frame.minX == screen.minX + 12) }
       if placement == .center { #expect(frame.midX == screen.midX && frame.midY == screen.midY) }
+      else { #expect(frame.maxY == screen.maxY - 4) }
     }
   }
 
@@ -75,6 +76,7 @@ struct DocumentNavigationTests {
       if placement == .upperRight { #expect(frame.maxX == screen.maxX - 12) }
       if placement == .upperLeft { #expect(frame.minX == screen.minX + 12) }
       if placement == .center { #expect(frame.midX == screen.midX && frame.midY == screen.midY) }
+      else { #expect(frame.maxY == screen.maxY - 4) }
     }
     #expect(TopTaskQueueGeometry.size(preferredWidth: 200).width == 400)
     #expect(TopTaskQueueGeometry.size(preferredWidth: 900).width == 620)

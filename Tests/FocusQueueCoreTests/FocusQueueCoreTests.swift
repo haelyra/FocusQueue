@@ -1247,6 +1247,12 @@ func codexQueueAgentArguments() async throws {
   #expect(prompt.contains("Edit the canonical dashboard only when"))
   #expect(prompt.contains("authorized to reorder tasks when the user requests it"))
   #expect(prompt.contains("focus-queue-session queue move"))
+  #expect(prompt.contains("focus-queue-session projects list"))
+  #expect(prompt.contains("focus-queue-session projects create"))
+  #expect(prompt.contains("Projects are separate dashboards"))
+  #expect(prompt.contains("Never substitute a category label or projectID field"))
+  #expect(prompt.contains("Never hand-edit config.json or dashboards to create or move a project"))
+  #expect(prompt.contains("Run `focus-queue-session projects list` afterward"))
   #expect(prompt.contains("Do not edit state.json"))
   #expect(prompt.contains("Current local deferred task IDs: ECC-009"))
   #expect(prompt.contains("Truth is a hard operational invariant"))
@@ -1874,7 +1880,8 @@ func queuePanelFrameIsVisible() {
   let right = DisplayGeometry.panelFrame(
     preferredWidth: 620,
     visibleFrame: compactDisplay,
-    placement: .upperRight
+    placement: .upperRight,
+    topMargin: 4
   )
   let centered = DisplayGeometry.panelFrame(
     preferredWidth: 900,
@@ -1883,7 +1890,9 @@ func queuePanelFrameIsVisible() {
   )
 
   #expect(compactDisplay.contains(right))
-  #expect(right == CGRect(x: 1_568, y: -8, width: 620, height: 476))
+  #expect(right == CGRect(x: 1_568, y: -8, width: 620, height: 484))
+  #expect(right.minY == compactDisplay.minY + 12)
+  #expect(right.maxY == compactDisplay.maxY - 4)
   #expect(centered.midX == -960)
   #expect(centered.width == 620)
 }

@@ -205,6 +205,9 @@ ad-hoc signing, so this is an accidental-overwrite guard, not a defense against
 a malicious same-user process. Public releases must use a CI-produced Developer
 ID signed and notarized artifact.
 
+See [Git delivery safety](Docs/GIT_DELIVERY_SAFETY.md) for the authoritative
+checkout, integration, branch-protection, and recovery rules.
+
 ## What works
 
 - Native SwiftUI and AppKit floating panel with upper-left, upper-right, and

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import Testing
 
@@ -6,6 +7,15 @@ import Testing
 @Suite("Notification layout")
 @MainActor
 struct NotificationLayoutTests {
+  @Test("Queue chrome uses compact outer spacing and a readable yellow notification badge")
+  func compactQueueChrome() {
+    #expect(QueueChromeMetrics.sectionSpacing == 4)
+    #expect(QueueChromeMetrics.notificationBadgeFill == NSColor.systemYellow)
+    #expect(QueueChromeMetrics.notificationBadgeForeground == NSColor.black)
+    #expect(QueueChromeMetrics.notificationPopoverHeight(for: 1) == 96)
+    #expect(QueueChromeMetrics.notificationPopoverHeight(for: 10) == 280)
+  }
+
   @Test("Swipe affordance does not stretch a notification into the available panel height",
     arguments: [CGFloat(380), CGFloat(600)])
   func contentDeterminesHeight(width: CGFloat) throws {

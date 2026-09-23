@@ -305,9 +305,48 @@ def write_managed_marker(path, value):
         os.close(descriptor)
 
 
-def prepare_managed_root(primary, *, create=True):
+def managed_root(primary):
+    return Path(primary).resolve() / ".worktrees"
+
+
+def legacy_managed_root(primary):
     primary = Path(primary).resolve()
-    root = primary.parent / (primary.name + "-worktrees")
+    return primary.parent / (primary.name + "-worktrees")
+
+
+def ensure_managed_root_excluded(primary):
+    primary = Path(primary).resolve()
+    result = git(primary, ["rev-parse", "--git-path", "info/exclude"])
+    exclude = Path(result.stdout.strip())
+    if not exclude.is_absolute():
+        exclude = primary / exclude
+    exclude.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(exclude, flags, 0o600)
+    try:
+        metadata = os.fstat(descriptor)
+        if (not stat_module.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid()
+                or metadata.st_mode & 0o022):
+            raise EntryError("The repository's local exclude file is not safe to update.")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        with os.fdopen(descriptor, "r+", closefd=False) as stream:
+            previous = stream.read()
+            if "/.worktrees/" not in previous.splitlines():
+                separator = "" if not previous or previous.endswith("\n") else "\n"
+                stream.seek(0, os.SEEK_END)
+                stream.write(separator + "# Local Focus Queue worktrees\n/.worktrees/\n")
+                stream.flush()
+                os.fsync(descriptor)
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def prepare_managed_root(primary, *, create=True, root=None):
+    primary = Path(primary).resolve()
+    root = Path(root).absolute() if root is not None else managed_root(primary)
+    if root == managed_root(primary):
+        ensure_managed_root_excluded(primary)
     expected = {"schemaVersion": 1, "repositoryPath": str(primary),
                 "repositoryIdentity": repository_identity(primary)}
     try:
@@ -355,6 +394,17 @@ def prepare_managed_root(primary, *, create=True):
             or not same_repository_identity(actual.get("repositoryIdentity"), expected["repositoryIdentity"])):
         raise EntryError("Managed worktree storage belongs to a different repository.")
     return root
+
+
+def saved_managed_root(primary, workspace):
+    workspace = Path(workspace).absolute()
+    for root in (managed_root(primary), legacy_managed_root(primary)):
+        try:
+            workspace.relative_to(root)
+        except ValueError:
+            continue
+        return prepare_managed_root(primary, create=False, root=root)
+    raise EntryError("Managed workspace path escapes its repository-owned root.")
 
 
 def validate_managed_ancestors(root, candidate, *, create=False):
@@ -504,7 +554,7 @@ def begin_tracking(arguments, mode, session_id, support, *, isolate=True, on_cha
                 if not isinstance(saved.get("repositoryPath"), str) or not saved["repositoryPath"]:
                     raise EntryError("The managed workspace record is missing its repository identity.")
                 saved_primary = canonical_repository_root(saved["repositoryPath"])
-                saved_root = prepare_managed_root(saved_primary, create=False)
+                saved_root = saved_managed_root(saved_primary, workspace)
                 validate_managed_ancestors(saved_root, workspace)
                 agent_id = record.get("agentID")
                 if (not re.fullmatch(r"[A-Za-z0-9_-]+", task_id)

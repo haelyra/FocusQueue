@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Portable setup and persistent terminals")
 struct SetupAndTmuxTests {
-  @Test("tmux identity is readable in a GUI C locale", .enabled(if: SetupEnvironment.executable("tmux") != nil))
+  @Test("tmux identity is readable across GUI C locale separator behavior", .enabled(if: SetupEnvironment.executable("tmux") != nil))
   func guiLocaleIdentity() async throws {
     let executable = try #require(SetupEnvironment.executable("tmux"))
     let server = "fq-locale-\(UUID().uuidString.lowercased())"
@@ -17,13 +17,18 @@ struct SetupAndTmuxTests {
       #expect(reference.name == "fq_locale_test")
       #expect(try await controller.list(executable: executable) == [reference])
       #expect(try await controller.verify(reference) == reference)
-      // Confirm the regression environment actually reproduces tmux's tab loss.
+      // Older tmux builds dropped these tabs in a C locale; newer builds retain
+      // them. The printable delimiter above must work in either environment.
       let legacy = try await runner.run(.init(executable: executable,
         arguments: ["-L", server, "display-message", "-p", "-t", "=fq_locale_test:0.0",
           TmuxController.format.replacingOccurrences(of: "|", with: "\t")]))
-      #expect(!legacy.standardOutput.contains("\t"))
-      #expect(throws: TmuxError.self) {
-        try TmuxController.decode(legacy.standardOutput, executable: executable)
+      if legacy.standardOutput.contains("\t") {
+        #expect(try TmuxController.decode(
+          legacy.standardOutput, executable: executable).first?.name == reference.name)
+      } else {
+        #expect(throws: TmuxError.self) {
+          try TmuxController.decode(legacy.standardOutput, executable: executable)
+        }
       }
     } catch {
       _ = try? await runner.run(.init(executable: executable, arguments: ["-L", server, "kill-server"]))

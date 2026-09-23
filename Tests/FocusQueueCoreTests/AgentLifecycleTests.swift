@@ -253,8 +253,8 @@ struct AgentLifecycleTests {
         let listing = try await git.run(.init(
             executable: "/usr/bin/git", arguments: ["worktree", "list", "--porcelain"],
             workingDirectory: repo.path))
-        #expect(listing.standardOutput.contains(
-            "/repo-worktrees/ecc-779/agents/\(id.lowercased())"))
+        #expect(listing.standardOutput.contains(repo.appendingPathComponent(
+            ".worktrees/ecc-779/agents/\(id.lowercased())").path))
         #expect(!listing.standardOutput.contains(victim.path))
     }
 

@@ -24,11 +24,12 @@ public enum DisplayGeometry {
         visibleFrame: CGRect,
         placement: QueueWindowPlacement,
         margin: CGFloat = 12,
+        topMargin: CGFloat = 12,
         minimumWidth: CGFloat = 400,
         maximumWidth: CGFloat = 620
     ) -> CGRect {
         let availableWidth = max(0, visibleFrame.width - (margin * 2))
-        let availableHeight = max(0, visibleFrame.height - (margin * 2))
+        let availableHeight = max(0, visibleFrame.height - margin - topMargin)
         let effectiveMinimumWidth = min(minimumWidth, availableWidth)
         let width = min(max(preferredWidth, effectiveMinimumWidth), min(maximumWidth, availableWidth))
 

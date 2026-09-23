@@ -41,6 +41,8 @@ class ManagedUsageWrapperTests(unittest.TestCase):
             "CALLS": str(self.calls),
             "CODEX_PARENT": str(self.root / "codex-parent"),
         }
+        for key in ("FOCUS_QUEUE_MANAGED_TMUX", "FOCUS_QUEUE_TMUX_NAME", "TMUX", "TMUX_PANE"):
+            environment.pop(key, None)
         if managed:
             environment.update(
                 FOCUS_QUEUE_MANAGED_TMUX="1",

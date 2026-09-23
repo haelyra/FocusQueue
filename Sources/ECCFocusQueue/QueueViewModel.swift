@@ -445,6 +445,10 @@ final class QueueViewModel {
     do {
       let firstRun = !FileManager.default.fileExists(atPath: paths.configurationFile.path)
       if firstRun { try SetupEnvironment.createStarterWorkspace(supportDirectory: paths.supportDirectory) }
+      _ = try ProjectCreationTransaction(
+        supportDirectory: paths.supportDirectory,
+        configurationURL: paths.configurationFile
+      ).recoverPending()
       config = try await configurationRepository.loadOrCreate(default: SetupEnvironment.starter(supportDirectory: paths.supportDirectory))
       let projects = ProjectCatalog.ensuringOther(
         in: config.projects, supportDirectory: paths.supportDirectory)
@@ -495,6 +499,49 @@ final class QueueViewModel {
     } catch {
       loadError = error.localizedDescription
       if !configurationIsLoaded { isSetupPresented = true }
+    }
+  }
+
+  @discardableResult
+  func reloadConfigurationFromDisk() async -> Bool {
+    configurationSaveTask?.cancel()
+    await configurationSaveTask?.value
+    do {
+      let reloaded = try await configurationRepository.loadOrCreate(
+        default: SetupEnvironment.starter(supportDirectory: paths.supportDirectory))
+      let selectionChanged = reloaded.selectedProjectID != config.selectedProjectID
+        || reloaded.dashboardPath != config.dashboardPath
+      if selectionChanged {
+        let snapshot = try await dashboardRepository.loadSnapshot(
+          from: URL(fileURLWithPath: reloaded.dashboardPath))
+        config = reloaded
+        closeAgentUpdate()
+        closePlan()
+        setQueueChatInspectorPresented(false)
+        setDailyReportPresented(false)
+        dashboard = snapshot.document
+        savedQueueOrder = nil
+        sourceModificationDate = nil
+        lastSync = nil
+        taskContexts.removeAll()
+        maintenanceReceipts.removeAll()
+        maintenanceSignatures.removeAll()
+        cleanupSignatures.removeAll()
+        recurringPRProgressByTicketID.removeAll()
+        recurringPRProgressErrors.removeAll()
+        expandedTicketIDs.removeAll()
+        documentConversations.removeAll()
+        lastContextRefresh = nil
+        lastDurableDashboard = nil
+        await captureDurableDashboard(snapshot.document)
+      } else {
+        config = reloaded
+      }
+      loadError = nil
+      return true
+    } catch {
+      loadError = "Could not reload projects: \(error.localizedDescription)"
+      return false
     }
   }
 
@@ -933,7 +980,9 @@ final class QueueViewModel {
           configuration: agentConfiguration
         )
         self.appendChat(QueueChatMessage(role: .agent, text: reply.message), ticketID: ticketID)
-        await self.refresh()
+        if await self.reloadConfigurationFromDisk() {
+          await self.refresh()
+        }
         await self.reloadPresentedPlan()
         if self.dailyReport == nil {
           await self.reloadDailyReport()
@@ -1272,6 +1321,15 @@ final class QueueViewModel {
     return updates
       .filter { !localState.dismissedNotificationIDs.contains($0.presentationID) }
       .sorted { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
+  }
+
+  var notificationAgentUpdates: [QueueAgentUpdate] {
+    agentUpdates.filter { update in
+      if update.review != nil || update.isCleanup { return true }
+      guard let subtaskID = update.subtaskID else { return false }
+      return taskContexts[update.ticketID]?.subtasks.first(where: { $0.id == subtaskID })?
+        .attention != nil
+    }
   }
 
   func openAgentUpdate(_ update: QueueAgentUpdate) {

@@ -42,21 +42,52 @@ public actor TaskWorktreeManager {
 
     public nonisolated static func managedRoot(repositoryPath: String) -> URL {
         let repository = URL(fileURLWithPath: repositoryPath).standardizedFileURL
+        return repository.appendingPathComponent(".worktrees", isDirectory: true)
+    }
+
+    private nonisolated static func legacyManagedRoot(repositoryPath: String) -> URL {
+        let repository = URL(fileURLWithPath: repositoryPath).standardizedFileURL
         return repository.deletingLastPathComponent()
             .appendingPathComponent(repository.lastPathComponent + "-worktrees", isDirectory: true)
+    }
+
+    private nonisolated static func managedRoot(
+        repositoryPath: String,
+        containing workspacePath: String
+    ) throws -> URL {
+        let workspace = URL(fileURLWithPath: workspacePath).standardizedFileURL
+        for root in [managedRoot(repositoryPath: repositoryPath),
+                     legacyManagedRoot(repositoryPath: repositoryPath)] {
+            if workspace.path == root.path || workspace.path.hasPrefix(root.path + "/") {
+                return root
+            }
+        }
+        throw TaskContextError.unsafeWorktree(
+            "Managed workspace path escapes its repository-owned root: \(workspace.path)")
     }
 
     public nonisolated static func agentDestination(
         repositoryPath: String, ticketID: String, subtaskID: String
     ) -> URL {
-        managedRoot(repositoryPath: repositoryPath)
+        agentDestination(root: managedRoot(repositoryPath: repositoryPath),
+            ticketID: ticketID, subtaskID: subtaskID)
+    }
+
+    private nonisolated static func agentDestination(
+        root: URL, ticketID: String, subtaskID: String
+    ) -> URL {
+        root
             .appendingPathComponent(ticketID.lowercased(), isDirectory: true)
             .appendingPathComponent("agents", isDirectory: true)
             .appendingPathComponent(subtaskID.lowercased(), isDirectory: true)
     }
 
     public nonisolated static func taskDestination(repositoryPath: String, ticketID: String) -> URL {
-        managedRoot(repositoryPath: repositoryPath)
+        taskDestination(root: managedRoot(repositoryPath: repositoryPath), ticketID: ticketID)
+    }
+
+    private nonisolated static func taskDestination(root: URL, ticketID: String) -> URL {
+        root
             .appendingPathComponent(ticketID.lowercased(), isDirectory: true)
             .appendingPathComponent("task", isDirectory: true)
     }
@@ -115,9 +146,16 @@ public actor TaskWorktreeManager {
         // A failed provider launch may already own a provisioned workspace.
         // Retry that exact assignment instead of creating another branch.
         if let saved = try await store.load(ticketID: ticketID)?.subtasks.first(where: { $0.id == subtaskID })?.workspace {
-            let sameSelection = createWorktree
-                ? saved.managed && saved.path == destination.path && saved.branch == branch
-                : saved.path == path
+            let sameSelection: Bool
+            if createWorktree, saved.managed {
+                let savedRoot = try Self.managedRoot(
+                    repositoryPath: saved.repositoryPath, containing: saved.path)
+                let savedDestination = Self.agentDestination(
+                    root: savedRoot, ticketID: ticketID, subtaskID: subtaskID)
+                sameSelection = saved.path == savedDestination.path && saved.branch == branch
+            } else {
+                sameSelection = !createWorktree && saved.path == path
+            }
             guard sameSelection,
                   saved.repositoryIdentity == source.repositoryIdentity else {
                 throw TaskContextError.unsafeWorktree("This agent already has a different assigned workspace. Reopen it from the task, or start a new agent to choose another workspace.")
@@ -150,7 +188,8 @@ public actor TaskWorktreeManager {
         try rejectApplicationSupport(saved.repositoryPath)
         if saved.managed {
             let managedRoot = try await prepareManagedRoot(
-                repositoryPath: saved.repositoryPath, createIfMissing: false)
+                repositoryPath: saved.repositoryPath, containing: saved.path,
+                createIfMissing: false)
             try ensureManagedAncestors(root: managedRoot,
                 through: URL(fileURLWithPath: saved.path), createMissing: false)
         }
@@ -190,18 +229,19 @@ public actor TaskWorktreeManager {
             try await validate(saved)
             return
         }
-        let expected = Self.agentDestination(repositoryPath: saved.repositoryPath,
-            ticketID: ticketID,
-            subtaskID: subtaskID).standardizedFileURL
         guard saved.managed, let branch = saved.branch else {
             throw TaskContextError.unsafeWorktree("The saved workspace is missing: \(saved.path)")
         }
+        let managedRoot = try await prepareManagedRoot(
+            repositoryPath: saved.repositoryPath, containing: saved.path,
+            createIfMissing: false)
+        let expected = Self.agentDestination(root: managedRoot,
+            ticketID: ticketID, subtaskID: subtaskID).standardizedFileURL
         let savedURL = URL(fileURLWithPath: saved.path).standardizedFileURL
         guard savedURL.path == expected.path else {
             throw TaskContextError.unsafeWorktree(
                 "The saved workspace is outside its managed location: \(saved.path); expected \(expected.path)")
         }
-        let managedRoot = try await prepareManagedRoot(repositoryPath: saved.repositoryPath)
         try ensureManagedAncestors(root: managedRoot,
             through: expected.deletingLastPathComponent(), createMissing: true)
         _ = try await git(["show-ref", "--verify", "refs/heads/\(branch)"], in: saved.repositoryPath)
@@ -229,12 +269,13 @@ public actor TaskWorktreeManager {
         guard let workspace = subtask.workspace, workspace.managed else {
             return .init(removed: false, message: "Existing workspace retained.")
         }
-        let expected = Self.agentDestination(repositoryPath: workspace.repositoryPath,
-            ticketID: ticketID, subtaskID: subtask.id).standardizedFileURL
         try rejectApplicationSupport(workspace.path, storeRoot: store.root)
         try rejectApplicationSupport(workspace.repositoryPath, storeRoot: store.root)
         let managedRoot = try await prepareManagedRoot(
-            repositoryPath: workspace.repositoryPath, createIfMissing: false)
+            repositoryPath: workspace.repositoryPath, containing: workspace.path,
+            createIfMissing: false)
+        let expected = Self.agentDestination(root: managedRoot,
+            ticketID: ticketID, subtaskID: subtask.id).standardizedFileURL
         try ensureManagedAncestors(root: managedRoot, through: expected, createMissing: false)
         guard URL(fileURLWithPath: workspace.path).standardizedFileURL.path == expected.path else {
             throw TaskContextError.unsafeWorktree("Agent worktree is outside its managed location.")
@@ -343,12 +384,12 @@ public actor TaskWorktreeManager {
             try await store.archive(ticketID: ticketID)
             return .init(removed: false, message: "Context archived. This task uses an existing workspace; automatic cleanup only removes worktrees created by Focus Queue.")
         }
-        let expected = Self.taskDestination(repositoryPath: repository,
-            ticketID: context.ticketID).standardizedFileURL
         try rejectApplicationSupport(path, storeRoot: store.root)
         try rejectApplicationSupport(repository, storeRoot: store.root)
         let managedRoot = try await prepareManagedRoot(
-            repositoryPath: repository, createIfMissing: false)
+            repositoryPath: repository, containing: path, createIfMissing: false)
+        let expected = Self.taskDestination(root: managedRoot,
+            ticketID: context.ticketID).standardizedFileURL
         try ensureManagedAncestors(root: managedRoot, through: expected, createMissing: false)
         guard URL(fileURLWithPath: path).standardizedFileURL.path == expected.path else {
             throw TaskContextError.unsafeWorktree("Cleanup refused because the registered worktree is outside the managed location or resolves through a symbolic link.")
@@ -452,12 +493,18 @@ public actor TaskWorktreeManager {
 
     private func prepareManagedRoot(
         repositoryPath: String,
+        containing workspacePath: String? = nil,
         createIfMissing: Bool = true
     ) async throws -> URL {
         let repository = try await primaryRepository(at: repositoryPath)
         let canonicalRepository = repository.standardizedFileURL.resolvingSymlinksInPath()
         try rejectApplicationSupport(canonicalRepository.path)
-        let root = Self.managedRoot(repositoryPath: canonicalRepository.path).standardizedFileURL
+        let root = try workspacePath.map {
+            try Self.managedRoot(repositoryPath: canonicalRepository.path, containing: $0)
+        } ?? Self.managedRoot(repositoryPath: canonicalRepository.path)
+        if root.path == Self.managedRoot(repositoryPath: canonicalRepository.path).path {
+            try await ensureManagedRootExcluded(repositoryPath: canonicalRepository.path)
+        }
         let expected = ManagedRootMarker(schemaVersion: 1,
             repositoryPath: canonicalRepository.path,
             repositoryIdentity: try await repositoryIdentity(in: canonicalRepository.path))
@@ -507,6 +554,24 @@ public actor TaskWorktreeManager {
                 "Managed worktree storage belongs to a different repository: \(root.path)")
         }
         return root
+    }
+
+    private func ensureManagedRootExcluded(repositoryPath: String) async throws {
+        let rawPath = try await git(
+            ["rev-parse", "--git-path", "info/exclude"], in: repositoryPath)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let excludeURL = rawPath.hasPrefix("/")
+            ? URL(fileURLWithPath: rawPath).standardizedFileURL
+            : URL(fileURLWithPath: repositoryPath)
+                .appendingPathComponent(rawPath).standardizedFileURL
+        try FocusQueueFileLock.withLocks(for: [excludeURL]) {
+            let previous = (try? String(contentsOf: excludeURL, encoding: .utf8)) ?? ""
+            guard !previous.split(separator: "\n").contains("/.worktrees/") else { return }
+            let separator = previous.isEmpty || previous.hasSuffix("\n") ? "" : "\n"
+            let updated = previous + separator
+                + "# Local Focus Queue worktrees\n/.worktrees/\n"
+            try Data(updated.utf8).write(to: excludeURL, options: .atomic)
+        }
     }
 
     private struct POSIXMarkerError: Error {
@@ -683,7 +748,8 @@ public actor TaskWorktreeManager {
     ) async throws -> ManagedWorkspaceIdentity {
         let pathURL = URL(fileURLWithPath: path).standardizedFileURL
         let managedRoot = try await prepareManagedRoot(
-            repositoryPath: repositoryPath, createIfMissing: false)
+            repositoryPath: repositoryPath, containing: expected.path,
+            createIfMissing: false)
         try ensureManagedAncestors(root: managedRoot, through: expected, createMissing: false)
         guard pathURL.path == expected.path else {
             throw TaskContextError.unsafeWorktree(
@@ -735,7 +801,8 @@ public actor TaskWorktreeManager {
     ) async throws -> RetainedManagedWorkspace {
         let repository = URL(fileURLWithPath: identity.commonDirectory, isDirectory: true)
             .deletingLastPathComponent()
-        let managedRoot = Self.managedRoot(repositoryPath: repository.path)
+        let managedRoot = try Self.managedRoot(
+            repositoryPath: repository.path, containing: expected.path)
         let common = URL(fileURLWithPath: identity.commonDirectory, isDirectory: true)
             .standardizedFileURL
         let admin = URL(fileURLWithPath: identity.gitDirectory, isDirectory: true)

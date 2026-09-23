@@ -20,6 +20,8 @@ public struct QueueOrderStore: Sendable {
         return directory.appendingPathComponent("order-\(encoded).json")
     }
 
+    public var storageURL: URL { file }
+
     public init(root: URL, projectID: String? = nil) {
         directory = root.appendingPathComponent("queue-order", isDirectory: true)
         self.projectID = projectID
@@ -95,10 +97,17 @@ public struct QueueOrderStore: Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted]
         try encoder.encode(ids).write(to: file, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
 
     private func locked<T>(_ body: () throws -> T) throws -> T {
+        let directoryAlreadyExisted = FileManager.default.fileExists(atPath: directory.path)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if !directoryAlreadyExisted {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        }
         let descriptor = Darwin.open(directory.appendingPathComponent("order.lock").path, O_CREAT | O_RDWR, 0o600)
         guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown) }
         defer { Darwin.close(descriptor) }

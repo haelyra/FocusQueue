@@ -58,6 +58,38 @@ struct QueueViewModelTests {
     #expect(model.launchingTaskIDs.isEmpty)
   }
 
+  @Test("Queue chat reloads a newly created project without restarting the app")
+  func queueChatReloadsProjectCatalog() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let agent = ControlledQueueAgent()
+    let model = await fixture.model(agent: agent)
+
+    #expect(model.sendQueueAgentMessage("Create a Focus Queue project for ECC-101."))
+    try await eventually { await agent.hasPendingReply }
+
+    let workspace = fixture.root.appendingPathComponent("focus-queue-workspace")
+    let dashboard = fixture.root.appendingPathComponent("projects/focus-queue/dashboard.json")
+    try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(
+      at: dashboard.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try JSONEncoder().encode(DashboardDocument(tickets: [])).write(to: dashboard)
+    let repository = JSONConfigurationRepository(url: fixture.paths.configurationFile)
+    var configuration = try await repository.loadOrCreate(
+      default: SetupEnvironment.starter(supportDirectory: fixture.root))
+    configuration.projects.append(ProjectConfiguration(
+      id: "focus-queue", name: "Focus Queue", dashboardPath: dashboard.path,
+      workspacePath: workspace.path))
+    try await repository.save(configuration)
+
+    await agent.reply("Created and verified the Focus Queue project.")
+    try await eventually { !model.isQueueAgentResponding }
+
+    #expect(model.projects.contains { $0.id == "focus-queue" && $0.name == "Focus Queue" })
+    #expect(model.selectedProject?.id == configuration.selectedProjectID)
+    #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
+  }
+
   @Test("Project selection scopes task creation, task rename, and survives restart")
   func projectSelectionAndTaskMutation() async throws {
     let fixture = try await Fixture()
@@ -1289,6 +1321,35 @@ struct QueueViewModelTests {
       try await JSONLocalStateStore(url: fixture.paths.stateFile).load()
         .dismissedNotificationIDs.contains(second.presentationID)
     }
+  }
+
+  @Test("The notification feed excludes ordinary results and completions")
+  func notificationFeedOnlyIncludesAttention() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+
+    var result = TaskSubtask(
+      id: "result", title: "Fresh result", status: .idle,
+      progressSummary: "A new result is ready", completionUnread: true)
+    result.resultID = "result-1"
+    var completed = TaskSubtask(
+      id: "completed", title: "Finished work", status: .completed,
+      progressSummary: "The work is complete", completionUnread: true)
+    completed.resultID = "result-2"
+    var attention = TaskSubtask(
+      id: "attention", title: "Needs a decision", status: .idle,
+      progressSummary: "Choose a deployment target", completionUnread: true)
+    attention.attention = .question
+    attention.resultID = "attention-1"
+    for subtask in [result, completed, attention] {
+      _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: subtask)
+    }
+
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(Set(model.agentUpdates.compactMap(\.subtaskID)) == ["result", "completed", "attention"])
+    #expect(model.notificationAgentUpdates.map(\.subtaskID) == ["attention"])
   }
 
   @Test("Changing type shows a pending response and the agent's result in the same task")

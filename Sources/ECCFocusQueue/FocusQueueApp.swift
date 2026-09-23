@@ -74,6 +74,12 @@ import UserNotifications
       name: Notification.Name(AgentRegistrationInbox.notificationName),
       object: nil
     )
+    DistributedNotificationCenter.default().addObserver(
+      self,
+      selector: #selector(reloadProjectCatalog(_:)),
+      name: Notification.Name(ProjectCatalogChangeNotification.name),
+      object: nil
+    )
     model.placementHandler = { [weak self] placement in
       self?.positionPanelOnCurrentDisplay(placement, animated: true)
     }
@@ -272,6 +278,14 @@ import UserNotifications
 
   @objc private func importAgentRegistration(_ notification: Notification) {
     Task { await model.refreshExternalAgentRegistrations(force: true) }
+  }
+
+  @objc private func reloadProjectCatalog(_ notification: Notification) {
+    Task {
+      if await model.reloadConfigurationFromDisk() {
+        await model.refresh(forceRecurringPRProgress: true, userInitiated: true)
+      }
+    }
   }
 
   @objc private func centerPanel() {
@@ -834,7 +848,9 @@ import UserNotifications
     panel.minSize = NSSize(width: 400, height: 500)
     panel.maxSize = NSSize(width: 620, height: 10_000)
     panel.delegate = self
-    let hostingView = NSHostingView(rootView: QueueView(model: model))
+    let hostingView = NSHostingView(rootView: FullFramePanelContent {
+      QueueView(model: model)
+    })
     // The panel owns its compact and expanded sizes. Prevent SwiftUI's
     // intrinsic-size updates from trying to resize the NSWindow during the
     // transition, which can otherwise create an AppKit constraint cycle.
@@ -981,6 +997,7 @@ import UserNotifications
       preferredWidth: panel.frame.width,
       visibleFrame: targetScreen.visibleFrame,
       placement: placement,
+      topMargin: 4,
       minimumWidth: minimumWidth,
       maximumWidth: inspectorLayout.maximumWidth
     )
@@ -1072,6 +1089,7 @@ import UserNotifications
       preferredWidth: preferredWidth,
       visibleFrame: screen.visibleFrame,
       placement: currentPlacement,
+      topMargin: 4,
       minimumWidth: minimumWidth,
       maximumWidth: layout.maximumWidth
     )
@@ -1300,4 +1318,16 @@ import UserNotifications
 final class FocusPanel: NSPanel {
   override var canBecomeKey: Bool { true }
   override var canBecomeMain: Bool { false }
+}
+
+struct FullFramePanelContent<Content: View>: View {
+  private let content: Content
+
+  init(@ViewBuilder content: () -> Content) {
+    self.content = content()
+  }
+
+  var body: some View {
+    content.ignoresSafeArea(.container, edges: .top)
+  }
 }

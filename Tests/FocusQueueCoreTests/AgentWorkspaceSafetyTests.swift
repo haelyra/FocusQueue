@@ -4,8 +4,8 @@ import Testing
 
 @Suite("Agent workspace launch safety")
 struct AgentWorkspaceSafetyTests {
-    @Test("Managed worktrees live beside the canonical repository, never in app support")
-    func repositoryAdjacentLayout() async throws {
+    @Test("Managed worktrees live under the canonical repository, never in app support")
+    func repositoryOwnedLayout() async throws {
         let fixture = try await WorkspaceSafetyFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let support = fixture.root.appendingPathComponent("Library/Application Support/ECC Focus Queue")
@@ -15,8 +15,7 @@ struct AgentWorkspaceSafetyTests {
         let context = try await manager.provision(ticket: task,
             repositoryPath: fixture.repository.path, store: store)
         let taskPath = try #require(context.worktreePath)
-        let expectedRoot = fixture.repository.deletingLastPathComponent()
-            .appendingPathComponent(fixture.repository.lastPathComponent + "-worktrees")
+        let expectedRoot = fixture.repository.appendingPathComponent(".worktrees")
         #expect(taskPath == expectedRoot.appendingPathComponent("ecc-035/task").path)
         #expect(!taskPath.contains("Application Support"))
         let markerURL = expectedRoot.appendingPathComponent(".focus-queue-worktrees.json")
@@ -32,7 +31,42 @@ struct AgentWorkspaceSafetyTests {
         let agent = try await manager.provisionAgent(ticketID: task.id, subtaskID: agentID,
             path: fixture.repository.path, policy: .isolatedCommittedSnapshot, store: store)
         #expect(agent.path == expectedRoot.appendingPathComponent("ecc-035/agents/\(agentID.lowercased())").path)
+        #expect(try await !manager.hasUncommittedChanges(at: fixture.repository.path))
         #expect(!FileManager.default.fileExists(atPath: support.appendingPathComponent("worktrees").path))
+    }
+
+    @Test("Recorded legacy sibling worktrees remain valid after nested storage becomes the default")
+    func legacySiblingResume() async throws {
+        let fixture = try await WorkspaceSafetyFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let manager = TaskWorktreeManager()
+        let store = TaskContextStore(root: fixture.support)
+        _ = try await manager.provisionAgent(ticketID: "SEED", subtaskID: UUID().uuidString,
+            path: fixture.repository.path, policy: .isolatedCommittedSnapshot, store: store)
+
+        let nestedRoot = TaskWorktreeManager.managedRoot(repositoryPath: fixture.repository.path)
+        let legacyRoot = fixture.repository.deletingLastPathComponent()
+            .appendingPathComponent(fixture.repository.lastPathComponent + "-worktrees")
+        try FileManager.default.createDirectory(at: legacyRoot, withIntermediateDirectories: false)
+        try FileManager.default.copyItem(
+            at: nestedRoot.appendingPathComponent(".focus-queue-worktrees.json"),
+            to: legacyRoot.appendingPathComponent(".focus-queue-worktrees.json"))
+
+        let agentID = UUID().uuidString
+        let branch = "focus-queue/ecc-legacy-\(agentID.lowercased())"
+        let legacyPath = legacyRoot.appendingPathComponent(
+            "ecc-legacy/agents/\(agentID.lowercased())")
+        try FileManager.default.createDirectory(
+            at: legacyPath.deletingLastPathComponent(), withIntermediateDirectories: true)
+        _ = try await fixture.git(["worktree", "add", "-qb", branch, legacyPath.path])
+        var saved = try await manager.workspace(at: legacyPath.path)
+        saved.repositoryPath = fixture.repository.path
+        saved.managed = true
+
+        try await manager.validate(saved)
+        try await manager.restoreIfNeeded(saved, ticketID: "ECC-LEGACY",
+            subtaskID: agentID, store: store)
+        #expect(FileManager.default.fileExists(atPath: saved.path))
     }
 
     @Test("Detached checkouts can launch and create worktrees without changing their source")
@@ -120,7 +154,7 @@ struct AgentWorkspaceSafetyTests {
         #expect(!FileManager.default.fileExists(atPath: redirected.appendingPathComponent("agents").path))
     }
 
-    @Test("A nonempty unmarked sibling directory is never adopted as managed storage")
+    @Test("A nonempty unmarked managed directory is never adopted as storage")
     func unownedManagedRoot() async throws {
         let fixture = try await WorkspaceSafetyFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }

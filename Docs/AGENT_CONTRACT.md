@@ -4,7 +4,7 @@ Task identity, writer isolation, a brief plan, and an append-only log form the c
 
 ## New Agent and resume
 
-New Agent and the installed `codex` shell entry automatically create an owned branch/worktree from the selected checkout's committed HEAD. Managed paths live beside the canonical repository under `<repository>-worktrees/<task>/agents/<agent-id>` when the task is known, with provisional isolated paths permitted during placement. Application Support stores task metadata and evidence, never a coding checkout. Local edits remain in the source and are excluded from the new workspace. There is no worktree toggle. Resuming a saved agent reuses its exact assigned workspace and provider UUID.
+New Agent and the installed `codex` shell entry automatically create an owned branch/worktree from the selected checkout's committed HEAD. New managed paths live under the canonical repository at `<repository>/.worktrees/<task>/agents/<agent-id>` when the task is known, with provisional isolated paths permitted during placement. Recorded legacy sibling worktrees remain resumable at their immutable paths. Application Support stores task metadata and evidence, never a coding checkout. Local edits remain in the source and are excluded from the new workspace. There is no worktree toggle. Resuming a saved agent reuses its exact assigned workspace and provider UUID.
 
 The first recorded workspace path is immutable for that agent. Same-path updates
 may enrich Git metadata, but a different checkout requires a new agent assignment.

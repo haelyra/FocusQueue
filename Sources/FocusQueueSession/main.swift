@@ -13,7 +13,7 @@ enum SessionRegistrationError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .usage:
-            "Usage: focus-queue-session intake-changed | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | route inspect --prompt <text> [--cwd <path>] [--provider codex|claude] | route start <ROUTE-UUID> (--task <TASK-ID> | --project <PROJECT-ID> --task-title <TITLE>) --title <TITLE> --description <TEXT> [--provider codex|claude] [--model <MODEL>] [--effort <EFFORT>] [--repository <PATH>] [--workspace existing|isolated-clean|isolated-snapshot] | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reset | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude> <title> | rename <TASK-ID> <SUBTASK-ID> <title> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
+            "Usage: focus-queue-session intake-changed | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | route inspect --prompt <text> [--cwd <path>] [--provider codex|claude] | route start <ROUTE-UUID> (--task <TASK-ID> | --project <PROJECT-ID> --task-title <TITLE>) --title <TITLE> --description <TEXT> [--provider codex|claude] [--model <MODEL>] [--effort <EFFORT>] [--repository <PATH>] [--workspace existing|isolated-clean|isolated-snapshot] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reset | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude> <title> | rename <TASK-ID> <SUBTASK-ID> <title> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
         case .missingSessionIdentity:
             "No Codex or Claude session ID was found in the environment or current WezTerm pane."
         case .missingManagedRuntime:
@@ -40,6 +40,7 @@ enum SessionRegistrationError: Error, LocalizedError {
                 print("Persistent terminals: tmux list | tmux start <name> [--cwd <directory>] [-- <command> ...] | tmux start-agent <TASK-ID> <AGENT-ID> [--cwd <directory>] -- <command> ... | tmux attach <name> | tmux ssh-command <user@host> <name>")
                 print("Task layouts: tmux panes <name> | tmux arrange <name> | tmux manual <name> | tmux save | tmux restore | tmux persistence")
             }
+            else if arguments.first == "projects" { try projectsCommand(arguments: arguments) }
             else if arguments.first == "queue" { try await queueCommand(arguments: arguments) }
             else if arguments.first == "placement" { try await placementCommand(arguments: arguments) }
             else if arguments.first == "route" { try await routeCommand(arguments: arguments) }
@@ -67,6 +68,56 @@ enum SessionRegistrationError: Error, LocalizedError {
         } catch {
             FileHandle.standardError.write(Data("\(error.localizedDescription)\n".utf8))
             Darwin.exit(1)
+        }
+    }
+
+    private static func projectsCommand(arguments: [String]) throws {
+        let root = supportDirectory(environment: ProcessInfo.processInfo.environment)
+        let transaction = ProjectCreationTransaction(
+            supportDirectory: root,
+            configurationURL: root.appendingPathComponent("config.json"))
+        let recoveries = try transaction.recoverPending()
+        switch arguments.dropFirst().first {
+        case "list" where arguments.count == 2:
+            try emit(transaction.listProjects())
+        case "recover" where arguments.count == 2:
+            try emit(ProjectRecoveryList(recoveries: recoveries))
+        case "create":
+            var projectID: String?
+            var name: String?
+            var workspace: String?
+            var sourceProjectID: String?
+            var taskIDs: [String] = []
+            var index = 2
+            while index < arguments.count {
+                guard index + 1 < arguments.count else { throw SessionRegistrationError.usage }
+                let value = arguments[index + 1]
+                switch arguments[index] {
+                case "--id" where projectID == nil: projectID = value
+                case "--name" where name == nil: name = value
+                case "--workspace" where workspace == nil: workspace = value
+                case "--from" where sourceProjectID == nil: sourceProjectID = value
+                case "--task": taskIDs.append(value)
+                default: throw SessionRegistrationError.usage
+                }
+                index += 2
+            }
+            guard let projectID, let name, let workspace, let sourceProjectID,
+                  !taskIDs.isEmpty else { throw SessionRegistrationError.usage }
+            let receipt = try transaction.create(ProjectCreationRequest(
+                id: projectID,
+                name: name,
+                workspacePath: workspace,
+                sourceProjectID: sourceProjectID,
+                taskIDs: taskIDs))
+            try emit(receipt)
+            DistributedNotificationCenter.default().postNotificationName(
+                Notification.Name(ProjectCatalogChangeNotification.name),
+                object: nil,
+                userInfo: nil,
+                deliverImmediately: true)
+        default:
+            throw SessionRegistrationError.usage
         }
     }
 
@@ -1073,6 +1124,10 @@ enum SessionRegistrationError: Error, LocalizedError {
         guard FileManager.default.fileExists(atPath: url.path) else { return SetupEnvironment.starter(supportDirectory: supportDirectory) }
         return try JSONDecoder().decode(AppConfiguration.self, from: Data(contentsOf: url)).validated()
     }
+}
+
+private struct ProjectRecoveryList: Codable {
+    let recoveries: [ProjectRecoveryReceipt]
 }
 
 private struct LibraryTaskView: Encodable {

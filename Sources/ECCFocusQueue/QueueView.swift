@@ -3,6 +3,16 @@ import FocusQueueCore
 import Foundation
 import SwiftUI
 
+enum QueueChromeMetrics {
+  static let sectionSpacing: CGFloat = 4
+  static let notificationBadgeFill = NSColor.systemYellow
+  static let notificationBadgeForeground = NSColor.black
+
+  static func notificationPopoverHeight(for count: Int) -> CGFloat {
+    min(max(CGFloat(count) * 76 + 20, 96), 280)
+  }
+}
+
 struct QueueView: View {
   let model: QueueViewModel
   @State private var showsMoreTasks = false
@@ -156,12 +166,11 @@ struct QueueView: View {
   }
 
   private var queueContent: some View {
-    VStack(spacing: 10) {
+    VStack(spacing: QueueChromeMetrics.sectionSpacing) {
       header
       if model.pendingDailyReportApproval != nil {
         missedReportApprovalBanner
       }
-      if notificationsExpanded, notificationCount > 0 { notificationFeed }
       queueTabs
       switch selectedTab {
       case .focus:
@@ -175,14 +184,23 @@ struct QueueView: View {
   }
 
   private var notificationCount: Int {
-    (model.showsReportNotification ? 1 : 0) + model.agentUpdates.count
+    (model.showsReportNotification ? 1 : 0) + model.notificationAgentUpdates.count
   }
 
   private var notificationFeed: some View {
-    VStack(spacing: 8) {
-      if model.showsReportNotification { reportStatusBanner }
-      ForEach(model.agentUpdates) { attention in attentionBanner(attention) }
+    ScrollView {
+      LazyVStack(spacing: 8) {
+        if model.showsReportNotification { reportStatusBanner }
+        ForEach(model.notificationAgentUpdates) { attention in attentionBanner(attention) }
+      }
+      .padding(10)
     }
+    .scrollIndicators(.automatic)
+    .frame(
+      width: 380,
+      height: QueueChromeMetrics.notificationPopoverHeight(for: notificationCount)
+    )
+    .background(.background)
   }
 
   private var reportStatusBanner: some View {
@@ -578,19 +596,6 @@ struct QueueView: View {
           .lineLimit(1).minimumScaleFactor(0.8)
         Spacer()
         monitorButton
-        Button { showsTerminals = true } label: {
-          HStack(spacing: 4) {
-            Image(systemName: "terminal").font(.system(size: 12, weight: .semibold))
-            Text(String(model.terminalCount))
-              .font(.caption2.monospacedDigit())
-              .foregroundStyle(model.unassignedAgentRegistrations.isEmpty ? Color.secondary : .orange)
-          }
-        }
-        .buttonStyle(.plain).minimumHitTarget(width: 30, height: 34)
-        .accessibilityLabel(
-          "Browse terminals, \(model.terminalCount) tracked, \(model.unassignedAgentRegistrations.count) agents to place"
-        )
-        .help("Review tracked agents, assign tasks, and open terminal panes")
         Button {
           if model.dailyReport == nil {
             Task { await model.reloadDailyReport() }
@@ -613,7 +618,13 @@ struct QueueView: View {
             if notificationCount > 0 {
               Text(String(notificationCount))
                 .font(.caption2.bold().monospacedDigit())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(nsColor: QueueChromeMetrics.notificationBadgeForeground))
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(
+                  Color(nsColor: QueueChromeMetrics.notificationBadgeFill),
+                  in: Capsule()
+                )
             }
           }
         }
@@ -626,6 +637,9 @@ struct QueueView: View {
             : "Open \(notificationCount) notifications"
         )
         .help(notificationsExpanded ? "Close notifications" : "Show notifications")
+        .popover(isPresented: $notificationsExpanded, arrowEdge: .top) {
+          notificationFeed
+        }
         Button {
           settingsTarget = nil
           withAnimation(.easeInOut(duration: 0.18)) { screen = .settings }

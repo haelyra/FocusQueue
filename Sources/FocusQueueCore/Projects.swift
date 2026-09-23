@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 
 public typealias ProjectDefinition = ProjectConfiguration
@@ -159,14 +158,7 @@ public struct ProjectRepositoryResolver: Sendable {
 /// Shared with the daily-report writer and project migration script.
 public enum ProjectFileLock {
     public static func withLock<T>(file: URL, _ operation: () throws -> T) throws -> T {
-        let lock = file.deletingLastPathComponent()
-            .appendingPathComponent(".\(file.lastPathComponent).focus-queue.lock")
-        let descriptor = Darwin.open(lock.path, O_CREAT | O_RDWR, 0o600)
-        guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown) }
-        defer { Darwin.close(descriptor) }
-        guard flock(descriptor, LOCK_EX) == 0 else { throw CocoaError(.fileWriteUnknown) }
-        defer { flock(descriptor, LOCK_UN) }
-        return try operation()
+        try FocusQueueFileLock.withLocks(for: [file], operation)
     }
 }
 

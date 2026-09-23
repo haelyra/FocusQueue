@@ -251,6 +251,56 @@ func taskContextAssignmentRemoval() async throws {
     #expect(retained.associatedSubtaskIDs.isEmpty)
 }
 
+@Test("Legacy assignment and agent pairs present as one titled described work item")
+func taskContextUnifiedWorkItems() async throws {
+    let root = try contextFixture(); defer { try? FileManager.default.removeItem(at: root) }
+    let store = TaskContextStore(root: root)
+    let initial = try await store.ensureContext(ticket: contextTicket())
+    var assignment = TaskSubtask(
+        id: "assignment", title: "Compact task layout",
+        assignmentDescription: "Keep every task in one four-pane tmux window.", runtimeMode: nil)
+    assignment.isAssignmentOnly = true
+    var agent = TaskSubtask(
+        id: "agent", title: "Codex · abc123", sessionID: UUID().uuidString, status: .working)
+    agent.parentSubtaskID = assignment.id
+    agent.tracksCompletion = false
+    _ = try await store.upsertSubtask(ticketID: initial.ticketID, subtask: assignment)
+    let context = try await store.upsertSubtask(ticketID: initial.ticketID, subtask: agent)
+
+    #expect(context.taskItems.count == 1)
+    let item = try #require(context.taskItems.first)
+    #expect(item.id == agent.id)
+    #expect(item.title == assignment.title)
+    #expect(item.workDescription == assignment.assignmentDescription)
+}
+
+@Test("A combined root and its linked child both remain accessible in the unified list")
+func taskContextUnifiedCombinedRoot() async throws {
+    let root = try contextFixture(); defer { try? FileManager.default.removeItem(at: root) }
+    let store = TaskContextStore(root: root)
+    let initial = try await store.ensureContext(ticket: contextTicket())
+    var combined = TaskSubtask(
+        id: "combined", title: "Primary agent",
+        assignmentDescription: "Implement the primary task layout.",
+        sessionID: UUID().uuidString, status: .working)
+    combined.workspace = AgentWorkspace(
+        path: "/tmp/primary", repositoryPath: "/tmp/repository", branch: "primary")
+    var child = TaskSubtask(
+        id: "linked", title: "Verification agent",
+        assignmentDescription: "Verify pane recall without changing ownership.",
+        provider: .claude, sessionID: UUID().uuidString, status: .working)
+    child.parentSubtaskID = combined.id
+    child.workspace = AgentWorkspace(
+        path: "/tmp/verification", repositoryPath: "/tmp/repository", branch: "verification")
+    _ = try await store.upsertSubtask(ticketID: initial.ticketID, subtask: combined)
+    let context = try await store.upsertSubtask(ticketID: initial.ticketID, subtask: child)
+
+    #expect(context.taskItems.map(\.id) == [combined.id, child.id])
+    #expect(context.taskItems.map { $0.workspace?.path } == ["/tmp/primary", "/tmp/verification"])
+    #expect(context.agents(for: combined.id).map(\.id) == [combined.id, child.id])
+    #expect(context.subtasks.first { $0.id == child.id }?.parentSubtaskID == combined.id)
+}
+
 @Test("Direct runtime persists only its exact terminal identity")
 func taskContextDirectRuntime() async throws {
     let root = try contextFixture(); defer { try? FileManager.default.removeItem(at: root) }

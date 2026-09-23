@@ -90,7 +90,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     public var agentRemovedAt: Date?
     public var tracksCompletion: Bool = true
     public var completionOverrideAt: Date?
-    // New agents are child records; legacy assignment/runtime records remain readable.
+    // New work items are one record; legacy assignment/runtime pairs remain readable.
     public var isAssignmentOnly: Bool = false
     public var parentSubtaskID: String?
     public var associatedSubtaskIDs: [String] = []
@@ -113,6 +113,13 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         !isAssignmentOnly && (workspace?.managed == true || workspaceHistory.contains(where: \.managed))
     }
     public var isAgentVisible: Bool { agentRemovedAt == nil && (status != .completed || completedRuntimeOpenedAt != nil) }
+    public var workDescription: String {
+        for value in [assignmentDescription, initialPrompt, progressSummary] {
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return "Work item: \(title.trimmingCharacters(in: .whitespacesAndNewlines))."
+    }
     public static func agentName(prompt: String, provider: AgentProvider) -> String {
         let firstLine = prompt.components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -726,7 +733,7 @@ public actor TaskContextStore {
     }
 
     @discardableResult public func upsertSubtask(ticketID: String, subtask: TaskSubtask) throws -> TaskContext {
-        try mutate(ticketID: ticketID) { context in
+        return try mutate(ticketID: ticketID) { context in
             if let index = context.subtasks.firstIndex(where: { $0.id == subtask.id }) { context.subtasks[index] = subtask }
             else { context.subtasks.append(subtask) }
         }
@@ -735,11 +742,14 @@ public actor TaskContextStore {
     /// Registers a provider-supplied identity while holding the task's cross-process lock.
     /// Repeated hook events cannot create duplicate records or revive completed work.
     @discardableResult public func registerExternalSession(
-        ticketID: String, provider: AgentProvider, sessionID: String, title: String, cwd: String,
+        ticketID: String, provider: AgentProvider, sessionID: String, title: String,
+        description: String = "", cwd: String,
         preferredSubtaskID: String?, allowFreshAssociation: Bool,
         tmux: TmuxSessionReference?, paneID: Int?, socketPath: String?, eventName: String
     ) throws -> TaskContext {
-        try mutate(ticketID: ticketID) { context in
+        let description = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        let workDescription = String((description.isEmpty ? title : description).prefix(2_000))
+        return try mutate(ticketID: ticketID) { context in
             let sameSession: (TaskSubtask) -> Bool = {
                 $0.provider == provider && $0.sessionID?.lowercased() == sessionID.lowercased()
             }
@@ -760,7 +770,8 @@ public actor TaskContextStore {
                 guard !dismissedLaunch,
                     allowFreshAssociation || (!context.subtasks.contains(where: sameSession)
                     && !(context.removedAgentSessionKeys ?? []).contains(key)) else { return }
-                var agent = TaskSubtask(title: title, provider: provider, sessionID: sessionID,
+                var agent = TaskSubtask(title: title, assignmentDescription: workDescription,
+                    provider: provider, sessionID: sessionID,
                     status: .idle, includeInitializationPrompt: false, runtimeMode: nil)
                 agent.tracksCompletion = false
                 agent.workspace = AgentWorkspace(path: cwd, repositoryPath: context.repositoryPath ?? cwd)
@@ -772,6 +783,10 @@ public actor TaskContextStore {
             if context.subtasks[index].title.hasPrefix(provider.displayName + " ·")
                 || context.subtasks[index].title.hasPrefix("Subagent ·") {
                 context.subtasks[index].title = title
+            }
+            if context.subtasks[index].assignmentDescription
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                context.subtasks[index].assignmentDescription = workDescription
             }
             if let tmux { context.subtasks[index].tmux = tmux; context.subtasks[index].runtimeMode = .tmux }
             else if let paneID {
@@ -798,8 +813,11 @@ public actor TaskContextStore {
             guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
             context.subtasks[index].title = String(title.prefix(200))
             if let assignmentDescription {
-                context.subtasks[index].assignmentDescription = String(
-                    assignmentDescription.trimmingCharacters(in: .whitespacesAndNewlines).prefix(2_000))
+                let description = assignmentDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !description.isEmpty else {
+                    throw TaskContextError.commandFailed("Add a brief description of this work item.")
+                }
+                context.subtasks[index].assignmentDescription = String(description.prefix(2_000))
             }
         }
     }

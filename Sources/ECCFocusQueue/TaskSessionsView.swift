@@ -67,6 +67,8 @@ private struct ExternalAgentsInboxView: View {
               }
               Text(registration.cwd).font(.caption).foregroundStyle(.secondary)
                 .lineLimit(2).textSelection(.enabled)
+              Text(registration.workDescription ?? "Work details are required before placement.")
+                .font(.caption).foregroundStyle(.secondary).lineLimit(3)
               if let reason = registration.reason {
                 Text(reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
               }
@@ -150,7 +152,7 @@ struct TaskSessionsView: View {
         Button("Refresh", systemImage: "arrow.clockwise") { Task { await reload() } }.disabled(busy)
         Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
       }
-      Text("One task, one terminal window. Extra panes use tabs inside tmux.")
+      Text("One task, one tmux session and window, with up to four agent panes.")
         .font(.callout).foregroundStyle(.secondary)
       if !names.isEmpty {
         Picker("Task", selection: $selectedTask) {
@@ -198,7 +200,7 @@ struct TaskSessionsView: View {
             let members = taskPanes.filter { $0.windowID == window }
             if let first = members.first {
               HStack {
-                Text("Tab \(index + 1)").font(.headline)
+                Text(index == 0 ? "Task window" : "Legacy window \(index + 1)").font(.headline)
                 Text("\(first.windowWidth) × \(first.windowHeight) · \(members.count) panes")
                   .font(.caption).foregroundStyle(.secondary)
               }
@@ -223,6 +225,7 @@ struct TaskSessionsView: View {
                 VStack(alignment: .leading, spacing: 3) {
                   Text(assignment(pane)?.1.title ?? "Shell \(pane.id)").font(.callout)
                   if let (_, agent) = assignment(pane) {
+                    Text(agent.workDescription).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                     Text(agent.workspace?.path ?? "Saved task workspace").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                   }
                 }
@@ -263,6 +266,9 @@ struct TaskSessionsView: View {
         Label(assignment(pane)?.1.provider.displayName ?? "Terminal", systemImage: "terminal")
           .font(.caption).foregroundStyle(.secondary)
         Text(assignment(pane)?.1.title ?? "Shell \(pane.id)").font(.callout.bold()).lineLimit(3)
+        if let (_, agent) = assignment(pane) {
+          Text(agent.workDescription).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+        }
         Text(pane.id).font(.caption2.monospaced()).foregroundStyle(.secondary)
       }.padding(10).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(pane.isActive ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.05),

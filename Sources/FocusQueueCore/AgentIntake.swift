@@ -77,7 +77,8 @@ public struct AgentIntakeReceipt: Decodable, Identifiable, Sendable {
         now: Date = Date()
     ) -> TaskSubtask {
         let name = TaskSubtask.agentName(prompt: title ?? "Codex agent", provider: .codex)
-        var subtask = existing ?? TaskSubtask(id: subtaskID ?? launchID, title: name, provider: .codex,
+        var subtask = existing ?? TaskSubtask(id: subtaskID ?? launchID, title: name,
+            assignmentDescription: note ?? title ?? name, provider: .codex,
             status: phase == "blocked" ? .blocked : .working,
             progressSummary: phase == "blocked" ? (note ?? "Launch needs attention.")
                 : phase == "ready" ? "Codex started; waiting for its session ID."
@@ -107,6 +108,7 @@ public struct AgentIntakeReceipt: Decodable, Identifiable, Sendable {
     public var pendingRegistration: ExternalAgentRegistration {
         ExternalAgentRegistration(id: id, provider: .codex, sessionID: nil, agentID: launchID,
             cwd: cwd, title: title?.isEmpty == false ? title! : "Codex agent",
+            workDescription: note ?? title ?? "Codex agent awaiting launch details.",
             taskID: taskID, subtaskID: launchID,
             reason: note ?? "Tracked launch. Waiting for provider identity and optional task details.",
             eventName: phase ?? "pending", updatedAt: .distantPast, tmux: reference)

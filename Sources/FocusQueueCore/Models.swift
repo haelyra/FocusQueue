@@ -1350,6 +1350,10 @@ public enum AgentTerminalLabels {
   public static func tabTitle(ticketID: String, paneID: Int) -> String {
     "\(ticketID) · Tab \(paneID)"
   }
+
+  public static func managedTabTitle(ticketID: String) -> String {
+    "\(ticketID.uppercased()) · tmux"
+  }
 }
 
 public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {

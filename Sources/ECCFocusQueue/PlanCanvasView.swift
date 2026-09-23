@@ -457,9 +457,9 @@ struct EmbeddedPlanDocument: NSViewRepresentable {
 struct NewTaskAgentView: View {
   let ticket: DashboardTicket
   let model: QueueViewModel
-  var blank = false
   var targetSubtask: TaskSubtask?
   @Environment(\.dismiss) private var dismiss
+  @State private var title = ""
   @State private var prompt = ""
   @AppStorage("newAgentProvider") private var provider: AgentProvider = .codex
   @State private var repository = ""
@@ -488,10 +488,12 @@ struct NewTaskAgentView: View {
   private var requiresTmux: Bool {
     model.config.wezTerm.applicationName.caseInsensitiveCompare("Terminal") == .orderedSame
   }
-  private var name: String { TaskSubtask.agentName(prompt: prompt, provider: provider) }
+  private var name: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
   private var preview: String {
     guard let context = model.taskContexts[ticket.id] else { return "Task context will be prepared at launch." }
-    var subtask = TaskSubtask(id: assignmentID, title: name, provider: provider)
+    var subtask = TaskSubtask(id: assignmentID, title: name,
+      assignmentDescription: prompt.trimmingCharacters(in: .whitespacesAndNewlines),
+      provider: provider)
     subtask.workspace = proposedWorkspace
     subtask.initialPrompt = prompt
     return context.agentPrompt(subtask: subtask)
@@ -508,15 +510,18 @@ struct NewTaskAgentView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text("\(targetSubtask == nil ? "New subtask agent" : "New agent") · \(ticket.id)").font(.title2.weight(.semibold))
+      Text("\(targetSubtask == nil ? "New work item" : "Start work item") · \(ticket.id)").font(.title2.weight(.semibold))
       ScrollView {
         VStack(alignment: .leading, spacing: 12) {
-          if let targetSubtask { Text(targetSubtask.title).font(.headline) }
-          Text("Initial prompt").font(.headline)
+          Text("Title").font(.headline)
+          TextField("Short, specific name", text: $title)
+            .accessibilityLabel("Work item title")
+          Text("Brief work description").font(.headline)
           TextEditor(text: $prompt).font(.body).frame(minHeight: 130, maxHeight: 180)
             .padding(6).overlay(RoundedRectangle(cornerRadius: 6).stroke(.secondary.opacity(0.3)))
-            .accessibilityLabel("Initial prompt")
-          Text("Name: \(name)").font(.caption).foregroundStyle(.secondary)
+            .accessibilityLabel("Work item description")
+          Text("Every item keeps this title and description with its agent, workspace, and terminal.")
+            .font(.caption).foregroundStyle(.secondary)
           Picker("Provider", selection: $provider) {
             ForEach(AgentProvider.allCases, id: \.self) { Text($0.displayName).tag($0) }
           }.pickerStyle(.segmented)
@@ -548,7 +553,7 @@ struct NewTaskAgentView: View {
               .font(.caption).foregroundStyle(.secondary)
           }
           Toggle("Include detailed task instructions", isOn: $includePrompt)
-          Text("Task identity and plan/log paths are always included. This adds the full assignment and reporting instructions. An empty initial prompt prepares context, then waits for you.")
+          Text("Task identity and plan/log paths are always included. This adds the full assignment and reporting instructions.")
             .font(.caption).foregroundStyle(.secondary)
           if includePrompt {
             DisclosureGroup("Initialization prompt preview") {
@@ -582,17 +587,21 @@ struct NewTaskAgentView: View {
           isStarting = true
           launchError = nil
           model.launchAgent(for: ticket, title: name, provider: provider, repositoryPath: repository,
+            assignmentDescription: prompt,
             includePrompt: includePrompt, useTmux: tmuxAvailable && (requiresTmux || useTmux),
-            initialPrompt: prompt, tracksCompletion: true, subtaskID: assignmentID,
+            initialPrompt: prompt, tracksCompletion: true,
+            subtaskID: targetSubtask?.id ?? assignmentID,
             allowProjectRepositoryMismatch: allowsOtherRepository,
-            parentSubtaskID: targetSubtask?.id, createAssignment: targetSubtask == nil,
+            parentSubtaskID: nil, createAssignment: false,
             workspacePolicy: .isolatedCommittedSnapshot) { started in
               isStarting = false
               if started { dismiss() }
               else { launchError = model.actionMessages[ticket.id] ?? "Agent could not start. Check the workspace and try again." }
             }
         }.buttonStyle(.borderedProminent)
-          .disabled(isStarting || model.launchingTaskIDs.contains(ticket.id) || workspaceBlockReason != nil
+          .disabled(isStarting || name.isEmpty
+            || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || model.launchingTaskIDs.contains(ticket.id) || workspaceBlockReason != nil
             || (requiresTmux && !tmuxAvailable)
             || (model.project(for: ticket) != nil && repositoryMatchesProject != true && !allowsOtherRepository))
       }
@@ -609,10 +618,15 @@ struct NewTaskAgentView: View {
       }
       .onAppear {
         includePrompt = false
-        prompt = targetSubtask.map {
-          !$0.assignmentDescription.isEmpty ? $0.assignmentDescription : ($0.initialPrompt ?? $0.title)
-        } ?? ""
-        if let targetSubtask { provider = targetSubtask.provider }
+        if let targetSubtask {
+          assignmentID = targetSubtask.id
+          title = targetSubtask.title
+          prompt = targetSubtask.workDescription
+          provider = targetSubtask.provider
+        } else {
+          title = ""
+          prompt = ""
+        }
         repository = targetSubtask?.workspace?.path ?? model.defaultRepository(for: ticket)
       }
   }

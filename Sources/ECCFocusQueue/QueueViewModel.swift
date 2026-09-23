@@ -1478,9 +1478,12 @@ final class QueueViewModel {
       return
     }
     let trimmedExplanation = explanation?.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmedExplanation?.isEmpty == false else {
+      actionMessages[ticket.id] = "Add a brief description of this work item."
+      return
+    }
     let updatedTitle = String(trimmedTitle.prefix(200))
-    let updatedExplanation = trimmedExplanation?.isEmpty == false
-      ? String(trimmedExplanation!.prefix(2_000)) : ""
+    let updatedExplanation = String(trimmedExplanation!.prefix(2_000))
     let key = Self.subtaskKey(ticketID: ticket.id, subtaskID: subtask.id)
     let token = UUID()
     subtaskEditTokens[key] = token
@@ -1532,15 +1535,18 @@ final class QueueViewModel {
       return
     }
     let trimmedExplanation = explanation?.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmedExplanation?.isEmpty == false else {
+      actionMessages[ticket.id] = "Add a brief description of this work item."
+      return
+    }
     Task {
       do {
         _ = try await taskContextStore.ensureContext(ticket: ticket, project: project(for: ticket))
         var assignment = TaskSubtask(
           title: String(trimmedTitle.prefix(200)),
-          assignmentDescription: trimmedExplanation?.isEmpty == false
-            ? String(trimmedExplanation!.prefix(2_000)) : "",
+          assignmentDescription: String(trimmedExplanation!.prefix(2_000)),
           status: .queued, runtimeMode: nil)
-        assignment.isAssignmentOnly = true
+        assignment.isAssignmentOnly = false
         assignment.tracksCompletion = true
         taskContexts[ticket.id] = try await taskContextStore.upsertSubtask(
           ticketID: ticket.id, subtask: assignment)
@@ -1679,6 +1685,10 @@ final class QueueViewModel {
     taskContexts[ticketID]?.focusSubtasks ?? []
   }
 
+  func taskItems(for ticketID: String) -> [TaskSubtask] {
+    taskContexts[ticketID]?.taskItems ?? []
+  }
+
   func agents(for subtask: TaskSubtask, ticketID: String) -> [TaskSubtask] {
     taskContexts[ticketID]?.agents(for: subtask.id) ?? []
   }
@@ -1762,9 +1772,10 @@ final class QueueViewModel {
                 taskID: ticket.id, subtaskID: subtask.id, executable: executable)
               taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
                 ticketID: ticket.id, subtaskID: subtask.id, tmux: runtime)
-              _ = try await terminalController.openManagedAgentRuntime(runtime,
-                taskID: ticket.id, subtaskID: subtask.id,
-                provider: subtask.provider, configuration: config.wezTerm)
+              var recovered = subtask
+              recovered.tmux = runtime
+              _ = try await terminalController.openAgentRuntime(
+                recovered, taskID: ticket.id, configuration: config.wezTerm)
               try await acknowledgeViewedAgent(subtask, ticketID: ticket.id)
               actionMessages[ticket.id] = "Opened \(subtask.title)."
               return
@@ -1840,6 +1851,11 @@ final class QueueViewModel {
     completion: (@MainActor (Bool) -> Void)? = nil
   ) {
     let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    let suppliedDescription = assignmentDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+    let promptDescription = initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let workDescription = String((suppliedDescription.isEmpty
+      ? (promptDescription.isEmpty ? title : promptDescription)
+      : suppliedDescription).prefix(2_000))
     guard useTmux || config.wezTerm.applicationName.caseInsensitiveCompare("Terminal") != .orderedSame else {
       actionMessages[ticket.id] = "macOS Terminal requires tmux for reliable agent launch and recall. Configure tmux or select WezTerm."
       completion?(false)
@@ -1878,7 +1894,7 @@ final class QueueViewModel {
           throw TaskContextError.commandFailed("This agent already has a saved session. Open it from the task to continue.")
         }
         var subtask = TaskSubtask(
-          id: subtaskID, title: title, assignmentDescription: assignmentDescription,
+          id: subtaskID, title: title, assignmentDescription: workDescription,
           provider: provider, includeInitializationPrompt: includePrompt,
           runtimeMode: useTmux ? .tmux : .terminal)
         subtask.initialPrompt = initialPrompt
@@ -1897,17 +1913,8 @@ final class QueueViewModel {
         if let previous {
           subtask.parentSubtaskID = previous.parentSubtaskID
           subtask.tracksCompletion = previous.tracksCompletion
-        } else if parentSubtaskID == nil && createAssignment {
-          var parent = TaskSubtask(title: title, provider: provider, runtimeMode: nil)
-          parent.isAssignmentOnly = true
-          parent.assignmentDescription = assignmentDescription.isEmpty
-            ? (initialPrompt ?? "") : assignmentDescription
-          parent.initialPrompt = initialPrompt
-          parent.workspace = subtask.workspace
-          _ = try await taskContextStore.upsertSubtask(ticketID: ticket.id, subtask: parent)
-          subtask.parentSubtaskID = parent.id
-          subtask.tracksCompletion = false
         }
+        _ = createAssignment // Retained for source compatibility; new launches are one task item.
         assignment = subtask
         agentSessionErrors[
           Self.subtaskKey(ticketID: ticket.id, subtaskID: subtask.id)
@@ -1937,6 +1944,7 @@ final class QueueViewModel {
           phase = "saving the confirmed tmux process"
           taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
             ticketID: ticket.id, subtaskID: subtask.id, tmux: tmux)
+          subtask.tmux = tmux
           await recordAgentLaunch(
             subtask, ticketID: ticket.id, phase: "tmux-confirm", outcome: "succeeded",
             message: "tmux reported the same final pane process three times.",
@@ -1945,9 +1953,8 @@ final class QueueViewModel {
               "pane": tmux.paneID, "panePID": String(tmux.panePID), "terminal": tmux.tty,
             ])
           phase = "opening the WezTerm view"
-          _ = try await terminalController.openManagedAgentRuntime(
-            tmux, taskID: ticket.id, subtaskID: subtask.id,
-            provider: provider, configuration: config.wezTerm)
+          _ = try await terminalController.openAgentRuntime(
+            subtask, taskID: ticket.id, configuration: config.wezTerm)
         } else {
           phase = "starting the direct WezTerm process"
           actionMessages[ticket.id] =

@@ -88,6 +88,18 @@ class RegistrationCLITests(unittest.TestCase):
         self.command("register-event", "--provider", "codex", payload=self.event("not-a-uuid"), expected=1)
         self.assertEqual(len(self.context()["subtasks"]), 2)
 
+    def test_add_requires_a_title_and_brief_description(self):
+        self.command("add", "ECC-401", "codex", "Named work item", expected=1)
+        self.assertEqual(self.context()["subtasks"], [])
+
+        created = self.command("add", "ECC-401", "codex", "Named work item",
+            "Verify exact task-pane recall from the saved workspace.")
+        self.assertEqual(created["title"], "Named work item")
+        self.assertEqual(created["assignmentDescription"],
+            "Verify exact task-pane recall from the saved workspace.")
+        self.assertFalse(created["isAssignmentOnly"])
+        self.assertNotIn("runtimeMode", created)
+
     def test_placement_cli_creates_other_task_and_private_capsule(self):
         dashboard = self.support / "dashboard.json"
         dashboard.write_text('{"tickets":[]}\n')

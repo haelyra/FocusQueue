@@ -2153,24 +2153,28 @@ private struct SubtaskEditorSheet: View {
     title.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
+  private var trimmedExplanation: String {
+    explanation.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
-      Text("Edit subtask").font(.title2.weight(.semibold))
+      Text("Edit work item").font(.title2.weight(.semibold))
       VStack(alignment: .leading, spacing: 6) {
         Text("Title").font(.headline)
         TextField("Short, readable title", text: $title)
-          .accessibilityLabel("Subtask title")
-        Text("Keep the title brief. Put the complete assignment in the explanation.")
+          .accessibilityLabel("Work item title")
+        Text("Keep the title brief. Put the complete assignment in the description.")
           .font(.caption).foregroundStyle(.secondary)
       }
       VStack(alignment: .leading, spacing: 6) {
-        Text("Explanation").font(.headline)
+        Text("Brief work description").font(.headline)
         TextEditor(text: $explanation)
           .font(.body)
           .frame(minHeight: 120)
           .padding(6)
           .overlay(RoundedRectangle(cornerRadius: 7).stroke(.secondary.opacity(0.3)))
-          .accessibilityLabel("Subtask explanation")
+          .accessibilityLabel("Work item description")
       }
       HStack {
         Spacer()
@@ -2180,7 +2184,7 @@ private struct SubtaskEditorSheet: View {
           dismiss()
         }
         .buttonStyle(.borderedProminent)
-        .disabled(trimmedTitle.isEmpty)
+        .disabled(trimmedTitle.isEmpty || trimmedExplanation.isEmpty)
         .keyboardShortcut(.defaultAction)
       }
     }
@@ -2263,18 +2267,14 @@ private struct TicketCard: View {
   @State private var reorderDropIsTargeted = false
   @State private var cardHeight: CGFloat = 1
   @State private var showsNewAgent = false
-  @State private var newAgentIsBlank = false
   @State private var agentTargetSubtask: TaskSubtask?
   @State private var showsSubtasks = true
-  @State private var showsAgents = true
   @State private var showsCompletedSubtasks = false
   @State private var subtaskDisclosure = SubtaskDisclosureState()
   @State private var showsNewSubtask = false
   @State private var newSubtaskTitle = ""
   @State private var newSubtaskExplanation = ""
   @State private var editingSubtask: TaskSubtask?
-  @State private var renamingAgent: TaskSubtask?
-  @State private var agentName = ""
   @State private var completingSubtask: TaskSubtask?
   @State private var deletingSubtask: TaskSubtask?
   @State private var completingAgent: TaskSubtask?
@@ -2308,11 +2308,13 @@ private struct TicketCard: View {
         details.padding(.top, 11).transition(.opacity.combined(with: .move(edge: .top)))
       }
     }.notificationSurface(radius: 18)
-      .sheet(isPresented: $showsNewAgent) { NewTaskAgentView(ticket: ticket, model: model, blank: newAgentIsBlank, targetSubtask: agentTargetSubtask) }
-      .alert("New subtask", isPresented: $showsNewSubtask) {
-        TextField("Subtask title", text: $newSubtaskTitle)
-        TextField("Optional explanation", text: $newSubtaskExplanation)
-        Button("Add subtask") {
+      .sheet(isPresented: $showsNewAgent) {
+        NewTaskAgentView(ticket: ticket, model: model, targetSubtask: agentTargetSubtask)
+      }
+      .alert("New work item", isPresented: $showsNewSubtask) {
+        TextField("Work item title", text: $newSubtaskTitle)
+        TextField("Brief work description", text: $newSubtaskExplanation)
+        Button("Add work item") {
           model.createSubtask(
             for: ticket, title: newSubtaskTitle, explanation: newSubtaskExplanation)
           newSubtaskTitle = ""
@@ -2320,7 +2322,7 @@ private struct TicketCard: View {
         }
         Button("Cancel", role: .cancel) {}
       } message: {
-        Text("Create the work item first. You can assign one or more agents afterward.")
+        Text("Every work item needs a short title and a brief description. You can start its agent afterward.")
       }
       .sheet(item: $editingSubtask) { subtask in
         SubtaskEditorSheet(subtask: subtask) { title, explanation in
@@ -2328,25 +2330,13 @@ private struct TicketCard: View {
             subtask, for: ticket, title: title, explanation: explanation)
         }
       }
-      .alert("Rename agent", isPresented: Binding(
-        get: { renamingAgent != nil }, set: { if !$0 { renamingAgent = nil } }
-      )) {
-        TextField("Agent name", text: $agentName)
-        Button("Save") {
-          if let agent = renamingAgent {
-            model.renameSubtask(agent, for: ticket, title: agentName)
-          }
-          renamingAgent = nil
-        }
-        Button("Cancel", role: .cancel) { renamingAgent = nil }
-      }
       .confirmationDialog(
-        "Mark this subtask complete?",
+        "Mark this work item complete?",
         isPresented: Binding(
           get: { completingSubtask != nil }, set: { if !$0 { completingSubtask = nil } }),
         titleVisibility: .visible
       ) {
-        Button("Mark subtask complete") {
+        Button("Mark work item complete") {
           if let subtask = completingSubtask { model.overrideCompletion(subtask, for: ticket) }
           completingSubtask = nil
         }
@@ -2355,12 +2345,12 @@ private struct TicketCard: View {
         Text("This records a user override and preserves the prior review evidence.")
       }
       .confirmationDialog(
-        "Delete this subtask?",
+        "Delete this work item?",
         isPresented: Binding(
           get: { deletingSubtask != nil }, set: { if !$0 { deletingSubtask = nil } }),
         titleVisibility: .visible
       ) {
-        Button("Delete subtask and linked agents", role: .destructive) {
+        Button("Delete work item", role: .destructive) {
           if let subtask = deletingSubtask { model.deleteSubtask(subtask, from: ticket) }
           deletingSubtask = nil
         }
@@ -2394,7 +2384,7 @@ private struct TicketCard: View {
         }
         Button("Cancel", role: .cancel) { removingAgent = nil }
       } message: {
-        Text("The subtask, conversation, and workspace history will be retained.")
+        Text("The work item, conversation, and workspace history will be retained.")
       }
       .draggable(ticket.id)
       .background {
@@ -2494,28 +2484,27 @@ private struct TicketCard: View {
 
   private var agentControls: some View {
     VStack(alignment: .leading, spacing: 7) {
-      let subtasks = model.focusSubtasks(for: ticket.id)
-      let activeSubtasks = subtasks.filter { $0.status != .completed }
-      let completedSubtasks = subtasks.filter { $0.status == .completed }
-      let agents = model.visibleAgents(for: ticket.id)
+      let items = model.taskItems(for: ticket.id)
+      let activeItems = items.filter { $0.status != .completed }
+      let completedItems = items.filter { $0.status == .completed }
 
-      DisclosureGroup("Subtasks (\(activeSubtasks.count))", isExpanded: $showsSubtasks) {
-        ForEach(activeSubtasks) { subtask in subtaskRow(subtask) }
-        if activeSubtasks.isEmpty {
-          Text("No subtasks yet").font(.caption).foregroundStyle(.secondary)
+      DisclosureGroup("Work items (\(activeItems.count))", isExpanded: $showsSubtasks) {
+        ForEach(activeItems) { item in taskItemRow(item) }
+        if activeItems.isEmpty {
+          Text("No active work items").font(.caption).foregroundStyle(.secondary)
         }
-        if !completedSubtasks.isEmpty {
+        if !completedItems.isEmpty {
           DisclosureGroup(
-            "Completed subtasks (\(completedSubtasks.count))",
+            "Completed items (\(completedItems.count))",
             isExpanded: $showsCompletedSubtasks
           ) {
-            ForEach(completedSubtasks) { subtask in subtaskRow(subtask) }
+            ForEach(completedItems) { item in taskItemRow(item) }
           }
           .font(.system(size: 11, weight: .semibold))
           .foregroundStyle(.secondary)
           .padding(.top, 4)
         }
-        Button("New subtask", systemImage: "plus") {
+        Button("New work item", systemImage: "plus") {
           newSubtaskTitle = ""
           newSubtaskExplanation = ""
           showsNewSubtask = true
@@ -2523,25 +2512,10 @@ private struct TicketCard: View {
         .buttonStyle(.bordered)
         .controlSize(.small)
         .disabled(ticket.isCompleted)
-        .help("Create a subtask before assigning an agent")
+        .help("Create one titled, described item for this task")
         .padding(.top, 3)
       }
       .font(.system(size: 12, weight: .semibold))
-
-      Divider().opacity(0.45)
-
-      DisclosureGroup("Agents (\(agents.count))", isExpanded: $showsAgents) {
-        ForEach(agents) { agent in
-          agentRow(agent).id("all-agent-\(ticket.id)-\(agent.id)")
-        }
-        if agents.isEmpty {
-          Text("No active agents. Add one from a subtask menu.")
-            .font(.caption).foregroundStyle(.secondary)
-            .padding(.vertical, 4)
-        }
-      }
-      .font(.system(size: 12, weight: .semibold))
-      .accessibilityIdentifier("attach-agent-\(ticket.id)")
 
       if let message = model.actionMessages[ticket.id] {
         if model.agentSessionIssue(for: ticket.id) != nil {
@@ -2561,6 +2535,15 @@ private struct TicketCard: View {
       }
     }.controlSize(.regular)
     .padding(.horizontal, 14).padding(.bottom, 10)
+  }
+
+  @ViewBuilder
+  private func taskItemRow(_ item: TaskSubtask) -> some View {
+    if item.hasAgent {
+      agentRow(item).id("work-item-\(ticket.id)-\(item.id)")
+    } else {
+      subtaskRow(item).id("work-item-\(ticket.id)-\(item.id)")
+    }
   }
 
   private var taskOverview: some View {
@@ -2597,7 +2580,7 @@ private struct TicketCard: View {
         Spacer()
         let subtasks = model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion)
         if !subtasks.isEmpty {
-          Text("\(subtasks.filter { $0.status == .completed }.count)/\(subtasks.count) subtasks")
+          Text("\(subtasks.filter { $0.status == .completed }.count)/\(subtasks.count) work items")
         } else { Text(ticket.progressLabel) }
       }.font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
       if ticket.isRecurringPullRequestTask {
@@ -2605,7 +2588,7 @@ private struct TicketCard: View {
       } else if !model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion).isEmpty {
         let subtasks = model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion)
         ProgressView(value: Double(subtasks.filter { $0.status == .completed }.count), total: Double(subtasks.count))
-          .accessibilityLabel("Subtask completion")
+          .accessibilityLabel("Work item completion")
       } else if !ticket.steps.isEmpty {
         ProgressView(value: Double(ticket.steps.filter(\.isDone).count), total: Double(ticket.steps.count))
           .accessibilityLabel("Task step completion")
@@ -2618,10 +2601,6 @@ private struct TicketCard: View {
     let rawExplanation: String? = subtask.assignmentDescription.isEmpty
       ? subtask.initialPrompt : subtask.assignmentDescription
     let explanation = rawExplanation?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let agentPresentation = SubtaskAgentPresentation(
-      linkedAgents: model.agents(for: subtask, ticketID: ticket.id)
-    )
-    let agentCount = agentPresentation.count
     return VStack(alignment: .leading, spacing: 7) {
       HStack(alignment: .top, spacing: 7) {
         Button {
@@ -2634,7 +2613,7 @@ private struct TicketCard: View {
               .frame(width: 12, height: 18)
             VStack(alignment: .leading, spacing: 3) {
               SubtaskTitleLabel(title: subtask.title, isExpanded: isExpanded)
-              Text("\(subtask.status.rawValue.capitalized) · \(agentCount) agent\(agentCount == 1 ? "" : "s")")
+              Text("\(subtask.status.rawValue.capitalized) · Ready to start")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
             }
@@ -2643,19 +2622,18 @@ private struct TicketCard: View {
           .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(isExpanded ? "Collapse" : "Expand") subtask \(subtask.title)")
+        .accessibilityLabel("\(isExpanded ? "Collapse" : "Expand") work item \(subtask.title)")
 
         Menu {
-          Button("Edit title and explanation", systemImage: "pencil") {
+          Button("Edit title and description", systemImage: "pencil") {
             Task { @MainActor in
               try? await Task.sleep(for: .milliseconds(100))
               editingSubtask = subtask
             }
           }
           if subtask.status != .completed {
-            Button(agentCount == 0 ? "New agent" : "Add agent", systemImage: "person.badge.plus") {
+            Button("Start agent", systemImage: "person.badge.plus") {
               agentTargetSubtask = subtask
-              newAgentIsBlank = false
               showsNewAgent = true
             }
             Button("Review completion", systemImage: "checkmark.seal") {
@@ -2666,7 +2644,7 @@ private struct TicketCard: View {
             }
           }
           Divider()
-          Button("Delete subtask…", systemImage: "trash", role: .destructive) {
+          Button("Delete work item…", systemImage: "trash", role: .destructive) {
             deletingSubtask = subtask
           }
         } label: {
@@ -2676,8 +2654,8 @@ private struct TicketCard: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .minimumHitTarget()
-        .accessibilityLabel("More options for subtask \(subtask.title)")
-        .help("Edit, complete, assign an agent, or delete this subtask")
+        .accessibilityLabel("More options for work item \(subtask.title)")
+        .help("Edit, complete, start an agent, or delete this work item")
       }
 
       if isExpanded {
@@ -2692,19 +2670,9 @@ private struct TicketCard: View {
             .font(.system(size: 11))
             .foregroundStyle(.tertiary)
         }
-        if !agentPresentation.agents.isEmpty {
-          Text("Assigned agents")
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .padding(.top, 2)
-          ForEach(agentPresentation.agents) { agent in
-            agentRow(agent).id("subtask-\(subtask.id)-agent-\(agent.id)")
-          }
-        }
         if subtask.status != .completed {
-          Button(agentCount == 0 ? "New agent" : "Add agent", systemImage: "person.badge.plus") {
+          Button("Start agent", systemImage: "person.badge.plus") {
             agentTargetSubtask = subtask
-            newAgentIsBlank = false
             showsNewAgent = true
           }
           .buttonStyle(.bordered)
@@ -2720,9 +2688,6 @@ private struct TicketCard: View {
 
   private func agentRow(_ agent: TaskSubtask) -> some View {
     let isOpening = model.isOpening(agent, ticketID: ticket.id)
-    let assignment = model.focusSubtasks(for: ticket.id).first {
-      $0.id == agent.parentSubtaskID || model.agents(for: $0, ticketID: ticket.id).contains(where: { $0.id == agent.id })
-    }
     return HStack(spacing: 7) {
       Button { model.openSubtask(agent, for: ticket) } label: {
         HStack(alignment: .top, spacing: 8) {
@@ -2737,9 +2702,9 @@ private struct TicketCard: View {
           }
           VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 5) {
-              Text("\(agent.provider.displayName) · \(agent.sessionID.map { String($0.suffix(6)) } ?? String(agent.id.suffix(6)))")
+              Text(agent.title)
                 .font(.system(size: 12, weight: .semibold))
-                .lineLimit(1)
+                .lineLimit(2)
               Spacer(minLength: 3)
               AgentStatusIndicator(
                 status: model.effectiveStatus(for: agent),
@@ -2748,16 +2713,11 @@ private struct TicketCard: View {
                 issue: model.agentSessionError(for: agent, ticketID: ticket.id),
                 attention: agent.attention)
             }
-            Text(agent.title)
-              .font(.system(size: 11, weight: .medium))
+            Text(agent.workDescription)
+              .font(.system(size: 11))
+              .foregroundStyle(.secondary)
               .lineLimit(2)
-            if let assignment, assignment.title != agent.title {
-              Text("Subtask: \(assignment.title)")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            }
-            Text(agent.progressSummary.isEmpty ? "Awaiting first update" : agent.progressSummary)
+            Text("\(agent.provider.displayName) · \(agent.sessionID.map { String($0.suffix(6)) } ?? String(agent.id.suffix(6))) · \(agent.progressSummary.isEmpty ? "Awaiting first update" : agent.progressSummary)")
               .font(.system(size: 10))
               .foregroundStyle(.secondary)
               .lineLimit(2)
@@ -2780,9 +2740,8 @@ private struct TicketCard: View {
           model.openSubtask(agent, for: ticket)
         }
         .disabled(isOpening)
-        Button("Rename agent", systemImage: "pencil") {
-          agentName = agent.title
-          renamingAgent = agent
+        Button("Edit title and description", systemImage: "pencil") {
+          editingSubtask = agent
         }
         if agent.status != .completed {
           Button("Mark as complete…", systemImage: "checkmark.circle") {
@@ -2804,8 +2763,8 @@ private struct TicketCard: View {
       .menuStyle(.borderlessButton)
       .fixedSize()
       .minimumHitTarget()
-      .accessibilityLabel("More options for agent \(agent.title)")
-      .help("Open, rename, complete, inspect, or remove this agent")
+      .accessibilityLabel("More options for work item \(agent.title)")
+      .help("Open, edit, complete, inspect, or remove this work item")
     }
     .padding(9)
     .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
@@ -2834,7 +2793,7 @@ private struct TicketCard: View {
         DetailBlock(title: "Done when", text: doneWhen)
       }
 
-      DisclosureGroup("Subtask history") {
+      DisclosureGroup("Work item history") {
         ForEach(model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion)) { subtask in
           VStack(alignment: .leading, spacing: 5) {
             Text("\(subtask.title) · \(subtask.status.rawValue)")

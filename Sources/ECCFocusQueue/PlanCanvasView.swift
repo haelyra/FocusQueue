@@ -463,6 +463,8 @@ struct NewTaskAgentView: View {
   @State private var prompt = ""
   @AppStorage("newAgentProvider") private var provider: AgentProvider = .codex
   @State private var repository = ""
+  @State private var modelName = ""
+  @State private var effort = ""
   @State private var includePrompt = false
   @State private var assignmentID = UUID().uuidString
   @State private var workspacePreview = WorkspacePreviewModel()
@@ -496,6 +498,12 @@ struct NewTaskAgentView: View {
       provider: provider)
     subtask.workspace = proposedWorkspace
     subtask.initialPrompt = prompt
+    if !modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      || !effort.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      subtask.launchConfiguration = AgentLaunchConfiguration(
+        model: modelName.trimmingCharacters(in: .whitespacesAndNewlines),
+        effort: effort.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
     return context.agentPrompt(subtask: subtask)
   }
 
@@ -525,6 +533,14 @@ struct NewTaskAgentView: View {
           Picker("Provider", selection: $provider) {
             ForEach(AgentProvider.allCases, id: \.self) { Text($0.displayName).tag($0) }
           }.pickerStyle(.segmented)
+          HStack {
+            TextField("Model (optional)", text: $modelName)
+              .accessibilityLabel("Agent model")
+            TextField("Effort (optional)", text: $effort)
+              .accessibilityLabel("Agent reasoning effort")
+          }
+          Text("Explicit model and effort choices are saved with the agent and reused for exact conversation recall. Leave them empty to use your alias or provider defaults.")
+            .font(.caption).foregroundStyle(.secondary)
           TextField("Source checkout", text: $repository).accessibilityLabel("Source checkout")
           if let project = model.project(for: ticket) {
             Text("Project: \(project.name)").font(.caption).foregroundStyle(.secondary)
@@ -593,6 +609,7 @@ struct NewTaskAgentView: View {
             subtaskID: targetSubtask?.id ?? assignmentID,
             allowProjectRepositoryMismatch: allowsOtherRepository,
             parentSubtaskID: nil, createAssignment: false,
+            modelName: modelName, effort: effort,
             workspacePolicy: .isolatedCommittedSnapshot) { started in
               isStarting = false
               if started { dismiss() }
@@ -623,9 +640,13 @@ struct NewTaskAgentView: View {
           title = targetSubtask.title
           prompt = targetSubtask.workDescription
           provider = targetSubtask.provider
+          modelName = targetSubtask.launchConfiguration?.model ?? ""
+          effort = targetSubtask.launchConfiguration?.effort ?? ""
         } else {
           title = ""
           prompt = ""
+          modelName = ""
+          effort = ""
         }
         repository = targetSubtask?.workspace?.path ?? model.defaultRepository(for: ticket)
       }

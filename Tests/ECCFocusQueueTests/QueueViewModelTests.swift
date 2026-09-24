@@ -657,7 +657,8 @@ struct QueueViewModelTests {
       taskAgentLauncher: TaskAgentLauncher(runner: launcher, candidateSockets: []))
     model.launchAgent(for: fixture.tickets[0], title: "New work", provider: .codex,
       repositoryPath: repository.path, includePrompt: false, useTmux: false, createWorktree: false,
-      initialPrompt: "Do the requested work", subtaskID: "first-agent", createAssignment: true)
+      initialPrompt: "Do the requested work", subtaskID: "first-agent", createAssignment: true,
+      modelName: "gpt-test", effort: "high")
     try await eventually { model.launchingTaskIDs.isEmpty }
     let assignment = try #require(model.focusSubtasks(for: "ECC-101").first)
     #expect(!assignment.isAssignmentOnly)
@@ -665,6 +666,8 @@ struct QueueViewModelTests {
     #expect(assignment.status == .working)
     #expect(assignment.title == "New work")
     #expect(assignment.assignmentDescription == "Do the requested work")
+    #expect(assignment.launchConfiguration?.model == "gpt-test")
+    #expect(assignment.launchConfiguration?.effort == "high")
     #expect(assignment.workspace?.path == repository.path)
     #expect(model.agents(for: assignment, ticketID: "ECC-101").map(\.id) == ["first-agent"])
     model.launchAgent(for: fixture.tickets[0], title: "Second worker", provider: .claude,
@@ -2470,7 +2473,7 @@ private actor ManagedResumeRunner: ProcessRunning {
     }
     if arguments.contains("list-panes") {
       guard started else { return result(exit: 1, error: "no server running") }
-      return result("fq-task-\(taskID.lowercased())|123|1000|%9|456|/dev/ttys099|0|@1|0|160|50|0|0|80|24|\(agentID)||1|auto\n")
+      return result("fq-task-\(taskID.lowercased())|123|1000|%9|456|/dev/ttys099|0|@1|0|160|50|0|0|80|24|\(agentID)|||1|auto\n")
     }
     if arguments.contains("show-options"), arguments.contains("status") {
       return result("off\n")

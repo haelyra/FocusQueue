@@ -39,7 +39,7 @@ private actor DeterministicRecallRunner: ProcessRunning {
       }
       if specification.arguments.contains("list-panes") {
         return success(
-          "\(reference.name)|\(reference.serverPID)|\(reference.createdAt)|\(reference.paneID)|\(reference.panePID)|\(reference.tty)|0|@1|0|160|50|0|0|80|24|\(agentID)||1|auto\n")
+          "\(reference.name)|\(reference.serverPID)|\(reference.createdAt)|\(reference.paneID)|\(reference.panePID)|\(reference.tty)|0|@1|0|160|50|0|0|80|24|\(agentID)|||1|auto\n")
       }
       if specification.arguments.contains("list-clients") {
         if spawnedPane { return success("/dev/ttys501\n") }
@@ -154,7 +154,7 @@ struct ManagedSessionRecallTests {
   @Test("With no WezTerm mux, recall starts only the exact tmux attachment and never a blank shell")
   func startExactAttachmentWithoutMux() async throws {
     let reference = taskReference()
-    let pane = "\(reference.name)|\(reference.serverPID)|\(reference.createdAt)|\(reference.paneID)|\(reference.panePID)|\(reference.tty)|0|@1|0|160|50|0|0|80|24|agent-one||1|auto\n"
+    let pane = "\(reference.name)|\(reference.serverPID)|\(reference.createdAt)|\(reference.paneID)|\(reference.panePID)|\(reference.tty)|0|@1|0|160|50|0|0|80|24|agent-one|||1|auto\n"
     let display = "\(reference.name)|\(reference.serverPID)|\(reference.createdAt)|\(reference.paneID)|\(reference.panePID)|\(reference.tty)|0\n"
     let runner = ManagedRecallRunner([
       result("ECC-1\n"), result(pane), result(display), result(display), result(), result(),
@@ -256,7 +256,7 @@ struct ManagedSessionRecallTests {
 
   @Test("A shared task pane must carry the exact agent tag before recall")
   func wrongAgentPane() async throws {
-    let pane = "fq-task-ecc-1|123|1000|%0|124|/dev/ttys099|0|@1|0|160|50|0|0|80|24|other-agent||1|auto\n"
+    let pane = "fq-task-ecc-1|123|1000|%0|124|/dev/ttys099|0|@1|0|160|50|0|0|80|24|other-agent|||1|auto\n"
     let runner = ManagedRecallRunner([result("ECC-1\n"), result(pane)])
     let reference = TmuxSessionReference(name: "fq-task-ecc-1", serverPID: 123,
       createdAt: 1000, paneID: "%0", panePID: 124, tty: "/dev/ttys099",

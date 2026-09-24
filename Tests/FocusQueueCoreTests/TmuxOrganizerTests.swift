@@ -218,7 +218,7 @@ struct TmuxOrganizerTests {
     #expect(TmuxController.ownsSession(name: "fq-task-ecc-1", taskID: "ECC-1", subtaskID: "agent"))
   }
 
-  @Test("Live panes stay in one window, reject a fifth agent, and survive manual swaps",
+  @Test("Live agents share one task session across four-pane window tabs and survive removal",
     .enabled(if: SetupEnvironment.executable("tmux") != nil))
   func liveTaskLayout() async throws {
     let executable = try #require(SetupEnvironment.executable("tmux"))
@@ -245,35 +245,34 @@ struct TmuxOrganizerTests {
     try await command(["-f", "/dev/null", "new-session", "-d", "-s", "fq-legacy-agent", "/bin/sleep", "90"])
     #expect(try await controller.panes(name: name, executable: executable).isEmpty)
     var references: [TmuxSessionReference] = []
-    for index in 0..<4 {
+    for index in 0..<9 {
       references.append(try await controller.startAgent(taskID: taskID, subtaskID: "agent-\(index)",
         directory: "/tmp", command: ["/bin/sleep", "90"], executable: executable))
     }
     #expect(Set(references.map(\.name)) == [name])
-    #expect(Set(references.map(\.paneID)).count == 4)
-    #expect(try await controller.inspectAgent(taskID: taskID, subtaskID: "agent-3", executable: executable) == references[3])
+    #expect(Set(references.map(\.paneID)).count == 9)
+    #expect(try await controller.inspectAgent(taskID: taskID, subtaskID: "agent-8", executable: executable) == references[8])
     #expect(try await controller.verifyAgent(
-      references[3], taskID: taskID, subtaskID: "agent-3", executable: executable) == references[3])
+      references[8], taskID: taskID, subtaskID: "agent-8", executable: executable) == references[8])
     await #expect(throws: TmuxError.self) {
       try await controller.verifyAgent(
-        references[3], taskID: taskID, subtaskID: "agent-2", executable: executable)
+        references[8], taskID: taskID, subtaskID: "agent-2", executable: executable)
     }
     await #expect(throws: TmuxError.self) {
       try await controller.verifyAgent(
-        references[3], taskID: "ECC-OTHER", subtaskID: "agent-3", executable: executable)
+        references[8], taskID: "ECC-OTHER", subtaskID: "agent-8", executable: executable)
     }
     await #expect(throws: TmuxError.self) {
-      try await controller.startAgent(taskID: taskID, subtaskID: "agent-3", directory: "/tmp", command: ["/bin/sleep", "90"], executable: executable)
-    }
-    await #expect(throws: TmuxError.self) {
-      try await controller.startAgent(taskID: taskID, subtaskID: "agent-4", directory: "/tmp", command: ["/bin/sleep", "90"], executable: executable)
+      try await controller.startAgent(taskID: taskID, subtaskID: "agent-8", directory: "/tmp", command: ["/bin/sleep", "90"], executable: executable)
     }
     var panes = try await controller.panes(name: name, executable: executable)
-    try await controller.select(references[3])
+    try await controller.select(references[8])
     for window in Set(panes.map(\.windowID)) { try await command(["resize-window", "-t", window, "-x", "160", "-y", "50"]) }
     try await controller.reflow(name: name, executable: executable, force: true)
     panes = try await controller.panes(name: name, executable: executable)
-    #expect(Set(panes.map(\.windowID)).count == 1)
+    let windowCounts = Dictionary(grouping: panes, by: \.windowID).values.map(\.count).sorted(by: >)
+    #expect(Set(panes.map(\.windowID)).count == 3)
+    #expect(windowCounts == [4, 4, 1])
     try await command(["set-option", "-t", name, "status-left", "old task padding "])
     try await command(["set-option", "-t", name, "status-right", " old instructions"])
     for window in Set(panes.map(\.windowID)) {
@@ -292,26 +291,63 @@ struct TmuxOrganizerTests {
     #expect(plainWindows.succeeded)
     #expect(plainWindows.standardOutput.split(separator: "\n").allSatisfy { $0 == "off" })
     let selected = try await controller.inspect(name: name, executable: executable)
-    #expect(selected == references[3])
+    #expect(selected == references[8])
     for reference in references { #expect(try await controller.verify(reference) == reference) }
-    #expect(panes.count == 4)
+    #expect(panes.count == 9)
     #expect(panes.allSatisfy { $0.width > 0 && $0.height > 0 })
     for window in Set(panes.map(\.windowID)) { try await command(["resize-window", "-t", window, "-x", "80", "-y", "24"]) }
     try await controller.reflow(name: name, executable: executable, force: true)
     panes = try await controller.panes(name: name, executable: executable)
-    #expect(Set(panes.map(\.windowID)).count == 1)
+    #expect(Dictionary(grouping: panes, by: \.windowID).values.map(\.count).sorted(by: >) == [4, 4, 1])
     try await controller.swap(references[0], with: references[3])
     let manual = try await controller.panes(name: name, executable: executable)
     #expect(manual.allSatisfy { !$0.automatic })
     try await controller.reflow(name: name, executable: executable)
     #expect(try await controller.panes(name: name, executable: executable) == manual)
+    try await controller.setAutomatic(name: name, executable: executable, enabled: true)
     try await controller.stop(references[0])
     do {
       _ = try await controller.verify(references[0])
       Issue.record("A pane removed while sibling sessions remain must be reported stopped")
     } catch TmuxError.stopped { }
     for reference in references.dropFirst() { #expect(try await controller.verify(reference) == reference) }
-    #expect(try await controller.panes(name: name, executable: executable).count == 3)
+    let remaining = try await controller.panes(name: name, executable: executable)
+    #expect(remaining.count == 8)
+    #expect(Dictionary(grouping: remaining, by: \.windowID).values.map(\.count).sorted(by: >) == [4, 4])
+
+    var completedAgent = TaskSubtask(
+      id: "agent-1", title: "Completed agent", sessionID: UUID().uuidString,
+      status: .completed, runtimeMode: .tmux)
+    completedAgent.tmux = references[1]
+    let context = TaskContext(
+      ticketID: taskID, title: "Window tabs", summary: "", successCriteria: "",
+      planPath: "/tmp/plan.md", worktreePath: "/tmp", updatedAt: Date())
+    let completion = try AgentCompletionMessage(
+      context: context, subtask: completedAgent, taskCompleted: false)
+    let completionReference = try await controller.finish(
+      references[1], subtaskID: completedAgent.id, message: completion)
+    #expect(try await controller.verify(completionReference) == completionReference)
+    await #expect(throws: TmuxError.self) {
+      try await controller.verifyAgent(
+        completionReference, taskID: taskID, subtaskID: completedAgent.id,
+        executable: executable)
+    }
+    let afterCompletion = try await controller.panes(name: name, executable: executable)
+    let activeAfterCompletion = afterCompletion.filter { !$0.subtaskID.isEmpty }
+    #expect(activeAfterCompletion.count == 7)
+    #expect(afterCompletion.filter { $0.completedSubtaskID == completedAgent.id }.count == 1)
+    #expect(Dictionary(grouping: activeAfterCompletion, by: \.windowID).values.map(\.count).sorted(by: >) == [4, 3])
+    #expect(Set(activeAfterCompletion.map(\.windowID)).isDisjoint(
+      with: Set(afterCompletion.filter { !$0.completedSubtaskID.isEmpty }.map(\.windowID))))
+
+    let resumed = try await controller.startAgent(
+      taskID: taskID, subtaskID: completedAgent.id, directory: "/tmp",
+      command: ["/bin/sleep", "90"], executable: executable)
+    #expect(resumed.name == name)
+    let afterResume = try await controller.panes(name: name, executable: executable)
+    #expect(afterResume.filter { !$0.subtaskID.isEmpty }.count == 8)
+    #expect(afterResume.allSatisfy { $0.completedSubtaskID != completedAgent.id })
+    #expect(Dictionary(grouping: afterResume, by: \.windowID).values.map(\.count).sorted(by: >) == [4, 4])
   }
 
   @Test("A lost ownership-tag response cannot launch a second agent",

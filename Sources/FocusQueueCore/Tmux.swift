@@ -172,19 +172,46 @@ public actor TmuxController {
   }
 
   /// Replace only the verified provider pane, preserving its window and siblings.
-  public func finish(_ saved: TmuxSessionReference, message: AgentCompletionMessage) async throws -> TmuxSessionReference {
+  public func finish(
+    _ saved: TmuxSessionReference, subtaskID: String? = nil,
+    message: AgentCompletionMessage
+  ) async throws -> TmuxSessionReference {
     _ = try await verify(saved)
     let result = try await run(saved.executable,
       ["respawn-pane", "-k", "-t", saved.paneID, "-c",
        message.directory.replacingOccurrences(of: "#", with: "##"), "--"] + message.command())
     guard result.succeeded else { throw TmuxError.unavailable("Could not show the completed agent terminal. Its record was retained.") }
-    return try await inspectTarget(saved.paneID, name: saved.name, executable: saved.executable, allowDifferentSession: true)
+    let completed = try await inspectTarget(
+      saved.paneID, name: saved.name, executable: saved.executable,
+      allowDifferentSession: true)
+    if saved.name.hasPrefix("fq-task-"), let subtaskID {
+      try Self.validateName(subtaskID)
+      try await checked(saved.executable, [
+        "set-option", "-p", "-t", saved.paneID,
+        "@focus-queue-completed-agent", subtaskID,
+      ])
+      try await checked(saved.executable, [
+        "set-option", "-p", "-u", "-t", saved.paneID,
+        "@focus-queue-agent",
+      ])
+      try await checked(saved.executable, [
+        "set-option", "-p", "-u", "-t", saved.paneID,
+        "@focus-queue-restored-agent",
+      ])
+      // The completion terminal is already durable. A layout warning must not
+      // make completion retryable or respawn the provider.
+      try? await reflow(name: saved.name, executable: saved.executable, force: true)
+    }
+    return completed
   }
 
   public func stop(_ saved: TmuxSessionReference) async throws {
     do { _ = try await verify(saved) } catch TmuxError.stopped { return }
     let result = try await run(saved.executable, ["kill-pane", "-t", saved.paneID])
     guard result.succeeded else { throw TmuxError.unavailable("Could not close the completed agent runtime.") }
+    if saved.name.hasPrefix("fq-task-") {
+      try? await reflow(name: saved.name, executable: saved.executable)
+    }
   }
 
   public func clientTTYs(for reference: TmuxSessionReference) async throws -> Set<String> {

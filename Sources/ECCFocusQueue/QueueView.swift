@@ -3391,7 +3391,7 @@ private struct AgentSessionPicker: View {
             Text(model.subtasks(for: ticket.id).first { $0.id == session.subtaskID }?.title
               ?? "Managed \(session.provider.displayName) session")
               .font(.system(size: 12, weight: .semibold)).lineLimit(2)
-            Text("\(session.provider.displayName) · \(displayPath(session.workingDirectory))")
+            Text(sessionDetail(session))
               .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
             if session.tmux != nil {
               Label("Persistent tmux session", systemImage: "network")
@@ -3418,6 +3418,16 @@ private struct AgentSessionPicker: View {
 
   private func displayPath(_ path: String) -> String {
     path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+  }
+
+  private func sessionDetail(_ session: TaskAgentSession) -> String {
+    let agent = model.subtasks(for: ticket.id).first { $0.id == session.subtaskID }
+    return ([session.provider.displayName]
+      + [agent?.launchConfiguration?.model, agent?.launchConfiguration?.effort]
+        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+      + [displayPath(session.workingDirectory)])
+      .joined(separator: " · ")
   }
 
  }

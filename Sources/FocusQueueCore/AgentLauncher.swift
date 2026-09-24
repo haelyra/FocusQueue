@@ -166,7 +166,7 @@ public actor TaskAgentLauncher {
     if let saved = subtask.tmux {
       do {
         return .managed(try await TmuxController(runner: runner, serverName: tmuxServerName)
-          .finish(saved, message: message))
+          .finish(saved, subtaskID: subtask.id, message: message))
       } catch TmuxError.stopped { return .absent }
     }
     guard let paneID = subtask.terminalPaneID else { return .absent }

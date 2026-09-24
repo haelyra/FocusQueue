@@ -1,6 +1,6 @@
 # Task session organizer
 
-New agents share one tmux session per task. The app opens one terminal view onto that task and recalls an agent by its pane identity, even after rearranging panes or closing the terminal view.
+New agents share one tmux session per task. Each native tmux window tab contains at most four active agent panes. The app opens one terminal view onto that task and recalls an agent by its pane identity, even after rearranging panes or closing the terminal view.
 
 ## Using it
 
@@ -25,17 +25,19 @@ flowchart TD
     App[App pane map] --> Session
 ```
 
-The layout uses terminal cells, with a target minimum of 72 columns and 20 rows per pane and at most four panes per tab. This accounts for font size, window size and monitor changes. A terminal too small for that minimum shows one pane. Extra panes use tmux tabs, which are available in terminals without native tabs.
+The layout uses terminal cells and places at most four panes per tab. One to four panes use all available cells; agent five starts a second tab, agent nine starts a third, and so on. Extra panes use native tmux tabs, which remain available in terminals without native tabs.
 
 Available height excludes the actual configured status-bar rows, including multi-row usage bars. Creating a task session also works when the server already contains older per-agent sessions.
 
 Focus Queue currently keeps tmux presentation deliberately plain. The managed usage bar and native tmux window tabs remain visible, while custom pane-border label rows and extra left/right status text are disabled. Agent names remain available in the app's session map and in nonvisual pane metadata.
 
-Client attachment and resize hooks invoke the helper. A size-and-pane signature avoids repeating unchanged layouts. A task lock serializes launches, rearrangement and swaps across the app and helper. Reflow preserves the selected pane and never starts or kills an agent process. A user arrangement remains in effect until automatic layout is selected again.
+Client attachment and resize hooks invoke the helper. A size-and-pane signature avoids repeating unchanged layouts. A task lock serializes launches, rearrangement and swaps across the app and helper. Reflow preserves the selected pane and never starts an agent process. Explicit removal kills only its verified pane and compacts the remaining automatic tabs. Automatic completion replaces the provider with its exact resume message, tags that shell as completed, and moves it to a separate completion tab so it does not consume active-agent capacity. Reopening the conversation replaces that completion shell with one new tracked agent pane. A user arrangement remains in effect until automatic layout is selected again.
 
 Pane identity includes the server, session creation time, pane ID, process PID and TTY. Closing an agent kills only that verified pane. An unresolved launch receipt blocks duplicate starts and permits recovery of the original pane. A runtime belonging to another task cannot be opened through a misbound task record.
 
 Existing direct WezTerm sessions and older per-agent tmux sessions remain available. They are not moved automatically. New launches use the task grouping model.
+
+tmux can move or link a window between sessions only when both sessions use the same tmux server socket. Focus Queue does not merge live sessions because that would change durable session ownership and can make saved pane references ambiguous. It creates the task-owned session before the first agent and adds every later agent as another pane/window inside that session. Legacy per-agent sessions stay recallable through the compatibility path.
 
 ## Saved layouts
 
@@ -59,6 +61,17 @@ The shipped drag-and-drop interaction lives in SwiftUI and uses verified tmux sw
 ## Verification and boundaries
 
 Headless tests use disposable tmux servers for pane overflow, reflow, identity retention, selection, manual layout, launch uncertainty, and save/restore. Existing app and Python tests cover launch, workspace, completion and document regressions. UI automation remains opt-in; real mouse interactions and monitor dragging require manual assessment.
+
+For a persistent local smoke test using the actual login shell and installed aliases:
+
+```sh
+Scripts/sanity-task-tmux.sh start TEST
+Scripts/sanity-task-tmux.sh remove TEST 4
+Scripts/sanity-task-tmux.sh reopen TEST 4
+Scripts/sanity-task-tmux.sh status TEST
+```
+
+The script leaves `fq-task-test` running. `open TEST` or `start TEST --open` opens WezTerm only when `ECC_FOCUS_QUEUE_UI_TESTS=1` is set for that run. `cleanup TEST` removes only the exact owned sanity session.
 
 The existing-server launch regression is covered by creating an unrelated legacy session before the first task pane. Provider sanity checks must verify an actual Codex session UUID and readiness, rather than treating a live shell or usage-wrapper PID as success. Run the live-agent test suite before committing launch changes or handing them over for manual assessment.
 

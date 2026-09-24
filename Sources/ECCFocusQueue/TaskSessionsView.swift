@@ -122,9 +122,13 @@ struct TaskSessionsView: View {
   @State private var persistenceStatus: TmuxPersistenceStatus?
 
   private var executable: String? { model.config.tmuxExecutable ?? SetupEnvironment.executable("tmux") }
-  private var names: [String] { Array(Set(panes.map { $0.reference.name })).sorted() }
+  private var names: [String] {
+    Array(Set(panes.filter { $0.completedSubtaskID.isEmpty }.map { $0.reference.name })).sorted()
+  }
   private var taskPanes: [TmuxPaneSnapshot] {
-    panes.filter { $0.reference.name == selectedTask }.sorted {
+    panes.filter {
+      $0.reference.name == selectedTask && $0.completedSubtaskID.isEmpty
+    }.sorted {
       ($0.windowIndex, $0.top, $0.left) < ($1.windowIndex, $1.top, $1.left)
     }
   }
@@ -133,7 +137,9 @@ struct TaskSessionsView: View {
   }
   private func assignment(_ pane: TmuxPaneSnapshot) -> (String, TaskSubtask)? {
     for (ticket, context) in model.taskContexts {
-      if let subtask = context.subtasks.first(where: { $0.tmux == pane.reference }) { return (ticket, subtask) }
+      if let subtask = context.subtasks.first(where: {
+        $0.tmux == pane.reference && $0.isAgentVisible
+      }) { return (ticket, subtask) }
     }
     return nil
   }
@@ -152,7 +158,7 @@ struct TaskSessionsView: View {
         Button("Refresh", systemImage: "arrow.clockwise") { Task { await reload() } }.disabled(busy)
         Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
       }
-      Text("One task, one tmux session and window, with up to four agent panes.")
+      Text("One task, one tmux session. Each native tmux window tab holds up to four agent panes.")
         .font(.callout).foregroundStyle(.secondary)
       if !names.isEmpty {
         Picker("Task", selection: $selectedTask) {
@@ -200,7 +206,7 @@ struct TaskSessionsView: View {
             let members = taskPanes.filter { $0.windowID == window }
             if let first = members.first {
               HStack {
-                Text(index == 0 ? "Task window" : "Legacy window \(index + 1)").font(.headline)
+                Text("Agent tab \(index + 1)").font(.headline)
                 Text("\(first.windowWidth) × \(first.windowHeight) · \(members.count) panes")
                   .font(.caption).foregroundStyle(.secondary)
               }
@@ -226,6 +232,9 @@ struct TaskSessionsView: View {
                   Text(assignment(pane)?.1.title ?? "Shell \(pane.id)").font(.callout)
                   if let (_, agent) = assignment(pane) {
                     Text(agent.workDescription).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                    if let configuration = launchConfiguration(agent) {
+                      Text(configuration).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    }
                     Text(agent.workspace?.path ?? "Saved task workspace").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                   }
                 }
@@ -268,6 +277,9 @@ struct TaskSessionsView: View {
         Text(assignment(pane)?.1.title ?? "Shell \(pane.id)").font(.callout.bold()).lineLimit(3)
         if let (_, agent) = assignment(pane) {
           Text(agent.workDescription).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+          if let configuration = launchConfiguration(agent) {
+            Text(configuration).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+          }
         }
         Text(pane.id).font(.caption2.monospaced()).foregroundStyle(.secondary)
       }.padding(10).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -297,6 +309,14 @@ struct TaskSessionsView: View {
     } else {
       message = "Copy the attach command to open this shell in your terminal."
     }
+  }
+
+  private func launchConfiguration(_ agent: TaskSubtask) -> String? {
+    let details = [
+      agent.launchConfiguration?.model.map { "Model \($0)" },
+      agent.launchConfiguration?.effort.map { "Effort \($0)" },
+    ].compactMap { $0 }
+    return details.isEmpty ? nil : details.joined(separator: " · ")
   }
 
   private func perform(_ action: @escaping (TmuxController, String) async throws -> Void) {

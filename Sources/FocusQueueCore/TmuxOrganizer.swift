@@ -83,15 +83,16 @@ public struct TmuxPaneSnapshot: Identifiable, Equatable, Sendable {
   public let height: Int
   public let subtaskID: String
   public let restoredSubtaskID: String
+  public let completedSubtaskID: String
   public let isActive: Bool
   public let automatic: Bool
 
-  static let format = TmuxController.format + "|#{window_id}|#{window_index}|#{window_width}|#{window_height}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{@focus-queue-agent}|#{@focus-queue-restored-agent}|#{pane_active}|#{@focus-queue-layout}"
+  static let format = TmuxController.format + "|#{window_id}|#{window_index}|#{window_width}|#{window_height}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{@focus-queue-agent}|#{@focus-queue-restored-agent}|#{@focus-queue-completed-agent}|#{pane_active}|#{@focus-queue-layout}"
 
   static func decode(_ output: String, executable: String) throws -> [Self] {
     try output.split(separator: "\n").map { line in
       let f = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-      guard f.count == 19, f[7].range(of: "^@[0-9]+$", options: .regularExpression) != nil,
+      guard f.count == 20, f[7].range(of: "^@[0-9]+$", options: .regularExpression) != nil,
             let index = Int(f[8]), let ww = Int(f[9]), let wh = Int(f[10]),
             let x = Int(f[11]), let y = Int(f[12]), let w = Int(f[13]), let h = Int(f[14]),
             ww > 0, wh > 0, w > 0, h > 0,
@@ -100,8 +101,8 @@ public struct TmuxPaneSnapshot: Identifiable, Equatable, Sendable {
       }
       return Self(reference: reference, windowID: f[7], windowIndex: index,
         windowWidth: ww, windowHeight: wh, left: x, top: y, width: w, height: h,
-        subtaskID: f[15], restoredSubtaskID: f[16], isActive: f[17] == "1",
-        automatic: f[18] != "manual")
+        subtaskID: f[15], restoredSubtaskID: f[16], completedSubtaskID: f[17],
+        isActive: f[18] == "1", automatic: f[19] != "manual")
     }
   }
 }
@@ -190,7 +191,7 @@ extension TmuxController {
     // A retained dead pane should not hide the other running agents.
     let live = result.standardOutput.split(separator: "\n").filter {
       let fields = $0.split(separator: "|", omittingEmptySubsequences: false)
-      return fields.count != 19 || fields[6] == "0"
+      return fields.count != 20 || fields[6] == "0"
     }.joined(separator: "\n")
     return try TmuxPaneSnapshot.decode(live, executable: executable)
   }
@@ -254,13 +255,13 @@ extension TmuxController {
     guard !existing.contains(where: { $0.subtaskID == subtaskID }) else {
       throw TmuxError.unavailable("This agent already has a pane. Open it from the task to continue.")
     }
-    guard existing.count < TmuxPaneLayout.maximumPanes else {
-      throw TmuxError.unavailable(
-        "This task already has four agent panes. Complete or remove one before starting another.")
-    }
     let restored = existing.filter { $0.restoredSubtaskID == subtaskID }
     guard restored.count <= 1 else {
       throw TmuxError.unavailable("More than one restored pane claims this agent. Resolve the task layout before retrying.")
+    }
+    let completed = existing.filter { $0.completedSubtaskID == subtaskID }
+    guard completed.count <= 1 else {
+      throw TmuxError.unavailable("More than one completion pane claims this agent. Resolve the task layout before retrying.")
     }
     if try pendingLaunch(taskID: taskID, subtaskID: subtaskID) != nil,
        !existing.isEmpty, restored.count != 1 {
@@ -333,6 +334,9 @@ extension TmuxController {
           if let placeholder = restored.first {
             try? await checked(executable, ["set-option", "-p", "-u", "-t",
               placeholder.id, "@focus-queue-restored-agent"])
+          }
+          if let placeholder = completed.first {
+            try? await checked(executable, ["kill-pane", "-t", placeholder.id])
           }
           // Layout failures never turn a successful process launch into a retryable launch.
           try? await reflowUnlocked(name: name, executable: executable, force: false)
@@ -522,12 +526,12 @@ extension TmuxController {
   private func reflowUnlocked(name: String, executable: String, force: Bool) async throws {
     let all = try await panes(name: name, executable: executable)
     guard let first = all.first, force || first.automatic else { return }
-    // Unregistered/restored shells remain under the user's control.
-    guard all.allSatisfy({ !$0.subtaskID.isEmpty }) else { return }
-    guard all.count <= TmuxPaneLayout.maximumPanes else {
-      throw TmuxError.unavailable(
-        "This legacy task session has more than four panes. Focus Queue left its layout unchanged.")
-    }
+    let tracked = all.filter { !$0.subtaskID.isEmpty }
+    let completed = all.filter { $0.subtaskID.isEmpty && !$0.completedSubtaskID.isEmpty }
+    // Unregistered/restored shells remain under the user's control. Completion
+    // shells are explicitly tagged and may be organized without claiming them
+    // as active agents.
+    guard tracked.count + completed.count == all.count else { return }
     let focused = try await run(executable, ["display-message", "-p", "-t", "=\(name):", "#{pane_id}"])
     let activePane = focused.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
     let sizes = try await run(executable, ["list-clients", "-t", "=\(name)", "-F", "#{client_width}|#{client_height}|#{client_activity}|#{client_control_mode}"])
@@ -544,15 +548,24 @@ extension TmuxController {
     let statusValue = status.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
     let width = client?.0 ?? first.windowWidth
     let height = client.map { TmuxPaneLayout.contentHeight(clientHeight: $0.1, status: statusValue, controlMode: $0.3 == 1) } ?? first.windowHeight
-    let ordered = all.sorted { (Int($0.id.dropFirst()) ?? 0) < (Int($1.id.dropFirst()) ?? 0) }
-    let signature = "\(width)x\(height):" + ordered.map(\.id).joined(separator: ",")
+    let ordered = tracked.sorted { (Int($0.id.dropFirst()) ?? 0) < (Int($1.id.dropFirst()) ?? 0) }
+    let completedOrdered = completed.sorted { (Int($0.id.dropFirst()) ?? 0) < (Int($1.id.dropFirst()) ?? 0) }
+    let signature = "\(width)x\(height):agents=" + ordered.map(\.id).joined(separator: ",")
+      + ":completed=" + completedOrdered.map(\.id).joined(separator: ",")
     let previous = try await run(executable, ["show-options", "-qv", "-t", name, "@focus-queue-size"])
     if !force, previous.succeeded, previous.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines) == signature { return }
-    let groups = [ordered]
+    let agentGroups = TmuxPaneLayout.groups(ordered, width: width, height: height)
+    let completedGroups = TmuxPaneLayout.groups(completedOrdered, width: width, height: height)
+    let groups: [([TmuxPaneSnapshot], String)] = agentGroups.enumerated().map { index, group in
+      (group, agentGroups.count == 1 ? "Agents" : "Agents \(index + 1)")
+    } + completedGroups.enumerated().map { index, group in
+      (group, completedGroups.count == 1 ? "Completed" : "Completed \(index + 1)")
+    }
     try await checked(executable, ["set-option", "-t", name, "status-left", ""])
     try await checked(executable, ["set-option", "-t", name, "status-right", ""])
-    // Consolidate every managed agent into the task's one window.
-    for group in groups {
+    // Keep at most four active agents in each native tmux window tab. Retained
+    // completion shells use their own tab so they never consume agent capacity.
+    for (group, label) in groups {
       guard let anchor = group.first else { continue }
       let current = try await panes(name: name, executable: executable)
       guard let liveAnchor = current.first(where: { $0.id == anchor.id }) else { throw TmuxError.changed }
@@ -571,7 +584,7 @@ extension TmuxController {
       }
       try await checked(executable, ["select-layout", "-t", anchor.id,
         TmuxPaneLayout.layout(paneIDs: group.map(\.id), width: width, height: height)])
-      try await checked(executable, ["rename-window", "-t", anchor.id, "Agents"])
+      try await checked(executable, ["rename-window", "-t", anchor.id, label])
       try await checked(executable, ["set-window-option", "-t", anchor.id, "automatic-rename", "off"])
       try await checked(executable, ["set-window-option", "-t", anchor.id, "window-size", "latest"])
       try await checked(executable, ["set-window-option", "-t", anchor.id, "pane-border-status", "off"])

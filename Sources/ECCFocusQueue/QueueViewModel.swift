@@ -2134,6 +2134,7 @@ final class QueueViewModel {
     createWorktree: Bool = true, initialPrompt: String? = nil, tracksCompletion: Bool = true,
     subtaskID: String = UUID().uuidString, allowProjectRepositoryMismatch: Bool = false,
     parentSubtaskID: String? = nil, createAssignment: Bool = false,
+    modelName: String? = nil, effort: String? = nil,
     workspacePolicy: AgentWorkspacePolicy? = nil,
     completion: (@MainActor (Bool) -> Void)? = nil
   ) {
@@ -2186,6 +2187,13 @@ final class QueueViewModel {
           runtimeMode: useTmux ? .tmux : .terminal)
         subtask.initialPrompt = initialPrompt
         subtask.tracksCompletion = tracksCompletion
+        let selectedModel = modelName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let selectedEffort = effort?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if selectedModel?.isEmpty == false || selectedEffort?.isEmpty == false {
+          subtask.launchConfiguration = AgentLaunchConfiguration(
+            model: selectedModel?.isEmpty == false ? selectedModel : nil,
+            effort: selectedEffort?.isEmpty == false ? selectedEffort : nil)
+        }
         if let parentSubtaskID {
           guard let parent = context.subtasks.first(where: { $0.id == parentSubtaskID }), parent.status != .completed else {
             throw TaskContextError.commandFailed("This subtask is already completed or no longer exists.")
@@ -2200,6 +2208,9 @@ final class QueueViewModel {
         if let previous {
           subtask.parentSubtaskID = previous.parentSubtaskID
           subtask.tracksCompletion = previous.tracksCompletion
+          if subtask.launchConfiguration == nil {
+            subtask.launchConfiguration = previous.launchConfiguration
+          }
         }
         _ = createAssignment // Retained for source compatibility; new launches are one task item.
         assignment = subtask

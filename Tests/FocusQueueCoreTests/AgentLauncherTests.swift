@@ -137,6 +137,7 @@ func exactCodexResumeRecipe() async throws {
   var subtask = TaskSubtask(id: "resume-agent", title: "Resume exact", provider: .codex,
     sessionID: sessionID, includeInitializationPrompt: false, runtimeMode: .tmux)
   subtask.workspace = AgentWorkspace(path: root.path, repositoryPath: root.path)
+  subtask.launchConfiguration = AgentLaunchConfiguration(model: "gpt-test", effort: "high")
   let launch = try TaskAgentLauncher.command(
     context: context, subtask: subtask, supportDirectory: root,
     includePrompt: false, shellPath: "/bin/zsh")
@@ -149,6 +150,7 @@ func exactCodexResumeRecipe() async throws {
   let arguments = result.standardOutput.split(separator: "\0", omittingEmptySubsequences: false)
     .dropLast().map(String.init)
   #expect(arguments == ["resume", sessionID, "--cd", root.path,
+    "--model", "gpt-test", "-c", "model_reasoning_effort=high",
     "--add-dir", context.contextDirectory.path])
 }
 

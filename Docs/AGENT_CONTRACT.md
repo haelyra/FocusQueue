@@ -21,7 +21,7 @@ Resume rechecks transient provider ownership up to four times while a process st
 
 Every new app launch includes a compact task ID, agent ID, workspace, plan/log pointers, and reporting instructions. Detailed task initialization remains optional. An empty prompt asks the agent to prepare context and wait, rather than starting the whole task. Low-level launches that explicitly suppress all prompts and saved-conversation resumes remain prompt-free.
 
-Task-associated agents share one `fq-task-<task-id>` tmux session with one exact pane per agent. Shell launches persist a launch receipt, resolve placement, persist a provisional queue row, save the exact pane reference afterward, and notify the app at each boundary. The managed usage bar follows the active pane and remains session-owned when another agent exits. A launch without a task objective stays in its project's inbox and an isolated `fq-codex-*` session until placement is unambiguous.
+Task-associated agents share one `fq-task-<task-id>` tmux session with one exact pane per agent and at most four active agents in each native tmux window tab. Additional agents create another window inside the same session. Shell launches persist a launch receipt, resolve placement, persist a provisional queue row, save the exact pane reference afterward, and notify the app at each boundary. The managed usage bar follows the active pane and remains session-owned when another agent exits. Explicit model and effort choices remain on the agent record and are reused for exact resume. A launch without a task objective stays in its project's inbox and an isolated `fq-codex-*` session until placement is unambiguous.
 
 ## Placement capsule
 

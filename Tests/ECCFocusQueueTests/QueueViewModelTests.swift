@@ -42,6 +42,29 @@ struct QueueViewModelTests {
     #expect(model.routerStatus?.contains("cancelled") == true)
   }
 
+  @Test("The Router starts after the undo window and can no longer be cancelled")
+  func routerObjectiveStartsAfterUndoWindow() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    var configuration = try JSONDecoder().decode(
+      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    configuration.projects[0].repositoryPath = fixture.root.path
+    configuration.tmuxExecutable = "/usr/bin/true"
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
+    let router = ControlledObjectiveRouter(outcome: .registered(
+      routeID: "route-after-undo", taskID: "ECC-101", subtaskID: "agent-one"))
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(), objectiveRouter: router,
+      routerUndoWindowSeconds: 0.01)
+
+    model.routeObjective("Route after the undo window")
+    try await eventually { await router.launchCount == 1 && !model.canCancelRouterObjective }
+
+    #expect(model.cancelRouterObjective() == nil)
+    try await eventually { !model.isRoutingObjective }
+    #expect(model.routerStatus?.contains("ECC-101") == true)
+  }
+
   @Test("A queue objective starts one headless router and clears only after registration")
   func queueObjectiveRouterRegistration() async throws {
     let fixture = try await Fixture()
@@ -2274,6 +2297,7 @@ private struct Fixture {
              taskAgentLauncher: TaskAgentLauncher = TaskAgentLauncher(),
              objectiveRouter: any QueueObjectiveRouting = QueueObjectiveRouter(),
              routerMonitorIntervalSeconds: Double = 2,
+             routerUndoWindowSeconds: Double = 0,
              connectorDiagnosticsRunner: any ProcessRunning = FoundationProcessRunner(),
              discoverExternalAgents: @escaping @Sendable () async throws -> [KnownProviderProcess] = { [] },
              labelTmuxPane: @escaping @Sendable (TmuxSessionReference, String) async -> Void = { _, _ in },
@@ -2287,6 +2311,7 @@ private struct Fixture {
       taskAgentLauncher: taskAgentLauncher,
       objectiveRouter: objectiveRouter,
       routerMonitorIntervalSeconds: routerMonitorIntervalSeconds,
+      routerUndoWindowSeconds: routerUndoWindowSeconds,
       connectorDiagnosticsRunner: connectorDiagnosticsRunner,
       discoverExternalAgents: discoverExternalAgents,
       labelTmuxPane: labelTmuxPane,

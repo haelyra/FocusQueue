@@ -8,11 +8,13 @@ public struct QueueRouterRuntime: Codable, Equatable, Sendable {
   public let startedAt: Date
   public let capability: String
   public let objectiveSHA256: String
+  public var objective: String?
   public var claimedRouteID: String?
 
   public init(
     tmux: TmuxSessionReference, startedAt: Date,
     capability: String = UUID().uuidString.lowercased(), objectiveSHA256: String = "",
+    objective: String? = nil,
     claimedRouteID: String? = nil
   ) {
     tmuxName = tmux.name
@@ -21,12 +23,14 @@ public struct QueueRouterRuntime: Codable, Equatable, Sendable {
     self.startedAt = startedAt
     self.capability = capability
     self.objectiveSHA256 = objectiveSHA256
+    self.objective = objective
     self.claimedRouteID = claimedRouteID
   }
 
   public init(
     tmuxName: String, tmuxExecutable: String, startedAt: Date,
     capability: String = UUID().uuidString.lowercased(), objectiveSHA256: String = "",
+    objective: String? = nil,
     claimedRouteID: String? = nil
   ) throws {
     try TmuxController.validateName(tmuxName)
@@ -39,12 +43,13 @@ public struct QueueRouterRuntime: Codable, Equatable, Sendable {
     self.startedAt = startedAt
     self.capability = capability.lowercased()
     self.objectiveSHA256 = objectiveSHA256
+    self.objective = objective
     self.claimedRouteID = claimedRouteID
   }
 
   private enum CodingKeys: String, CodingKey {
     case tmuxName, tmuxExecutable, confirmedReference, startedAt
-    case capability, objectiveSHA256, claimedRouteID
+    case capability, objectiveSHA256, objective, claimedRouteID
   }
 
   public init(from decoder: any Decoder) throws {
@@ -56,6 +61,7 @@ public struct QueueRouterRuntime: Codable, Equatable, Sendable {
     startedAt = try values.decode(Date.self, forKey: .startedAt)
     capability = try values.decode(String.self, forKey: .capability)
     objectiveSHA256 = try values.decode(String.self, forKey: .objectiveSHA256)
+    objective = try values.decodeIfPresent(String.self, forKey: .objective)
     claimedRouteID = try values.decodeIfPresent(String.self, forKey: .claimedRouteID)
     try validate()
   }
@@ -69,6 +75,7 @@ public struct QueueRouterRuntime: Codable, Equatable, Sendable {
     try values.encode(startedAt, forKey: .startedAt)
     try values.encode(capability.lowercased(), forKey: .capability)
     try values.encode(objectiveSHA256, forKey: .objectiveSHA256)
+    try values.encodeIfPresent(objective, forKey: .objective)
     try values.encodeIfPresent(claimedRouteID?.lowercased(), forKey: .claimedRouteID)
   }
 
@@ -77,6 +84,11 @@ public struct QueueRouterRuntime: Codable, Equatable, Sendable {
     guard tmuxExecutable.hasPrefix("/"), !tmuxExecutable.contains("\0"),
           UUID(uuidString: capability) != nil,
           objectiveSHA256.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil,
+          objective.map({
+            !$0.isEmpty && $0.utf8.count <= 100_000
+              && $0.trimmingCharacters(in: .whitespacesAndNewlines) == $0
+              && AgentStartupReceipt.promptDigest($0) == objectiveSHA256
+          }) ?? true,
           claimedRouteID.map({ UUID(uuidString: $0) != nil }) ?? true,
           confirmedReference.map({
             $0.name == tmuxName && $0.executable == tmuxExecutable
@@ -114,6 +126,12 @@ public struct QueueRouterRuntimeStore: Sendable {
         if let claimedRouteID = saved.claimedRouteID {
           merged.claimedRouteID = claimedRouteID
         }
+        guard saved.objective == nil || runtime.objective == nil
+                || saved.objective == runtime.objective else {
+          throw TaskContextError.commandFailed(
+            "The queue router's authorized objective changed.")
+        }
+        merged.objective = saved.objective ?? runtime.objective
         if let confirmed = saved.confirmedReference {
           guard runtime.confirmedReference == nil
                   || runtime.confirmedReference == confirmed else {
@@ -124,6 +142,7 @@ public struct QueueRouterRuntimeStore: Sendable {
             tmux: confirmed, startedAt: saved.startedAt,
             capability: saved.capability,
             objectiveSHA256: saved.objectiveSHA256,
+            objective: merged.objective,
             claimedRouteID: merged.claimedRouteID)
         }
       }
@@ -158,15 +177,21 @@ public struct QueueRouterRuntimeStore: Sendable {
 
   public func claimRoute(
     capability: String, sourceTmuxName: String, prompt: String, routeID: String
-  ) throws {
+  ) throws -> String {
     guard UUID(uuidString: capability) != nil, UUID(uuidString: routeID) != nil else {
       throw TaskContextError.commandFailed("The queue router capability is invalid.")
     }
-    try withLock {
+    return try withLock {
       guard var runtime = try load(),
             runtime.capability.caseInsensitiveCompare(capability) == .orderedSame,
-            runtime.tmuxName == sourceTmuxName,
-            runtime.objectiveSHA256 == AgentStartupReceipt.promptDigest(prompt) else {
+            runtime.tmuxName == sourceTmuxName else {
+        throw TaskContextError.commandFailed(
+          "This queue router is not authorized for the submitted objective.")
+      }
+      let authoritativePrompt = runtime.objective ?? prompt
+      guard runtime.objectiveSHA256 == AgentStartupReceipt.promptDigest(authoritativePrompt),
+            runtime.objective != nil
+              || runtime.objectiveSHA256 == AgentStartupReceipt.promptDigest(prompt) else {
         throw TaskContextError.commandFailed(
           "This queue router is not authorized for the submitted objective.")
       }
@@ -176,6 +201,7 @@ public struct QueueRouterRuntimeStore: Sendable {
       }
       runtime.claimedRouteID = routeID.lowercased()
       try saveUnlocked(runtime)
+      return authoritativePrompt
     }
   }
 
@@ -350,7 +376,8 @@ public actor QueueObjectiveRouter: QueueObjectiveRouting {
     let capability = UUID().uuidString.lowercased()
     let pending = try QueueRouterRuntime(
       tmuxName: name, tmuxExecutable: tmuxExecutable, startedAt: startedAt,
-      capability: capability, objectiveSHA256: AgentStartupReceipt.promptDigest(objective))
+      capability: capability, objectiveSHA256: AgentStartupReceipt.promptDigest(objective),
+      objective: objective)
     let store = QueueRouterRuntimeStore(root: supportDirectory)
     if let existing = try store.reserve(pending) {
       throw QueueRouterLaunchUnconfirmedError(
@@ -371,7 +398,7 @@ public actor QueueObjectiveRouter: QueueObjectiveRouting {
         executable: tmuxExecutable)
       let confirmed = QueueRouterRuntime(
         tmux: tmux, startedAt: startedAt, capability: capability,
-        objectiveSHA256: pending.objectiveSHA256)
+        objectiveSHA256: pending.objectiveSHA256, objective: objective)
       do { try store.save(confirmed) }
       catch {
         throw QueueRouterLaunchUnconfirmedError(
@@ -385,7 +412,7 @@ public actor QueueObjectiveRouter: QueueObjectiveRouting {
         let recovered = try await controller.inspect(name: name, executable: tmuxExecutable)
         let runtime = QueueRouterRuntime(
           tmux: recovered, startedAt: startedAt, capability: capability,
-          objectiveSHA256: pending.objectiveSHA256)
+          objectiveSHA256: pending.objectiveSHA256, objective: objective)
         try store.save(runtime)
         return runtime
       } catch TmuxError.stopped {
@@ -473,6 +500,7 @@ public actor QueueObjectiveRouter: QueueObjectiveRouting {
           QueueRouterRuntime(
             tmux: reference, startedAt: runtime.startedAt,
             capability: runtime.capability, objectiveSHA256: runtime.objectiveSHA256,
+            objective: runtime.objective,
             claimedRouteID: runtime.claimedRouteID))
       }
       return reference

@@ -13,6 +13,17 @@ enum QueueChromeMetrics {
   }
 }
 
+enum RouterComposerKeyboardAction: Equatable {
+  case submit
+  case insertNewline
+}
+
+enum RouterComposerKeyboard {
+  static func action(shiftPressed: Bool) -> RouterComposerKeyboardAction {
+    shiftPressed ? .insertNewline : .submit
+  }
+}
+
 struct QueueView: View {
   let model: QueueViewModel
   @State private var showsMoreTasks = false
@@ -308,8 +319,29 @@ struct QueueView: View {
         TextField("What do you want to accomplish?", text: $routerObjectiveDraft, axis: .vertical)
           .textFieldStyle(.roundedBorder)
           .lineLimit(2...5)
-          .onSubmit { submitRouterObjective() }
+          .onKeyPress(.return, phases: .down) { keyPress in
+            switch RouterComposerKeyboard.action(
+              shiftPressed: keyPress.modifiers.contains(.shift)) {
+            case .insertNewline:
+              return .ignored
+            case .submit:
+              submitRouterObjective()
+              return .handled
+            }
+          }
           .accessibilityLabel("Objective for the router agent")
+          .help("Press Return to route. Press Shift-Return for a new line.")
+        if model.canCancelRouterObjective {
+          Button("Cancel", role: .cancel) {
+            if let restored = model.cancelRouterObjective() {
+              routerObjectiveDraft = restored
+            }
+          }
+          .buttonStyle(.bordered)
+          .minimumHitTarget()
+          .keyboardShortcut(.cancelAction)
+          .help("Undo this submission before the three-second routing window closes")
+        }
         Button("Route", systemImage: "arrow.up.circle.fill") { submitRouterObjective() }
           .buttonStyle(.borderedProminent)
           .minimumHitTarget()

@@ -390,7 +390,7 @@ struct QueueObjectiveRouterTests {
     #!/bin/zsh
     /usr/bin/printenv > "\(environmentCapture.path)"
     /usr/bin/printf '%s\\n' "$@" > "\(argumentCapture.path)"
-    "\(sessionExecutable.path)" route inspect --prompt "${@: -1}" --cwd "$PWD" --provider codex > "\(inspectionCapture.path)"
+    "\(sessionExecutable.path)" route inspect --prompt "Summarized router request" --cwd "$PWD" --provider codex > "\(inspectionCapture.path)"
     /bin/sleep 5
     """
     try Data(script.utf8).write(to: shell, options: .atomic)
@@ -426,6 +426,7 @@ struct QueueObjectiveRouterTests {
     let loadedRuntime = try QueueRouterRuntimeStore(root: support).load()
     let savedRuntime = try #require(loadedRuntime)
     #expect(savedRuntime.claimedRouteID == inspection.routeID)
+    #expect(try AgentRouteStore(root: support).load(routeID: inspection.routeID)?.prompt == objective)
     let outcome = try await router.currentOutcome(runtime, supportDirectory: support)
     let recoveryPath = try AgentRouteStore(root: support)
       .intentURL(routeID: inspection.routeID).path
@@ -455,6 +456,9 @@ private actor QueueRouterRunner: ProcessRunning {
 
 private actor UnconfirmedQueueRouterRunner: ProcessRunning {
   func run(_ specification: ProcessSpecification) -> ProcessResult {
+    if specification.arguments.contains("start-server") {
+      return .init(exitCode: 0, standardOutput: "", standardError: "", timedOut: false)
+    }
     if specification.arguments.contains("new-session") {
       return .init(exitCode: 0, standardOutput: "", standardError: "", timedOut: false)
     }

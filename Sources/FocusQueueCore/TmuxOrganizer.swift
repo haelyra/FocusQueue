@@ -183,7 +183,8 @@ extension TmuxController {
       + ["-F", TmuxPaneSnapshot.format]
     let result = try await run(executable, arguments)
     if !result.succeeded {
-      if !result.timedOut && ["no server running", "No such file or directory", "can't find session", "no sessions"].contains(where: result.standardError.contains) { return [] }
+      if !result.timedOut && ["no server running", "No such file or directory", "can't find session",
+        "no sessions", "no current target"].contains(where: result.standardError.contains) { return [] }
       throw TmuxError.unavailable(String(result.standardError.prefix(800)))
     }
     // A retained dead pane should not hide the other running agents.
@@ -244,6 +245,7 @@ extension TmuxController {
     }
     let lock = try await TmuxOrganizerLock.acquire(name: name)
     defer { lock.release() }
+    try await configureManagedScrollback(executable: executable)
     let sessionExists = try await taskSessionExists(name: name, executable: executable)
     if sessionExists {
       try await requireTaskSessionOwnership(name: name, taskID: taskID, executable: executable)
@@ -348,7 +350,8 @@ extension TmuxController {
     let result = try await run(executable, ["has-session", "-t", "=\(name)"])
     if result.succeeded { return true }
     if !result.timedOut,
-       ["no server running", "No such file or directory", "can't find session", "no sessions"]
+       ["no server running", "No such file or directory", "can't find session", "no sessions",
+        "no current target"]
         .contains(where: result.standardError.contains) { return false }
     throw TmuxError.unavailable("Could not verify ownership of the task session.")
   }

@@ -267,6 +267,7 @@ struct SetupAndTmuxTests {
     let runner = TmuxSequenceRunner([
       .init(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
       .init(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
+      .init(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
       .init(exitCode: 0, standardOutput: "fq-pending\n", standardError: "", timedOut: false),
       .init(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
       .init(exitCode: 0, standardOutput: "fq-pending\n", standardError: "", timedOut: false),

@@ -176,6 +176,18 @@ struct TmuxOrganizerTests {
     ], environment: ["TMUX_TMPDIR": "/tmp"]))
     #expect(resurrect.succeeded)
     #expect(!resurrect.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    let mouse = try await runner.run(.init(executable: executable, arguments: [
+      "-L", TmuxController.serverName, "show-options", "-gv", "mouse",
+    ], environment: ["TMUX_TMPDIR": "/tmp"]))
+    let history = try await runner.run(.init(executable: executable, arguments: [
+      "-L", TmuxController.serverName, "display-message", "-p", "-t", first.paneID,
+      "#{history_limit}",
+    ], environment: ["TMUX_TMPDIR": "/tmp"]))
+    #expect(mouse.succeeded)
+    #expect(mouse.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "on")
+    #expect(history.succeeded)
+    #expect(Int(history.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines))
+      == TmuxController.managedHistoryLimit)
   }
 
   @Test("Every usable task window supports at most four agent panes")

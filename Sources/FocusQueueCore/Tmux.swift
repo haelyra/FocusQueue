@@ -37,6 +37,7 @@ public enum TmuxError: Error, LocalizedError {
 /// One dedicated server, with no user tmux configuration or existing sessions modified.
 public actor TmuxController {
   public static let serverName = "ecc-focus-queue"
+  public static let managedHistoryLimit = 50_000
   // Non-UTF-8 tmux clients replace control characters (including tabs) with
   // underscores. GUI apps often have no locale, so use a printable delimiter.
   public static let format = "#{session_name}|#{pid}|#{session_created}|#{pane_id}|#{pane_pid}|#{pane_tty}|#{pane_dead}"
@@ -114,7 +115,8 @@ public actor TmuxController {
   public func list(executable: String) async throws -> [TmuxSessionReference] {
     let result = try await run(executable, ["list-panes", "-a", "-F", Self.format])
     if !result.succeeded {
-      if !result.timedOut && (result.standardError.contains("no server running") || result.standardError.contains("No such file or directory")) { return [] }
+      if !result.timedOut && ["no server running", "No such file or directory", "no current target"]
+        .contains(where: result.standardError.contains) { return [] }
       throw TmuxError.unavailable(String(result.standardError.prefix(800)))
     }
     return try Self.decode(result.standardOutput, executable: executable)
@@ -128,7 +130,8 @@ public actor TmuxController {
   func inspectTarget(_ target: String, name: String, executable: String, allowDifferentSession: Bool = false) async throws -> TmuxSessionReference {
     let result = try await run(executable, ["display-message", "-p", "-t", target, Self.format])
     if !result.succeeded, !result.timedOut,
-       ["no server running", "No such file or directory", "can't find", "no sessions"].contains(where: result.standardError.contains) {
+       ["no server running", "No such file or directory", "can't find", "no sessions",
+        "no current target"].contains(where: result.standardError.contains) {
       throw TmuxError.stopped
     }
     guard result.succeeded else {
@@ -226,6 +229,7 @@ public actor TmuxController {
     guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory), isDirectory.boolValue else {
       throw ProcessRunnerError.invalidWorkingDirectory(directory)
     }
+    try await configureManagedScrollback(executable: executable)
     let result = try await run(executable, Self.startArguments(name: name, directory: directory, command: command))
     guard result.succeeded else {
       throw TmuxError.unavailable(result.timedOut
@@ -300,5 +304,27 @@ public actor TmuxController {
     }
     return try await runner.run(.init(executable: executable, arguments: ["-f", configurationPath, "-L", serverName] + literalArguments,
       environment: ["TMUX_TMPDIR": "/tmp"], timeoutSeconds: 10))
+  }
+
+  /// Starts the dedicated server without a user configuration and establishes
+  /// scrolling defaults before any managed pane is created. Keeping the empty
+  /// server alive preserves those defaults between agent sessions.
+  func configureManagedScrollback(executable: String) async throws {
+    let arguments = [
+      "-f", configurationPath, "-L", serverName,
+      "start-server", ";",
+      "set-option", "-g", "exit-empty", "off", ";",
+      "set-option", "-g", "mouse", "on", ";",
+      "set-option", "-g", "history-limit", String(Self.managedHistoryLimit),
+    ]
+    let result = try await runner.run(.init(
+      executable: executable, arguments: arguments,
+      environment: ["TMUX_TMPDIR": "/tmp"], timeoutSeconds: 10))
+    guard result.succeeded else {
+      throw TmuxError.unavailable(
+        result.timedOut
+          ? "Timed out while enabling managed terminal scrolling."
+          : String(result.standardError.prefix(800)))
+    }
   }
 }

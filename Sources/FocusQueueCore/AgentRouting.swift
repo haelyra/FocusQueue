@@ -385,7 +385,7 @@ public actor AgentRouteCoordinator {
 
     public func inspect(_ request: AgentRouteInspectionRequest,
                         configuration: AppConfiguration) async throws -> AgentRouteInspection {
-        let prompt = request.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        var prompt = request.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else {
             throw TaskContextError.commandFailed("Routing needs the full initial prompt.")
         }
@@ -397,7 +397,7 @@ public actor AgentRouteCoordinator {
                 throw TaskContextError.commandFailed(
                     "The queue router is missing its one-use authorization.")
             }
-            try QueueRouterRuntimeStore(root: root).claimRoute(
+            prompt = try QueueRouterRuntimeStore(root: root).claimRoute(
                 capability: capability, sourceTmuxName: tmuxName,
                 prompt: prompt, routeID: routeID)
             composerClaim = (capability, routeID)

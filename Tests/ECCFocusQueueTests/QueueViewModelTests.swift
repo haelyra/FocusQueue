@@ -723,6 +723,49 @@ struct QueueViewModelTests {
     #expect(model.launchDiagnostics?.text.contains(failReveal ? "view-failed" : "\"phase\":\"ready\"") == true)
   }
 
+  @Test("One-click New Agent uses Codex, no custom prompt, and an isolated task worktree")
+  func oneClickAgentLaunch() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let repository = externalWorkspace(for: fixture.root, suffix: "one-click-repo")
+    defer { try? FileManager.default.removeItem(at: repository) }
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    let git = FoundationProcessRunner()
+    for arguments in [["init", "-q"], ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+      "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Fixture", "--allow-empty"]] {
+      #expect(try await git.run(.init(executable: "/usr/bin/git", arguments: arguments,
+        workingDirectory: repository.path)).succeeded)
+    }
+    var configuration = try JSONDecoder().decode(
+      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    configuration.workspacePath = repository.path
+    configuration.projects[0].workspacePath = repository.path
+    configuration.projects[0].repositoryPath = repository.path
+    configuration.tmuxExecutable = "/usr/bin/true"
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
+    let agentID = "11111111-1111-4111-8111-111111111111"
+    let runner = ManagedResumeRunner(taskID: "ECC-101", agentID: agentID)
+    let terminal = ManagedResumeRecorder()
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(), terminalController: terminal,
+      taskAgentLauncher: TaskAgentLauncher(runner: runner, tmuxServerName: "one-click-test"))
+
+    model.launchDefaultAgent(for: fixture.tickets[0], subtaskID: agentID)
+    try await eventually { model.launchingTaskIDs.isEmpty }
+
+    let agent = try #require(model.subtasks(for: "ECC-101").first { $0.id == agentID })
+    #expect(agent.title == "Agent 1")
+    #expect(agent.provider == .codex)
+    #expect(agent.initialPrompt == nil)
+    #expect(!agent.includeInitializationPrompt)
+    #expect(agent.runtimeMode == .tmux)
+    #expect(agent.tmux?.name == "fq-task-ecc-101")
+    #expect(agent.workspace?.managed == true)
+    #expect(agent.workspace?.path != repository.path)
+    #expect(agent.workspace?.repositoryPath == repository.path)
+    #expect(await terminal.opened.count == 1)
+  }
+
   @Test("A failed New Agent launch returns its error and retries its saved workspace and assignment")
   func launchRetryPreservesAssignment() async throws {
     let fixture = try await Fixture()
@@ -942,15 +985,16 @@ struct QueueViewModelTests {
     let store = TaskContextStore(root: fixture.root)
     _ = try await store.ensureContext(ticket: fixture.tickets[0])
     let subtask = TaskSubtask(id: "worker", title: "Worker", status: .working,
-      lastHeartbeatAt: Date().addingTimeInterval(-298))
+      lastHeartbeatAt: Date().addingTimeInterval(-290))
     _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: subtask)
     let model = await fixture.model(agent: ControlledQueueAgent())
+    // Leave enough pre-expiry margin for a heavily concurrent suite bootstrap.
     #expect(model.effectiveStatus(for: subtask) == .working)
     let activity = ObservationCounter()
     let contexts = ObservationCounter()
     withObservationTracking { _ = model.effectiveStatus(for: subtask) } onChange: { activity.record() }
     withObservationTracking { _ = model.taskContexts } onChange: { contexts.record() }
-    try await Task.sleep(for: .milliseconds(3100))
+    try await Task.sleep(for: .milliseconds(10_100))
     await model.refresh()
     #expect(model.effectiveStatus(for: subtask) == .idle)
     try await eventually { activity.count == 1 }

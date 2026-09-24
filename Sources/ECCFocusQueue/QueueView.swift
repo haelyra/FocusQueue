@@ -2604,6 +2604,13 @@ private struct TicketCard: View {
         .disabled(ticket.isCompleted)
         .help("Create one titled, described item for this task")
         .padding(.top, 3)
+        Button("New Agent", systemImage: "person.badge.plus") {
+          model.launchDefaultAgent(for: ticket)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
+        .disabled(ticket.isCompleted || model.launchingTaskIDs.contains(ticket.id))
+        .help("Start Codex now in a new isolated worktree and this task's shared tmux session")
       }
       .font(.system(size: 12, weight: .semibold))
 

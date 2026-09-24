@@ -2349,6 +2349,24 @@ final class QueueViewModel {
     }
   }
 
+  func launchDefaultAgent(
+    for ticket: DashboardTicket, subtaskID: String = UUID().uuidString,
+    completion: (@MainActor (Bool) -> Void)? = nil
+  ) {
+    let existingTitles = Set(
+      taskItems(for: ticket.id).map {
+        $0.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      })
+    var index = 1
+    while existingTitles.contains("agent \(index)") { index += 1 }
+    launchAgent(
+      for: ticket, title: "Agent \(index)", provider: .codex,
+      repositoryPath: defaultRepository(for: ticket), assignmentDescription: "",
+      includePrompt: false, useTmux: true, initialPrompt: nil, tracksCompletion: true,
+      subtaskID: subtaskID, workspacePolicy: .isolatedCommittedSnapshot,
+      completion: completion)
+  }
+
   private func finalizeCompletedTask(_ ticket: DashboardTicket) async {
     do {
       let lease = try await TaskMaintenance.lease(ticketID: ticket.id, root: paths.supportDirectory)

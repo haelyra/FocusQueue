@@ -29,7 +29,12 @@ DEFAULT_MAIL_COMMAND_DIRECTORY = Path(
     "/Users/hira/Library/Application Support/ECC Focus Queue/connector-commands"
 )
 DEFAULT_CODEX = Path("/opt/homebrew/bin/codex")
-NO_TOOLS_MODEL = "gpt-5.2"
+NO_TOOLS_MODEL = "gpt-5.5"
+NO_TOOLS_MODEL_PREFERENCES = (
+    NO_TOOLS_MODEL,
+    "gpt-5.4",
+    "gpt-5.2",
+)
 EXPECTED_MANIFEST_KEYS = {
     "model",
     "instructions",
@@ -111,7 +116,21 @@ def is_empty_prompt_probe_exit(result: subprocess.CompletedProcess[str]) -> bool
     return result.returncode != 0 and "no prompt provided via stdin" in detail.casefold()
 
 
-def build_no_tools_model_catalog(executable: str, directory: Path, version: str) -> Path:
+def select_no_tools_model(models: list[dict[str, Any]]) -> dict[str, Any]:
+    by_slug = {
+        str(item.get("slug")): item
+        for item in models
+        if isinstance(item, dict) and item.get("supported_in_api") is not False
+    }
+    for slug in NO_TOOLS_MODEL_PREFERENCES:
+        if slug in by_slug:
+            return by_slug[slug]
+    raise ValueError("no approved general model is available")
+
+
+def build_no_tools_model_catalog(
+    executable: str, directory: Path, version: str
+) -> tuple[Path, str]:
     result = run_codex_capability_probe(
         [executable, "debug", "models", "--bundled"],
         operation=f"inspect the bundled model catalog for {version}",
@@ -119,8 +138,8 @@ def build_no_tools_model_catalog(executable: str, directory: Path, version: str)
     try:
         payload = json.loads(result.stdout)
         models = payload["models"]
-        model = next(item for item in models if item.get("slug") == NO_TOOLS_MODEL)
-    except (json.JSONDecodeError, KeyError, StopIteration, TypeError) as error:
+        model = select_no_tools_model(models)
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
         raise CodexHarnessError(
             f"Could not build the no-tools model profile for {version}. Classification was "
             "stopped before inference. Update Codex or the Focus Queue harness, then retry."
@@ -139,7 +158,7 @@ def build_no_tools_model_catalog(executable: str, directory: Path, version: str)
     sanitized.pop("multi_agent_version", None)
     path = directory / "no-tools-model-catalog.json"
     morning.write_private_json(path, {"models": [sanitized]})
-    return path
+    return path, str(sanitized["slug"])
 
 
 def assert_effective_no_tools_manifest(
@@ -149,6 +168,7 @@ def assert_effective_no_tools_manifest(
     features: tuple[str, ...],
     overrides: tuple[str, ...],
     catalog_path: Path,
+    model: str,
     workspace: Path,
 ) -> None:
     captured: list[tuple[str, dict[str, Any]]] = []
@@ -196,7 +216,7 @@ def assert_effective_no_tools_manifest(
             "-c",
             f"model_catalog_json={json.dumps(str(catalog_path))}",
             "-c",
-            f"model={json.dumps(NO_TOOLS_MODEL)}",
+            f"model={json.dumps(model)}",
             "-c",
             'model_provider="focus_queue_manifest_probe"',
             "-c",
@@ -235,13 +255,15 @@ def assert_effective_no_tools_manifest(
             f"Codex {version} used an unexpected classifier manifest endpoint. Classification "
             "was stopped before inference. Update Codex or the Focus Queue harness, then retry."
         )
-    validate_effective_no_tools_manifest(payload, version=version)
+    validate_effective_no_tools_manifest(payload, version=version, model=model)
 
 
-def validate_effective_no_tools_manifest(payload: dict[str, Any], *, version: str) -> None:
+def validate_effective_no_tools_manifest(
+    payload: dict[str, Any], *, version: str, model: str = NO_TOOLS_MODEL
+) -> None:
     if (
         not isinstance(payload, dict)
-        or payload.get("model") != NO_TOOLS_MODEL
+        or payload.get("model") != model
         or "tools" not in payload
         or "input" not in payload
     ):
@@ -367,10 +389,12 @@ def discover_no_tools_codex_capabilities(
             "inference. Update Codex or the Focus Queue harness, then retry."
         )
 
-    catalog_path = build_no_tools_model_catalog(executable, safety_directory, version)
+    catalog_path, no_tools_model = build_no_tools_model_catalog(
+        executable, safety_directory, version
+    )
     catalog_overrides = (
         f"model_catalog_json={json.dumps(str(catalog_path))}",
-        f"model={json.dumps(NO_TOOLS_MODEL)}",
+        f"model={json.dumps(no_tools_model)}",
     )
     validation_command = [executable]
     for feature in features:
@@ -397,6 +421,7 @@ def discover_no_tools_codex_capabilities(
         features=tuple(features),
         overrides=tuple(supported_overrides),
         catalog_path=catalog_path,
+        model=no_tools_model,
         workspace=workspace,
     )
     return tuple(features), tuple(supported_overrides) + catalog_overrides

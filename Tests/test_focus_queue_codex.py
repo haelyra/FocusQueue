@@ -31,7 +31,7 @@ class FocusQueueCodexTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
             MODULE,
             "build_no_tools_model_catalog",
-            return_value=Path(temporary) / "models.json",
+            return_value=(Path(temporary) / "models.json", MODULE.NO_TOOLS_MODEL),
         ), mock.patch.object(MODULE, "assert_effective_no_tools_manifest"):
             return MODULE.discover_no_tools_codex_capabilities(
                 executable,
@@ -44,7 +44,7 @@ class FocusQueueCodexTests(unittest.TestCase):
         payload = {key: None for key in MODULE.EXPECTED_MANIFEST_KEYS}
         payload.update(
             {
-                "model": "gpt-5.2",
+                "model": MODULE.NO_TOOLS_MODEL,
                 "tools": [] if tools is None else tools,
                 "input": (
                     [{"type": "message", "role": "user"}]
@@ -82,7 +82,7 @@ class FocusQueueCodexTests(unittest.TestCase):
                 "tools.update_plan.enabled=false",
                 "tools.view_image=false",
                 mock.ANY,
-                'model="gpt-5.2"',
+                f'model="{MODULE.NO_TOOLS_MODEL}"',
             ),
         )
         validation_command = calls[-1]
@@ -120,6 +120,21 @@ class FocusQueueCodexTests(unittest.TestCase):
         self.assertIn('web_search="disabled"', overrides)
         self.assertIn("tools.web_search=false", overrides)
         self.assertNotIn("tools.view_image=false", overrides)
+
+    def test_no_tools_model_selection_uses_an_available_approved_general_model(self):
+        selected = MODULE.select_no_tools_model([
+            {"slug": "gpt-6-sol", "supported_in_api": True},
+            {"slug": "gpt-5.4", "supported_in_api": True},
+        ])
+
+        self.assertEqual(selected["slug"], "gpt-5.4")
+
+    def test_no_tools_model_selection_fails_closed_without_an_approved_model(self):
+        with self.assertRaisesRegex(ValueError, "no approved general model"):
+            MODULE.select_no_tools_model([
+                {"slug": "gpt-6-sol", "supported_in_api": True},
+                {"slug": "gpt-5.5", "supported_in_api": False},
+            ])
 
     def test_no_tools_preflight_disables_namespaced_features_from_codex_154(self):
         calls = []

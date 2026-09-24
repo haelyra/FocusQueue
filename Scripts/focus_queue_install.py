@@ -435,6 +435,8 @@ class Installer:
         self.codex_prompt = self.home / ".codex/AGENTS.md"
         self.codex_entry = self.support / "shell/focus_queue_codex_entry.py"
         self.codex_usage_wrapper = self.support / "shell/focus_queue_usage_wrapper.sh"
+        self.codex_usage_renderer = self.support / "shell/focus_queue_codex_bar.js"
+        self.codex_usage_license = self.support / "shell/AgentUsageBar-LICENSE.txt"
         self.login, self.shortcut, self.start = login, desktop, start
         self.service = f"gui/{os.getuid()}/{IDENTIFIER}"
         self.legacy_shortcut_owned = False
@@ -467,9 +469,13 @@ class Installer:
         merge_codex_prompt(self.codex_prompt.read_text() if self.codex_prompt.exists() else "", payload.read_text())
         safe_destination(self.codex_entry, self.home)
         safe_destination(self.codex_usage_wrapper, self.home)
+        safe_destination(self.codex_usage_renderer, self.home)
+        safe_destination(self.codex_usage_license, self.home)
         for relative in (
             "Contents/Resources/shell/focus_queue_codex_entry.py",
             "Contents/Resources/shell/focus_queue_usage_wrapper.sh",
+            "Contents/Resources/shell/focus_queue_codex_bar.js",
+            "Contents/Resources/shell/AgentUsageBar-LICENSE.txt",
         ):
             validate_bundle_member(self.bundle, self.bundle / relative)
         if self.codex_entry.exists():
@@ -485,6 +491,18 @@ class Installer:
                 p.is_file() and digest(p) == digest(self.codex_usage_wrapper) for p in candidates
             ):
                 raise ValueError("The installed Codex usage adapter has local changes; retained for review.")
+        for installed, relative, label in (
+            (self.codex_usage_renderer, "focus_queue_codex_bar.js", "usage renderer"),
+            (self.codex_usage_license, "AgentUsageBar-LICENSE.txt", "usage renderer license"),
+        ):
+            if installed.exists():
+                candidates = [app / "Contents/Resources/shell" / relative
+                              for app in (self.app, self.bundle)]
+                if not installed.is_file() or not any(
+                    candidate.is_file() and digest(candidate) == digest(installed)
+                    for candidate in candidates
+                ):
+                    raise ValueError(f"The installed Codex {label} has local changes; retained for review.")
         validate_automation_tree(bundled_automation)
         subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(self.bundle)], check=True, capture_output=True)
         self.source_provenance = read_source_provenance(
@@ -672,6 +690,8 @@ class Installer:
                 "Contents/Resources/CODEX_GLOBAL_INSTRUCTIONS.md",
                 "Contents/Resources/shell/focus_queue_codex_entry.py",
                 "Contents/Resources/shell/focus_queue_usage_wrapper.sh",
+                "Contents/Resources/shell/focus_queue_codex_bar.js",
+                "Contents/Resources/shell/AgentUsageBar-LICENSE.txt",
                 "Contents/Resources/automation",
             ):
                 validate_bundle_member(staged_app, staged_app / relative)
@@ -699,6 +719,10 @@ class Installer:
             original_entry = self.codex_entry.read_bytes() if self.codex_entry.exists() else None
             original_usage_wrapper = (self.codex_usage_wrapper.read_bytes()
                                       if self.codex_usage_wrapper.exists() else None)
+            original_usage_renderer = (self.codex_usage_renderer.read_bytes()
+                                       if self.codex_usage_renderer.exists() else None)
+            original_usage_license = (self.codex_usage_license.read_bytes()
+                                      if self.codex_usage_license.exists() else None)
             if original_entry is not None:
                 staged_entry = stage / "codex-entry.py"
                 shutil.copy2(staged_app / "Contents/Resources/shell/focus_queue_codex_entry.py", staged_entry)
@@ -710,6 +734,22 @@ class Installer:
                     self.codex_usage_wrapper.stat().st_mode & 0o777
                     if self.codex_usage_wrapper.exists() else 0o600)
                 planned.append((staged_usage_wrapper, self.codex_usage_wrapper))
+                staged_usage_renderer = stage / "codex-usage-renderer.js"
+                shutil.copy2(
+                    staged_app / "Contents/Resources/shell/focus_queue_codex_bar.js",
+                    staged_usage_renderer)
+                staged_usage_renderer.chmod(
+                    self.codex_usage_renderer.stat().st_mode & 0o777
+                    if self.codex_usage_renderer.exists() else 0o600)
+                planned.append((staged_usage_renderer, self.codex_usage_renderer))
+                staged_usage_license = stage / "codex-usage-license.txt"
+                shutil.copy2(
+                    staged_app / "Contents/Resources/shell/AgentUsageBar-LICENSE.txt",
+                    staged_usage_license)
+                staged_usage_license.chmod(
+                    self.codex_usage_license.stat().st_mode & 0o777
+                    if self.codex_usage_license.exists() else 0o600)
+                planned.append((staged_usage_license, self.codex_usage_license))
             if self.login:
                 staged_agent = stage / self.agent.name
                 staged_agent.write_bytes(plistlib.dumps({"Label": IDENTIFIER,
@@ -733,10 +773,13 @@ class Installer:
                                **({"digestAlgorithm": TREE_DIGEST_ALGORITHM}
                                   if target == self.automation else {})}
                               for source, target in planned if target not in {
-                                  self.codex_prompt, self.codex_entry, self.codex_usage_wrapper}],
+                                  self.codex_prompt, self.codex_entry, self.codex_usage_wrapper,
+                                  self.codex_usage_renderer, self.codex_usage_license}],
                 "managedSettings": [{"path": str(self.codex_prompt), "ownership": "delimited-block-only"},
                     {"path": str(self.codex_entry), "ownership": "configured-entry-only"},
-                    {"path": str(self.codex_usage_wrapper), "ownership": "configured-entry-support"}],
+                    {"path": str(self.codex_usage_wrapper), "ownership": "configured-entry-support"},
+                    {"path": str(self.codex_usage_renderer), "ownership": "configured-entry-support"},
+                    {"path": str(self.codex_usage_license), "ownership": "configured-entry-support"}],
                 "launchAtLogin": self.login, "desktopShortcut": self.shortcut}
             staged_manifest = stage / "manifest.json"
             staged_manifest.write_text(json.dumps(manifest, indent=2) + "\n")
@@ -766,6 +809,14 @@ class Installer:
                     target.read_bytes() if target.exists() else None
                 ) != original_usage_wrapper:
                     raise ValueError("Codex usage adapter changed during installation; retry to preserve the newer edit.")
+                if target == self.codex_usage_renderer and (
+                    target.read_bytes() if target.exists() else None
+                ) != original_usage_renderer:
+                    raise ValueError("Codex usage renderer changed during installation; retry to preserve the newer edit.")
+                if target == self.codex_usage_license and (
+                    target.read_bytes() if target.exists() else None
+                ) != original_usage_license:
+                    raise ValueError("Codex usage license changed during installation; retry to preserve the newer edit.")
                 if source is not None:
                     target.parent.mkdir(parents=True, exist_ok=True)
                 previous = backup / str(index)

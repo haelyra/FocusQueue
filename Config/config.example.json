@@ -20,6 +20,7 @@
   ],
   "defaultPlacement": "upper-right",
   "refreshIntervalSeconds": 2,
+  "agentUsageBarEnabled": true,
   "dailyRoutines": [
     {
       "id": "daily-review",

@@ -547,6 +547,25 @@ struct QueueViewModelTests {
     #expect(restarted.config.automaticAgentRouting)
   }
 
+  @Test("Agent usage bar defaults on and its Settings value persists")
+  func agentUsageBarSetting() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(model.config.agentUsageBarEnabled)
+
+    model.setAgentUsageBarEnabled(false)
+    #expect(!model.config.agentUsageBarEnabled)
+    try await eventually {
+      let saved = try JSONDecoder().decode(
+        AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+      return !saved.agentUsageBarEnabled
+    }
+
+    let restarted = await fixture.model(agent: ControlledQueueAgent())
+    #expect(!restarted.config.agentUsageBarEnabled)
+  }
+
   @Test("App and agent share queue moves across refreshes, state saves, and restarts")
   func sharedQueueOrder() async throws {
     let fixture = try await Fixture()

@@ -218,6 +218,69 @@ struct TmuxOrganizerTests {
     #expect(TmuxController.ownsSession(name: "fq-task-ecc-1", taskID: "ECC-1", subtaskID: "agent"))
   }
 
+  @Test("Task presentation shows a title banner and toggles exact-agent usage rows",
+    .enabled(if: SetupEnvironment.executable("tmux") != nil
+      && SetupEnvironment.executable("node") != nil))
+  func taskPresentation() async throws {
+    let executable = try #require(SetupEnvironment.executable("tmux"))
+    let node = try #require(SetupEnvironment.executable("node"))
+    let server = "fq-presentation-test-" + UUID().uuidString.lowercased()
+    let controller = TmuxController(serverName: server)
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("fq-presentation-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer {
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: executable)
+      process.arguments = ["-L", server, "kill-server"]
+      process.standardError = FileHandle.nullDevice
+      try? process.run(); process.waitUntilExit()
+      try? FileManager.default.removeItem(at: root)
+    }
+    let context = root.appendingPathComponent("context.json")
+    try JSONSerialization.data(withJSONObject: [
+      "ticketID":"ECC-035", "title":"Usage task",
+      "subtasks":[["id":"agent-one"]],
+    ]).write(to: context)
+    let renderer = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+      .deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Scripts/focus_queue_codex_bar.js")
+    let reference = try await controller.startAgent(
+      taskID: "ECC-035", subtaskID: "agent-one", taskTitle: "Usage task",
+      directory: root.path, command: ["/bin/sleep", "30"], executable: executable)
+
+    try await controller.configureTaskPresentation(
+      taskID: "ECC-035", taskTitle: "Usage task", contextPath: context.path,
+      rendererPath: renderer.path, nodePath: node, usageBarEnabled: true,
+      executable: executable)
+    let runner = FoundationProcessRunner()
+    func output(_ arguments: [String]) async throws -> String {
+      let result = try await runner.run(.init(
+        executable: executable, arguments: ["-L", server] + arguments,
+        environment: ["TMUX_TMPDIR":"/tmp"]))
+      #expect(result.succeeded, "\(result.standardError)")
+      return result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    #expect(try await output(["show-options", "-v", "-t", reference.name, "status"]) == "4")
+    #expect(try await output(["show-window-options", "-v", "-t", reference.paneID,
+      "pane-border-status"]) == "top")
+    #expect(try await output(["show-options", "-qv", "-t", reference.name,
+      "@focus-queue-task-title"]) == "Usage task")
+    for line in 1...3 {
+      let format = try await output([
+        "show-options", "-v", "-t", reference.name, "status-format[\(line)]"])
+      #expect(format.contains(renderer.path))
+      #expect(format.contains(context.path))
+      #expect(format.contains("#{@focus-queue-agent}"))
+      #expect(!format.contains("$FOCUS_QUEUE_USAGE_BAR_PATH"))
+    }
+    try await controller.configureTaskPresentation(
+      taskID: "ECC-035", taskTitle: "Usage task", contextPath: context.path,
+      rendererPath: renderer.path, nodePath: node, usageBarEnabled: false,
+      executable: executable)
+    #expect(try await output(["show-options", "-v", "-t", reference.name, "status"]) == "on")
+  }
+
   @Test("Live agents share one task session across four-pane window tabs and survive removal",
     .enabled(if: SetupEnvironment.executable("tmux") != nil))
   func liveTaskLayout() async throws {
@@ -246,7 +309,8 @@ struct TmuxOrganizerTests {
     #expect(try await controller.panes(name: name, executable: executable).isEmpty)
     var references: [TmuxSessionReference] = []
     for index in 0..<9 {
-      references.append(try await controller.startAgent(taskID: taskID, subtaskID: "agent-\(index)",
+      references.append(try await controller.startAgent(
+        taskID: taskID, subtaskID: "agent-\(index)", taskTitle: "Task banner title",
         directory: "/tmp", command: ["/bin/sleep", "90"], executable: executable))
     }
     #expect(Set(references.map(\.name)) == [name])
@@ -289,7 +353,18 @@ struct TmuxOrganizerTests {
       arguments: ["-L", server, "list-windows", "-t", "=\(name):", "-F", "#{pane-border-status}"],
       environment: ["TMUX_TMPDIR": "/tmp"]))
     #expect(plainWindows.succeeded)
-    #expect(plainWindows.standardOutput.split(separator: "\n").allSatisfy { $0 == "off" })
+    #expect(plainWindows.standardOutput.split(separator: "\n").allSatisfy { $0 == "top" })
+    let borderFormats = try await runner.run(.init(executable: executable,
+      arguments: ["-L", server, "list-windows", "-t", "=\(name):", "-F", "#{pane-border-format}"],
+      environment: ["TMUX_TMPDIR": "/tmp"]))
+    #expect(borderFormats.succeeded)
+    #expect(borderFormats.standardOutput.split(separator: "\n").allSatisfy {
+      $0.contains("#{@focus-queue-task-title}")
+    })
+    let banner = try await runner.run(.init(executable: executable,
+      arguments: ["-L", server, "show-options", "-qv", "-t", name, "@focus-queue-task-title"],
+      environment: ["TMUX_TMPDIR": "/tmp"]))
+    #expect(banner.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "Task banner title")
     let selected = try await controller.inspect(name: name, executable: executable)
     #expect(selected == references[8])
     for reference in references { #expect(try await controller.verify(reference) == reference) }

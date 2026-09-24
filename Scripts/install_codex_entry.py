@@ -153,6 +153,8 @@ def plan(home, usage_wrapper, flags, *, source_directory=None, install_hooks=Fal
     helper = home / ".local/bin/focus-queue-session"
     entry = directory / "focus_queue_codex_entry.py"
     managed_usage_wrapper = directory / "focus_queue_usage_wrapper.sh"
+    managed_usage_renderer = directory / "focus_queue_codex_bar.js"
+    managed_usage_license = directory / "AgentUsageBar-LICENSE.txt"
     shell = directory / "codex.zsh"
     zshrc = home / ".zshrc"
     hook_file = home / ".codex/hooks.json"
@@ -161,8 +163,10 @@ def plan(home, usage_wrapper, flags, *, source_directory=None, install_hooks=Fal
     if "--dangerously-bypass-hook-trust" in flags:
         raise ValueError("This integration uses native /hooks review and cannot bypass hook trust.")
     require_task_session_helper(helper, home)
-    destinations = ((entry, managed_usage_wrapper, shell, zshrc, hook_file) if install_hooks
-                    else (entry, managed_usage_wrapper, shell, zshrc))
+    destinations = ((entry, managed_usage_wrapper, managed_usage_renderer,
+                     managed_usage_license, shell, zshrc, hook_file) if install_hooks
+                    else (entry, managed_usage_wrapper, managed_usage_renderer,
+                          managed_usage_license, shell, zshrc))
     for path in destinations:
         safe_destination(path, home)
     command = ["/usr/bin/python3", str(entry), "--usage-wrapper", str(usage_wrapper)]
@@ -176,6 +180,8 @@ def plan(home, usage_wrapper, flags, *, source_directory=None, install_hooks=Fal
     files = {
         entry: (source_directory / "focus_queue_codex_entry.py").read_bytes(),
         managed_usage_wrapper: (source_directory / "focus_queue_usage_wrapper.sh").read_bytes(),
+        managed_usage_renderer: (source_directory / "focus_queue_codex_bar.js").read_bytes(),
+        managed_usage_license: (source_directory / "AgentUsageBar-LICENSE.txt").read_bytes(),
         shell: shell_source.encode(),
         zshrc: merge_shell(zshrc.read_text() if zshrc.exists() else "", shell).encode(),
     }

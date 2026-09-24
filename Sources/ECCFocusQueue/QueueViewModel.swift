@@ -224,6 +224,7 @@ final class QueueViewModel {
   @ObservationIgnored private var lastActivityCheck = Date()
   @ObservationIgnored private let agentActivityObserver = AgentActivityObserver()
   @ObservationIgnored private var lastIdentityRefresh: Date?
+  @ObservationIgnored private var lastManagedPresentationRefresh: Date?
   @ObservationIgnored private var subtaskEditTokens: [String: UUID] = [:]
   @ObservationIgnored private var subtaskEditTasks: [String: Task<Void, Never>] = [:]
   @ObservationIgnored private var planPresentationID = UUID()
@@ -1232,6 +1233,15 @@ final class QueueViewModel {
     for ticketID in snapshot.contexts.keys where actionMessages[ticketID]?.hasPrefix("Task context:") == true {
       actionMessages[ticketID] = nil
     }
+    if lastManagedPresentationRefresh == nil
+      || Date().timeIntervalSince(lastManagedPresentationRefresh!) >= 60 {
+      lastManagedPresentationRefresh = Date()
+      for context in taskContexts.values where context.subtasks.contains(where: { $0.tmux != nil }) {
+        try? await taskAgentLauncher.configureManagedPresentation(
+          context: context, supportDirectory: paths.supportDirectory,
+          usageBarEnabled: config.agentUsageBarEnabled)
+      }
+    }
     for ticket in tickets {
       guard snapshot.errors[ticket.id] == nil, let context = taskContexts[ticket.id] else { continue }
       if ticket.isCompleted, cleanupSignatures[ticket.id] != context.updatedAt {
@@ -1873,7 +1883,8 @@ final class QueueViewModel {
             throw TmuxError.unavailable("Configure tmux or change the agent runtime before reopening.")
           }
           let runtime = try await taskAgentLauncher.startManagedSession(context: context, subtask: assignment,
-            supportDirectory: paths.supportDirectory, tmuxExecutable: executable)
+            supportDirectory: paths.supportDirectory, tmuxExecutable: executable,
+            usageBarEnabled: config.agentUsageBarEnabled)
           taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
             ticketID: ticket.id, subtaskID: assignment.id, tmux: runtime)
           assignment.tmux = runtime
@@ -2271,7 +2282,8 @@ final class QueueViewModel {
             details: ["tmuxName": expectedName, "executable": tmuxExecutable])
           let tmux = try await taskAgentLauncher.startManagedSession(
             context: context, subtask: subtask, supportDirectory: paths.supportDirectory,
-            includePrompt: includePrompt, tmuxExecutable: tmuxExecutable)
+            includePrompt: includePrompt, tmuxExecutable: tmuxExecutable,
+            usageBarEnabled: config.agentUsageBarEnabled)
           runtimeStarted = true
           phase = "saving the confirmed tmux process"
           taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
@@ -3655,6 +3667,20 @@ final class QueueViewModel {
   func setAutoExitCompletedAgents(_ enabled: Bool) {
     config.autoExitCompletedAgents = enabled
     persistConfiguration()
+  }
+
+  func setAgentUsageBarEnabled(_ enabled: Bool) {
+    guard config.agentUsageBarEnabled != enabled else { return }
+    config.agentUsageBarEnabled = enabled
+    persistConfiguration()
+    let contexts = Array(taskContexts.values)
+    let support = paths.supportDirectory
+    Task { [taskAgentLauncher] in
+      for context in contexts where context.subtasks.contains(where: { $0.tmux != nil }) {
+        try? await taskAgentLauncher.configureManagedPresentation(
+          context: context, supportDirectory: support, usageBarEnabled: enabled)
+      }
+    }
   }
 
   private func persistConfiguration() {

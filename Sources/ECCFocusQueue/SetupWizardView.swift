@@ -105,6 +105,9 @@ struct SetupWizardView: View {
       Toggle("Automatically exit completed agents", isOn: $draft.autoExitCompletedAgents)
       Text("Keep the terminal open with a completion message and a command to resume the conversation. Turn off to keep completed agents running.")
         .font(.caption).foregroundStyle(.secondary)
+      Toggle("Show agent usage bar", isOn: $draft.agentUsageBarEnabled)
+      Text("Show three live Codex usage and context rows beneath managed task sessions. The active pane selects the agent whose context is displayed.")
+        .font(.caption).foregroundStyle(.secondary)
       DisclosureGroup("Connect from another location") {
         VStack(alignment: .leading, spacing: 10) {
           Text("Connect both devices to your tailnet. On the host Mac, configure Remote Login for your account and verify its SSH host key from your other device. The standard Tailscale macOS app uses ordinary SSH over the private network.")

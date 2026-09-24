@@ -62,6 +62,8 @@ class InstallerTests(unittest.TestCase):
         shell.mkdir()
         (shell / "focus_queue_codex_entry.py").write_bytes(b"entry:" + content)
         (shell / "focus_queue_usage_wrapper.sh").write_bytes(b"wrapper:" + content)
+        (shell / "focus_queue_codex_bar.js").write_bytes(b"renderer:" + content)
+        (shell / "AgentUsageBar-LICENSE.txt").write_bytes(b"license:" + content)
         automation = path / "Contents/Resources/automation"
         for relative in self.automation_files:
             destination = automation / relative
@@ -417,6 +419,8 @@ class InstallerTests(unittest.TestCase):
         self.installer.install()
         self.assertEqual(entry.read_bytes(), b"entry:new executable")
         self.assertEqual(usage_wrapper.read_bytes(), b"wrapper:new executable")
+        self.assertEqual(self.installer.codex_usage_renderer.read_bytes(), b"renderer:new executable")
+        self.assertEqual(self.installer.codex_usage_license.read_bytes(), b"license:new executable")
         self.assertEqual(shell.read_text(), "my configured aliases and flags")
         installed_prompt = prompt.read_bytes()
         MODULE.uninstall(self.home, stop=False)

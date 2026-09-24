@@ -8,11 +8,19 @@ struct AgentCompletionTerminalTests {
   func configurationMigration() throws {
     var config = AppConfiguration.eccDefault()
     #expect(config.autoExitCompletedAgents)
+    #expect(config.agentUsageBarEnabled)
     var old = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(config)) as? [String: Any])
     old.removeValue(forKey: "autoExitCompletedAgents")
-    #expect(try JSONDecoder().decode(AppConfiguration.self, from: JSONSerialization.data(withJSONObject: old)).autoExitCompletedAgents)
+    old.removeValue(forKey: "agentUsageBarEnabled")
+    let migrated = try JSONDecoder().decode(
+      AppConfiguration.self, from: JSONSerialization.data(withJSONObject: old))
+    #expect(migrated.autoExitCompletedAgents)
+    #expect(migrated.agentUsageBarEnabled)
     config.autoExitCompletedAgents = false
-    #expect(try !JSONDecoder().decode(AppConfiguration.self, from: JSONEncoder().encode(config)).autoExitCompletedAgents)
+    config.agentUsageBarEnabled = false
+    let saved = try JSONDecoder().decode(AppConfiguration.self, from: JSONEncoder().encode(config))
+    #expect(!saved.autoExitCompletedAgents)
+    #expect(!saved.agentUsageBarEnabled)
   }
 
   @Test("Resume commands preserve the exact provider UUID and safely quote workspaces")

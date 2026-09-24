@@ -96,18 +96,24 @@ func liveManagedProviderSanity() async throws {
       let statusRows = try await fixture.tmux(["show-options", "-v", "-t", reference.name, "status"])
         .trimmingCharacters(in: .whitespacesAndNewlines)
       #expect(statusRows == "4", "The live usage bar must reserve its four tmux status rows")
-      let renderer = try await fixture.tmux([
-        "show-environment", "-t", reference.name, "FOCUS_QUEUE_USAGE_BAR_PATH",
+      let nativeRow = try await fixture.tmux([
+        "show-options", "-v", "-t", reference.name, "status-format[0]",
       ])
-      #expect(renderer.hasPrefix("FOCUS_QUEUE_USAGE_BAR_PATH=") && renderer.hasSuffix("/codex-bar.js"),
-        "The task session must retain the installed usage renderer path")
+      #expect(!nativeRow.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        "The usage rows must preserve native tmux window tabs")
       for line in 1...3 {
         let format = try await fixture.tmux([
           "show-options", "-v", "-t", reference.name, "status-format[\(line)]",
         ])
-        #expect(format.contains("$FOCUS_QUEUE_USAGE_BAR_PATH") && format.contains("--line \(line)"),
-          "Usage row \(line) must render through the installed Codex bar")
+        #expect(format.contains("focus_queue_codex_bar.js")
+          && format.contains("#{@focus-queue-agent}")
+          && format.contains("--context") && format.contains("--line \(line)"),
+          "Usage row \(line) must render the active agent through Focus Queue's bundled bar")
       }
+      let paneBanner = try await fixture.tmux([
+        "show-window-options", "-v", "-t", reference.paneID, "pane-border-status",
+      ])
+      #expect(paneBanner.trimmingCharacters(in: .whitespacesAndNewlines) == "top")
       let persistence = try TmuxPersistence.prepare(executable: fixture.executable,
         serverName: fixture.server, supportDirectory: fixture.support)
       let actualSaveDirectory = try await fixture.tmux(["show-options", "-gqv", "@resurrect-dir"])

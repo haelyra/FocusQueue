@@ -136,6 +136,14 @@ else:
         (self.support / "config.json").unlink()
         self.assertFalse(ENTRY.should_route_automatically("new", True, base, self.support))
 
+    def test_managed_agent_usage_bar_defaults_on_and_respects_opt_out(self):
+        self.support.mkdir(parents=True, exist_ok=True)
+        self.assertTrue(ENTRY.agent_usage_bar_enabled(self.support))
+        (self.support / "config.json").write_text(json.dumps({"agentUsageBarEnabled": False}))
+        self.assertFalse(ENTRY.agent_usage_bar_enabled(self.support))
+        (self.support / "config.json").write_text(json.dumps({"agentUsageBarEnabled": True}))
+        self.assertTrue(ENTRY.agent_usage_bar_enabled(self.support))
+
     def test_explicit_queue_composer_router_bypasses_intake_only_when_unassigned(self):
         base = {"FOCUS_QUEUE_ROUTER":"1", "FOCUS_QUEUE_ROUTER_SOURCE":"queue-composer"}
         self.assertTrue(ENTRY.should_run_explicit_router("new", True, base))
@@ -739,7 +747,7 @@ else:
         home.mkdir()
         self.install_session_helper(home)
         preview = INSTALL.install(home, self.wrapper, ["--yolo"], check=True)
-        self.assertEqual(len(preview["paths"]), 4)
+        self.assertEqual(len(preview["paths"]), 6)
         self.assertFalse((home / ".codex").exists())
         INSTALL.install(home, self.wrapper, ["--yolo"])
         self.assertFalse((home / ".codex").exists())

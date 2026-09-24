@@ -555,7 +555,8 @@ enum SessionRegistrationError: Error, LocalizedError {
             do {
                 runtime = try await launcher.startManagedSession(
                     context: context, subtask: subtask, supportDirectory: root,
-                    includePrompt: true, tmuxExecutable: tmuxExecutable)
+                    includePrompt: true, tmuxExecutable: tmuxExecutable,
+                    usageBarEnabled: configuration.agentUsageBarEnabled)
                 providerStarted = true
             } catch let error as TmuxError where error.mayHaveStarted {
                 providerStarted = true

@@ -236,8 +236,9 @@ extension TmuxController {
     return try await verify(saved)
   }
 
-  public func startAgent(taskID: String, subtaskID: String, directory: String,
-                         command: [String], executable: String) async throws -> TmuxSessionReference {
+  public func startAgent(taskID: String, subtaskID: String, taskTitle: String? = nil,
+                         directory: String, command: [String],
+                         executable: String) async throws -> TmuxSessionReference {
     let name = try Self.taskSessionName(taskID: taskID)
     try Self.validateName(subtaskID)
     var isDirectory: ObjCBool = false
@@ -304,6 +305,10 @@ extension TmuxController {
     // update response is lost, recovery can still prove task ownership.
     do {
       try await checked(executable, ["set-option", "-t", name, "@focus-queue-task", taskID.uppercased()])
+      if let taskTitle {
+        let readable = Self.readableTaskTitle(taskTitle, fallback: taskID.uppercased())
+        try await checked(executable, ["set-option", "-t", name, "@focus-queue-task-title", readable])
+      }
     } catch {
       throw TmuxError.startedButUnconfirmed(name: name, executable: executable, attempts: 1,
         lastDetail: "The launch receipt is retained, but task ownership was not confirmed. \(error.localizedDescription)")
@@ -318,6 +323,7 @@ extension TmuxController {
     }
     try await checked(executable, ["set-option", "-t", name, "mouse", "on"])
     try await checked(executable, ["set-window-option", "-t", paneID, "window-size", "latest"])
+    try? await applyTaskBanner(name: name, paneID: paneID, executable: executable)
     var previous: TmuxSessionReference?
     var stable = 0
     var detail = "The pane process kept changing."
@@ -491,11 +497,66 @@ extension TmuxController {
     _ = try await verify(saved)
     let readable = String(title.filter { !$0.isNewline && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }.prefix(100))
     try await checked(saved.executable, ["set-option", "-p", "-t", saved.paneID, "@focus-queue-label", readable])
-    // Keep tmux presentation plain while retaining internal labels for the app.
-    // The managed usage adapter owns its rows, and tmux's native window list
-    // remains the only other status-line content.
-    try await resetPlainPresentation(
+    try await applyTaskBanner(
       name: saved.name, paneID: saved.paneID, executable: saved.executable)
+  }
+
+  /// Applies the durable task title and active-pane-aware Codex usage rows to
+  /// an existing task session. This repairs sessions launched by an older app
+  /// as soon as the current app reloads their task context.
+  public func configureTaskPresentation(
+    taskID: String, taskTitle: String, contextPath: String,
+    rendererPath: String, nodePath: String, usageBarEnabled: Bool,
+    executable: String
+  ) async throws {
+    let name = try Self.taskSessionName(taskID: taskID)
+    try await requireTaskSessionOwnership(name: name, taskID: taskID, executable: executable)
+    guard contextPath.hasPrefix("/"), rendererPath.hasPrefix("/"), nodePath.hasPrefix("/"),
+      Self.isRegularFile(contextPath), Self.isRegularFile(rendererPath),
+      FileManager.default.isExecutableFile(atPath: nodePath)
+    else { throw TmuxError.unavailable("The managed usage renderer is unavailable.") }
+
+    let readable = Self.readableTaskTitle(taskTitle, fallback: taskID.uppercased())
+    try await checked(executable, ["set-option", "-t", name, "@focus-queue-task-title", readable])
+    let all = try await panes(name: name, executable: executable)
+    for pane in Dictionary(grouping: all, by: \.windowID).values.compactMap(\.first) {
+      try await applyTaskBanner(name: name, paneID: pane.id, executable: executable)
+    }
+
+    let native = try await run(executable, ["show-options", "-gv", "status-format[0]"])
+    let nativeRow = native.succeeded
+      && !native.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      ? native.standardOutput.trimmingCharacters(in: .newlines)
+      : "#[align=left]#{W:#[fg=colour245] #I:#W ,#[bold] #I:#W }"
+    try await checked(executable, ["set-option", "-t", name, "status", usageBarEnabled ? "4" : "on"])
+    try await checked(executable, ["set-option", "-t", name, "status-position", "bottom"])
+    try await checked(executable, ["set-option", "-t", name, "status-interval", "15"])
+    try await checked(executable, ["set-option", "-t", name, "status-style", "bg=default,fg=default"])
+    try await checked(executable, ["set-option", "-t", name, "status-format[0]", nativeRow])
+
+    let node = Self.statusShellQuote(nodePath)
+    let renderer = Self.statusShellQuote(rendererPath)
+    let context = Self.statusShellQuote(contextPath)
+    for line in 1...3 {
+      let format = "#[align=left,bg=default,fg=default]#(USAGE_BAR_GLYPHS=unicode \(node) \(renderer) --tmux --context \(context) --agent \"#{@focus-queue-agent}\" --cwd #{q:pane_current_path} --line \(line))"
+      try await checked(executable, ["set-option", "-t", name, "status-format[\(line)]", format])
+    }
+    try? await reflow(name: name, executable: executable, force: true)
+  }
+
+  private static func readableTaskTitle(_ title: String, fallback: String) -> String {
+    let clean = title.unicodeScalars.map { CharacterSet.controlCharacters.contains($0) ? " " : String($0) }
+      .joined().split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    return String((clean.isEmpty ? fallback : clean).prefix(120))
+  }
+
+  private static func statusShellQuote(_ value: String) -> String {
+    ("'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'")
+      .replacingOccurrences(of: "#", with: "##")
+  }
+
+  private static func isRegularFile(_ path: String) -> Bool {
+    (try? FileManager.default.attributesOfItem(atPath: path)[.type] as? FileAttributeType) == .typeRegular
   }
 
   public func setAutomatic(name: String, executable: String, enabled: Bool) async throws {
@@ -587,8 +648,7 @@ extension TmuxController {
       try await checked(executable, ["rename-window", "-t", anchor.id, label])
       try await checked(executable, ["set-window-option", "-t", anchor.id, "automatic-rename", "off"])
       try await checked(executable, ["set-window-option", "-t", anchor.id, "window-size", "latest"])
-      try await checked(executable, ["set-window-option", "-t", anchor.id, "pane-border-status", "off"])
-      try await checked(executable, ["set-window-option", "-u", "-t", anchor.id, "pane-border-format"])
+      try await applyTaskBanner(name: name, paneID: anchor.id, executable: executable)
     }
     try await checked(executable, ["set-option", "-t", name, "@focus-queue-size", signature])
     if all.contains(where: { $0.id == activePane }) {
@@ -597,13 +657,21 @@ extension TmuxController {
     }
   }
 
-  private func resetPlainPresentation(
+  private func applyTaskBanner(
     name: String, paneID: String, executable: String
   ) async throws {
     try await checked(executable, ["set-option", "-t", name, "status-left", ""])
     try await checked(executable, ["set-option", "-t", name, "status-right", ""])
-    try await checked(executable, ["set-window-option", "-t", paneID, "pane-border-status", "off"])
-    try await checked(executable, ["set-window-option", "-u", "-t", paneID, "pane-border-format"])
+    let title = try await run(executable, ["show-options", "-qv", "-t", name, "@focus-queue-task-title"])
+      .standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+    if title.isEmpty {
+      try await checked(executable, ["set-window-option", "-t", paneID, "pane-border-status", "off"])
+      try await checked(executable, ["set-window-option", "-u", "-t", paneID, "pane-border-format"])
+    } else {
+      try await checked(executable, ["set-window-option", "-t", paneID, "pane-border-status", "top"])
+      try await checked(executable, ["set-window-option", "-t", paneID, "pane-border-format",
+        "#[align=left] #[bold]#{@focus-queue-task-title}#[default] "])
+    }
   }
 }
 

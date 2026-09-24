@@ -50,7 +50,8 @@ public actor TaskAgentLauncher {
   }
 
   public static func command(context: TaskContext, subtask: TaskSubtask, supportDirectory: URL,
-                             includePrompt: Bool = true, shellPath: String? = nil) throws -> [String] {
+                             includePrompt: Bool = true, shellPath: String? = nil,
+                             usageBarEnabled: Bool = true) throws -> [String] {
     guard let directory = (subtask.workspace?.path ?? context.worktreePath), directory.hasPrefix("/") else {
       throw TaskContextError.unsafeWorktree("Choose a task worktree before launching an agent.")
     }
@@ -84,6 +85,7 @@ public actor TaskAgentLauncher {
             "/usr/bin/env", "-u", "FOCUS_QUEUE_ROUTER", "-u", "FOCUS_QUEUE_ROUTER_SOURCE",
             "-u", "FOCUS_QUEUE_ROUTER_CAPABILITY",
             "FOCUS_QUEUE_SUPPORT_DIR=\(supportDirectory.path)",
+            "FOCUS_QUEUE_USAGE_BAR=\(usageBarEnabled ? "on" : "off")",
             "FOCUS_QUEUE_PROVIDER=\(subtask.provider.rawValue)",
             "FOCUS_QUEUE_SUBTASK_ID=\(subtask.id)", "FOCUS_QUEUE_TASK_ID=\(context.ticketID)"]
     focusEnvironment.append("FOCUS_QUEUE_RUNTIME_MODE=\(subtask.runtimeMode?.rawValue ?? "legacy")")
@@ -227,7 +229,8 @@ public actor TaskAgentLauncher {
   /// identity. Callers persist this value before opening any terminal view.
   public func startManagedSession(
     context: TaskContext, subtask: TaskSubtask, supportDirectory: URL,
-    includePrompt: Bool = true, tmuxExecutable: String
+    includePrompt: Bool = true, tmuxExecutable: String,
+    usageBarEnabled: Bool = true
   ) async throws -> TmuxSessionReference {
     if let workspace = subtask.workspace { try await TaskWorktreeManager().validate(workspace) }
     if subtask.tmux != nil, subtask.sessionID == nil {
@@ -235,17 +238,20 @@ public actor TaskAgentLauncher {
     }
     let command = try Self.command(
       context: context, subtask: subtask, supportDirectory: supportDirectory,
-      includePrompt: includePrompt)
+      includePrompt: includePrompt, usageBarEnabled: usageBarEnabled)
     let persistence = FileManager.default.isExecutableFile(atPath: tmuxExecutable)
       ? try TmuxPersistence.prepare(executable: tmuxExecutable, serverName: tmuxServerName,
           supportDirectory: supportDirectory) : nil
     let runtime = TmuxController(runner: runner, serverName: tmuxServerName,
       configurationPath: persistence?.configurationURL.path ?? "/dev/null")
     let reference = try await runtime.startAgent(
-      taskID: context.ticketID, subtaskID: subtask.id,
+      taskID: context.ticketID, subtaskID: subtask.id, taskTitle: context.title,
       directory: (subtask.workspace?.path ?? context.worktreePath)!, command: command,
       executable: tmuxExecutable)
     try? await runtime.label(reference, title: "\(subtask.provider.displayName): \(subtask.title)")
+    try? await configureManagedPresentation(
+      context: context, supportDirectory: supportDirectory,
+      usageBarEnabled: usageBarEnabled, tmuxExecutable: tmuxExecutable)
     if let persistence {
       // Persistence is supplementary. Once the provider is live, a setup
       // warning must never turn success into a retry that can duplicate it.
@@ -259,6 +265,27 @@ public actor TaskAgentLauncher {
         helper: helper, supportDirectory: supportDirectory)
     }
     return reference
+  }
+
+  public func configureManagedPresentation(
+    context: TaskContext, supportDirectory: URL, usageBarEnabled: Bool,
+    tmuxExecutable requestedExecutable: String? = nil
+  ) async throws {
+    guard let executable = requestedExecutable
+      ?? context.subtasks.compactMap(\.tmux).first?.executable else { return }
+    let installed = supportDirectory.appendingPathComponent("shell/focus_queue_codex_bar.js")
+    let bundled = Bundle.main.bundleURL
+      .appendingPathComponent("Contents/Resources/shell/focus_queue_codex_bar.js")
+    guard let renderer = [installed, bundled].first(where: {
+      (try? FileManager.default.attributesOfItem(atPath: $0.path)[.type] as? FileAttributeType)
+        == .typeRegular
+    }), let node = SetupEnvironment.executable("node") else { return }
+    try await TmuxController(runner: runner, serverName: tmuxServerName)
+      .configureTaskPresentation(
+        taskID: context.ticketID, taskTitle: context.title,
+        contextPath: context.contextDirectory.appendingPathComponent("context.json").path,
+        rendererPath: renderer.path, nodePath: node,
+        usageBarEnabled: usageBarEnabled, executable: executable)
   }
 
   /// Starts a terminal-owned provider process and records its transient pane.

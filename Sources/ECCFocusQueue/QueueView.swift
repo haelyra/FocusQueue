@@ -1546,6 +1546,14 @@ private struct QueueSettingsView: View {
               set: { model.setAutoExitCompletedAgents($0) }))
           }
           settingsSection(
+            title: "Agent terminal usage",
+            detail: "Show three live Codex quota and context rows below each managed task window. The values follow the active agent pane."
+          ) {
+            Toggle("Show agent usage bar", isOn: Binding(
+              get: { model.config.agentUsageBarEnabled },
+              set: { model.setAgentUsageBarEnabled($0) }))
+          }
+          settingsSection(
             title: "Appearance", detail: "Dark uses your WezTerm #1A1D23 background color."
           ) {
             Picker("Appearance", selection: appearanceBinding) {

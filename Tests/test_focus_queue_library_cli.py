@@ -39,8 +39,10 @@ class DurableLibraryCLITests(unittest.TestCase):
         return json.loads(result.stdout) if result.stdout else result
 
     def test_agent_activity_and_assignment_associations(self):
-        first = self.command("add", "ECC-401", "codex", "First assignment")
-        second = self.command("add", "ECC-401", "codex", "Second assignment")
+        first = self.command(
+            "add", "ECC-401", "codex", "First assignment", "Exercise the first assignment lifecycle.")
+        second = self.command(
+            "add", "ECC-401", "codex", "Second assignment", "Associate a second assignment.")
         self.command("progress", "ECC-401", first["id"], "working", "Started")
         context = self.command("associate", "ECC-401", first["id"], second["id"])
         record = next(item for item in context["subtasks"] if item["id"] == first["id"])

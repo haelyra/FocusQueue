@@ -16,6 +16,35 @@ import Testing
   #expect(args.contains("/tmp/task with spaces"))
 }
 
+@Test("Assigned workers cannot inherit queue-composer router authority")
+func assignedWorkerClearsRouterEnvironment() async throws {
+  let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+    "assigned-worker-environment-\(UUID().uuidString)")
+  try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  try Data("codex() { /usr/bin/env | /usr/bin/grep '^FOCUS_QUEUE_ROUTER' || true; }\n".utf8)
+    .write(to: root.appendingPathComponent(".zshrc"))
+  let context = TaskContext(
+    ticketID: "ECC-1", title: "Assigned worker", summary: "", successCriteria: "",
+    planPath: root.appendingPathComponent("plan.md").path,
+    worktreePath: root.path, updatedAt: Date())
+  let command = try TaskAgentLauncher.command(
+    context: context,
+    subtask: .init(id: "worker", title: "Do assigned work", runtimeMode: .tmux),
+    supportDirectory: root, shellPath: "/bin/zsh")
+
+  let result = try await FoundationProcessRunner().run(.init(
+    executable: try #require(command.first), arguments: Array(command.dropFirst()),
+    environment: [
+      "ZDOTDIR": root.path,
+      "FOCUS_QUEUE_ROUTER": "1",
+      "FOCUS_QUEUE_ROUTER_SOURCE": "queue-composer",
+    ], timeoutSeconds: 10))
+
+  #expect(result.succeeded, "Assigned worker launch failed: \(result.standardError)")
+  #expect(result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+}
+
 @Test func subtaskExplanationSurvivesPersistenceAndAppearsInTheAgentPrompt() throws {
   let context = TaskContext(
     ticketID: "ECC-1", title: "Expandable subtask", summary: "", successCriteria: "Checks pass",

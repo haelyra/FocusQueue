@@ -152,6 +152,16 @@ def should_route_automatically(mode, interactive, environment, support):
             and automatic_routing_enabled(support))
 
 
+def should_run_explicit_router(mode, interactive, environment):
+    """A queue-composer router is already explicit and must skip normal intake."""
+    return (mode == "new" and interactive
+            and environment.get("FOCUS_QUEUE_ROUTER") == "1"
+            and environment.get("FOCUS_QUEUE_ROUTER_SOURCE") == "queue-composer"
+            and environment.get("FOCUS_QUEUE_RUNTIME_MODE") not in {"tmux", "terminal"}
+            and not environment.get("FOCUS_QUEUE_TASK_ID")
+            and not environment.get("FOCUS_QUEUE_SUBTASK_ID"))
+
+
 def selected_directory(arguments):
     directory = os.getcwd()
     index = 0
@@ -974,6 +984,8 @@ def main(argv=None):
     if mode == "noninteractive":
         interactive = False
     if not creates_agent:
+        os.execv(command[0], command)
+    if should_run_explicit_router(mode, interactive, os.environ):
         os.execv(command[0], command)
     support = support_directory(os.environ)
     if should_route_automatically(mode, interactive, os.environ, support):

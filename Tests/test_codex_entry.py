@@ -136,6 +136,18 @@ else:
         (self.support / "config.json").unlink()
         self.assertFalse(ENTRY.should_route_automatically("new", True, base, self.support))
 
+    def test_explicit_queue_composer_router_bypasses_intake_only_when_unassigned(self):
+        base = {"FOCUS_QUEUE_ROUTER":"1", "FOCUS_QUEUE_ROUTER_SOURCE":"queue-composer"}
+        self.assertTrue(ENTRY.should_run_explicit_router("new", True, base))
+        self.assertFalse(ENTRY.should_run_explicit_router("resume", True, base))
+        self.assertFalse(ENTRY.should_run_explicit_router("new", False, base))
+        self.assertFalse(ENTRY.should_run_explicit_router(
+            "new", True, {**base, "FOCUS_QUEUE_TASK_ID":"ECC-035"}))
+        self.assertFalse(ENTRY.should_run_explicit_router(
+            "new", True, {**base, "FOCUS_QUEUE_RUNTIME_MODE":"tmux"}))
+        self.assertFalse(ENTRY.should_run_explicit_router(
+            "new", True, {**base, "FOCUS_QUEUE_ROUTER_SOURCE":"unknown"}))
+
     def test_resume_uses_exact_saved_workspace_without_task_environment(self):
         saved = self.root / "assigned"
         saved.mkdir()

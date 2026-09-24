@@ -54,6 +54,95 @@ struct AgentRoutingTests {
         }
     }
 
+    @Test("An explicit queue composer route remains available when shell interception is disabled")
+    func explicitComposerRoute() async throws {
+        let fixture = try await RoutingFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        var configuration = fixture.configuration
+        configuration.automaticAgentRouting = false
+        let objective = "Add a router prompt above the focus queue"
+        let capability = UUID().uuidString.lowercased()
+        try QueueRouterRuntimeStore(root: fixture.support).save(try .init(
+            tmuxName: "fq-router-test", tmuxExecutable: "/mock/tmux", startedAt: Date(),
+            capability: capability,
+            objectiveSHA256: AgentStartupReceipt.promptDigest(objective)))
+
+        let packet = try await AgentRouteCoordinator(root: fixture.support).inspect(
+            .init(
+                prompt: objective,
+                provider: .codex,
+                source: .init(cwd: fixture.repository.path, tmuxName: "fq-router-test"),
+                origin: .queueComposer, composerCapability: capability),
+            configuration: configuration)
+
+        #expect(packet.status == .ready)
+        #expect(packet.automaticRoutingEnabled == false)
+        let intent = try #require(try AgentRouteStore(root: fixture.support).load(routeID: packet.routeID))
+        #expect(intent.origin == .queueComposer)
+        #expect(intent.composerCapability == capability)
+        #expect(intent.allowsRouting(automaticAgentRouting: false))
+        await #expect(throws: TaskContextError.self) {
+            try await AgentRouteCoordinator(root: fixture.support).inspect(
+                .init(
+                    prompt: objective, provider: .codex,
+                    source: .init(cwd: fixture.repository.path, tmuxName: "fq-router-test"),
+                    origin: .queueComposer, composerCapability: capability),
+                configuration: configuration)
+        }
+    }
+
+    @Test("A failed composer inspection releases its one-use claim for one safe retry")
+    func composerInspectionFailureReleasesClaim() async throws {
+        let fixture = try await RoutingFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let objective = "Retry inspection after a damaged dashboard"
+        let capability = UUID().uuidString.lowercased()
+        try QueueRouterRuntimeStore(root: fixture.support).save(try .init(
+            tmuxName: "fq-router-retry", tmuxExecutable: "/mock/tmux", startedAt: Date(),
+            capability: capability,
+            objectiveSHA256: AgentStartupReceipt.promptDigest(objective)))
+        let dashboard = try Data(contentsOf: fixture.dashboard)
+        try Data("not-json".utf8).write(to: fixture.dashboard, options: .atomic)
+        let request = AgentRouteInspectionRequest(
+            prompt: objective, provider: .codex,
+            source: .init(cwd: fixture.repository.path, tmuxName: "fq-router-retry"),
+            origin: .queueComposer, composerCapability: capability)
+
+        await #expect(throws: Error.self) {
+            try await AgentRouteCoordinator(root: fixture.support).inspect(
+                request, configuration: fixture.configuration)
+        }
+        #expect(try QueueRouterRuntimeStore(root: fixture.support).load()?.claimedRouteID == nil)
+        try dashboard.write(to: fixture.dashboard, options: .atomic)
+        let inspection = try await AgentRouteCoordinator(root: fixture.support).inspect(
+            request, configuration: fixture.configuration)
+        #expect(inspection.status == .ready)
+        #expect(try QueueRouterRuntimeStore(root: fixture.support).load()?.claimedRouteID
+            == inspection.routeID)
+    }
+
+    @Test("Legacy route intents remain governed by the automatic routing preference")
+    func legacyRouteOrigin() throws {
+        let routeID = UUID().uuidString.lowercased()
+        let legacy = """
+        {
+          "schemaVersion": 1,
+          "routeID": "\(routeID)",
+          "prompt": "Legacy route",
+          "provider": "codex",
+          "source": {"cwd": "/repo"},
+          "createdAt": "2026-09-23T12:00:00Z"
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let intent = try decoder.decode(AgentRouteIntent.self, from: Data(legacy.utf8))
+
+        #expect(intent.origin == .automaticShell)
+        #expect(!intent.allowsRouting(automaticAgentRouting: false))
+        #expect(intent.allowsRouting(automaticAgentRouting: true))
+    }
+
     @Test("Existing task routing trusts its unique dashboard project instead of its ID prefix")
     func dashboardOwnsTaskPlacement() async throws {
         let fixture = try await RoutingFixture()
@@ -182,6 +271,7 @@ struct AgentRoutingTests {
             workspace: workspace, runtime: .init(
                 mode: .tmux, tmuxExecutable: "/opt/homebrew/bin/tmux",
                 tmuxServerName: "focus-queue", tmuxName: "fq-task-foc-1",
+                tmuxServerPID: 101, tmuxCreatedAt: 102,
                 tmuxPaneID: "%3", tmuxPanePID: 111, tty: "/dev/ttys003",
                 terminalApplication: "Terminal", terminalPaneID: nil, terminalSocketPath: nil,
                 attachCommand: ["tmux", "-L", "focus-queue", "attach", "-t", "fq-task-foc-1"]),
@@ -192,18 +282,62 @@ struct AgentRoutingTests {
         #expect(try String(contentsOf: url).contains("Make exact recovery deterministic"))
         #expect(!String(data: try Data(contentsOf: url), encoding: .utf8)!.contains("fullInitialPrompt"))
 
+        try store.reserveProviderSession(
+            taskID: "FOC-1", subtaskID: "a1",
+            providerSessionID: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+        let reservedLoaded = try store.load(taskID: "FOC-1", subtaskID: "a1")
+        let reserved = try #require(reservedLoaded)
+        #expect(reserved.status == .launched)
+        #expect(reserved.providerSessionID == nil)
+        #expect(reserved.reservedProviderSessionID
+            == "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+        #expect(throws: TaskContextError.self) {
+            try store.reserveProviderSession(
+                taskID: "FOC-1", subtaskID: "a1",
+                providerSessionID: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff")
+        }
         try store.register(
             taskID: "FOC-1", subtaskID: "a1",
             providerSessionID: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+        #expect(throws: TaskContextError.self) {
+            try store.completeHandoff(
+                taskID: "FOC-1", subtaskID: "a1",
+                expectedSessionID: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+        }
+        try store.markOrchestrationPrepared(taskID: "FOC-1", subtaskID: "a1")
+        DispatchQueue.concurrentPerform(iterations: 100) { index in
+            if index.isMultiple(of: 2) {
+                try? store.completeHandoff(
+                    taskID: "FOC-1", subtaskID: "a1",
+                    expectedSessionID: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+            } else {
+                try? store.register(
+                    taskID: "FOC-1", subtaskID: "a1",
+                    providerSessionID: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+            }
+        }
         let loaded = try store.load(taskID: "FOC-1", subtaskID: "a1")
         let registered = try #require(loaded)
         #expect(registered.status == .registered)
+        #expect(registered.orchestrationPreparedAt != nil)
+        #expect(registered.handoffCompletedAt != nil)
         #expect(registered.providerSessionID == "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
         #expect(registered.projectID == "focus")
         #expect(registered.taskTitle == "Exact recall")
         #expect(registered.providerResumeCommand?.prefix(3) == ["codex", "resume", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"])
         #expect(registered.runtime?.attachCommand == receipt.runtime?.attachCommand)
         #expect(registered.context == context)
+        #expect(throws: TaskContextError.self) {
+            try store.register(
+                taskID: "FOC-1", subtaskID: "a1",
+                providerSessionID: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff")
+        }
+        try store.save(receipt)
+        let monotonicLoaded = try store.load(taskID: "FOC-1", subtaskID: "a1")
+        let monotonic = try #require(monotonicLoaded)
+        #expect(monotonic.status == .registered)
+        #expect(monotonic.providerSessionID == registered.providerSessionID)
+        #expect(monotonic.handoffCompletedAt == registered.handoffCompletedAt)
         #expect(AgentStartupReceipt.promptDigest("abc")
             == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
         #expect(throws: TaskContextError.self) {

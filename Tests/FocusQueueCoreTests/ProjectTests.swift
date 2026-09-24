@@ -63,6 +63,35 @@ struct ProjectTests {
         #expect(decoded.tickets[1].summary == "New")
     }
 
+    @Test func routedTaskCreationIsIdempotent() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("dashboard.json")
+        try Data(#"{"tickets":[]}"#.utf8).write(to: path)
+        let store = ProjectTaskStore(dashboardURL: path, supportDirectory: root)
+        let project = ProjectDefinition(
+            id: "focus", name: "Focus Queue", taskPrefix: "FOC", repositoryPath: root.path)
+        let routeID = "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE"
+
+        let first = try store.create(
+            title: "First", summary: "Original objective", project: project, routeID: routeID)
+        let replay = try store.create(
+            title: "Duplicate", summary: "Should not be created", project: project,
+            routeID: routeID.lowercased())
+
+        #expect(first == "FOC-001")
+        #expect(replay == first)
+        #expect(try store.taskID(forRoute: routeID) == first)
+        let dashboard = try JSONDecoder().decode(
+            DashboardDocument.self, from: Data(contentsOf: path))
+        #expect(dashboard.tickets.map(\.id) == [first])
+        let raw = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [String: Any])
+        let tickets = try #require(raw["tickets"] as? [[String: Any]])
+        #expect(tickets.first?["focusQueueRouteID"] as? String == routeID.lowercased())
+    }
+
     @Test func fallbackProjectPrefixAndPlanAreStable() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

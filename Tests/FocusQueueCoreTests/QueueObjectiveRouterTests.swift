@@ -144,6 +144,43 @@ struct QueueObjectiveRouterTests {
     #expect(try store.load() == nil)
   }
 
+  @Test("An authorized composer routes the original objective when its agent paraphrases it")
+  func authorizedComposerUsesOriginalObjective() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "queue-router-authoritative-prompt-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let original = """
+      We need to refine the task description beneath ECC-035.
+      Keep the complete rendered-data workflow context.
+      """
+    let paraphrase = "Refine the ECC-035 task description and rendered-data workflow."
+    let runtime = try QueueRouterRuntime(
+      tmuxName: "fq-router-authoritative", tmuxExecutable: "/mock/tmux",
+      startedAt: Date(), objectiveSHA256: AgentStartupReceipt.promptDigest(original))
+    let store = QueueRouterRuntimeStore(root: root)
+    try store.save(runtime)
+    var stored = try #require(
+      JSONSerialization.jsonObject(with: Data(contentsOf: store.url)) as? [String: Any])
+    stored["objective"] = original
+    try JSONSerialization.data(withJSONObject: stored, options: [.prettyPrinted, .sortedKeys])
+      .write(to: store.url, options: .atomic)
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o600], ofItemAtPath: store.url.path)
+    var configuration = SetupEnvironment.starter(supportDirectory: root)
+    configuration.projects = []
+
+    let inspection = try await AgentRouteCoordinator(root: root).inspect(
+      .init(
+        prompt: paraphrase, provider: .codex,
+        source: .init(cwd: root.path, tmuxName: runtime.tmuxName),
+        origin: .queueComposer, composerCapability: runtime.capability),
+      configuration: configuration)
+
+    let intent = try #require(try AgentRouteStore(root: root).load(routeID: inspection.routeID))
+    #expect(intent.prompt == original)
+    #expect(intent.prompt != paraphrase)
+  }
+
   @Test("An unconfirmed caller cannot recreate a missing active-router record")
   func missingUnconfirmedRecoveryIsRejected() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(

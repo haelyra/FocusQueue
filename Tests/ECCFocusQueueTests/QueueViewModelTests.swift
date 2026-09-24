@@ -9,6 +9,39 @@ import Darwin
 @Suite("Queue app state integration")
 @MainActor
 struct QueueViewModelTests {
+  @Test("Shift Return inserts a newline while unmodified Return submits the router objective")
+  func routerComposerKeyboardSemantics() {
+    #expect(RouterComposerKeyboard.action(shiftPressed: true) == .insertNewline)
+    #expect(RouterComposerKeyboard.action(shiftPressed: false) == .submit)
+  }
+
+  @Test("Cancelling within the undo window restores the exact draft and never launches a router")
+  func cancelRouterObjectiveWithinUndoWindow() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    var configuration = try JSONDecoder().decode(
+      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    configuration.projects[0].repositoryPath = fixture.root.path
+    configuration.tmuxExecutable = "/usr/bin/true"
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
+    let router = ControlledObjectiveRouter(outcome: .registered(
+      routeID: "must-not-launch", taskID: "ECC-101", subtaskID: "agent-one"))
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(), objectiveRouter: router,
+      routerUndoWindowSeconds: 0.2)
+    let draft = "First line\nSecond line with exact spacing  "
+
+    model.routeObjective(draft)
+    #expect(model.canCancelRouterObjective)
+    #expect(model.cancelRouterObjective() == draft)
+    try await Task.sleep(for: .milliseconds(250))
+
+    #expect(await router.launchCount == 0)
+    #expect(!model.isRoutingObjective)
+    #expect(!model.canCancelRouterObjective)
+    #expect(model.routerStatus?.contains("cancelled") == true)
+  }
+
   @Test("A queue objective starts one headless router and clears only after registration")
   func queueObjectiveRouterRegistration() async throws {
     let fixture = try await Fixture()

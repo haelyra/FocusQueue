@@ -4,6 +4,46 @@ import Testing
 
 @Suite("Portable setup and persistent terminals")
 struct SetupAndTmuxTests {
+  @Test("Focus Queue tmux sessions enable mouse scrolling and deep scrollback",
+    .enabled(if: SetupEnvironment.executable("tmux") != nil))
+  func scrollbackDefaults() async throws {
+    let executable = try #require(SetupEnvironment.executable("tmux"))
+    let server = "fq-scroll-\(UUID().uuidString.lowercased())"
+    let runner = FoundationProcessRunner()
+    let controller = TmuxController(
+      runner: runner, serverName: server,
+      confirmationAttempts: 10, confirmationDelayMilliseconds: 10,
+      requiredStableObservations: 1)
+    let reference = try await controller.start(
+      name: "fq-scroll-test", directory: "/tmp",
+      command: ["/bin/sleep", "30"], executable: executable)
+    defer {
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: executable)
+      process.arguments = ["-L", server, "kill-server"]
+      process.environment = ["PATH": "/usr/bin:/bin", "TMUX_TMPDIR": "/tmp"]
+      process.standardOutput = FileHandle.nullDevice
+      process.standardError = FileHandle.nullDevice
+      try? process.run()
+      process.waitUntilExit()
+    }
+
+    let mouse = try await runner.run(.init(
+      executable: executable,
+      arguments: ["-L", server, "show-options", "-gv", "mouse"],
+      environment: ["TMUX_TMPDIR": "/tmp"]))
+    let history = try await runner.run(.init(
+      executable: executable,
+      arguments: ["-L", server, "display-message", "-p", "-t", reference.paneID,
+        "#{history_limit}"],
+      environment: ["TMUX_TMPDIR": "/tmp"]))
+
+    #expect(mouse.succeeded)
+    #expect(mouse.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "on")
+    #expect(history.succeeded)
+    #expect(Int(history.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)) == 50_000)
+  }
+
   @Test("tmux identity is readable across GUI C locale separator behavior", .enabled(if: SetupEnvironment.executable("tmux") != nil))
   func guiLocaleIdentity() async throws {
     let executable = try #require(SetupEnvironment.executable("tmux"))

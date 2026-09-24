@@ -25,6 +25,7 @@ struct QueueView: View {
   @State private var restButtonDropIsTargeted = false
   @State private var restSectionDropIsTargeted = false
   @State private var queueAgentDraft = ""
+  @State private var routerObjectiveDraft = ""
   @State private var taskAgentDrafts: [String: String] = [:]
   @State private var showsTerminals = false
   @State private var showsNewTask = false
@@ -279,6 +280,7 @@ struct QueueView: View {
     VStack(spacing: 10) {
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 10) {
+          routerComposer
           todayFocusSection
 
           if showsMoreTasks {
@@ -288,6 +290,62 @@ struct QueueView: View {
       }.scrollIndicators(.automatic)
 
       if !remainingTickets.isEmpty || !model.visibleRoutines.isEmpty { moreButton }
+    }
+  }
+
+  private var routerComposer: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(spacing: 7) {
+        Image(systemName: "arrow.triangle.branch")
+          .foregroundStyle(Color.accentColor)
+        Text("Router agent").font(.system(size: 13, weight: .semibold))
+        Spacer(minLength: 0)
+        if model.isRoutingObjective { ProgressView().controlSize(.small) }
+      }
+      Text("Describe the outcome. Focus Queue will assign the right task and workspace, then open the agent.")
+        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+      HStack(alignment: .bottom, spacing: 8) {
+        TextField("What do you want to accomplish?", text: $routerObjectiveDraft, axis: .vertical)
+          .textFieldStyle(.roundedBorder)
+          .lineLimit(2...5)
+          .onSubmit { submitRouterObjective() }
+          .accessibilityLabel("Objective for the router agent")
+        Button("Route", systemImage: "arrow.up.circle.fill") { submitRouterObjective() }
+          .buttonStyle(.borderedProminent)
+          .minimumHitTarget()
+          .disabled(
+            model.isRoutingObjective || model.hasRouterRecovery
+              || routerObjectiveDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+          .help("Assign this objective and open its agent")
+      }
+      if let status = model.routerStatus {
+        Text(status)
+          .font(.caption).foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityLabel("Router status: \(status)")
+          .accessibilityAddTraits(.updatesFrequently)
+      }
+      if let recoveryPath = model.routerRecoveryPath {
+        Text(recoveryPath)
+          .font(.system(size: 10, design: .monospaced))
+          .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+          .textSelection(.enabled).help(recoveryPath)
+          .accessibilityLabel("Router recovery locator")
+      }
+      if model.canOpenRouterRecovery {
+        Button("Open router", systemImage: "terminal") { model.openRouterRecovery() }
+          .buttonStyle(.bordered).minimumHitTarget()
+          .help("Open the exact existing router session")
+      }
+    }
+    .padding(12)
+    .notificationSurface(radius: 14)
+  }
+
+  private func submitRouterObjective() {
+    let submitted = routerObjectiveDraft
+    model.routeObjective(submitted) { succeeded in
+      if succeeded, routerObjectiveDraft == submitted { routerObjectiveDraft = "" }
     }
   }
 

@@ -236,30 +236,50 @@ enum SessionRegistrationError: Error, LocalizedError {
                 tmuxName: environment["FOCUS_QUEUE_TMUX_NAME"], tmuxPaneID: environment["TMUX_PANE"],
                 terminalPaneID: environment["WEZTERM_PANE"].flatMap(Int.init),
                 terminalSocketPath: environment["WEZTERM_UNIX_SOCKET"])
+            let isQueueComposer = environment["FOCUS_QUEUE_ROUTER"] == "1"
+                && environment["FOCUS_QUEUE_ROUTER_SOURCE"] == "queue-composer"
             try emit(try await AgentRouteCoordinator(root: root).inspect(
-                .init(prompt: prompt, provider: provider, source: source),
+                .init(
+                    prompt: prompt, provider: provider, source: source,
+                    origin: isQueueComposer ? .queueComposer : .automaticShell,
+                    composerCapability: isQueueComposer
+                        ? environment["FOCUS_QUEUE_ROUTER_CAPABILITY"] : nil),
                 configuration: configuration))
         case "start":
             try await startRoute(arguments: arguments, root: root,
-                                 configuration: configuration)
+                                 configuration: configuration, environment: environment)
         default: throw SessionRegistrationError.usage
         }
     }
 
     private static func startRoute(arguments: [String], root: URL,
-                                   configuration: AppConfiguration) async throws {
-        guard arguments.count >= 3, UUID(uuidString: arguments[2]) != nil,
-              configuration.automaticAgentRouting else {
-            if !configuration.automaticAgentRouting {
-                throw TaskContextError.commandFailed(
-                    "Automatic agent routing is disabled in Focus Queue settings.")
-            }
+                                   configuration: AppConfiguration,
+                                   environment: [String: String]) async throws {
+        guard arguments.count >= 3, UUID(uuidString: arguments[2]) != nil else {
             throw SessionRegistrationError.usage
         }
         let routeID = arguments[2].lowercased()
         let routeStore = AgentRouteStore(root: root)
-        guard let intent = try routeStore.load(routeID: routeID) else {
+        guard var intent = try routeStore.load(routeID: routeID) else {
             throw TaskContextError.commandFailed("The routing inspection expired or is missing.")
+        }
+        if intent.origin == .queueComposer {
+            guard environment["FOCUS_QUEUE_ROUTER"] == "1",
+                  environment["FOCUS_QUEUE_ROUTER_SOURCE"] == "queue-composer",
+                  let capability = environment["FOCUS_QUEUE_ROUTER_CAPABILITY"],
+                  let expectedCapability = intent.composerCapability,
+                  capability.caseInsensitiveCompare(expectedCapability) == .orderedSame,
+                  let sourceTmuxName = intent.source.tmuxName,
+                  environment["FOCUS_QUEUE_TMUX_NAME"] == sourceTmuxName else {
+                throw TaskContextError.commandFailed(
+                    "This queue-composer route is missing its one-use authorization.")
+            }
+            try QueueRouterRuntimeStore(root: root).authorizeStart(
+                capability: capability, sourceTmuxName: sourceTmuxName, routeID: routeID)
+        }
+        guard intent.allowsRouting(automaticAgentRouting: configuration.automaticAgentRouting) else {
+            throw TaskContextError.commandFailed(
+                "Automatic agent routing is disabled in Focus Queue settings.")
         }
         var options: [String: String] = [:]
         var index = 3
@@ -288,6 +308,9 @@ enum SessionRegistrationError: Error, LocalizedError {
         } else { provider = intent.provider }
         let workspacePolicy: AgentWorkspacePolicy
         switch options["--workspace"] ?? "isolated-snapshot" {
+        case "existing" where intent.origin == .queueComposer:
+            throw TaskContextError.commandFailed(
+                "Queue-composer routes require an isolated workspace.")
         case "existing": workspacePolicy = .existingCheckout
         case "isolated-clean": workspacePolicy = .isolatedCleanCheckout
         case "isolated-snapshot": workspacePolicy = .isolatedCommittedSnapshot
@@ -299,28 +322,64 @@ enum SessionRegistrationError: Error, LocalizedError {
                 "Effort must be low, medium, high, xhigh, or max.")
         }
 
+        let receiptStore = AgentStartupReceiptStore(root: root)
+        var recoveredLaunchRuntime: TmuxSessionReference?
+        var replayReceipt: AgentStartupReceipt?
         if let startedAt = intent.startedAt, let taskID = intent.taskID,
            let subtaskID = intent.subtaskID,
-           let receipt = try AgentStartupReceiptStore(root: root).load(
-            taskID: taskID, subtaskID: subtaskID) {
+           let receipt = try receiptStore.load(taskID: taskID, subtaskID: subtaskID) {
             if receipt.status == .failed {
-                try AgentStartupReceiptStore(root: root).remove(
-                    taskID: taskID, subtaskID: subtaskID)
+                try receiptStore.remove(taskID: taskID, subtaskID: subtaskID)
                 try routeStore.releaseClaim(routeID: routeID, subtaskID: subtaskID)
-            } else {
+                intent = try routeStore.load(routeID: routeID) ?? intent
+            } else if receipt.orchestrationPreparedAt != nil,
+                      receipt.status == .registered {
+                if receipt.status == .registered, receipt.handoffCompletedAt == nil,
+                   let sessionID = receipt.providerSessionID {
+                    _ = try finalizeRouteHandoffIfReady(
+                        root: root, routeID: routeID, taskID: taskID,
+                        subtaskID: subtaskID, sessionID: sessionID,
+                        receiptStore: receiptStore)
+                }
+                let current = try receiptStore.load(taskID: taskID, subtaskID: subtaskID)
+                    ?? receipt
                 try emit(AgentRouteStartResult(
-                    status: receipt.status.rawValue, routeID: routeID,
-                    taskID: receipt.taskID, subtaskID: receipt.subtaskID,
-                    providerSessionID: receipt.providerSessionID,
-                    startupReceiptPath: try AgentStartupReceiptStore(root: root)
-                        .url(taskID: receipt.taskID, subtaskID: receipt.subtaskID).path,
-                    routerAction: receipt.status == .registered ? "exit" : "wait-for-registration",
+                    status: current.status.rawValue, routeID: routeID,
+                    taskID: current.taskID, subtaskID: current.subtaskID,
+                    providerSessionID: current.providerSessionID,
+                    startupReceiptPath: try receiptStore.url(
+                        taskID: current.taskID, subtaskID: current.subtaskID).path,
+                    routerAction: current.handoffCompletedAt != nil
+                        ? "exit" : "wait-for-registration",
                     replayed: true, startedAt: startedAt))
                 return
+            } else {
+                let tmuxExecutable = configuration.tmuxExecutable
+                    ?? SetupEnvironment.executable("tmux")
+                guard let tmuxExecutable else {
+                    throw TmuxError.unavailable(
+                        "The routed launch cannot recover without tmux.")
+                }
+                let controller = TmuxController()
+                do {
+                    if let saved = receipt.runtime?.exactTmuxReference {
+                        guard saved.executable == tmuxExecutable else { throw TmuxError.changed }
+                        recoveredLaunchRuntime = try await controller.verify(saved)
+                    } else {
+                        recoveredLaunchRuntime = try await controller.inspectAgent(
+                            taskID: taskID, subtaskID: subtaskID,
+                            executable: tmuxExecutable)
+                    }
+                    replayReceipt = receipt
+                } catch TmuxError.stopped where receipt.status == .starting
+                    && receipt.providerSessionID == nil && receipt.runtime == nil {
+                    // No provider was ever observable. Release only this exact
+                    // pre-launch receipt so the saved task/subtask can retry.
+                    try receiptStore.remove(taskID: taskID, subtaskID: subtaskID)
+                    try routeStore.releaseClaim(routeID: routeID, subtaskID: subtaskID)
+                    intent = try routeStore.load(routeID: routeID) ?? intent
+                }
             }
-        } else if intent.startedAt != nil {
-            throw TaskContextError.commandFailed(
-                "This route is already starting. Re-run the same route start command to read its receipt; no second agent was created.")
         }
 
         let projects = ProjectCatalog.ensuringOther(
@@ -360,11 +419,29 @@ enum SessionRegistrationError: Error, LocalizedError {
         } else {
             guard let taskTitle = options["--task-title"]?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !taskTitle.isEmpty else { throw SessionRegistrationError.usage }
-            newTaskTitle = taskTitle
+            let taskStore = ProjectTaskStore(dashboardURL: dashboardURL, supportDirectory: root)
+            if let recoveredTaskID = try taskStore.taskID(forRoute: routeID) {
+                let recoveredDashboard = try await JSONDashboardRepository().load(from: dashboardURL)
+                guard let recoveredTicket = recoveredDashboard.tickets.first(where: {
+                    $0.id.caseInsensitiveCompare(recoveredTaskID) == .orderedSame
+                }) else {
+                    throw TaskContextError.commandFailed(
+                        "The routed task marker does not match a dashboard task.")
+                }
+                taskID = recoveredTaskID.uppercased()
+                ticket = recoveredTicket
+            } else {
+                newTaskTitle = taskTitle
+            }
         }
 
         let subtaskID = intent.subtaskID ?? UUID().uuidString.lowercased()
-        try routeStore.claim(routeID: routeID, subtaskID: subtaskID)
+        if intent.startedAt == nil {
+            try routeStore.claim(routeID: routeID, subtaskID: subtaskID)
+        } else if intent.subtaskID != subtaskID {
+            throw TaskContextError.commandFailed(
+                "The saved route assignment no longer matches this retry.")
+        }
         var providerStarted = false
         var receiptSaved = false
         defer {
@@ -374,7 +451,9 @@ enum SessionRegistrationError: Error, LocalizedError {
         }
         if let newTaskTitle {
             let createdID = try ProjectTaskStore(dashboardURL: dashboardURL, supportDirectory: root)
-                .create(title: newTaskTitle, summary: String(intent.prompt.prefix(2_000)), project: project)
+                .create(
+                    title: newTaskTitle, summary: String(intent.prompt.prefix(2_000)),
+                    project: project, routeID: routeID)
             taskID = createdID
             ticket = DashboardTicket(id: createdID, title: newTaskTitle, projectID: project.id,
                                      status: "backlog", summary: String(intent.prompt.prefix(2_000)))
@@ -427,7 +506,6 @@ enum SessionRegistrationError: Error, LocalizedError {
             taskPlan: context.planPath,
             taskContext: context.contextDirectory.appendingPathComponent("context.json").path,
             taskLog: context.agentLogURL.path)
-        let receiptStore = AgentStartupReceiptStore(root: root)
         var providerLaunchCommand = [provider.executableName]
         if let model = subtask.launchConfiguration?.model {
             providerLaunchCommand += ["--model", model]
@@ -438,79 +516,144 @@ enum SessionRegistrationError: Error, LocalizedError {
                 : ["--effort", effort]
         }
         providerLaunchCommand += ["--add-dir", context.contextDirectory.path, "<initial-prompt>"]
-        var receipt = AgentStartupReceipt(
-            routeID: routeID, status: .starting,
-            projectID: project.id, projectName: project.name,
-            taskID: taskID, taskTitle: ticket.title, subtaskID: subtaskID,
-            title: subtask.title, description: subtask.assignmentDescription,
-            provider: provider, model: subtask.launchConfiguration?.model,
-            effort: subtask.launchConfiguration?.effort, providerVersion: version,
-            providerLaunchCommand: providerLaunchCommand,
-            promptByteCount: intent.prompt.utf8.count,
-            promptSHA256: AgentStartupReceipt.promptDigest(intent.prompt),
-            workspace: subtask.workspace!, context: paths, source: intent.source)
-        let receiptURL = try receiptStore.save(receipt)
-        receiptSaved = true
+        var receipt: AgentStartupReceipt
+        let receiptURL: URL
+        if let replayReceipt {
+            guard replayReceipt.routeID == routeID,
+                  replayReceipt.taskID.caseInsensitiveCompare(taskID) == .orderedSame,
+                  replayReceipt.subtaskID == subtaskID,
+                  replayReceipt.provider == provider,
+                  replayReceipt.workspace == subtask.workspace else {
+                throw TaskContextError.commandFailed(
+                    "The startup receipt no longer matches the routed assignment.")
+            }
+            receipt = replayReceipt
+            receiptURL = try receiptStore.url(taskID: taskID, subtaskID: subtaskID)
+            receiptSaved = true
+        } else {
+            receipt = AgentStartupReceipt(
+                routeID: routeID, status: .starting,
+                projectID: project.id, projectName: project.name,
+                taskID: taskID, taskTitle: ticket.title, subtaskID: subtaskID,
+                title: subtask.title, description: subtask.assignmentDescription,
+                provider: provider, model: subtask.launchConfiguration?.model,
+                effort: subtask.launchConfiguration?.effort, providerVersion: version,
+                providerLaunchCommand: providerLaunchCommand,
+                promptByteCount: intent.prompt.utf8.count,
+                promptSHA256: AgentStartupReceipt.promptDigest(intent.prompt),
+                workspace: subtask.workspace!, context: paths, source: intent.source)
+            receiptURL = try receiptStore.save(receipt)
+            receiptSaved = true
+        }
 
         let launcher = TaskAgentLauncher()
         let runtime: TmuxSessionReference
-        do {
-            runtime = try await launcher.startManagedSession(
-                context: context, subtask: subtask, supportDirectory: root,
-                includePrompt: true, tmuxExecutable: tmuxExecutable)
+        if let recoveredLaunchRuntime {
+            runtime = recoveredLaunchRuntime
             providerStarted = true
-        } catch let error as TmuxError where error.mayHaveStarted {
-            providerStarted = true
-            throw error
-        } catch {
-            receipt.status = .failed
-            _ = try? receiptStore.save(receipt)
-            try? receiptStore.remove(taskID: taskID, subtaskID: subtaskID)
-            receiptSaved = false
-            throw error
+        } else {
+            do {
+                runtime = try await launcher.startManagedSession(
+                    context: context, subtask: subtask, supportDirectory: root,
+                    includePrompt: true, tmuxExecutable: tmuxExecutable)
+                providerStarted = true
+            } catch let error as TmuxError where error.mayHaveStarted {
+                providerStarted = true
+                throw error
+            } catch {
+                receipt.status = .failed
+                _ = try? receiptStore.save(receipt)
+                try? receiptStore.remove(taskID: taskID, subtaskID: subtaskID)
+                receiptSaved = false
+                throw error
+            }
         }
         receipt.status = .launched
         receipt.runtime = .init(
-                mode: .tmux, tmuxExecutable: runtime.executable,
-                tmuxServerName: TmuxController.serverName,
-                tmuxName: runtime.name, tmuxPaneID: runtime.paneID,
-                tmuxPanePID: runtime.panePID, tty: runtime.tty,
-                terminalApplication: configuration.wezTerm.applicationName,
-                terminalPaneID: nil, terminalSocketPath: configuration.wezTerm.socketPath,
-                attachCommand: try TmuxController.attachCommand(reference: runtime))
+            tmux: runtime, tmuxServerName: TmuxController.serverName,
+            terminalApplication: configuration.wezTerm.applicationName,
+            terminalSocketPath: configuration.wezTerm.socketPath,
+            attachCommand: try TmuxController.attachCommand(reference: runtime))
         try receiptStore.save(receipt)
+        receipt = try receiptStore.load(taskID: taskID, subtaskID: subtaskID) ?? receipt
         _ = try await contextStore.setManagedRuntime(
             ticketID: taskID, subtaskID: subtaskID, tmux: runtime)
         subtask.tmux = runtime
-        _ = try await WezTermController().openManagedAgentRuntime(
-            runtime, taskID: taskID, subtaskID: subtaskID,
-            provider: provider, configuration: configuration.wezTerm)
+        do {
+            _ = try await WezTermController().openManagedAgentRuntime(
+                runtime, taskID: taskID, subtaskID: subtaskID,
+                provider: provider, configuration: configuration.wezTerm)
+        } catch {
+            FileHandle.standardError.write(Data(
+                "Agent started; terminal reveal will retry from Focus Queue.\n".utf8))
+        }
+        try receiptStore.markOrchestrationPrepared(
+            taskID: taskID, subtaskID: subtaskID)
+        receipt = try receiptStore.load(taskID: taskID, subtaskID: subtaskID)
+            ?? receipt
 
         for _ in 0..<40 where receipt.providerSessionID == nil {
             if let sessionID = try? await launcher.identify(
                 subtask: subtask, configuration: configuration.wezTerm) {
+                try receiptStore.reserveProviderSession(
+                    taskID: taskID, subtaskID: subtaskID,
+                    providerSessionID: sessionID)
                 _ = try await contextStore.attachSubtask(
                     ticketID: taskID, subtaskID: subtaskID,
                     provider: provider, sessionID: sessionID)
                 try receiptStore.register(
                     taskID: taskID, subtaskID: subtaskID, providerSessionID: sessionID)
-                receipt.providerSessionID = sessionID.lowercased()
-                receipt.status = .registered
-                _ = try? AgentPlacementCapsuleStore(root: root).finalize(
-                    launchID: routeID, taskID: taskID,
-                    agentID: subtaskID, sessionID: sessionID.lowercased())
+                _ = try finalizeRouteHandoffIfReady(
+                    root: root, routeID: routeID, taskID: taskID,
+                    subtaskID: subtaskID, sessionID: sessionID.lowercased(),
+                    receiptStore: receiptStore)
+                receipt = try receiptStore.load(taskID: taskID, subtaskID: subtaskID)
+                    ?? receipt
                 break
             }
             try await Task.sleep(for: .milliseconds(250))
         }
-        notifyContextChanged()
+        if receipt.status == .registered, receipt.handoffCompletedAt == nil,
+           let sessionID = receipt.providerSessionID {
+            _ = try finalizeRouteHandoffIfReady(
+                root: root, routeID: routeID, taskID: taskID,
+                subtaskID: subtaskID, sessionID: sessionID,
+                receiptStore: receiptStore)
+            receipt = try receiptStore.load(taskID: taskID, subtaskID: subtaskID)
+                ?? receipt
+        } else if receipt.status != .registered {
+            notifyContextChanged()
+        }
         try emit(AgentRouteStartResult(
             status: receipt.status.rawValue, routeID: routeID,
             taskID: taskID, subtaskID: subtaskID,
             providerSessionID: receipt.providerSessionID,
             startupReceiptPath: receiptURL.path,
-            routerAction: receipt.status == .registered ? "exit" : "wait-for-registration",
+            routerAction: receipt.handoffCompletedAt != nil
+                ? "exit" : "wait-for-registration",
             replayed: false, startedAt: Date()))
+    }
+
+    @discardableResult
+    private static func finalizeRouteHandoffIfReady(
+        root: URL, routeID: String, taskID: String, subtaskID: String,
+        sessionID: String, receiptStore: AgentStartupReceiptStore
+    ) throws -> Bool {
+        guard let receipt = try receiptStore.load(taskID: taskID, subtaskID: subtaskID),
+              receipt.status == .registered,
+              receipt.providerSessionID?.caseInsensitiveCompare(sessionID) == .orderedSame,
+              receipt.orchestrationPreparedAt != nil else { return false }
+        guard try AgentPlacementCapsuleStore(root: root).finalize(
+            launchID: routeID, taskID: taskID,
+            agentID: subtaskID, sessionID: sessionID.lowercased()) != nil else {
+            throw TaskContextError.commandFailed(
+                "The routed agent placement capsule is missing, so handoff remains recoverable.")
+        }
+        notifyContextChanged()
+        try receiptStore.completeHandoff(
+            taskID: taskID, subtaskID: subtaskID,
+            expectedSessionID: sessionID.lowercased())
+        return true
     }
 
     private static func providerVersion(_ provider: AgentProvider) async -> String? {
@@ -899,8 +1042,45 @@ enum SessionRegistrationError: Error, LocalizedError {
                                       explicitTaskID: String?, environment: [String: String]) async throws {
         let root = supportDirectory(environment: environment)
         let config = try loadConfiguration(from: root)
-        let launchID = environment["FOCUS_QUEUE_LAUNCH_ID"]
-            ?? event.providerSessionID ?? UUID().uuidString.lowercased()
+        let launchID = event.isSubagent
+            ? (event.providerSessionID ?? event.sessionID.lowercased())
+            : (environment["FOCUS_QUEUE_LAUNCH_ID"]
+                ?? event.providerSessionID ?? UUID().uuidString.lowercased())
+        var routedReceipt: AgentStartupReceipt?
+        if !event.isSubagent, UUID(uuidString: launchID) != nil,
+           let route = try AgentRouteStore(root: root).load(routeID: launchID) {
+            guard let taskID = route.taskID, let subtaskID = route.subtaskID,
+                  route.startedAt != nil,
+                  environment["FOCUS_QUEUE_TASK_ID"]?.caseInsensitiveCompare(taskID)
+                    == .orderedSame,
+                  environment["FOCUS_QUEUE_SUBTASK_ID"] == subtaskID,
+                  let sessionID = event.providerSessionID,
+                  let receipt = try AgentStartupReceiptStore(root: root).load(
+                    taskID: taskID, subtaskID: subtaskID),
+                  receipt.routeID.caseInsensitiveCompare(launchID) == .orderedSame,
+                  receipt.provider == provider,
+                  (receipt.providerSessionID ?? receipt.reservedProviderSessionID).map({
+                    $0.caseInsensitiveCompare(sessionID) == .orderedSame
+                  }) ?? true,
+                  let context = try await TaskContextStore(root: root).load(
+                    ticketID: taskID),
+                  let subtask = context.subtasks.first(where: { $0.id == subtaskID }),
+                  subtask.provider == provider,
+                  subtask.agentRemovedAt == nil, subtask.status != .completed,
+                  subtask.sessionID.map({
+                    $0.caseInsensitiveCompare(sessionID) == .orderedSame
+                  }) ?? true,
+                  subtask.workspace.map({
+                    ExternalAgentRegistry.contains(directory: $0.path, path: event.cwd)
+                  }) == true else {
+                throw TaskContextError.commandFailed(
+                    "The routed registration does not match its fixed task and agent.")
+            }
+            try AgentStartupReceiptStore(root: root).reserveProviderSession(
+                taskID: taskID, subtaskID: subtaskID,
+                providerSessionID: sessionID)
+            routedReceipt = receipt
+        }
         let placement = try? await AgentPlacementResolver(root: root).resolve(AgentPlacementRequest(
             launchID: launchID, cwd: event.cwd, prompt: event.prompt,
             explicitTaskID: explicitTaskID, inheritedTaskID: environment["FOCUS_QUEUE_TASK_ID"],
@@ -930,14 +1110,25 @@ enum SessionRegistrationError: Error, LocalizedError {
             explicitTaskID: explicitTaskID ?? placement?.taskID,
             environment: environment, tmux: runtime, paneID: directPane,
             socketPath: environment["WEZTERM_UNIX_SOCKET"])
-        _ = try? AgentPlacementCapsuleStore(root: root).finalize(
-            launchID: launchID, taskID: record.taskID, agentID: record.subtaskID,
-            sessionID: record.sessionID)
-        if let taskID = record.taskID, let subtaskID = record.subtaskID,
-           let sessionID = record.sessionID {
-            try? AgentStartupReceiptStore(root: root).register(
-                taskID: taskID, subtaskID: subtaskID,
+        if let receipt = routedReceipt {
+            guard record.taskID?.caseInsensitiveCompare(receipt.taskID) == .orderedSame,
+                  record.subtaskID == receipt.subtaskID,
+                  let sessionID = record.sessionID else {
+                throw TaskContextError.commandFailed(
+                    "The routed registration changed its fixed task or agent.")
+            }
+            let receiptStore = AgentStartupReceiptStore(root: root)
+            try receiptStore.register(
+                taskID: receipt.taskID, subtaskID: receipt.subtaskID,
                 providerSessionID: sessionID)
+            _ = try finalizeRouteHandoffIfReady(
+                root: root, routeID: receipt.routeID, taskID: receipt.taskID,
+                subtaskID: receipt.subtaskID, sessionID: sessionID,
+                receiptStore: receiptStore)
+        } else {
+            _ = try? AgentPlacementCapsuleStore(root: root).finalize(
+                launchID: launchID, taskID: record.taskID, agentID: record.subtaskID,
+                sessionID: record.sessionID)
         }
         if let session = record.session, FileManager.default.isExecutableFile(atPath: config.wezTerm.executable) {
             do {

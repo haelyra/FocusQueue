@@ -128,6 +128,11 @@ final class QueueViewModel {
   }
   private(set) var planEditDrafts: [String: PlanEditDraft] = [:]
   private(set) var launchingTaskIDs: Set<String> = []
+  private(set) var isRoutingObjective = false
+  private(set) var routerStatus: String?
+  private(set) var routerRecoveryPath: String?
+  private(set) var routerRuntime: QueueRouterRuntime?
+  private(set) var routerRecoveryBlocked = false
   private(set) var openingSubtaskIDs: Set<String> = []
   private(set) var openingAgentSessionIDs: Set<String> = []
   private(set) var agentSessionErrors: [String: String] = [:] {
@@ -175,6 +180,8 @@ final class QueueViewModel {
   @ObservationIgnored private let taskContextStore: TaskContextStore
   @ObservationIgnored private let taskWorktreeManager = TaskWorktreeManager()
   @ObservationIgnored private let taskAgentLauncher: TaskAgentLauncher
+  @ObservationIgnored private let objectiveRouter: any QueueObjectiveRouting
+  @ObservationIgnored private let routerMonitorIntervalSeconds: Double
   @ObservationIgnored private let agentLaunchLogger: AgentLaunchLogger
   @ObservationIgnored private let reportHistoryRepository: JSONDailyReportHistoryRepository
   @ObservationIgnored private let conversationStore: QueueConversationStore
@@ -192,6 +199,7 @@ final class QueueViewModel {
   @ObservationIgnored private var cleanupSignatures: [String: Date] = [:]
   @ObservationIgnored private var lastReportRefresh: Date?
   @ObservationIgnored private var refreshTask: Task<Void, Never>?
+  @ObservationIgnored private var routerMonitorTask: Task<Void, Never>?
   @ObservationIgnored private var reviewTasks: [UUID: Task<Void, Never>] = [:]
   @ObservationIgnored private var windowSaveTask: Task<Void, Never>?
   @ObservationIgnored private var localStateSaveTask: Task<Void, Never>?
@@ -250,6 +258,8 @@ final class QueueViewModel {
     queueAgent: any QueueAgentChatting = CodexQueueAgent(),
     pullRequestQueueLoader: any PullRequestQueueLoading = GitHubPullRequestQueueLoader(),
     taskAgentLauncher: TaskAgentLauncher = TaskAgentLauncher(),
+    objectiveRouter: any QueueObjectiveRouting = QueueObjectiveRouter(),
+    routerMonitorIntervalSeconds: Double = 2,
     agentLaunchLogger: AgentLaunchLogger? = nil,
     connectorDiagnosticsRunner: any ProcessRunning = FoundationProcessRunner(),
     discoverExternalAgents: @escaping @Sendable () async throws -> [KnownProviderProcess] = {
@@ -294,6 +304,8 @@ final class QueueViewModel {
     self.queueAgent = queueAgent
     self.pullRequestQueueLoader = pullRequestQueueLoader
     self.taskAgentLauncher = taskAgentLauncher
+    self.objectiveRouter = objectiveRouter
+    self.routerMonitorIntervalSeconds = max(0.01, routerMonitorIntervalSeconds)
     self.agentLaunchLogger = agentLaunchLogger
       ?? AgentLaunchLogger(supportDirectory: paths.supportDirectory)
     self.connectorDiagnosticsRunner = connectorDiagnosticsRunner
@@ -428,6 +440,10 @@ final class QueueViewModel {
   var minimizationPreference: QueueMinimizationPreference {
     localState.minimizationPreference
   }
+  var hasRouterRecovery: Bool {
+    (routerRuntime != nil || routerRecoveryBlocked) && !isRoutingObjective
+  }
+  var canOpenRouterRecovery: Bool { routerRuntime != nil && !isRoutingObjective }
 
   var terminalCount: Int {
     var identities = Set(localState.agentSessions.map {
@@ -450,6 +466,26 @@ final class QueueViewModel {
         configurationURL: paths.configurationFile
       ).recoverPending()
       config = try await configurationRepository.loadOrCreate(default: SetupEnvironment.starter(supportDirectory: paths.supportDirectory))
+      do {
+        if let recoveredRouter = try QueueRouterRuntimeStore(root: paths.supportDirectory).load() {
+          guard routerExecutableMatchesConfiguration(recoveredRouter) else {
+            throw TaskContextError.commandFailed(
+              "The saved router does not match the configured tmux executable.")
+          }
+          routerRuntime = recoveredRouter
+          routerRecoveryPath = QueueRouterRuntimeStore(root: paths.supportDirectory).url.path
+          routerStatus = "Recovered an unfinished router. Focus Queue will not start a duplicate."
+          let outcome = try await objectiveRouter.waitForOutcome(
+            recoveredRouter, supportDirectory: paths.supportDirectory, timeoutSeconds: 0)
+          if !applyRouterOutcome(outcome), case .waiting = outcome {
+            startRouterMonitor(recoveredRouter)
+          }
+        }
+      } catch {
+        routerRecoveryBlocked = true
+        routerRecoveryPath = QueueRouterRuntimeStore(root: paths.supportDirectory).url.path
+        routerStatus = "Router recovery needs attention; new routing is blocked. \(error.localizedDescription)"
+      }
       let projects = ProjectCatalog.ensuringOther(
         in: config.projects, supportDirectory: paths.supportDirectory)
       if projects != config.projects {
@@ -1838,6 +1874,195 @@ final class QueueViewModel {
         actionMessages[ticket.id] = error.localizedDescription
       }
     }
+  }
+
+  func routeObjective(
+    _ rawObjective: String,
+    completion: (@MainActor (Bool) -> Void)? = nil
+  ) {
+    let objective = rawObjective.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !objective.isEmpty else {
+      routerStatus = "Describe the work you want routed."
+      completion?(false)
+      return
+    }
+    guard !isRoutingObjective else {
+      routerStatus = "The router is already assigning your previous objective."
+      completion?(false)
+      return
+    }
+    guard !hasRouterRecovery else {
+      routerStatus = "The previous router still has a recovery session. Open it before starting another."
+      completion?(false)
+      return
+    }
+    guard let project = selectedProject else {
+      routerStatus = "Select a project before routing work."
+      completion?(false)
+      return
+    }
+    let repository = project.repositoryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+    var isDirectory: ObjCBool = false
+    guard repository.hasPrefix("/"),
+          FileManager.default.fileExists(atPath: repository, isDirectory: &isDirectory),
+          isDirectory.boolValue else {
+      routerStatus = "The selected project needs an available repository before routing work."
+      completion?(false)
+      return
+    }
+    guard let tmuxExecutable = config.tmuxExecutable ?? SetupEnvironment.executable("tmux"),
+          FileManager.default.isExecutableFile(atPath: tmuxExecutable) else {
+      routerStatus = "The router needs tmux. Configure an executable in Settings."
+      completion?(false)
+      return
+    }
+    isRoutingObjective = true
+    routerRecoveryBlocked = false
+    routerRecoveryPath = nil
+    routerStatus = "Starting a router for \(project.name)…"
+    Task {
+      do {
+        let runtime = try await objectiveRouter.launch(
+          objective: objective, repositoryPath: repository,
+          supportDirectory: paths.supportDirectory,
+          tmuxExecutable: tmuxExecutable, shellPath: nil)
+        routerRuntime = runtime
+        routerStatus = "Router started. Waiting for the assigned agent…"
+        let outcome = try await objectiveRouter.waitForOutcome(
+          runtime, supportDirectory: paths.supportDirectory, timeoutSeconds: 120)
+        let succeeded = applyRouterOutcome(outcome)
+        if succeeded {
+          completion?(true)
+          await refresh(userInitiated: true)
+        } else if case .waiting = outcome {
+          startRouterMonitor(runtime, completion: completion)
+        } else {
+          completion?(false)
+        }
+      } catch let error as QueueRouterLaunchUnconfirmedError {
+        if routerExecutableMatchesConfiguration(error.runtime) {
+          routerRuntime = error.runtime
+        } else {
+          routerRecoveryBlocked = true
+        }
+        routerRecoveryPath = QueueRouterRuntimeStore(root: paths.supportDirectory).url.path
+        routerStatus = error.localizedDescription
+        if routerRuntime != nil {
+          startRouterMonitor(error.runtime, completion: completion)
+        } else {
+          completion?(false)
+        }
+      } catch {
+        routerStatus = error.localizedDescription
+        completion?(false)
+      }
+      isRoutingObjective = false
+    }
+  }
+
+  private func startRouterMonitor(
+    _ runtime: QueueRouterRuntime,
+    completion: (@MainActor (Bool) -> Void)? = nil
+  ) {
+    routerMonitorTask?.cancel()
+    routerMonitorTask = Task { [weak self] in
+      while !Task.isCancelled {
+        guard let self else { return }
+        try? await Task.sleep(for: .seconds(self.routerMonitorIntervalSeconds))
+        guard !Task.isCancelled,
+              self.routerRuntime?.capability == runtime.capability else { return }
+        do {
+          let outcome = try await self.objectiveRouter.waitForOutcome(
+            runtime, supportDirectory: self.paths.supportDirectory,
+            timeoutSeconds: 0)
+          guard !Task.isCancelled,
+                self.routerRuntime?.capability == runtime.capability else { return }
+          if self.applyRouterOutcome(outcome) {
+            completion?(true)
+            await self.refresh(userInitiated: true)
+            return
+          }
+          if case .failed = outcome {
+            completion?(false)
+            return
+          }
+        } catch {
+          guard !Task.isCancelled,
+                self.routerRuntime?.capability == runtime.capability else { return }
+          self.routerStatus = "Router monitoring will retry. \(error.localizedDescription)"
+        }
+      }
+    }
+  }
+
+  func openRouterRecovery() {
+    guard let runtime = routerRuntime else { return }
+    guard routerExecutableMatchesConfiguration(runtime) else {
+      routerRecoveryBlocked = true
+      routerStatus = "Router recovery is blocked because its tmux executable no longer matches Settings."
+      return
+    }
+    routerStatus = "Opening the existing router session…"
+    Task {
+      do {
+        let reference = try await objectiveRouter.recoveryReference(
+          runtime, supportDirectory: paths.supportDirectory)
+        guard routerRuntime?.capability == runtime.capability else { return }
+        let result = try await terminalController.openManagedRuntime(
+          reference, taskID: "ROUTER", provider: .codex,
+          configuration: config.wezTerm)
+        guard routerRuntime?.capability == runtime.capability else { return }
+        routerStatus = result.message
+      } catch TmuxError.stopped {
+        guard routerRuntime?.capability == runtime.capability else { return }
+        let outcome = try? await objectiveRouter.waitForOutcome(
+          runtime, supportDirectory: paths.supportDirectory, timeoutSeconds: 0)
+        guard routerRuntime?.capability == runtime.capability else { return }
+        if let outcome, applyRouterOutcome(outcome) { await refresh(userInitiated: true) }
+        else if case .waiting(nil, nil) = outcome {
+          routerRuntime = nil
+          routerRecoveryBlocked = false
+          routerRecoveryPath = nil
+          routerStatus = "The router stopped before creating a route. It is safe to submit again."
+        } else {
+          routerStatus = "The router terminal stopped, but its route is still unresolved. Use the recovery locator; Focus Queue will not start a duplicate."
+        }
+      } catch {
+        guard routerRuntime?.capability == runtime.capability else { return }
+        routerStatus = error.localizedDescription
+      }
+    }
+  }
+
+  @discardableResult
+  private func applyRouterOutcome(_ outcome: QueueRouterOutcome) -> Bool {
+    switch outcome {
+    case .registered(_, let taskID, _):
+      routerMonitorTask?.cancel()
+      routerMonitorTask = nil
+      routerRuntime = nil
+      routerRecoveryBlocked = false
+      routerRecoveryPath = nil
+      routerStatus = "Assigned to \(taskID). The agent terminal is opening."
+      return true
+    case .waiting(let routeID, let recoveryPath):
+      if let recoveryPath { routerRecoveryPath = recoveryPath }
+      let locator = routeID.map { " Route \($0)." } ?? ""
+      routerStatus = "The router is still working; no duplicate was started.\(locator)"
+      return false
+    case .failed(let routeID, let recoveryPath, let message):
+      if let recoveryPath { routerRecoveryPath = recoveryPath }
+      routerStatus = "\(message) Route \(routeID)."
+      return false
+    }
+  }
+
+  private func routerExecutableMatchesConfiguration(_ runtime: QueueRouterRuntime) -> Bool {
+    guard let configured = config.tmuxExecutable ?? SetupEnvironment.executable("tmux") else {
+      return false
+    }
+    return URL(fileURLWithPath: configured).standardizedFileURL.path
+      == URL(fileURLWithPath: runtime.tmuxExecutable).standardizedFileURL.path
   }
 
   func launchAgent(

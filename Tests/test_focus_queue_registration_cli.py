@@ -78,12 +78,16 @@ class RegistrationCLITests(unittest.TestCase):
         self.assertEqual(assigned["taskID"], "ECC-402")
 
     def test_subagent_child_identity_and_invalid_input(self):
-        parent, child = str(uuid.uuid4()), str(uuid.uuid4())
+        parent, child, inherited_launch = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
         self.command("register-event", "--provider", "codex", payload=self.event(parent))
         registered = self.command("register-event", "--provider", "codex",
-            payload=self.event(parent, "SubagentStart", agent_id=child))
+            payload=self.event(parent, "SubagentStart", agent_id=child),
+            extra_environment={"FOCUS_QUEUE_LAUNCH_ID": inherited_launch})
         self.assertEqual(registered["sessionID"], child)
         self.assertEqual(registered["parentSessionID"], parent)
+        placements = self.support / "tracking" / "placements"
+        self.assertTrue((placements / f"{child}.json").is_file())
+        self.assertFalse((placements / f"{inherited_launch}.json").exists())
         self.command("register-event", "--provider", "codex", payload="{malformed", expected=1)
         self.command("register-event", "--provider", "codex", payload=self.event("not-a-uuid"), expected=1)
         self.assertEqual(len(self.context()["subtasks"]), 2)

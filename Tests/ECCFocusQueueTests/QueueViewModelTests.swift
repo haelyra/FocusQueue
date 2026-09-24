@@ -9,6 +9,159 @@ import Darwin
 @Suite("Queue app state integration")
 @MainActor
 struct QueueViewModelTests {
+  @Test("A queue objective starts one headless router and clears only after registration")
+  func queueObjectiveRouterRegistration() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    var configuration = try JSONDecoder().decode(
+      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    configuration.projects[0].repositoryPath = fixture.root.path
+    configuration.tmuxExecutable = "/usr/bin/true"
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
+    let router = ControlledObjectiveRouter(outcome: .registered(
+      routeID: "route-one", taskID: "ECC-101", subtaskID: "agent-one"))
+    let model = await fixture.model(agent: ControlledQueueAgent(), objectiveRouter: router)
+    var completion: Bool?
+
+    model.routeObjective("Fix exact agent recall") { completion = $0 }
+    model.routeObjective("Duplicate click") { _ in }
+
+    try await eventually { !model.isRoutingObjective && completion == true }
+    #expect(await router.launchCount == 1)
+    #expect(await router.objectives == ["Fix exact agent recall"])
+    #expect(model.routerStatus?.contains("ECC-101") == true)
+  }
+
+  @Test("A pending router keeps its recovery locator and an empty objective never launches")
+  func queueObjectiveRouterRecovery() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    var configuration = try JSONDecoder().decode(
+      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    configuration.projects[0].repositoryPath = fixture.root.path
+    configuration.tmuxExecutable = "/usr/bin/true"
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
+    let router = ControlledObjectiveRouter(outcome: .waiting(
+      routeID: "route-two", recoveryPath: "/tmp/route-two.json"))
+    let model = await fixture.model(agent: ControlledQueueAgent(), objectiveRouter: router)
+    var emptyCompletion: Bool?
+
+    model.routeObjective("   ") { emptyCompletion = $0 }
+    #expect(emptyCompletion == false)
+    #expect(await router.launchCount == 0)
+    model.routeObjective("Route unfinished work") { _ in }
+
+    try await eventually { !model.isRoutingObjective }
+    #expect(model.routerRecoveryPath == "/tmp/route-two.json")
+    #expect(model.routerStatus?.contains("still working") == true)
+    model.routeObjective("Do not duplicate the pending route") { _ in }
+    #expect(await router.launchCount == 1)
+    #expect(model.hasRouterRecovery)
+  }
+
+  @Test("A pending router keeps monitoring until delayed registration completes")
+  func queueObjectiveRouterDelayedRegistration() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    var configuration = try JSONDecoder().decode(
+      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    configuration.projects[0].repositoryPath = fixture.root.path
+    configuration.tmuxExecutable = "/usr/bin/true"
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
+    let router = ControlledObjectiveRouter(outcomes: [
+      .waiting(routeID: "route-delayed", recoveryPath: "/tmp/route-delayed.json"),
+      .registered(routeID: "route-delayed", taskID: "ECC-102", subtaskID: "agent-delayed"),
+    ])
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(), objectiveRouter: router,
+      routerMonitorIntervalSeconds: 0.01)
+    var completion: Bool?
+
+    model.routeObjective("Route delayed work") { completion = $0 }
+
+    try await eventually {
+      completion == true && model.routerRuntime == nil
+        && model.routerStatus?.contains("ECC-102") == true
+    }
+    #expect(await router.waitCount >= 2)
+    #expect(!model.hasRouterRecovery)
+  }
+
+  @Test("A stale router monitor cannot overwrite a newer router after suspension")
+  func staleRouterMonitorIsIdentityFenced() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    var configuration = try JSONDecoder().decode(
+      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    configuration.projects[0].repositoryPath = fixture.root.path
+    configuration.tmuxExecutable = "/usr/bin/true"
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
+    let router = SuspendedRouterReplacementFixture()
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(), objectiveRouter: router,
+      routerMonitorIntervalSeconds: 0.01)
+
+    model.routeObjective("First routed objective") { _ in }
+    try await eventually { await router.hasSuspendedFirstMonitor }
+    model.openRouterRecovery()
+    try await eventually { model.routerRuntime == nil }
+
+    model.routeObjective("Second routed objective") { _ in }
+    try await eventually {
+      !model.isRoutingObjective && model.routerRuntime?.tmuxName == "fq-router-second"
+    }
+    let secondCapability = try #require(model.routerRuntime?.capability)
+    await router.resumeFirstMonitor()
+    try await Task.sleep(for: .milliseconds(50))
+
+    #expect(model.routerRuntime?.capability == secondCapability)
+    #expect(model.routerRuntime?.tmuxName == "fq-router-second")
+    #expect(model.hasRouterRecovery)
+  }
+
+  @Test("A persisted router recovery blocks duplicate submission after app restart")
+  func queueObjectiveRouterRecoverySurvivesRestart() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    var configuration = try JSONDecoder().decode(
+      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    configuration.projects[0].repositoryPath = fixture.root.path
+    configuration.tmuxExecutable = "/usr/bin/true"
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
+    let runtime = try QueueRouterRuntime(
+      tmuxName: "fq-router-restarted", tmuxExecutable: "/usr/bin/true", startedAt: Date(),
+      objectiveSHA256: AgentStartupReceipt.promptDigest("Persisted restart objective"))
+    try QueueRouterRuntimeStore(root: fixture.paths.supportDirectory).save(runtime)
+    let router = ControlledObjectiveRouter(outcome: .waiting(
+      routeID: nil, recoveryPath: QueueRouterRuntimeStore(root: fixture.paths.supportDirectory).url.path))
+
+    let model = await fixture.model(agent: ControlledQueueAgent(), objectiveRouter: router)
+    model.routeObjective("Do not duplicate after restart") { _ in }
+
+    #expect(model.hasRouterRecovery)
+    #expect(await router.launchCount == 0)
+    #expect(model.routerStatus?.contains("previous router") == true)
+  }
+
+  @Test("A malformed router recovery blocks routing without blocking queue bootstrap")
+  func malformedRouterRecoveryDoesNotBlockBootstrap() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = QueueRouterRuntimeStore(root: fixture.paths.supportDirectory)
+    try FileManager.default.createDirectory(
+      at: store.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("{\"tmuxName\":\"unsafe\"}".utf8).write(to: store.url, options: .atomic)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: store.url.path)
+
+    let model = await fixture.model(agent: ControlledQueueAgent())
+
+    #expect(model.loadError == nil)
+    #expect(!model.openTickets.isEmpty)
+    #expect(model.hasRouterRecovery)
+    #expect(!model.canOpenRouterRecovery)
+    #expect(model.routerStatus?.contains("new routing is blocked") == true)
+  }
+
   @Test("Disabling auto-exit preserves completed agents through refresh and saves the setting")
   func completedAgentOptOut() async throws {
     let fixture = try await Fixture()
@@ -2086,6 +2239,8 @@ private struct Fixture {
              terminalController: (any WezTermControlling)? = nil,
              dashboardRepository: any DashboardManaging = JSONDashboardRepository(),
              taskAgentLauncher: TaskAgentLauncher = TaskAgentLauncher(),
+             objectiveRouter: any QueueObjectiveRouting = QueueObjectiveRouter(),
+             routerMonitorIntervalSeconds: Double = 2,
              connectorDiagnosticsRunner: any ProcessRunning = FoundationProcessRunner(),
              discoverExternalAgents: @escaping @Sendable () async throws -> [KnownProviderProcess] = { [] },
              labelTmuxPane: @escaping @Sendable (TmuxSessionReference, String) async -> Void = { _, _ in },
@@ -2097,6 +2252,8 @@ private struct Fixture {
       terminalController: terminalController ?? boundary,
       verifier: verifier ?? boundary, queueAgent: agent, pullRequestQueueLoader: boundary,
       taskAgentLauncher: taskAgentLauncher,
+      objectiveRouter: objectiveRouter,
+      routerMonitorIntervalSeconds: routerMonitorIntervalSeconds,
       connectorDiagnosticsRunner: connectorDiagnosticsRunner,
       discoverExternalAgents: discoverExternalAgents,
       labelTmuxPane: labelTmuxPane,
@@ -2118,6 +2275,87 @@ private struct Fixture {
     let directory = paths.ingestionRuntimeDirectory.appendingPathComponent("reports/2026-09-10")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     try JSONEncoder().encode(report).write(to: directory.appendingPathComponent("\(report.runID).json"))
+  }
+}
+
+private actor ControlledObjectiveRouter: QueueObjectiveRouting {
+  private(set) var launchCount = 0
+  private(set) var waitCount = 0
+  private(set) var objectives: [String] = []
+  private var outcomes: [QueueRouterOutcome]
+
+  init(outcome: QueueRouterOutcome) { outcomes = [outcome] }
+  init(outcomes: [QueueRouterOutcome]) { self.outcomes = outcomes }
+
+  func launch(
+    objective: String, repositoryPath: String, supportDirectory: URL,
+    tmuxExecutable: String, shellPath: String?
+  ) async throws -> QueueRouterRuntime {
+    launchCount += 1
+    objectives.append(objective)
+    try await Task.sleep(for: .milliseconds(30))
+    let reference = try TmuxController.decode(
+      "fq-router-test|1|1|%1|2|/dev/ttys001|0\n", executable: tmuxExecutable)[0]
+    return QueueRouterRuntime(tmux: reference, startedAt: Date())
+  }
+
+  func waitForOutcome(
+    _ runtime: QueueRouterRuntime, supportDirectory: URL, timeoutSeconds: Double
+  ) async throws -> QueueRouterOutcome {
+    waitCount += 1
+    if outcomes.count > 1 { return outcomes.removeFirst() }
+    return outcomes[0]
+  }
+}
+
+private actor SuspendedRouterReplacementFixture: QueueObjectiveRouting {
+  private var launchCount = 0
+  private var firstWaitCount = 0
+  private var firstMonitor: CheckedContinuation<QueueRouterOutcome, any Error>?
+
+  var hasSuspendedFirstMonitor: Bool { firstMonitor != nil }
+
+  func launch(
+    objective: String, repositoryPath: String, supportDirectory: URL,
+    tmuxExecutable: String, shellPath: String?
+  ) async throws -> QueueRouterRuntime {
+    launchCount += 1
+    let isFirst = launchCount == 1
+    let name = isFirst ? "fq-router-first" : "fq-router-second"
+    let reference = try TmuxController.decode(
+      "\(name)|\(100 + launchCount)|\(launchCount)|%\(launchCount)|\(200 + launchCount)|/dev/ttys00\(launchCount)|0\n",
+      executable: tmuxExecutable)[0]
+    return QueueRouterRuntime(tmux: reference, startedAt: Date())
+  }
+
+  func waitForOutcome(
+    _ runtime: QueueRouterRuntime, supportDirectory: URL, timeoutSeconds: Double
+  ) async throws -> QueueRouterOutcome {
+    if runtime.tmuxName == "fq-router-first" {
+      firstWaitCount += 1
+      if firstWaitCount == 1 {
+        return .waiting(routeID: "route-first", recoveryPath: "/tmp/route-first.json")
+      }
+      if firstWaitCount == 2 {
+        return try await withCheckedThrowingContinuation { firstMonitor = $0 }
+      }
+      return .registered(
+        routeID: "route-first", taskID: "ECC-101", subtaskID: "agent-first")
+    }
+    return .waiting(routeID: "route-second", recoveryPath: "/tmp/route-second.json")
+  }
+
+  func recoveryReference(
+    _ runtime: QueueRouterRuntime, supportDirectory: URL
+  ) async throws -> TmuxSessionReference {
+    if runtime.tmuxName == "fq-router-first" { throw TmuxError.stopped }
+    return try #require(runtime.confirmedReference)
+  }
+
+  func resumeFirstMonitor() {
+    firstMonitor?.resume(returning: .registered(
+      routeID: "route-first", taskID: "ECC-101", subtaskID: "agent-first"))
+    firstMonitor = nil
   }
 }
 

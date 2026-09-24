@@ -180,20 +180,53 @@ public struct ProjectTaskStore: Sendable {
         }
     }
 
-    public func create(title: String, summary: String, project: ProjectDefinition) throws -> String {
+    public func create(
+        title: String, summary: String, project: ProjectDefinition, routeID: String? = nil
+    ) throws -> String {
+        if let routeID, UUID(uuidString: routeID) == nil {
+            throw TaskContextError.invalidIdentifier
+        }
+        let normalizedRouteID = routeID?.lowercased()
         var taskID = ""
         try update { tickets in
+            if let normalizedRouteID,
+               let existing = tickets.first(where: {
+                   ($0["focusQueueRouteID"] as? String)?.lowercased() == normalizedRouteID
+               }) {
+                guard let existingID = existing["id"] as? String else {
+                    throw TaskContextError.commandFailed("The routed task has no valid ID.")
+                }
+                taskID = existingID
+                return
+            }
             let prefix = project.taskPrefix + "-"
             let last = tickets.compactMap { ($0["id"] as? String).flatMap {
                 $0.uppercased().hasPrefix(prefix) ? Int($0.dropFirst(prefix.count)) : nil
             } }.max() ?? 0
             taskID = String(format: "%@-%03d", project.taskPrefix, last + 1)
-            let task: [String: Any] = ["id": taskID, "title": title, "summary": summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? title : summary,
+            var task: [String: Any] = ["id": taskID, "title": title, "summary": summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? title : summary,
                 "status": "backlog", "priority": "medium", "updatedAt": ISO8601DateFormatter().string(from: Date()),
                 "links": [], "prs": [], "steps": [], "projectID": project.id]
+            if let normalizedRouteID { task["focusQueueRouteID"] = normalizedRouteID }
             tickets.append(task)
         }
         return taskID
+    }
+
+    public func taskID(forRoute routeID: String) throws -> String? {
+        guard UUID(uuidString: routeID) != nil else { throw TaskContextError.invalidIdentifier }
+        return try ProjectFileLock.withLock(file: dashboardURL) {
+            let data = try Data(contentsOf: dashboardURL)
+            guard let document = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let tickets = document["tickets"] as? [[String: Any]] else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            let matches = tickets.filter { ($0["focusQueueRouteID"] as? String) == routeID.lowercased() }
+            guard matches.count <= 1 else {
+                throw TaskContextError.commandFailed("More than one task claims this route.")
+            }
+            return matches.first?["id"] as? String
+        }
     }
 
     private func update(_ edit: (inout [[String: Any]]) throws -> Void) throws {

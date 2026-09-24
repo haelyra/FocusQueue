@@ -1236,7 +1236,10 @@ final class QueueViewModel {
     if lastManagedPresentationRefresh == nil
       || Date().timeIntervalSince(lastManagedPresentationRefresh!) >= 60 {
       lastManagedPresentationRefresh = Date()
-      for context in taskContexts.values where context.subtasks.contains(where: { $0.tmux != nil }) {
+      var presentationContexts = Dictionary(uniqueKeysWithValues:
+        ((try? await taskContextStore.loadAvailableForDiscovery()) ?? []).map { ($0.ticketID, $0) })
+      for context in taskContexts.values { presentationContexts[context.ticketID] = context }
+      for context in presentationContexts.values where context.subtasks.contains(where: { $0.tmux != nil }) {
         try? await taskAgentLauncher.configureManagedPresentation(
           context: context, supportDirectory: paths.supportDirectory,
           usageBarEnabled: config.agentUsageBarEnabled)
@@ -3673,10 +3676,14 @@ final class QueueViewModel {
     guard config.agentUsageBarEnabled != enabled else { return }
     config.agentUsageBarEnabled = enabled
     persistConfiguration()
-    let contexts = Array(taskContexts.values)
+    let visibleContexts = Array(taskContexts.values)
+    let contextStore = taskContextStore
     let support = paths.supportDirectory
     Task { [taskAgentLauncher] in
-      for context in contexts where context.subtasks.contains(where: { $0.tmux != nil }) {
+      var contexts = Dictionary(uniqueKeysWithValues:
+        ((try? await contextStore.loadAvailableForDiscovery()) ?? []).map { ($0.ticketID, $0) })
+      for context in visibleContexts { contexts[context.ticketID] = context }
+      for context in contexts.values where context.subtasks.contains(where: { $0.tmux != nil }) {
         try? await taskAgentLauncher.configureManagedPresentation(
           context: context, supportDirectory: support, usageBarEnabled: enabled)
       }

@@ -566,6 +566,32 @@ struct QueueViewModelTests {
     #expect(!restarted.config.agentUsageBarEnabled)
   }
 
+  @Test("Managed usage presentation repairs task sessions outside the selected project")
+  func managedUsagePresentationRepairsEveryStoredTask() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    let hiddenTicket = DashboardTicket(
+      id: "OTH-103", title: "Stored task outside the visible project", status: "open",
+      summary: "Keep its Codex usage rows current")
+    _ = try await store.ensureContext(ticket: hiddenTicket)
+    let runtime = try #require(TmuxController.decode(
+      "fq-task-oth-103|123|1000|%9|456|/dev/ttys099|0\n", executable: "/mock/tmux").first)
+    _ = try await store.upsertSubtask(ticketID: hiddenTicket.id, subtask: TaskSubtask(
+      id: "stored-agent", title: "Stored agent", provider: .codex,
+      sessionID: UUID().uuidString, status: .working, tmux: runtime))
+    let shellDirectory = fixture.paths.supportDirectory.appendingPathComponent("shell")
+    try FileManager.default.createDirectory(at: shellDirectory, withIntermediateDirectories: true)
+    try Data("process.stdout.write('ok')\n".utf8).write(
+      to: shellDirectory.appendingPathComponent("focus_queue_codex_bar.js"))
+    let runner = PresentationRepairRunner(taskID: hiddenTicket.id)
+
+    _ = await fixture.model(agent: ControlledQueueAgent(),
+      taskAgentLauncher: TaskAgentLauncher(runner: runner))
+
+    try await eventually { await runner.repairedContextIDs.contains(hiddenTicket.id) }
+  }
+
   @Test("App and agent share queue moves across refreshes, state saves, and restarts")
   func sharedQueueOrder() async throws {
     let fixture = try await Fixture()
@@ -2589,6 +2615,36 @@ private actor ManagedResumeRunner: ProcessRunning {
 
   private func result(_ output: String = "", exit: Int32 = 0, error: String = "") -> ProcessResult {
     .init(exitCode: exit, standardOutput: output, standardError: error, timedOut: false)
+  }
+}
+
+private actor PresentationRepairRunner: ProcessRunning {
+  private(set) var repairedContextIDs: Set<String> = []
+  private let taskID: String
+
+  init(taskID: String) { self.taskID = taskID }
+
+  func run(_ specification: ProcessSpecification) throws -> ProcessResult {
+    let arguments = specification.arguments
+    if arguments.contains("status-format[1]"),
+       arguments.contains(where: { $0.contains("/tasks/\(taskID)/context.json") }) {
+      repairedContextIDs.insert(taskID)
+    }
+    if arguments.contains("@focus-queue-task") { return result("\(taskID)\n") }
+    if arguments.contains("list-panes") {
+      return result("fq-task-\(taskID.lowercased())|123|1000|%9|456|/dev/ttys099|0|@1|0|160|50|0|0|160|49|stored-agent|||1|auto\n")
+    }
+    if arguments.contains("display-message") { return result("%9\n") }
+    if arguments.contains("@focus-queue-task-title") {
+      return result("Stored task outside the visible project\n")
+    }
+    if arguments.contains("status-format[0]") { return result("#[align=left] #I:#W\n") }
+    if arguments.contains("status") { return result("4\n") }
+    return result()
+  }
+
+  private func result(_ output: String = "") -> ProcessResult {
+    .init(exitCode: 0, standardOutput: output, standardError: "", timedOut: false)
   }
 }
 

@@ -718,7 +718,7 @@ struct QueueViewModelTests {
     #expect(subtask.status == .working)
     #expect(subtask.assignmentDescription == "Keep the exact pane identity")
     let message = try #require(model.actionMessages["ECC-101"])
-    #expect(message.contains(failReveal ? "Click the subtask to retry" : "Preparing task context"))
+    #expect(message.contains(failReveal ? "Click the subtask to retry" : "empty input"))
     model.openLaunchDiagnostics(for: subtask)
     #expect(model.launchDiagnostics?.text.contains(failReveal ? "view-failed" : "\"phase\":\"ready\"") == true)
   }
@@ -743,6 +743,13 @@ struct QueueViewModelTests {
     configuration.projects[0].repositoryPath = repository.path
     configuration.tmuxExecutable = "/usr/bin/true"
     try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(
+      ticket: fixture.tickets[0], project: configuration.projects[0])
+    _ = try await store.setWorktree(
+      ticketID: "ECC-101", path: repository.appendingPathComponent(".worktrees/previous-agent").path,
+      branch: "focus-queue/previous-agent", baseBranch: "main", managed: true,
+      repositoryPath: repository.path)
     let agentID = "11111111-1111-4111-8111-111111111111"
     let runner = ManagedResumeRunner(taskID: "ECC-101", agentID: agentID)
     let terminal = ManagedResumeRecorder()
@@ -750,6 +757,7 @@ struct QueueViewModelTests {
       agent: ControlledQueueAgent(), terminalController: terminal,
       taskAgentLauncher: TaskAgentLauncher(runner: runner, tmuxServerName: "one-click-test"))
 
+    #expect(model.defaultRepository(for: fixture.tickets[0]) == repository.path)
     model.launchDefaultAgent(for: fixture.tickets[0], subtaskID: agentID)
     try await eventually { model.launchingTaskIDs.isEmpty }
 
@@ -757,6 +765,7 @@ struct QueueViewModelTests {
     #expect(agent.title == "Agent 1")
     #expect(agent.provider == .codex)
     #expect(agent.initialPrompt == nil)
+    #expect(agent.assignmentDescription.isEmpty)
     #expect(!agent.includeInitializationPrompt)
     #expect(agent.runtimeMode == .tmux)
     #expect(agent.tmux?.name == "fq-task-ecc-101")
@@ -764,6 +773,8 @@ struct QueueViewModelTests {
     #expect(agent.workspace?.path != repository.path)
     #expect(agent.workspace?.repositoryPath == repository.path)
     #expect(await terminal.opened.count == 1)
+    let launchCommands = await runner.commands.map(\.arguments).flatMap { $0 }
+    #expect(!launchCommands.contains { $0.contains("Prepare the task context") })
   }
 
   @Test("A failed New Agent launch returns its error and retries its saved workspace and assignment")
@@ -1719,6 +1730,33 @@ struct QueueViewModelTests {
       #expect(model.agentSessionError(for: subtask, ticketID: "ECC-101") == nil)
       #expect(model.agentSessionIssue(for: "ECC-101") == nil)
     }
+  }
+
+  @Test("Opening a task title focuses its one shared tmux session")
+  func taskTitleOpensSharedAgentSession() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    let sessionName = "fq-task-ecc-101"
+    for index in 1...2 {
+      let sessionID = UUID().uuidString
+      let runtime = try #require(TmuxController.decode(
+        "\(sessionName)|123|1000|%\(index)|\(500 + index)|/dev/ttys09\(index)|0\n",
+        executable: "/mock/tmux").first)
+      _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: TaskSubtask(
+        id: "agent-\(index)", title: "Agent \(index)", provider: .codex,
+        sessionID: sessionID, status: .working, lastHeartbeatAt: Date(), tmux: runtime))
+    }
+    let terminal = ManagedResumeRecorder()
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(), terminalController: terminal,
+      identifyManagedAgent: { subtask, _ in subtask.sessionID })
+
+    model.openTaskAgents(for: fixture.tickets[0])
+    try await eventually { await terminal.opened.count == 1 }
+    #expect(await terminal.opened.first?.name == sessionName)
+    #expect(model.agentSessionIssue(for: "ECC-101") == nil)
   }
 
   @Test("Opening status stays scoped when two tasks use the same subtask name")

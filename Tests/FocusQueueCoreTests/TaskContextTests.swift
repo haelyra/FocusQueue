@@ -121,6 +121,16 @@ func generatedAgentNamesRespectWordBoundaries() {
     #expect(unbroken.count == 56)
 }
 
+@Test("Generated agent descriptions keep one brief sentence")
+func generatedAgentDescriptionsAreBrief() {
+    #expect(TaskSubtask.agentDescription(
+        prompt: "Please repair promptless startup. Then verify the existing session still opens."
+    ) == "Please repair promptless startup.")
+    let long = TaskSubtask.agentDescription(prompt: String(repeating: "word ", count: 100))
+    #expect(long.count <= 240)
+    #expect(long.hasSuffix("…"))
+}
+
 @Test("Managed runtime is durable and clearing the queue archives before removal")
 func taskContextManagedRuntimeAndClear() async throws {
     let root = try contextFixture(); defer { try? FileManager.default.removeItem(at: root) }

@@ -153,6 +153,40 @@ struct ExternalAgentRegistrationTests {
         #expect(try await registry.registrations().count == 1)
     }
 
+    @Test("First prompt names a promptless app agent once")
+    func firstPromptNamesDefaultAgent() async throws {
+        let (root, store) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionID = UUID().uuidString
+        var agent = TaskSubtask(
+            id: "promptless", title: "Agent 1", assignmentDescription: "",
+            provider: .codex, status: .queued, includeInitializationPrompt: false)
+        agent.workspace = AgentWorkspace(path: root.path, repositoryPath: root.path)
+        _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: agent)
+        let environment = [
+            "FOCUS_QUEUE_TASK_ID": "ECC-101", "FOCUS_QUEUE_SUBTASK_ID": agent.id,
+        ]
+        let registry = ExternalAgentRegistry(root: root)
+        _ = try await registry.register(.init(
+            sessionID: sessionID, cwd: root.path, hookEventName: "SessionStart"
+        ), provider: .codex, environment: environment)
+        _ = try await registry.register(.init(
+            sessionID: sessionID, cwd: root.path, hookEventName: "UserPromptSubmit",
+            prompt: "Fix blank agent startup. Keep the saved tmux session intact."
+        ), provider: .codex, environment: environment)
+        var saved = try #require(try await store.load(ticketID: "ECC-101")?.subtasks.first)
+        #expect(saved.title == "Fix blank agent startup")
+        #expect(saved.assignmentDescription == "Fix blank agent startup.")
+
+        _ = try await registry.register(.init(
+            sessionID: sessionID, cwd: root.path, hookEventName: "UserPromptSubmit",
+            prompt: "Do not replace the established identity. This is a later prompt."
+        ), provider: .codex, environment: environment)
+        saved = try #require(try await store.load(ticketID: "ECC-101")?.subtasks.first)
+        #expect(saved.title == "Fix blank agent startup")
+        #expect(saved.assignmentDescription == "Fix blank agent startup.")
+    }
+
     @Test("Discovery never changes completed work or counts presence as activity")
     func completedAndIdle() async throws {
         let (root, store) = try await fixture()

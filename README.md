@@ -177,12 +177,12 @@ can inspect known profile declarations without executing them. Base installation
 does not inspect shell profiles. Bash follows its normal login-profile rules;
 other shells currently fall back to zsh.
 
-**New agent** has a wrapping Initial prompt editor and derives a readable name.
-**New blank agent** starts with an empty prompt and guesses the workspace. The
-initialization checkbox has a fixed description and an expandable preview, with
-the planned workspace and branch shown before launch. Turning initialization off
-sends only the custom prompt; an empty prompt submits nothing. Blank agents do not
-count toward subtask completion.
+**New Agent** on a task immediately opens a promptless Codex conversation in a
+new isolated worktree and that task's shared tmux session. The first submitted
+prompt replaces its generated `Agent N` identity with a short title and
+one-sentence description. The configured agent sheet retains its wrapping work
+description editor, initialization checkbox, expandable preview, and planned
+workspace and branch. Turning initialization off sends no provider prompt.
 
 Initialized agents are instructed to call `focus-queue-session review-push
 <TASK-ID> <SUBTASK-ID>` before an authorized push. The read-only orchestrator scan

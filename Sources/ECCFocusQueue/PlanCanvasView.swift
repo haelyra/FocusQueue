@@ -569,7 +569,7 @@ struct NewTaskAgentView: View {
               .font(.caption).foregroundStyle(.secondary)
           }
           Toggle("Include detailed task instructions", isOn: $includePrompt)
-          Text("Task identity and plan/log paths are always included. This adds the full assignment and reporting instructions.")
+          Text("Task identity remains in the launch environment. When this is off, the agent opens at an empty input. Turning it on adds the full assignment and reporting instructions.")
             .font(.caption).foregroundStyle(.secondary)
           if includePrompt {
             DisclosureGroup("Initialization prompt preview") {

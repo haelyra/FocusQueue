@@ -1847,6 +1847,7 @@ struct RenamableTaskTitle: View {
   let size: CGFloat
   let weight: Font.Weight
   let maximumLines: Int
+  var openAction: (() -> Void)? = nil
   @State private var isRenaming = false
   @State private var draft = ""
 
@@ -1856,12 +1857,15 @@ struct RenamableTaskTitle: View {
       .lineLimit(maximumLines)
       .frame(maxWidth: .infinity, alignment: .leading)
       .contentShape(Rectangle())
+      .onTapGesture { openAction?() }
       .highPriorityGesture(TapGesture(count: 2).onEnded { beginRename() })
       .contextMenu {
         Button("Rename task", systemImage: "pencil") { beginRename() }
       }
       .accessibilityAction(named: "Rename task", beginRename)
-      .help("Double-click to rename this task")
+      .help(openAction == nil
+        ? "Double-click to rename this task"
+        : "Click to open this task's agents. Double-click to rename the task.")
       .alert("Rename task", isPresented: $isRenaming) {
         TextField("Task title", text: $draft)
         Button("Save") {
@@ -2536,7 +2540,7 @@ private struct TicketCard: View {
         HStack(alignment: .top, spacing: 10) {
           RenamableTaskTitle(
             ticket: ticket, model: model, size: 16, weight: .semibold,
-            maximumLines: 3)
+            maximumLines: 3, openAction: { model.openTaskAgents(for: ticket) })
           VStack(alignment: .trailing, spacing: 3) {
             Text(summaryProgressLabel).font(
               .system(size: 12, weight: .semibold).monospacedDigit()

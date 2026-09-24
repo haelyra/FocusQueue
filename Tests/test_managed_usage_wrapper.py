@@ -73,6 +73,7 @@ class ManagedUsageWrapperTests(unittest.TestCase):
                             "the adapter must remain the pane PID so Codex is its discoverable child")
         self.assertFalse(any(line.startswith("delegate:") for line in calls))
         self.assertTrue(any("status 4" in line for line in calls))
+        self.assertTrue(any("status-position bottom" in line for line in calls))
         self.assertTrue(any(
             f"set-environment -t %7 FOCUS_QUEUE_USAGE_BAR_PATH {self.root / 'codex-bar.js'}" in line
             for line in calls

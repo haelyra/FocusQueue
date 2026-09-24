@@ -45,6 +45,7 @@ case "$interval" in
 esac
 
 tmux set-option -t "$TMUX_PANE" status 4 >/dev/null 2>&1 || true
+tmux set-option -t "$TMUX_PANE" status-position bottom >/dev/null 2>&1 || true
 tmux set-option -t "$TMUX_PANE" status-interval "$interval" >/dev/null 2>&1 || true
 tmux set-option -t "$TMUX_PANE" status-style 'bg=default,fg=default' >/dev/null 2>&1 || true
 tmux set-environment -t "$TMUX_PANE" FOCUS_QUEUE_USAGE_BAR_PATH "$bar" >/dev/null 2>&1 || true

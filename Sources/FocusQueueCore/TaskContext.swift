@@ -182,6 +182,33 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         return title
     }
 
+    public static func agentDescription(prompt: String) -> String {
+        let normalized = prompt.components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }.joined(separator: " ")
+            .replacingOccurrences(
+                of: #"^\s*(?:[-*+>#]+|\d+[.)]|\[[ xX]\])\s*"#,
+                with: "", options: .regularExpression)
+        guard !normalized.isEmpty else { return "Awaiting the first work request." }
+        var firstSentence = ""
+        normalized.enumerateSubstrings(
+            in: normalized.startIndex..<normalized.endIndex,
+            options: [.bySentences, .substringNotRequired]
+        ) { _, range, _, stop in
+            firstSentence = String(normalized[range])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            stop = true
+        }
+        let sentence = firstSentence.isEmpty ? normalized : firstSentence
+        guard sentence.count > 240 else { return sentence }
+        let prefix = String(sentence.prefix(239))
+        let boundary = prefix.lastIndex(where: \.isWhitespace) ?? prefix.endIndex
+        return String(prefix[..<boundary]).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+    }
+
+    static func hasDefaultAgentName(_ title: String) -> Bool {
+        title.range(of: #"^Agent [1-9][0-9]*$"#, options: .regularExpression) != nil
+    }
+
     public init(id: String = UUID().uuidString, title: String,
                 assignmentDescription: String = "", provider: AgentProvider = .codex,
                 sessionID: String? = nil, status: TaskSubtaskStatus = .queued,
@@ -780,11 +807,16 @@ public actor TaskContextStore {
             }
             guard let index else { return }
             context.subtasks[index].sessionID = sessionID.lowercased()
-            if context.subtasks[index].title.hasPrefix(provider.displayName + " ·")
+            let adoptsFirstPrompt = eventName == "UserPromptSubmit"
+                && TaskSubtask.hasDefaultAgentName(context.subtasks[index].title)
+            if adoptsFirstPrompt
+                || context.subtasks[index].title.hasPrefix(provider.displayName + " ·")
                 || context.subtasks[index].title.hasPrefix("Subagent ·") {
                 context.subtasks[index].title = title
             }
-            if context.subtasks[index].assignmentDescription
+            if adoptsFirstPrompt {
+                context.subtasks[index].assignmentDescription = workDescription
+            } else if context.subtasks[index].assignmentDescription
                 .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 context.subtasks[index].assignmentDescription = workDescription
             }

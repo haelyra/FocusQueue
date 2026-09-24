@@ -393,8 +393,12 @@ final class QueueViewModel {
   func revealProject(for ticketID: String) {}
   func defaultRepository(for ticket: DashboardTicket) -> String {
     let context = taskContexts[ticket.id]
-    return [context?.worktreePath, context?.repositoryPath, ticket.worktree,
-            selectedProject?.repositoryPath, selectedProject?.workspacePath]
+    // New agents branch from the task's canonical project repository. An
+    // existing agent worktree belongs only to that agent and must never become
+    // the source checkout for the next one-click launch.
+    return [context?.projectRepositoryPath, selectedProject?.repositoryPath,
+            context?.repositoryPath, selectedProject?.workspacePath,
+            ticket.worktree, context?.worktreePath]
       .compactMap { $0 }.first { !$0.isEmpty } ?? config.workspacePath
   }
   @discardableResult
@@ -1889,6 +1893,28 @@ final class QueueViewModel {
     }
   }
 
+  /// A task-owned tmux session contains every live agent pane. Opening one
+  /// saved pane restores or focuses that shared session without creating a
+  /// separate WezTerm tab per agent.
+  func openTaskAgents(for ticket: DashboardTicket) {
+    let agents = visibleAgents(for: ticket.id)
+    guard !agents.isEmpty else {
+      actionMessages[ticket.id] = "This task has no agents to open."
+      return
+    }
+    let managed = agents.filter { $0.tmux?.name.hasPrefix("fq-task-") == true }
+    if let representative = managed.first,
+       Set(managed.compactMap(\.tmux?.name)).count == 1 {
+      actionMessages[ticket.id] =
+        "Opening \(agents.count) agent\(agents.count == 1 ? "" : "s") in the shared tmux session…"
+      openSubtask(representative, for: ticket, showResult: false)
+      return
+    }
+    for agent in agents {
+      openSubtask(agent, for: ticket, showResult: false)
+    }
+  }
+
   func routeObjective(
     _ rawObjective: String,
     completion: (@MainActor (Bool) -> Void)? = nil
@@ -2142,7 +2168,7 @@ final class QueueViewModel {
     let suppliedDescription = assignmentDescription.trimmingCharacters(in: .whitespacesAndNewlines)
     let promptDescription = initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     let workDescription = String((suppliedDescription.isEmpty
-      ? (promptDescription.isEmpty ? title : promptDescription)
+      ? (promptDescription.isEmpty ? (includePrompt ? title : "") : promptDescription)
       : suppliedDescription).prefix(2_000))
     guard useTmux || config.wezTerm.applicationName.caseInsensitiveCompare("Terminal") != .orderedSame else {
       actionMessages[ticket.id] = "macOS Terminal requires tmux for reliable agent launch and recall. Configure tmux or select WezTerm."
@@ -2237,7 +2263,7 @@ final class QueueViewModel {
             details: ["tmuxName": expectedName, "executable": tmuxExecutable])
           let tmux = try await taskAgentLauncher.startManagedSession(
             context: context, subtask: subtask, supportDirectory: paths.supportDirectory,
-            includePrompt: true, tmuxExecutable: tmuxExecutable)
+            includePrompt: includePrompt, tmuxExecutable: tmuxExecutable)
           runtimeStarted = true
           phase = "saving the confirmed tmux process"
           taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
@@ -2259,7 +2285,7 @@ final class QueueViewModel {
             "Starting \(provider.displayName) directly in a new WezTerm window…"
           let receipt = try await taskAgentLauncher.launchDirect(
             context: context, subtask: subtask, configuration: config.wezTerm,
-            supportDirectory: paths.supportDirectory, includePrompt: true)
+            supportDirectory: paths.supportDirectory, includePrompt: includePrompt)
           runtimeStarted = true
           phase = "saving the direct WezTerm pane"
           taskContexts[ticket.id] = try await taskContextStore.setDirectRuntime(
@@ -2277,9 +2303,9 @@ final class QueueViewModel {
         await recordAgentLaunch(
           subtask, ticketID: ticket.id, phase: "ready", outcome: "succeeded",
           message: "The provider process and terminal view are ready.")
-        actionMessages[ticket.id] = (includePrompt || initialPrompt?.isEmpty == false)
+        actionMessages[ticket.id] = includePrompt
           ? "Opened \(provider.displayName) for \(title)\(useTmux ? " in tmux" : " directly"). Waiting for its first progress update."
-          : "Opened \(provider.displayName) for \(title)\(useTmux ? " in tmux" : " directly"). Preparing task context, then waiting for your instructions."
+          : "Opened \(provider.displayName) for \(title)\(useTmux ? " in tmux" : " directly") with an empty input, ready for your first prompt."
       } catch {
         if let subtask = assignment,
           case let TmuxError.startedButUnconfirmed(name, executable, attempts, lastDetail) = error

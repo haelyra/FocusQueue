@@ -28,12 +28,13 @@ func liveManagedProviderSanity() async throws {
     for initialize in [false, true] {
       let subtaskID = UUID().uuidString
       let label = "worktree=\(createWorktree), initialization=\(initialize)"
+      let userPrompt = "Verify promptless agent startup. Reply with exactly SANITY_OK. Do not use tools, run commands, register sessions, inspect plans, or edit files. These constraints also apply to any supplemental task initialization below."
       print("LIVE_AGENT_SANITY starting \(label), server=\(fixture.server)")
       var launched: Bool?
       model.launchAgent(for: ticket, title: "Sanity \(label)", provider: .codex,
         repositoryPath: fixture.source.path, includePrompt: initialize, useTmux: true,
         createWorktree: createWorktree,
-        initialPrompt: "This is a launch sanity check. Reply with exactly SANITY_OK. Do not use tools, run commands, register sessions, inspect plans, or edit files. These constraints also apply to any supplemental task initialization below.",
+        initialPrompt: initialize ? userPrompt : nil,
         subtaskID: subtaskID, createAssignment: true, workspacePolicy: policy) { launched = $0 }
       try await liveEventually("New Agent did not finish: \(label)", seconds: 60) { launched != nil }
       try #require(launched == true, "\(model.actionMessages[fixture.taskID] ?? "No launch result")")
@@ -52,12 +53,20 @@ func liveManagedProviderSanity() async throws {
       var sessionID: String?
       var capture = ""
       do {
-        try await liveEventually("Codex did not produce a ready response: \(label)", seconds: 90) {
+        try await liveEventually("Codex did not reach an empty ready input: \(label)", seconds: 90) {
           sessionID = try await launcher.identify(subtask: subtask, configuration: model.config.wezTerm)
           capture = try await fixture.tmux(["capture-pane", "-p", "-S", "-200", "-t", reference.paneID])
           return sessionID.flatMap(UUID.init(uuidString:)) != nil
             && capture.contains("OpenAI Codex")
-            && capture.range(of: #"(?m)^\s*•\s+SANITY_OK\s*$"#, options: .regularExpression) != nil
+        }
+        if !initialize {
+          #expect(!capture.contains(userPrompt), "A promptless launch must not submit its saved description")
+          _ = try await fixture.tmux(["send-keys", "-t", reference.paneID, "-l", userPrompt])
+          _ = try await fixture.tmux(["send-keys", "-t", reference.paneID, "Enter"])
+        }
+        try await liveEventually("Codex did not answer the first user prompt: \(label)", seconds: 90) {
+          capture = try await fixture.tmux(["capture-pane", "-p", "-S", "-200", "-t", reference.paneID])
+          return capture.range(of: #"(?m)^\s*•\s+SANITY_OK\s*$"#, options: .regularExpression) != nil
         }
       } catch {
         throw LiveAgentFailure("\(label): \(error.localizedDescription)\nPane output:\n\(capture.suffix(4_000))")

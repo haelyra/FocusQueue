@@ -142,7 +142,7 @@ public actor ExternalAgentRegistry {
             socketPath: hasParent ? nil : socketPath ?? previous?.socketPath)
         if let prompt = event.prompt?.trimmingCharacters(in: .whitespacesAndNewlines), !prompt.isEmpty {
             record.title = TaskSubtask.agentName(prompt: prompt, provider: provider)
-            record.workDescription = String(prompt.prefix(2_000))
+            record.workDescription = TaskSubtask.agentDescription(prompt: prompt)
         }
         // Tracking survives an incomplete task or a failed enrichment step.
         if previous == nil { try save(record) }

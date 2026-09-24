@@ -104,6 +104,12 @@ class RegistrationCLITests(unittest.TestCase):
         self.assertFalse(created["isAssignmentOnly"])
         self.assertNotIn("runtimeMode", created)
 
+        identified = self.command("identify", "ECC-401", created["id"],
+            "Inspect shared panes", "Inspect the shared tmux panes after the first prompt.")
+        self.assertEqual(identified["title"], "Inspect shared panes")
+        self.assertEqual(identified["assignmentDescription"],
+            "Inspect the shared tmux panes after the first prompt.")
+
     def test_placement_cli_creates_other_task_and_private_capsule(self):
         dashboard = self.support / "dashboard.json"
         dashboard.write_text('{"tickets":[]}\n')

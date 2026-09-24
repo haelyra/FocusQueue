@@ -21,18 +21,31 @@ managed_tmux() {
     && [ "$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null)" = "$FOCUS_QUEUE_TMUX_NAME" ]
 }
 
+run_managed_codex() {
+  codex "$@"
+  local provider_status=$?
+  if [ "$provider_status" -eq 0 ] \
+    && [ -n "${FOCUS_QUEUE_TASK_ID:-}" ] \
+    && [ -n "${FOCUS_QUEUE_SUBTASK_ID:-}" ] \
+    && command -v focus-queue-session >/dev/null 2>&1; then
+    focus-queue-session archive-agent \
+      "$FOCUS_QUEUE_TASK_ID" "$FOCUS_QUEUE_SUBTASK_ID" >/dev/null 2>&1 || true
+  fi
+  exit "$provider_status"
+}
+
 if ! managed_tmux; then
   exec /bin/bash "$delegate" "$@"
 fi
 
 if [ "${USAGE_BAR:-on}" = "off" ]; then
-  exec codex "$@"
+  run_managed_codex "$@"
 fi
 
 bar="$(dirname "$delegate")/codex-bar.js"
 if ! command -v node >/dev/null 2>&1 || [ ! -f "$bar" ]; then
   printf '%s\n' 'Focus Queue: the configured usage renderer is unavailable; starting Codex without a bar.' >&2
-  exec codex "$@"
+  run_managed_codex "$@"
 fi
 
 interval=${USAGE_BAR_INTERVAL:-15}
@@ -69,4 +82,4 @@ for line in 1 2 3; do
   tmux set-option -t "$TMUX_PANE" "status-format[$line]" "$format" >/dev/null 2>&1 || true
 done
 
-codex "$@"
+run_managed_codex "$@"

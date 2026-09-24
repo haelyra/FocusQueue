@@ -988,8 +988,8 @@ public actor TaskContextStore {
         }
     }
 
-    /// Removing an agent never deletes its assignment, conversation identity, or workspace.
-    @discardableResult public func removeAgent(ticketID: String, subtaskID: String, automatically: Bool = false) throws -> TaskContext {
+    /// Archiving an agent never deletes its assignment, conversation identity, or workspace.
+    @discardableResult public func archiveAgent(ticketID: String, subtaskID: String, automatically: Bool = false) throws -> TaskContext {
         try mutate(ticketID: ticketID, archiveChanges: true) { context in
             guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
             let session = context.subtasks[index].sessionID
@@ -1002,6 +1002,11 @@ public actor TaskContextStore {
                 if !automatically { context.subtasks[i].completionUnread = false }
             }
         }
+    }
+
+    /// Compatibility spelling for callers that predate the archived-agent UI.
+    @discardableResult public func removeAgent(ticketID: String, subtaskID: String, automatically: Bool = false) throws -> TaskContext {
+        try archiveAgent(ticketID: ticketID, subtaskID: subtaskID, automatically: automatically)
     }
 
     /// Terminal launch receipts can arrive after a provisional row was shown.

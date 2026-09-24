@@ -209,8 +209,8 @@ func taskContextTrackedLaunchInitialization() async throws {
         ticketID: "ECC-405", title: "Must not create an unknown task") == nil)
 }
 
-@Test("Removing a provisional launch records its launch identity tombstone")
-func provisionalLaunchRemovalTombstone() async throws {
+@Test("Archiving a provisional launch preserves it and records its launch identity tombstone")
+func provisionalLaunchArchiveTombstone() async throws {
     let root = try contextFixture(); defer { try? FileManager.default.removeItem(at: root) }
     let store = TaskContextStore(root: root)
     let initial = try await store.ensureContext(ticket: contextTicket())
@@ -218,11 +218,12 @@ func provisionalLaunchRemovalTombstone() async throws {
     _ = try await store.upsertSubtask(ticketID: initial.ticketID,
         subtask: .init(id: launchID, title: "Provisional", status: .working))
 
-    let removed = try await store.removeAgent(ticketID: initial.ticketID,
+    let archived = try await store.archiveAgent(ticketID: initial.ticketID,
         subtaskID: launchID)
 
-    #expect(removed.subtasks.first?.agentRemovedAt != nil)
-    #expect(removed.hasDismissedLaunch(launchID))
+    #expect(archived.subtasks.first?.agentRemovedAt != nil)
+    #expect(archived.hasDismissedLaunch(launchID))
+    #expect(archived.taskItems.isEmpty)
     let registered = try await store.registerExternalSession(
         ticketID: initial.ticketID, provider: .codex,
         sessionID: UUID().uuidString.lowercased(), title: "Late discovery",
@@ -232,6 +233,12 @@ func provisionalLaunchRemovalTombstone() async throws {
     #expect(registered.subtasks.count == 1)
     #expect(registered.subtasks[0].agentRemovedAt != nil)
     #expect(registered.subtasks[0].sessionID == nil)
+
+    let restored = try await store.restoreAgent(
+        ticketID: initial.ticketID, subtaskID: launchID)
+    #expect(restored.subtasks[0].agentRemovedAt == nil)
+    #expect(restored.subtasks[0].id == launchID)
+    #expect(restored.taskItems.map(\.id) == [launchID])
 }
 
 @Test("Deleting an assignment removes only exclusive agents and reparents shared agents")

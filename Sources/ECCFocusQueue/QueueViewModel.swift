@@ -1704,7 +1704,7 @@ final class QueueViewModel {
   }
 
   func agentSessionIssue(for ticketID: String) -> String? {
-    subtasks(for: ticketID).compactMap {
+    visibleAgents(for: ticketID).compactMap {
       agentSessionErrors[Self.subtaskKey(ticketID: ticketID, subtaskID: $0.id)]
     }.first
   }
@@ -1732,6 +1732,14 @@ final class QueueViewModel {
 
   func visibleAgents(for ticketID: String) -> [TaskSubtask] {
     subtasks(for: ticketID).filter { $0.hasAgent && $0.isAgentVisible }
+  }
+
+  func archivedAgents(for ticketID: String) -> [TaskSubtask] {
+    subtasks(for: ticketID)
+      .filter { !$0.isAssignmentOnly && $0.agentRemovedAt != nil }
+      .sorted {
+        ($0.agentRemovedAt ?? .distantPast) > ($1.agentRemovedAt ?? .distantPast)
+      }
   }
 
   func focusSubtasks(for ticketID: String) -> [TaskSubtask] {
@@ -2801,9 +2809,13 @@ final class QueueViewModel {
     }
   }
 
-  func removeAgent(_ subtask: TaskSubtask, from ticket: DashboardTicket) {
+  func archiveAgent(_ subtask: TaskSubtask, from ticket: DashboardTicket) {
     let agents = subtask.isAssignmentOnly ? self.agents(for: subtask, ticketID: ticket.id) : [subtask]
     Task { for agent in agents { await retireAgent(agent, for: ticket) } }
+  }
+
+  func removeAgent(_ subtask: TaskSubtask, from ticket: DashboardTicket) {
+    archiveAgent(subtask, from: ticket)
   }
 
   private func retireAgent(_ subtask: TaskSubtask, for ticket: DashboardTicket, automatically: Bool = false) async {
@@ -2826,21 +2838,21 @@ final class QueueViewModel {
         case .absent: break
         }
       }
-      taskContexts[ticket.id] = try await taskContextStore.removeAgent(ticketID: ticket.id, subtaskID: subtask.id, automatically: automatically)
+      taskContexts[ticket.id] = try await taskContextStore.archiveAgent(ticketID: ticket.id, subtaskID: subtask.id, automatically: automatically)
       localState.agentSessions.removeAll {
         $0.ticketID == ticket.id && ($0.subtaskID == subtask.id ||
           ($0.provider == subtask.provider && $0.sessionID.caseInsensitiveCompare(subtask.sessionID ?? "") == .orderedSame))
       }
       agentSessionErrors[Self.subtaskKey(ticketID: ticket.id, subtaskID: subtask.id)] = nil
       persistLocalState()
-      actionMessages[ticket.id] = "Agent removed. Its assignment, conversation, and workspace history are retained."
+      actionMessages[ticket.id] = "Agent archived. Its assignment, conversation, and workspace history are retained."
       if automatically {
         actionMessages[ticket.id] = "Agent exited. Its terminal and workspace remain available to continue the conversation."
         return
       }
       // List removal is independent of process cleanup and completion approval.
       do { try await taskAgentLauncher.closeRuntime(subtask: subtask, configuration: config.wezTerm) }
-      catch { actionMessages[ticket.id] = "Agent removed. \(error.localizedDescription)" }
+      catch { actionMessages[ticket.id] = "Agent archived. \(error.localizedDescription)" }
       if subtask.status == .completed {
         let removed = taskContexts[ticket.id]?.subtasks.first { $0.id == subtask.id } ?? subtask
         try await TaskMaintenance(root: paths.supportDirectory).requireInactive(removed)
@@ -2850,13 +2862,17 @@ final class QueueViewModel {
     } catch { actionMessages[ticket.id] = error.localizedDescription }
   }
 
-  func removeAgent(_ session: TaskAgentSession, from ticket: DashboardTicket) {
+  func archiveAgent(_ session: TaskAgentSession, from ticket: DashboardTicket) {
     guard session.ticketID == ticket.id else { return }
     if let subtask = subtasks(for: ticket.id).first(where: {
       $0.id == session.subtaskID || ($0.provider == session.provider && $0.sessionID?.caseInsensitiveCompare(session.sessionID) == .orderedSame)
-    }) { removeAgent(subtask, from: ticket); return }
+    }) { archiveAgent(subtask, from: ticket); return }
     localState.agentSessions.removeAll { $0.id == session.id }
     persistLocalState()
+  }
+
+  func removeAgent(_ session: TaskAgentSession, from ticket: DashboardTicket) {
+    archiveAgent(session, from: ticket)
   }
 
   func overrideCompletion(_ subtask: TaskSubtask, for ticket: DashboardTicket) {

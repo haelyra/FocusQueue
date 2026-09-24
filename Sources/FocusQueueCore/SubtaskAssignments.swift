@@ -105,6 +105,7 @@ extension TaskContext {
         var seenRecords = Set<String>()
         var seenSessions = Set<String>()
         func append(_ item: TaskSubtask) {
+            guard item.agentRemovedAt == nil else { return }
             guard seenRecords.insert(item.id).inserted else { return }
             if let sessionID = item.sessionID?.lowercased() {
                 guard seenSessions.insert(item.provider.rawValue + ":" + sessionID).inserted else { return }

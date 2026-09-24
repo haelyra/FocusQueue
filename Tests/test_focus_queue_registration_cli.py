@@ -28,6 +28,7 @@ class RegistrationCLITests(unittest.TestCase):
     def add_task(self, task_id):
         task = self.support / "tasks" / task_id
         task.mkdir(parents=True)
+        (task / "plan.md").write_text(f"# {task_id}\n")
         (task / "context.json").write_text(json.dumps({
             "schemaVersion": 2, "ticketID": task_id, "title": "Registration test",
             "summary": "Fixture", "successCriteria": "Exact identity",
@@ -109,6 +110,20 @@ class RegistrationCLITests(unittest.TestCase):
         self.assertEqual(identified["title"], "Inspect shared panes")
         self.assertEqual(identified["assignmentDescription"],
             "Inspect the shared tmux panes after the first prompt.")
+
+        session_id = str(uuid.uuid4())
+        context = self.context()
+        context["subtasks"][0]["sessionID"] = session_id
+        context["subtasks"][0]["lastHeartbeatAt"] = 1
+        (self.support / "tasks/ECC-401/context.json").write_text(json.dumps(context))
+        archived = self.command("archive-agent", "ECC-401", created["id"])
+        self.assertEqual(archived, {
+            "status": "archived", "subtaskID": created["id"], "taskID": "ECC-401",
+        })
+        saved = self.context()["subtasks"][0]
+        self.assertIn("agentRemovedAt", saved)
+        self.assertEqual(saved["title"], "Inspect shared panes")
+        self.assertEqual(saved["sessionID"], session_id)
 
     def test_placement_cli_creates_other_task_and_private_capsule(self):
         dashboard = self.support / "dashboard.json"

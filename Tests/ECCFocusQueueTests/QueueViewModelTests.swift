@@ -1786,8 +1786,8 @@ struct QueueViewModelTests {
     try await eventually { !model.isOpening(first, ticketID: "ECC-101") }
   }
 
-  @Test("Removing one agent leaves other task agents intact")
-  func removeAgentFromOneTask() async throws {
+  @Test("Archiving one agent leaves it recoverable and other task agents intact")
+  func archiveAgentFromOneTask() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let store = TaskContextStore(root: fixture.root)
@@ -1807,10 +1807,12 @@ struct QueueViewModelTests {
       LocalState(agentSessions: [firstSession, secondSession]))
     let model = await fixture.model(agent: ControlledQueueAgent())
 
-    model.removeAgent(first, from: fixture.tickets[0])
+    model.archiveAgent(first, from: fixture.tickets[0])
     try await eventually { model.visibleAgents(for: "ECC-101").isEmpty }
 
     #expect(model.agentSessions(for: "ECC-101").isEmpty)
+    #expect(model.archivedAgents(for: "ECC-101").map(\.id) == ["first"])
+    #expect(model.archivedAgents(for: "ECC-101").first?.sessionID == first.sessionID)
     #expect(model.subtasks(for: "ECC-102").map(\.id) == ["second"])
     #expect(model.agentSessions(for: "ECC-102").map(\.subtaskID) == ["second"])
   }

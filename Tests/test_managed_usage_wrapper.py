@@ -1,8 +1,13 @@
+import json
 import os
 from pathlib import Path
+import shlex
+import shutil
 import subprocess
 import tempfile
+import time
 import unittest
+import uuid
 
 
 ROOT = Path(__file__).parents[1]
@@ -25,7 +30,10 @@ class ManagedUsageWrapperTests(unittest.TestCase):
         (self.root / "codex-bar.js").write_text("// fixture\n")
         for name, body in {
             "codex": ("#!/bin/bash\nprintf 'codex:%s\\n' \"$*\" >> \"$CALLS\"\n"
-                      "printf '%s\\n' \"$PPID\" > \"$CODEX_PARENT\"\n"),
+                      "printf '%s\\n' \"$PPID\" > \"$CODEX_PARENT\"\n"
+                      "exit \"${CODEX_EXIT:-0}\"\n"),
+            "focus-queue-session":
+                "#!/bin/bash\nprintf 'session:%s\\n' \"$*\" >> \"$CALLS\"\n",
             "node": "#!/bin/bash\nexit 0\n",
             "tmux": ("#!/bin/bash\nprintf 'tmux:%s\\n' \"$*\" >> \"$CALLS\"\n"
                      "case \"${*: -1}\" in '#{session_name}') printf '%s\\n' \"${LIVE_TMUX_SESSION:-fq-task-ecc-035}\" ;; '#{client_utf8}') printf '1\\n' ;; esac\n"),
@@ -134,6 +142,105 @@ class ManagedUsageWrapperTests(unittest.TestCase):
         calls = self.calls.read_text().splitlines()
         self.assertEqual(calls[-1], "codex:--yolo hello")
         self.assertFalse(any("set-option" in line or "set-environment" in line for line in calls))
+
+    def test_graceful_managed_exit_archives_the_exact_agent(self):
+        result = self.run_wrapper(managed=True, overrides={
+            "FOCUS_QUEUE_TASK_ID": "FOC-005",
+            "FOCUS_QUEUE_SUBTASK_ID": "agent-6",
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls.read_text().splitlines()[-1],
+                         "session:archive-agent FOC-005 agent-6")
+
+    def test_uncertain_managed_exit_remains_active_and_recallable(self):
+        result = self.run_wrapper(managed=True, overrides={
+            "FOCUS_QUEUE_TASK_ID": "FOC-005",
+            "FOCUS_QUEUE_SUBTASK_ID": "agent-6",
+            "CODEX_EXIT": "17",
+        })
+        self.assertEqual(result.returncode, 17, result.stderr)
+        self.assertFalse(any(line.startswith("session:archive-agent")
+                             for line in self.calls.read_text().splitlines()))
+
+    def test_real_tmux_classifies_graceful_and_uncertain_exits_without_killing_session(self):
+        real_tmux = shutil.which("tmux", path=os.environ.get("PATH"))
+        helper = ROOT / ".build/debug/focus-queue-session"
+        if not real_tmux or not helper.is_file():
+            self.skipTest("real tmux and a built focus-queue-session are required")
+
+        support = self.root / "support"
+        task = support / "tasks/SAN-001"
+        task.mkdir(parents=True)
+        plan = task / "plan.md"
+        plan.write_text("# Managed exit sanity\n")
+        subtasks = [{
+            "id": agent_id,
+            "title": title,
+            "provider": "codex",
+            "status": "working",
+            "runtimeMode": "tmux",
+            "lastHeartbeatAt": 1,
+        } for agent_id, title in (
+            ("graceful", "Graceful agent"), ("uncertain", "Uncertain agent"))]
+        context = task / "context.json"
+        context.write_text(json.dumps({
+            "schemaVersion": 2,
+            "ticketID": "SAN-001",
+            "title": "Managed exit sanity",
+            "summary": "",
+            "successCriteria": "Classify exits without losing the task session.",
+            "planPath": str(plan),
+            "managedWorktree": False,
+            "subtasks": subtasks,
+            "updatedAt": 0,
+        }))
+
+        real_bin = self.root / "real-bin"
+        real_bin.mkdir()
+        for name, body in {
+            "codex": "#!/bin/bash\nexit \"${CODEX_EXIT:-0}\"\n",
+            "node": "#!/bin/bash\nexit 0\n",
+        }.items():
+            path = real_bin / name
+            path.write_text(body)
+            path.chmod(0o700)
+        socket = "fq-archive-" + uuid.uuid4().hex[:12]
+        session = "fq-task-san-001"
+        path = f"{real_bin}:{helper.parent}:{os.environ.get('PATH', '/usr/bin:/bin')}"
+
+        def tmux(*arguments, check=True):
+            return subprocess.run(
+                [real_tmux, "-L", socket, *arguments], capture_output=True,
+                text=True, timeout=10, check=check)
+
+        def launch(agent_id, exit_code):
+            command = shlex.join([
+                "env", f"PATH={path}", "FOCUS_QUEUE_MANAGED_TMUX=1",
+                f"FOCUS_QUEUE_TMUX_NAME={session}", "FOCUS_QUEUE_TASK_ID=SAN-001",
+                f"FOCUS_QUEUE_SUBTASK_ID={agent_id}",
+                f"FOCUS_QUEUE_SUPPORT_DIR={support}", f"CODEX_EXIT={exit_code}",
+                "/bin/bash", str(WRAPPER), str(self.delegate), "--",
+            ])
+            tmux("split-window", "-d", "-t", session, command)
+
+        try:
+            tmux("new-session", "-d", "-s", session, "sleep 60")
+            launch("graceful", 0)
+            launch("uncertain", 17)
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                saved = json.loads(context.read_text())
+                archived = {item["id"]: item.get("agentRemovedAt") for item in saved["subtasks"]}
+                panes = tmux("list-panes", "-t", session, "-F", "#{pane_id}").stdout.splitlines()
+                if archived["graceful"] and archived["uncertain"] is None and len(panes) == 1:
+                    break
+                time.sleep(0.1)
+            self.assertTrue(archived["graceful"])
+            self.assertIsNone(archived["uncertain"])
+            self.assertEqual(len(panes), 1, "the sibling pane must keep the task session alive")
+            self.assertEqual(tmux("has-session", "-t", session).returncode, 0)
+        finally:
+            tmux("kill-server", check=False)
 
 
 if __name__ == "__main__":

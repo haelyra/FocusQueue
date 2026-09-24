@@ -58,7 +58,7 @@ struct AgentUpdateView: View {
         HStack {
           Button("Override: mark complete") { model.overrideCompletion(subtask, for: ticket) }
             .buttonStyle(.borderedProminent)
-          Button(subtask.isAssignmentOnly ? "Remove agents" : "Remove agent") { model.removeAgent(subtask, from: ticket); model.closeAgentUpdate() }
+          Button(subtask.isAssignmentOnly ? "Archive agents" : "Archive agent") { model.archiveAgent(subtask, from: ticket); model.closeAgentUpdate() }
         }
       }
       ScrollView {

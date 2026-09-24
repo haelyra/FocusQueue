@@ -2372,7 +2372,7 @@ private struct TicketCard: View {
   @State private var completingSubtask: TaskSubtask?
   @State private var deletingSubtask: TaskSubtask?
   @State private var completingAgent: TaskSubtask?
-  @State private var removingAgent: TaskSubtask?
+  @State private var archivingAgent: TaskSubtask?
   @Environment(\.queueAccentStyle) private var accentStyle
 
   private var review: CompletionRequest? { model.latestReview(for: ticket.id) }
@@ -2467,18 +2467,18 @@ private struct TicketCard: View {
         Text("This changes only the selected agent record.")
       }
       .confirmationDialog(
-        "Remove this agent?",
+        "Archive this agent?",
         isPresented: Binding(
-          get: { removingAgent != nil }, set: { if !$0 { removingAgent = nil } }),
+          get: { archivingAgent != nil }, set: { if !$0 { archivingAgent = nil } }),
         titleVisibility: .visible
       ) {
-        Button("Remove agent", role: .destructive) {
-          if let agent = removingAgent { model.removeAgent(agent, from: ticket) }
-          removingAgent = nil
+        Button("Archive agent") {
+          if let agent = archivingAgent { model.archiveAgent(agent, from: ticket) }
+          archivingAgent = nil
         }
-        Button("Cancel", role: .cancel) { removingAgent = nil }
+        Button("Cancel", role: .cancel) { archivingAgent = nil }
       } message: {
-        Text("The work item, conversation, and workspace history will be retained.")
+        Text("The live pane will close. The work item, conversation, and workspace stay available under Archived agents.")
       }
       .draggable(ticket.id)
       .background {
@@ -2581,6 +2581,7 @@ private struct TicketCard: View {
       let items = model.taskItems(for: ticket.id)
       let activeItems = items.filter { $0.status != .completed }
       let completedItems = items.filter { $0.status == .completed }
+      let archivedAgents = model.archivedAgents(for: ticket.id)
 
       DisclosureGroup("Work items (\(activeItems.count))", isExpanded: $showsSubtasks) {
         ForEach(activeItems) { item in taskItemRow(item) }
@@ -2617,6 +2618,23 @@ private struct TicketCard: View {
         .help("Start Codex now in a new isolated worktree and this task's shared tmux session")
       }
       .font(.system(size: 12, weight: .semibold))
+      .contextMenu {
+        Menu {
+          if archivedAgents.isEmpty {
+            Button("No archived agents") {}
+              .disabled(true)
+          } else {
+            ForEach(archivedAgents) { agent in
+              Button("Restore and open \(agent.title)", systemImage: "arrow.uturn.backward.circle") {
+                model.openSubtask(agent, for: ticket, showResult: false)
+              }
+            }
+          }
+        } label: {
+          Label("Archived agents (\(archivedAgents.count))", systemImage: "archivebox")
+        }
+      }
+      .help("Right-click to restore archived agents")
 
       if let message = model.actionMessages[ticket.id] {
         if model.agentSessionIssue(for: ticket.id) != nil {
@@ -2854,8 +2872,8 @@ private struct TicketCard: View {
         }
         .disabled(!model.hasLaunchDiagnostics(for: agent))
         Divider()
-        Button("Remove agent…", systemImage: "trash", role: .destructive) {
-          removingAgent = agent
+        Button("Archive agent…", systemImage: "archivebox") {
+          archivingAgent = agent
         }
       } label: {
         Image(systemName: "ellipsis.circle")
@@ -2865,7 +2883,7 @@ private struct TicketCard: View {
       .fixedSize()
       .minimumHitTarget()
       .accessibilityLabel("More options for work item \(agent.title)")
-      .help("Open, edit, complete, inspect, or remove this work item")
+      .help("Open, edit, complete, inspect, or archive this agent")
     }
     .padding(9)
     .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
@@ -3418,11 +3436,11 @@ private struct AgentSessionPicker: View {
             : "View \(session.provider.displayName) agent, \(session.tabTitle), session \(session.sessionID)"
         )
 
-      Button { model.removeAgent(session, from: ticket) } label: {
-        Image(systemName: "trash").font(.system(size: 13, weight: .semibold))
+      Button { model.archiveAgent(session, from: ticket) } label: {
+        Image(systemName: "archivebox").font(.system(size: 13, weight: .semibold))
       }.buttonStyle(.plain).minimumHitTarget()
-        .accessibilityLabel("Remove agent \(session.tabTitle)")
-        .help("Remove this agent from the task")
+        .accessibilityLabel("Archive agent \(session.tabTitle)")
+        .help("Archive this agent and retain its conversation and workspace")
     }.padding(.horizontal, 10).padding(.vertical, 8)
       .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 10))
   }

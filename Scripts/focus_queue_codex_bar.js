@@ -143,6 +143,70 @@ function readSessionSnapshot(sessionFile) {
   }
 }
 
+function agentProvider(taskAgent) {
+  return String(taskAgent?.agent?.provider || 'codex').toLowerCase() === 'claude' ? 'claude' : 'codex';
+}
+
+// Claude transcripts live one escaped project folder deep and are named by the
+// exact session UUID, so the scan stays bounded by the project count.
+function findClaudeSessionFile(claudeHome, sessionID) {
+  if (!UUID.test(sessionID)) return null;
+  const projectsRoot = path.join(claudeHome, 'projects');
+  try {
+    for (const entry of fs.readdirSync(projectsRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const candidate = path.join(projectsRoot, entry.name, `${sessionID.toLowerCase()}.jsonl`);
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate;
+      } catch { /* another project's folder may not hold this session */ }
+    }
+  } catch { /* a missing projects root is an untracked session */ }
+  return null;
+}
+
+// Claude transcripts carry per-message usage records but no quota events.
+function readClaudeSessionSnapshot(sessionFile) {
+  if (!sessionFile) return { claudeUsage: null, claudeModel: null };
+  let descriptor;
+  try {
+    const metadata = fs.statSync(sessionFile);
+    const start = Math.max(0, metadata.size - TAIL_BYTES);
+    descriptor = fs.openSync(sessionFile, 'r');
+    const buffer = Buffer.alloc(metadata.size - start);
+    fs.readSync(descriptor, buffer, 0, buffer.length, start);
+    const lines = buffer.toString('utf8').split('\n');
+    let usage = null;
+    let model = null;
+    for (let index = lines.length - 1; index >= 0 && !usage; index -= 1) {
+      const line = lines[index];
+      if (!line.includes('"usage"')) continue;
+      try {
+        const event = JSON.parse(line);
+        const record = event?.message?.usage;
+        if (record && Number.isFinite(record.input_tokens) && Number.isFinite(record.output_tokens)) {
+          usage = record;
+          model = typeof event.message?.model === 'string' ? event.message.model : null;
+        }
+      } catch { /* the first tail line can be partial */ }
+    }
+    return { claudeUsage: usage, claudeModel: model };
+  } catch {
+    return { claudeUsage: null, claudeModel: null };
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
+function claudeContextWindow(model) {
+  return typeof model === 'string' && model.includes('[1m]') ? 1_000_000 : 200_000;
+}
+
+function claudeContextUsed(usage) {
+  if (!usage) return null;
+  return (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0)
+    + (usage.cache_creation_input_tokens || 0);
+}
+
 function glyphs(environment = process.env) {
   const unicode = String(environment.USAGE_BAR_GLYPHS || '').toLowerCase() !== 'ascii';
   return unicode
@@ -212,23 +276,27 @@ function buildCompactLine(taskAgent, snapshot, quotaSnapshot, mode) {
   const p = palette(mode);
   const sep = ` ${p.dim(marks.sep)} `;
   const ticket = safeText(taskAgent.context?.ticketID || 'Focus Queue', mode);
+  const isClaude = agentProvider(taskAgent) === 'claude';
   const tokenCount = snapshot.tokenCount;
   const info = tokenCount?.info || {};
-  const limits = quotaSnapshot?.tokenCount?.rate_limits || tokenCount?.rate_limits || {};
+  const limits = isClaude ? {}
+    : quotaSnapshot?.tokenCount?.rate_limits || tokenCount?.rate_limits || {};
   const quotaParts = [
     quotaSegment(limits.primary, '5h', p.amber, p, marks),
     quotaSegment(limits.secondary, '7d', p.rose, p, marks),
   ].filter(Boolean);
   const parts = [quotaParts.length > 0
     ? `${p.amber(marks.bolt)} ${quotaParts.join(sep)}`
-    : p.dim(`${marks.bolt} waiting for first prompt`)];
+    : p.dim(isClaude ? `${marks.bolt} no provider quota data` : `${marks.bolt} waiting for first prompt`)];
   const launch = taskAgent.agent.launchConfiguration || {};
-  const model = safeText(launch.model || snapshot.turnContext?.model || 'codex', mode);
+  const model = safeText(launch.model || (isClaude ? snapshot.claudeModel : snapshot.turnContext?.model)
+    || (isClaude ? 'claude' : 'codex'), mode);
   const last = info.last_token_usage;
-  const used = last?.total_tokens;
+  const used = isClaude ? claudeContextUsed(snapshot.claudeUsage) : last?.total_tokens;
+  const contextWindow = isClaude ? claudeContextWindow(snapshot.claudeModel) : info.model_context_window;
   const modelParts = [p.amber(`${marks.star} ${model}`)];
-  if (Number.isFinite(used) && Number.isFinite(info.model_context_window) && info.model_context_window > 0) {
-    const percent = Math.min(100, Math.round((used / info.model_context_window) * 100));
+  if (Number.isFinite(used) && Number.isFinite(contextWindow) && contextWindow > 0) {
+    const percent = Math.min(100, Math.round((used / contextWindow) * 100));
     const paint = percent >= 90 ? p.crit : percent >= 75 ? p.warn : p.ok;
     modelParts.push(`${p.dim('ctx')} ${paint(`${bar(percent, 6, marks)} ${percent}%`)}`);
   }
@@ -259,40 +327,44 @@ function buildLines(taskAgent, snapshot, quotaSnapshot, codexHome, cwd, mode) {
     ];
   }
 
+  const isClaude = agentProvider(taskAgent) === 'claude';
   const tokenCount = snapshot.tokenCount;
   const info = tokenCount?.info || {};
-  const limits = quotaSnapshot?.tokenCount?.rate_limits || tokenCount?.rate_limits || {};
+  const limits = isClaude ? {}
+    : quotaSnapshot?.tokenCount?.rate_limits || tokenCount?.rate_limits || {};
   const last = info.last_token_usage;
   const quotaParts = [
     quotaSegment(limits.primary, '5h', p.amber, p, marks),
     quotaSegment(limits.secondary, '7d', p.rose, p, marks),
   ].filter(Boolean);
-  if (last?.input_tokens > 0 && quotaParts.length > 0) {
+  if (!isClaude && last?.input_tokens > 0 && quotaParts.length > 0) {
     const cache = Math.round(((last.cached_input_tokens || 0) / last.input_tokens) * 100);
     quotaParts.push(`${p.dim('cache')} ${cache >= 50 ? p.ok(`${cache}%`) : p.dim(`${cache}%`)}`);
   }
   const line1 = quotaParts.length > 0
     ? `${p.amber(marks.bolt)} ${quotaParts.join(sep)}`
-    : p.dim(`${marks.bolt} waiting for first prompt`);
+    : p.dim(isClaude ? `${marks.bolt} no provider quota data` : `${marks.bolt} waiting for first prompt`);
 
   const launch = taskAgent.agent.launchConfiguration || {};
-  const model = safeText(launch.model || snapshot.turnContext?.model || 'codex', mode);
+  const model = safeText(launch.model || (isClaude ? snapshot.claudeModel : snapshot.turnContext?.model)
+    || (isClaude ? 'claude' : 'codex'), mode);
   const effort = safeText(launch.effort
-    || snapshot.turnContext?.collaboration_mode?.settings?.reasoning_effort || '', mode);
+    || (isClaude ? '' : snapshot.turnContext?.collaboration_mode?.settings?.reasoning_effort) || '', mode);
   const modelParts = [p.amber(`${marks.star} ${model}`)];
   if (effort) modelParts.push(p.dim(effort));
-  const used = last?.total_tokens;
-  if (Number.isFinite(used) && Number.isFinite(info.model_context_window) && info.model_context_window > 0) {
-    const percent = Math.min(100, Math.round((used / info.model_context_window) * 100));
+  const used = isClaude ? claudeContextUsed(snapshot.claudeUsage) : last?.total_tokens;
+  const contextWindow = isClaude ? claudeContextWindow(snapshot.claudeModel) : info.model_context_window;
+  if (Number.isFinite(used) && Number.isFinite(contextWindow) && contextWindow > 0) {
+    const percent = Math.min(100, Math.round((used / contextWindow) * 100));
     const paint = percent >= 90 ? p.crit : percent >= 75 ? p.warn : p.ok;
-    modelParts.push(`${p.dim('ctx')} ${paint(`${bar(percent, 10, marks)} ${percent}%`)} ${p.dim(`${Math.round(info.model_context_window / 1000)}K`)}`);
+    modelParts.push(`${p.dim('ctx')} ${paint(`${bar(percent, 10, marks)} ${percent}%`)} ${p.dim(`${Math.round(contextWindow / 1000)}K`)}`);
   } else {
     modelParts.push(p.dim('ctx waiting'));
   }
-  const total = compactTokens(info.total_token_usage?.total_tokens);
+  const total = isClaude ? '' : compactTokens(info.total_token_usage?.total_tokens);
   if (total) modelParts.push(p.dim(`${total} tok`));
 
-  const hooks = countHooks(codexHome);
+  const hooks = isClaude ? 0 : countHooks(codexHome);
   const detailParts = [p.rose(marks.gear), p.dim(`task ${ticket}`)];
   if (hooks > 0) detailParts.push(p.dim(`hooks ${hooks}`));
   if (directory) detailParts.push(p.dim(directory));
@@ -306,15 +378,19 @@ function main() {
   const agentID = args.get('--agent');
   const cwd = args.get('--cwd') || process.cwd();
   const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+  const claudeHome = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
   const taskAgent = typeof contextPath === 'string' && typeof agentID === 'string'
     ? readTaskAgent(contextPath, agentID) : null;
+  const provider = agentProvider(taskAgent);
   const sessionID = taskAgent?.agent?.sessionID;
   const requested = Number.parseInt(args.get('--line'), 10);
   const compact = requested === 0;
   const sessionFile = requested === 3 || typeof sessionID !== 'string'
-    ? null : findSessionFile(codexHome, sessionID);
-  const snapshot = readSessionSnapshot(sessionFile);
-  const quotaSnapshot = (requested === 1 || compact) && taskAgent
+    ? null : provider === 'claude'
+      ? findClaudeSessionFile(claudeHome, sessionID) : findSessionFile(codexHome, sessionID);
+  const snapshot = provider === 'claude'
+    ? readClaudeSessionSnapshot(sessionFile) : readSessionSnapshot(sessionFile);
+  const quotaSnapshot = provider !== 'claude' && (requested === 1 || compact) && taskAgent
     ? readSessionSnapshot(findNewestSession(codexHome)) : snapshot;
   if (compact) {
     process.stdout.write(`${buildCompactLine(taskAgent, snapshot, quotaSnapshot, mode)}\n`);
@@ -326,7 +402,7 @@ function main() {
 
 module.exports = {
   readTaskAgent, findSessionFile, findNewestSession, readSessionSnapshot, buildLines,
-  buildCompactLine,
+  buildCompactLine, findClaudeSessionFile, readClaudeSessionSnapshot,
 };
 
 if (require.main === module) main();

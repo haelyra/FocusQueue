@@ -1,0 +1,19 @@
+# Claude shell entry
+
+Normal interactive `claude` and `claude --resume <uuid>` launches can start in Focus Queue's managed tmux server, mirroring the [Codex shell entry](CODEX_TMUX_ENTRY.md). The entry script, installer, usage adapter and resume/duplicate guards are shared machinery; only the provider grammar differs.
+
+Grammar differences from Codex: resume is the flag `claude --resume <uuid>` (or `-r`), not a `resume` subcommand, and `--continue` resumes the most recent conversation without a UUID. There is no `--cd`; the launch directory is always the current directory, so the managed workspace is applied with `chdir` before the provider starts and never appears in provider arguments. `--add-dir` and the other known value options pass through unchanged. `-p`/`--print` invocations are classified as noninteractive agents; they persist a launch receipt like any other launch, and a print-mode resume with an explicit UUID runs the same duplicate guard as a bypassed interactive resume.
+
+## Session identity: hooks are canonical, not the environment
+
+Claude Code does not export `CLAUDE_SESSION_ID` to the shell, so unlike Codex the environment is never a reliable identity source (managed panes also strip any inherited value). The canonical registration path is the Claude Code hooks payload: the optional installer merges `SessionStart`, `UserPromptSubmit`, `Stop`, `SessionEnd`, `SubagentStart` and `SubagentStop` hooks into `~/.claude/settings.json`, and each pipes its stdin JSON — which carries `session_id` — to `focus-queue-session register-event --provider claude`. Identity registration therefore needs no model response. Without hooks, process discovery matches transcripts under `~/.claude/projects/<escaped-cwd>/<uuid>.jsonl` and `focus-queue-session attach` remains the manual fallback.
+
+## Install and recovery
+
+`Scripts/install_claude_entry.py` mirrors the Codex installer: it installs the entry and shared usage adapter under the application's support directory, appends one marked source block defining a zsh `function claude` to `.zshrc`, and leaves hook files untouched unless `--install-hooks` is passed. Hook merging into `~/.claude/settings.json` preserves unrelated settings and other users' hook entries, replaces only this integration's exact commands, and is idempotent; new or changed hooks require Claude Code's interactive review before they run. Existing files are backed up and a failed install rolls back. Session names use `fq-claude-*`; task panes share `fq-task-<task-id>` as with Codex. `FOCUS_QUEUE_CLAUDE_TMUX=off` is the shell-level managed-tmux opt-out.
+
+The shareable global instruction payload is [CLAUDE_GLOBAL_INSTRUCTIONS.md](../Config/CLAUDE_GLOBAL_INSTRUCTIONS.md). App installation merges its marked block into the default `~/.claude/CLAUDE.md`, preserving personal text outside it, alongside the existing `~/.codex/AGENTS.md` merge.
+
+The managed usage bar reads the task context's per-agent `provider` field. For Claude agents it locates the exact session transcript under `~/.claude/projects` and renders model plus context-window fill from the last `message.usage` record (`input_tokens + cache_read_input_tokens + cache_creation_input_tokens` against a 200K window, or 1M for `[1m]` model IDs). Claude transcripts carry no 5h/7d quota events, so quota segments are omitted and the bar reports `no provider quota data`; the compact one-line border works identically otherwise.
+
+The headless test module `Tests/test_claude_entry.py` mirrors the Codex entry coverage: argument classification, provider environment, session naming, exact resume reuse, duplicate and unconfirmed launch rejection, restored-shell preservation, workspace isolation through `chdir`, print-mode resume guarding, fixture-home installation, hook opt-in idempotence, and rollback. Usage-bar Claude rendering is covered in `Tests/test_focus_queue_codex_bar.py`.

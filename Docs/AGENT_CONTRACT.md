@@ -41,7 +41,7 @@ Projects own unique 2 to 5 character task prefixes. Focus Queue uses `FOC-###`; 
 
 Preparing task context creates missing documents and outlines empty plans without replacing authored content. Log appends use the same cross-process task lock as state changes. They never re-save the central plan or overwrite task state. Symbolic-link log destinations are rejected. Existing historical plans are preserved until a deliberate archival migration.
 
-The installable, coworker-shareable Codex payload is [CODEX_GLOBAL_INSTRUCTIONS.md](../Config/CODEX_GLOBAL_INSTRUCTIONS.md). App installation replaces only its marked global block and preserves personal instructions. The [entry guide](CODEX_TMUX_ENTRY.md) covers fresh shell setup, role selection, missing-data behavior, enforcement boundaries and recovery.
+The installable, coworker-shareable Codex payload is [CODEX_GLOBAL_INSTRUCTIONS.md](../Config/CODEX_GLOBAL_INSTRUCTIONS.md). App installation replaces only its marked global block and preserves personal instructions. The [entry guide](CODEX_TMUX_ENTRY.md) covers fresh shell setup, role selection, missing-data behavior, enforcement boundaries and recovery. The Claude equivalents are [CLAUDE_GLOBAL_INSTRUCTIONS.md](../Config/CLAUDE_GLOBAL_INSTRUCTIONS.md), merged into `~/.claude/CLAUDE.md`, and the [Claude entry guide](CLAUDE_TMUX_ENTRY.md), whose hook payload is the canonical session-identity path because Claude Code does not export `CLAUDE_SESSION_ID` to the shell.
 
 ## Management boundaries
 

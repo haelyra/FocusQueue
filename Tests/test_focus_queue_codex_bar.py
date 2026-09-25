@@ -18,9 +18,14 @@ class FocusQueueCodexBarTests(unittest.TestCase):
         self.codex_home = self.root / "codex"
         self.sessions = self.codex_home / "sessions/2026/09/24"
         self.sessions.mkdir(parents=True)
+        self.claude_home = self.root / "claude"
+        self.claude_project = self.claude_home / "projects/-Users-test-repository"
+        self.claude_project.mkdir(parents=True)
         self.context = self.root / "context.json"
         self.first_session = "01a0d15c-33b1-7442-9e82-83038734d23b"
         self.second_session = "01a0d15c-ad43-7ab3-bbaa-e8b703b84f05"
+        self.first_claude_session = "3f4a9c1e-2b7d-4c5a-8e6f-1a2b3c4d5e6f"
+        self.second_claude_session = "9b8a7d6c-5e4f-4a3b-8c2d-0e1f2a3b4c5d"
         self.context.write_text(json.dumps({
             "ticketID": "ECC-035",
             "title": "Usage bar test",
@@ -35,6 +40,17 @@ class FocusQueueCodexBarTests(unittest.TestCase):
                     "sessionID": self.second_session,
                     "launchConfiguration": {"model": "gpt-agent-two", "effort": "low"},
                 },
+                {
+                    "id": "claude-one",
+                    "provider": "claude",
+                    "sessionID": self.first_claude_session,
+                    "launchConfiguration": {"model": "claude-agent-one", "effort": "medium"},
+                },
+                {
+                    "id": "claude-two",
+                    "provider": "claude",
+                    "sessionID": self.second_claude_session,
+                },
             ],
         }))
         self.write_session(self.first_session, context_tokens=25_000, total_tokens=40_000,
@@ -42,6 +58,9 @@ class FocusQueueCodexBarTests(unittest.TestCase):
         self.write_session(self.second_session, context_tokens=200_000, total_tokens=300_000,
                            context_window=250_000, used_percent=88)
         os.utime(self.session_path(self.second_session), (2_000_000_000, 2_000_000_000))
+        self.write_claude_session(self.first_claude_session, context_tokens=20_000)
+        self.write_claude_session(self.second_claude_session, context_tokens=80_000,
+                                  model="claude-agent-two")
 
     def session_path(self, session_id):
         return self.sessions / f"rollout-2026-09-24T00-00-00-{session_id}.jsonl"
@@ -68,11 +87,27 @@ class FocusQueueCodexBarTests(unittest.TestCase):
         }
         self.session_path(session_id).write_text(json.dumps(event) + "\n")
 
+    def write_claude_session(self, session_id, *, context_tokens, model="claude-transcript-model"):
+        events = [
+            {"type": "user", "sessionId": session_id,
+             "message": {"role": "user", "content": "hello"}},
+            {"type": "assistant", "sessionId": session_id,
+             "message": {"role": "assistant", "model": model,
+                         "usage": {"input_tokens": 4,
+                                   "cache_read_input_tokens": context_tokens - 1004,
+                                   "cache_creation_input_tokens": 1000,
+                                   "output_tokens": 350}}},
+        ]
+        transcript = self.claude_project / f"{session_id}.jsonl"
+        transcript.write_text("".join(json.dumps(event) + "\n" for event in events))
+
     def render(self, agent, line):
         return subprocess.run([
             "node", str(RENDERER), "--plain", "--context", str(self.context),
             "--agent", agent, "--cwd", str(self.root / agent), "--line", str(line),
-        ], capture_output=True, text=True, env={**os.environ, "CODEX_HOME": str(self.codex_home)},
+        ], capture_output=True, text=True,
+           env={**os.environ, "CODEX_HOME": str(self.codex_home),
+                "CLAUDE_CONFIG_DIR": str(self.claude_home)},
            timeout=10)
 
     def test_context_window_and_model_are_selected_by_exact_agent_session(self):
@@ -130,6 +165,45 @@ class FocusQueueCodexBarTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "")
+
+    def test_claude_agent_renders_model_and_context_from_transcript_usage(self):
+        first = self.render("claude-one", 2)
+        second = self.render("claude-two", 2)
+
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertIn("claude-agent-one", first.stdout)
+        self.assertIn("medium", first.stdout)
+        self.assertIn("ctx", first.stdout)
+        self.assertIn("10%", first.stdout)
+        self.assertIn("200K", first.stdout)
+
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertIn("claude-agent-two", second.stdout)
+        self.assertIn("40%", second.stdout)
+
+    def test_claude_agent_has_no_quota_segments_in_full_or_compact_lines(self):
+        quota = self.render("claude-one", 1)
+        compact = self.render("claude-one", 0)
+
+        self.assertEqual(quota.returncode, 0, quota.stderr)
+        self.assertIn("no provider quota data", quota.stdout)
+        self.assertNotIn("88%", quota.stdout)
+        self.assertEqual(compact.returncode, 0, compact.stderr)
+        self.assertEqual(len(compact.stdout.splitlines()), 1)
+        self.assertIn("no provider quota data", compact.stdout)
+        self.assertIn("claude-agent-one", compact.stdout)
+        self.assertIn("10%", compact.stdout)
+        self.assertIn("ECC-035", compact.stdout)
+        self.assertNotIn("88%", compact.stdout)
+
+    def test_claude_agent_without_transcript_waits_without_codex_fallback(self):
+        (self.claude_project / f"{self.first_claude_session}.jsonl").unlink()
+        result = self.render("claude-one", 2)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("claude-agent-one", result.stdout)
+        self.assertIn("ctx waiting", result.stdout)
+        self.assertNotIn("gpt-agent-one", result.stdout)
 
 
 if __name__ == "__main__":

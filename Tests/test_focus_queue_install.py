@@ -58,9 +58,12 @@ class InstallerTests(unittest.TestCase):
         (path / "Contents/Resources").mkdir(parents=True)
         shutil.copy2(Path(__file__).parents[1] / "Config/CODEX_GLOBAL_INSTRUCTIONS.md",
                      path / "Contents/Resources/CODEX_GLOBAL_INSTRUCTIONS.md")
+        shutil.copy2(Path(__file__).parents[1] / "Config/CLAUDE_GLOBAL_INSTRUCTIONS.md",
+                     path / "Contents/Resources/CLAUDE_GLOBAL_INSTRUCTIONS.md")
         shell = path / "Contents/Resources/shell"
         shell.mkdir()
         (shell / "focus_queue_codex_entry.py").write_bytes(b"entry:" + content)
+        (shell / "focus_queue_claude_entry.py").write_bytes(b"claude-entry:" + content)
         (shell / "focus_queue_usage_wrapper.sh").write_bytes(b"wrapper:" + content)
         (shell / "focus_queue_codex_bar.js").write_bytes(b"renderer:" + content)
         (shell / "AgentUsageBar-LICENSE.txt").write_bytes(b"license:" + content)
@@ -394,6 +397,32 @@ class InstallerTests(unittest.TestCase):
         manifest = json.loads(self.installer.manifest.read_text())
         self.assertNotIn(str(prompt), [entry["path"] for entry in manifest["artifacts"]])
         self.assertEqual(manifest["managedSettings"][0]["ownership"], "delimited-block-only")
+
+    def test_claude_global_prompt_merges_beside_codex_and_stays_idempotent(self):
+        prompt = self.home / ".claude/CLAUDE.md"
+        prompt.parent.mkdir(parents=True)
+        personal = "# Personal\n\nKeep my exact words.\n\n"
+        prompt.write_text(personal)
+        self.installer.install()
+        once = prompt.read_text()
+        self.assertTrue(once.startswith(personal))
+        self.assertEqual(once.count(MODULE.PROMPT_START), 1)
+        self.assertIn("--provider claude", once)
+        codex_prompt = (self.home / ".codex/AGENTS.md").read_text()
+        self.assertIn("--provider codex", codex_prompt)
+        self.assertEqual(codex_prompt.count(MODULE.PROMPT_START), 1)
+        self.installer.install()
+        self.assertEqual(prompt.read_text(), once)
+        self.assertEqual((self.home / ".codex/AGENTS.md").read_text(), codex_prompt)
+
+    def test_malformed_claude_global_prompt_markers_fail_without_overwriting(self):
+        prompt = self.home / ".claude/CLAUDE.md"
+        prompt.parent.mkdir(parents=True)
+        prompt.write_text("My notes\n" + MODULE.PROMPT_START)
+        before = prompt.read_bytes()
+        with self.assertRaises(ValueError):
+            self.installer.install()
+        self.assertEqual(prompt.read_bytes(), before)
 
     def test_malformed_global_prompt_markers_fail_without_overwriting(self):
         prompt = self.home / ".codex/AGENTS.md"

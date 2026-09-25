@@ -262,16 +262,16 @@ def read_source_provenance(bundle, *, require_integrated=False):
     return validate_source_provenance(value, require_integrated=require_integrated)
 
 
-def merge_codex_prompt(original, payload):
+def merge_agent_prompt(original, payload, *, label):
     """Replace only our delimited block; keep personal instructions byte-for-byte."""
     if not payload.startswith(PROMPT_START) or not payload.rstrip().endswith(PROMPT_END):
-        raise ValueError("The bundled Codex instruction block is incomplete.")
+        raise ValueError(f"The bundled {label} instruction block is incomplete.")
     if PROMPT_START in original or PROMPT_END in original:
         if original.count(PROMPT_START) != 1 or original.count(PROMPT_END) != 1:
-            raise ValueError("The installed Codex instruction markers require review.")
+            raise ValueError(f"The installed {label} instruction markers require review.")
         start, end = original.index(PROMPT_START), original.index(PROMPT_END) + len(PROMPT_END)
         if end <= start:
-            raise ValueError("The installed Codex instruction markers are reversed.")
+            raise ValueError(f"The installed {label} instruction markers are reversed.")
         return original[:start] + payload.rstrip("\n") + original[end:]
     return original + ("\n\n" if original else "") + payload
 AUTOMATION_FILES = (
@@ -433,6 +433,7 @@ class Installer:
         self.legacy_desktop = self.home / "Desktop" / f"{LEGACY_PRODUCT}.app"
         self.manifest = self.support / "install-manifest.json"
         self.codex_prompt = self.home / ".codex/AGENTS.md"
+        self.claude_prompt = self.home / ".claude/CLAUDE.md"
         self.codex_entry = self.support / "shell/focus_queue_codex_entry.py"
         self.codex_usage_wrapper = self.support / "shell/focus_queue_usage_wrapper.sh"
         self.codex_usage_renderer = self.support / "shell/focus_queue_codex_bar.js"
@@ -462,17 +463,24 @@ class Installer:
         bundled_automation = self.bundle / "Contents/Resources/automation"
         validate_bundle_member(self.bundle, bundled_automation)
         safe_destination(self.codex_prompt, self.home)
+        safe_destination(self.claude_prompt, self.home)
         payload = self.bundle / "Contents/Resources/CODEX_GLOBAL_INSTRUCTIONS.md"
         validate_bundle_member(self.bundle, payload)
         if not payload.is_file() or payload.is_symlink():
             raise ValueError("The built app is missing its shareable Codex instructions.")
-        merge_codex_prompt(self.codex_prompt.read_text() if self.codex_prompt.exists() else "", payload.read_text())
+        merge_agent_prompt(self.codex_prompt.read_text() if self.codex_prompt.exists() else "", payload.read_text(), label="Codex")
+        claude_payload = self.bundle / "Contents/Resources/CLAUDE_GLOBAL_INSTRUCTIONS.md"
+        validate_bundle_member(self.bundle, claude_payload)
+        if not claude_payload.is_file() or claude_payload.is_symlink():
+            raise ValueError("The built app is missing its shareable Claude instructions.")
+        merge_agent_prompt(self.claude_prompt.read_text() if self.claude_prompt.exists() else "", claude_payload.read_text(), label="Claude")
         safe_destination(self.codex_entry, self.home)
         safe_destination(self.codex_usage_wrapper, self.home)
         safe_destination(self.codex_usage_renderer, self.home)
         safe_destination(self.codex_usage_license, self.home)
         for relative in (
             "Contents/Resources/shell/focus_queue_codex_entry.py",
+            "Contents/Resources/shell/focus_queue_claude_entry.py",
             "Contents/Resources/shell/focus_queue_usage_wrapper.sh",
             "Contents/Resources/shell/focus_queue_codex_bar.js",
             "Contents/Resources/shell/AgentUsageBar-LICENSE.txt",
@@ -603,6 +611,7 @@ class Installer:
                 "configuration": "preserve existing; first launch offers setup",
                 "companions": "app-owned automation updated; companion launch agents unchanged",
                 "codexInstructions": "merge app-owned block; preserve personal instructions",
+                "claudeInstructions": "merge app-owned block; preserve personal instructions",
                 "signature": "verified (does not imply notarization)"}
 
     def stop(self):
@@ -688,7 +697,9 @@ class Installer:
                 "Contents/MacOS/focus-queue-session",
                 "Contents/MacOS/focus-queue-map",
                 "Contents/Resources/CODEX_GLOBAL_INSTRUCTIONS.md",
+                "Contents/Resources/CLAUDE_GLOBAL_INSTRUCTIONS.md",
                 "Contents/Resources/shell/focus_queue_codex_entry.py",
+                "Contents/Resources/shell/focus_queue_claude_entry.py",
                 "Contents/Resources/shell/focus_queue_usage_wrapper.sh",
                 "Contents/Resources/shell/focus_queue_codex_bar.js",
                 "Contents/Resources/shell/AgentUsageBar-LICENSE.txt",
@@ -711,10 +722,16 @@ class Installer:
             ]
             original_prompt = self.codex_prompt.read_bytes() if self.codex_prompt.exists() else b""
             staged_prompt = stage / "codex-instructions.md"
-            staged_prompt.write_text(merge_codex_prompt(original_prompt.decode(),
-                (staged_app / "Contents/Resources/CODEX_GLOBAL_INSTRUCTIONS.md").read_text()))
+            staged_prompt.write_text(merge_agent_prompt(original_prompt.decode(),
+                (staged_app / "Contents/Resources/CODEX_GLOBAL_INSTRUCTIONS.md").read_text(), label="Codex"))
             staged_prompt.chmod(self.codex_prompt.stat().st_mode & 0o777 if self.codex_prompt.exists() else 0o600)
             planned.append((staged_prompt, self.codex_prompt))
+            original_claude_prompt = self.claude_prompt.read_bytes() if self.claude_prompt.exists() else b""
+            staged_claude_prompt = stage / "claude-instructions.md"
+            staged_claude_prompt.write_text(merge_agent_prompt(original_claude_prompt.decode(),
+                (staged_app / "Contents/Resources/CLAUDE_GLOBAL_INSTRUCTIONS.md").read_text(), label="Claude"))
+            staged_claude_prompt.chmod(self.claude_prompt.stat().st_mode & 0o777 if self.claude_prompt.exists() else 0o600)
+            planned.append((staged_claude_prompt, self.claude_prompt))
             # Refresh an already configured entry without changing aliases, flags or hook trust.
             original_entry = self.codex_entry.read_bytes() if self.codex_entry.exists() else None
             original_usage_wrapper = (self.codex_usage_wrapper.read_bytes()
@@ -773,9 +790,11 @@ class Installer:
                                **({"digestAlgorithm": TREE_DIGEST_ALGORITHM}
                                   if target == self.automation else {})}
                               for source, target in planned if target not in {
-                                  self.codex_prompt, self.codex_entry, self.codex_usage_wrapper,
+                                  self.codex_prompt, self.claude_prompt, self.codex_entry,
+                                  self.codex_usage_wrapper,
                                   self.codex_usage_renderer, self.codex_usage_license}],
                 "managedSettings": [{"path": str(self.codex_prompt), "ownership": "delimited-block-only"},
+                    {"path": str(self.claude_prompt), "ownership": "delimited-block-only"},
                     {"path": str(self.codex_entry), "ownership": "configured-entry-only"},
                     {"path": str(self.codex_usage_wrapper), "ownership": "configured-entry-support"},
                     {"path": str(self.codex_usage_renderer), "ownership": "configured-entry-support"},
@@ -803,6 +822,8 @@ class Installer:
             for index, (source, target) in enumerate(operations):
                 if target == self.codex_prompt and (target.read_bytes() if target.exists() else b"") != original_prompt:
                     raise ValueError("Codex instructions changed during installation; retry to preserve the newer edit.")
+                if target == self.claude_prompt and (target.read_bytes() if target.exists() else b"") != original_claude_prompt:
+                    raise ValueError("Claude instructions changed during installation; retry to preserve the newer edit.")
                 if target == self.codex_entry and (target.read_bytes() if target.exists() else None) != original_entry:
                     raise ValueError("Codex entry changed during installation; retry to preserve the newer edit.")
                 if target == self.codex_usage_wrapper and (

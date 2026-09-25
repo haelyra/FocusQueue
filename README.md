@@ -43,6 +43,9 @@ conversation and preserves your queue order. Cleared assignments stay cleared
 until you explicitly attach the session again.
 The optional [Codex shell entry](Docs/CODEX_TMUX_ENTRY.md) starts interactive
 Codex sessions in tmux while retaining existing command flags and the usage bar.
+The [Claude shell entry](Docs/CLAUDE_TMUX_ENTRY.md) provides the same routing
+for `claude`, with hook-based session registration as its canonical identity
+path.
 
 With **Open in tmux** checked, Focus Queue saves the exact runtime before opening
 its terminal view. Closing the view leaves tmux running. Direct launches save the

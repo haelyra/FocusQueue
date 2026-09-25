@@ -85,7 +85,7 @@ class ManagedUsageWrapperTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.calls.read_text().splitlines(), ["delegate:--yolo hello"])
 
-    def test_managed_tmux_bar_tracks_active_pane_and_is_not_removed_on_exit(self):
+    def test_managed_tmux_bar_is_a_per_pane_border_and_is_not_removed_on_exit(self):
         result = self.run_wrapper(managed=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls.read_text().splitlines()
@@ -93,18 +93,28 @@ class ManagedUsageWrapperTests(unittest.TestCase):
         self.assertNotEqual(int((self.root / "codex-parent").read_text()), os.getpid(),
                             "the adapter must remain the pane PID so Codex is its discoverable child")
         self.assertFalse(any(line.startswith("delegate:") for line in calls))
-        self.assertTrue(any("status 4" in line for line in calls))
+        self.assertTrue(any("status on" in line for line in calls))
         self.assertTrue(any("status-position bottom" in line for line in calls))
         self.assertTrue(any("status-format[0] native-window-row" in line for line in calls))
-        status = [line for line in calls if "set-option" in line and "status-format[" in line]
-        usage_status = [line for line in status if "status-format[0]" not in line]
-        self.assertEqual(len(status), 4)
-        self.assertEqual(len(usage_status), 3)
-        self.assertTrue(all("#{@focus-queue-agent}" in line for line in usage_status))
-        self.assertTrue(all("--context" in line and "context.json" in line for line in usage_status))
-        self.assertTrue(all("focus_queue_codex_bar.js" in line for line in usage_status))
-        self.assertTrue(all("$FOCUS_QUEUE_USAGE_BAR_PATH" not in line for line in usage_status))
-        self.assertTrue(all("set-option -u" not in line for line in calls))
+        stale_rows = [line for line in calls
+                      if "set-option -u" in line and "status-format[" in line]
+        self.assertEqual(len(stale_rows), 3,
+                         "the retired session usage rows must be cleared")
+        usage = [line for line in calls if "@focus-queue-usage-command" in line]
+        self.assertEqual(len(usage), 1)
+        self.assertIn("#{@focus-queue-agent}", usage[0])
+        self.assertIn("--context", usage[0])
+        self.assertIn("context.json", usage[0])
+        self.assertIn("focus_queue_codex_bar.js", usage[0])
+        self.assertIn("--line 0", usage[0])
+        self.assertNotIn("$FOCUS_QUEUE_USAGE_BAR_PATH", usage[0])
+        self.assertTrue(any("set-window-option" in line and "pane-border-status bottom" in line
+                            for line in calls))
+        borders = [line for line in calls if "pane-border-format" in line]
+        self.assertEqual(len(borders), 1)
+        self.assertIn("#{@focus-queue-task-title}", borders[0])
+        self.assertIn("#{@focus-queue-agent}", borders[0])
+        self.assertIn("focus_queue_codex_bar.js", borders[0])
 
     def test_managed_mode_requires_exact_focus_queue_marker_and_pane(self):
         environment = {
@@ -141,9 +151,8 @@ class ManagedUsageWrapperTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls.read_text().splitlines()
         self.assertTrue(any("status-interval 7" in line for line in calls))
-        self.assertTrue(all("USAGE_BAR_GLYPHS=ascii" in line for line in calls
-                            if "set-option" in line and "status-format[" in line
-                            and "status-format[0]" not in line))
+        self.assertTrue(any("USAGE_BAR_GLYPHS=ascii" in line for line in calls
+                            if "set-option" in line and "@focus-queue-usage-command" in line))
 
         self.calls.unlink()
         result = self.run_wrapper(managed=True, overrides={"USAGE_BAR_INTERVAL": "not-a-number"})
@@ -157,8 +166,13 @@ class ManagedUsageWrapperTests(unittest.TestCase):
         self.assertEqual(calls[-1], "codex:--yolo hello")
         self.assertTrue(any("status on" in line for line in calls))
         self.assertTrue(any("status-format[0] native-window-row" in line for line in calls))
-        self.assertEqual(len([line for line in calls
-                              if "set-option" in line and "status-format[" in line]), 4)
+        usage = [line for line in calls if "@focus-queue-usage-command" in line]
+        self.assertEqual(len(usage), 1)
+        self.assertNotIn("focus_queue_codex_bar.js", usage[0])
+        borders = [line for line in calls if "pane-border-format" in line]
+        self.assertEqual(len(borders), 1)
+        self.assertIn("#{@focus-queue-task-title}", borders[0])
+        self.assertNotIn("focus_queue_codex_bar.js", borders[0])
 
     def test_graceful_managed_exit_archives_the_exact_agent(self):
         result = self.run_wrapper(managed=True, overrides={
@@ -259,7 +273,7 @@ class ManagedUsageWrapperTests(unittest.TestCase):
         finally:
             tmux("kill-server", check=False)
 
-    def test_real_tmux_renders_the_selected_agents_usage_rows(self):
+    def test_real_tmux_renders_the_selected_agents_pane_border(self):
         real_tmux = shutil.which("tmux", path=os.environ.get("PATH"))
         real_node = shutil.which("node", path=os.environ.get("PATH"))
         if not real_tmux or not real_node:

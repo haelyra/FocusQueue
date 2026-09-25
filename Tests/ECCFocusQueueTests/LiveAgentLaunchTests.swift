@@ -95,25 +95,29 @@ func liveManagedProviderSanity() async throws {
         "The installed Codex alias and usage bar must run inside the tmux pane")
       let statusRows = try await fixture.tmux(["show-options", "-v", "-t", reference.name, "status"])
         .trimmingCharacters(in: .whitespacesAndNewlines)
-      #expect(statusRows == "4", "The live usage bar must reserve its four tmux status rows")
+      #expect(statusRows == "on", "The managed session keeps one native window-tab row")
       let nativeRow = try await fixture.tmux([
         "show-options", "-v", "-t", reference.name, "status-format[0]",
       ])
       #expect(!nativeRow.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-        "The usage rows must preserve native tmux window tabs")
-      for line in 1...3 {
-        let format = try await fixture.tmux([
-          "show-options", "-v", "-t", reference.name, "status-format[\(line)]",
-        ])
-        #expect(format.contains("focus_queue_codex_bar.js")
-          && format.contains("#{@focus-queue-agent}")
-          && format.contains("--context") && format.contains("--line \(line)"),
-          "Usage row \(line) must render the active agent through Focus Queue's bundled bar")
-      }
+        "The status row must preserve native tmux window tabs")
+      let usageCommand = try await fixture.tmux([
+        "show-options", "-qv", "-t", reference.name, "@focus-queue-usage-command",
+      ])
+      #expect(usageCommand.contains("focus_queue_codex_bar.js")
+        && usageCommand.contains("#{@focus-queue-agent}")
+        && usageCommand.contains("--context") && usageCommand.contains("--line 0"),
+        "Each pane border must render its own agent through Focus Queue's bundled bar")
       let paneBanner = try await fixture.tmux([
         "show-window-options", "-v", "-t", reference.paneID, "pane-border-status",
       ])
-      #expect(paneBanner.trimmingCharacters(in: .whitespacesAndNewlines) == "top")
+      #expect(paneBanner.trimmingCharacters(in: .whitespacesAndNewlines) == "bottom")
+      let paneBorder = try await fixture.tmux([
+        "show-window-options", "-v", "-t", reference.paneID, "pane-border-format",
+      ])
+      #expect(paneBorder.contains("#{@focus-queue-task-title}")
+        && paneBorder.contains("focus_queue_codex_bar.js"),
+        "The pane border carries the task title and that pane's own usage bar")
       let persistence = try TmuxPersistence.prepare(executable: fixture.executable,
         serverName: fixture.server, supportDirectory: fixture.support)
       let actualSaveDirectory = try await fixture.tmux(["show-options", "-gqv", "@resurrect-dir"])

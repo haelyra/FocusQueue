@@ -2649,7 +2649,7 @@ private actor PresentationRepairRunner: ProcessRunning {
 
   func run(_ specification: ProcessSpecification) throws -> ProcessResult {
     let arguments = specification.arguments
-    if arguments.contains("status-format[1]"),
+    if arguments.contains("@focus-queue-usage-command"),
        arguments.contains(where: { $0.contains("/tasks/\(taskID)/context.json") }) {
       repairedContextIDs.insert(taskID)
     }
@@ -2662,7 +2662,7 @@ private actor PresentationRepairRunner: ProcessRunning {
       return result("Stored task outside the visible project\n")
     }
     if arguments.contains("status-format[0]") { return result("#[align=left] #I:#W\n") }
-    if arguments.contains("status") { return result("4\n") }
+    if arguments.contains("status") { return result("on\n") }
     return result()
   }
 

@@ -203,6 +203,39 @@ function quotaSegment(window, fallbackLabel, paint, p, marks) {
     + (reset ? ` ${p.dim(`${marks.reset}${reset}`)}` : '');
 }
 
+// One-pane-border variant: quota, context window and ticket on a single line.
+// Panes without a registered agent stay empty so the border keeps only the
+// plain task title.
+function buildCompactLine(taskAgent, snapshot, quotaSnapshot, mode) {
+  if (!taskAgent) return '';
+  const marks = glyphs();
+  const p = palette(mode);
+  const sep = ` ${p.dim(marks.sep)} `;
+  const ticket = safeText(taskAgent.context?.ticketID || 'Focus Queue', mode);
+  const tokenCount = snapshot.tokenCount;
+  const info = tokenCount?.info || {};
+  const limits = quotaSnapshot?.tokenCount?.rate_limits || tokenCount?.rate_limits || {};
+  const quotaParts = [
+    quotaSegment(limits.primary, '5h', p.amber, p, marks),
+    quotaSegment(limits.secondary, '7d', p.rose, p, marks),
+  ].filter(Boolean);
+  const parts = [quotaParts.length > 0
+    ? `${p.amber(marks.bolt)} ${quotaParts.join(sep)}`
+    : p.dim(`${marks.bolt} waiting for first prompt`)];
+  const launch = taskAgent.agent.launchConfiguration || {};
+  const model = safeText(launch.model || snapshot.turnContext?.model || 'codex', mode);
+  const last = info.last_token_usage;
+  const used = last?.total_tokens;
+  const modelParts = [p.amber(`${marks.star} ${model}`)];
+  if (Number.isFinite(used) && Number.isFinite(info.model_context_window) && info.model_context_window > 0) {
+    const percent = Math.min(100, Math.round((used / info.model_context_window) * 100));
+    const paint = percent >= 90 ? p.crit : percent >= 75 ? p.warn : p.ok;
+    modelParts.push(`${p.dim('ctx')} ${paint(`${bar(percent, 6, marks)} ${percent}%`)}`);
+  }
+  parts.push(modelParts.join(sep), p.dim(ticket));
+  return parts.join(sep);
+}
+
 function countHooks(codexHome) {
   try {
     const config = fs.readFileSync(path.join(codexHome, 'config.toml'), 'utf8');
@@ -277,17 +310,23 @@ function main() {
     ? readTaskAgent(contextPath, agentID) : null;
   const sessionID = taskAgent?.agent?.sessionID;
   const requested = Number.parseInt(args.get('--line'), 10);
+  const compact = requested === 0;
   const sessionFile = requested === 3 || typeof sessionID !== 'string'
     ? null : findSessionFile(codexHome, sessionID);
   const snapshot = readSessionSnapshot(sessionFile);
-  const quotaSnapshot = requested === 1 && taskAgent
+  const quotaSnapshot = (requested === 1 || compact) && taskAgent
     ? readSessionSnapshot(findNewestSession(codexHome)) : snapshot;
+  if (compact) {
+    process.stdout.write(`${buildCompactLine(taskAgent, snapshot, quotaSnapshot, mode)}\n`);
+    return;
+  }
   const lines = buildLines(taskAgent, snapshot, quotaSnapshot, codexHome, cwd, mode);
   process.stdout.write(`${Number.isFinite(requested) ? lines[requested - 1] || '' : lines.join('\n')}\n`);
 }
 
 module.exports = {
   readTaskAgent, findSessionFile, findNewestSession, readSessionSnapshot, buildLines,
+  buildCompactLine,
 };
 
 if (require.main === module) main();

@@ -501,8 +501,8 @@ extension TmuxController {
       name: saved.name, paneID: saved.paneID, executable: saved.executable)
   }
 
-  /// Applies the durable task title and active-pane-aware Codex usage rows to
-  /// an existing task session. This repairs sessions launched by an older app
+  /// Applies the durable task title and per-pane Codex usage border to an
+  /// existing task session. This repairs sessions launched by an older app
   /// as soon as the current app reloads their task context.
   public func configureTaskPresentation(
     taskID: String, taskTitle: String, contextPath: String,
@@ -518,28 +518,37 @@ extension TmuxController {
 
     let readable = Self.readableTaskTitle(taskTitle, fallback: taskID.uppercased())
     try await checked(executable, ["set-option", "-t", name, "@focus-queue-task-title", readable])
-    let all = try await panes(name: name, executable: executable)
-    for pane in Dictionary(grouping: all, by: \.windowID).values.compactMap(\.first) {
-      try await applyTaskBanner(name: name, paneID: pane.id, executable: executable)
-    }
 
+    // tmux has no per-pane status rows. The session keeps one native window-tab
+    // row while every pane's bottom border renders its own agent's usage bar.
     let native = try await run(executable, ["show-options", "-gv", "status-format[0]"])
     let nativeRow = native.succeeded
       && !native.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       ? native.standardOutput.trimmingCharacters(in: .newlines)
       : "#[align=left]#{W:#[fg=colour245] #I:#W ,#[bold] #I:#W }"
-    try await checked(executable, ["set-option", "-t", name, "status", usageBarEnabled ? "4" : "on"])
+    try await checked(executable, ["set-option", "-t", name, "status", "on"])
     try await checked(executable, ["set-option", "-t", name, "status-position", "bottom"])
     try await checked(executable, ["set-option", "-t", name, "status-interval", "15"])
     try await checked(executable, ["set-option", "-t", name, "status-style", "bg=default,fg=default"])
     try await checked(executable, ["set-option", "-t", name, "status-format[0]", nativeRow])
+    for line in 1...3 {
+      try await checked(executable, ["set-option", "-u", "-t", name, "status-format[\(line)]"])
+    }
 
     let node = Self.statusShellQuote(nodePath)
     let renderer = Self.statusShellQuote(rendererPath)
     let context = Self.statusShellQuote(contextPath)
-    for line in 1...3 {
-      let format = "#[align=left,bg=default,fg=default]#(USAGE_BAR_GLYPHS=unicode \(node) \(renderer) --tmux --context \(context) --agent \"#{@focus-queue-agent}\" --cwd #{q:pane_current_path} --line \(line))"
-      try await checked(executable, ["set-option", "-t", name, "status-format[\(line)]", format])
+    // The pane-scoped agent marker and path resolve per pane when tmux expands
+    // the border format, so neighboring agents keep independent bars. Literal
+    // executable and renderer paths avoid tmux background-job environment
+    // differences, which otherwise produce a silently blank border.
+    let usageCommand = usageBarEnabled
+      ? "USAGE_BAR_GLYPHS=unicode \(node) \(renderer) --tmux --context \(context) --agent \"#{@focus-queue-agent}\" --cwd #{q:pane_current_path} --line 0"
+      : ""
+    try await checked(executable, ["set-option", "-t", name, "@focus-queue-usage-command", usageCommand])
+    let all = try await panes(name: name, executable: executable)
+    for pane in Dictionary(grouping: all, by: \.windowID).values.compactMap(\.first) {
+      try await applyTaskBanner(name: name, paneID: pane.id, executable: executable)
     }
     try? await reflow(name: name, executable: executable, force: true)
   }
@@ -602,7 +611,7 @@ extension TmuxController {
       return f.count == 4 ? (f[0], f[1], f[2], f[3]) : nil
     }
     let client = clients.max(by: { $0.2 < $1.2 })
-    // User wrappers can reserve multiple status rows (for example a usage bar).
+    // User wrappers can reserve status rows (for example a taller status bar).
     // Respect that setting instead of sizing panes underneath those rows.
     let status = try await run(executable, ["show-options", "-Av", "-t", name, "status"])
     guard status.succeeded else { throw TmuxError.unavailable("Could not read the task status bar size.") }
@@ -668,9 +677,14 @@ extension TmuxController {
       try await checked(executable, ["set-window-option", "-t", paneID, "pane-border-status", "off"])
       try await checked(executable, ["set-window-option", "-u", "-t", paneID, "pane-border-format"])
     } else {
-      try await checked(executable, ["set-window-option", "-t", paneID, "pane-border-status", "top"])
-      try await checked(executable, ["set-window-option", "-t", paneID, "pane-border-format",
-        "#[align=left] #[bold]#{@focus-queue-task-title}#[default] "])
+      let usage = try await run(executable, ["show-options", "-qv", "-t", name, "@focus-queue-usage-command"])
+        .standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+      // One bottom border per pane carries the task title and that pane's own
+      // usage bar; the border is the only surface tmux formats per pane.
+      var format = "#[align=left] #[bold]#{@focus-queue-task-title}#[default]"
+      if !usage.isEmpty { format += "  #(\(usage))" }
+      try await checked(executable, ["set-window-option", "-t", paneID, "pane-border-status", "bottom"])
+      try await checked(executable, ["set-window-option", "-t", paneID, "pane-border-format", format])
     }
   }
 }

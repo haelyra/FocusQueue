@@ -218,7 +218,7 @@ struct TmuxOrganizerTests {
     #expect(TmuxController.ownsSession(name: "fq-task-ecc-1", taskID: "ECC-1", subtaskID: "agent"))
   }
 
-  @Test("Task presentation shows a title banner and toggles exact-agent usage rows",
+  @Test("Task presentation gives every pane its own bottom usage border",
     .enabled(if: SetupEnvironment.executable("tmux") != nil
       && SetupEnvironment.executable("node") != nil))
   func taskPresentation() async throws {
@@ -261,24 +261,39 @@ struct TmuxOrganizerTests {
       #expect(result.succeeded, "\(result.standardError)")
       return result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    #expect(try await output(["show-options", "-v", "-t", reference.name, "status"]) == "4")
+    #expect(try await output(["show-options", "-v", "-t", reference.name, "status"]) == "on")
     #expect(try await output(["show-window-options", "-v", "-t", reference.paneID,
-      "pane-border-status"]) == "top")
+      "pane-border-status"]) == "bottom")
     #expect(try await output(["show-options", "-qv", "-t", reference.name,
       "@focus-queue-task-title"]) == "Usage task")
+    let usage = try await output(["show-options", "-qv", "-t", reference.name,
+      "@focus-queue-usage-command"])
+    #expect(usage.contains(renderer.path))
+    #expect(usage.contains(context.path))
+    #expect(usage.contains("#{@focus-queue-agent}"))
+    #expect(usage.contains("--line 0"))
+    #expect(!usage.contains("$FOCUS_QUEUE_USAGE_BAR_PATH"))
+    let border = try await output(["show-window-options", "-v", "-t", reference.paneID,
+      "pane-border-format"])
+    #expect(border.contains("#{@focus-queue-task-title}"))
+    #expect(border.contains("#(\(usage))"))
     for line in 1...3 {
-      let format = try await output([
+      let retired = try await output([
         "show-options", "-v", "-t", reference.name, "status-format[\(line)]"])
-      #expect(format.contains(renderer.path))
-      #expect(format.contains(context.path))
-      #expect(format.contains("#{@focus-queue-agent}"))
-      #expect(!format.contains("$FOCUS_QUEUE_USAGE_BAR_PATH"))
+      #expect(!retired.contains(renderer.path),
+        "The retired session usage row \(line) must fall back to the global default")
     }
     try await controller.configureTaskPresentation(
       taskID: "ECC-035", taskTitle: "Usage task", contextPath: context.path,
       rendererPath: renderer.path, nodePath: node, usageBarEnabled: false,
       executable: executable)
     #expect(try await output(["show-options", "-v", "-t", reference.name, "status"]) == "on")
+    #expect(try await output(["show-options", "-qv", "-t", reference.name,
+      "@focus-queue-usage-command"]) == "")
+    let disabledBorder = try await output(["show-window-options", "-v", "-t", reference.paneID,
+      "pane-border-format"])
+    #expect(disabledBorder.contains("#{@focus-queue-task-title}"))
+    #expect(!disabledBorder.contains("focus_queue_codex_bar.js"))
   }
 
   @Test("Live agents share one task session across four-pane window tabs and survive removal",
@@ -353,7 +368,7 @@ struct TmuxOrganizerTests {
       arguments: ["-L", server, "list-windows", "-t", "=\(name):", "-F", "#{pane-border-status}"],
       environment: ["TMUX_TMPDIR": "/tmp"]))
     #expect(plainWindows.succeeded)
-    #expect(plainWindows.standardOutput.split(separator: "\n").allSatisfy { $0 == "top" })
+    #expect(plainWindows.standardOutput.split(separator: "\n").allSatisfy { $0 == "bottom" })
     let borderFormats = try await runner.run(.init(executable: executable,
       arguments: ["-L", server, "list-windows", "-t", "=\(name):", "-F", "#{pane-border-format}"],
       environment: ["TMUX_TMPDIR": "/tmp"]))

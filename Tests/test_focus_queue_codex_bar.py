@@ -109,6 +109,28 @@ class FocusQueueCodexBarTests(unittest.TestCase):
         self.assertNotIn("gpt-agent-one", result.stdout)
         self.assertNotIn("gpt-agent-two", result.stdout)
 
+    def test_compact_line_combines_quota_context_and_ticket_for_one_pane_border(self):
+        first = self.render("agent-one", 0)
+        second = self.render("agent-two", 0)
+
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(len(first.stdout.splitlines()), 1)
+        self.assertIn("88%", first.stdout)
+        self.assertIn("gpt-agent-one", first.stdout)
+        self.assertIn("10%", first.stdout)
+        self.assertIn("ECC-035", first.stdout)
+
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(len(second.stdout.splitlines()), 1)
+        self.assertIn("gpt-agent-two", second.stdout)
+        self.assertIn("80%", second.stdout)
+
+    def test_compact_line_stays_empty_for_panes_without_a_registered_agent(self):
+        result = self.render("unknown-agent", 0)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "")
+
 
 if __name__ == "__main__":
     unittest.main()

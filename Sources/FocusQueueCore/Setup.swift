@@ -16,7 +16,7 @@ public enum SetupEnvironment {
     var configuration = AppConfiguration(appName: "Focus Queue",
       dashboardPath: supportDirectory.appendingPathComponent("workspace/dashboard.json").path,
       workspacePath: supportDirectory.appendingPathComponent("workspace").path,
-      defaultPlacement: .upperRight, refreshIntervalSeconds: 2, dailyRoutines: [],
+      defaultPlacement: .upperLeft, refreshIntervalSeconds: 2, dailyRoutines: [],
       wezTerm: .init(executable: executable("wezterm", home: home) ?? "/Applications/WezTerm.app/Contents/MacOS/wezterm"),
       verifier: .init(enabled: false, executable: home.appendingPathComponent(".local/bin/focus-queue-codex").path,
         sessionName: "focus-queue-verifier"))

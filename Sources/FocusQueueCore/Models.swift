@@ -435,7 +435,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
       appName: "Focus Queue",
       dashboardPath: "\(workspace)/ecc-dashboard/data/dashboard.json",
       workspacePath: workspace,
-      defaultPlacement: .upperRight,
+      defaultPlacement: .upperLeft,
       refreshIntervalSeconds: 2,
       dailyRoutines: [
         DailyRoutine(

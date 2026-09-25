@@ -48,6 +48,7 @@ import UserNotifications
   private var terminalFocusController: TerminalFocusModeController?
   private var focusChromeRefreshTask: Task<Void, Never>?
   private var screenReconciliationTask: Task<Void, Never>?
+  private var movePersistTask: Task<Void, Never>?
   private var morningReconciliationTask: Task<Void, Never>?
   private var lastMorningAttempt: Date?
   private var lastFailedDailyReportAttempt: Date?
@@ -56,7 +57,7 @@ import UserNotifications
   private var isDailyReportProcessRunning = false
   private var expandedPanelFrame: NSRect?
   private var compactPanelWidth: CGFloat = 440
-  private var currentPlacement: QueueWindowPlacement = .upperRight
+  private var currentPlacement: QueueWindowPlacement = .upperLeft
   private var preferredDisplayIdentifier: String?
   private var isApplyingPanelFrame = false
   private var appliedPanelMode: QueuePanelMode = .expanded
@@ -134,7 +135,7 @@ import UserNotifications
 
     createPanel()
     createStatusItem()
-    positionPanel(.upperRight, on: defaultScreen(), animated: false, persist: false)
+    positionPanel(.upperLeft, on: defaultScreen(), animated: false, persist: false)
     panel?.orderFrontRegardless()
 
     Task { [weak self] in
@@ -235,6 +236,30 @@ import UserNotifications
 
   func windowDidMove(_ notification: Notification) {
     scheduleFocusChromeRefresh()
+    guard notification.object as? NSWindow === panel, !isApplyingPanelFrame else { return }
+    movePersistTask?.cancel()
+    movePersistTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: .milliseconds(400))
+      guard !Task.isCancelled, let self, !self.isApplyingPanelFrame else { return }
+      self.persistDraggedPlacement()
+    }
+  }
+
+  private func persistDraggedPlacement() {
+    guard let panel else { return }
+    let screen = panel.screen ?? defaultScreen()
+    let visible = screen.visibleFrame
+    let midX = panel.frame.midX
+    let third = visible.width / 3
+    if midX < visible.minX + third {
+      currentPlacement = .upperLeft
+    } else if midX > visible.maxX - third {
+      currentPlacement = .upperRight
+    } else {
+      currentPlacement = .center
+    }
+    preferredDisplayIdentifier = displayIdentifier(for: screen)
+    saveWindowFrame()
   }
 
   func windowDidResize(_ notification: Notification) {

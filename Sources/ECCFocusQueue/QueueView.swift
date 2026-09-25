@@ -669,6 +669,7 @@ struct QueueView: View {
           }
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .fixedSize()
         .accessibilityLabel("Working project: \(model.selectedProject?.name ?? "none")")
         .help("Choose the working project")

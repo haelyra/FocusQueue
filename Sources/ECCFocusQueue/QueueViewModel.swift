@@ -219,6 +219,7 @@ final class QueueViewModel {
   @ObservationIgnored private var configurationSaveTask: Task<Void, Never>?
   @ObservationIgnored private var lastRecurringPRRefresh: Date?
   @ObservationIgnored private var bootstrapped = false
+  @ObservationIgnored private(set) var bootstrapTail: Task<Void, Never>?
   @ObservationIgnored private var refreshInFlight = false
   @ObservationIgnored private var projectRefreshPending = false
   @ObservationIgnored private var lastActivityCheck = Date()
@@ -275,9 +276,7 @@ final class QueueViewModel {
     routerUndoWindowSeconds: Double = 3,
     agentLaunchLogger: AgentLaunchLogger? = nil,
     connectorDiagnosticsRunner: any ProcessRunning = FoundationProcessRunner(),
-    discoverExternalAgents: @escaping @Sendable () async throws -> [KnownProviderProcess] = {
-      try await WezTermController().knownProviderProcesses()
-    },
+    discoverExternalAgents: (@Sendable () async throws -> [KnownProviderProcess])? = nil,
     labelTmuxPane: @escaping @Sendable (TmuxSessionReference, String) async -> Void = { reference, title in
       _ = try? await TmuxController().label(reference, title: title)
     },
@@ -290,7 +289,10 @@ final class QueueViewModel {
     self.paths = paths
     self.programLog = programLog
     self.maintenanceEnabled = maintenanceEnabled
-    self.discoverExternalAgents = discoverExternalAgents
+    let processDiscovery = WezTermController()
+    self.discoverExternalAgents = discoverExternalAgents ?? {
+      try await processDiscovery.knownProviderProcesses()
+    }
     self.labelTmuxPane = labelTmuxPane
     self.identifyManagedAgent = identifyManagedAgent
     self.locateExistingAgent = locateExistingAgent
@@ -484,6 +486,42 @@ final class QueueViewModel {
         configurationURL: paths.configurationFile
       ).recoverPending()
       config = try await configurationRepository.loadOrCreate(default: SetupEnvironment.starter(supportDirectory: paths.supportDirectory))
+      isSetupPresented = firstRun || config.setupCompleted == false
+      configurationIsLoaded = true
+      localState = try await stateStore.load()
+      localState.selectedProjectID = selectedProjectID
+      await primePresentationFromDisk()
+    } catch {
+      loadError = error.localizedDescription
+      if !configurationIsLoaded { isSetupPresented = true }
+      return
+    }
+    // Router probes, tmux presentation, and process inspection can take many
+    // seconds. Reconcile them after the panel already renders the saved queue.
+    bootstrapTail = Task { @MainActor [weak self] in
+      await self?.finishBootstrap()
+    }
+  }
+
+  /// Read-only disk load so agent boxes render before any reconciliation runs.
+  private func primePresentationFromDisk() async {
+    let dashboardURL = URL(fileURLWithPath: config.dashboardPath)
+    if let document = try? await dashboardRepository.load(from: dashboardURL) {
+      dashboard = document
+    }
+    if let order = try? queueOrderStore.load() { savedQueueOrder = order }
+    taskContexts = await availableTaskContexts()
+  }
+
+  /// Tolerant read-only contexts. Swap whole dictionaries so the panel never
+  /// shows an empty queue while replacement data is still loading.
+  private func availableTaskContexts() async -> [String: TaskContext] {
+    let discovered = (try? await taskContextStore.loadAvailableForDiscovery()) ?? []
+    return Dictionary(discovered.map { ($0.ticketID, $0) }, uniquingKeysWith: { _, last in last })
+  }
+
+  private func finishBootstrap() async {
+    do {
       do {
         if let recoveredRouter = try QueueRouterRuntimeStore(root: paths.supportDirectory).load() {
           guard routerExecutableMatchesConfiguration(recoveredRouter) else {
@@ -520,10 +558,6 @@ final class QueueViewModel {
         config.tmuxExecutable = tmux
         try await configurationRepository.save(config)
       }
-      isSetupPresented = firstRun || config.setupCompleted == false
-      configurationIsLoaded = true
-      localState = try await stateStore.load()
-      localState.selectedProjectID = selectedProjectID
       // Preserve the prior task associations before registration can move them.
       await captureDurableState(localState)
       if let saved = try await conversationStore.load(ticketID: nil), !saved.isEmpty {
@@ -552,7 +586,6 @@ final class QueueViewModel {
       )
     } catch {
       loadError = error.localizedDescription
-      if !configurationIsLoaded { isSetupPresented = true }
     }
   }
 
@@ -577,7 +610,7 @@ final class QueueViewModel {
         savedQueueOrder = nil
         sourceModificationDate = nil
         lastSync = nil
-        taskContexts.removeAll()
+        taskContexts = await availableTaskContexts()
         maintenanceReceipts.removeAll()
         maintenanceSignatures.removeAll()
         cleanupSignatures.removeAll()
@@ -663,7 +696,7 @@ final class QueueViewModel {
       savedQueueOrder = nil
       sourceModificationDate = nil
       lastSync = nil
-      taskContexts.removeAll()
+      taskContexts = await availableTaskContexts()
       maintenanceReceipts.removeAll()
       maintenanceSignatures.removeAll()
       cleanupSignatures.removeAll()

@@ -39,6 +39,7 @@ public actor TaskAgentLauncher {
   private let runner: any ProcessRunning
   private let candidateSockets: [String]?
   private let tmuxServerName: String
+  private let processController: WezTermController
   public init(
     runner: any ProcessRunning = FoundationProcessRunner(),
     candidateSockets: [String]? = nil,
@@ -47,6 +48,7 @@ public actor TaskAgentLauncher {
     self.runner = runner
     self.candidateSockets = candidateSockets
     self.tmuxServerName = tmuxServerName
+    self.processController = WezTermController(runner: runner, candidateSockets: candidateSockets)
   }
 
   public static func command(context: TaskContext, subtask: TaskSubtask, supportDirectory: URL,
@@ -101,7 +103,7 @@ public actor TaskAgentLauncher {
   }
 
   public func identify(subtask: TaskSubtask, configuration: WezTermConfiguration) async throws -> String? {
-    let controller = WezTermController(runner: runner, candidateSockets: candidateSockets)
+    let controller = processController
     let candidates: [RunningAgentSession]
     if let tmux = subtask.tmux {
       guard FileManager.default.isExecutableFile(atPath: tmux.executable) else { return nil }
@@ -131,13 +133,13 @@ public actor TaskAgentLauncher {
     } else if let paneID = subtask.terminalPaneID {
       var requested = configuration
       requested.socketPath = subtask.terminalSocketPath ?? configuration.socketPath
-      let connection = try await WezTermConnection.resolve(configuration: requested, runner: runner, candidateSockets: candidateSockets)
+      let connection = try await processController.resolveConnection(configuration: requested)
       guard connection.result.succeeded else { throw WezTermError.actionFailed("Could not inspect the agent terminal.") }
       guard subtask.terminalSocketPath == nil || connection.configuration.socketPath == subtask.terminalSocketPath else { return nil }
       let panes = try JSONDecoder().decode([WezTermPane].self, from: Data(connection.result.standardOutput.utf8))
       guard let pane = panes.first(where: { $0.paneID == paneID }) else { return .interrupted }
       guard let sessionID = subtask.sessionID, let tty = pane.ttyName else { return nil }
-      let agents = try await WezTermController(runner: runner).agents(onTTY: tty)
+      let agents = try await processController.agents(onTTY: tty)
       guard agents.contains(where: { $0.provider == subtask.provider && $0.sessionID.lowercased() == sessionID.lowercased() }) else { return nil }
       output = try await runner.run(.init(executable: connection.configuration.executable,
         arguments: ["cli", "get-text", "--pane-id", String(paneID)], environment: connection.configuration.cliEnvironment))
@@ -174,7 +176,7 @@ public actor TaskAgentLauncher {
     guard let paneID = subtask.terminalPaneID else { return .absent }
     var requested = configuration
     requested.socketPath = subtask.terminalSocketPath ?? configuration.socketPath
-    let connection = try await WezTermConnection.resolve(configuration: requested, runner: runner, candidateSockets: candidateSockets)
+    let connection = try await processController.resolveConnection(configuration: requested)
     guard connection.result.succeeded,
           subtask.terminalSocketPath == nil || connection.configuration.socketPath == subtask.terminalSocketPath else {
       throw WezTermError.actionFailed("Could not verify the completed agent terminal; it was retained.")
@@ -184,7 +186,7 @@ public actor TaskAgentLauncher {
     guard let tty = pane.ttyName, let session = subtask.sessionID else {
       throw WezTermError.actionFailed("The completed terminal has no verifiable provider identity; it was retained.")
     }
-    let agents = try await WezTermController(runner: runner).agents(onTTY: tty)
+    let agents = try await processController.agents(onTTY: tty)
     guard agents.contains(where: { $0.provider == subtask.provider && $0.sessionID.caseInsensitiveCompare(session) == .orderedSame }) else {
       throw WezTermError.actionFailed("The terminal's conversation changed; it was retained.")
     }
@@ -210,7 +212,7 @@ public actor TaskAgentLauncher {
     guard let paneID = subtask.terminalPaneID else { return }
     var requested = configuration
     requested.socketPath = subtask.terminalSocketPath ?? configuration.socketPath
-    let connection = try await WezTermConnection.resolve(configuration: requested, runner: runner, candidateSockets: candidateSockets)
+    let connection = try await processController.resolveConnection(configuration: requested)
     guard connection.result.succeeded else { throw WezTermError.actionFailed("Could not inspect the terminal for cleanup.") }
     if let socket = subtask.terminalSocketPath, connection.configuration.socketPath != socket { return }
     let panes = try JSONDecoder().decode([WezTermPane].self, from: Data(connection.result.standardOutput.utf8))
@@ -218,7 +220,7 @@ public actor TaskAgentLauncher {
     guard let tty = pane.ttyName, let sessionID = subtask.sessionID else {
       throw WezTermError.actionFailed("Agent removed from the list. Its terminal was retained because its provider identity could not be verified.")
     }
-    let agents = try await WezTermController(runner: runner).agents(onTTY: tty)
+    let agents = try await processController.agents(onTTY: tty)
     guard agents.contains(where: { $0.provider == subtask.provider && $0.sessionID.caseInsensitiveCompare(sessionID) == .orderedSame }) else { return }
     let result = try await runner.run(.init(executable: connection.configuration.executable,
       arguments: ["cli", "kill-pane", "--pane-id", String(paneID)], environment: connection.configuration.cliEnvironment))
@@ -301,8 +303,8 @@ public actor TaskAgentLauncher {
     let command = try Self.command(
       context: context, subtask: subtask, supportDirectory: supportDirectory,
       includePrompt: includePrompt)
-    var connection = try await WezTermConnection.resolve(
-      configuration: configuration, runner: runner, candidateSockets: candidateSockets)
+    var connection = try await processController.resolveConnection(
+      configuration: configuration)
     guard !connection.result.timedOut else {
       throw WezTermError.actionFailed("WezTerm lookup timed out. No direct agent launch was attempted.")
     }
@@ -315,8 +317,8 @@ public actor TaskAgentLauncher {
           "Could not start WezTerm. \(String(bootstrap.standardError.prefix(1_000)))")
       }
       for _ in 0..<5 {
-        connection = try await WezTermConnection.resolve(
-          configuration: configuration, runner: runner, candidateSockets: candidateSockets)
+        connection = try await processController.resolveConnection(
+          configuration: configuration)
         if connection.result.succeeded || connection.result.timedOut { break }
         try await Task.sleep(for: .milliseconds(300))
       }

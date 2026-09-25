@@ -4,8 +4,9 @@ import Foundation
 
 /// Finds an existing local mux without launching a GUI or changing its windows.
 public enum WezTermConnection {
-  private static let paneArguments = ["cli", "list", "--format", "json"]
+  static let paneArguments = ["cli", "list", "--format", "json"]
   private static let maximumCandidates = 12
+  static let probeTimeoutSeconds = 2
 
   public static func resolve(
     configuration: WezTermConfiguration,
@@ -25,7 +26,7 @@ public enum WezTermConnection {
     }
     let direct = try await runner.run(ProcessSpecification(
       executable: requested.executable, arguments: paneArguments,
-      environment: requested.cliEnvironment, timeoutSeconds: 10))
+      environment: requested.cliEnvironment, timeoutSeconds: probeTimeoutSeconds))
     if hasValidPanes(direct) || direct.timedOut {
       // The CLI may have created its default mux during the initial probe.
       if !direct.timedOut, requested.socketPath == nil, candidateSockets == nil,
@@ -112,7 +113,7 @@ public enum WezTermConnection {
       "connect", "--class", "com.haelyra.focus-queue-mux.\(identity)", "focus-queue"]
   }
 
-  private static func hasValidPanes(_ result: ProcessResult) -> Bool {
+  static func hasValidPanes(_ result: ProcessResult) -> Bool {
     result.succeeded && (try? JSONDecoder().decode([WezTermPane].self, from: Data(result.standardOutput.utf8))) != nil
   }
 }

@@ -372,6 +372,10 @@ public actor WezTermController: WezTermControlling {
     private let runner: any ProcessRunning
     private let candidateSockets: [String]?
     private let labelAttempts: Int
+    private static let processSnapshotTTL: TimeInterval = 3
+    private var processSnapshots: [String: (fetchedAt: Date, result: ProcessResult)] = [:]
+    private var processSnapshotTasks: [String: Task<ProcessResult, Error>] = [:]
+    private var resolvedSockets: [String: String] = [:]
 
     public init(runner: any ProcessRunning = FoundationProcessRunner(), candidateSockets: [String]? = nil,
                 verificationAttempts: Int = 10) {
@@ -380,11 +384,57 @@ public actor WezTermController: WezTermControlling {
         self.labelAttempts = max(1, min(verificationAttempts, 10))
     }
 
+    /// Reuses a socket that already answered this controller so refresh passes
+    /// do not re-probe every candidate. A stale entry costs one bounded probe.
+    func resolveConnection(
+        configuration: WezTermConfiguration
+    ) async throws -> (configuration: WezTermConfiguration, result: ProcessResult) {
+        if configuration.socketPath == nil, let cached = resolvedSockets[configuration.executable] {
+            var pinned = configuration
+            pinned.socketPath = cached
+            let probe = try await runner.run(ProcessSpecification(
+                executable: pinned.executable, arguments: WezTermConnection.paneArguments,
+                environment: pinned.cliEnvironment, timeoutSeconds: WezTermConnection.probeTimeoutSeconds))
+            if WezTermConnection.hasValidPanes(probe) { return (pinned, probe) }
+            resolvedSockets[configuration.executable] = nil
+        }
+        let connection = try await WezTermConnection.resolve(
+            configuration: configuration, runner: runner, candidateSockets: candidateSockets)
+        if configuration.socketPath == nil, WezTermConnection.hasValidPanes(connection.result),
+           let socket = connection.configuration.socketPath {
+            resolvedSockets[configuration.executable] = socket
+        }
+        return connection
+    }
+
+    /// Read-only process inspection shares one in-flight call and a few-second
+    /// result so a refresh pass does not rerun identical ps/lsof invocations.
+    private func runSharedProcess(_ specification: ProcessSpecification) async throws -> ProcessResult {
+        let key = ([specification.executable] + specification.arguments).joined(separator: "\u{1F}")
+        if let cached = processSnapshots[key],
+           Date().timeIntervalSince(cached.fetchedAt) < Self.processSnapshotTTL {
+            return cached.result
+        }
+        if let inFlight = processSnapshotTasks[key] { return try await inFlight.value }
+        let task = Task { try await runner.run(specification) }
+        processSnapshotTasks[key] = task
+        do {
+            let result = try await task.value
+            processSnapshotTasks[key] = nil
+            if result.succeeded {
+                processSnapshots[key] = (Date(), result)
+            }
+            return result
+        } catch {
+            processSnapshotTasks[key] = nil
+            throw error
+        }
+    }
+
     public func focusPane(_ pane: WezTermPane, configuration: WezTermConfiguration) async throws {
         var requested = configuration
         requested.socketPath = pane.socketPath ?? configuration.socketPath
-        let connection = try await WezTermConnection.resolve(configuration: requested,
-            runner: runner, candidateSockets: candidateSockets)
+        let connection = try await resolveConnection(configuration: requested)
         guard connection.result.succeeded else { throw WezTermError.actionFailed(Self.failureDetail(connection.result)) }
         if let socketPath = pane.socketPath, connection.configuration.socketPath != socketPath {
             throw WezTermError.actionFailed("The selected terminal connection is unavailable. Refresh the browser before choosing another pane.")
@@ -409,8 +459,7 @@ public actor WezTermController: WezTermControlling {
     public func listAttachablePanes(
         configuration: WezTermConfiguration
     ) async throws -> [WezTermPane] {
-        let connection = try await WezTermConnection.resolve(configuration: configuration,
-            runner: runner, candidateSockets: candidateSockets)
+        let connection = try await resolveConnection(configuration: configuration)
         let result = connection.result
         guard result.succeeded else {
             throw WezTermError.actionFailed(Self.failureDetail(result))
@@ -423,8 +472,7 @@ public actor WezTermController: WezTermControlling {
     public func listRunningAgents(
         configuration: WezTermConfiguration
     ) async throws -> [RunningAgentSession] {
-        let connection = try await WezTermConnection.resolve(configuration: configuration,
-            runner: runner, candidateSockets: candidateSockets)
+        let connection = try await resolveConnection(configuration: configuration)
         let result = connection.result
         guard result.succeeded else {
             throw WezTermError.actionFailed(Self.failureDetail(result))
@@ -691,8 +739,7 @@ public actor WezTermController: WezTermControlling {
         configuration: WezTermConfiguration,
         runtime: TmuxController
     ) async throws -> TerminalActionResult {
-        let connection = try await WezTermConnection.resolve(
-            configuration: configuration, runner: runner, candidateSockets: candidateSockets)
+        let connection = try await resolveConnection(configuration: configuration)
         guard !connection.result.timedOut else {
             throw WezTermError.actionFailed(
                 "WezTerm lookup timed out. The managed agent remains available in tmux.")
@@ -813,8 +860,7 @@ public actor WezTermController: WezTermControlling {
         }
         var requested = configuration
         requested.socketPath = socketPath ?? requested.socketPath
-        let connection = try await WezTermConnection.resolve(
-            configuration: requested, runner: runner, candidateSockets: candidateSockets)
+        let connection = try await resolveConnection(configuration: requested)
         guard connection.result.succeeded else {
             if !connection.result.timedOut,
                ["Connection refused", "No such file or directory", "no running GUI"].contains(where: connection.result.standardError.contains) {
@@ -1049,13 +1095,21 @@ public actor WezTermController: WezTermControlling {
 
     public func knownProviderProcesses(provider: AgentProvider? = nil,
                                        requireComplete: Bool = false) async throws -> [KnownProviderProcess] {
-        let processes = try await runner.run(.init(executable: "/bin/ps",
-            arguments: ["-axo", "pid=,tty=,comm="], timeoutSeconds: 10))
+        let psSpec = ProcessSpecification(executable: "/bin/ps",
+            arguments: ["-axo", "pid=,tty=,comm="], timeoutSeconds: 3)
+        // Ownership verification always inspects fresh processes; discovery
+        // polls may reuse a snapshot taken moments ago.
+        let processes = requireComplete
+            ? try await runner.run(psSpec)
+            : try await runSharedProcess(psSpec)
         guard processes.succeeded else { throw WezTermError.actionFailed("Could not inspect provider processes.") }
         let providers = Self.agentProcesses(in: processes.standardOutput).filter { provider == nil || $0.provider == provider }
         guard !providers.isEmpty else { return [] }
-        let files = try await runner.run(.init(executable: "/usr/sbin/lsof",
-            arguments: ["-a", "-p", providers.map { String($0.pid) }.joined(separator: ","), "-Fpnf"], timeoutSeconds: 10))
+        let lsofSpec = ProcessSpecification(executable: "/usr/sbin/lsof",
+            arguments: ["-a", "-p", providers.map { String($0.pid) }.joined(separator: ","), "-Fpnf"], timeoutSeconds: 3)
+        let files = requireComplete
+            ? try await runner.run(lsofSpec)
+            : try await runSharedProcess(lsofSpec)
         guard files.succeeded else { throw WezTermError.actionFailed("Provider ownership lookup failed; running state is unknown.") }
         var lines: [Int32: [String]] = [:]
         var directories: [Int32: String] = [:]
@@ -1104,8 +1158,7 @@ public actor WezTermController: WezTermControlling {
             do {
                 let clients = try await TmuxController(runner: runner).clientTTYs(for: reference)
                 if !clients.isEmpty {
-                    let connection = try await WezTermConnection.resolve(configuration: configuration,
-                        runner: runner, candidateSockets: candidateSockets)
+                    let connection = try await resolveConnection(configuration: configuration)
                     if connection.result.succeeded {
                         let panes = try Self.decodePanes(from: connection.result).filter {
                             $0.ttyName.map(clients.contains) == true
@@ -1134,10 +1187,10 @@ public actor WezTermController: WezTermControlling {
         in panes: [WezTermPane],
         preferredSession: TaskAgentSession? = nil
     ) async throws -> [RunningAgentSession] {
-        let processResult = try await runner.run(ProcessSpecification(
+        let processResult = try await runSharedProcess(ProcessSpecification(
             executable: "/bin/ps",
             arguments: ["-axo", "pid=,tty=,comm="],
-            timeoutSeconds: 10
+            timeoutSeconds: 3
         ))
         guard processResult.succeeded else {
             throw WezTermError.actionFailed(Self.failureDetail(processResult))
@@ -1158,10 +1211,10 @@ public actor WezTermController: WezTermControlling {
             uniqueKeysWithValues: paneProcesses.map { ($0.pid, $0.provider) }
         )
         let processIDs = paneProcesses.map { String($0.pid) }.joined(separator: ",")
-        let lsofResult = try await runner.run(ProcessSpecification(
+        let lsofResult = try await runSharedProcess(ProcessSpecification(
             executable: "/usr/sbin/lsof",
             arguments: ["-a", "-p", processIDs, "-Fn"],
-            timeoutSeconds: 10
+            timeoutSeconds: 3
         ))
         guard lsofResult.succeeded else {
             throw WezTermError.actionFailed("Could not verify agent process ownership. No absence was assumed. \(Self.failureDetail(lsofResult))")

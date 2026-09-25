@@ -13,6 +13,7 @@ struct SetupWizardTests {
     let paths = AppPaths.live(environment: ["FOCUS_QUEUE_SUPPORT_DIR": root.path])
     let model = QueueViewModel(paths: paths)
     await model.bootstrap()
+    await model.bootstrapTail?.value
     #expect(model.configurationIsLoaded)
     #expect(model.isSetupPresented)
     #expect(model.loadError == nil)
@@ -21,6 +22,7 @@ struct SetupWizardTests {
     model.isSetupPresented = false
     let restarted = QueueViewModel(paths: paths)
     await restarted.bootstrap()
+    await restarted.bootstrapTail?.value
     #expect(restarted.isSetupPresented)
     #expect(await restarted.finishSetup(restarted.config))
     #expect(!restarted.isSetupPresented)
@@ -36,6 +38,7 @@ struct SetupWizardTests {
     let paths = AppPaths.live(environment: ["FOCUS_QUEUE_SUPPORT_DIR": root.path])
     let model = QueueViewModel(paths: paths)
     await model.bootstrap()
+    await model.bootstrapTail?.value
     let original = try Data(contentsOf: paths.configurationFile)
     var draft = model.config
     draft.dashboardPath = root.appendingPathComponent("missing/dashboard.json").path

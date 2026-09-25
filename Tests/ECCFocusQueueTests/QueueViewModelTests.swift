@@ -218,6 +218,28 @@ struct QueueViewModelTests {
     #expect(model.routerStatus?.contains("new routing is blocked") == true)
   }
 
+  @Test("Bootstrap primes saved agents from disk before background reconciliation")
+  func bootstrapPrimesAgentsBeforeReconciliation() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    _ = try await store.upsertSubtask(ticketID: "ECC-101",
+      subtask: TaskSubtask(id: "primed-worker", title: "Primed agent", sessionID: UUID().uuidString))
+    let boundary = ForbiddenExternalActions()
+    let model = QueueViewModel(paths: fixture.paths,
+      terminalController: boundary, verifier: boundary, queueAgent: ControlledQueueAgent(),
+      pullRequestQueueLoader: boundary, discoverExternalAgents: { [] },
+      maintenanceEnabled: false, locateExistingAgent: { _, _ in nil })
+
+    await model.bootstrap()
+
+    #expect(model.loadError == nil)
+    #expect(model.visibleAgents(for: "ECC-101").map(\.id) == ["primed-worker"])
+    if let tail = model.bootstrapTail { await tail.value }
+    #expect(model.visibleAgents(for: "ECC-101").map(\.id) == ["primed-worker"])
+  }
+
   @Test("Disabling auto-exit preserves completed agents through refresh and saves the setting")
   func completedAgentOptOut() async throws {
     let fixture = try await Fixture()
@@ -2451,6 +2473,7 @@ private struct Fixture {
       identifyManagedAgent: identifyManagedAgent,
       locateExistingAgent: locateExistingAgent)
     await model.bootstrap()
+    await model.bootstrapTail?.value
     #expect(model.loadError == nil)
     return model
   }

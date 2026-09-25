@@ -141,6 +141,7 @@ private struct DurableFixture {
       verifier: boundary, queueAgent: boundary, pullRequestQueueLoader: boundary,
       discoverExternalAgents: { [] }, locateExistingAgent: { _, _ in nil })
     await model.bootstrap()
+    await model.bootstrapTail?.value
     return model
   }
 }

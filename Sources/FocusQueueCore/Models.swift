@@ -266,6 +266,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var autoExitCompletedAgents: Bool
   public var agentUsageBarEnabled: Bool
   public var agentModelChoices: [AgentModelChoice]
+  public var autoArchiveStaleAgents: Bool
 
   public static let defaultAgentModelChoices: [AgentModelChoice] = [
     AgentModelChoice(provider: .codex, label: "Default"),
@@ -304,6 +305,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.autoExitCompletedAgents = true
     self.agentUsageBarEnabled = true
     self.agentModelChoices = Self.defaultAgentModelChoices
+    self.autoArchiveStaleAgents = false
     let effectiveProjects = projects ?? [Self.legacyProject(
       appName: appName,
       dashboardPath: dashboardPath,
@@ -321,6 +323,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case autoExitCompletedAgents
     case agentUsageBarEnabled
     case agentModelChoices
+    case autoArchiveStaleAgents
     case focusQueueProjects, focusQueueSelectedProjectID, projects, selectedProjectID
   }
 
@@ -342,6 +345,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     agentUsageBarEnabled = try container.decodeIfPresent(Bool.self, forKey: .agentUsageBarEnabled) ?? true
     agentModelChoices = try container.decodeIfPresent([AgentModelChoice].self, forKey: .agentModelChoices)
       ?? Self.defaultAgentModelChoices
+    autoArchiveStaleAgents = try container.decodeIfPresent(Bool.self, forKey: .autoArchiveStaleAgents) ?? false
     dailyReport =
       try container.decodeIfPresent(DailyReportConfiguration.self, forKey: .dailyReport)
       ?? DailyReportConfiguration()
@@ -407,6 +411,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encode(autoExitCompletedAgents, forKey: .autoExitCompletedAgents)
     try container.encode(agentUsageBarEnabled, forKey: .agentUsageBarEnabled)
     try container.encode(agentModelChoices, forKey: .agentModelChoices)
+    try container.encode(autoArchiveStaleAgents, forKey: .autoArchiveStaleAgents)
   }
 
   public var selectedProject: ProjectConfiguration? {
@@ -1524,6 +1529,7 @@ public struct LocalState: Codable, Equatable, Sendable {
   public var minimizationPreference: QueueMinimizationPreference
   public var programLogWindowVisible: Bool
   public var agentSessions: [TaskAgentSession]
+  public var lastStaleAgentSweepAt: Date?
 
   public init(
     routineDate: String = "",
@@ -1536,7 +1542,8 @@ public struct LocalState: Codable, Equatable, Sendable {
     accentStyle: QueueAccentStyle? = nil,
     minimizationPreference: QueueMinimizationPreference = .fq,
     programLogWindowVisible: Bool = false,
-    agentSessions: [TaskAgentSession] = []
+    agentSessions: [TaskAgentSession] = [],
+    lastStaleAgentSweepAt: Date? = nil
   ) {
     self.routineDate = routineDate
     self.completedRoutineIDs = completedRoutineIDs
@@ -1549,6 +1556,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     self.minimizationPreference = minimizationPreference
     self.programLogWindowVisible = programLogWindowVisible
     self.agentSessions = agentSessions
+    self.lastStaleAgentSweepAt = lastStaleAgentSweepAt
   }
 
   public mutating func upsertAgentSession(_ session: TaskAgentSession) {

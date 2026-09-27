@@ -926,6 +926,7 @@ final class QueueViewModel {
           }
         }
       }
+      await runStaleAgentSweepIfDue()
       if userInitiated || lastReportRefresh == nil || Date().timeIntervalSince(lastReportRefresh!) >= 10 {
         lastReportRefresh = Date()
         if !isDailyReportRunning {
@@ -2947,6 +2948,51 @@ final class QueueViewModel {
     persistLocalState()
   }
 
+  /// Visible agents across open tasks that match the stale-cleanup record
+  /// criteria. Live-process ownership is proven only during the actual sweep.
+  func staleAgentCandidates(now: Date = Date()) -> [(ticket: DashboardTicket, agent: TaskSubtask)] {
+    openTickets.flatMap { ticket in
+      taskItems(for: ticket.id)
+        .filter { $0.hasAgent && $0.isStaleAgentCandidate(now: now) }
+        .map { (ticket: ticket, agent: $0) }
+    }
+  }
+
+  /// Archives every stale agent that no live process owns. Archiving is
+  /// recallable under Archived agents; nothing is deleted. Returns the count.
+  @discardableResult
+  func cleanupStaleAgents(now: Date = Date()) async -> Int {
+    let candidates = staleAgentCandidates(now: now)
+    guard !candidates.isEmpty else { return 0 }
+    let maintenance = TaskMaintenance(root: paths.supportDirectory)
+    var archivedPerTicket: [String: Int] = [:]
+    for candidate in candidates {
+      // Uncertain ownership is a retain decision, never evidence for cleanup.
+      let owned = (try? await maintenance.ownsLiveProcess(candidate.agent)) ?? true
+      guard !owned else { continue }
+      await retireAgent(candidate.agent, for: candidate.ticket)
+      let archived = subtasks(for: candidate.ticket.id).first { $0.id == candidate.agent.id }?
+        .agentRemovedAt != nil
+      if archived { archivedPerTicket[candidate.ticket.id, default: 0] += 1 }
+    }
+    let total = archivedPerTicket.values.reduce(0, +)
+    for (ticketID, count) in archivedPerTicket {
+      actionMessages[ticketID] =
+        "Archived \(count) stale \(count == 1 ? "agent" : "agents"). They stay recallable under Archived agents."
+    }
+    return total
+  }
+
+  private func runStaleAgentSweepIfDue() async {
+    guard config.autoArchiveStaleAgents else { return }
+    let now = Date()
+    if let last = localState.lastStaleAgentSweepAt,
+       now.timeIntervalSince(last) < 24 * 60 * 60 { return }
+    localState.lastStaleAgentSweepAt = now
+    persistLocalState()
+    await cleanupStaleAgents(now: now)
+  }
+
   func removeAgent(_ session: TaskAgentSession, from ticket: DashboardTicket) {
     archiveAgent(session, from: ticket)
   }
@@ -3731,6 +3777,12 @@ final class QueueViewModel {
 
   func setAutoExitCompletedAgents(_ enabled: Bool) {
     config.autoExitCompletedAgents = enabled
+    persistConfiguration()
+  }
+
+  func setAutoArchiveStaleAgents(_ enabled: Bool) {
+    guard config.autoArchiveStaleAgents != enabled else { return }
+    config.autoArchiveStaleAgents = enabled
     persistConfiguration()
   }
 

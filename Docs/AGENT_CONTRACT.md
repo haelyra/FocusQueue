@@ -65,6 +65,16 @@ The configured entry persists launch intent before starting Codex. Task/session/
 
 Automatic startup receipts live at `logs/agent-startups/<TASK-ID>/<agent-id>.json`. They record the prompt digest and byte count rather than duplicating prompt text, plus source-router identity, project/task/subtask metadata, provider/version/model/effort, workspace and Git identity, tmux executable/server/session/pane/TTY and attach command, terminal selection, placement capsule, project plan, task plan, task context, task log, and sanitized launch arguments. Registration adds the real provider conversation UUID and exact resume command. The full initial prompt remains in the route intent and subtask context.
 
+## Stale agent cleanup
+
+Manual ("Clean up stale agents…" in the Today's focus menu) and opt-in automatic (`autoArchiveStaleAgents`, at most one sweep per 24 hours) cleanup only ever archive agents and close their runtimes. Nothing is deleted: archived agents stay recallable under Archived agents with provider resume, workspace, and conversation intact. An agent is a cleanup candidate only when all five criteria hold:
+
+1. It is visible (not already archived).
+2. No live process owns it, proven through the same maintenance inspection used for worktree cleanup; uncertain ownership retains the agent.
+3. It is either interrupted, or idle with its output already seen (no unread completion).
+4. Its last activity (heartbeat or result, falling back to the earliest recorded timestamp) is older than 5 days.
+5. It is not queued or working, has no unread result, and the user has not retained it by opening the completed runtime.
+
 ## Verification
 
 Run `swift test`, Python regression tests, and the opt-in headless `ECC_FOCUS_QUEUE_LIVE_AGENT_TESTS=1 swift test --filter liveManagedProviderSanity`. The live test exercises actual Codex launch through the model, automatic isolation from a dirty source, compact/detailed prompts, exact session identity, detach/reopen, and stopped-session resume. Stop the production app during live fixtures so its external-session observer cannot import fixture agents. UI automation still requires its separate explicit opt-in.

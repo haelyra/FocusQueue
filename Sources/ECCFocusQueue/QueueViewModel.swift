@@ -226,6 +226,7 @@ final class QueueViewModel {
   @ObservationIgnored private let agentActivityObserver = AgentActivityObserver()
   @ObservationIgnored private var lastIdentityRefresh: Date?
   @ObservationIgnored private var lastManagedPresentationRefresh: Date?
+  @ObservationIgnored private var panelVisible = true
   @ObservationIgnored private var subtaskEditTokens: [String: UUID] = [:]
   @ObservationIgnored private var subtaskEditTasks: [String: Task<Void, Never>] = [:]
   @ObservationIgnored private var planPresentationID = UUID()
@@ -903,11 +904,11 @@ final class QueueViewModel {
       resetDailyRoutinesIfNeeded()
       await importAgentRegistrations()
       await refreshTaskContexts()
-      await refreshExternalAgentRegistrations()
+      if panelVisible { await refreshExternalAgentRegistrations() }
       if maintenanceEnabled {
         let recoverySweep = lastMaintenanceAt == nil || Date().timeIntervalSince(lastMaintenanceAt!) >= 60
         if recoverySweep { lastMaintenanceAt = Date() }
-        let maintenance = TaskMaintenance(root: paths.supportDirectory)
+        var dueTickets: [DashboardTicket] = []
         for ticket in dashboard.tickets {
           guard let context = taskContexts[ticket.id] else { continue }
           // Semantic events trigger a pass; frequent heartbeat timestamps do not.
@@ -917,16 +918,24 @@ final class QueueViewModel {
           }.joined(separator: "\n")
           guard recoverySweep || maintenanceSignatures[ticket.id] != signature else { continue }
           maintenanceSignatures[ticket.id] = signature
-          do {
-            let receipt = try await maintenance.run(ticket: ticket)
-            if maintenanceReceipts[ticket.id] != receipt { maintenanceReceipts[ticket.id] = receipt }
-          } catch {
-            maintenanceReceipts[ticket.id] = .init(ticketID: ticket.id,
-              notes: ["Maintenance retained existing data: \(error.localizedDescription)"])
+          dueTickets.append(ticket)
+        }
+        if !dueTickets.isEmpty {
+          // One complete process snapshot covers every ticket's inspection pass.
+          let processes = try? await WezTermController().knownProviderProcesses(requireComplete: true)
+          let maintenance = TaskMaintenance(root: paths.supportDirectory, processes: processes)
+          for ticket in dueTickets {
+            do {
+              let receipt = try await maintenance.run(ticket: ticket)
+              if maintenanceReceipts[ticket.id] != receipt { maintenanceReceipts[ticket.id] = receipt }
+            } catch {
+              maintenanceReceipts[ticket.id] = .init(ticketID: ticket.id,
+                notes: ["Maintenance retained existing data: \(error.localizedDescription)"])
+            }
           }
         }
       }
-      if userInitiated || lastReportRefresh == nil || Date().timeIntervalSince(lastReportRefresh!) >= 10 {
+      if userInitiated || lastReportRefresh == nil || Date().timeIntervalSince(lastReportRefresh!) >= 30 {
         lastReportRefresh = Date()
         if !isDailyReportRunning {
           isRecoveredDailyReportRunning = try await reportHistoryRepository.reconcileInactiveRuns()
@@ -938,7 +947,7 @@ final class QueueViewModel {
     } catch {
       if loadError != error.localizedDescription { loadError = error.localizedDescription }
       // A missing dashboard must not disable mandatory agent tracking.
-      await refreshExternalAgentRegistrations()
+      if panelVisible { await refreshExternalAgentRegistrations() }
     }
   }
 
@@ -1305,34 +1314,46 @@ final class QueueViewModel {
         await retireAgent(subtask, for: ticket, automatically: true)
       }
     }
-    if lastIdentityRefresh == nil || Date().timeIntervalSince(lastIdentityRefresh!) >= 15 {
+    if panelVisible, lastIdentityRefresh == nil || Date().timeIntervalSince(lastIdentityRefresh!) >= 15 {
       lastIdentityRefresh = Date()
-      for ticket in tickets {
-        for subtask in visibleAgents(for: ticket.id) {
-          if let event = try? await agentActivityObserver.latest(for: subtask) {
-            do {
-              taskContexts[ticket.id] = try await taskContextStore.observeActivity(ticketID: ticket.id, subtaskID: subtask.id, event: event)
-            } catch { actionMessages[ticket.id] = error.localizedDescription }
-          }
-          if let attention = try? await taskAgentLauncher.runtimeAttention(subtask: subtask, configuration: config.wezTerm),
-             let latest = subtasks(for: ticket.id).first(where: { $0.id == subtask.id }),
-             latest.attention != attention {
-            do {
-              taskContexts[ticket.id] = try await taskContextStore.reportAttention(ticketID: ticket.id,
-                subtaskID: subtask.id, attention: attention,
-                summary: attention == .approval ? "The agent is waiting for approval in its terminal." : "The terminal session ended before this subtask was completed. Click to resume.",
-                expectedHeartbeat: subtask.lastHeartbeatAt)
-            } catch { actionMessages[ticket.id] = error.localizedDescription }
-          }
+      let observed = tickets.flatMap { ticket in
+        visibleAgents(for: ticket.id).map { (ticketID: ticket.id, subtask: $0) }
+      }
+      for entry in observed {
+        if let event = try? await agentActivityObserver.latest(for: entry.subtask) {
+          do {
+            taskContexts[entry.ticketID] = try await taskContextStore.observeActivity(
+              ticketID: entry.ticketID, subtaskID: entry.subtask.id, event: event)
+          } catch { actionMessages[entry.ticketID] = error.localizedDescription }
         }
-        for subtask in visibleAgents(for: ticket.id) where subtask.sessionID == nil {
-          if let identity = try? await taskAgentLauncher.identify(subtask: subtask, configuration: config.wezTerm),
-             subtasks(for: ticket.id).first(where: { $0.id == subtask.id })?.isAgentVisible == true {
-            do {
-              taskContexts[ticket.id] = try await taskContextStore.recordAgentIdentity(ticketID: ticket.id,
-                subtaskID: subtask.id, sessionID: identity)
-            } catch { actionMessages[ticket.id] = error.localizedDescription }
-          }
+      }
+      let terminalSnapshot = await taskAgentLauncher.runtimeSnapshot(
+        subtasks: observed.map(\.subtask), configuration: config.wezTerm)
+      let attentions = await taskAgentLauncher.runtimeAttention(
+        subtasks: observed.map(\.subtask), configuration: config.wezTerm, snapshot: terminalSnapshot)
+      for entry in observed {
+        guard let attention = attentions[entry.subtask.id],
+             let latest = subtasks(for: entry.ticketID).first(where: { $0.id == entry.subtask.id }),
+             latest.attention != attention else { continue }
+        do {
+          taskContexts[entry.ticketID] = try await taskContextStore.reportAttention(ticketID: entry.ticketID,
+            subtaskID: entry.subtask.id, attention: attention,
+            summary: attention == .approval ? "The agent is waiting for approval in its terminal." : "The terminal session ended before this subtask was completed. Click to resume.",
+            expectedHeartbeat: entry.subtask.lastHeartbeatAt)
+        } catch { actionMessages[entry.ticketID] = error.localizedDescription }
+      }
+      let unidentified = observed.filter { $0.subtask.sessionID == nil }
+      if !unidentified.isEmpty {
+        let identities = await taskAgentLauncher.identify(
+          subtasks: unidentified.map(\.subtask), configuration: config.wezTerm, snapshot: terminalSnapshot)
+        for entry in unidentified {
+          guard let identity = identities[entry.subtask.id],
+                subtasks(for: entry.ticketID).first(where: { $0.id == entry.subtask.id })?.isAgentVisible == true
+          else { continue }
+          do {
+            taskContexts[entry.ticketID] = try await taskContextStore.recordAgentIdentity(ticketID: entry.ticketID,
+              subtaskID: entry.subtask.id, sessionID: identity)
+          } catch { actionMessages[entry.ticketID] = error.localizedDescription }
         }
       }
     }
@@ -2696,8 +2717,12 @@ final class QueueViewModel {
       let unseenReferenceKeys = currentReferenceKeys.subtracting(forcedIntakeReferenceKeys)
       let shouldForceReferenceDiscovery = force && !unseenReferenceKeys.isEmpty
       if shouldForceReferenceDiscovery { forcedIntakeReferenceKeys.formUnion(unseenReferenceKeys) }
+      let hasActiveVisibleAgents = dashboard.tickets.contains { ticket in
+        visibleAgents(for: ticket.id).contains { $0.effectiveStatus() == .working }
+      }
+      // Idle polls recover half as often; active agents keep the fast cadence.
       let recoveryDue = lastExternalAgentDiscovery == nil
-        || Date().timeIntervalSince(lastExternalAgentDiscovery!) >= 15
+        || Date().timeIntervalSince(lastExternalAgentDiscovery!) >= (hasActiveVisibleAgents ? 15 : 30)
       if shouldForceReferenceDiscovery || (!force && recoveryDue) {
         // A reference gets one immediate attempt. If it is too early to find
         // the provider UUID, the normal bounded recovery interval takes over.
@@ -3381,13 +3406,24 @@ final class QueueViewModel {
     }
   }
 
+  /// A hidden panel ticks slowly and skips terminal scraping; revealing it
+  /// refreshes immediately so the queue is current.
+  func setPanelVisible(_ visible: Bool) {
+    let wasHidden = !panelVisible
+    panelVisible = visible
+    if visible, wasHidden {
+      Task { await refresh() }
+    }
+  }
+
   private func startRefreshLoop() {
     refreshTask?.cancel()
     let interval = config.refreshIntervalSeconds
     refreshTask = Task { [weak self] in
       while !Task.isCancelled {
-        try? await Task.sleep(for: .seconds(interval))
-        guard !Task.isCancelled, let self else { return }
+        guard let self else { return }
+        try? await Task.sleep(for: .seconds(self.panelVisible ? interval : 30))
+        guard !Task.isCancelled else { return }
         await self.refresh()
       }
     }

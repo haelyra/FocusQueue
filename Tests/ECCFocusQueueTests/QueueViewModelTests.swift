@@ -266,6 +266,29 @@ struct QueueViewModelTests {
     #expect(model.subtasks(for: "ECC-101").first { $0.id == agent.id }?.agentRemovedAt != nil)
   }
 
+  @Test("A hidden panel skips external agent discovery, and reveal refreshes immediately")
+  func hiddenPanelSkipsHeavyLanes() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let discoveries = DiscoveryCounter()
+    let dashboards = CountingDashboardRepository()
+    let model = await fixture.model(agent: ControlledQueueAgent(),
+      dashboardRepository: dashboards, discoverExternalAgents: {
+        await discoveries.record()
+        return []
+      })
+    let discoveryBaseline = await discoveries.count
+
+    model.setPanelVisible(false)
+    await model.refresh()
+    await model.refresh()
+    #expect(await discoveries.count == discoveryBaseline)
+
+    let loadBaseline = dashboards.loads
+    model.setPanelVisible(true)
+    try await eventually { dashboards.loads > loadBaseline }
+  }
+
   @Test("macOS Terminal rejects direct agents before any launch side effect")
   func macTerminalRequiresTmux() async throws {
     let fixture = try await Fixture()
@@ -2488,6 +2511,33 @@ private struct Fixture {
     let directory = paths.ingestionRuntimeDirectory.appendingPathComponent("reports/2026-09-10")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     try JSONEncoder().encode(report).write(to: directory.appendingPathComponent("\(report.runID).json"))
+  }
+}
+
+private final class CountingDashboardRepository: DashboardManaging, @unchecked Sendable {
+  private let base = JSONDashboardRepository()
+  private let lock = NSLock()
+  private var loadCount = 0
+  var loads: Int { lock.withLock { loadCount } }
+  func load(from url: URL) async throws -> DashboardDocument {
+    lock.withLock { loadCount += 1 }
+    return try await base.load(from: url)
+  }
+  func modificationDate(at url: URL) async throws -> Date? { try await base.modificationDate(at: url) }
+  func loadSnapshot(from url: URL) async throws -> DashboardSnapshot {
+    try await base.loadSnapshot(from: url)
+  }
+  func createTicket(
+    _ ticket: DashboardTicket, in url: URL, expectedRevision: DashboardRevision,
+    checking otherDashboardURLs: [URL]
+  ) async throws -> DashboardSnapshot {
+    try await base.createTicket(ticket, in: url, expectedRevision: expectedRevision,
+      checking: otherDashboardURLs)
+  }
+  func renameTicket(
+    id: String, to title: String, in url: URL, expectedRevision: DashboardRevision
+  ) async throws -> DashboardSnapshot {
+    try await base.renameTicket(id: id, to: title, in: url, expectedRevision: expectedRevision)
   }
 }
 

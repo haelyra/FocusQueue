@@ -22,7 +22,10 @@ public actor TaskMaintenance {
     private let inspect: @Sendable (TaskSubtask) async throws -> Bool
     private let cleanup: @Sendable (String, TaskSubtask) async throws -> TaskWorktreeCleanupResult
 
+    /// A tick-wide process snapshot keeps maintenance from rerunning ps/lsof
+    /// per agent per ticket. Without one, ownership inspects fresh processes.
     public init(root: URL,
+        processes: [KnownProviderProcess]? = nil,
         inspect: (@Sendable (TaskSubtask) async throws -> Bool)? = nil,
         cleanup: (@Sendable (String, TaskSubtask) async throws -> TaskWorktreeCleanupResult)? = nil) {
         self.root = root
@@ -44,7 +47,9 @@ public actor TaskMaintenance {
                 do { _ = try await TmuxController().verify(runtime); return true }
                 catch TmuxError.stopped { }
             }
-            let running = try await WezTermController().knownProviderProcesses(requireComplete: true)
+            let running: [KnownProviderProcess]
+            if let processes { running = processes }
+            else { running = try await WezTermController().knownProviderProcesses(requireComplete: true) }
             return running.contains { process in
                 (process.provider == agent.provider && process.sessionID.caseInsensitiveCompare(agent.sessionID ?? "") == .orderedSame)
                     || agent.workspace.map { ExternalAgentRegistry.contains(directory: $0.path, path: process.cwd) } == true

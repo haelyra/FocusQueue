@@ -341,3 +341,58 @@ func managedRuntimeAttentionRetainsAnUnconfirmedLivePane() async throws {
   }
   #expect(await runner.specifications.last?.arguments.suffix(4) == ["list-panes", "-a", "-F", "#{pane_id}"])
 }
+
+private actor BatchedAttentionRunner: ProcessRunning {
+  private(set) var specifications: [ProcessSpecification] = []
+  let paneListing: String
+  let captureText: String
+  init(paneListing: String, captureText: String) {
+    self.paneListing = paneListing
+    self.captureText = captureText
+  }
+  func run(_ specification: ProcessSpecification) -> ProcessResult {
+    specifications.append(specification)
+    if specification.arguments.contains("list-panes") {
+      return .init(exitCode: 0, standardOutput: paneListing, standardError: "", timedOut: false)
+    }
+    if specification.arguments.contains("capture-pane") {
+      return .init(exitCode: 0, standardOutput: captureText, standardError: "", timedOut: false)
+    }
+    return .init(exitCode: 0, standardOutput: "", standardError: "", timedOut: false)
+  }
+}
+
+@Test("Batched attention shares one pane listing and skips captures for fresh heartbeats")
+func batchedRuntimeAttentionSharesListingAndSkipsFreshHeartbeats() async throws {
+  let paneListing = """
+  fq-task-ecc-1|123|1000|%0|124|/dev/ttys099|0|@1|0|200|50|0|0|200|50||||1|
+  fq-task-ecc-1|123|1000|%1|125|/dev/ttys100|0|@1|0|200|50|0|0|200|50||||0|
+  """
+  let runner = BatchedAttentionRunner(paneListing: paneListing,
+    captureText: "Do you want to proceed?\n› 1. Yes\n  2. No (Esc)\n")
+  let launcher = TaskAgentLauncher(runner: runner,
+    tmuxServerName: "batched-" + UUID().uuidString.lowercased())
+  var stale = TaskSubtask(id: "stale", title: "Stale", provider: .codex, runtimeMode: .tmux)
+  stale.tmux = .init(name: "fq-task-ecc-1", serverPID: 123, createdAt: 1000, paneID: "%0",
+    panePID: 124, tty: "/dev/ttys099", executable: "/bin/zsh")
+  stale.lastHeartbeatAt = Date(timeIntervalSinceNow: -60)
+  var fresh = TaskSubtask(id: "fresh", title: "Fresh", provider: .codex, runtimeMode: .tmux)
+  fresh.tmux = .init(name: "fq-task-ecc-1", serverPID: 123, createdAt: 1000, paneID: "%1",
+    panePID: 125, tty: "/dev/ttys100", executable: "/bin/zsh")
+  fresh.lastHeartbeatAt = Date()
+  var gone = TaskSubtask(id: "gone", title: "Gone", provider: .codex, runtimeMode: .tmux)
+  gone.tmux = .init(name: "fq-task-ecc-1", serverPID: 123, createdAt: 1000, paneID: "%9",
+    panePID: 126, tty: "/dev/ttys101", executable: "/bin/zsh")
+
+  let configuration = WezTermConfiguration(executable: "/unused/wezterm")
+  let snapshot = await launcher.runtimeSnapshot(subtasks: [stale, fresh, gone], configuration: configuration)
+  let attentions = await launcher.runtimeAttention(subtasks: [stale, fresh, gone],
+    configuration: configuration, snapshot: snapshot)
+
+  #expect(attentions[stale.id]! == .approval)
+  #expect(!attentions.keys.contains(fresh.id))
+  #expect(attentions[gone.id]! == .interrupted)
+  let calls = await runner.specifications
+  #expect(calls.filter { $0.arguments.contains("list-panes") }.count == 1)
+  #expect(calls.filter { $0.arguments.contains("capture-pane") }.count == 1)
+}

@@ -277,6 +277,24 @@ import UserNotifications
     model.setProgramLogWindowVisible(false)
   }
 
+  func windowDidMiniaturize(_ notification: Notification) {
+    guard notification.object as? NSWindow === panel else { return }
+    model.setPanelVisible(false)
+  }
+
+  func windowDidDeminiaturize(_ notification: Notification) {
+    guard notification.object as? NSWindow === panel else { return }
+    model.setPanelVisible(true)
+  }
+
+  func applicationDidHide(_ notification: Notification) {
+    model.setPanelVisible(false)
+  }
+
+  func applicationDidUnhide(_ notification: Notification) {
+    model.setPanelVisible(panel?.isVisible ?? false)
+  }
+
   @objc private func showPanel() {
     revealPanelOnPointerDisplay()
   }
@@ -299,6 +317,7 @@ import UserNotifications
     panel.deminiaturize(nil)
     panel.orderFrontRegardless()
     NSApp.activate(ignoringOtherApps: true)
+    model.setPanelVisible(true)
   }
 
   @objc private func importAgentRegistration(_ notification: Notification) {
@@ -316,16 +335,19 @@ import UserNotifications
   @objc private func centerPanel() {
     positionPanelOnCurrentDisplay(.center, animated: true)
     panel?.orderFrontRegardless()
+    model.setPanelVisible(true)
   }
 
   @objc private func placeUpperLeft() {
     positionPanelOnCurrentDisplay(.upperLeft, animated: true)
     panel?.orderFrontRegardless()
+    model.setPanelVisible(true)
   }
 
   @objc private func placeUpperRight() {
     positionPanelOnCurrentDisplay(.upperRight, animated: true)
     panel?.orderFrontRegardless()
+    model.setPanelVisible(true)
   }
 
   @objc private func switchPanelMonitor() {
@@ -347,9 +369,13 @@ import UserNotifications
     }
     positionPanel(currentPlacement, on: screens[nextIndex], animated: true)
     panel.orderFrontRegardless()
+    model.setPanelVisible(true)
   }
 
-  @objc private func hidePanel() { panel?.orderOut(nil) }
+  @objc private func hidePanel() {
+    panel?.orderOut(nil)
+    model.setPanelVisible(false)
+  }
 
   @objc private func exitTerminalFocus() { terminalFocusController?.dismiss() }
 

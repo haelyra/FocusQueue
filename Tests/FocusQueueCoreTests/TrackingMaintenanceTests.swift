@@ -198,4 +198,26 @@ struct TrackingMaintenanceTests {
         #expect(try await stopped.run(ticket: ticket).agentStates[agent.id] == "Unmerged commits retained")
         #expect(try await store.load(ticketID: ticket.id)?.subtasks[0].status == .completed)
     }
+
+    @Test("A shared process snapshot answers ownership without per-agent process scans")
+    func maintenanceUsesSharedProcessSnapshot() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("maintenance-snapshot-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = TaskContextStore(root: root)
+        let ticket = DashboardTicket(id: "ECC-1", title: "Maintenance", status: "open", summary: "", doneWhen: "")
+        _ = try await store.ensureContext(ticket: ticket)
+        var agent = TaskSubtask(id: UUID().uuidString, title: "Completed", provider: .codex,
+            sessionID: UUID().uuidString, status: .completed)
+        agent.workspace = .init(path: root.path, repositoryPath: root.path, managed: true)
+        _ = try await store.upsertSubtask(ticketID: ticket.id, subtask: agent)
+        let live = TaskMaintenance(root: root, processes: [
+            KnownProviderProcess(provider: .codex, sessionID: try #require(agent.sessionID),
+                processID: 4242, tty: nil, cwd: "/elsewhere")
+        ])
+        #expect(try await live.run(ticket: ticket).agentStates[agent.id]?.contains("live agent") == true)
+        let stopped = TaskMaintenance(root: root, processes: [], cleanup: { _, _ in
+            .init(removed: false, message: "Unmerged commits retained")
+        })
+        #expect(try await stopped.run(ticket: ticket).agentStates[agent.id] == "Unmerged commits retained")
+    }
 }

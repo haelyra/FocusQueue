@@ -88,6 +88,7 @@ public actor AgentActivityObserver {
     private let claudeRoot: URL
     private var locations: [String: URL] = [:]
     private var searchedAt: [String: Date] = [:]
+    private var scans: [String: (stamp: String, files: [URL])] = [:]
 
     public init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
         codexRoot = ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) }
@@ -96,21 +97,20 @@ public actor AgentActivityObserver {
             ?? home.appendingPathComponent(".claude")
     }
 
+    init(codexRoot: URL, claudeRoot: URL) {
+        self.codexRoot = codexRoot
+        self.claudeRoot = claudeRoot
+    }
+
     public func latest(for agent: TaskSubtask) throws -> AgentActivityEvent? {
         guard let sessionID = agent.sessionID, UUID(uuidString: sessionID) != nil else { return nil }
         let key = agent.provider.rawValue + ":" + sessionID.lowercased()
         if locations[key] == nil, Date().timeIntervalSince(searchedAt[key] ?? .distantPast) >= 60 {
             searchedAt[key] = Date()
             let root = agent.provider == .codex ? codexRoot.appendingPathComponent("sessions") : claudeRoot.appendingPathComponent("projects")
-            if let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) {
-                var inspected = 0
-                for case let url as URL in files {
-                    inspected += 1
-                    if inspected > 50_000 { break }
-                    guard url.pathExtension == "jsonl", url.lastPathComponent.lowercased().hasSuffix(sessionID.lowercased() + ".jsonl") else { continue }
-                    locations[key] = url
-                    break
-                }
+            let suffix = (sessionID + ".jsonl").lowercased()
+            locations[key] = sessionFiles(root: root).first {
+                $0.lastPathComponent.lowercased().hasSuffix(suffix)
             }
         }
         guard let url = locations[key] else { return nil }
@@ -119,5 +119,44 @@ public actor AgentActivityObserver {
         let end = try handle.seekToEnd()
         try handle.seek(toOffset: end > 262_144 ? end - 262_144 : 0)
         return AgentActivityEvent.latest(in: try handle.readToEnd() ?? Data(), provider: agent.provider, sessionID: sessionID)
+    }
+
+    /// A directory's modification time and entry count change when a session
+    /// file appears or is removed, so an unchanged stamp reuses the file list
+    /// instead of re-enumerating tens of thousands of transcripts.
+    private func sessionFiles(root: URL) -> [URL] {
+        let stamp = directoryStamp(root: root)
+        if let cached = scans[root.path], cached.stamp == stamp {
+            return cached.files
+        }
+        var files: [URL] = []
+        if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) {
+            var inspected = 0
+            for case let url as URL in enumerator {
+                inspected += 1
+                if inspected > 50_000 { break }
+                guard url.pathExtension == "jsonl" else { continue }
+                files.append(url)
+            }
+        }
+        scans[root.path] = (stamp, files)
+        return files
+    }
+
+    private func directoryStamp(root: URL) -> String {
+        var parts: [String] = []
+        var pending = [root]
+        while let directory = pending.popLast() {
+            let children = (try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
+                options: [.skipsHiddenFiles])) ?? []
+            let modified = (try? directory.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate?.timeIntervalSince1970 ?? 0
+            parts.append("\(directory.path)=\(modified)=\(children.count)")
+            pending.append(contentsOf: children.filter {
+                (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+            })
+        }
+        return parts.sorted().joined(separator: ";")
     }
 }

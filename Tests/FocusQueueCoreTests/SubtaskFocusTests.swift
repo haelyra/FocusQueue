@@ -151,6 +151,27 @@ struct SubtaskFocusTests {
         #expect(TaskAgentLauncher.terminalAttention("The agent asked: Do you want to proceed?") == nil)
     }
 
+    @Test("Session file scans reuse an unchanged directory stamp and notice new transcripts")
+    func activityScanCaching() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("activity-scan-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessions = root.appendingPathComponent("codex/sessions/2026/09/27")
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        let observer = AgentActivityObserver(codexRoot: root.appendingPathComponent("codex"),
+            claudeRoot: root.appendingPathComponent("claude"))
+        #expect(try await observer.latest(for: TaskSubtask(id: "missing", title: "Missing",
+            provider: .codex, sessionID: UUID().uuidString)) == nil)
+        let sessionID = UUID().uuidString
+        let line = #"{"timestamp":"2026-09-15T18:00:00Z","type":"event_msg","payload":{"type":"task_complete","thread_id":"\#(sessionID)"}}"#
+        try Data((line + "\n").utf8).write(to: sessions
+            .appendingPathComponent("rollout-2026-09-27T18-00-00-\(sessionID).jsonl"))
+        // The new transcript changes the directory stamp, so the first search
+        // for its session re-enumerates instead of reusing the stale file list.
+        let event = try await observer.latest(for: TaskSubtask(id: "found", title: "Found",
+            provider: .codex, sessionID: sessionID))
+        #expect(event?.kind == .result)
+    }
+
     @Test("Both prompt modes preserve the initial instruction and compact mode includes task pointers")
     func promptPreview() throws {
         let context = context()

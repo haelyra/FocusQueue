@@ -148,6 +148,151 @@ public actor TaskAgentLauncher {
     return Self.terminalAttention(output.standardOutput)
   }
 
+  /// Terminal state captured once per refresh tick: one tmux pane listing per
+  /// executable and one WezTerm connection per socket cover every subtask.
+  public struct RuntimeSnapshot: Sendable {
+    var tmuxPanes: [String: [TmuxPaneSnapshot]] = [:]
+    var connections: [String: (configuration: WezTermConfiguration, panes: [WezTermPane])] = [:]
+
+    static func socketKey(_ socketPath: String?) -> String { socketPath ?? "" }
+  }
+
+  public func runtimeSnapshot(subtasks: [TaskSubtask], configuration: WezTermConfiguration) async -> RuntimeSnapshot {
+    var snapshot = RuntimeSnapshot()
+    for executable in Set(subtasks.compactMap(\.tmux?.executable))
+    where FileManager.default.isExecutableFile(atPath: executable) {
+      if let panes = try? await TmuxController(runner: runner, serverName: tmuxServerName)
+        .panes(executable: executable) {
+        snapshot.tmuxPanes[executable] = panes
+      }
+    }
+    let sockets = Set(subtasks.filter { $0.tmux == nil && $0.terminalPaneID != nil }
+      .map { RuntimeSnapshot.socketKey($0.terminalSocketPath ?? configuration.socketPath) })
+    for key in sockets {
+      var requested = configuration
+      requested.socketPath = key.isEmpty ? nil : key
+      guard let connection = try? await processController.resolveConnection(configuration: requested),
+            connection.result.succeeded,
+            let panes = try? JSONDecoder().decode([WezTermPane].self, from: Data(connection.result.standardOutput.utf8))
+      else { continue }
+      snapshot.connections[key] = (connection.configuration, panes)
+    }
+    return snapshot
+  }
+
+  /// One shared listing answers every subtask check. Presence in the result
+  /// means the runtime state was determined; a fresh heartbeat skips the pane
+  /// capture because structured events already report attention.
+  public func runtimeAttention(
+    subtasks: [TaskSubtask], configuration: WezTermConfiguration, snapshot: RuntimeSnapshot,
+    heartbeatGraceSeconds: TimeInterval = 15
+  ) async -> [String: AgentAttention?] {
+    var results: [String: AgentAttention?] = [:]
+    for subtask in subtasks {
+      guard case .report(let attention) = try? await probedAttention(
+        subtask: subtask, configuration: configuration,
+        snapshot: snapshot, heartbeatGraceSeconds: heartbeatGraceSeconds)
+      else { continue }
+      results[subtask.id] = attention
+    }
+    return results
+  }
+
+  /// Identity lookups share the tick's pane listing; direct panes keep their
+  /// per-subtask connection probe because they are rare next to tmux runtimes.
+  public func identify(
+    subtasks: [TaskSubtask], configuration: WezTermConfiguration, snapshot: RuntimeSnapshot
+  ) async -> [String: String] {
+    var identities: [String: String] = [:]
+    for subtask in subtasks {
+      let identity: String?
+      if subtask.tmux != nil {
+        identity = try? await identifyManaged(subtask: subtask, snapshot: snapshot)
+      } else {
+        identity = try? await identify(subtask: subtask, configuration: configuration)
+      }
+      if let identity { identities[subtask.id] = identity }
+    }
+    return identities
+  }
+
+  private enum TmuxRuntimeState { case verified, stopped, unknown }
+
+  /// Listing-based equivalent of TmuxController.verify: exact pane identity
+  /// verifies, a missing pane on a live server or a dead server PID stops, and
+  /// anything else stays unknown rather than guessing.
+  private static func tmuxRuntimeState(
+    _ saved: TmuxSessionReference, listing: [TmuxPaneSnapshot]?
+  ) -> TmuxRuntimeState {
+    guard let listing,
+          saved.serverPID > 0, saved.serverPID <= Int(Int32.max),
+          saved.paneID.range(of: "^%[0-9]+$", options: .regularExpression) != nil,
+          (try? TmuxController.validateName(saved.name)) != nil
+    else { return .unknown }
+    if let match = listing.first(where: { $0.reference.paneID == saved.paneID }) {
+      return match.reference == saved ? .verified : .unknown
+    }
+    if listing.contains(where: { $0.reference.name == saved.name }) { return .stopped }
+    if kill(pid_t(saved.serverPID), 0) == -1 && errno == ESRCH { return .stopped }
+    return .unknown
+  }
+
+  private static func hasRecentHeartbeat(
+    _ subtask: TaskSubtask, graceSeconds: TimeInterval, now: Date = Date()
+  ) -> Bool {
+    guard let heartbeat = subtask.lastHeartbeatAt else { return false }
+    return now.timeIntervalSince(heartbeat) <= graceSeconds
+  }
+
+  private enum AttentionProbe { case skip, report(AgentAttention?) }
+
+  private func probedAttention(
+    subtask: TaskSubtask, configuration: WezTermConfiguration,
+    snapshot: RuntimeSnapshot, heartbeatGraceSeconds: TimeInterval
+  ) async throws -> AttentionProbe {
+    let output: ProcessResult
+    if let tmux = subtask.tmux {
+      switch Self.tmuxRuntimeState(tmux, listing: snapshot.tmuxPanes[tmux.executable]) {
+      case .stopped: return .report(.interrupted)
+      case .unknown:
+        throw TmuxError.unavailable("Could not verify the agent terminal from the shared pane listing.")
+      case .verified: break
+      }
+      guard !Self.hasRecentHeartbeat(subtask, graceSeconds: heartbeatGraceSeconds) else { return .skip }
+      output = try await runner.run(.init(executable: tmux.executable,
+        arguments: ["-L", tmuxServerName, "capture-pane", "-p", "-t", tmux.paneID],
+        environment: ["TMUX_TMPDIR": "/tmp"]))
+    } else if let paneID = subtask.terminalPaneID {
+      let key = RuntimeSnapshot.socketKey(subtask.terminalSocketPath ?? configuration.socketPath)
+      guard let connection = snapshot.connections[key] else {
+        throw WezTermError.actionFailed("Could not inspect the agent terminal.")
+      }
+      guard subtask.terminalSocketPath == nil || connection.configuration.socketPath == subtask.terminalSocketPath
+      else { return .report(nil) }
+      guard let pane = connection.panes.first(where: { $0.paneID == paneID }) else { return .report(.interrupted) }
+      guard let sessionID = subtask.sessionID, let tty = pane.ttyName else { return .report(nil) }
+      let agents = try await processController.agents(onTTY: tty)
+      guard agents.contains(where: {
+        $0.provider == subtask.provider && $0.sessionID.lowercased() == sessionID.lowercased()
+      }) else { return .report(nil) }
+      guard !Self.hasRecentHeartbeat(subtask, graceSeconds: heartbeatGraceSeconds) else { return .skip }
+      output = try await runner.run(.init(executable: connection.configuration.executable,
+        arguments: ["cli", "get-text", "--pane-id", String(paneID)],
+        environment: connection.configuration.cliEnvironment))
+    } else { return .report(nil) }
+    guard output.succeeded else { return .report(nil) }
+    return .report(Self.terminalAttention(output.standardOutput))
+  }
+
+  private func identifyManaged(subtask: TaskSubtask, snapshot: RuntimeSnapshot) async throws -> String? {
+    guard let tmux = subtask.tmux else { return nil }
+    guard FileManager.default.isExecutableFile(atPath: tmux.executable) else { return nil }
+    guard Self.tmuxRuntimeState(tmux, listing: snapshot.tmuxPanes[tmux.executable]) == .verified else { return nil }
+    let matching = try await processController.agents(onTTY: tmux.tty)
+      .filter { $0.provider == subtask.provider }
+    return matching.count == 1 ? matching.first?.sessionID : nil
+  }
+
   public static func terminalAttention(_ text: String) -> AgentAttention? {
     let lines = text.split(separator: "\n").suffix(24).map {
       $0.trimmingCharacters(in: .whitespaces).lowercased()

@@ -16,6 +16,7 @@ SPEC = importlib.util.spec_from_file_location("focus_queue_morning", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
+import focus_queue_triage as TRIAGE
 
 
 class FocusQueueMorningTests(unittest.TestCase):
@@ -1152,22 +1153,19 @@ except module.TerminationRequested:
         self.assertEqual(unseen, messages)
         self.assertEqual(processed, [])
 
-    def test_token_estimator_is_conservative_for_ascii_and_unicode(self):
-        self.assertEqual(MODULE.estimated_token_count("abcdef"), 6)
-        high_entropy = "https://example.test/a?token=A9+/="
-        self.assertEqual(
-            MODULE.estimated_token_count(high_entropy),
-            len(high_entropy.encode("utf-8")),
-        )
-        self.assertEqual(MODULE.estimated_token_count("💌"), 4)
-        self.assertEqual(MODULE.estimated_token_count("a💌b"), 6)
+    def test_token_estimator_approximates_four_bytes_per_token(self):
+        self.assertEqual(MODULE.estimated_token_count(""), 0)
+        self.assertEqual(MODULE.estimated_token_count("abcdef"), 1)
+        self.assertEqual(MODULE.estimated_token_count("a" * 100), 25)
+        self.assertEqual(MODULE.estimated_token_count("💌"), 1)
+        self.assertEqual(MODULE.estimated_token_count("a💌b"), 1)
 
     def test_budget_reserves_output_and_prompt_envelope_tokens(self):
         base_prompt = "a" * 1_000
-        self.assertEqual(MODULE.estimated_token_count(base_prompt), 1_000)
+        self.assertEqual(MODULE.estimated_token_count(base_prompt), 250)
         self.assertEqual(
             MODULE.maximum_source_tokens_for_report(10_000, base_prompt),
-            5_476,
+            6_226,
         )
 
     def test_budget_selection_defers_oldest_messages_deterministically(self):
@@ -1595,6 +1593,549 @@ except module.TerminationRequested:
             self.assertEqual(ticket["next"], "Human next action")
             self.assertEqual(ticket["priority"], "critical")
             self.assertEqual(len(ticket["links"]), 1)
+
+    def test_mail_collection_covers_all_configured_addresses_in_inbox_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "V10"
+            index = root / "MailData" / "Envelope Index"
+            index.parent.mkdir(parents=True)
+            connection = MODULE.sqlite3.connect(index)
+            connection.executescript("""
+                CREATE TABLE mailboxes(ROWID INTEGER PRIMARY KEY, url TEXT);
+                CREATE TABLE addresses(ROWID INTEGER PRIMARY KEY, comment TEXT, address TEXT);
+                CREATE TABLE subjects(ROWID INTEGER PRIMARY KEY, subject TEXT);
+                CREATE TABLE summaries(ROWID INTEGER PRIMARY KEY, summary TEXT);
+                CREATE TABLE message_global_data(ROWID INTEGER PRIMARY KEY, message_id_header TEXT);
+                CREATE TABLE messages(
+                    ROWID INTEGER PRIMARY KEY, mailbox INTEGER, date_received REAL,
+                    read INTEGER, flagged INTEGER, subject_prefix TEXT, subject INTEGER,
+                    summary INTEGER, sender INTEGER, deleted INTEGER, global_message_id INTEGER
+                );
+                CREATE TABLE recipients(message INTEGER, address INTEGER);
+            """)
+            now = int(MODULE.dt.datetime.now(MODULE.dt.timezone.utc).timestamp())
+            connection.executemany("INSERT INTO mailboxes VALUES(?, ?)", [
+                (1, "imap://acct/INBOX"),
+                (2, "imap://acct/Junk"),
+            ])
+            connection.executemany("INSERT INTO addresses VALUES(?, ?, ?)", [
+                (1, "", "haley@example.com"),
+                (2, "", "haley-alt@example.net"),
+                (3, "", "someone-else@example.org"),
+                (4, "Customer", "customer@bigclient.example"),
+                (5, "Newsletter", "newsletter@brand.example"),
+            ])
+            connection.executemany("INSERT INTO subjects VALUES(?, ?)", [
+                (1, "Crash after update"),
+                (2, "Weekly deal"),
+                (3, "Not for the user"),
+                (4, "Junk folder item"),
+            ])
+            connection.executemany("INSERT INTO message_global_data VALUES(?, ?)", [
+                (1, "m1@example.test"),
+                (2, "m2@example.test"),
+                (3, "m3@example.test"),
+                (4, "m4@example.test"),
+            ])
+            connection.executemany(
+                "INSERT INTO messages VALUES(?, ?, ?, 0, 0, '', ?, NULL, ?, 0, ?)",
+                [
+                    (101, 1, now - 60, 1, 4, 1),
+                    (102, 1, now - 50, 2, 5, 2),
+                    (103, 1, now - 40, 3, 4, 3),
+                    (104, 2, now - 30, 4, 5, 4),
+                ],
+            )
+            connection.executemany("INSERT INTO recipients VALUES(?, ?)", [
+                (101, 1),
+                (102, 2),
+                (103, 3),
+                (104, 1),
+            ])
+            connection.commit()
+            connection.close()
+            for mailbox in ("INBOX", "Junk"):
+                (root / "acct" / f"{mailbox}.mbox").mkdir(parents=True)
+            payload = (
+                b"From: Newsletter <newsletter@brand.example>\r\n"
+                b"To: haley-alt@example.net\r\n"
+                b"Subject: Weekly deal\r\n"
+                b"List-Unsubscribe: <https://brand.example/unsubscribe>\r\n"
+                b"\r\nSale ends soon. Unsubscribe anytime.\r\n"
+            )
+            (root / "acct" / "INBOX.mbox" / "102.emlx").write_bytes(
+                str(len(payload)).encode("ascii") + b"\n" + payload
+            )
+            config = {
+                "emailAddress": "haley@example.com",
+                "emailAddresses": ["haley@example.com", "haley-alt@example.net"],
+                "lookbackHours": 24,
+            }
+            with mock.patch.dict(os.environ, {"FOCUS_QUEUE_MAIL_HELPER": "1"}), mock.patch.object(
+                MODULE, "apple_mail_store", return_value=(root, index)
+            ):
+                result = MODULE.collect_mail(config)
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["mailboxesScanned"], 1)
+            by_subject = {item["subject"]: item for item in result["messages"]}
+            self.assertEqual(set(by_subject), {"Crash after update", "Weekly deal"})
+            self.assertTrue(by_subject["Weekly deal"]["headers"]["listUnsubscribe"])
+            self.assertEqual(
+                by_subject["Weekly deal"]["headers"]["to"], ["haley-alt@example.net"]
+            )
+
+    def test_mail_collection_defaults_to_the_single_configured_address(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "V10"
+            index = root / "MailData" / "Envelope Index"
+            index.parent.mkdir(parents=True)
+            connection = MODULE.sqlite3.connect(index)
+            connection.executescript("""
+                CREATE TABLE mailboxes(ROWID INTEGER PRIMARY KEY, url TEXT);
+                CREATE TABLE addresses(ROWID INTEGER PRIMARY KEY, comment TEXT, address TEXT);
+                CREATE TABLE subjects(ROWID INTEGER PRIMARY KEY, subject TEXT);
+                CREATE TABLE summaries(ROWID INTEGER PRIMARY KEY, summary TEXT);
+                CREATE TABLE message_global_data(ROWID INTEGER PRIMARY KEY, message_id_header TEXT);
+                CREATE TABLE messages(
+                    ROWID INTEGER PRIMARY KEY, mailbox INTEGER, date_received REAL,
+                    read INTEGER, flagged INTEGER, subject_prefix TEXT, subject INTEGER,
+                    summary INTEGER, sender INTEGER, deleted INTEGER, global_message_id INTEGER
+                );
+                CREATE TABLE recipients(message INTEGER, address INTEGER);
+            """)
+            now = int(MODULE.dt.datetime.now(MODULE.dt.timezone.utc).timestamp())
+            connection.executemany("INSERT INTO mailboxes VALUES(?, ?)", [(1, "imap://acct/INBOX")])
+            connection.executemany("INSERT INTO addresses VALUES(?, ?, ?)", [
+                (1, "", "haley@example.com"),
+                (2, "", "haley-alt@example.net"),
+                (3, "Customer", "customer@bigclient.example"),
+            ])
+            connection.executemany("INSERT INTO subjects VALUES(?, ?)", [
+                (1, "Primary address"),
+                (2, "Other address"),
+            ])
+            connection.executemany("INSERT INTO messages VALUES(?, ?, ?, 0, 0, '', ?, NULL, ?, 0, NULL)", [
+                (101, 1, now - 60, 1, 3),
+                (102, 1, now - 50, 2, 3),
+            ])
+            connection.executemany("INSERT INTO recipients VALUES(?, ?)", [(101, 1), (102, 2)])
+            connection.commit()
+            connection.close()
+            (root / "acct" / "INBOX.mbox").mkdir(parents=True)
+            config = {"emailAddress": "haley@example.com", "lookbackHours": 24}
+            with mock.patch.dict(os.environ, {"FOCUS_QUEUE_MAIL_HELPER": "1"}), mock.patch.object(
+                MODULE, "apple_mail_store", return_value=(root, index)
+            ):
+                result = MODULE.collect_mail(config)
+
+            self.assertEqual(
+                [item["subject"] for item in result["messages"]], ["Primary address"]
+            )
+
+    def test_promotional_and_automated_mail_skip_classification_but_stay_counted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dashboard = root / "dashboard.json"
+            dashboard.write_text(json.dumps({"tickets": []}), encoding="utf-8")
+            config = {
+                "dashboardPath": str(dashboard),
+                "dashboardDirectory": str(root),
+                "maxNewTasksPerRun": 20,
+                "emailAddress": "haley@example.com",
+                "emailAddresses": ["haley@example.com"],
+                "lookbackHours": 168,
+                "dailyReport": {
+                    "maximumTokens": 75_000,
+                    "enabledPlatforms": ["email"],
+                },
+            }
+            bundle = {
+                "version": 1,
+                "collectedAt": "2026-09-03T12:00:00Z",
+                "dashboard": {"openTickets": []},
+                "email": {"status": "ok", "messages": [
+                    {
+                        "sourceKey": "email:promo",
+                        "subject": "Weekly deal",
+                        "receivedAt": "2026-09-03T11:30:00Z",
+                        "sender": "Newsletter <newsletter@brand.example>",
+                        "text": "Sale ends soon. Unsubscribe anytime.",
+                        "url": "message://promo",
+                        "headers": {
+                            "from": "newsletter@brand.example",
+                            "to": ["haley@example.com"],
+                            "listUnsubscribe": True,
+                        },
+                    },
+                    {
+                        "sourceKey": "email:auto",
+                        "subject": "Build finished",
+                        "receivedAt": "2026-09-03T11:00:00Z",
+                        "sender": "Notifications <notifications@ci.example>",
+                        "text": "Build 42 finished.",
+                        "url": "message://auto",
+                        "headers": {
+                            "from": "notifications@ci.example",
+                            "autoSubmitted": "auto-generated",
+                        },
+                    },
+                    {
+                        "sourceKey": "email:direct",
+                        "subject": "Re: crash on launch",
+                        "receivedAt": "2026-09-03T10:00:00Z",
+                        "sender": "Customer <customer@bigclient.example>",
+                        "text": "The patch crashes on launch.",
+                        "url": "message://direct",
+                        "headers": {
+                            "from": "customer@bigclient.example",
+                            "to": ["haley@example.com"],
+                        },
+                    },
+                ]},
+                "collectionErrors": [],
+            }
+            proposals = {
+                "version": 1,
+                "runSummary": "One customer report needs attention.",
+                "messageSummaries": [{
+                    "sourceKey": "email:direct",
+                    "title": "Crash report",
+                    "summary": "The patch crashes on launch.",
+                    "disposition": "actionable",
+                }],
+                "newTasks": [],
+                "updates": [],
+                "progressNotes": [],
+                "ignoredCount": 0,
+            }
+
+            with mock.patch.object(MODULE, "refresh_dashboard"), mock.patch.object(
+                MODULE, "collect_sources", return_value=bundle
+            ), mock.patch.object(MODULE, "classify", return_value=proposals) as classify, \
+                 mock.patch.object(
+                     MODULE,
+                     "apply_proposals",
+                     return_value={
+                         "created": [],
+                         "updated": [],
+                         "taskReferencesBySourceKey": {},
+                         "customerConcernTasks": [],
+                     },
+                 ):
+                report, _ = MODULE.run_reconciliation(
+                    config,
+                    root / "runtime",
+                    platforms={"email"},
+                    trigger="manual",
+                    comprehensive=True,
+                )
+
+            classified = [item["sourceKey"] for item in classify.call_args.args[1]["messages"]]
+            self.assertEqual(classified, ["email:direct"])
+            email = report["platforms"][0]
+            self.assertEqual(email["checkedCount"], 1)
+            self.assertEqual(email["triagedAwayCount"], 2)
+
+    def test_importance_scores_order_selection_before_recency(self):
+        messages = [
+            {"sourceKey": "newer", "timestamp": "2026-09-03T11:00:00Z", "text": "b" * 40},
+            {"sourceKey": "older", "timestamp": "2026-09-03T10:00:00Z", "text": "a" * 40},
+        ]
+        one_message_tokens = MODULE.estimated_token_count(json.dumps(
+            messages[0], ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ))
+
+        selected, deferred = MODULE.select_messages_within_budget(
+            messages,
+            maximum_source_tokens=one_message_tokens,
+            importance={"older": 5, "newer": 0},
+        )
+
+        self.assertEqual([item["sourceKey"] for item in selected], ["older"])
+        self.assertEqual([item["sourceKey"] for item in deferred], ["newer"])
+
+    def test_customer_concern_proposals_keep_escalated_priority(self):
+        proposals = {
+            "runSummary": "summary",
+            "messageSummaries": [],
+            "newTasks": [
+                {
+                    "title": "Fix the customer crash",
+                    "summary": "A customer reports a crash.",
+                    "next": "Reproduce it.",
+                    "doneWhen": "Fixed.",
+                    "priority": "high",
+                    "customerConcern": True,
+                    "severity": "high",
+                },
+                {
+                    "title": "Routine cleanup",
+                    "summary": "s",
+                    "next": "n",
+                    "doneWhen": "d",
+                    "priority": "critical",
+                },
+            ],
+            "updates": [],
+            "progressNotes": [],
+        }
+
+        MODULE.sanitize_untrusted_proposals(proposals)
+
+        self.assertEqual(proposals["newTasks"][0]["priority"], "high")
+        self.assertEqual(proposals["newTasks"][0]["severity"], "high")
+        self.assertEqual(proposals["newTasks"][1]["priority"], "medium")
+        self.assertFalse(proposals["newTasks"][1]["customerConcern"])
+
+    def test_customer_concern_task_is_typed_and_requests_a_launch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dashboard = root / "dashboard.json"
+            dashboard.write_text(json.dumps({"tickets": []}), encoding="utf-8")
+            (root / "package.json").write_text(
+                json.dumps({"scripts": {"check": "node -e ''"}}), encoding="utf-8"
+            )
+            config = {
+                "dashboardPath": str(dashboard),
+                "dashboardDirectory": str(root),
+                "maxNewTasksPerRun": 20,
+            }
+            runtime = root / "runtime"
+
+            result = MODULE.apply_proposals(
+                config,
+                {
+                    "newTasks": [{
+                        "title": "Fix the customer crash",
+                        "category": "Bug",
+                        "priority": "high",
+                        "customerConcern": True,
+                        "summary": "A customer reports a launch crash.",
+                        "next": "Reproduce the crash.",
+                        "doneWhen": "The crash is fixed.",
+                        "sourceKeys": ["email:one"],
+                        "sourceLinks": [{
+                            "label": "Customer email",
+                            "url": "message://one",
+                            "type": "email",
+                        }],
+                        "deepPass": {
+                            "researchSummary": "The patch broke activation.",
+                            "evidenceLinks": [{
+                                "label": "Release notes",
+                                "url": "https://example.test/release",
+                                "type": "email",
+                            }],
+                            "planSteps": ["Reproduce the crash"],
+                        },
+                    }],
+                    "updates": [],
+                },
+                runtime,
+            )
+
+            ticket = json.loads(dashboard.read_text(encoding="utf-8"))["tickets"][0]
+            self.assertEqual(ticket["taskType"], "customer-concern")
+            self.assertIn("Research: The patch broke activation.", ticket["summary"])
+            self.assertIn("Plan: 1. Reproduce the crash", ticket["summary"])
+            self.assertEqual(
+                [link["url"] for link in ticket["links"]],
+                ["message://one", "https://example.test/release"],
+            )
+            self.assertEqual(
+                result["customerConcernTasks"],
+                [{"id": "ECC-001", "title": "Fix the customer crash"}],
+            )
+            request = json.loads((runtime / "launch-requests" / "ECC-001.json").read_text())
+            self.assertEqual(request["ticketId"], "ECC-001")
+            self.assertEqual(request["provider"], "codex")
+            self.assertEqual(request["effort"], "high")
+            self.assertTrue(request["model"])
+            self.assertIn("ECC-001", request["prompt"])
+            self.assertIn("The patch broke activation", request["prompt"])
+            self.assertIn("message://one", request["prompt"])
+
+    def test_launch_requests_follow_the_escalation_auto_launch_setting(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dashboard = root / "dashboard.json"
+            dashboard.write_text(json.dumps({"tickets": []}), encoding="utf-8")
+            (root / "package.json").write_text(
+                json.dumps({"scripts": {"check": "node -e ''"}}), encoding="utf-8"
+            )
+            config = {
+                "dashboardPath": str(dashboard),
+                "dashboardDirectory": str(root),
+                "maxNewTasksPerRun": 20,
+                "escalationAutoLaunch": False,
+            }
+
+            MODULE.apply_proposals(
+                config,
+                {
+                    "newTasks": [{
+                        "title": "Fix the customer crash",
+                        "category": "Bug",
+                        "priority": "high",
+                        "customerConcern": True,
+                        "summary": "A customer reports a crash.",
+                        "next": "Reproduce it.",
+                        "doneWhen": "Fixed.",
+                        "sourceKeys": ["email:one"],
+                        "sourceLinks": [{
+                            "label": "Customer email",
+                            "url": "message://one",
+                            "type": "email",
+                        }],
+                    }],
+                    "updates": [],
+                },
+                root / "runtime",
+            )
+
+            self.assertFalse((root / "runtime" / "launch-requests").exists())
+
+    def test_deep_pass_runs_only_for_customer_concern_tasks(self):
+        proposals = {
+            "newTasks": [
+                {
+                    "customerConcern": True,
+                    "title": "Fix the customer crash",
+                    "summary": "A customer reports a crash.",
+                    "next": "Reproduce it.",
+                    "sourceKeys": ["email:one"],
+                    "sourceLinks": [],
+                },
+                {
+                    "customerConcern": False,
+                    "title": "Routine item",
+                    "summary": "s",
+                    "next": "n",
+                    "sourceKeys": ["email:two"],
+                    "sourceLinks": [],
+                },
+            ]
+        }
+        checked = [
+            {"sourceKey": "email:one", "platform": "email", "messageId": "<one@x>", "text": "snippet"},
+            {"sourceKey": "email:two", "platform": "email", "messageId": "<two@x>", "text": "snippet"},
+        ]
+        findings = {
+            "researchSummary": "The patch broke activation for the customer.",
+            "evidenceLinks": [{
+                "label": "Release notes",
+                "url": "https://example.test/release",
+                "type": "email",
+            }],
+            "planSteps": ["Reproduce the crash"],
+        }
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            MODULE, "fetch_full_customer_message_text", return_value="full body"
+        ) as fetch, mock.patch.object(MODULE, "run_deep_pass", return_value=findings) as deep:
+            MODULE.apply_deep_passes(
+                {"emailAddress": "haley@example.com"}, proposals, checked, Path(temporary)
+            )
+
+        deep.assert_called_once()
+        fetch.assert_called_once()
+        flagged = proposals["newTasks"][0]
+        self.assertEqual(
+            flagged["deepPass"]["researchSummary"],
+            "The patch broke activation for the customer.",
+        )
+        self.assertEqual(flagged["deepPass"]["planSteps"], ["Reproduce the crash"])
+        self.assertEqual(
+            flagged["deepPass"]["evidenceLinks"][0]["url"], "https://example.test/release"
+        )
+        self.assertNotIn("deepPass", proposals["newTasks"][1])
+
+    def test_deep_pass_failure_leaves_the_proposal_intact(self):
+        proposals = {
+            "newTasks": [{
+                "customerConcern": True,
+                "title": "Fix the customer crash",
+                "summary": "original summary",
+                "next": "n",
+                "sourceKeys": [],
+                "sourceLinks": [],
+            }]
+        }
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            MODULE, "run_deep_pass", side_effect=MODULE.ReconciliationError("model unavailable")
+        ):
+            MODULE.apply_deep_passes({}, proposals, [], Path(temporary))
+
+        self.assertEqual(proposals["newTasks"][0]["summary"], "original summary")
+
+
+class FocusQueueTriageTests(unittest.TestCase):
+    def test_bulk_signals_classify_promotional(self):
+        verdict = TRIAGE.classify_message(
+            {
+                "sourceKey": "email:p",
+                "headers": {
+                    "from": "newsletter@brand.example",
+                    "to": ["haley@example.com"],
+                    "listUnsubscribe": True,
+                },
+                "text": "Sale ends soon. Unsubscribe anytime.",
+            },
+            user_addresses={"haley@example.com"},
+        )
+        self.assertEqual(verdict["category"], "promotional")
+        self.assertLess(verdict["score"], 0)
+
+    def test_auto_submitted_mail_classifies_automated(self):
+        verdict = TRIAGE.classify_message(
+            {
+                "headers": {
+                    "from": "mailer-daemon@example.com",
+                    "autoSubmitted": "auto-replied",
+                },
+                "text": "Delivery failed.",
+            }
+        )
+        self.assertEqual(verdict["category"], "automated")
+
+    def test_direct_customer_mail_scores_above_bulk(self):
+        verdict = TRIAGE.classify_message(
+            {
+                "subject": "Re: crash on launch",
+                "flagged": True,
+                "headers": {"from": "customer@bigclient.example", "to": ["haley@example.com"]},
+            },
+            user_addresses={"haley@example.com"},
+            known_domains={"bigclient.example"},
+        )
+        self.assertEqual(verdict["category"], "direct")
+        self.assertGreater(verdict["score"], 0)
+
+    def test_gmail_category_labels_drive_classification(self):
+        promotional = TRIAGE.classify_message(
+            {"labels": ["CATEGORY_PROMOTIONS"], "headers": {"from": "shop@example.com"}}
+        )
+        self.assertEqual(promotional["category"], "promotional")
+        automated = TRIAGE.classify_message(
+            {"labels": ["CATEGORY_UPDATES"], "headers": {"from": "ci@example.com"}}
+        )
+        self.assertEqual(automated["category"], "automated")
+
+    def test_plain_message_is_ambiguous(self):
+        verdict = TRIAGE.classify_message(
+            {"headers": {"from": "person@example.com"}, "text": "hello"}
+        )
+        self.assertEqual(verdict["category"], "ambiguous")
+
+    def test_triage_messages_defaults_to_the_single_configured_address(self):
+        results = TRIAGE.triage_messages(
+            [{
+                "sourceKey": "email:one",
+                "headers": {"from": "customer@bigclient.example", "to": ["haley@example.com"]},
+            }],
+            {"emailAddress": "haley@example.com"},
+        )
+        self.assertEqual(results["email:one"]["category"], "direct")
 
 
 if __name__ == "__main__":

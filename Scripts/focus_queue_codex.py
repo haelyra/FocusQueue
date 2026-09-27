@@ -128,8 +128,22 @@ def select_no_tools_model(models: list[dict[str, Any]]) -> dict[str, Any]:
     raise ValueError("no approved general model is available")
 
 
+def select_named_model(models: list[dict[str, Any]], slug: str) -> dict[str, Any]:
+    for item in models:
+        if (
+            isinstance(item, dict)
+            and str(item.get("slug")) == slug
+            and item.get("supported_in_api") is not False
+        ):
+            return item
+    raise ValueError(f"the requested model {slug} is not available")
+
+
 def build_no_tools_model_catalog(
-    executable: str, directory: Path, version: str
+    executable: str,
+    directory: Path,
+    version: str,
+    model: str | None = None,
 ) -> tuple[Path, str]:
     result = run_codex_capability_probe(
         [executable, "debug", "models", "--bundled"],
@@ -138,18 +152,20 @@ def build_no_tools_model_catalog(
     try:
         payload = json.loads(result.stdout)
         models = payload["models"]
-        model = select_no_tools_model(models)
+        selected = (
+            select_named_model(models, model) if model else select_no_tools_model(models)
+        )
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
         raise CodexHarnessError(
             f"Could not build the no-tools model profile for {version}. Classification was "
             "stopped before inference. Update Codex or the Focus Queue harness, then retry."
         ) from error
-    if result.returncode != 0 or not isinstance(model, dict):
+    if result.returncode != 0 or not isinstance(selected, dict):
         raise CodexHarnessError(
             f"Could not inspect the bundled model catalog for {version}. Classification was "
             "stopped before inference. Update Codex or the Focus Queue harness, then retry."
         )
-    sanitized = dict(model)
+    sanitized = dict(selected)
     sanitized["shell_type"] = "disabled"
     sanitized["apply_patch_tool_type"] = None
     sanitized["supports_search_tool"] = False
@@ -316,6 +332,7 @@ def discover_no_tools_codex_capabilities(
     *,
     safety_directory: Path,
     workspace: Path,
+    model: str | None = None,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     version_result = run_codex_capability_probe(
         [executable, "--version"],
@@ -390,7 +407,7 @@ def discover_no_tools_codex_capabilities(
         )
 
     catalog_path, no_tools_model = build_no_tools_model_catalog(
-        executable, safety_directory, version
+        executable, safety_directory, version, model=model
     )
     catalog_overrides = (
         f"model_catalog_json={json.dumps(str(catalog_path))}",
@@ -516,6 +533,7 @@ def run_codex(
     thread_id: str | None,
     output_schema: Path | None,
     usage_file: Path | None = None,
+    model: str | None = None,
     expose_evidence_directories: bool = False,
     expose_queue_order: bool = False,
     disable_tools: bool = False,
@@ -541,6 +559,7 @@ def run_codex(
                 executable,
                 safety_directory=Path(temporary),
                 workspace=workspace,
+                model=model,
             )
         command = [
             executable,
@@ -735,6 +754,7 @@ def run_once(arguments: argparse.Namespace) -> int:
         output_schema=arguments.output_schema,
         usage_file=arguments.usage_file,
         disable_tools=arguments.disable_tools,
+        model=getattr(arguments, "model", None),
         context_directory=getattr(arguments, "context_dir", None),
     )
     print(reply)
@@ -772,6 +792,7 @@ def main() -> int:
     run_parser.add_argument("--output-schema", type=Path)
     run_parser.add_argument("--usage-file", type=Path)
     run_parser.add_argument("--disable-tools", action="store_true")
+    run_parser.add_argument("--model", help="Override the pinned no-tools model slug")
     run_parser.add_argument("--label")
 
     reset_parser = subparsers.add_parser("reset")

@@ -2,17 +2,26 @@
   "dashboardPath": "/absolute/path/to/ecc-dashboard/data/dashboard.json",
   "dashboardDirectory": "/absolute/path/to/ecc-dashboard",
   "emailAddress": "agent@example.com",
+  "emailAddresses": [
+    "agent@example.com",
+    "agent-alt@example.net"
+  ],
   "emailProvider": "apple_mail",
   "gmailOAuthClientPath": "/Users/your-account/Library/Application Support/ECC Focus Queue/google-oauth-client.json",
   "appleMailDirectory": "/Users/your-account/Library/Mail",
   "mailReaderApplication": "/Users/your-account/Applications/ECC Focus Mail Reader.app",
   "mailSnapshotPath": "/Users/your-account/Library/Application Support/ECC Focus Queue/ingestion/mail-snapshot.json",
   "emailMailboxes": [
-    "INBOX",
-    "Junk",
-    "Archive",
-    "Deleted Messages"
+    "INBOX"
   ],
+  "knownSenderDomains": [
+    "important-customer.com"
+  ],
+  "deepPassModel": "gpt-5.5",
+  "escalationAutoLaunch": true,
+  "escalationProvider": "codex",
+  "escalationModel": "gpt-5.5",
+  "escalationEffort": "high",
   "discordGuildId": "123456789012345678",
   "discordCredentialPath": "/absolute/path/to/private-ecc-credentials.json",
   "githubRepositories": [

@@ -422,6 +422,69 @@ process.stdout.write(JSON.stringify(result));
         self.assertFalse(result["truncated"])
         self.assertTrue(result["hardTruncated"])
 
+    def test_reader_daily_report_scans_past_out_of_order_old_messages(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is required to exercise the JavaScript mail reader contract")
+        reader = SCRIPTS / "focus-queue-mail-reader.js"
+        harness = r"""
+const fs = require("fs");
+globalThis.ObjC = {import() {}};
+globalThis.$ = (value) => value;
+eval(fs.readFileSync(process.argv[1], "utf8"));
+const now = Date.now();
+const values = [
+  {id: "new-2", messageId: "new-2@example.com", date: new Date(now - 60000)},
+  {id: "old", messageId: "old@example.com", date: new Date(now - 40 * 24 * 60 * 60 * 1000)},
+  {id: "new-1", messageId: "new-1@example.com", date: new Date(now - 120000)}
+];
+const messages = values.map((item) => ({
+  id() { return item.id; }, messageId() { return item.messageId; }, dateReceived() { return item.date; },
+  sender() { return "sender@example.com"; }, subject() { return `subject ${item.id}`; },
+  readStatus() { return false; }, flaggedStatus() { return false; },
+  content() { return `body ${item.id}`; }
+}));
+messages.id = () => values.map((item) => item.id);
+messages.messageId = () => values.map((item) => item.messageId);
+messages.dateReceived = () => values.map((item) => item.date);
+messages.sender = () => values.map(() => "sender@example.com");
+messages.subject = () => values.map((item) => `subject ${item.id}`);
+messages.readStatus = () => values.map(() => false);
+messages.flaggedStatus = () => values.map(() => false);
+messages.slice = (start, end) => {
+  const bounded = Array.prototype.slice.call(messages, start, end + 1);
+  for (const property of ["id", "messageId", "dateReceived", "sender", "subject", "readStatus", "flaggedStatus"]) {
+    bounded[property] = () => bounded.map((message) => message[property]());
+  }
+  bounded.content = () => bounded.map((message) => message.content());
+  return bounded;
+};
+const mailbox = {name() { return "INBOX"; }, messages};
+const account = {mailboxes() { return [mailbox]; }};
+const config = {emailAddress: "haley@example.com", emailMailboxes: ["INBOX"]};
+const first = search(config, {query: "", days: 7, limit: 1, offset: 0, dailyReport: true}, account);
+const second = search(config, {query: "", days: 7, limit: 1, offset: 1, dailyReport: true}, account);
+process.stdout.write(JSON.stringify({first, second}));
+"""
+
+        completed = subprocess.run(
+            [node, "-e", harness, str(reader)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        observed = json.loads(completed.stdout)
+
+        self.assertEqual(
+            [item["id"] for item in observed["first"]["results"]], ["mail:new-2"]
+        )
+        self.assertTrue(observed["first"]["truncated"])
+        self.assertEqual(
+            [item["id"] for item in observed["second"]["results"]], ["mail:new-1"]
+        )
+        self.assertFalse(observed["second"]["truncated"])
+        self.assertFalse(observed["second"]["hardTruncated"])
+
     def test_main_install_keeps_mail_reader_separate(self):
         install_script = (SCRIPTS / "install.sh").read_text()
         install_calls = [
@@ -725,7 +788,7 @@ process.stdout.write(JSON.stringify(results));
             capture_output=True, text=True, check=True,
         )
         expected = [
-            (["6", "7"], True),
+            (["6", "7"], False),
             (["6", "7"], False),
         ]
         for result, (expected_body_reads, expected_hard_truncation) in zip(
@@ -923,20 +986,19 @@ process.stdout.write(JSON.stringify({
             [3063, 3063, 0, 2, 3, 3, 3, 3063, 20, 20, 3063],
         )
         self.assertEqual(observed["boundedBulkMetadataReads"], 60)
-        self.assertEqual(observed["bulkWidths"][:6], [3] * 6)
-        self.assertEqual(observed["bulkWidths"][6:12], [3063] * 6)
+        self.assertEqual(observed["bulkWidths"][:12], [3063] * 12)
         self.assertEqual(observed["bulkWidths"][12:18], [2] * 6)
         self.assertEqual(observed["bulkWidths"][18:36], [3] * 18)
-        self.assertEqual(observed["bulkWidths"][36:42], [201] * 6)
+        self.assertEqual(observed["bulkWidths"][36:42], [3063] * 6)
         self.assertEqual(observed["bulkWidths"][42:54], [20] * 12)
-        self.assertEqual(observed["bulkWidths"][54:], [161] * 6)
+        self.assertEqual(observed["bulkWidths"][54:], [3063] * 6)
         self.assertEqual(observed["resolutionWidths"], [3063])
         self.assertEqual(observed["bulkContentWidths"], [1, 2, 1, 2, 1, 10, 5, 5, 10])
         self.assertEqual(observed["bulkContentRanges"][-1], [150, 159])
         self.assertEqual(sum(observed["bulkContentWidths"][3:5]), 3)
         self.assertEqual(sum(observed["bulkContentWidths"][-3:-1]), 10)
         self.assertEqual(observed["result"]["mailboxes"], ["INBOX"])
-        self.assertEqual(observed["result"]["candidateCount"], 3)
+        self.assertEqual(observed["result"]["candidateCount"], 3063)
         self.assertEqual(observed["result"]["results"][0]["id"], "mail:3062")
         self.assertEqual(observed["result"]["results"][0]["sourceKey"], "email:<3062@example.com>")
         self.assertEqual(observed["queried"]["candidateCount"], 3063)
@@ -970,7 +1032,7 @@ process.stdout.write(JSON.stringify({
         self.assertFalse(observed["highOffset"]["bodyTruncated"])
         self.assertEqual(observed["bodyReads"], ["3062"])
         self.assertTrue(observed["result"]["truncated"])
-        self.assertTrue(observed["result"]["hardTruncated"])
+        self.assertFalse(observed["result"]["hardTruncated"])
         self.assertFalse(observed["empty"]["hardTruncated"])
         self.assertFalse(observed["underfilled"]["hardTruncated"])
         self.assertFalse(observed["withOldMessages"]["hardTruncated"])

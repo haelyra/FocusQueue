@@ -67,7 +67,7 @@ def selected_mailboxes(
         str(item).casefold()
         for item in config.get(
             "emailMailboxes",
-            ["INBOX", "Junk", "Archive", "Deleted Messages"],
+            ["INBOX"],
         )
     }
     if requested:
@@ -101,12 +101,17 @@ def message_rows(
     maximum: int | None,
     local_id: int | None = None,
 ) -> list[sqlite3.Row]:
+    recipient_addresses = [
+        str(item).strip()
+        for item in (config.get("emailAddresses") or [config["emailAddress"]])
+        if str(item).strip()
+    ]
     predicates = [
-        "lower(recipient.address) = lower(?)",
+        f"lower(recipient.address) IN ({','.join('lower(?)' for _ in recipient_addresses)})",
         f"m.mailbox IN ({','.join('?' for _ in mailboxes)})",
         "m.deleted = 0",
     ]
-    parameters: list[Any] = [str(config["emailAddress"]), *mailboxes.keys()]
+    parameters: list[Any] = [*recipient_addresses, *mailboxes.keys()]
     if days is not None:
         cutoff = int((dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)).timestamp())
         predicates.append("m.date_received >= ?")
@@ -374,6 +379,12 @@ def read_mail(config: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]
 
 def status(config: dict[str, Any]) -> dict[str, Any]:
     _, index_path = morning.apple_mail_store(config)
+    recipient_addresses = [
+        str(item).strip()
+        for item in (config.get("emailAddresses") or [config["emailAddress"]])
+        if str(item).strip()
+    ]
+    address_filter = ",".join("lower(?)" for _ in recipient_addresses)
     connection = sqlite3.connect(f"file:{index_path}?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
     try:
@@ -381,14 +392,14 @@ def status(config: dict[str, Any]) -> dict[str, Any]:
         counts = {}
         for mailbox_id, (_, name) in mailboxes.items():
             count = connection.execute(
-                """
+                f"""
                 SELECT COUNT(DISTINCT m.ROWID)
                 FROM messages AS m
                 JOIN recipients ON recipients.message = m.ROWID
                 JOIN addresses AS recipient ON recipient.ROWID = recipients.address
-                WHERE lower(recipient.address) = lower(?) AND m.mailbox = ? AND m.deleted = 0
+                WHERE lower(recipient.address) IN ({address_filter}) AND m.mailbox = ? AND m.deleted = 0
                 """,
-                [str(config["emailAddress"]), mailbox_id],
+                [*recipient_addresses, mailbox_id],
             ).fetchone()[0]
             counts[name] = int(count)
     finally:

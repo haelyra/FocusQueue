@@ -137,7 +137,7 @@ function resolveAccount(Mail, targetAddress) {
 }
 
 function selectedMailboxes(account, config, requested) {
-  let configured = (config.emailMailboxes || ["INBOX", "Junk", "Archive", "Deleted Messages"])
+  let configured = (config.emailMailboxes || ["INBOX"])
     .map((value) => String(value).toLowerCase());
   if (requested && requested.length) {
     const wanted = requested.map((value) => String(value).toLowerCase());
@@ -336,9 +336,6 @@ function search(config, request, account) {
   const limitCap = request.dailyReport ? MAX_DAILY_REPORT_RESULTS : 50;
   const limit = Math.min(Math.max(Number(request.limit || 10), 1), limitCap);
   const offset = Math.min(Math.max(Number(request.offset || 0), 0), MAX_SEARCH_CANDIDATES);
-  // Let the scan guard observe one more position when a page ends at the cap,
-  // so capped mailboxes are reported as incomplete instead of silently done.
-  const requestedCandidateCount = Math.min(offset + limit + 1, MAX_SEARCH_CANDIDATES + 1);
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const mailboxes = selectedMailboxes(account, config, request.mailboxes);
   const candidates = [];
@@ -349,14 +346,18 @@ function search(config, request, account) {
     const index = recentMailboxIndex(
       entry,
       cutoff,
-      query ? MAX_SEARCH_CANDIDATES + 1 : requestedCandidateCount,
+      MAX_SEARCH_CANDIDATES + 1,
       Boolean(query)
     );
     scanTruncated = scanTruncated || index.rangeTruncated;
-    let mailboxMatches = 0;
     for (let position = 0; position < index.ids.length; position += 1) {
       const received = index.dates[position];
-      if (received && received < cutoff) break;
+      // Mailbox order is not guaranteed. Query-less daily-report scans skip old
+      // entries instead of stopping, so a full window is always covered.
+      if (received && received < cutoff) {
+        if (query) break;
+        continue;
+      }
       if (scanned >= MAX_SEARCH_CANDIDATES) {
         scanTruncated = true;
         break;
@@ -376,8 +377,6 @@ function search(config, request, account) {
       // Keep metadata candidates cheap. Fetch snippets only for the returned
       // page, rather than rereading every earlier page and every mailbox match.
       candidates.push({item, index, position, body});
-      mailboxMatches += 1;
-      if (!query && mailboxMatches >= requestedCandidateCount) break;
     }
   }
   candidates.sort((left, right) => String(right.item.receivedAt).localeCompare(String(left.item.receivedAt)));

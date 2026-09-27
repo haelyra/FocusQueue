@@ -136,6 +136,17 @@ class FocusQueueCodexTests(unittest.TestCase):
                 {"slug": "gpt-5.5", "supported_in_api": False},
             ])
 
+    def test_named_model_selection_requires_the_requested_available_slug(self):
+        models = [
+            {"slug": "gpt-5.4", "supported_in_api": True},
+            {"slug": "gpt-5.2", "supported_in_api": False},
+        ]
+        self.assertEqual(MODULE.select_named_model(models, "gpt-5.4")["slug"], "gpt-5.4")
+        with self.assertRaisesRegex(ValueError, "not available"):
+            MODULE.select_named_model(models, "gpt-5.2")
+        with self.assertRaisesRegex(ValueError, "not available"):
+            MODULE.select_named_model(models, "gpt-9")
+
     def test_no_tools_preflight_disables_namespaced_features_from_codex_154(self):
         calls = []
         listing = (

@@ -107,8 +107,9 @@ needed, and allowlisting the intended chats.
 
 The email collector selects one provider with `emailProvider`. The default,
 `apple_mail`, reads `haley@ecc.tools` through its already-authenticated iCloud
-account in Apple Mail. The collector includes Inbox, Junk, Archive, and Deleted Messages,
-filters every result for the ECC address, and never marks mail read, moves,
+account in Apple Mail. The collector reads `INBOX` by default (configurable with
+`emailMailboxes`), matches every configured recipient address in
+`emailAddresses` (defaulting to `emailAddress`), and never marks mail read, moves,
 deletes, drafts, or sends messages. Drafts, Sent, Outbox, and Notes are excluded
 because they are not inbound requests. It first reads Mail's synchronized local
 store in read-only mode. macOS denies that protected directory to background

@@ -19,7 +19,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
-from email.utils import parseaddr
+from email.utils import getaddresses, parseaddr
 from pathlib import Path
 from typing import Any, Callable
 
@@ -589,6 +589,22 @@ def message_metadata(message: dict[str, Any], *, full: bool) -> dict[str, Any]:
         "receivedAt": received_at(message),
         "read": "UNREAD" not in labels,
         "flagged": "STARRED" in labels,
+        "headers": {
+            "from": sender_address.lower(),
+            "to": [
+                address.lower()
+                for _, address in getaddresses([headers.get("to", "")])
+                if address
+            ],
+            "cc": [
+                address.lower()
+                for _, address in getaddresses([headers.get("cc", "")])
+                if address
+            ],
+            "listUnsubscribe": bool(headers.get("list-unsubscribe")),
+            "precedence": headers.get("precedence", "").strip().lower(),
+            "autoSubmitted": headers.get("auto-submitted", "").strip().lower(),
+        },
         "url": f"https://mail.google.com/mail/u/0/#all/{gmail_id}",
     }
     if full:
@@ -659,7 +675,10 @@ def search(
             break
     selected = identifiers[bounded_offset:needed]
     results = []
-    headers = ["From", "To", "Cc", "Subject", "Date", "Message-ID"]
+    headers = [
+        "From", "To", "Cc", "Subject", "Date", "Message-ID",
+        "List-Unsubscribe", "Precedence", "Auto-Submitted",
+    ]
     for item in selected:
         identifier = str(item.get("id", ""))
         if not identifier:
@@ -738,10 +757,13 @@ def collect_for_daily_report(config: dict[str, Any]) -> dict[str, Any]:
                 "messageId": item["messageId"],
                 "mailbox": item["mailbox"],
                 "sender": item["sender"],
+                "senderAddress": item.get("senderAddress", ""),
                 "subject": item["subject"],
                 "receivedAt": item["receivedAt"],
                 "read": item["read"],
                 "flagged": item["flagged"],
+                "labels": item.get("labels", []),
+                "headers": item.get("headers", {}),
                 "text": item["snippet"],
                 "url": item["url"],
             }

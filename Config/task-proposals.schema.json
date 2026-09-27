@@ -33,6 +33,8 @@
           "projectID": {"type": ["string", "null"], "maxLength": 128},
           "category": {"type": "string", "enum": ["Inbox", "Bug", "Feature", "Maintenance", "Community", "Security"]},
           "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+          "customerConcern": {"type": "boolean"},
+          "severity": {"type": "string", "maxLength": 40},
           "summary": {"type": "string", "minLength": 1, "maxLength": 600},
           "next": {"type": "string", "minLength": 1, "maxLength": 600},
           "doneWhen": {"type": "string", "minLength": 1, "maxLength": 600},

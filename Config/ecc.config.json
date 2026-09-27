@@ -28,6 +28,16 @@
   ],
   "defaultPlacement": "upper-left",
   "refreshIntervalSeconds": 2,
+  "agentModelChoices": [
+    {"provider": "codex", "label": "Default"},
+    {"provider": "codex", "label": "gpt-5.5", "model": "gpt-5.5"},
+    {"provider": "codex", "label": "gpt-5.4", "model": "gpt-5.4"},
+    {"provider": "codex", "label": "gpt-5.2", "model": "gpt-5.2"},
+    {"provider": "claude", "label": "Default"},
+    {"provider": "claude", "label": "sonnet", "model": "sonnet"},
+    {"provider": "claude", "label": "opus", "model": "opus"},
+    {"provider": "claude", "label": "haiku", "model": "haiku"}
+  ],
   "dailyRoutines": [
     {
       "id": "review-prs",

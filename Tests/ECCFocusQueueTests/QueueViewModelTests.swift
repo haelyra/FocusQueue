@@ -829,7 +829,7 @@ struct QueueViewModelTests {
     try await eventually { model.launchingTaskIDs.isEmpty }
 
     let agent = try #require(model.subtasks(for: "ECC-101").first { $0.id == agentID })
-    #expect(agent.title == "Agent 1")
+    #expect(agent.title == "Codex agent")
     #expect(agent.provider == .codex)
     #expect(agent.initialPrompt == nil)
     #expect(agent.assignmentDescription.isEmpty)
@@ -842,6 +842,54 @@ struct QueueViewModelTests {
     #expect(await terminal.opened.count == 1)
     let launchCommands = await runner.commands.map(\.arguments).flatMap { $0 }
     #expect(!launchCommands.contains { $0.contains("Prepare the task context") })
+  }
+
+  @Test("New Agent menu choices pick the provider, name the agent, and pass the launch configuration")
+  func oneClickAgentModelChoice() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let repository = externalWorkspace(for: fixture.root, suffix: "model-choice-repo")
+    defer { try? FileManager.default.removeItem(at: repository) }
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    let git = FoundationProcessRunner()
+    for arguments in [["init", "-q"], ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+      "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Fixture", "--allow-empty"]] {
+      #expect(try await git.run(.init(executable: "/usr/bin/git", arguments: arguments,
+        workingDirectory: repository.path)).succeeded)
+    }
+    var configuration = try JSONDecoder().decode(
+      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    configuration.workspacePath = repository.path
+    configuration.projects[0].workspacePath = repository.path
+    configuration.projects[0].repositoryPath = repository.path
+    configuration.tmuxExecutable = "/usr/bin/true"
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(
+      ticket: fixture.tickets[0], project: configuration.projects[0])
+    _ = try await store.upsertSubtask(ticketID: "ECC-101",
+      subtask: TaskSubtask(title: "claude sonnet", provider: .claude))
+    let agentID = "22222222-2222-4222-8222-222222222222"
+    let runner = ManagedResumeRunner(taskID: "ECC-101", agentID: agentID)
+    let terminal = ManagedResumeRecorder()
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(), terminalController: terminal,
+      taskAgentLauncher: TaskAgentLauncher(runner: runner, tmuxServerName: "model-choice-test"))
+
+    model.launchDefaultAgent(for: fixture.tickets[0], provider: .claude,
+      model: "sonnet", effort: "low", subtaskID: agentID)
+    try await eventually { model.launchingTaskIDs.isEmpty }
+
+    let agent = try #require(model.subtasks(for: "ECC-101").first { $0.id == agentID })
+    #expect(agent.title == "Claude sonnet 2")
+    #expect(agent.provider == .claude)
+    #expect(agent.launchConfiguration?.model == "sonnet")
+    #expect(agent.launchConfiguration?.effort == "low")
+    let launchCommands = await runner.commands.map(\.arguments).flatMap { $0 }
+    #expect(launchCommands.contains("--model"))
+    #expect(launchCommands.contains("sonnet"))
+    #expect(launchCommands.contains("--effort"))
+    #expect(launchCommands.contains("low"))
   }
 
   @Test("A failed New Agent launch returns its error and retries its saved workspace and assignment")

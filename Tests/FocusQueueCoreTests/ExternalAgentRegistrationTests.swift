@@ -153,13 +153,14 @@ struct ExternalAgentRegistrationTests {
         #expect(try await registry.registrations().count == 1)
     }
 
-    @Test("First prompt names a promptless app agent once")
-    func firstPromptNamesDefaultAgent() async throws {
+    @Test("First prompt names a promptless app agent once",
+          arguments: ["Agent 1", "Codex agent", "Codex agent 2", "Claude agent"])
+    func firstPromptNamesDefaultAgent(defaultTitle: String) async throws {
         let (root, store) = try await fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let sessionID = UUID().uuidString
         var agent = TaskSubtask(
-            id: "promptless", title: "Agent 1", assignmentDescription: "",
+            id: "promptless", title: defaultTitle, assignmentDescription: "",
             provider: .codex, status: .queued, includeInitializationPrompt: false)
         agent.workspace = AgentWorkspace(path: root.path, repositoryPath: root.path)
         _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: agent)

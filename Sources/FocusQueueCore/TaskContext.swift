@@ -207,6 +207,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
 
     static func hasDefaultAgentName(_ title: String) -> Bool {
         title.range(of: #"^Agent [1-9][0-9]*$"#, options: .regularExpression) != nil
+            || title.range(of: #"^(Codex|Claude) agent( [1-9][0-9]*)?$"#, options: .regularExpression) != nil
     }
 
     public init(id: String = UUID().uuidString, title: String,

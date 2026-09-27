@@ -2444,20 +2444,31 @@ final class QueueViewModel {
   }
 
   func launchDefaultAgent(
-    for ticket: DashboardTicket, subtaskID: String = UUID().uuidString,
+    for ticket: DashboardTicket, provider: AgentProvider = .codex,
+    model: String? = nil, effort: String? = nil,
+    subtaskID: String = UUID().uuidString,
     completion: (@MainActor (Bool) -> Void)? = nil
   ) {
     let existingTitles = Set(
       taskItems(for: ticket.id).map {
         $0.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
       })
-    var index = 1
-    while existingTitles.contains("agent \(index)") { index += 1 }
+    let trimmedModel = model?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let baseTitle = trimmedModel?.isEmpty == false
+      ? "\(provider.displayName) \(trimmedModel ?? "")"
+      : "\(provider.displayName) agent"
+    var title = baseTitle
+    var index = 2
+    while existingTitles.contains(title.lowercased()) {
+      title = "\(baseTitle) \(index)"
+      index += 1
+    }
     launchAgent(
-      for: ticket, title: "Agent \(index)", provider: .codex,
+      for: ticket, title: title, provider: provider,
       repositoryPath: defaultRepository(for: ticket), assignmentDescription: "",
       includePrompt: false, useTmux: true, initialPrompt: nil, tracksCompletion: true,
-      subtaskID: subtaskID, workspacePolicy: .isolatedCommittedSnapshot,
+      subtaskID: subtaskID, modelName: model, effort: effort,
+      workspacePolicy: .isolatedCommittedSnapshot,
       completion: completion)
   }
 

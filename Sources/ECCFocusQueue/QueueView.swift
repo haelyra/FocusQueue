@@ -2382,7 +2382,9 @@ private struct TicketCard: View {
   @State private var deletingSubtask: TaskSubtask?
   @State private var completingAgent: TaskSubtask?
   @State private var archivingAgent: TaskSubtask?
+  @AppStorage("newAgentProvider") private var newAgentProvider: AgentProvider = .codex
   @Environment(\.queueAccentStyle) private var accentStyle
+  private let lastOutputFormatter = RelativeDateTimeFormatter()
 
   private var review: CompletionRequest? { model.latestReview(for: ticket.id) }
   private var isChecked: Bool { model.ticketIsChecked(ticket) }
@@ -2391,6 +2393,34 @@ private struct TicketCard: View {
   }
   private var recurringProgressError: String? {
     model.recurringPRProgressError(for: ticket.id)
+  }
+
+  private var newAgentModelChoices: [AgentModelChoice] {
+    let configured = model.config.agentModelChoices
+    return configured.isEmpty ? AppConfiguration.defaultAgentModelChoices : configured
+  }
+
+  private var newAgentChoiceProviders: [AgentProvider] {
+    var providers: [AgentProvider] = []
+    for choice in newAgentModelChoices where !providers.contains(choice.provider) {
+      providers.append(choice.provider)
+    }
+    return providers
+  }
+
+  @ViewBuilder
+  private var newAgentModelMenuContent: some View {
+    ForEach(newAgentChoiceProviders, id: \.self) { provider in
+      Text(provider.displayName)
+        .font(.system(size: 11, weight: .semibold))
+        .disabled(true)
+      ForEach(newAgentModelChoices.filter { $0.provider == provider }) { choice in
+        Button("  \(choice.label)") {
+          model.launchDefaultAgent(
+            for: ticket, provider: choice.provider, model: choice.model, effort: choice.effort)
+        }
+      }
+    }
   }
 
   var body: some View {
@@ -2618,13 +2648,28 @@ private struct TicketCard: View {
         .disabled(ticket.isCompleted)
         .help("Create one titled, described item for this task")
         .padding(.top, 3)
-        Button("New Agent", systemImage: "person.badge.plus") {
-          model.launchDefaultAgent(for: ticket)
+        HStack(spacing: 4) {
+          Button("New Agent", systemImage: "person.badge.plus") {
+            model.launchDefaultAgent(for: ticket, provider: newAgentProvider)
+          }
+          .buttonStyle(.borderedProminent)
+          .controlSize(.small)
+          .disabled(ticket.isCompleted || model.launchingTaskIDs.contains(ticket.id))
+          .help("Start \(newAgentProvider.displayName) now in a new isolated worktree and this task's shared tmux session")
+          Menu {
+            newAgentModelMenuContent
+          } label: {
+            Image(systemName: "chevron.down")
+              .font(.system(size: 10, weight: .bold))
+          }
+          .menuStyle(.borderlessButton)
+          .fixedSize()
+          .frame(width: 22)
+          .disabled(ticket.isCompleted || model.launchingTaskIDs.contains(ticket.id))
+          .accessibilityLabel("Agent provider and model choices")
+          .help("Choose the provider and model for the new agent")
         }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.small)
-        .disabled(ticket.isCompleted || model.launchingTaskIDs.contains(ticket.id))
-        .help("Start Codex now in a new isolated worktree and this task's shared tmux session")
+        .contextMenu { newAgentModelMenuContent }
       }
       .font(.system(size: 12, weight: .semibold))
       .contextMenu {
@@ -2849,6 +2894,11 @@ private struct TicketCard: View {
               .font(.system(size: 10))
               .foregroundStyle(.secondary)
               .lineLimit(2)
+            if let lastOutputAt = agent.resultAt ?? agent.lastHeartbeatAt {
+              Text("Last output \(lastOutputFormatter.localizedString(for: lastOutputAt, relativeTo: Date()))")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
           }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

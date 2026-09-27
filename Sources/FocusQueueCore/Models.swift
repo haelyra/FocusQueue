@@ -217,6 +217,24 @@ private struct LegacyProjectConfigurationShape: Decodable {
   var repositoryPath: String?
 }
 
+/// One entry in the New Agent provider/model menu. A nil or empty model
+/// launches the provider without a `--model` argument (the provider default).
+public struct AgentModelChoice: Codable, Equatable, Sendable, Identifiable {
+  public var provider: AgentProvider
+  public var label: String
+  public var model: String?
+  public var effort: String?
+
+  public init(provider: AgentProvider, label: String, model: String? = nil, effort: String? = nil) {
+    self.provider = provider
+    self.label = label
+    self.model = model
+    self.effort = effort
+  }
+
+  public var id: String { "\(provider.rawValue)/\(label)" }
+}
+
 public struct AppConfiguration: Codable, Equatable, Sendable {
   public var appName: String
   public var dashboardPath: String {
@@ -247,6 +265,18 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var automaticAgentRouting: Bool
   public var autoExitCompletedAgents: Bool
   public var agentUsageBarEnabled: Bool
+  public var agentModelChoices: [AgentModelChoice]
+
+  public static let defaultAgentModelChoices: [AgentModelChoice] = [
+    AgentModelChoice(provider: .codex, label: "Default"),
+    AgentModelChoice(provider: .codex, label: "gpt-5.5", model: "gpt-5.5"),
+    AgentModelChoice(provider: .codex, label: "gpt-5.4", model: "gpt-5.4"),
+    AgentModelChoice(provider: .codex, label: "gpt-5.2", model: "gpt-5.2"),
+    AgentModelChoice(provider: .claude, label: "Default"),
+    AgentModelChoice(provider: .claude, label: "sonnet", model: "sonnet"),
+    AgentModelChoice(provider: .claude, label: "opus", model: "opus"),
+    AgentModelChoice(provider: .claude, label: "haiku", model: "haiku"),
+  ]
 
   public init(
     appName: String,
@@ -273,6 +303,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.automaticAgentRouting = false
     self.autoExitCompletedAgents = true
     self.agentUsageBarEnabled = true
+    self.agentModelChoices = Self.defaultAgentModelChoices
     let effectiveProjects = projects ?? [Self.legacyProject(
       appName: appName,
       dashboardPath: dashboardPath,
@@ -289,6 +320,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case automaticAgentRouting
     case autoExitCompletedAgents
     case agentUsageBarEnabled
+    case agentModelChoices
     case focusQueueProjects, focusQueueSelectedProjectID, projects, selectedProjectID
   }
 
@@ -308,6 +340,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     automaticAgentRouting = try container.decodeIfPresent(Bool.self, forKey: .automaticAgentRouting) ?? false
     autoExitCompletedAgents = try container.decodeIfPresent(Bool.self, forKey: .autoExitCompletedAgents) ?? true
     agentUsageBarEnabled = try container.decodeIfPresent(Bool.self, forKey: .agentUsageBarEnabled) ?? true
+    agentModelChoices = try container.decodeIfPresent([AgentModelChoice].self, forKey: .agentModelChoices)
+      ?? Self.defaultAgentModelChoices
     dailyReport =
       try container.decodeIfPresent(DailyReportConfiguration.self, forKey: .dailyReport)
       ?? DailyReportConfiguration()
@@ -372,6 +406,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encode(automaticAgentRouting, forKey: .automaticAgentRouting)
     try container.encode(autoExitCompletedAgents, forKey: .autoExitCompletedAgents)
     try container.encode(agentUsageBarEnabled, forKey: .agentUsageBarEnabled)
+    try container.encode(agentModelChoices, forKey: .agentModelChoices)
   }
 
   public var selectedProject: ProjectConfiguration? {

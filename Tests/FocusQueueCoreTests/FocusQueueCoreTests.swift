@@ -131,6 +131,50 @@ func legacyDailyReportConfiguration() throws {
   #expect(config.dailyReport.scheduleMinute == 0)
   #expect(config.dailyReport.maximumTokens == 75_000)
   #expect(Set(config.dailyReport.enabledPlatforms) == Set(DailyReportPlatform.allCases))
+  #expect(config.agentModelChoices == AppConfiguration.defaultAgentModelChoices)
+}
+
+@Test("Configured agent model choices decode and round-trip")
+func agentModelChoiceConfiguration() throws {
+  let data = Data(
+    """
+    {
+      "appName": "ECC Focus Queue",
+      "dashboardPath": "/tmp/dashboard.json",
+      "workspacePath": "/tmp/workspace",
+      "defaultPlacement": "upper-right",
+      "refreshIntervalSeconds": 2,
+      "dailyRoutines": [],
+      "wezTerm": {"executable": "/tmp/wezterm", "applicationName": "WezTerm"},
+      "verifier": {
+        "enabled": true,
+        "executable": "/tmp/focus-queue-codex",
+        "sessionName": "queue",
+        "timeoutSeconds": 120,
+        "maxTurns": 24
+      },
+      "agentModelChoices": [
+        {"provider": "codex", "label": "Default"},
+        {"provider": "codex", "label": "gpt-5.5", "model": "gpt-5.5"},
+        {"provider": "claude", "label": "Big opus", "model": "opus", "effort": "high"}
+      ]
+    }
+    """.utf8
+  )
+
+  let config = try JSONDecoder().decode(AppConfiguration.self, from: data)
+
+  #expect(config.agentModelChoices == [
+    AgentModelChoice(provider: .codex, label: "Default"),
+    AgentModelChoice(provider: .codex, label: "gpt-5.5", model: "gpt-5.5"),
+    AgentModelChoice(provider: .claude, label: "Big opus", model: "opus", effort: "high"),
+  ])
+  let roundTripped = try JSONDecoder().decode(
+    AppConfiguration.self, from: JSONEncoder().encode(config))
+  #expect(roundTripped.agentModelChoices == config.agentModelChoices)
+  #expect(AppConfiguration.defaultAgentModelChoices.map(\.provider)
+    == [.codex, .codex, .codex, .codex, .claude, .claude, .claude, .claude])
+  #expect(AppConfiguration.defaultAgentModelChoices.first(where: { $0.model == nil && $0.provider == .claude })?.label == "Default")
 }
 
 @Test("Daily report documents retain platform counts, messages, tasks, and exact usage")

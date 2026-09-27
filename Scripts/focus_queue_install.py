@@ -282,6 +282,7 @@ AUTOMATION_FILES = (
     "Scripts/focus_queue_gmail.py",
     "Scripts/focus_queue_discord.py",
     "Scripts/focus_queue_connectors.py",
+    "Scripts/focus_queue_triage.py",
     "Scripts/focus-queue-mail.js",
     "Config/task-proposals.schema.json",
 )

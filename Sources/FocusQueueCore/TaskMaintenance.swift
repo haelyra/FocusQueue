@@ -66,6 +66,12 @@ public actor TaskMaintenance {
         return try await Lease(TmuxOrganizerLock.acquire(name: "task-maintenance-" + String(key.prefix(48))))
     }
 
+    /// True when a live process still owns this agent. Callers must treat a
+    /// thrown error as "retain"; only a definitive false authorizes cleanup.
+    public func ownsLiveProcess(_ agent: TaskSubtask) async throws -> Bool {
+        try await inspect(agent)
+    }
+
     public func requireInactive(_ agent: TaskSubtask) async throws {
         guard agent.completionTerminalRetained != true else {
             throw TaskContextError.unsafeWorktree("Workspace retained for the completed conversation and its resume command.")

@@ -852,7 +852,7 @@ struct QueueViewModelTests {
     try await eventually { model.launchingTaskIDs.isEmpty }
 
     let agent = try #require(model.subtasks(for: "ECC-101").first { $0.id == agentID })
-    #expect(agent.title == "Agent 1")
+    #expect(agent.title == "Codex agent")
     #expect(agent.provider == .codex)
     #expect(agent.initialPrompt == nil)
     #expect(agent.assignmentDescription.isEmpty)
@@ -865,6 +865,54 @@ struct QueueViewModelTests {
     #expect(await terminal.opened.count == 1)
     let launchCommands = await runner.commands.map(\.arguments).flatMap { $0 }
     #expect(!launchCommands.contains { $0.contains("Prepare the task context") })
+  }
+
+  @Test("New Agent menu choices pick the provider, name the agent, and pass the launch configuration")
+  func oneClickAgentModelChoice() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let repository = externalWorkspace(for: fixture.root, suffix: "model-choice-repo")
+    defer { try? FileManager.default.removeItem(at: repository) }
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    let git = FoundationProcessRunner()
+    for arguments in [["init", "-q"], ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+      "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Fixture", "--allow-empty"]] {
+      #expect(try await git.run(.init(executable: "/usr/bin/git", arguments: arguments,
+        workingDirectory: repository.path)).succeeded)
+    }
+    var configuration = try JSONDecoder().decode(
+      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    configuration.workspacePath = repository.path
+    configuration.projects[0].workspacePath = repository.path
+    configuration.projects[0].repositoryPath = repository.path
+    configuration.tmuxExecutable = "/usr/bin/true"
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(
+      ticket: fixture.tickets[0], project: configuration.projects[0])
+    _ = try await store.upsertSubtask(ticketID: "ECC-101",
+      subtask: TaskSubtask(title: "claude sonnet", provider: .claude))
+    let agentID = "22222222-2222-4222-8222-222222222222"
+    let runner = ManagedResumeRunner(taskID: "ECC-101", agentID: agentID)
+    let terminal = ManagedResumeRecorder()
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(), terminalController: terminal,
+      taskAgentLauncher: TaskAgentLauncher(runner: runner, tmuxServerName: "model-choice-test"))
+
+    model.launchDefaultAgent(for: fixture.tickets[0], provider: .claude,
+      model: "sonnet", effort: "low", subtaskID: agentID)
+    try await eventually { model.launchingTaskIDs.isEmpty }
+
+    let agent = try #require(model.subtasks(for: "ECC-101").first { $0.id == agentID })
+    #expect(agent.title == "Claude sonnet 2")
+    #expect(agent.provider == .claude)
+    #expect(agent.launchConfiguration?.model == "sonnet")
+    #expect(agent.launchConfiguration?.effort == "low")
+    let launchCommands = await runner.commands.map(\.arguments).flatMap { $0 }
+    #expect(launchCommands.contains("--model"))
+    #expect(launchCommands.contains("sonnet"))
+    #expect(launchCommands.contains("--effort"))
+    #expect(launchCommands.contains("low"))
   }
 
   @Test("A failed New Agent launch returns its error and retries its saved workspace and assignment")
@@ -2205,8 +2253,8 @@ struct QueueViewModelTests {
     #expect(agent.workspace?.managed == true)
     #expect(agent.sessionID == nil)
     let label = try #require(await terminal.labels.last)
-    #expect(label.terminalWindowTitle == "ECC-101")
-    #expect(label.terminalTabTitle == "ECC-101 · Codex · \(launchID.suffix(6))")
+    #expect(label.terminalWindowTitle == "Task ECC-101")
+    #expect(label.terminalTabTitle == "Task ECC-101 · Codex · \(launchID.suffix(6))")
     let unchanged = try #require(try await store.load(ticketID: "ECC-101"))
     try await model.importProvisionalAgentIntakes([intake])
     #expect(try await store.load(ticketID: "ECC-101")?.updatedAt == unchanged.updatedAt)
@@ -2974,7 +3022,7 @@ private actor ManagedResumeRecorder: WezTermControlling {
   private(set) var opened: [TmuxSessionReference] = []
 
   func openManagedAgentRuntime(_ tmux: TmuxSessionReference, taskID: String,
-    subtaskID: String, provider: AgentProvider,
+    subtaskID: String, provider: AgentProvider, taskTitle: String,
     configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     opened.append(tmux)
     return .spawned(paneID: nil)
@@ -2984,7 +3032,7 @@ private actor ManagedResumeRecorder: WezTermControlling {
   func listRunningAgents(configuration: WezTermConfiguration) async throws -> [RunningAgentSession] { [] }
   func attach(paneID: Int, tabTitle: String, windowTitle: String,
     configuration: WezTermConfiguration) async throws { throw TestFailure.unexpectedExternalAction }
-  func focusOrSpawn(directory: String, taskID: String,
+  func focusOrSpawn(directory: String, taskID: String, taskTitle: String,
     configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     throw TestFailure.unexpectedExternalAction
   }
@@ -3034,7 +3082,7 @@ private actor DirectViewRecorder: WezTermControlling {
     throw TestFailure.unexpectedExternalAction
   }
   func openDirectRuntime(paneID: Int, socketPath: String?, taskID: String,
-    provider: AgentProvider, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    provider: AgentProvider, taskTitle: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     let context = try await TaskContextStore(root: root).load(ticketID: taskID)
     let saved = context?.subtasks.first { $0.terminalPaneID == paneID && $0.provider == provider }
     #expect(saved?.terminalPaneID == paneID)
@@ -3043,7 +3091,7 @@ private actor DirectViewRecorder: WezTermControlling {
     if failReveal { throw WezTermError.actionFailed("Fixture window failure") }
     return .focused(paneID: paneID)
   }
-  func focusOrSpawn(directory: String, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+  func focusOrSpawn(directory: String, taskID: String, taskTitle: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     throw TestFailure.unexpectedExternalAction
   }
 }
@@ -3060,7 +3108,7 @@ private actor LabelRecorder: WezTermControlling {
     configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     throw TestFailure.unexpectedExternalAction
   }
-  func focusOrSpawn(directory: String, taskID: String,
+  func focusOrSpawn(directory: String, taskID: String, taskTitle: String,
     configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     throw TestFailure.unexpectedExternalAction
   }
@@ -3142,7 +3190,7 @@ private struct ForbiddenExternalActions: WezTermControlling, CompletionVerifying
   func listAttachablePanes(configuration: WezTermConfiguration) async throws -> [WezTermPane] { try forbidden() }
   func listRunningAgents(configuration: WezTermConfiguration) async throws -> [RunningAgentSession] { try forbidden() }
   func attach(paneID: Int, tabTitle: String, windowTitle: String, configuration: WezTermConfiguration) async throws { let _: Void = try forbidden() }
-  func focusOrSpawn(directory: String, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult { try forbidden() }
+  func focusOrSpawn(directory: String, taskID: String, taskTitle: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult { try forbidden() }
   func focusOrResume(session: TaskAgentSession, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult { try forbidden() }
   func verify(ticketID: String, requestFile: URL, workspace: String, configuration: VerifierConfiguration) async throws -> VerificationRunResult { try forbidden() }
   func load(repository: String, closedSince: String) async throws -> PullRequestQueueSnapshot { try forbidden() }
@@ -3153,7 +3201,7 @@ private actor RecallRecorder: WezTermControlling {
   func listAttachablePanes(configuration: WezTermConfiguration) async throws -> [WezTermPane] { [] }
   func listRunningAgents(configuration: WezTermConfiguration) async throws -> [RunningAgentSession] { [] }
   func attach(paneID: Int, tabTitle: String, windowTitle: String, configuration: WezTermConfiguration) async throws {}
-  func focusOrSpawn(directory: String, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+  func focusOrSpawn(directory: String, taskID: String, taskTitle: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     Issue.record("Recall attempted to open a plain shell")
     return .spawned(paneID: 42)
   }
@@ -3169,14 +3217,14 @@ private actor ClosedDirectRecorder: WezTermControlling {
   func listAttachablePanes(configuration: WezTermConfiguration) async throws -> [WezTermPane] { [] }
   func listRunningAgents(configuration: WezTermConfiguration) async throws -> [RunningAgentSession] { [] }
   func attach(paneID: Int, tabTitle: String, windowTitle: String, configuration: WezTermConfiguration) async throws { }
-  func focusOrSpawn(directory: String, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+  func focusOrSpawn(directory: String, taskID: String, taskTitle: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     throw TestFailure.unexpectedExternalAction
   }
   func focusOrResume(session: TaskAgentSession, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     throw TestFailure.unexpectedExternalAction
   }
   func openDirectRuntime(paneID: Int, socketPath: String?, taskID: String, provider: AgentProvider,
-    configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    taskTitle: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     if paneID == 7 {
       if transportFailure { throw WezTermError.actionFailed("Transport failed") }
       throw WezTermError.runtimeClosed
@@ -3192,7 +3240,7 @@ private actor HoldingRecallRecorder: WezTermControlling {
   init(fails: Bool) { self.fails = fails }
 
   func openManagedRuntime(_ saved: TmuxSessionReference, taskID: String, provider: AgentProvider,
-    configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    taskTitle: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     while !released { try await Task.sleep(for: .milliseconds(10)) }
     if fails { throw WezTermError.actionFailed("Fixture session failure") }
     return .focused(paneID: 42)
@@ -3204,7 +3252,7 @@ private actor HoldingRecallRecorder: WezTermControlling {
   func listRunningAgents(configuration: WezTermConfiguration) async throws -> [RunningAgentSession] { [] }
   func attach(paneID: Int, tabTitle: String, windowTitle: String,
     configuration: WezTermConfiguration) async throws {}
-  func focusOrSpawn(directory: String, taskID: String,
+  func focusOrSpawn(directory: String, taskID: String, taskTitle: String,
     configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     throw TestFailure.unexpectedExternalAction
   }

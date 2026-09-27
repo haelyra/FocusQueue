@@ -218,7 +218,7 @@ struct TmuxOrganizerTests {
     #expect(TmuxController.ownsSession(name: "fq-task-ecc-1", taskID: "ECC-1", subtaskID: "agent"))
   }
 
-  @Test("Task presentation gives every pane its own bottom usage border",
+  @Test("Task presentation gives every pane its own top usage border",
     .enabled(if: SetupEnvironment.executable("tmux") != nil
       && SetupEnvironment.executable("node") != nil))
   func taskPresentation() async throws {
@@ -263,7 +263,7 @@ struct TmuxOrganizerTests {
     }
     #expect(try await output(["show-options", "-v", "-t", reference.name, "status"]) == "on")
     #expect(try await output(["show-window-options", "-v", "-t", reference.paneID,
-      "pane-border-status"]) == "bottom")
+      "pane-border-status"]) == "top")
     #expect(try await output(["show-options", "-qv", "-t", reference.name,
       "@focus-queue-task-title"]) == "Usage task")
     let usage = try await output(["show-options", "-qv", "-t", reference.name,
@@ -294,6 +294,12 @@ struct TmuxOrganizerTests {
       "pane-border-format"])
     #expect(disabledBorder.contains("#{@focus-queue-task-title}"))
     #expect(!disabledBorder.contains("focus_queue_codex_bar.js"))
+    try await controller.label(reference, title: "Codex: Agent one")
+    let labeledBorder = try await output(["show-window-options", "-v", "-t", reference.paneID,
+      "pane-border-format"])
+    #expect(labeledBorder.contains("Codex: Agent one"))
+    #expect(!labeledBorder.contains("#{@focus-queue-task-title}"),
+      "A pane with an agent label must lead with it instead of the task title reference")
   }
 
   @Test("Live agents share one task session across four-pane window tabs and survive removal",
@@ -355,7 +361,7 @@ struct TmuxOrganizerTests {
     try await command(["set-option", "-t", name, "status-left", "old task padding "])
     try await command(["set-option", "-t", name, "status-right", " old instructions"])
     for window in Set(panes.map(\.windowID)) {
-      try await command(["set-window-option", "-t", window, "pane-border-status", "top"])
+      try await command(["set-window-option", "-t", window, "pane-border-status", "bottom"])
       try await command(["set-window-option", "-t", window, "pane-border-format", " old pane padding "])
     }
     try await controller.reflow(name: name, executable: executable, force: true)
@@ -368,7 +374,7 @@ struct TmuxOrganizerTests {
       arguments: ["-L", server, "list-windows", "-t", "=\(name):", "-F", "#{pane-border-status}"],
       environment: ["TMUX_TMPDIR": "/tmp"]))
     #expect(plainWindows.succeeded)
-    #expect(plainWindows.standardOutput.split(separator: "\n").allSatisfy { $0 == "bottom" })
+    #expect(plainWindows.standardOutput.split(separator: "\n").allSatisfy { $0 == "top" })
     let borderFormats = try await runner.run(.init(executable: executable,
       arguments: ["-L", server, "list-windows", "-t", "=\(name):", "-F", "#{pane-border-format}"],
       environment: ["TMUX_TMPDIR": "/tmp"]))

@@ -44,6 +44,8 @@ struct QueueView: View {
   @State private var updateDrafts: [String: String] = [:]
   @State private var notificationsExpanded = false
   @State private var settingsTarget: QueueSettingsTarget?
+  @State private var showsStaleAgentCleanupConfirmation = false
+  @AppStorage("agentViewEnabled") private var agentViewEnabled = false
 
   private let completedPageSize = 12
 
@@ -384,29 +386,107 @@ struct QueueView: View {
   private var todayFocusSection: some View {
     VStack(alignment: .leading, spacing: 10) {
       HStack {
-        SectionHeading(
-          title: focusDropIsTargeted ? "Drop to Today's focus" : "Today's focus",
-          detail: "Top \(focusTickets.count)"
-        )
-        .dropDestination(for: String.self) { ticketIDs, _ in
-          moveTicketsToToday(ticketIDs)
-        } isTargeted: { focusDropIsTargeted = $0 }
+        if agentViewEnabled {
+          SectionHeading(
+            title: "Today's focus",
+            detail: "\(agentViewEntries(for: focusTickets).count) agents"
+          )
+        } else {
+          SectionHeading(
+            title: focusDropIsTargeted ? "Drop to Today's focus" : "Today's focus",
+            detail: "Top \(focusTickets.count)"
+          )
+          .dropDestination(for: String.self) { ticketIDs, _ in
+            moveTicketsToToday(ticketIDs)
+          } isTargeted: { focusDropIsTargeted = $0 }
+        }
         Menu {
+          Button {
+            agentViewEnabled.toggle()
+          } label: {
+            Label(
+              agentViewEnabled ? "Task view" : "Agent view",
+              systemImage: agentViewEnabled ? "rectangle.stack" : "person.2")
+          }
+          Button("Clean up stale agents…") { showsStaleAgentCleanupConfirmation = true }
           Button("Restore priority order") { model.resetQueueOrder() }
         } label: { Image(systemName: "arrow.up.arrow.down") }
           .menuStyle(.borderlessButton).fixedSize()
-          .accessibilityLabel("Queue ordering")
+          .accessibilityLabel("Queue view and ordering")
       }
-      Text("Drag tasks to set their order")
-        .font(.caption).foregroundStyle(.secondary)
+      if !agentViewEnabled {
+        Text("Drag tasks to set their order")
+          .font(.caption).foregroundStyle(.secondary)
+      }
 
       if focusTickets.isEmpty {
         ContentUnavailableView(
           "Queue is clear", systemImage: "checkmark.circle",
           description: Text("No open tasks are present in \(model.selectedProject?.name ?? "the selected project").")
         ).frame(maxWidth: .infinity).notificationSurface(radius: 18)
+      } else if agentViewEnabled {
+        agentViewList(for: focusTickets)
       } else {
         ForEach(focusTickets) { ticket in TicketCard(ticket: ticket, model: model) }
+      }
+    }
+    .confirmationDialog(
+      "Clean up stale agents?",
+      isPresented: $showsStaleAgentCleanupConfirmation,
+      titleVisibility: .visible
+    ) {
+      Button("Archive \(staleAgentCandidateCount) stale \(staleAgentCandidateCount == 1 ? "agent" : "agents")") {
+        Task { await model.cleanupStaleAgents() }
+      }
+      .disabled(staleAgentCandidateCount == 0)
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(
+        staleAgentCandidateCount == 0
+          ? "No agents currently match. Candidates are interrupted or idle agents with no live process, no unseen output, and no activity in 5 days."
+          : "These agents are interrupted or idle with no live process and no activity in 5 days. Archiving keeps them recallable under Archived agents with provider resume."
+      )
+    }
+  }
+
+  private var staleAgentCandidateCount: Int {
+    model.staleAgentCandidates().count
+  }
+
+  private struct AgentViewEntry: Identifiable {
+    let ticket: DashboardTicket
+    let agent: TaskSubtask
+    var id: String { ticket.id + ":" + agent.id }
+  }
+
+  private func agentViewEntries(for tickets: [DashboardTicket]) -> [AgentViewEntry] {
+    var entries: [AgentViewEntry] = []
+    for ticket in tickets {
+      for agent in model.taskItems(for: ticket.id) where agent.hasAgent && agent.agentRemovedAt == nil {
+        entries.append(AgentViewEntry(ticket: ticket, agent: agent))
+      }
+    }
+    return AgentViewOrdering.ordered(entries) { entry in
+      AgentViewOrdering.rank(
+        status: model.effectiveStatus(for: entry.agent),
+        attention: entry.agent.attention,
+        completionUnread: entry.agent.completionUnread,
+        sessionError: model.agentSessionError(for: entry.agent, ticketID: entry.ticket.id))
+    } activity: { entry in
+      entry.agent.resultAt ?? entry.agent.lastHeartbeatAt
+    }
+  }
+
+  @ViewBuilder
+  private func agentViewList(for tickets: [DashboardTicket]) -> some View {
+    let entries = agentViewEntries(for: tickets)
+    if entries.isEmpty {
+      Text("No agents yet")
+        .font(.caption).foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    } else {
+      ForEach(entries) { entry in
+        AgentViewRow(ticket: entry.ticket, agent: entry.agent, model: model)
       }
     }
   }
@@ -819,20 +899,49 @@ struct QueueView: View {
 
       if !remainingTickets.isEmpty {
         LazyVStack(alignment: .leading, spacing: 10) {
-          SectionHeading(
-            title: restSectionDropIsTargeted ? "Drop to Rest of queue" : "Rest of queue",
-            detail: "\(remainingTickets.count)"
-          )
-          .dropDestination(for: String.self) { ticketIDs, _ in
-            moveTicketsToRest(ticketIDs)
-          } isTargeted: { restSectionDropIsTargeted = $0 }
-          ForEach(remainingTickets) { ticket in TicketCard(ticket: ticket, model: model) }
+          if agentViewEnabled {
+            SectionHeading(
+              title: "Rest of queue",
+              detail: "\(agentViewEntries(for: remainingTickets).count) agents"
+            )
+            agentViewList(for: remainingTickets)
+          } else {
+            SectionHeading(
+              title: restSectionDropIsTargeted ? "Drop to Rest of queue" : "Rest of queue",
+              detail: "\(remainingTickets.count)"
+            )
+            .dropDestination(for: String.self) { ticketIDs, _ in
+              moveTicketsToRest(ticketIDs)
+            } isTargeted: { restSectionDropIsTargeted = $0 }
+            ForEach(remainingTickets) { ticket in TicketCard(ticket: ticket, model: model) }
+          }
         }
       }
     }
   }
 
-  private var moreButton: some View {
+  @ViewBuilder private var moreButton: some View {
+    if agentViewEnabled {
+      moreButtonCore
+    } else {
+      moreButtonCore
+        .dropDestination(for: String.self) { ticketIDs, _ in
+          moveTicketsToRest(ticketIDs)
+        } isTargeted: {
+          restButtonDropIsTargeted = $0
+          if $0 { showsMoreTasks = true }
+        }
+        .overlay {
+          if restButtonDropIsTargeted {
+            RoundedRectangle(cornerRadius: 16)
+              .stroke(.tint, style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
+              .allowsHitTesting(false)
+          }
+        }
+    }
+  }
+
+  private var moreButtonCore: some View {
     Button {
       withAnimation(.easeInOut(duration: 0.22)) { showsMoreTasks.toggle() }
     } label: {
@@ -840,7 +949,7 @@ struct QueueView: View {
         Image(systemName: showsMoreTasks ? "chevron.up" : "chevron.down").font(
           .system(size: 12, weight: .bold))
         Text(
-          restButtonDropIsTargeted
+          restButtonDropIsTargeted && !agentViewEnabled
             ? "Drop after the top five"
             : (showsMoreTasks ? "Show only top five" : moreButtonLabel)
         ).font(
@@ -852,19 +961,6 @@ struct QueueView: View {
           .secondary)
       }.padding(.horizontal, 15).frame(height: 52).contentShape(Rectangle())
     }.buttonStyle(.plain).notificationSurface(radius: 16)
-      .dropDestination(for: String.self) { ticketIDs, _ in
-        moveTicketsToRest(ticketIDs)
-      } isTargeted: {
-        restButtonDropIsTargeted = $0
-        if $0 { showsMoreTasks = true }
-      }
-      .overlay {
-        if restButtonDropIsTargeted {
-          RoundedRectangle(cornerRadius: 16)
-            .stroke(.tint, style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
-            .allowsHitTesting(false)
-        }
-      }
       .accessibilityLabel(
       showsMoreTasks ? "Show only top five tasks" : "View more tasks")
   }
@@ -1545,6 +1641,14 @@ private struct QueueSettingsView: View {
             Toggle("Automatically exit completed agents", isOn: Binding(
               get: { model.config.autoExitCompletedAgents },
               set: { model.setAutoExitCompletedAgents($0) }))
+          }
+          settingsSection(
+            title: "Stale agent cleanup",
+            detail: "Once a day, archive interrupted or idle agents that have no live process, no unseen output, and no activity in 5 days. Archived agents stay recallable under Archived agents."
+          ) {
+            Toggle("Automatically archive stale agents", isOn: Binding(
+              get: { model.config.autoArchiveStaleAgents },
+              set: { model.setAutoArchiveStaleAgents($0) }))
           }
           settingsSection(
             title: "Agent terminal usage",
@@ -2382,6 +2486,7 @@ private struct TicketCard: View {
   @State private var deletingSubtask: TaskSubtask?
   @State private var completingAgent: TaskSubtask?
   @State private var archivingAgent: TaskSubtask?
+  @AppStorage("newAgentProvider") private var newAgentProvider: AgentProvider = .codex
   @Environment(\.queueAccentStyle) private var accentStyle
 
   private var review: CompletionRequest? { model.latestReview(for: ticket.id) }
@@ -2391,6 +2496,34 @@ private struct TicketCard: View {
   }
   private var recurringProgressError: String? {
     model.recurringPRProgressError(for: ticket.id)
+  }
+
+  private var newAgentModelChoices: [AgentModelChoice] {
+    let configured = model.config.agentModelChoices
+    return configured.isEmpty ? AppConfiguration.defaultAgentModelChoices : configured
+  }
+
+  private var newAgentChoiceProviders: [AgentProvider] {
+    var providers: [AgentProvider] = []
+    for choice in newAgentModelChoices where !providers.contains(choice.provider) {
+      providers.append(choice.provider)
+    }
+    return providers
+  }
+
+  @ViewBuilder
+  private var newAgentModelMenuContent: some View {
+    ForEach(newAgentChoiceProviders, id: \.self) { provider in
+      Text(provider.displayName)
+        .font(.system(size: 11, weight: .semibold))
+        .disabled(true)
+      ForEach(newAgentModelChoices.filter { $0.provider == provider }) { choice in
+        Button("  \(choice.label)") {
+          model.launchDefaultAgent(
+            for: ticket, provider: choice.provider, model: choice.model, effort: choice.effort)
+        }
+      }
+    }
   }
 
   var body: some View {
@@ -2618,13 +2751,28 @@ private struct TicketCard: View {
         .disabled(ticket.isCompleted)
         .help("Create one titled, described item for this task")
         .padding(.top, 3)
-        Button("New Agent", systemImage: "person.badge.plus") {
-          model.launchDefaultAgent(for: ticket)
+        HStack(spacing: 4) {
+          Button("New Agent", systemImage: "person.badge.plus") {
+            model.launchDefaultAgent(for: ticket, provider: newAgentProvider)
+          }
+          .buttonStyle(.borderedProminent)
+          .controlSize(.small)
+          .disabled(ticket.isCompleted || model.launchingTaskIDs.contains(ticket.id))
+          .help("Start \(newAgentProvider.displayName) now in a new isolated worktree and this task's shared tmux session")
+          Menu {
+            newAgentModelMenuContent
+          } label: {
+            Image(systemName: "chevron.down")
+              .font(.system(size: 10, weight: .bold))
+          }
+          .menuStyle(.borderlessButton)
+          .fixedSize()
+          .frame(width: 22)
+          .disabled(ticket.isCompleted || model.launchingTaskIDs.contains(ticket.id))
+          .accessibilityLabel("Agent provider and model choices")
+          .help("Choose the provider and model for the new agent")
         }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.small)
-        .disabled(ticket.isCompleted || model.launchingTaskIDs.contains(ticket.id))
-        .help("Start Codex now in a new isolated worktree and this task's shared tmux session")
+        .contextMenu { newAgentModelMenuContent }
       }
       .font(.system(size: 12, weight: .semibold))
       .contextMenu {
@@ -2818,39 +2966,7 @@ private struct TicketCard: View {
     let isOpening = model.isOpening(agent, ticketID: ticket.id)
     return HStack(spacing: 7) {
       Button { model.openSubtask(agent, for: ticket) } label: {
-        HStack(alignment: .top, spacing: 8) {
-          if isOpening {
-            ProgressView().controlSize(.mini).frame(width: 20, height: 20)
-          } else {
-            Image(systemName: agent.provider.symbolName)
-              .font(.system(size: 13, weight: .semibold))
-              .frame(width: 24, height: 24)
-              .foregroundStyle(.primary)
-              .background(Color.primary.opacity(0.08), in: Circle())
-          }
-          VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 5) {
-              Text(agent.title)
-                .font(.system(size: 12, weight: .semibold))
-                .lineLimit(2)
-              Spacer(minLength: 3)
-              AgentStatusIndicator(
-                status: model.effectiveStatus(for: agent),
-                hasUnreadCompletion: agent.completionUnread,
-                isOpening: isOpening,
-                issue: model.agentSessionError(for: agent, ticketID: ticket.id),
-                attention: agent.attention)
-            }
-            Text(agent.workDescription)
-              .font(.system(size: 11))
-              .foregroundStyle(.secondary)
-              .lineLimit(2)
-            Text("\(agent.provider.displayName) · \(agent.sessionID.map { String($0.suffix(6)) } ?? String(agent.id.suffix(6))) · \(agent.progressSummary.isEmpty ? "Awaiting first update" : agent.progressSummary)")
-              .font(.system(size: 10))
-              .foregroundStyle(.secondary)
-              .lineLimit(2)
-          }
-        }
+        AgentRowLabel(agent: agent, ticket: ticket, model: model, isOpening: isOpening)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
       }
@@ -3080,6 +3196,132 @@ private struct TicketCard: View {
     case "plan": "doc.text"
     case "file": "folder"
     default: "link"
+    }
+  }
+}
+
+private struct AgentRowLabel: View {
+  let agent: TaskSubtask
+  let ticket: DashboardTicket
+  let model: QueueViewModel
+  let isOpening: Bool
+  private let lastOutputFormatter = RelativeDateTimeFormatter()
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 8) {
+      if isOpening {
+        ProgressView().controlSize(.mini).frame(width: 20, height: 20)
+      } else {
+        Image(systemName: agent.provider.symbolName)
+          .font(.system(size: 13, weight: .semibold))
+          .frame(width: 24, height: 24)
+          .foregroundStyle(.primary)
+          .background(Color.primary.opacity(0.08), in: Circle())
+      }
+      VStack(alignment: .leading, spacing: 3) {
+        HStack(spacing: 5) {
+          Text(agent.title)
+            .font(.system(size: 12, weight: .semibold))
+            .lineLimit(2)
+          Spacer(minLength: 3)
+          AgentStatusIndicator(
+            status: model.effectiveStatus(for: agent),
+            hasUnreadCompletion: agent.completionUnread,
+            isOpening: isOpening,
+            issue: model.agentSessionError(for: agent, ticketID: ticket.id),
+            attention: agent.attention)
+        }
+        Text(agent.workDescription)
+          .font(.system(size: 11))
+          .foregroundStyle(.secondary)
+          .lineLimit(2)
+        Text("\(agent.provider.displayName) · \(agent.sessionID.map { String($0.suffix(6)) } ?? String(agent.id.suffix(6))) · \(agent.progressSummary.isEmpty ? "Awaiting first update" : agent.progressSummary)")
+          .font(.system(size: 10))
+          .foregroundStyle(.secondary)
+          .lineLimit(2)
+        if let lastOutputAt = agent.resultAt ?? agent.lastHeartbeatAt {
+          Text("Last output \(lastOutputFormatter.localizedString(for: lastOutputAt, relativeTo: Date()))")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+      }
+    }
+  }
+}
+
+/// Flat agent-list row for the queue's Agent view: the shared agent row plus a
+/// compact task chip with plan, context, and New Agent shortcuts.
+private struct AgentViewRow: View {
+  let ticket: DashboardTicket
+  let agent: TaskSubtask
+  let model: QueueViewModel
+  @State private var showsLinks = false
+  @AppStorage("newAgentProvider") private var newAgentProvider: AgentProvider = .codex
+
+  private var isOpening: Bool { model.isOpening(agent, ticketID: ticket.id) }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      Button { model.openSubtask(agent, for: ticket) } label: {
+        AgentRowLabel(agent: agent, ticket: ticket, model: model, isOpening: isOpening)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .disabled(isOpening)
+      .accessibilityLabel(
+        isOpening
+          ? "Finding and opening \(agent.title)"
+          : "Open \(agent.title), \(agent.attention?.label ?? model.effectiveStatus(for: agent).rawValue)"
+      )
+      .help("Focus or resume this agent in its saved workspace")
+      .padding(9)
+      .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
+      .overlay {
+        RoundedRectangle(cornerRadius: 9)
+          .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+      }
+
+      HStack(spacing: 6) {
+        Button { model.openSubtask(agent, for: ticket) } label: {
+          HStack(spacing: 5) {
+            Image(systemName: "checklist")
+            Text(ticket.title).lineLimit(1)
+          }
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(.secondary)
+          .padding(.horizontal, 8).padding(.vertical, 4)
+          .background(Color.primary.opacity(0.05), in: Capsule())
+          .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open task \(ticket.id): \(ticket.title)")
+        .help("Open this agent in \(ticket.id)")
+        Spacer(minLength: 0)
+        Menu {
+          Button("View Central Plan", systemImage: "doc.text") { model.openPlan(for: ticket) }
+          Button("Context, evidence & links", systemImage: "link") { showsLinks = true }
+          Button("New Agent", systemImage: "person.badge.plus") {
+            model.launchDefaultAgent(for: ticket, provider: newAgentProvider)
+          }
+          .disabled(model.launchingTaskIDs.contains(ticket.id) || ticket.isCompleted)
+        } label: {
+          Image(systemName: "ellipsis")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(Color.primary.opacity(0.05), in: Capsule())
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityLabel("More options for task \(ticket.id)")
+      }
+      .padding(.leading, 33)
+    }
+    .padding(.vertical, 2)
+    .popover(isPresented: $showsLinks) {
+      TaskContextLinksView(ticket: ticket, model: model)
+        .padding(14).frame(minWidth: 260)
     }
   }
 }

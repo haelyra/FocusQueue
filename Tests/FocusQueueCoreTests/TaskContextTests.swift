@@ -500,3 +500,96 @@ func taskContextArchiveRetention() async throws {
     let archive = context.contextDirectory.appendingPathComponent("archive")
     #expect(try FileManager.default.contentsOfDirectory(atPath: archive.path).count == 100)
 }
+
+// MARK: - Stale agent cleanup predicate
+
+private func staleFixture(
+    status: TaskSubtaskStatus = .idle,
+    attention: AgentAttention? = nil,
+    heartbeat: Date? = nil
+) -> TaskSubtask {
+    var agent = TaskSubtask(
+        id: "stale-\(UUID().uuidString)", title: "Fixture agent",
+        sessionID: UUID().uuidString, status: status, lastHeartbeatAt: heartbeat)
+    agent.attention = attention
+    return agent
+}
+
+@Test("Interrupted agent with no recent activity is a stale cleanup candidate")
+func staleAgentInterruptedMatches() {
+    let now = Date()
+    let agent = staleFixture(status: .idle, attention: .interrupted,
+        heartbeat: now.addingTimeInterval(-6 * 24 * 60 * 60))
+    #expect(agent.isStaleAgentCandidate(now: now))
+}
+
+@Test("Idle agent with seen output and no recent activity is a stale cleanup candidate")
+func staleAgentIdleSeenMatches() {
+    let now = Date()
+    let agent = staleFixture(status: .idle,
+        heartbeat: now.addingTimeInterval(-6 * 24 * 60 * 60))
+    #expect(agent.isStaleAgentCandidate(now: now))
+}
+
+@Test("Idle agent with an unread result is retained")
+func staleAgentIdleUnreadDoesNotMatch() {
+    let now = Date()
+    var agent = staleFixture(status: .idle,
+        heartbeat: now.addingTimeInterval(-6 * 24 * 60 * 60))
+    agent.completionUnread = true
+    #expect(!agent.isStaleAgentCandidate(now: now))
+}
+
+@Test("Working and queued agents are never stale")
+func staleAgentWorkingDoesNotMatch() {
+    let now = Date()
+    let working = staleFixture(status: .working, heartbeat: now.addingTimeInterval(-60))
+    #expect(working.effectiveStatus(now: now) == .working)
+    #expect(!working.isStaleAgentCandidate(now: now))
+    let queued = staleFixture(status: .queued,
+        heartbeat: now.addingTimeInterval(-30 * 24 * 60 * 60))
+    #expect(!queued.isStaleAgentCandidate(now: now))
+}
+
+@Test("Agents active within the five-day window are retained")
+func staleAgentFreshDoesNotMatch() {
+    let now = Date()
+    let agent = staleFixture(status: .idle,
+        heartbeat: now.addingTimeInterval(-4 * 24 * 60 * 60))
+    #expect(!agent.isStaleAgentCandidate(now: now))
+}
+
+@Test("Already archived agents are never stale candidates")
+func staleAgentArchivedDoesNotMatch() {
+    let now = Date()
+    var agent = staleFixture(status: .idle, attention: .interrupted,
+        heartbeat: now.addingTimeInterval(-6 * 24 * 60 * 60))
+    agent.agentRemovedAt = now.addingTimeInterval(-24 * 60 * 60)
+    #expect(!agent.isStaleAgentCandidate(now: now))
+}
+
+@Test("Agents the user opened after completion are retained")
+func staleAgentRetainedDoesNotMatch() {
+    let now = Date()
+    var agent = staleFixture(status: .idle, attention: .interrupted,
+        heartbeat: now.addingTimeInterval(-6 * 24 * 60 * 60))
+    agent.completedRuntimeOpenedAt = now.addingTimeInterval(-6 * 24 * 60 * 60)
+    #expect(!agent.isStaleAgentCandidate(now: now))
+}
+
+@Test("A newer result keeps an old heartbeat from looking stale")
+func staleAgentUsesLatestActivity() {
+    let now = Date()
+    var agent = staleFixture(status: .idle,
+        heartbeat: now.addingTimeInterval(-6 * 24 * 60 * 60))
+    agent.resultAt = now.addingTimeInterval(-1 * 24 * 60 * 60)
+    #expect(!agent.isStaleAgentCandidate(now: now))
+}
+
+@Test("Records without any activity timestamp are skipped")
+func staleAgentWithoutTimestampsDoesNotMatch() {
+    let now = Date()
+    let agent = staleFixture(status: .idle, attention: .interrupted)
+    #expect(agent.lastHeartbeatAt == nil)
+    #expect(!agent.isStaleAgentCandidate(now: now))
+}

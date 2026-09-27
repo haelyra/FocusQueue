@@ -945,6 +945,7 @@ final class QueueViewModel {
           }
         }
       }
+      await runStaleAgentSweepIfDue()
       if userInitiated || lastReportRefresh == nil || Date().timeIntervalSince(lastReportRefresh!) >= 30 {
         lastReportRefresh = Date()
         if !isDailyReportRunning {
@@ -1597,7 +1598,12 @@ final class QueueViewModel {
 
   func renameSubtask(_ subtask: TaskSubtask, for ticket: DashboardTicket, title: String) {
     Task {
-      do { taskContexts[ticket.id] = try await taskContextStore.renameSubtask(ticketID: ticket.id, subtaskID: subtask.id, title: title) }
+      do {
+        taskContexts[ticket.id] = try await taskContextStore.renameSubtask(ticketID: ticket.id, subtaskID: subtask.id, title: title)
+        if let reference = subtask.tmux {
+          await labelTmuxPane(reference, "\(subtask.provider.displayName): \(title)")
+        }
+      }
       catch { actionMessages[ticket.id] = error.localizedDescription }
     }
   }
@@ -1643,6 +1649,9 @@ final class QueueViewModel {
         guard subtaskEditTokens[key] == token else { return }
         subtaskEditTokens[key] = nil
         subtaskEditTasks[key] = nil
+        if let reference = subtask.tmux {
+          await labelTmuxPane(reference, "\(subtask.provider.displayName): \(updatedTitle)")
+        }
         actionMessages[ticket.id] = "Subtask updated."
       } catch {
         guard subtaskEditTokens[key] == token else { return }
@@ -1886,7 +1895,7 @@ final class QueueViewModel {
                 subtask: subtask, configuration: config.wezTerm)
             }
             if expectedIdentity == nil || observedIdentity?.lowercased() == expectedIdentity {
-              _ = try await terminalController.openAgentRuntime(subtask, taskID: ticket.id, configuration: config.wezTerm)
+              _ = try await terminalController.openAgentRuntime(subtask, taskID: ticket.id, taskTitle: ticket.title, configuration: config.wezTerm)
               try await acknowledgeViewedAgent(subtask, ticketID: ticket.id)
               actionMessages[ticket.id] = "Opened \(subtask.title)."
               return
@@ -1901,7 +1910,7 @@ final class QueueViewModel {
           } catch TmuxError.stopped { /* Resume the durable provider conversation below. */ }
         } else if subtask.terminalPaneID != nil {
           do {
-            _ = try await terminalController.openAgentRuntime(subtask, taskID: ticket.id, configuration: config.wezTerm)
+            _ = try await terminalController.openAgentRuntime(subtask, taskID: ticket.id, taskTitle: ticket.title, configuration: config.wezTerm)
             try await agentTerminalFocusHandler?(config.wezTerm.applicationName, ticket.id)
             try await acknowledgeViewedAgent(subtask, ticketID: ticket.id)
             actionMessages[ticket.id] = "Opened \(subtask.title)."
@@ -1917,7 +1926,8 @@ final class QueueViewModel {
               var recovered = subtask
               recovered.tmux = runtime
               _ = try await terminalController.openAgentRuntime(
-                recovered, taskID: ticket.id, configuration: config.wezTerm)
+                recovered, taskID: ticket.id, taskTitle: ticket.title,
+                configuration: config.wezTerm)
               try await acknowledgeViewedAgent(subtask, ticketID: ticket.id)
               actionMessages[ticket.id] = "Opened \(subtask.title)."
               return
@@ -1959,7 +1969,7 @@ final class QueueViewModel {
           taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
             ticketID: ticket.id, subtaskID: assignment.id, tmux: runtime)
           assignment.tmux = runtime
-          _ = try await terminalController.openAgentRuntime(assignment, taskID: ticket.id, configuration: config.wezTerm)
+          _ = try await terminalController.openAgentRuntime(assignment, taskID: ticket.id, taskTitle: ticket.title, configuration: config.wezTerm)
         } else {
           assignment.runtimeMode = .terminal
           let receipt = try await taskAgentLauncher.launchDirect(context: context, subtask: assignment,
@@ -1969,7 +1979,7 @@ final class QueueViewModel {
           assignment.tmux = nil
           assignment.terminalPaneID = receipt.paneID
           assignment.terminalSocketPath = receipt.socketPath
-          _ = try await terminalController.openAgentRuntime(assignment, taskID: ticket.id, configuration: config.wezTerm)
+          _ = try await terminalController.openAgentRuntime(assignment, taskID: ticket.id, taskTitle: ticket.title, configuration: config.wezTerm)
         }
         if assignment.runtimeMode == .terminal {
           try await agentTerminalFocusHandler?(config.wezTerm.applicationName, ticket.id)
@@ -2189,7 +2199,7 @@ final class QueueViewModel {
           runtime, supportDirectory: paths.supportDirectory)
         guard routerRuntime?.capability == runtime.capability else { return }
         let result = try await terminalController.openManagedRuntime(
-          reference, taskID: "ROUTER", provider: routerProvider ?? defaultAgentProvider,
+          reference, taskID: "ROUTER", provider: routerProvider ?? defaultAgentProvider, taskTitle: "",
           configuration: config.wezTerm)
         guard routerRuntime?.capability == runtime.capability else { return }
         routerStatus = result.message
@@ -2371,7 +2381,8 @@ final class QueueViewModel {
             ])
           phase = "opening the WezTerm view"
           _ = try await terminalController.openAgentRuntime(
-            subtask, taskID: ticket.id, configuration: config.wezTerm)
+            subtask, taskID: ticket.id, taskTitle: ticket.title,
+            configuration: config.wezTerm)
         } else {
           phase = "starting the direct WezTerm process"
           actionMessages[ticket.id] =
@@ -2391,7 +2402,8 @@ final class QueueViewModel {
           phase = "opening the direct WezTerm view"
           _ = try await terminalController.openDirectRuntime(
             paneID: receipt.paneID, socketPath: receipt.socketPath,
-            taskID: ticket.id, provider: provider, configuration: config.wezTerm)
+            taskID: ticket.id, provider: provider, taskTitle: ticket.title,
+            configuration: config.wezTerm)
         }
         await recordAgentLaunch(
           subtask, ticketID: ticket.id, phase: "ready", outcome: "succeeded",
@@ -2421,7 +2433,8 @@ final class QueueViewModel {
             do {
               let result = try await terminalController.openManagedAgentRuntime(
                 saved, taskID: ticket.id, subtaskID: subtask.id,
-                provider: provider, configuration: config.wezTerm)
+                provider: provider, taskTitle: ticket.title,
+                configuration: config.wezTerm)
               actionMessages[ticket.id] =
                 "\(result.message) The provider process registered while tmux was still confirming its pane."
             } catch {
@@ -2469,20 +2482,32 @@ final class QueueViewModel {
   }
 
   func launchDefaultAgent(
-    for ticket: DashboardTicket, subtaskID: String = UUID().uuidString,
+    for ticket: DashboardTicket, provider: AgentProvider? = nil,
+    model: String? = nil, effort: String? = nil,
+    subtaskID: String = UUID().uuidString,
     completion: (@MainActor (Bool) -> Void)? = nil
   ) {
+    let provider = provider ?? defaultAgentProvider
     let existingTitles = Set(
       taskItems(for: ticket.id).map {
         $0.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
       })
-    var index = 1
-    while existingTitles.contains("agent \(index)") { index += 1 }
+    let trimmedModel = model?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let baseTitle = trimmedModel?.isEmpty == false
+      ? "\(provider.displayName) \(trimmedModel ?? "")"
+      : "\(provider.displayName) agent"
+    var title = baseTitle
+    var index = 2
+    while existingTitles.contains(title.lowercased()) {
+      title = "\(baseTitle) \(index)"
+      index += 1
+    }
     launchAgent(
-      for: ticket, title: "Agent \(index)", provider: defaultAgentProvider,
+      for: ticket, title: title, provider: provider,
       repositoryPath: defaultRepository(for: ticket), assignmentDescription: "",
       includePrompt: false, useTmux: true, initialPrompt: nil, tracksCompletion: true,
-      subtaskID: subtaskID, workspacePolicy: .isolatedCommittedSnapshot,
+      subtaskID: subtaskID, modelName: model, effort: effort,
+      workspacePolicy: .isolatedCommittedSnapshot,
       completion: completion)
   }
 
@@ -2726,6 +2751,7 @@ final class QueueViewModel {
         let result = try await terminalController.focusOrSpawn(
           directory: directory,
           taskID: ticket.id,
+          taskTitle: ticket.title,
           configuration: config.wezTerm
         )
         if let terminalFocusHandler {
@@ -2832,7 +2858,7 @@ final class QueueViewModel {
         let sessionID = provisional.sessionID
           ?? UUID(uuidString: effectiveSubtaskID)?.uuidString {
         let session = TaskAgentSession(ticketID: taskID, provider: .codex,
-          sessionID: sessionID, tabTitle: provisional.title,
+          sessionID: sessionID, tabTitle: provisional.title, taskTitle: context.title,
           workingDirectory: receipt.cwd, subtaskID: provisional.id,
           tmux: receipt.reference)
         if let reference = receipt.reference {
@@ -2896,7 +2922,10 @@ final class QueueViewModel {
             cwd: process.cwd, hookEventName: "ProcessDiscovery", prompt: prompt), provider: process.provider,
             explicitTaskID: intake?.taskID, environment: environment,
             tmux: tmux, paneID: terminal?.paneID, socketPath: terminal?.socketPath)
-          if let session = registration.session {
+          if var session = registration.session {
+            if session.taskTitle == nil, let taskID = registration.taskID {
+              session.taskTitle = taskContexts[taskID.uppercased()]?.title
+            }
             try? await terminalController.labelTmuxClients(session: session,
               configuration: config.wezTerm)
           }
@@ -2991,7 +3020,8 @@ final class QueueViewModel {
         if subtask?.runtimeMode == .terminal, let paneID = subtask?.terminalPaneID {
           result = try await terminalController.openDirectRuntime(
             paneID: paneID, socketPath: subtask?.terminalSocketPath,
-            taskID: ticket.id, provider: session.provider, configuration: config.wezTerm)
+            taskID: ticket.id, provider: session.provider, taskTitle: ticket.title,
+            configuration: config.wezTerm)
         } else {
           result = try await terminalController.focusOrResume(
             session: session, taskID: ticket.id, configuration: config.wezTerm)
@@ -3081,6 +3111,51 @@ final class QueueViewModel {
     }) { archiveAgent(subtask, from: ticket); return }
     localState.agentSessions.removeAll { $0.id == session.id }
     persistLocalState()
+  }
+
+  /// Visible agents across open tasks that match the stale-cleanup record
+  /// criteria. Live-process ownership is proven only during the actual sweep.
+  func staleAgentCandidates(now: Date = Date()) -> [(ticket: DashboardTicket, agent: TaskSubtask)] {
+    openTickets.flatMap { ticket in
+      taskItems(for: ticket.id)
+        .filter { $0.hasAgent && $0.isStaleAgentCandidate(now: now) }
+        .map { (ticket: ticket, agent: $0) }
+    }
+  }
+
+  /// Archives every stale agent that no live process owns. Archiving is
+  /// recallable under Archived agents; nothing is deleted. Returns the count.
+  @discardableResult
+  func cleanupStaleAgents(now: Date = Date()) async -> Int {
+    let candidates = staleAgentCandidates(now: now)
+    guard !candidates.isEmpty else { return 0 }
+    let maintenance = TaskMaintenance(root: paths.supportDirectory)
+    var archivedPerTicket: [String: Int] = [:]
+    for candidate in candidates {
+      // Uncertain ownership is a retain decision, never evidence for cleanup.
+      let owned = (try? await maintenance.ownsLiveProcess(candidate.agent)) ?? true
+      guard !owned else { continue }
+      await retireAgent(candidate.agent, for: candidate.ticket)
+      let archived = subtasks(for: candidate.ticket.id).first { $0.id == candidate.agent.id }?
+        .agentRemovedAt != nil
+      if archived { archivedPerTicket[candidate.ticket.id, default: 0] += 1 }
+    }
+    let total = archivedPerTicket.values.reduce(0, +)
+    for (ticketID, count) in archivedPerTicket {
+      actionMessages[ticketID] =
+        "Archived \(count) stale \(count == 1 ? "agent" : "agents"). They stay recallable under Archived agents."
+    }
+    return total
+  }
+
+  private func runStaleAgentSweepIfDue() async {
+    guard config.autoArchiveStaleAgents else { return }
+    let now = Date()
+    if let last = localState.lastStaleAgentSweepAt,
+       now.timeIntervalSince(last) < 24 * 60 * 60 { return }
+    localState.lastStaleAgentSweepAt = now
+    persistLocalState()
+    await cleanupStaleAgents(now: now)
   }
 
   func removeAgent(_ session: TaskAgentSession, from ticket: DashboardTicket) {
@@ -3173,8 +3248,9 @@ final class QueueViewModel {
       terminalConfiguration.socketPath = pane.socketPath ?? terminalConfiguration.socketPath
       try await terminalController.attach(
         paneID: pane.paneID,
-        tabTitle: AgentTerminalLabels.tabTitle(ticketID: ticket.id, paneID: pane.paneID),
-        windowTitle: ticket.id,
+        tabTitle: AgentTerminalLabels.tabTitle(
+          ticketID: ticket.id, paneID: pane.paneID, taskTitle: ticket.title),
+        windowTitle: AgentTerminalLabels.windowTitle(ticketID: ticket.id, taskTitle: ticket.title),
         configuration: terminalConfiguration
       )
       actionMessages[ticket.id] =
@@ -3877,6 +3953,12 @@ final class QueueViewModel {
 
   func setAutoExitCompletedAgents(_ enabled: Bool) {
     config.autoExitCompletedAgents = enabled
+    persistConfiguration()
+  }
+
+  func setAutoArchiveStaleAgents(_ enabled: Bool) {
+    guard config.autoArchiveStaleAgents != enabled else { return }
+    config.autoArchiveStaleAgents = enabled
     persistConfiguration()
   }
 

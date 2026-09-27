@@ -154,7 +154,7 @@ private struct DurableForbiddenActions: WezTermControlling, CompletionVerifying,
   func listAttachablePanes(configuration: WezTermConfiguration) async throws -> [WezTermPane] { try denied() }
   func listRunningAgents(configuration: WezTermConfiguration) async throws -> [RunningAgentSession] { try denied() }
   func attach(paneID: Int, tabTitle: String, windowTitle: String, configuration: WezTermConfiguration) async throws { let _: Void = try denied() }
-  func focusOrSpawn(directory: String, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult { try denied() }
+  func focusOrSpawn(directory: String, taskID: String, taskTitle: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult { try denied() }
   func focusOrResume(session: TaskAgentSession, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult { try denied() }
   func verify(ticketID: String, requestFile: URL, workspace: String, configuration: VerifierConfiguration) async throws -> VerificationRunResult { try denied() }
   func load(repository: String, closedSince: String) async throws -> PullRequestQueueSnapshot { try denied() }

@@ -21,7 +21,7 @@ Resume rechecks transient provider ownership up to four times while a process st
 
 The app's one-click New Agent launch passes no positional prompt to the provider, so Codex opens at an empty input. Task and agent identity remain in the launch environment. On the first substantive prompt, the provider event hook deterministically replaces a generated `Agent N` label with a short title and one-sentence description; the global agent contract provides the `identify` command as a hook-independent fallback. A user-edited or already descriptive identity is never overwritten. Detailed task initialization remains optional for configured launches, and saved-conversation resumes remain prompt-free.
 
-Task-associated agents share one `fq-task-<task-id>` tmux session with one exact pane per agent and at most four active agents in each native tmux window tab. Additional agents create another window inside the same session. Shell launches persist a launch receipt, resolve placement, persist a provisional queue row, save the exact pane reference afterward, and notify the app at each boundary. Each pane's bottom border carries its own managed usage bar, so neighboring agents show independent quota and context readings, and one agent exiting never removes the bar for its neighbors. Explicit model and effort choices remain on the agent record and are reused for exact resume. A launch without a task objective stays in its project's inbox and an isolated `fq-codex-*` session until placement is unambiguous.
+Task-associated agents share one `fq-task-<task-id>` tmux session with one exact pane per agent and at most four active agents in each native tmux window tab. Additional agents create another window inside the same session. Shell launches persist a launch receipt, resolve placement, persist a provisional queue row, save the exact pane reference afterward, and notify the app at each boundary. Each pane's top border leads with its agent name and carries its own managed usage bar, so neighboring agents show independent quota and context readings, and one agent exiting never removes the bar for its neighbors. Explicit model and effort choices remain on the agent record and are reused for exact resume. A launch without a task objective stays in its project's inbox and an isolated `fq-codex-*` session until placement is unambiguous.
 
 ## Placement capsule
 
@@ -64,6 +64,16 @@ signing, and notarization.
 The configured entry persists launch intent before starting Codex. Task/session/label metadata can remain provisional; unknown identities never authorize resume or cleanup. New interactive coding starts and forks in committed repositories get a separate worktree; read-only research/orchestration and explicit existing-workspace modes retain their checkout and record the policy. Noninteractive calls are tracked in their existing checkout. A native-executable bypass remains discoverable on a best-effort basis rather than an OS-wide launch gate.
 
 Automatic startup receipts live at `logs/agent-startups/<TASK-ID>/<agent-id>.json`. They record the prompt digest and byte count rather than duplicating prompt text, plus source-router identity, project/task/subtask metadata, provider/version/model/effort, workspace and Git identity, tmux executable/server/session/pane/TTY and attach command, terminal selection, placement capsule, project plan, task plan, task context, task log, and sanitized launch arguments. Registration adds the real provider conversation UUID and exact resume command. The full initial prompt remains in the route intent and subtask context.
+
+## Stale agent cleanup
+
+Manual ("Clean up stale agents…" in the Today's focus menu) and opt-in automatic (`autoArchiveStaleAgents`, at most one sweep per 24 hours) cleanup only ever archive agents and close their runtimes. Nothing is deleted: archived agents stay recallable under Archived agents with provider resume, workspace, and conversation intact. An agent is a cleanup candidate only when all five criteria hold:
+
+1. It is visible (not already archived).
+2. No live process owns it, proven through the same maintenance inspection used for worktree cleanup; uncertain ownership retains the agent.
+3. It is either interrupted, or idle with its output already seen (no unread completion).
+4. Its last activity (heartbeat or result, falling back to the earliest recorded timestamp) is older than 5 days.
+5. It is not queued or working, has no unread result, and the user has not retained it by opening the completed runtime.
 
 ## Verification
 

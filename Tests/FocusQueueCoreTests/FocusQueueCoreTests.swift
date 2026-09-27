@@ -131,6 +131,50 @@ func legacyDailyReportConfiguration() throws {
   #expect(config.dailyReport.scheduleMinute == 0)
   #expect(config.dailyReport.maximumTokens == 75_000)
   #expect(Set(config.dailyReport.enabledPlatforms) == Set(DailyReportPlatform.allCases))
+  #expect(config.agentModelChoices == AppConfiguration.defaultAgentModelChoices)
+}
+
+@Test("Configured agent model choices decode and round-trip")
+func agentModelChoiceConfiguration() throws {
+  let data = Data(
+    """
+    {
+      "appName": "ECC Focus Queue",
+      "dashboardPath": "/tmp/dashboard.json",
+      "workspacePath": "/tmp/workspace",
+      "defaultPlacement": "upper-right",
+      "refreshIntervalSeconds": 2,
+      "dailyRoutines": [],
+      "wezTerm": {"executable": "/tmp/wezterm", "applicationName": "WezTerm"},
+      "verifier": {
+        "enabled": true,
+        "executable": "/tmp/focus-queue-codex",
+        "sessionName": "queue",
+        "timeoutSeconds": 120,
+        "maxTurns": 24
+      },
+      "agentModelChoices": [
+        {"provider": "codex", "label": "Default"},
+        {"provider": "codex", "label": "gpt-5.5", "model": "gpt-5.5"},
+        {"provider": "claude", "label": "Big opus", "model": "opus", "effort": "high"}
+      ]
+    }
+    """.utf8
+  )
+
+  let config = try JSONDecoder().decode(AppConfiguration.self, from: data)
+
+  #expect(config.agentModelChoices == [
+    AgentModelChoice(provider: .codex, label: "Default"),
+    AgentModelChoice(provider: .codex, label: "gpt-5.5", model: "gpt-5.5"),
+    AgentModelChoice(provider: .claude, label: "Big opus", model: "opus", effort: "high"),
+  ])
+  let roundTripped = try JSONDecoder().decode(
+    AppConfiguration.self, from: JSONEncoder().encode(config))
+  #expect(roundTripped.agentModelChoices == config.agentModelChoices)
+  #expect(AppConfiguration.defaultAgentModelChoices.map(\.provider)
+    == [.codex, .codex, .codex, .codex, .claude, .claude, .claude, .claude])
+  #expect(AppConfiguration.defaultAgentModelChoices.first(where: { $0.model == nil && $0.provider == .claude })?.label == "Default")
 }
 
 @Test("Daily report documents retain platform counts, messages, tasks, and exact usage")
@@ -1165,6 +1209,27 @@ func agentTerminalLabels() {
   #expect(session.terminalWindowTitle == "ECC-015")
   #expect(session.terminalTabTitle == "ECC-015 · Codex · 0bea7c")
   #expect(AgentTerminalLabels.tabTitle(ticketID: "ECC-015", paneID: 17) == "ECC-015 · Tab 17")
+}
+
+@Test("Agent terminal labels prefer a sanitized task name over the ticket ID")
+func agentTerminalLabelsPreferTaskName() {
+  let session = TaskAgentSession(
+    ticketID: "ECC-015",
+    provider: .codex,
+    sessionID: "01a0696a-6348-79f0-8dbd-0c421c0bea7c",
+    tabTitle: "App Defect",
+    taskTitle: "Fix\tlogin   flow",
+    workingDirectory: "/Users/test/project"
+  )
+
+  #expect(session.terminalWindowTitle == "Fix login flow")
+  #expect(session.terminalTabTitle == "Fix login flow · Codex · 0bea7c")
+  #expect(AgentTerminalLabels.managedTabTitle(ticketID: "ECC-015", taskTitle: "Fix login flow")
+    == "Fix login flow · tmux")
+  #expect(AgentTerminalLabels.windowTitle(ticketID: "ECC-015", taskTitle: "   ") == "ECC-015")
+  #expect(AgentTerminalLabels.managedTabTitle(ticketID: "ecc-015", taskTitle: "") == "ECC-015 · tmux")
+  let longTitle = String(repeating: "a", count: 200)
+  #expect(AgentTerminalLabels.windowTitle(ticketID: "ECC-015", taskTitle: longTitle).count == 120)
 }
 
 @Test("One provider session can belong to only one ticket")

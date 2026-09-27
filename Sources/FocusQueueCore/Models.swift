@@ -217,6 +217,24 @@ private struct LegacyProjectConfigurationShape: Decodable {
   var repositoryPath: String?
 }
 
+/// One entry in the New Agent provider/model menu. A nil or empty model
+/// launches the provider without a `--model` argument (the provider default).
+public struct AgentModelChoice: Codable, Equatable, Sendable, Identifiable {
+  public var provider: AgentProvider
+  public var label: String
+  public var model: String?
+  public var effort: String?
+
+  public init(provider: AgentProvider, label: String, model: String? = nil, effort: String? = nil) {
+    self.provider = provider
+    self.label = label
+    self.model = model
+    self.effort = effort
+  }
+
+  public var id: String { "\(provider.rawValue)/\(label)" }
+}
+
 public struct AppConfiguration: Codable, Equatable, Sendable {
   public var appName: String
   public var dashboardPath: String {
@@ -251,6 +269,19 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var agentEscalationAutoLaunch: Bool
 
   public static let defaultAgentProviderFallbackOrder: [AgentProvider] = [.codex, .claude]
+  public var agentModelChoices: [AgentModelChoice]
+  public var autoArchiveStaleAgents: Bool
+
+  public static let defaultAgentModelChoices: [AgentModelChoice] = [
+    AgentModelChoice(provider: .codex, label: "Default"),
+    AgentModelChoice(provider: .codex, label: "gpt-5.5", model: "gpt-5.5"),
+    AgentModelChoice(provider: .codex, label: "gpt-5.4", model: "gpt-5.4"),
+    AgentModelChoice(provider: .codex, label: "gpt-5.2", model: "gpt-5.2"),
+    AgentModelChoice(provider: .claude, label: "Default"),
+    AgentModelChoice(provider: .claude, label: "sonnet", model: "sonnet"),
+    AgentModelChoice(provider: .claude, label: "opus", model: "opus"),
+    AgentModelChoice(provider: .claude, label: "haiku", model: "haiku"),
+  ]
 
   public init(
     appName: String,
@@ -279,6 +310,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.agentUsageBarEnabled = true
     self.agentProviderFallbackOrder = Self.defaultAgentProviderFallbackOrder
     self.agentEscalationAutoLaunch = true
+    self.agentModelChoices = Self.defaultAgentModelChoices
+    self.autoArchiveStaleAgents = false
     let effectiveProjects = projects ?? [Self.legacyProject(
       appName: appName,
       dashboardPath: dashboardPath,
@@ -297,6 +330,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case agentUsageBarEnabled
     case agentProviderFallbackOrder
     case agentEscalationAutoLaunch
+    case agentModelChoices
+    case autoArchiveStaleAgents
     case focusQueueProjects, focusQueueSelectedProjectID, projects, selectedProjectID
   }
 
@@ -324,6 +359,9 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     agentProviderFallbackOrder = fallbackOrder.isEmpty ? Self.defaultAgentProviderFallbackOrder : fallbackOrder
     agentEscalationAutoLaunch =
       try container.decodeIfPresent(Bool.self, forKey: .agentEscalationAutoLaunch) ?? true
+    agentModelChoices = try container.decodeIfPresent([AgentModelChoice].self, forKey: .agentModelChoices)
+      ?? Self.defaultAgentModelChoices
+    autoArchiveStaleAgents = try container.decodeIfPresent(Bool.self, forKey: .autoArchiveStaleAgents) ?? false
     dailyReport =
       try container.decodeIfPresent(DailyReportConfiguration.self, forKey: .dailyReport)
       ?? DailyReportConfiguration()
@@ -390,6 +428,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encode(agentUsageBarEnabled, forKey: .agentUsageBarEnabled)
     try container.encode(agentProviderFallbackOrder, forKey: .agentProviderFallbackOrder)
     try container.encode(agentEscalationAutoLaunch, forKey: .agentEscalationAutoLaunch)
+    try container.encode(agentModelChoices, forKey: .agentModelChoices)
+    try container.encode(autoArchiveStaleAgents, forKey: .autoArchiveStaleAgents)
   }
 
   public var selectedProject: ProjectConfiguration? {
@@ -1358,24 +1398,35 @@ public enum AgentProvider: String, Codable, CaseIterable, Equatable, Sendable {
 }
 
 public enum AgentTerminalLabels {
-  public static func windowTitle(ticketID: String) -> String {
-    ticketID
+  /// Task titles are user-authored text. Strip control characters, collapse
+  /// whitespace, and cap the length before placing one in a terminal title.
+  /// A blank title keeps the ticket-ID label.
+  public static func readableTaskTitle(_ title: String, fallback: String) -> String {
+    let clean = title.unicodeScalars.map { CharacterSet.controlCharacters.contains($0) ? " " : String($0) }
+      .joined().split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    return String((clean.isEmpty ? fallback : clean).prefix(120))
+  }
+
+  public static func windowTitle(ticketID: String, taskTitle: String = "") -> String {
+    readableTaskTitle(taskTitle, fallback: ticketID)
   }
 
   public static func tabTitle(
     ticketID: String,
     provider: AgentProvider,
-    sessionID: String
+    sessionID: String,
+    taskTitle: String = ""
   ) -> String {
-    "\(ticketID) · \(provider.displayName) · \(sessionID.suffix(6).lowercased())"
+    let label = readableTaskTitle(taskTitle, fallback: ticketID)
+    return "\(label) · \(provider.displayName) · \(sessionID.suffix(6).lowercased())"
   }
 
-  public static func tabTitle(ticketID: String, paneID: Int) -> String {
-    "\(ticketID) · Tab \(paneID)"
+  public static func tabTitle(ticketID: String, paneID: Int, taskTitle: String = "") -> String {
+    "\(readableTaskTitle(taskTitle, fallback: ticketID)) · Tab \(paneID)"
   }
 
-  public static func managedTabTitle(ticketID: String) -> String {
-    "\(ticketID.uppercased()) · tmux"
+  public static func managedTabTitle(ticketID: String, taskTitle: String = "") -> String {
+    "\(readableTaskTitle(taskTitle, fallback: ticketID.uppercased())) · tmux"
   }
 }
 
@@ -1385,6 +1436,7 @@ public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {
   public let provider: AgentProvider
   public let sessionID: String
   public var tabTitle: String
+  public var taskTitle: String?
   public var workingDirectory: String
   public var windowID: Int?
   public var tabID: Int?
@@ -1401,6 +1453,7 @@ public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {
     provider: AgentProvider,
     sessionID: String,
     tabTitle: String,
+    taskTitle: String? = nil,
     workingDirectory: String,
     windowID: Int? = nil,
     tabID: Int? = nil,
@@ -1416,6 +1469,7 @@ public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {
     self.provider = provider
     self.sessionID = sessionID
     self.tabTitle = tabTitle
+    self.taskTitle = taskTitle
     self.workingDirectory = workingDirectory
     self.windowID = windowID
     self.tabID = tabID
@@ -1428,14 +1482,15 @@ public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {
   }
 
   public var terminalWindowTitle: String {
-    AgentTerminalLabels.windowTitle(ticketID: ticketID)
+    AgentTerminalLabels.windowTitle(ticketID: ticketID, taskTitle: taskTitle ?? "")
   }
 
   public var terminalTabTitle: String {
     AgentTerminalLabels.tabTitle(
       ticketID: ticketID,
       provider: provider,
-      sessionID: sessionID
+      sessionID: sessionID,
+      taskTitle: taskTitle ?? ""
     )
   }
 
@@ -1446,6 +1501,7 @@ public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {
       provider: provider,
       sessionID: sessionID,
       tabTitle: terminalTabTitle,
+      taskTitle: taskTitle,
       workingDirectory: workingDirectory,
       windowID: windowID,
       tabID: tabID,
@@ -1466,6 +1522,9 @@ public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {
       enriched.workingDirectory = context.worktreePath ?? context.repositoryPath ?? workingDirectory
     }
     enriched.subtaskID = subtask?.id
+    if !context.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      enriched.taskTitle = context.title
+    }
     enriched.contextDirectory = context.contextDirectory.path
     enriched.supportDirectory = supportDirectory.path
     // Legacy state can still decode resumePrompt, but managed recall never sends
@@ -1488,6 +1547,7 @@ public struct LocalState: Codable, Equatable, Sendable {
   public var minimizationPreference: QueueMinimizationPreference
   public var programLogWindowVisible: Bool
   public var agentSessions: [TaskAgentSession]
+  public var lastStaleAgentSweepAt: Date?
 
   public init(
     routineDate: String = "",
@@ -1500,7 +1560,8 @@ public struct LocalState: Codable, Equatable, Sendable {
     accentStyle: QueueAccentStyle? = nil,
     minimizationPreference: QueueMinimizationPreference = .fq,
     programLogWindowVisible: Bool = false,
-    agentSessions: [TaskAgentSession] = []
+    agentSessions: [TaskAgentSession] = [],
+    lastStaleAgentSweepAt: Date? = nil
   ) {
     self.routineDate = routineDate
     self.completedRoutineIDs = completedRoutineIDs
@@ -1513,6 +1574,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     self.minimizationPreference = minimizationPreference
     self.programLogWindowVisible = programLogWindowVisible
     self.agentSessions = agentSessions
+    self.lastStaleAgentSweepAt = lastStaleAgentSweepAt
   }
 
   public mutating func upsertAgentSession(_ session: TaskAgentSession) {
@@ -1530,6 +1592,7 @@ public struct LocalState: Codable, Equatable, Sendable {
       provider: session.provider,
       sessionID: session.sessionID,
       tabTitle: session.terminalTabTitle,
+      taskTitle: session.taskTitle ?? sameTask?.taskTitle,
       workingDirectory: session.workingDirectory,
       windowID: session.windowID,
       tabID: session.tabID,

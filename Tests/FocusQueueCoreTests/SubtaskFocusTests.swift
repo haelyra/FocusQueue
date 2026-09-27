@@ -151,6 +151,26 @@ struct SubtaskFocusTests {
         #expect(TaskAgentLauncher.terminalAttention("The agent asked: Do you want to proceed?") == nil)
     }
 
+    @Test("Quota and credit errors classify distinctly from generic failures")
+    func quotaErrorClassification() throws {
+        let codexQuota = Data(#"{"timestamp":"2026-09-15T18:00:00Z","type":"event_msg","payload":{"type":"error","thread_id":"one","message":"Rate limit reached for this plan"}}"#.utf8)
+        let quotaEvent = try #require(AgentActivityEvent.latest(in: codexQuota, provider: .codex, sessionID: "one"))
+        #expect(quotaEvent.kind == .attention(.quotaExhausted))
+        #expect(quotaEvent.summary.contains("Rate limit"))
+        let codexFailure = Data(#"{"timestamp":"2026-09-15T18:00:00Z","type":"event_msg","payload":{"type":"error","thread_id":"one","message":"The apply_patch call failed"}}"#.utf8)
+        #expect(AgentActivityEvent.latest(in: codexFailure, provider: .codex, sessionID: "one")?.kind == .attention(.failed))
+        let claudeQuota = Data(#"{"timestamp":"2026-09-15T18:00:00Z","sessionId":"one","type":"assistant","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"You've hit your limit · resets 3pm"}]}}"#.utf8)
+        #expect(AgentActivityEvent.latest(in: claudeQuota, provider: .claude, sessionID: "one")?.kind == .attention(.quotaExhausted))
+        let claudeFailure = Data(#"{"timestamp":"2026-09-15T18:00:00Z","sessionId":"one","type":"assistant","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"Overloaded"}]}}"#.utf8)
+        #expect(AgentActivityEvent.latest(in: claudeFailure, provider: .claude, sessionID: "one")?.kind == .attention(.failed))
+        #expect(AgentActivityEvent.isQuotaError("INSUFFICIENT CREDITS"))
+        #expect(AgentActivityEvent.isQuotaError("HTTP 429 returned"))
+        #expect(!AgentActivityEvent.isQuotaError("compiler error"))
+        #expect(!AgentActivityEvent.isQuotaError(""))
+        #expect(AgentAttention.quotaExhausted.isProblem)
+        #expect(AgentAttention.quotaExhausted.label == "Quota exhausted")
+    }
+
     @Test("Session file scans reuse an unchanged directory stamp and notice new transcripts")
     func activityScanCaching() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("activity-scan-\(UUID().uuidString)")

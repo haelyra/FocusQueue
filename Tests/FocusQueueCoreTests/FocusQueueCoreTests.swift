@@ -234,6 +234,44 @@ func dailyReportPersistence() async throws {
   )[.posixPermissions] as? NSNumber)?.intValue == 0o600)
 }
 
+@Test("Agent provider fallback order filters unknown names and defaults to codex then claude")
+func agentProviderFallbackDecoding() throws {
+  let encoder = JSONEncoder()
+  var configuration = AppConfiguration.eccDefault(homeDirectory: URL(fileURLWithPath: "/tmp/fallback-home"))
+  #expect(configuration.agentProviderFallbackOrder == [.codex, .claude])
+  #expect(configuration.agentEscalationAutoLaunch)
+
+  // A legacy configuration without the new keys decodes to the defaults.
+  var object = try #require(
+    try JSONSerialization.jsonObject(with: encoder.encode(configuration)) as? [String: Any])
+  object.removeValue(forKey: "agentProviderFallbackOrder")
+  object.removeValue(forKey: "agentEscalationAutoLaunch")
+  let legacy = try JSONDecoder().decode(
+    AppConfiguration.self, from: JSONSerialization.data(withJSONObject: object))
+  #expect(legacy.agentProviderFallbackOrder == [.codex, .claude])
+  #expect(legacy.agentEscalationAutoLaunch)
+
+  // Unknown providers are skipped and duplicates collapse.
+  object["agentProviderFallbackOrder"] = ["kimi", "claude", "claude", "codex"]
+  object["agentEscalationAutoLaunch"] = false
+  let filtered = try JSONDecoder().decode(
+    AppConfiguration.self, from: JSONSerialization.data(withJSONObject: object))
+  #expect(filtered.agentProviderFallbackOrder == [.claude, .codex])
+  #expect(!filtered.agentEscalationAutoLaunch)
+
+  // An entirely unknown list falls back to the default instead of decoding empty.
+  object["agentProviderFallbackOrder"] = ["kimi"]
+  let unknown = try JSONDecoder().decode(
+    AppConfiguration.self, from: JSONSerialization.data(withJSONObject: object))
+  #expect(unknown.agentProviderFallbackOrder == [.codex, .claude])
+
+  // The configured order survives a save and reload round trip.
+  configuration.agentProviderFallbackOrder = [.claude, .codex]
+  let roundTrip = try JSONDecoder().decode(
+    AppConfiguration.self, from: encoder.encode(configuration))
+  #expect(roundTrip.agentProviderFallbackOrder == [.claude, .codex])
+}
+
 @Test("Missed-run approval is a portable persisted contract")
 func dailyReportApprovalPersistence() async throws {
   let root = FileManager.default.temporaryDirectory

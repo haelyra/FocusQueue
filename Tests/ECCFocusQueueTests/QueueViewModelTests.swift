@@ -2373,6 +2373,206 @@ struct QueueViewModelTests {
     #expect(FileManager.default.fileExists(atPath: context.planPath))
   }
 
+  @Test("The default provider follows the configured fallback order")
+  func defaultProviderFollowsFallbackOrder() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    var configuration = try JSONDecoder().decode(
+      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    configuration.projects[0].repositoryPath = fixture.root.path
+    configuration.tmuxExecutable = "/usr/bin/true"
+    configuration.agentProviderFallbackOrder = [.claude, .codex]
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
+    let router = ControlledObjectiveRouter(outcome: .registered(
+      routeID: "route-claude", taskID: "ECC-101", subtaskID: "agent-one"))
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(), objectiveRouter: router, routerUndoWindowSeconds: 0.01)
+
+    #expect(model.defaultAgentProvider == .claude)
+    model.routeObjective("Route with the configured provider")
+    try await eventually { !model.isRoutingObjective && model.routerStatus?.contains("ECC-101") == true }
+
+    #expect(await router.providers == [.claude])
+  }
+
+  @Test("Quota fallback claims the next installed provider once per subtask inside a per-ticket cooldown")
+  func quotaFallbackDecision() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    func exhausted(_ id: String, provider: AgentProvider, status: TaskSubtaskStatus = .blocked) -> TaskSubtask {
+      var subtask = TaskSubtask(id: id, title: "Worker", provider: provider,
+        sessionID: UUID().uuidString, status: status)
+      subtask.attention = .quotaExhausted
+      return subtask
+    }
+
+    let first = exhausted("agent-one", provider: .codex)
+    #expect(model.claimQuotaFallback(ticketID: "ECC-101", subtask: first,
+      executableAvailable: { $0 == .claude }) == .claude)
+    // One fallback per subtask.
+    #expect(model.claimQuotaFallback(ticketID: "ECC-101", subtask: first,
+      executableAvailable: { _ in true }) == nil)
+    // The per-ticket cooldown blocks a different subtask right after.
+    let second = exhausted("agent-two", provider: .codex)
+    #expect(model.claimQuotaFallback(ticketID: "ECC-101", subtask: second,
+      executableAvailable: { _ in true }) == nil)
+    let afterCooldown = Date().addingTimeInterval(QueueViewModel.quotaFallbackCooldownSeconds + 1)
+    #expect(model.claimQuotaFallback(ticketID: "ECC-101", subtask: second, now: afterCooldown,
+      executableAvailable: { _ in true }) == .claude)
+    // Another ticket is not covered by the first ticket's cooldown.
+    #expect(model.claimQuotaFallback(ticketID: "ECC-102", subtask: exhausted("agent-three", provider: .codex),
+      executableAvailable: { _ in true }) == .claude)
+    // The last provider in the order has nowhere to fall back to.
+    #expect(model.claimQuotaFallback(ticketID: "ECC-900", subtask: exhausted("agent-four", provider: .claude),
+      executableAvailable: { _ in true }) == nil)
+    // No installed CLI means no fallback.
+    #expect(model.claimQuotaFallback(ticketID: "ECC-901", subtask: exhausted("agent-five", provider: .codex),
+      executableAvailable: { _ in false }) == nil)
+    // Completed, removed, and non-quota subtasks never fall back.
+    var completed = exhausted("agent-six", provider: .codex, status: .completed)
+    #expect(model.claimQuotaFallback(ticketID: "ECC-902", subtask: completed,
+      executableAvailable: { _ in true }) == nil)
+    completed = exhausted("agent-seven", provider: .codex)
+    completed.attention = .failed
+    #expect(model.claimQuotaFallback(ticketID: "ECC-903", subtask: completed,
+      executableAvailable: { _ in true }) == nil)
+
+    #expect(QueueViewModel.quotaFallbackProvider(for: .codex, fallbackOrder: [.codex, .claude],
+      executableAvailable: { _ in false }) == nil)
+    // A provider listed last has no later fallback; an unlisted provider starts at the front.
+    #expect(QueueViewModel.quotaFallbackProvider(for: .codex, fallbackOrder: [.claude, .codex],
+      executableAvailable: { _ in true }) == nil)
+    #expect(QueueViewModel.quotaFallbackProvider(for: .codex, fallbackOrder: [.claude],
+      executableAvailable: { $0 == .claude }) == .claude)
+  }
+
+  @Test("Escalation provider resolution prefers the request and falls back when its CLI is missing")
+  func escalationProviderResolution() {
+    #expect(QueueViewModel.escalationProvider(requested: "claude", fallbackOrder: [.codex, .claude],
+      executableAvailable: { _ in true }) == .claude)
+    #expect(QueueViewModel.escalationProvider(requested: "claude", fallbackOrder: [.codex, .claude],
+      executableAvailable: { $0 == .codex }) == .codex)
+    #expect(QueueViewModel.escalationProvider(requested: "kimi", fallbackOrder: [.codex, .claude],
+      executableAvailable: { $0 == .claude }) == .claude)
+    #expect(QueueViewModel.escalationProvider(requested: nil, fallbackOrder: [.codex, .claude],
+      executableAvailable: { _ in false }) == nil)
+  }
+
+  @Test("Escalation launch requests auto-launch one agent per pass and are consumed")
+  func escalationLaunchRequestConsumption() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let repository = externalWorkspace(for: fixture.root, suffix: "escalation-repo")
+    defer { try? FileManager.default.removeItem(at: repository) }
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    let git = FoundationProcessRunner()
+    for arguments in [["init", "-q"], ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+      "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Fixture", "--allow-empty"]] {
+      #expect(try await git.run(.init(executable: "/usr/bin/git", arguments: arguments,
+        workingDirectory: repository.path)).succeeded)
+    }
+    var configuration = try JSONDecoder().decode(
+      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    configuration.workspacePath = repository.path
+    configuration.projects[0].workspacePath = repository.path
+    configuration.projects[0].repositoryPath = repository.path
+    configuration.tmuxExecutable = "/usr/bin/true"
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
+    let requests = fixture.paths.launchRequestsDirectory
+    try FileManager.default.createDirectory(at: requests, withIntermediateDirectories: true)
+    let encoder = JSONEncoder()
+    try encoder.encode(AgentLaunchRequest(ticketId: "ECC-101", title: "Fix the customer crash",
+      provider: "claude", model: "claude-test", effort: "high",
+      prompt: "Focus Queue task ECC-101: reproduce the crash"))
+      .write(to: requests.appendingPathComponent("ECC-101.json"))
+    try encoder.encode(AgentLaunchRequest(ticketId: "ECC-102", title: "Second escalation",
+      provider: "codex")).write(to: requests.appendingPathComponent("ECC-102.json"))
+    try encoder.encode(AgentLaunchRequest(ticketId: "ECC-999", title: "Unknown ticket"))
+      .write(to: requests.appendingPathComponent("ECC-999.json"))
+    let runner = EscalationLaunchRunner()
+    let model = await fixture.model(agent: ControlledQueueAgent(),
+      terminalController: ManagedResumeRecorder(),
+      taskAgentLauncher: TaskAgentLauncher(runner: runner, tmuxServerName: "escalation-test"),
+      providerExecutableAvailable: { _ in true })
+
+    await model.refresh(userInitiated: true)
+    try await eventually { model.launchingTaskIDs.isEmpty && !model.subtasks(for: "ECC-101").isEmpty }
+
+    let first = try #require(model.subtasks(for: "ECC-101").first)
+    #expect(first.provider == .claude)
+    #expect(first.title == "Fix the customer crash")
+    #expect(first.launchConfiguration?.model == "claude-test")
+    #expect(first.launchConfiguration?.effort == "high")
+    #expect(first.initialPrompt?.contains("ECC-101") == true)
+    // One auto-launch per pass; the second request stays queued and unknown tickets are left alone.
+    #expect(model.subtasks(for: "ECC-102").isEmpty)
+    #expect(!FileManager.default.fileExists(atPath: requests.appendingPathComponent("ECC-101.json").path))
+    #expect(FileManager.default.fileExists(atPath: requests.appendingPathComponent("ECC-102.json").path))
+    #expect(FileManager.default.fileExists(atPath: requests.appendingPathComponent("ECC-999.json").path))
+
+    await model.refresh(userInitiated: true)
+    try await eventually { model.launchingTaskIDs.isEmpty && !model.subtasks(for: "ECC-102").isEmpty }
+    #expect(model.subtasks(for: "ECC-102").first?.provider == .codex)
+    #expect(!FileManager.default.fileExists(atPath: requests.appendingPathComponent("ECC-102.json").path))
+    // Consumed requests never relaunch.
+    await model.refresh(userInitiated: true)
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(model.subtasks(for: "ECC-101").count == 1)
+    #expect(model.subtasks(for: "ECC-102").count == 1)
+  }
+
+  @Test("A launch request for a ticket with a live agent is consumed without relaunching")
+  func escalationLaunchRequestDedupesLiveAgents() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    _ = try await store.upsertSubtask(ticketID: "ECC-101",
+      subtask: TaskSubtask(id: "live-worker", title: "Live agent",
+        sessionID: UUID().uuidString, status: .working, lastHeartbeatAt: Date()))
+    let requests = fixture.paths.launchRequestsDirectory
+    try FileManager.default.createDirectory(at: requests, withIntermediateDirectories: true)
+    try JSONEncoder().encode(AgentLaunchRequest(ticketId: "ECC-101", title: "Duplicate escalation"))
+      .write(to: requests.appendingPathComponent("ECC-101.json"))
+    let runner = EscalationLaunchRunner()
+    let model = await fixture.model(agent: ControlledQueueAgent(),
+      taskAgentLauncher: TaskAgentLauncher(runner: runner, tmuxServerName: "escalation-dedupe"),
+      providerExecutableAvailable: { _ in true })
+
+    await model.refresh(userInitiated: true)
+    try await Task.sleep(for: .milliseconds(50))
+
+    #expect(model.subtasks(for: "ECC-101").map(\.id) == ["live-worker"])
+    #expect(!FileManager.default.fileExists(atPath: requests.appendingPathComponent("ECC-101.json").path))
+    #expect(await runner.commands.contains { $0.arguments.contains("new-session") } == false)
+  }
+
+  @Test("The escalation auto-launch setting leaves requests queued when disabled")
+  func escalationLaunchRequestsRespectDisabledSetting() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    var configuration = try JSONDecoder().decode(
+      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    configuration.agentEscalationAutoLaunch = false
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
+    let requests = fixture.paths.launchRequestsDirectory
+    try FileManager.default.createDirectory(at: requests, withIntermediateDirectories: true)
+    try JSONEncoder().encode(AgentLaunchRequest(ticketId: "ECC-101", title: "Held escalation"))
+      .write(to: requests.appendingPathComponent("ECC-101.json"))
+    let runner = EscalationLaunchRunner()
+    let model = await fixture.model(agent: ControlledQueueAgent(),
+      taskAgentLauncher: TaskAgentLauncher(runner: runner, tmuxServerName: "escalation-off"),
+      providerExecutableAvailable: { _ in true })
+
+    await model.refresh(userInitiated: true)
+    try await Task.sleep(for: .milliseconds(50))
+
+    #expect(model.subtasks(for: "ECC-101").isEmpty)
+    #expect(FileManager.default.fileExists(atPath: requests.appendingPathComponent("ECC-101.json").path))
+    #expect(await runner.commands.contains { $0.arguments.contains("new-session") } == false)
+  }
+
   private func eventually(_ condition: @MainActor () async throws -> Bool) async throws {
     for _ in 0..<200 {
       if try await condition() { return }
@@ -2479,6 +2679,7 @@ private struct Fixture {
              discoverExternalAgents: @escaping @Sendable () async throws -> [KnownProviderProcess] = { [] },
              labelTmuxPane: @escaping @Sendable (TmuxSessionReference, String) async -> Void = { _, _ in },
              identifyManagedAgent: (@Sendable (TaskSubtask, WezTermConfiguration) async throws -> String?)? = nil,
+             providerExecutableAvailable: (@Sendable (AgentProvider) -> Bool)? = nil,
              locateExistingAgent: @escaping @Sendable (AgentProvider, String) async throws -> KnownProviderProcess? = { _, _ in nil }) async -> QueueViewModel {
     let boundary = ForbiddenExternalActions()
     let model = QueueViewModel(paths: paths, programLog: programLog,
@@ -2494,6 +2695,7 @@ private struct Fixture {
       labelTmuxPane: labelTmuxPane,
       maintenanceEnabled: false,
       identifyManagedAgent: identifyManagedAgent,
+      providerExecutableAvailable: providerExecutableAvailable,
       locateExistingAgent: locateExistingAgent)
     await model.bootstrap()
     await model.bootstrapTail?.value
@@ -2545,6 +2747,7 @@ private actor ControlledObjectiveRouter: QueueObjectiveRouting {
   private(set) var launchCount = 0
   private(set) var waitCount = 0
   private(set) var objectives: [String] = []
+  private(set) var providers: [AgentProvider] = []
   private var outcomes: [QueueRouterOutcome]
 
   init(outcome: QueueRouterOutcome) { outcomes = [outcome] }
@@ -2554,8 +2757,18 @@ private actor ControlledObjectiveRouter: QueueObjectiveRouting {
     objective: String, repositoryPath: String, supportDirectory: URL,
     tmuxExecutable: String, shellPath: String?
   ) async throws -> QueueRouterRuntime {
+    try await launch(
+      objective: objective, repositoryPath: repositoryPath, supportDirectory: supportDirectory,
+      tmuxExecutable: tmuxExecutable, shellPath: shellPath, provider: .codex)
+  }
+
+  func launch(
+    objective: String, repositoryPath: String, supportDirectory: URL,
+    tmuxExecutable: String, shellPath: String?, provider: AgentProvider
+  ) async throws -> QueueRouterRuntime {
     launchCount += 1
     objectives.append(objective)
+    providers.append(provider)
     try await Task.sleep(for: .milliseconds(30))
     let reference = try TmuxController.decode(
       "fq-router-test|1|1|%1|2|/dev/ttys001|0\n", executable: tmuxExecutable)[0]
@@ -2676,6 +2889,42 @@ private actor ManagedResumeRunner: ProcessRunning {
     if arguments.contains("list-panes") {
       guard started else { return result(exit: 1, error: "no server running") }
       return result("fq-task-\(taskID.lowercased())|123|1000|%9|456|/dev/ttys099|0|@1|0|160|50|0|0|80|24|\(agentID)|||1|auto\n")
+    }
+    if arguments.contains("show-options"), arguments.contains("status") {
+      return result("off\n")
+    }
+    if arguments.contains("list-clients") {
+      return result()
+    }
+    return result()
+  }
+
+  private func result(_ output: String = "", exit: Int32 = 0, error: String = "") -> ProcessResult {
+    .init(exitCode: exit, standardOutput: output, standardError: error, timedOut: false)
+  }
+}
+
+private actor EscalationLaunchRunner: ProcessRunning {
+  private(set) var commands: [ProcessSpecification] = []
+  private var started = false
+
+  func run(_ specification: ProcessSpecification) throws -> ProcessResult {
+    commands.append(specification)
+    let arguments = specification.arguments
+    let name = arguments.first(where: { $0.hasPrefix("fq-task-") }) ?? "fq-task-ecc-101"
+    if arguments.contains("has-session") {
+      return result(exit: 1, error: "no server running")
+    }
+    if arguments.contains("new-session") {
+      started = true
+      return result("\(name)|123|1000|%9|||0\n")
+    }
+    if arguments.contains("display-message") {
+      return result("\(name)|123|1000|%9|456|/dev/ttys099|0\n")
+    }
+    if arguments.contains("list-panes") {
+      guard started else { return result(exit: 1, error: "no server running") }
+      return result("\(name)|123|1000|%9|456|/dev/ttys099|0|@1|0|160|50|0|0|80|24|\(UUID().uuidString)|||1|auto\n")
     }
     if arguments.contains("show-options"), arguments.contains("status") {
       return result("off\n")

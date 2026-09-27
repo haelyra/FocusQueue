@@ -224,6 +224,10 @@ final class QueueViewModel {
   @ObservationIgnored private var projectRefreshPending = false
   @ObservationIgnored private var lastActivityCheck = Date()
   @ObservationIgnored private let agentActivityObserver = AgentActivityObserver()
+  @ObservationIgnored private var quotaFallbackedSubtaskKeys: Set<String> = []
+  @ObservationIgnored private var quotaFallbackAtByTicketID: [String: Date] = [:]
+  @ObservationIgnored private var escalationAutoLaunchInFlight = false
+  @ObservationIgnored private var routerProvider: AgentProvider?
   @ObservationIgnored private var lastIdentityRefresh: Date?
   @ObservationIgnored private var lastManagedPresentationRefresh: Date?
   @ObservationIgnored private var panelVisible = true
@@ -235,6 +239,7 @@ final class QueueViewModel {
   @ObservationIgnored private var forcedIntakeReferenceKeys: Set<String> = []
   @ObservationIgnored private var labeledIntakeReferenceKeys: Set<String> = []
   @ObservationIgnored private let discoverExternalAgents: @Sendable () async throws -> [KnownProviderProcess]
+  @ObservationIgnored private let providerExecutableAvailable: @Sendable (AgentProvider) -> Bool
   @ObservationIgnored private let labelTmuxPane: @Sendable (TmuxSessionReference, String) async -> Void
   @ObservationIgnored private let locateExistingAgent: @Sendable (AgentProvider, String) async throws -> KnownProviderProcess?
   @ObservationIgnored private let identifyManagedAgent: (@Sendable (TaskSubtask, WezTermConfiguration) async throws -> String?)?
@@ -283,6 +288,7 @@ final class QueueViewModel {
     },
     maintenanceEnabled: Bool = true,
     identifyManagedAgent: (@Sendable (TaskSubtask, WezTermConfiguration) async throws -> String?)? = nil,
+    providerExecutableAvailable: (@Sendable (AgentProvider) -> Bool)? = nil,
     locateExistingAgent: @escaping @Sendable (AgentProvider, String) async throws -> KnownProviderProcess? = { provider, sessionID in
       try await WezTermController().locateProviderProcess(provider: provider, sessionID: sessionID)
     }
@@ -296,6 +302,9 @@ final class QueueViewModel {
     }
     self.labelTmuxPane = labelTmuxPane
     self.identifyManagedAgent = identifyManagedAgent
+    self.providerExecutableAvailable = providerExecutableAvailable ?? {
+      SetupEnvironment.executable($0.executableName) != nil
+    }
     self.locateExistingAgent = locateExistingAgent
     self.taskContextStore = TaskContextStore(root: paths.supportDirectory)
     self.reportHistoryRepository = JSONDailyReportHistoryRepository(runtimeDirectory: paths.ingestionRuntimeDirectory)
@@ -904,6 +913,7 @@ final class QueueViewModel {
       resetDailyRoutinesIfNeeded()
       await importAgentRegistrations()
       await refreshTaskContexts()
+      await consumeEscalationLaunchRequests()
       if panelVisible { await refreshExternalAgentRegistrations() }
       if maintenanceEnabled {
         let recoverySweep = lastMaintenanceAt == nil || Date().timeIntervalSince(lastMaintenanceAt!) >= 60
@@ -1324,6 +1334,10 @@ final class QueueViewModel {
           do {
             taskContexts[entry.ticketID] = try await taskContextStore.observeActivity(
               ticketID: entry.ticketID, subtaskID: entry.subtask.id, event: event)
+            if case .attention(.quotaExhausted) = event.kind,
+               let ticket = tickets.first(where: { $0.id == entry.ticketID }) {
+              await applyQuotaFallback(ticket: ticket, subtaskID: entry.subtask.id)
+            }
           } catch { actionMessages[entry.ticketID] = error.localizedDescription }
         }
       }
@@ -2081,12 +2095,14 @@ final class QueueViewModel {
   ) async {
     guard activeRouterSubmissionID == submissionID else { return }
     do {
+      let provider = defaultAgentProvider
       let runtime = try await objectiveRouter.launch(
         objective: objective, repositoryPath: repository,
         supportDirectory: paths.supportDirectory,
-        tmuxExecutable: tmuxExecutable, shellPath: nil)
+        tmuxExecutable: tmuxExecutable, shellPath: nil, provider: provider)
       guard activeRouterSubmissionID == submissionID else { return }
       routerRuntime = runtime
+      routerProvider = provider
       routerStatus = "Router started. Waiting for the assigned agent…"
       let outcome = try await objectiveRouter.waitForOutcome(
         runtime, supportDirectory: paths.supportDirectory, timeoutSeconds: 120)
@@ -2173,7 +2189,7 @@ final class QueueViewModel {
           runtime, supportDirectory: paths.supportDirectory)
         guard routerRuntime?.capability == runtime.capability else { return }
         let result = try await terminalController.openManagedRuntime(
-          reference, taskID: "ROUTER", provider: .codex,
+          reference, taskID: "ROUTER", provider: routerProvider ?? defaultAgentProvider,
           configuration: config.wezTerm)
         guard routerRuntime?.capability == runtime.capability else { return }
         routerStatus = result.message
@@ -2463,11 +2479,134 @@ final class QueueViewModel {
     var index = 1
     while existingTitles.contains("agent \(index)") { index += 1 }
     launchAgent(
-      for: ticket, title: "Agent \(index)", provider: .codex,
+      for: ticket, title: "Agent \(index)", provider: defaultAgentProvider,
       repositoryPath: defaultRepository(for: ticket), assignmentDescription: "",
       includePrompt: false, useTmux: true, initialPrompt: nil, tracksCompletion: true,
       subtaskID: subtaskID, workspacePolicy: .isolatedCommittedSnapshot,
       completion: completion)
+  }
+
+  var defaultAgentProvider: AgentProvider {
+    config.agentProviderFallbackOrder.first ?? .codex
+  }
+
+  /// The next configured provider after the failing one whose CLI is installed.
+  static func quotaFallbackProvider(
+    for provider: AgentProvider,
+    fallbackOrder: [AgentProvider],
+    executableAvailable: (AgentProvider) -> Bool
+  ) -> AgentProvider? {
+    guard let index = fallbackOrder.firstIndex(of: provider) else {
+      return fallbackOrder.first(where: executableAvailable)
+    }
+    return fallbackOrder.dropFirst(index + 1).first(where: executableAvailable)
+  }
+
+  static let quotaFallbackCooldownSeconds: TimeInterval = 300
+
+  /// Guards quota fallback to one replacement per subtask and one per ticket
+  /// inside the cooldown window, then claims both so a retry cannot loop.
+  @discardableResult
+  func claimQuotaFallback(
+    ticketID: String, subtask: TaskSubtask, now: Date = Date(),
+    executableAvailable: ((AgentProvider) -> Bool)? = nil
+  ) -> AgentProvider? {
+    let available = executableAvailable ?? providerExecutableAvailable
+    let key = Self.subtaskKey(ticketID: ticketID, subtaskID: subtask.id)
+    guard !quotaFallbackedSubtaskKeys.contains(key),
+          subtask.isAgentVisible, subtask.status != .completed,
+          subtask.attention == .quotaExhausted,
+          now.timeIntervalSince(quotaFallbackAtByTicketID[ticketID] ?? .distantPast)
+            >= Self.quotaFallbackCooldownSeconds,
+          let next = Self.quotaFallbackProvider(
+            for: subtask.provider, fallbackOrder: config.agentProviderFallbackOrder,
+            executableAvailable: available)
+    else { return nil }
+    quotaFallbackedSubtaskKeys.insert(key)
+    quotaFallbackAtByTicketID[ticketID] = now
+    return next
+  }
+
+  /// Cross-provider resume is impossible, so the replacement is a fresh session.
+  private func applyQuotaFallback(ticket: DashboardTicket, subtaskID: String) async {
+    guard let context = taskContexts[ticket.id],
+          let subtask = context.subtasks.first(where: { $0.id == subtaskID }),
+          let next = claimQuotaFallback(ticketID: ticket.id, subtask: subtask)
+    else { return }
+    let note = "Quota exhausted on \(subtask.provider.displayName); falling back to \(next.displayName)."
+    do {
+      taskContexts[ticket.id] = try await taskContextStore.updateProgress(
+        ticketID: ticket.id, subtaskID: subtask.id, status: .blocked, summary: note)
+    } catch {
+      actionMessages[ticket.id] = error.localizedDescription
+      return
+    }
+    await recordAgentLaunch(
+      subtask, ticketID: ticket.id, phase: "provider-fallback", outcome: "started",
+      message: note,
+      details: ["from": subtask.provider.rawValue, "to": next.rawValue])
+    actionMessages[ticket.id] = note
+    launchAgent(
+      for: ticket, title: "\(subtask.title) · \(next.displayName) fallback",
+      provider: next,
+      repositoryPath: subtask.workspace?.repositoryPath ?? defaultRepository(for: ticket),
+      assignmentDescription: subtask.assignmentDescription,
+      includePrompt: true, useTmux: true,
+      initialPrompt: subtask.initialPrompt, tracksCompletion: subtask.tracksCompletion)
+  }
+
+  /// The requested provider wins when its CLI is installed; otherwise the first
+  /// available entry of the configured fallback order takes over.
+  static func escalationProvider(
+    requested: String?,
+    fallbackOrder: [AgentProvider],
+    executableAvailable: (AgentProvider) -> Bool
+  ) -> AgentProvider? {
+    if let name = requested?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+       !name.isEmpty, let provider = AgentProvider(rawValue: name),
+       executableAvailable(provider) {
+      return provider
+    }
+    return fallbackOrder.first(where: executableAvailable)
+  }
+
+  /// One auto-launch at a time; the remaining requests stay queued on disk.
+  private func consumeEscalationLaunchRequests() async {
+    guard config.agentEscalationAutoLaunch, !escalationAutoLaunchInFlight else { return }
+    let inbox = AgentLaunchRequestInbox(directory: paths.launchRequestsDirectory)
+    guard let requests = try? await inbox.pending(), !requests.isEmpty else { return }
+    for request in requests {
+      guard let ticket = dashboard.tickets.first(where: {
+        $0.id.caseInsensitiveCompare(request.ticketId) == .orderedSame
+      }) else { continue }
+      let hasLiveAgent = launchingTaskIDs.contains(ticket.id)
+        || visibleAgents(for: ticket.id).contains { $0.status != .completed }
+      if hasLiveAgent {
+        await inbox.consume(request)
+        continue
+      }
+      guard let provider = Self.escalationProvider(
+        requested: request.provider, fallbackOrder: config.agentProviderFallbackOrder,
+        executableAvailable: providerExecutableAvailable)
+      else { continue }
+      escalationAutoLaunchInFlight = true
+      await inbox.consume(request)
+      let title = request.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let prompt = request.prompt?.trimmingCharacters(in: .whitespacesAndNewlines)
+      launchAgent(
+        for: ticket,
+        title: title?.isEmpty == false ? title! : "Escalation \(ticket.id)",
+        provider: provider,
+        repositoryPath: defaultRepository(for: ticket),
+        assignmentDescription: prompt ?? "",
+        includePrompt: true, useTmux: true,
+        initialPrompt: prompt?.isEmpty == false ? prompt : nil,
+        modelName: request.model, effort: request.effort
+      ) { [weak self] _ in
+        self?.escalationAutoLaunchInFlight = false
+      }
+      break
+    }
   }
 
   private func finalizeCompletedTask(_ ticket: DashboardTicket) async {

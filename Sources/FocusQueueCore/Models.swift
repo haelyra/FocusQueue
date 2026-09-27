@@ -247,6 +247,10 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var automaticAgentRouting: Bool
   public var autoExitCompletedAgents: Bool
   public var agentUsageBarEnabled: Bool
+  public var agentProviderFallbackOrder: [AgentProvider]
+  public var agentEscalationAutoLaunch: Bool
+
+  public static let defaultAgentProviderFallbackOrder: [AgentProvider] = [.codex, .claude]
 
   public init(
     appName: String,
@@ -273,6 +277,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.automaticAgentRouting = false
     self.autoExitCompletedAgents = true
     self.agentUsageBarEnabled = true
+    self.agentProviderFallbackOrder = Self.defaultAgentProviderFallbackOrder
+    self.agentEscalationAutoLaunch = true
     let effectiveProjects = projects ?? [Self.legacyProject(
       appName: appName,
       dashboardPath: dashboardPath,
@@ -289,6 +295,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case automaticAgentRouting
     case autoExitCompletedAgents
     case agentUsageBarEnabled
+    case agentProviderFallbackOrder
+    case agentEscalationAutoLaunch
     case focusQueueProjects, focusQueueSelectedProjectID, projects, selectedProjectID
   }
 
@@ -308,6 +316,14 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     automaticAgentRouting = try container.decodeIfPresent(Bool.self, forKey: .automaticAgentRouting) ?? false
     autoExitCompletedAgents = try container.decodeIfPresent(Bool.self, forKey: .autoExitCompletedAgents) ?? true
     agentUsageBarEnabled = try container.decodeIfPresent(Bool.self, forKey: .agentUsageBarEnabled) ?? true
+    // Unknown providers (for example from a newer build) are skipped, never fatal.
+    var seenProviders = Set<AgentProvider>()
+    let fallbackOrder = (try container.decodeIfPresent([String].self, forKey: .agentProviderFallbackOrder) ?? [])
+      .compactMap { AgentProvider(rawValue: $0.lowercased()) }
+      .filter { seenProviders.insert($0).inserted }
+    agentProviderFallbackOrder = fallbackOrder.isEmpty ? Self.defaultAgentProviderFallbackOrder : fallbackOrder
+    agentEscalationAutoLaunch =
+      try container.decodeIfPresent(Bool.self, forKey: .agentEscalationAutoLaunch) ?? true
     dailyReport =
       try container.decodeIfPresent(DailyReportConfiguration.self, forKey: .dailyReport)
       ?? DailyReportConfiguration()
@@ -372,6 +388,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encode(automaticAgentRouting, forKey: .automaticAgentRouting)
     try container.encode(autoExitCompletedAgents, forKey: .autoExitCompletedAgents)
     try container.encode(agentUsageBarEnabled, forKey: .agentUsageBarEnabled)
+    try container.encode(agentProviderFallbackOrder, forKey: .agentProviderFallbackOrder)
+    try container.encode(agentEscalationAutoLaunch, forKey: .agentEscalationAutoLaunch)
   }
 
   public var selectedProject: ProjectConfiguration? {

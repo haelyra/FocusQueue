@@ -9,6 +9,16 @@ public struct AgentActivityEvent: Sendable, Equatable {
     public let kind: Kind
     public let summary: String
 
+    private static let quotaMarkers = [
+        "rate limit", "usage limit", "quota", "insufficient credits",
+        "credit balance", "429", "plan limit", "you've hit your limit",
+    ]
+
+    public static func isQuotaError(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        return quotaMarkers.contains { lowered.contains($0) }
+    }
+
     public static func latest(in data: Data, provider: AgentProvider, sessionID: String) -> Self? {
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -32,7 +42,10 @@ public struct AgentActivityEvent: Sendable, Equatable {
                     case "exec_approval_request", "apply_patch_approval_request":
                         kind = .attention(.approval); summary = "The agent is waiting for approval in its terminal."
                     case "request_user_input": kind = .attention(.question); summary = "The agent has a question to answer."
-                    case "error": kind = .attention(.failed); summary = payload["message"] as? String ?? "The agent reported a problem."
+                    case "error":
+                        let message = payload["message"] as? String ?? ""
+                        kind = Self.isQuotaError(message) ? .attention(.quotaExhausted) : .attention(.failed)
+                        summary = message.isEmpty ? "The agent reported a problem." : message
                     default: break
                     }
                 } else if record["type"] as? String == "response_item" {
@@ -61,7 +74,8 @@ public struct AgentActivityEvent: Sendable, Equatable {
                 if type == "assistant", let message = record["message"] as? [String: Any] {
                     let content = message["content"] as? [[String: Any]] ?? []
                     if record["isApiErrorMessage"] as? Bool == true {
-                        kind = .attention(.failed)
+                        let errorText = content.compactMap { $0["text"] as? String }.joined(separator: "\n")
+                        kind = Self.isQuotaError(errorText) ? .attention(.quotaExhausted) : .attention(.failed)
                     } else if content.contains(where: { $0["name"] as? String == "AskUserQuestion" }) {
                         kind = .attention(.question)
                     } else if message["stop_reason"] as? String == "max_tokens" {

@@ -281,6 +281,15 @@ public protocol QueueObjectiveRouting: Sendable {
     shellPath: String?
   ) async throws -> QueueRouterRuntime
 
+  func launch(
+    objective: String,
+    repositoryPath: String,
+    supportDirectory: URL,
+    tmuxExecutable: String,
+    shellPath: String?,
+    provider: AgentProvider
+  ) async throws -> QueueRouterRuntime
+
   func waitForOutcome(
     _ runtime: QueueRouterRuntime,
     supportDirectory: URL,
@@ -294,6 +303,20 @@ public protocol QueueObjectiveRouting: Sendable {
 }
 
 public extension QueueObjectiveRouting {
+  func launch(
+    objective: String,
+    repositoryPath: String,
+    supportDirectory: URL,
+    tmuxExecutable: String,
+    shellPath: String?,
+    provider _: AgentProvider
+  ) async throws -> QueueRouterRuntime {
+    try await launch(
+      objective: objective, repositoryPath: repositoryPath,
+      supportDirectory: supportDirectory, tmuxExecutable: tmuxExecutable,
+      shellPath: shellPath)
+  }
+
   func recoveryReference(
     _ runtime: QueueRouterRuntime,
     supportDirectory _: URL
@@ -334,7 +357,8 @@ public actor QueueObjectiveRouter: QueueObjectiveRouting {
     repositoryPath: String,
     supportDirectory: URL,
     capability: String = UUID().uuidString.lowercased(),
-    shellPath: String? = nil
+    shellPath: String? = nil,
+    provider: AgentProvider = .codex
   ) -> [String] {
     let cleared = [
       "FOCUS_QUEUE_TASK_ID", "FOCUS_QUEUE_SUBTASK_ID", "FOCUS_QUEUE_RUNTIME_MODE",
@@ -348,7 +372,7 @@ public actor QueueObjectiveRouter: QueueObjectiveRouting {
       "FOCUS_QUEUE_ROUTER_CAPABILITY=\(capability)",
     ]
     return ["/usr/bin/env"] + cleared + environment + InteractiveAgentShell.command(
-      provider: .codex, arguments: [objective], shellPath: shellPath,
+      provider: provider, arguments: [objective], shellPath: shellPath,
       workingDirectory: repositoryPath)
   }
 
@@ -357,7 +381,21 @@ public actor QueueObjectiveRouter: QueueObjectiveRouting {
     repositoryPath: String,
     supportDirectory: URL,
     tmuxExecutable: String,
-    shellPath: String? = nil
+    shellPath: String?
+  ) async throws -> QueueRouterRuntime {
+    try await launch(
+      objective: objective, repositoryPath: repositoryPath,
+      supportDirectory: supportDirectory, tmuxExecutable: tmuxExecutable,
+      shellPath: shellPath, provider: .codex)
+  }
+
+  public func launch(
+    objective: String,
+    repositoryPath: String,
+    supportDirectory: URL,
+    tmuxExecutable: String,
+    shellPath: String? = nil,
+    provider: AgentProvider = .codex
   ) async throws -> QueueRouterRuntime {
     let objective = objective.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !objective.isEmpty else {
@@ -394,7 +432,8 @@ public actor QueueObjectiveRouter: QueueObjectiveRouting {
         directory: repository,
         command: Self.command(
           objective: objective, repositoryPath: repository,
-          supportDirectory: supportDirectory, capability: capability, shellPath: shellPath),
+          supportDirectory: supportDirectory, capability: capability, shellPath: shellPath,
+          provider: provider),
         executable: tmuxExecutable)
       let confirmed = QueueRouterRuntime(
         tmux: tmux, startedAt: startedAt, capability: capability,

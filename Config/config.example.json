@@ -21,6 +21,8 @@
   "defaultPlacement": "upper-left",
   "refreshIntervalSeconds": 2,
   "agentUsageBarEnabled": true,
+  "agentProviderFallbackOrder": ["codex", "claude"],
+  "agentEscalationAutoLaunch": true,
   "dailyRoutines": [
     {
       "id": "daily-review",

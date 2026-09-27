@@ -28,6 +28,8 @@
   ],
   "defaultPlacement": "upper-left",
   "refreshIntervalSeconds": 2,
+  "agentProviderFallbackOrder": ["codex", "claude"],
+  "agentEscalationAutoLaunch": true,
   "dailyRoutines": [
     {
       "id": "review-prs",

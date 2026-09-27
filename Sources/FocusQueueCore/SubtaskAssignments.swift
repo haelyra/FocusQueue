@@ -1,9 +1,9 @@
 import Foundation
 
 public enum AgentAttention: String, Codable, Sendable, CaseIterable {
-    case approval, question, interrupted, incomplete, failed
+    case approval, question, interrupted, incomplete, failed, quotaExhausted
 
-    public var isProblem: Bool { [.interrupted, .incomplete, .failed].contains(self) }
+    public var isProblem: Bool { [.interrupted, .incomplete, .failed, .quotaExhausted].contains(self) }
     public var label: String {
         switch self {
         case .approval: "Needs approval"
@@ -11,6 +11,7 @@ public enum AgentAttention: String, Codable, Sendable, CaseIterable {
         case .interrupted: "Interrupted"
         case .incomplete: "Incomplete"
         case .failed: "Problem"
+        case .quotaExhausted: "Quota exhausted"
         }
     }
     public var icon: String {
@@ -19,6 +20,7 @@ public enum AgentAttention: String, Codable, Sendable, CaseIterable {
         case .question: "questionmark.bubble.fill"
         case .interrupted: "pause.circle.fill"
         case .incomplete, .failed: "exclamationmark.circle.fill"
+        case .quotaExhausted: "bolt.slash.fill"
         }
     }
 }

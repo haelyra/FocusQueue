@@ -15,6 +15,10 @@ struct AppPaths: Sendable {
         supportDirectory.appendingPathComponent("ingestion", isDirectory: true)
     }
 
+    var launchRequestsDirectory: URL {
+        ingestionRuntimeDirectory.appendingPathComponent("launch-requests", isDirectory: true)
+    }
+
     var latestDailyReportFile: URL {
         ingestionRuntimeDirectory.appendingPathComponent("latest-report.json")
     }

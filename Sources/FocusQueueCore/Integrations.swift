@@ -259,6 +259,7 @@ public protocol WezTermControlling: Sendable {
     func focusOrSpawn(
         directory: String,
         taskID: String,
+        taskTitle: String,
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult
 
@@ -272,6 +273,7 @@ public protocol WezTermControlling: Sendable {
         _ tmux: TmuxSessionReference,
         taskID: String,
         provider: AgentProvider,
+        taskTitle: String,
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult
 
@@ -280,6 +282,7 @@ public protocol WezTermControlling: Sendable {
         taskID: String,
         subtaskID: String,
         provider: AgentProvider,
+        taskTitle: String,
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult
 
@@ -288,7 +291,7 @@ public protocol WezTermControlling: Sendable {
         configuration: WezTermConfiguration
     ) async throws
 
-    func openAgentRuntime(_ subtask: TaskSubtask, taskID: String,
+    func openAgentRuntime(_ subtask: TaskSubtask, taskID: String, taskTitle: String,
                           configuration: WezTermConfiguration) async throws -> TerminalActionResult
 
     func openDirectRuntime(
@@ -296,6 +299,7 @@ public protocol WezTermControlling: Sendable {
         socketPath: String?,
         taskID: String,
         provider: AgentProvider,
+        taskTitle: String,
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult
 }
@@ -306,15 +310,17 @@ public extension WezTermControlling {
         configuration: WezTermConfiguration
     ) async throws {}
 
-    func openAgentRuntime(_ subtask: TaskSubtask, taskID: String,
+    func openAgentRuntime(_ subtask: TaskSubtask, taskID: String, taskTitle: String,
                           configuration: WezTermConfiguration) async throws -> TerminalActionResult {
         if let tmux = subtask.tmux {
             return try await openManagedAgentRuntime(tmux, taskID: taskID,
-                subtaskID: subtask.id, provider: subtask.provider, configuration: configuration)
+                subtaskID: subtask.id, provider: subtask.provider, taskTitle: taskTitle,
+                configuration: configuration)
         }
         guard let paneID = subtask.terminalPaneID else { throw WezTermError.runtimeClosed }
         return try await openDirectRuntime(paneID: paneID, socketPath: subtask.terminalSocketPath,
-            taskID: taskID, provider: subtask.provider, configuration: configuration)
+            taskID: taskID, provider: subtask.provider, taskTitle: taskTitle,
+            configuration: configuration)
     }
 
     func focusPane(_ pane: WezTermPane, configuration: WezTermConfiguration) async throws {
@@ -325,6 +331,7 @@ public extension WezTermControlling {
         _ tmux: TmuxSessionReference,
         taskID: String,
         provider: AgentProvider,
+        taskTitle: String,
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult {
         throw TmuxError.unavailable("This terminal integration cannot open managed sessions.")
@@ -335,10 +342,12 @@ public extension WezTermControlling {
         taskID: String,
         subtaskID: String,
         provider: AgentProvider,
+        taskTitle: String,
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult {
         try await openManagedRuntime(
-            tmux, taskID: taskID, provider: provider, configuration: configuration)
+            tmux, taskID: taskID, provider: provider, taskTitle: taskTitle,
+            configuration: configuration)
     }
 
     func openDirectRuntime(
@@ -346,6 +355,7 @@ public extension WezTermControlling {
         socketPath: String?,
         taskID: String,
         provider: AgentProvider,
+        taskTitle: String,
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult {
         throw WezTermError.actionFailed("This terminal integration cannot open direct sessions.")
@@ -507,6 +517,7 @@ public actor WezTermController: WezTermControlling {
     public func focusOrSpawn(
         directory: String,
         taskID: String,
+        taskTitle: String = "",
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult {
         let listResult = try await listPanes(using: configuration)
@@ -523,14 +534,15 @@ public actor WezTermController: WezTermControlling {
                 executable: configuration.executable,
                 arguments: [
                     "cli", "set-tab-title", "--pane-id", String(pane.paneID),
-                    AgentTerminalLabels.tabTitle(ticketID: taskID, paneID: pane.paneID),
+                    AgentTerminalLabels.tabTitle(ticketID: taskID, paneID: pane.paneID, taskTitle: taskTitle),
                 ],
                 timeoutSeconds: 10
             ))
             _ = try? await runner.run(ProcessSpecification(
                 executable: configuration.executable,
                 arguments: [
-                    "cli", "set-window-title", "--pane-id", String(pane.paneID), taskID,
+                    "cli", "set-window-title", "--pane-id", String(pane.paneID),
+                    AgentTerminalLabels.windowTitle(ticketID: taskID, taskTitle: taskTitle),
                 ],
                 timeoutSeconds: 10
             ))
@@ -559,14 +571,15 @@ public actor WezTermController: WezTermControlling {
                         executable: configuration.executable,
                         arguments: [
                             "cli", "set-tab-title", "--pane-id", String(paneID),
-                            AgentTerminalLabels.tabTitle(ticketID: taskID, paneID: paneID),
+                            AgentTerminalLabels.tabTitle(ticketID: taskID, paneID: paneID, taskTitle: taskTitle),
                         ],
                         timeoutSeconds: 10
                     ))
                     _ = try? await runner.run(ProcessSpecification(
                         executable: configuration.executable,
                         arguments: [
-                            "cli", "set-window-title", "--pane-id", String(paneID), taskID,
+                            "cli", "set-window-title", "--pane-id", String(paneID),
+                            AgentTerminalLabels.windowTitle(ticketID: taskID, taskTitle: taskTitle),
                         ],
                         timeoutSeconds: 10
                     ))
@@ -610,37 +623,45 @@ public actor WezTermController: WezTermControlling {
         if let subtaskID = session.subtaskID {
             return try await openManagedAgentRuntime(
                 tmux, taskID: taskID, subtaskID: subtaskID,
-                provider: session.provider, configuration: configuration,
+                provider: session.provider, taskTitle: session.taskTitle ?? "",
+                configuration: configuration,
                 workingDirectory: session.workingDirectory)
         }
         return try await openManagedRuntime(
-            tmux, taskID: taskID, provider: session.provider, configuration: configuration,
+            tmux, taskID: taskID, provider: session.provider,
+            taskTitle: session.taskTitle ?? "", configuration: configuration,
             workingDirectory: session.workingDirectory)
     }
 
     public func openAgentRuntime(_ subtask: TaskSubtask, taskID: String,
+                                 taskTitle: String = "",
                                  configuration: WezTermConfiguration) async throws -> TerminalActionResult {
-        let title = subtask.sessionID.map { AgentTerminalLabels.tabTitle(ticketID: taskID, provider: subtask.provider, sessionID: $0) }
+        let title = subtask.sessionID.map {
+            AgentTerminalLabels.tabTitle(ticketID: taskID, provider: subtask.provider,
+                sessionID: $0, taskTitle: taskTitle)
+        }
         if let tmux = subtask.tmux {
             return try await openManagedRuntime(tmux, taskID: taskID,
                 subtaskID: subtask.id, provider: subtask.provider,
-                configuration: configuration, tabTitle: title,
+                configuration: configuration, tabTitle: title, taskTitle: taskTitle,
                 workingDirectory: subtask.workspace?.path)
         }
         guard let paneID = subtask.terminalPaneID else { throw WezTermError.runtimeClosed }
         return try await openDirectRuntime(paneID: paneID, socketPath: subtask.terminalSocketPath,
-            taskID: taskID, provider: subtask.provider, configuration: configuration, tabTitle: title)
+            taskID: taskID, provider: subtask.provider, taskTitle: taskTitle,
+            configuration: configuration, tabTitle: title)
     }
 
     public func openManagedRuntime(
         _ saved: TmuxSessionReference,
         taskID: String,
         provider: AgentProvider,
+        taskTitle: String = "",
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult {
         try await openManagedRuntime(saved, taskID: taskID, subtaskID: nil,
             provider: provider, configuration: configuration, tabTitle: nil,
-            workingDirectory: nil)
+            taskTitle: taskTitle, workingDirectory: nil)
     }
 
     public func openManagedAgentRuntime(
@@ -648,11 +669,12 @@ public actor WezTermController: WezTermControlling {
         taskID: String,
         subtaskID: String,
         provider: AgentProvider,
+        taskTitle: String = "",
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult {
         try await openManagedRuntime(saved, taskID: taskID, subtaskID: subtaskID,
             provider: provider, configuration: configuration, tabTitle: nil,
-            workingDirectory: nil)
+            taskTitle: taskTitle, workingDirectory: nil)
     }
 
     private func openManagedAgentRuntime(
@@ -660,29 +682,32 @@ public actor WezTermController: WezTermControlling {
         taskID: String,
         subtaskID: String,
         provider: AgentProvider,
+        taskTitle: String,
         configuration: WezTermConfiguration,
         workingDirectory: String
     ) async throws -> TerminalActionResult {
         try await openManagedRuntime(saved, taskID: taskID, subtaskID: subtaskID,
             provider: provider, configuration: configuration, tabTitle: nil,
-            workingDirectory: workingDirectory)
+            taskTitle: taskTitle, workingDirectory: workingDirectory)
     }
 
     private func openManagedRuntime(
         _ saved: TmuxSessionReference,
         taskID: String,
         provider: AgentProvider,
+        taskTitle: String,
         configuration: WezTermConfiguration,
         workingDirectory: String
     ) async throws -> TerminalActionResult {
         try await openManagedRuntime(saved, taskID: taskID, subtaskID: nil,
             provider: provider, configuration: configuration, tabTitle: nil,
-            workingDirectory: workingDirectory)
+            taskTitle: taskTitle, workingDirectory: workingDirectory)
     }
 
     private func openManagedRuntime(_ saved: TmuxSessionReference, taskID: String,
                                     subtaskID: String?, provider: AgentProvider,
                                     configuration: WezTermConfiguration, tabTitle: String?,
+                                    taskTitle: String,
                                     workingDirectory: String?) async throws -> TerminalActionResult {
         if saved.name.hasPrefix("fq-task-"), saved.name != (try TmuxController.taskSessionName(taskID: taskID)) {
             throw TmuxError.changed
@@ -710,7 +735,7 @@ public actor WezTermController: WezTermControlling {
             workingDirectory, runtime: runtime, reference: live)
         let result = try await locateOrAttachManagedRuntime(
             live, taskID: taskID, directory: directory,
-            configuration: configuration, runtime: runtime)
+            taskTitle: taskTitle, configuration: configuration, runtime: runtime)
         // Opening a desktop view is not allowed to weaken runtime identity.
         // If the pane changed during launch, report that exact conflict.
         _ = try await runtime.verify(live)
@@ -736,6 +761,7 @@ public actor WezTermController: WezTermControlling {
         _ reference: TmuxSessionReference,
         taskID: String,
         directory: String,
+        taskTitle: String,
         configuration: WezTermConfiguration,
         runtime: TmuxController
     ) async throws -> TerminalActionResult {
@@ -752,8 +778,10 @@ public actor WezTermController: WezTermControlling {
             if let pane = Self.managedClientPane(in: panes, clientTTYs: clients, directory: directory) {
                 try await focus(
                     pane: pane,
-                    tabTitle: AgentTerminalLabels.managedTabTitle(ticketID: taskID),
-                    windowTitle: taskID.uppercased(), configuration: pinned)
+                    tabTitle: AgentTerminalLabels.managedTabTitle(ticketID: taskID, taskTitle: taskTitle),
+                    windowTitle: AgentTerminalLabels.windowTitle(
+                        ticketID: taskID.uppercased(), taskTitle: taskTitle),
+                    configuration: pinned)
                 return .focused(paneID: pane.paneID)
             }
 
@@ -775,8 +803,10 @@ public actor WezTermController: WezTermControlling {
                 configuration: pinned, runtime: runtime) {
                 try await focus(
                     pane: pane,
-                    tabTitle: AgentTerminalLabels.managedTabTitle(ticketID: taskID),
-                    windowTitle: taskID.uppercased(), configuration: pinned)
+                    tabTitle: AgentTerminalLabels.managedTabTitle(ticketID: taskID, taskTitle: taskTitle),
+                    windowTitle: AgentTerminalLabels.windowTitle(
+                        ticketID: taskID.uppercased(), taskTitle: taskTitle),
+                    configuration: pinned)
                 return .focused(paneID: paneID)
             }
             _ = try? await runner.run(ProcessSpecification(
@@ -847,13 +877,15 @@ public actor WezTermController: WezTermControlling {
         socketPath: String?,
         taskID: String,
         provider: AgentProvider,
+        taskTitle: String = "",
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult {
         try await openDirectRuntime(paneID: paneID, socketPath: socketPath, taskID: taskID,
-            provider: provider, configuration: configuration, tabTitle: nil)
+            provider: provider, taskTitle: taskTitle, configuration: configuration, tabTitle: nil)
     }
 
     private func openDirectRuntime(paneID: Int, socketPath: String?, taskID: String, provider: AgentProvider,
+                                   taskTitle: String,
                                    configuration: WezTermConfiguration, tabTitle: String?) async throws -> TerminalActionResult {
         guard paneID >= 0 else {
             throw WezTermError.actionFailed("The saved direct terminal identity is invalid.")
@@ -875,10 +907,13 @@ public actor WezTermController: WezTermControlling {
         guard let pane else {
             throw WezTermError.runtimeClosed
         }
+        let directLabel = AgentTerminalLabels.readableTaskTitle(taskTitle, fallback: taskID.uppercased())
         try await focus(
             pane: pane,
-            tabTitle: tabTitle ?? "\(taskID.uppercased()) · \(provider.displayName) · direct",
-            windowTitle: taskID.uppercased(), configuration: connection.configuration)
+            tabTitle: tabTitle ?? "\(directLabel) · \(provider.displayName) · direct",
+            windowTitle: AgentTerminalLabels.windowTitle(
+                ticketID: taskID.uppercased(), taskTitle: taskTitle),
+            configuration: connection.configuration)
         return .focused(paneID: paneID)
     }
 
@@ -1153,6 +1188,7 @@ public actor WezTermController: WezTermControlling {
 
     public func labelTmuxClients(session: TaskAgentSession, configuration: WezTermConfiguration) async throws {
         guard let reference = session.tmux else { return }
+        let taskTitle = await Self.resolvedTaskTitle(for: session)
         var lastError: (any Error)?
         for attempt in 0..<labelAttempts {
             do {
@@ -1165,12 +1201,17 @@ public actor WezTermController: WezTermControlling {
                         }
                         if !panes.isEmpty {
                             let tabTitle = reference.name.hasPrefix("fq-task-")
-                                ? "\(session.ticketID.uppercased()) · tmux"
-                                : session.terminalTabTitle
+                                ? AgentTerminalLabels.managedTabTitle(
+                                    ticketID: session.ticketID, taskTitle: taskTitle)
+                                : AgentTerminalLabels.tabTitle(
+                                    ticketID: session.ticketID, provider: session.provider,
+                                    sessionID: session.sessionID, taskTitle: taskTitle)
+                            let windowTitle = AgentTerminalLabels.windowTitle(
+                                ticketID: session.ticketID, taskTitle: taskTitle)
                             for pane in panes {
                                 try await attach(paneID: pane.paneID,
                                     tabTitle: tabTitle,
-                                    windowTitle: session.terminalWindowTitle,
+                                    windowTitle: windowTitle,
                                     configuration: connection.configuration)
                             }
                             return
@@ -1181,6 +1222,18 @@ public actor WezTermController: WezTermControlling {
             if attempt + 1 < labelAttempts { try await Task.sleep(for: .milliseconds(200)) }
         }
         if let lastError { throw lastError }
+    }
+
+    /// The session record carries the task title when the app enriched it from the
+    /// task context; CLI-registered sessions recover it from the context store.
+    private static func resolvedTaskTitle(for session: TaskAgentSession) async -> String {
+        if let taskTitle = session.taskTitle,
+           !taskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return taskTitle
+        }
+        guard let supportDirectory = session.supportDirectory else { return "" }
+        let store = TaskContextStore(root: URL(fileURLWithPath: supportDirectory, isDirectory: true))
+        return (try? await store.load(ticketID: session.ticketID)?.title) ?? ""
     }
 
     private func discoverAgents(

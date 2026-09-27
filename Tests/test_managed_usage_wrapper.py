@@ -108,7 +108,7 @@ class ManagedUsageWrapperTests(unittest.TestCase):
         self.assertIn("focus_queue_codex_bar.js", usage[0])
         self.assertIn("--line 0", usage[0])
         self.assertNotIn("$FOCUS_QUEUE_USAGE_BAR_PATH", usage[0])
-        self.assertTrue(any("set-window-option" in line and "pane-border-status bottom" in line
+        self.assertTrue(any("set-window-option" in line and "pane-border-status top" in line
                             for line in calls))
         borders = [line for line in calls if "pane-border-format" in line]
         self.assertEqual(len(borders), 1)

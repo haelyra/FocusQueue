@@ -1129,6 +1129,27 @@ func agentTerminalLabels() {
   #expect(AgentTerminalLabels.tabTitle(ticketID: "ECC-015", paneID: 17) == "ECC-015 · Tab 17")
 }
 
+@Test("Agent terminal labels prefer a sanitized task name over the ticket ID")
+func agentTerminalLabelsPreferTaskName() {
+  let session = TaskAgentSession(
+    ticketID: "ECC-015",
+    provider: .codex,
+    sessionID: "01a0696a-6348-79f0-8dbd-0c421c0bea7c",
+    tabTitle: "App Defect",
+    taskTitle: "Fix\tlogin   flow",
+    workingDirectory: "/Users/test/project"
+  )
+
+  #expect(session.terminalWindowTitle == "Fix login flow")
+  #expect(session.terminalTabTitle == "Fix login flow · Codex · 0bea7c")
+  #expect(AgentTerminalLabels.managedTabTitle(ticketID: "ECC-015", taskTitle: "Fix login flow")
+    == "Fix login flow · tmux")
+  #expect(AgentTerminalLabels.windowTitle(ticketID: "ECC-015", taskTitle: "   ") == "ECC-015")
+  #expect(AgentTerminalLabels.managedTabTitle(ticketID: "ecc-015", taskTitle: "") == "ECC-015 · tmux")
+  let longTitle = String(repeating: "a", count: 200)
+  #expect(AgentTerminalLabels.windowTitle(ticketID: "ECC-015", taskTitle: longTitle).count == 120)
+}
+
 @Test("One provider session can belong to only one ticket")
 func agentSessionUpsertMovesAssociationAndCanonicalizesLabel() {
   let originalID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!

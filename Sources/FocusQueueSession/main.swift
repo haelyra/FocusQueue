@@ -583,7 +583,8 @@ enum SessionRegistrationError: Error, LocalizedError {
         do {
             _ = try await WezTermController().openManagedAgentRuntime(
                 runtime, taskID: taskID, subtaskID: subtaskID,
-                provider: provider, configuration: configuration.wezTerm)
+                provider: provider, taskTitle: context.title,
+                configuration: configuration.wezTerm)
         } catch {
             FileHandle.standardError.write(Data(
                 "Agent started; terminal reveal will retry from Focus Queue.\n".utf8))
@@ -1131,8 +1132,13 @@ enum SessionRegistrationError: Error, LocalizedError {
                 launchID: launchID, taskID: record.taskID, agentID: record.subtaskID,
                 sessionID: record.sessionID)
         }
-        if let session = record.session, FileManager.default.isExecutableFile(atPath: config.wezTerm.executable) {
+        if let recordSession = record.session, FileManager.default.isExecutableFile(atPath: config.wezTerm.executable) {
             do {
+                var session = recordSession
+                if session.taskTitle == nil,
+                   let context = try? await TaskContextStore(root: root).load(ticketID: session.ticketID) {
+                    session.taskTitle = context.title
+                }
                 let controller = WezTermController()
                 if session.tmux != nil { try await controller.labelTmuxClients(session: session, configuration: config.wezTerm) }
                 else if let pane = session.paneID {

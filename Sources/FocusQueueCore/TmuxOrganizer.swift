@@ -237,6 +237,7 @@ extension TmuxController {
   }
 
   public func startAgent(taskID: String, subtaskID: String, taskTitle: String? = nil,
+                         agentTitle: String? = nil,
                          directory: String, command: [String],
                          executable: String) async throws -> TmuxSessionReference {
     let name = try Self.taskSessionName(taskID: taskID)
@@ -315,6 +316,10 @@ extension TmuxController {
     }
     do {
       try await checked(executable, ["set-option", "-p", "-t", paneID, "@focus-queue-agent", subtaskID])
+      if let agentTitle {
+        try await checked(executable, ["set-option", "-p", "-t", paneID, "@focus-queue-label",
+          Self.readablePaneLabel(agentTitle)])
+      }
       try await checked(executable, ["set-option", "-p", "-u", "-t", paneID, "@focus-queue-restored-agent"])
       try await checked(executable, ["set-option", "-p", "-u", "-t", paneID, "@focus-queue-restored"])
     } catch {
@@ -495,10 +500,14 @@ extension TmuxController {
 
   public func label(_ saved: TmuxSessionReference, title: String) async throws {
     _ = try await verify(saved)
-    let readable = String(title.filter { !$0.isNewline && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }.prefix(100))
+    let readable = Self.readablePaneLabel(title)
     try await checked(saved.executable, ["set-option", "-p", "-t", saved.paneID, "@focus-queue-label", readable])
     try await applyTaskBanner(
       name: saved.name, paneID: saved.paneID, executable: saved.executable)
+  }
+
+  private static func readablePaneLabel(_ title: String) -> String {
+    String(title.filter { !$0.isNewline && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }.prefix(100))
   }
 
   /// Applies the durable task title and per-pane Codex usage border to an
@@ -520,7 +529,7 @@ extension TmuxController {
     try await checked(executable, ["set-option", "-t", name, "@focus-queue-task-title", readable])
 
     // tmux has no per-pane status rows. The session keeps one native window-tab
-    // row while every pane's bottom border renders its own agent's usage bar.
+    // row while every pane's top border renders its own agent's usage bar.
     let native = try await run(executable, ["show-options", "-gv", "status-format[0]"])
     let nativeRow = native.succeeded
       && !native.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -679,11 +688,17 @@ extension TmuxController {
     } else {
       let usage = try await run(executable, ["show-options", "-qv", "-t", name, "@focus-queue-usage-command"])
         .standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-      // One bottom border per pane carries the task title and that pane's own
-      // usage bar; the border is the only surface tmux formats per pane.
-      var format = "#[align=left] #[bold]#{@focus-queue-task-title}#[default]"
+      let label = Self.readablePaneLabel(try await run(executable,
+        ["show-options", "-qv", "-p", "-t", paneID, "@focus-queue-label"])
+        .standardOutput.trimmingCharacters(in: .whitespacesAndNewlines))
+      // One top border per pane leads with that pane's agent label, falling
+      // back to the task title; the border is the only surface tmux formats
+      // per pane. A literal label must escape "#" so tmux keeps it verbatim.
+      var format = "#[align=left] #[bold]"
+        + (label.isEmpty ? "#{@focus-queue-task-title}" : label.replacingOccurrences(of: "#", with: "##"))
+        + "#[default]"
       if !usage.isEmpty { format += "  #(\(usage))" }
-      try await checked(executable, ["set-window-option", "-t", paneID, "pane-border-status", "bottom"])
+      try await checked(executable, ["set-window-option", "-t", paneID, "pane-border-status", "top"])
       try await checked(executable, ["set-window-option", "-t", paneID, "pane-border-format", format])
     }
   }

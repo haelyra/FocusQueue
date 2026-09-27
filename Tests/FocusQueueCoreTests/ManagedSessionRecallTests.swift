@@ -126,6 +126,28 @@ struct ManagedSessionRecallTests {
     #expect(!calls.flatMap(\.arguments).contains("spawn"))
   }
 
+  @Test("WezTerm recall labels the managed view with the task name")
+  func deterministicWezTermRecipeUsesTaskName() async throws {
+    let agentID = "agent-one"
+    let reference = taskReference()
+    let runner = DeterministicRecallRunner(reference: reference, agentID: agentID)
+    var subtask = TaskSubtask(id: agentID, title: "Exact agent", provider: .codex,
+      tmux: reference, runtimeMode: .tmux)
+    subtask.workspace = AgentWorkspace(path: "/tmp", repositoryPath: "/tmp")
+
+    let result = try await WezTermController(
+      runner: runner, candidateSockets: []).openAgentRuntime(
+        subtask, taskID: "ECC-1", taskTitle: "Polish the queue UI",
+        configuration: .init(executable: "/mock/wezterm", applicationName: "WezTerm"))
+
+    #expect(result == .focused(paneID: 41))
+    let calls = await runner.calls
+    #expect(calls.contains {
+      $0.arguments == ["cli", "set-tab-title", "--pane-id", "41", "Polish the queue UI · tmux"] })
+    #expect(calls.contains {
+      $0.arguments == ["cli", "set-window-title", "--pane-id", "41", "Polish the queue UI"] })
+  }
+
   @Test("A detached task gets one exact WezTerm view in its recorded workspace")
   func attachDetachedRuntime() async throws {
     let reference = taskReference()

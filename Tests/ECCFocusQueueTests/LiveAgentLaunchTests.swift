@@ -111,13 +111,13 @@ func liveManagedProviderSanity() async throws {
       let paneBanner = try await fixture.tmux([
         "show-window-options", "-v", "-t", reference.paneID, "pane-border-status",
       ])
-      #expect(paneBanner.trimmingCharacters(in: .whitespacesAndNewlines) == "bottom")
+      #expect(paneBanner.trimmingCharacters(in: .whitespacesAndNewlines) == "top")
       let paneBorder = try await fixture.tmux([
         "show-window-options", "-v", "-t", reference.paneID, "pane-border-format",
       ])
-      #expect(paneBorder.contains("#{@focus-queue-task-title}")
+      #expect(paneBorder.contains("\(subtask.provider.displayName): \(subtask.title)")
         && paneBorder.contains("focus_queue_codex_bar.js"),
-        "The pane border carries the task title and that pane's own usage bar")
+        "The pane border leads with the agent name and carries that pane's own usage bar")
       let persistence = try TmuxPersistence.prepare(executable: fixture.executable,
         serverName: fixture.server, supportDirectory: fixture.support)
       let actualSaveDirectory = try await fixture.tmux(["show-options", "-gqv", "@resurrect-dir"])
@@ -300,7 +300,7 @@ private actor LiveHeadlessTerminal: WezTermControlling {
   init(fixture: LiveAgentFixture) { self.fixture = fixture }
 
   func openManagedRuntime(_ reference: TmuxSessionReference, taskID: String,
-    provider: AgentProvider, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    provider: AgentProvider, taskTitle: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     #expect(reference.name == (try TmuxController.taskSessionName(taskID: fixture.taskID)))
     let context = try await TaskContextStore(root: fixture.support).load(ticketID: taskID)
     try #require(context?.subtasks.contains { $0.tmux == reference } == true,
@@ -339,7 +339,7 @@ private actor LiveHeadlessTerminal: WezTermControlling {
   func listRunningAgents(configuration: WezTermConfiguration) async throws -> [RunningAgentSession] { [] }
   func attach(paneID: Int, tabTitle: String, windowTitle: String,
     configuration: WezTermConfiguration) async throws { throw LiveAgentFailure("Unexpected graphical action") }
-  func focusOrSpawn(directory: String, taskID: String,
+  func focusOrSpawn(directory: String, taskID: String, taskTitle: String,
     configuration: WezTermConfiguration) async throws -> TerminalActionResult { throw LiveAgentFailure("Unexpected graphical action") }
   func focusOrResume(session: TaskAgentSession, taskID: String,
     configuration: WezTermConfiguration) async throws -> TerminalActionResult { throw LiveAgentFailure("Unexpected graphical action") }

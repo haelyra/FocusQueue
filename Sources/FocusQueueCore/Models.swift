@@ -1340,24 +1340,35 @@ public enum AgentProvider: String, Codable, CaseIterable, Equatable, Sendable {
 }
 
 public enum AgentTerminalLabels {
-  public static func windowTitle(ticketID: String) -> String {
-    ticketID
+  /// Task titles are user-authored text. Strip control characters, collapse
+  /// whitespace, and cap the length before placing one in a terminal title.
+  /// A blank title keeps the ticket-ID label.
+  public static func readableTaskTitle(_ title: String, fallback: String) -> String {
+    let clean = title.unicodeScalars.map { CharacterSet.controlCharacters.contains($0) ? " " : String($0) }
+      .joined().split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    return String((clean.isEmpty ? fallback : clean).prefix(120))
+  }
+
+  public static func windowTitle(ticketID: String, taskTitle: String = "") -> String {
+    readableTaskTitle(taskTitle, fallback: ticketID)
   }
 
   public static func tabTitle(
     ticketID: String,
     provider: AgentProvider,
-    sessionID: String
+    sessionID: String,
+    taskTitle: String = ""
   ) -> String {
-    "\(ticketID) · \(provider.displayName) · \(sessionID.suffix(6).lowercased())"
+    let label = readableTaskTitle(taskTitle, fallback: ticketID)
+    return "\(label) · \(provider.displayName) · \(sessionID.suffix(6).lowercased())"
   }
 
-  public static func tabTitle(ticketID: String, paneID: Int) -> String {
-    "\(ticketID) · Tab \(paneID)"
+  public static func tabTitle(ticketID: String, paneID: Int, taskTitle: String = "") -> String {
+    "\(readableTaskTitle(taskTitle, fallback: ticketID)) · Tab \(paneID)"
   }
 
-  public static func managedTabTitle(ticketID: String) -> String {
-    "\(ticketID.uppercased()) · tmux"
+  public static func managedTabTitle(ticketID: String, taskTitle: String = "") -> String {
+    "\(readableTaskTitle(taskTitle, fallback: ticketID.uppercased())) · tmux"
   }
 }
 
@@ -1367,6 +1378,7 @@ public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {
   public let provider: AgentProvider
   public let sessionID: String
   public var tabTitle: String
+  public var taskTitle: String?
   public var workingDirectory: String
   public var windowID: Int?
   public var tabID: Int?
@@ -1383,6 +1395,7 @@ public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {
     provider: AgentProvider,
     sessionID: String,
     tabTitle: String,
+    taskTitle: String? = nil,
     workingDirectory: String,
     windowID: Int? = nil,
     tabID: Int? = nil,
@@ -1398,6 +1411,7 @@ public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {
     self.provider = provider
     self.sessionID = sessionID
     self.tabTitle = tabTitle
+    self.taskTitle = taskTitle
     self.workingDirectory = workingDirectory
     self.windowID = windowID
     self.tabID = tabID
@@ -1410,14 +1424,15 @@ public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {
   }
 
   public var terminalWindowTitle: String {
-    AgentTerminalLabels.windowTitle(ticketID: ticketID)
+    AgentTerminalLabels.windowTitle(ticketID: ticketID, taskTitle: taskTitle ?? "")
   }
 
   public var terminalTabTitle: String {
     AgentTerminalLabels.tabTitle(
       ticketID: ticketID,
       provider: provider,
-      sessionID: sessionID
+      sessionID: sessionID,
+      taskTitle: taskTitle ?? ""
     )
   }
 
@@ -1428,6 +1443,7 @@ public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {
       provider: provider,
       sessionID: sessionID,
       tabTitle: terminalTabTitle,
+      taskTitle: taskTitle,
       workingDirectory: workingDirectory,
       windowID: windowID,
       tabID: tabID,
@@ -1448,6 +1464,9 @@ public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {
       enriched.workingDirectory = context.worktreePath ?? context.repositoryPath ?? workingDirectory
     }
     enriched.subtaskID = subtask?.id
+    if !context.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      enriched.taskTitle = context.title
+    }
     enriched.contextDirectory = context.contextDirectory.path
     enriched.supportDirectory = supportDirectory.path
     // Legacy state can still decode resumePrompt, but managed recall never sends
@@ -1512,6 +1531,7 @@ public struct LocalState: Codable, Equatable, Sendable {
       provider: session.provider,
       sessionID: session.sessionID,
       tabTitle: session.terminalTabTitle,
+      taskTitle: session.taskTitle ?? sameTask?.taskTitle,
       workingDirectory: session.workingDirectory,
       windowID: session.windowID,
       tabID: session.tabID,

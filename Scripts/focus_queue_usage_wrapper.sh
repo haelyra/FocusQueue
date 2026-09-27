@@ -1,7 +1,7 @@
 #!/bin/bash
 # Keep direct-terminal behavior in the user's configured wrapper. Inside the
 # private Focus Queue tmux server, give each agent pane its own usage bar in
-# its bottom pane border; tmux has no per-pane status rows, and the border is
+# its top pane border; tmux has no per-pane status rows, and the border is
 # the only surface whose format resolves pane-scoped values per pane.
 
 set -uo pipefail
@@ -101,9 +101,18 @@ context_q=${context_q//#/##}
 usage_command="USAGE_BAR_GLYPHS=$glyphs $node_q $bar_q --tmux --context $context_q --agent \"#{@focus-queue-agent}\" --cwd #{q:pane_current_path} --line 0"
 if [ "$usage_enabled" = off ]; then usage_command=""; fi
 tmux set-option -t "$TMUX_PANE" @focus-queue-usage-command "$usage_command" >/dev/null 2>&1 || true
-border_format='#[align=left] #[bold]#{@focus-queue-task-title}#[default]'
+# The border leads with this pane's agent label, falling back to the task
+# title when no label is registered yet. A literal label escapes "#" so tmux
+# keeps it verbatim.
+pane_label="$(tmux show-options -qv -p -t "$TMUX_PANE" @focus-queue-label 2>/dev/null || true)"
+pane_label="$(printf '%s' "$pane_label" | tr -d '[:cntrl:]')"
+if [ -n "$pane_label" ]; then
+  border_format="#[align=left] #[bold]${pane_label//#/##}#[default]"
+else
+  border_format='#[align=left] #[bold]#{@focus-queue-task-title}#[default]'
+fi
 if [ -n "$usage_command" ]; then border_format="$border_format  #($usage_command)"; fi
-tmux set-window-option -t "$TMUX_PANE" pane-border-status bottom >/dev/null 2>&1 || true
+tmux set-window-option -t "$TMUX_PANE" pane-border-status top >/dev/null 2>&1 || true
 tmux set-window-option -t "$TMUX_PANE" pane-border-format "$border_format" >/dev/null 2>&1 || true
 
 run_managed_codex "$@"

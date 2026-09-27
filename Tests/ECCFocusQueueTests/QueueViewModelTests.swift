@@ -2182,8 +2182,8 @@ struct QueueViewModelTests {
     #expect(agent.workspace?.managed == true)
     #expect(agent.sessionID == nil)
     let label = try #require(await terminal.labels.last)
-    #expect(label.terminalWindowTitle == "ECC-101")
-    #expect(label.terminalTabTitle == "ECC-101 · Codex · \(launchID.suffix(6))")
+    #expect(label.terminalWindowTitle == "Task ECC-101")
+    #expect(label.terminalTabTitle == "Task ECC-101 · Codex · \(launchID.suffix(6))")
     let unchanged = try #require(try await store.load(ticketID: "ECC-101"))
     try await model.importProvisionalAgentIntakes([intake])
     #expect(try await store.load(ticketID: "ECC-101")?.updatedAt == unchanged.updatedAt)
@@ -2675,7 +2675,7 @@ private actor ManagedResumeRecorder: WezTermControlling {
   private(set) var opened: [TmuxSessionReference] = []
 
   func openManagedAgentRuntime(_ tmux: TmuxSessionReference, taskID: String,
-    subtaskID: String, provider: AgentProvider,
+    subtaskID: String, provider: AgentProvider, taskTitle: String,
     configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     opened.append(tmux)
     return .spawned(paneID: nil)
@@ -2685,7 +2685,7 @@ private actor ManagedResumeRecorder: WezTermControlling {
   func listRunningAgents(configuration: WezTermConfiguration) async throws -> [RunningAgentSession] { [] }
   func attach(paneID: Int, tabTitle: String, windowTitle: String,
     configuration: WezTermConfiguration) async throws { throw TestFailure.unexpectedExternalAction }
-  func focusOrSpawn(directory: String, taskID: String,
+  func focusOrSpawn(directory: String, taskID: String, taskTitle: String,
     configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     throw TestFailure.unexpectedExternalAction
   }
@@ -2735,7 +2735,7 @@ private actor DirectViewRecorder: WezTermControlling {
     throw TestFailure.unexpectedExternalAction
   }
   func openDirectRuntime(paneID: Int, socketPath: String?, taskID: String,
-    provider: AgentProvider, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    provider: AgentProvider, taskTitle: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     let context = try await TaskContextStore(root: root).load(ticketID: taskID)
     let saved = context?.subtasks.first { $0.terminalPaneID == paneID && $0.provider == provider }
     #expect(saved?.terminalPaneID == paneID)
@@ -2744,7 +2744,7 @@ private actor DirectViewRecorder: WezTermControlling {
     if failReveal { throw WezTermError.actionFailed("Fixture window failure") }
     return .focused(paneID: paneID)
   }
-  func focusOrSpawn(directory: String, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+  func focusOrSpawn(directory: String, taskID: String, taskTitle: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     throw TestFailure.unexpectedExternalAction
   }
 }
@@ -2761,7 +2761,7 @@ private actor LabelRecorder: WezTermControlling {
     configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     throw TestFailure.unexpectedExternalAction
   }
-  func focusOrSpawn(directory: String, taskID: String,
+  func focusOrSpawn(directory: String, taskID: String, taskTitle: String,
     configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     throw TestFailure.unexpectedExternalAction
   }
@@ -2843,7 +2843,7 @@ private struct ForbiddenExternalActions: WezTermControlling, CompletionVerifying
   func listAttachablePanes(configuration: WezTermConfiguration) async throws -> [WezTermPane] { try forbidden() }
   func listRunningAgents(configuration: WezTermConfiguration) async throws -> [RunningAgentSession] { try forbidden() }
   func attach(paneID: Int, tabTitle: String, windowTitle: String, configuration: WezTermConfiguration) async throws { let _: Void = try forbidden() }
-  func focusOrSpawn(directory: String, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult { try forbidden() }
+  func focusOrSpawn(directory: String, taskID: String, taskTitle: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult { try forbidden() }
   func focusOrResume(session: TaskAgentSession, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult { try forbidden() }
   func verify(ticketID: String, requestFile: URL, workspace: String, configuration: VerifierConfiguration) async throws -> VerificationRunResult { try forbidden() }
   func load(repository: String, closedSince: String) async throws -> PullRequestQueueSnapshot { try forbidden() }
@@ -2854,7 +2854,7 @@ private actor RecallRecorder: WezTermControlling {
   func listAttachablePanes(configuration: WezTermConfiguration) async throws -> [WezTermPane] { [] }
   func listRunningAgents(configuration: WezTermConfiguration) async throws -> [RunningAgentSession] { [] }
   func attach(paneID: Int, tabTitle: String, windowTitle: String, configuration: WezTermConfiguration) async throws {}
-  func focusOrSpawn(directory: String, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+  func focusOrSpawn(directory: String, taskID: String, taskTitle: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     Issue.record("Recall attempted to open a plain shell")
     return .spawned(paneID: 42)
   }
@@ -2870,14 +2870,14 @@ private actor ClosedDirectRecorder: WezTermControlling {
   func listAttachablePanes(configuration: WezTermConfiguration) async throws -> [WezTermPane] { [] }
   func listRunningAgents(configuration: WezTermConfiguration) async throws -> [RunningAgentSession] { [] }
   func attach(paneID: Int, tabTitle: String, windowTitle: String, configuration: WezTermConfiguration) async throws { }
-  func focusOrSpawn(directory: String, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+  func focusOrSpawn(directory: String, taskID: String, taskTitle: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     throw TestFailure.unexpectedExternalAction
   }
   func focusOrResume(session: TaskAgentSession, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     throw TestFailure.unexpectedExternalAction
   }
   func openDirectRuntime(paneID: Int, socketPath: String?, taskID: String, provider: AgentProvider,
-    configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    taskTitle: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     if paneID == 7 {
       if transportFailure { throw WezTermError.actionFailed("Transport failed") }
       throw WezTermError.runtimeClosed
@@ -2893,7 +2893,7 @@ private actor HoldingRecallRecorder: WezTermControlling {
   init(fails: Bool) { self.fails = fails }
 
   func openManagedRuntime(_ saved: TmuxSessionReference, taskID: String, provider: AgentProvider,
-    configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    taskTitle: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     while !released { try await Task.sleep(for: .milliseconds(10)) }
     if fails { throw WezTermError.actionFailed("Fixture session failure") }
     return .focused(paneID: 42)
@@ -2905,7 +2905,7 @@ private actor HoldingRecallRecorder: WezTermControlling {
   func listRunningAgents(configuration: WezTermConfiguration) async throws -> [RunningAgentSession] { [] }
   func attach(paneID: Int, tabTitle: String, windowTitle: String,
     configuration: WezTermConfiguration) async throws {}
-  func focusOrSpawn(directory: String, taskID: String,
+  func focusOrSpawn(directory: String, taskID: String, taskTitle: String,
     configuration: WezTermConfiguration) async throws -> TerminalActionResult {
     throw TestFailure.unexpectedExternalAction
   }

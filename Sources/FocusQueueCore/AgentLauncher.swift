@@ -248,6 +248,7 @@ public actor TaskAgentLauncher {
       configurationPath: persistence?.configurationURL.path ?? "/dev/null")
     let reference = try await runtime.startAgent(
       taskID: context.ticketID, subtaskID: subtask.id, taskTitle: context.title,
+      agentTitle: "\(subtask.provider.displayName): \(subtask.title)",
       directory: (subtask.workspace?.path ?? context.worktreePath)!, command: command,
       executable: tmuxExecutable)
     try? await runtime.label(reference, title: "\(subtask.provider.displayName): \(subtask.title)")

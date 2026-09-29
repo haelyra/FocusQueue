@@ -808,8 +808,10 @@ public actor TaskContextStore {
             }
             guard let index else { return }
             context.subtasks[index].sessionID = sessionID.lowercased()
-            let adoptsFirstPrompt = eventName == "UserPromptSubmit"
-                && TaskSubtask.hasDefaultAgentName(context.subtasks[index].title)
+            let hasProvisionalIdentity = TaskSubtask.hasDefaultAgentName(context.subtasks[index].title)
+                || context.subtasks[index].title.hasPrefix(provider.displayName + " ·")
+                || context.subtasks[index].title.hasPrefix("Subagent ·")
+            let adoptsFirstPrompt = eventName == "UserPromptSubmit" && hasProvisionalIdentity
             if adoptsFirstPrompt
                 || context.subtasks[index].title.hasPrefix(provider.displayName + " ·")
                 || context.subtasks[index].title.hasPrefix("Subagent ·") {

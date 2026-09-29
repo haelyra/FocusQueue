@@ -49,7 +49,15 @@ public actor TaskMaintenance {
             }
             let running: [KnownProviderProcess]
             if let processes { running = processes }
-            else { running = try await WezTermController().knownProviderProcesses(requireComplete: true) }
+            else {
+                let scan = try await WezTermController().knownProviderProcesses(requireComplete: true)
+                // Cleanup is destructive: an unverified process means ownership
+                // is unknown, and unknown never authorizes cleanup.
+                guard scan.unresolved.isEmpty else {
+                    throw WezTermError.actionFailed("A provider process has no exact session identity yet. Retry after startup.")
+                }
+                running = scan.resolved
+            }
             return running.contains { process in
                 (process.provider == agent.provider && process.sessionID.caseInsensitiveCompare(agent.sessionID ?? "") == .orderedSame)
                     || agent.workspace.map { ExternalAgentRegistry.contains(directory: $0.path, path: process.cwd) } == true

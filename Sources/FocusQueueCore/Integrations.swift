@@ -225,6 +225,33 @@ public struct KnownProviderProcess: Sendable, Equatable {
     }
 }
 
+/// A live provider process whose session identity could not be verified.
+/// Ownership checks must fail closed only when one of these could plausibly
+/// own the requested session; unrelated processes never block a safe resume.
+public struct UnresolvedProviderProcess: Sendable, Equatable {
+    public let provider: AgentProvider
+    public let processID: Int32
+    public let tty: String?
+    public let cwd: String?
+
+    public init(provider: AgentProvider, processID: Int32, tty: String?, cwd: String?) {
+        self.provider = provider
+        self.processID = processID
+        self.tty = tty
+        self.cwd = cwd
+    }
+}
+
+public struct ProviderProcessScan: Sendable, Equatable {
+    public let resolved: [KnownProviderProcess]
+    public let unresolved: [UnresolvedProviderProcess]
+
+    public init(resolved: [KnownProviderProcess], unresolved: [UnresolvedProviderProcess]) {
+        self.resolved = resolved
+        self.unresolved = unresolved
+    }
+}
+
 public enum TerminalActionResult: Equatable, Sendable {
     case focused(paneID: Int)
     case spawned(paneID: Int?)
@@ -397,16 +424,24 @@ public actor WezTermController: WezTermControlling {
     private let runner: any ProcessRunning
     private let candidateSockets: [String]?
     private let labelAttempts: Int
+    private let claudeRootOverride: URL?
     private static let processSnapshotTTL: TimeInterval = 3
     private var processSnapshots: [String: (fetchedAt: Date, result: ProcessResult)] = [:]
     private var processSnapshotTasks: [String: Task<ProcessResult, Error>] = [:]
     private var resolvedSockets: [String: String] = [:]
 
     public init(runner: any ProcessRunning = FoundationProcessRunner(), candidateSockets: [String]? = nil,
-                verificationAttempts: Int = 10) {
+                verificationAttempts: Int = 10, claudeRoot: URL? = nil) {
         self.runner = runner
         self.candidateSockets = candidateSockets
         self.labelAttempts = max(1, min(verificationAttempts, 10))
+        self.claudeRootOverride = claudeRoot
+    }
+
+    private var claudeRoot: URL {
+        claudeRootOverride
+            ?? ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude", isDirectory: true)
     }
 
     /// Reuses a socket that already answered this controller so refresh passes
@@ -1132,8 +1167,19 @@ public actor WezTermController: WezTermControlling {
         for attempt in 0..<limit {
             try Task.checkCancellation()
             do {
-                return try await knownProviderProcesses(provider: provider, requireComplete: true)
-                    .first { $0.sessionID.caseInsensitiveCompare(sessionID) == .orderedSame }
+                let scan = try await knownProviderProcesses(provider: provider, requireComplete: true)
+                if let match = scan.resolved.first(where: {
+                    $0.sessionID.caseInsensitiveCompare(sessionID) == .orderedSame
+                }) { return match }
+                // Only an unresolved process that could plausibly own the
+                // requested session blocks a resume; unrelated identity-less
+                // processes (another project's agent, a daemon) never do.
+                let blockers = scan.unresolved.filter { unresolvedProcessCouldOwn($0, sessionID: sessionID) }
+                guard !blockers.isEmpty else { return nil }
+                guard attempt + 1 < limit else {
+                    throw WezTermError.actionFailed("A provider process has no exact session identity yet. Retry after startup.")
+                }
+                try await Task.sleep(for: retryDelay)
             } catch is CancellationError { throw CancellationError() }
             catch {
                 guard attempt + 1 < limit else { throw error }
@@ -1143,18 +1189,31 @@ public actor WezTermController: WezTermControlling {
         throw WezTermError.actionFailed("Provider ownership could not be verified.")
     }
 
+    /// A process with an unverified working directory, or of a provider whose
+    /// ownership cannot be scoped to a project, always plausibly owns the
+    /// target. A Claude process is scoped by its project directory: it can own
+    /// the target only when the target transcript lives in the same project.
+    private func unresolvedProcessCouldOwn(_ process: UnresolvedProviderProcess, sessionID: String) -> Bool {
+        guard let cwd = process.cwd else { return true }
+        guard process.provider == .claude else { return true }
+        guard let projectDirectory = claudeProjectDirectory(containingTranscript: sessionID) else { return true }
+        return Self.claudeProjectDirectoryName(forWorkingDirectory: cwd) == projectDirectory
+    }
+
     public func knownProviderProcesses(provider: AgentProvider? = nil,
-                                       requireComplete: Bool = false) async throws -> [KnownProviderProcess] {
+                                       requireComplete: Bool = false) async throws -> ProviderProcessScan {
         let psSpec = ProcessSpecification(executable: "/bin/ps",
-            arguments: ["-axo", "pid=,tty=,comm="], timeoutSeconds: 3)
+            arguments: ["-axo", "pid=,tty=,args="], timeoutSeconds: 3)
         // Ownership verification always inspects fresh processes; discovery
         // polls may reuse a snapshot taken moments ago.
         let processes = requireComplete
             ? try await runner.run(psSpec)
             : try await runSharedProcess(psSpec)
         guard processes.succeeded else { throw WezTermError.actionFailed("Could not inspect provider processes.") }
-        let providers = Self.agentProcesses(in: processes.standardOutput).filter { provider == nil || $0.provider == provider }
-        guard !providers.isEmpty else { return [] }
+        let providers = Self.agentProcesses(in: processes.standardOutput).filter {
+            !$0.isInfrastructure && (provider == nil || $0.provider == provider)
+        }
+        guard !providers.isEmpty else { return ProviderProcessScan(resolved: [], unresolved: []) }
         let lsofSpec = ProcessSpecification(executable: "/usr/sbin/lsof",
             arguments: ["-a", "-p", providers.map { String($0.pid) }.joined(separator: ","), "-Fpnf"], timeoutSeconds: 3)
         let files = requireComplete
@@ -1174,10 +1233,14 @@ public actor WezTermController: WezTermControlling {
             }
         }
         var result: [KnownProviderProcess] = []
+        var unresolved: [UnresolvedProviderProcess] = []
         var seen = Set<String>()
+        var claudeDiskFallback: [(process: AgentProcess, cwd: String)] = []
         for process in providers {
+            let tty = process.tty == "??" ? nil : "/dev/" + process.tty
             guard let cwd = directories[process.pid], cwd.hasPrefix("/") else {
-                if requireComplete { throw WezTermError.actionFailed("A provider process has no verified working directory yet.") }
+                unresolved.append(UnresolvedProviderProcess(
+                    provider: process.provider, processID: process.pid, tty: tty, cwd: nil))
                 continue
             }
             let candidates = Self.sessionCandidates(for: process.provider,
@@ -1190,8 +1253,17 @@ public actor WezTermController: WezTermControlling {
                 let all = Set(candidates.map(\.sessionID))
                 ids = all.count == 1 ? all : []
             }
-            if ids.isEmpty, requireComplete {
-                throw WezTermError.actionFailed("A provider process has no exact session identity yet. Retry after startup.")
+            guard !ids.isEmpty else {
+                // Claude 2.1+ does not hold its transcript open. A process with
+                // no open candidates can still be identified from its project
+                // directory on disk when it is the only candidate there.
+                if process.provider == .claude, candidates.isEmpty {
+                    claudeDiskFallback.append((process, cwd))
+                } else {
+                    unresolved.append(UnresolvedProviderProcess(
+                        provider: process.provider, processID: process.pid, tty: tty, cwd: cwd))
+                }
+                continue
             }
             let codexMetadata = process.provider == .codex
                 ? codexSessionMetadataByID(from: candidates) : [:]
@@ -1201,10 +1273,78 @@ public actor WezTermController: WezTermControlling {
                     parentSessionID: metadata?.parentSessionID,
                     isSubagent: metadata?.isSubagent == true,
                     promptHint: metadata?.promptHint,
-                    processID: process.pid, tty: process.tty == "??" ? nil : "/dev/" + process.tty, cwd: cwd))
+                    processID: process.pid, tty: tty, cwd: cwd))
             }
         }
-        return result
+        let fallbackByProject = Dictionary(grouping: claudeDiskFallback) {
+            Self.claudeProjectDirectoryName(forWorkingDirectory: $0.cwd)
+        }
+        for (projectDirectory, group) in fallbackByProject {
+            // Two live processes in one project can each own a different
+            // transcript; attributing the newest file to either would be a guess.
+            guard group.count == 1, let entry = group.first,
+                  let sessionID = latestClaudeTranscriptID(inProjectDirectory: projectDirectory)
+            else {
+                for entry in group {
+                    unresolved.append(UnresolvedProviderProcess(
+                        provider: entry.process.provider, processID: entry.process.pid,
+                        tty: entry.process.tty == "??" ? nil : "/dev/" + entry.process.tty,
+                        cwd: entry.cwd))
+                }
+                continue
+            }
+            if seen.insert(AgentProvider.claude.rawValue + ":" + sessionID).inserted {
+                result.append(KnownProviderProcess(provider: .claude, sessionID: sessionID,
+                    processID: entry.process.pid,
+                    tty: entry.process.tty == "??" ? nil : "/dev/" + entry.process.tty,
+                    cwd: entry.cwd))
+            }
+        }
+        return ProviderProcessScan(resolved: result, unresolved: unresolved)
+    }
+
+    /// Claude Code escapes a project directory name by replacing every
+    /// non-alphanumeric character with a dash; runs are not collapsed.
+    static func claudeProjectDirectoryName(forWorkingDirectory cwd: String) -> String {
+        String(cwd.map { character in
+            character.isASCII && (character.isLetter || character.isNumber) ? character : "-"
+        })
+    }
+
+    private func latestClaudeTranscriptID(inProjectDirectory name: String) -> String? {
+        let directory = claudeRoot
+            .appendingPathComponent("projects", isDirectory: true)
+            .appendingPathComponent(name, isDirectory: true)
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        let newest = files.filter { $0.pathExtension == "jsonl" }.max {
+            let left = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate ?? .distantPast
+            let right = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate ?? .distantPast
+            return (left, $0.lastPathComponent) < (right, $1.lastPathComponent)
+        }
+        guard let stem = newest?.deletingPathExtension().lastPathComponent,
+              UUID(uuidString: stem) != nil
+        else { return nil }
+        return stem.lowercased()
+    }
+
+    private func claudeProjectDirectory(containingTranscript sessionID: String) -> String? {
+        let root = claudeRoot.appendingPathComponent("projects", isDirectory: true)
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
+        ) else { return nil }
+        let fileName = sessionID.lowercased() + ".jsonl"
+        for entry in entries
+        where (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+            if FileManager.default.fileExists(atPath: entry.appendingPathComponent(fileName).path) {
+                return entry.lastPathComponent
+            }
+        }
+        return nil
     }
 
     public func labelTmuxClients(session: TaskAgentSession, configuration: WezTermConfiguration) async throws {
@@ -1263,7 +1403,7 @@ public actor WezTermController: WezTermControlling {
     ) async throws -> [RunningAgentSession] {
         let processResult = try await runSharedProcess(ProcessSpecification(
             executable: "/bin/ps",
-            arguments: ["-axo", "pid=,tty=,comm="],
+            arguments: ["-axo", "pid=,tty=,args="],
             timeoutSeconds: 3
         ))
         guard processResult.succeeded else {
@@ -1277,7 +1417,7 @@ public actor WezTermController: WezTermControlling {
             }
         )
         let paneProcesses = Self.agentProcesses(in: processResult.standardOutput).filter {
-            panesByTTY[$0.tty] != nil
+            !$0.isInfrastructure && panesByTTY[$0.tty] != nil
         }
         guard !paneProcesses.isEmpty else { return [] }
 
@@ -1331,16 +1471,33 @@ public actor WezTermController: WezTermControlling {
         output.split(whereSeparator: \Character.isNewline).compactMap { rawLine in
             let fields = rawLine.split(maxSplits: 2, whereSeparator: \Character.isWhitespace)
             guard fields.count == 3, let pid = Int32(fields[0]) else { return nil }
-            let commandPath = String(fields[2]).trimmingCharacters(in: .whitespaces)
-            let command = URL(fileURLWithPath: commandPath).lastPathComponent.lowercased()
+            let invocation = fields[2].split(whereSeparator: \Character.isWhitespace)
+            guard let executable = invocation.first else { return nil }
+            let executablePath = String(executable)
+            let command = URL(fileURLWithPath: executablePath).lastPathComponent.lowercased()
             let provider: AgentProvider
             switch command {
             case "codex": provider = .codex
             case "claude": provider = .claude
             default: return nil
             }
-            return AgentProcess(pid: pid, tty: String(fields[1]), provider: provider)
+            let arguments = invocation.dropFirst().map(String.init)
+            return AgentProcess(pid: pid, tty: String(fields[1]), provider: provider,
+                isInfrastructure: Self.isProviderInfrastructure(
+                    provider: provider, executablePath: executablePath, arguments: arguments))
         }
+    }
+
+    /// Provider daemons share the interactive executable's name but never own a
+    /// conversation identity, so they must not poison ownership scans. Codex
+    /// 0.157+ runs a persistent `codex app-server` daemon from its package
+    /// directory; both shapes are infrastructure, never interactive sessions.
+    private static func isProviderInfrastructure(
+        provider: AgentProvider, executablePath: String, arguments: [String]
+    ) -> Bool {
+        guard provider == .codex else { return false }
+        if executablePath.contains("/.codex/packages/") { return true }
+        return arguments.first == "app-server" || arguments.first == "daemon"
     }
 
     private func sessionIdentitiesByProcess(
@@ -1670,6 +1827,7 @@ private struct AgentProcess {
     let pid: Int32
     let tty: String
     let provider: AgentProvider
+    let isInfrastructure: Bool
 }
 
 private struct AgentSessionCandidate {

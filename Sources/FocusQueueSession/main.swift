@@ -1200,13 +1200,18 @@ enum SessionRegistrationError: Error, LocalizedError {
     private static func locateRuntime(provider: AgentProvider, sessionID: String) async throws {
         do {
             let controller = WezTermController()
-            let processes = try await controller.knownProviderProcesses(provider: provider)
+            let processes = try await controller.knownProviderProcesses(provider: provider).resolved
             guard let process = processes.first(where: { $0.sessionID == sessionID }) else {
                 let complete = try await controller.knownProviderProcesses(provider: provider, requireComplete: true)
-                if let appeared = complete.first(where: { $0.sessionID == sessionID }) {
+                if let appeared = complete.resolved.first(where: { $0.sessionID == sessionID }) {
                     try emit(RuntimeLocationResult(
                         status: "running", sessionID: sessionID, processID: Int(appeared.processID)))
                     return
+                }
+                // "Stopped" is only emitted when every live process is accounted
+                // for; an unverified process keeps the state unknown.
+                guard complete.unresolved.isEmpty else {
+                    throw WezTermError.actionFailed("A provider process has no exact session identity yet. Retry after startup.")
                 }
                 try emit(RuntimeLocationResult(status: "stopped", sessionID: sessionID)); return
             }

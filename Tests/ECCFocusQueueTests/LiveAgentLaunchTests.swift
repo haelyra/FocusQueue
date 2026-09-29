@@ -72,7 +72,7 @@ func liveManagedProviderSanity() async throws {
         throw LiveAgentFailure("\(label): \(error.localizedDescription)\nPane output:\n\(capture.suffix(4_000))")
       }
       let nativeID = try #require(sessionID)
-      let processesForTracking = try await WezTermController().knownProviderProcesses()
+      let processesForTracking = try await WezTermController().knownProviderProcesses().resolved
       let nativeProcess = try #require(processesForTracking.first { $0.sessionID.lowercased() == nativeID.lowercased() })
       let intake = try #require(AgentIntakeStore.match(nativeProcess, tmux: reference,
         receipts: AgentIntakeStore.load(root: fixture.support), parents: try await AgentIntakeStore.processParents()),

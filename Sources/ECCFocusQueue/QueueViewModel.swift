@@ -316,7 +316,7 @@ final class QueueViewModel {
     self.maintenanceEnabled = maintenanceEnabled
     let processDiscovery = WezTermController()
     self.discoverExternalAgents = discoverExternalAgents ?? {
-      try await processDiscovery.knownProviderProcesses()
+      try await processDiscovery.knownProviderProcesses().resolved
     }
     self.labelTmuxPane = labelTmuxPane
     self.identifyManagedAgent = identifyManagedAgent
@@ -966,8 +966,11 @@ final class QueueViewModel {
         }
         if !dueTickets.isEmpty {
           // One complete process snapshot covers every ticket's inspection pass.
-          let processes = try? await WezTermController().knownProviderProcesses(requireComplete: true)
-          let maintenance = TaskMaintenance(root: paths.supportDirectory, processes: processes)
+          // An unresolved process means ownership is unknown, so the snapshot is
+          // withheld and maintenance falls back to its own fail-closed check.
+          let scan = try? await WezTermController().knownProviderProcesses(requireComplete: true)
+          let maintenance = TaskMaintenance(root: paths.supportDirectory,
+            processes: scan.flatMap { $0.unresolved.isEmpty ? $0.resolved : nil })
           for ticket in dueTickets {
             do {
               let receipt = try await maintenance.run(ticket: ticket)

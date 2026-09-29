@@ -783,6 +783,48 @@ public struct AgentStartupReceiptStore: Sendable {
         }
     }
 
+    /// Completes the handoff of a `.registered` receipt whose successor the app
+    /// independently observed, even when the router exited before finalizing
+    /// the receipt. Unlike `completeHandoff`, orchestration preparation is not
+    /// required: the observed registration is itself proof the successor took
+    /// over. Returns false when the receipt is not registered or the bound
+    /// provider session does not match.
+    @discardableResult
+    public func completeObservedHandoff(
+        taskID: String, subtaskID: String, sessionID: String?
+    ) throws -> Bool {
+        try withLock(taskID: taskID, subtaskID: subtaskID) {
+            guard var receipt = try load(taskID: taskID, subtaskID: subtaskID),
+                  receipt.status == .registered,
+                  let boundSessionID = receipt.providerSessionID else { return false }
+            if let sessionID,
+               boundSessionID.caseInsensitiveCompare(sessionID) != .orderedSame {
+                return false
+            }
+            if receipt.handoffCompletedAt != nil { return true }
+            receipt.handoffCompletedAt = Date()
+            receipt.updatedAt = Date()
+            let destination = try url(taskID: taskID, subtaskID: subtaskID)
+            try saveUnlocked(receipt, destination: destination)
+            return true
+        }
+    }
+
+    /// Repair-only transition used by the launch-time stuck-receipt sweep. A
+    /// receipt whose successor never became observable is failed explicitly so
+    /// its router unwinds instead of blocking routing forever. This
+    /// deliberately overrides the monotonic registered status.
+    public func markFailed(taskID: String, subtaskID: String) throws {
+        try withLock(taskID: taskID, subtaskID: subtaskID) {
+            guard var receipt = try load(taskID: taskID, subtaskID: subtaskID),
+                  receipt.status != .failed else { return }
+            receipt.status = .failed
+            receipt.updatedAt = Date()
+            let destination = try url(taskID: taskID, subtaskID: subtaskID)
+            try saveUnlocked(receipt, destination: destination)
+        }
+    }
+
     public func markOrchestrationPrepared(taskID: String, subtaskID: String) throws {
         try withLock(taskID: taskID, subtaskID: subtaskID) {
             guard var receipt = try load(taskID: taskID, subtaskID: subtaskID),
@@ -820,5 +862,170 @@ public struct AgentStartupReceiptStore: Sendable {
         guard flock(descriptor, LOCK_EX) == 0 else { throw CocoaError(.fileWriteUnknown) }
         defer { flock(descriptor, LOCK_UN) }
         return try body()
+    }
+}
+
+
+/// Reads live agent registrations to reconcile routed startup receipts. A
+/// receipt's successor counts as observed when the external registry or the
+/// registration inbox holds a matching session for the routed task and
+/// subtask, or the receipt's bound provider session is registered at all.
+public struct AgentStartupObserver: Sendable {
+    public let root: URL
+
+    public init(root: URL) { self.root = root }
+
+    public func observes(_ receipt: AgentStartupReceipt) async -> Bool {
+        await observedSessionID(
+            taskID: receipt.taskID, subtaskID: receipt.subtaskID,
+            matching: receipt.providerSessionID) != nil
+    }
+
+    /// The observed provider session for a routed task/subtask, restricted to
+    /// the expected session when one is already bound to the receipt.
+    public func observedSessionID(
+        taskID: String, subtaskID: String, matching expectedSessionID: String? = nil
+    ) async -> String? {
+        if let registrations = try? await ExternalAgentRegistry(root: root).registrations() {
+            for registration in registrations {
+                guard registration.taskID?.caseInsensitiveCompare(taskID) == .orderedSame,
+                      registration.subtaskID == subtaskID,
+                      let sessionID = registration.sessionID else { continue }
+                if let expectedSessionID,
+                   sessionID.caseInsensitiveCompare(expectedSessionID) != .orderedSame {
+                    continue
+                }
+                return sessionID.lowercased()
+            }
+            if let expectedSessionID,
+               registrations.contains(where: {
+                   $0.sessionID?.caseInsensitiveCompare(expectedSessionID) == .orderedSame
+               }) {
+                return expectedSessionID.lowercased()
+            }
+        }
+        let inbox = AgentRegistrationInbox(
+            directory: root.appendingPathComponent("agent-registrations", isDirectory: true))
+        if let pending = try? await inbox.pending() {
+            for session in pending {
+                guard session.ticketID.caseInsensitiveCompare(taskID) == .orderedSame,
+                      session.subtaskID == subtaskID else { continue }
+                if let expectedSessionID,
+                   session.sessionID.caseInsensitiveCompare(expectedSessionID) != .orderedSame {
+                    continue
+                }
+                return session.sessionID.lowercased()
+            }
+        }
+        return nil
+    }
+}
+
+public struct AgentStartupRepairReport: Equatable, Sendable {
+    public var completedHandoffs: [AgentStartupReceipt]
+    public var failedReceipts: [AgentStartupReceipt]
+
+    public init(
+        completedHandoffs: [AgentStartupReceipt] = [],
+        failedReceipts: [AgentStartupReceipt] = []
+    ) {
+        self.completedHandoffs = completedHandoffs
+        self.failedReceipts = failedReceipts
+    }
+}
+
+/// Launch-time sweep for routed startup receipts whose router exited before
+/// the handoff finalized. Receipts with an observable successor are completed;
+/// aged receipts with no live successor are marked failed so their router
+/// unwinds instead of blocking routing forever.
+public struct AgentStartupRepair: Sendable {
+    public let root: URL
+    public let launchedTimeout: TimeInterval
+
+    public init(root: URL, launchedTimeout: TimeInterval = 30) {
+        self.root = root
+        self.launchedTimeout = launchedTimeout
+    }
+
+    public func run(now: Date = Date()) async throws -> AgentStartupRepairReport {
+        let store = AgentStartupReceiptStore(root: root)
+        let observer = AgentStartupObserver(root: root)
+        var report = AgentStartupRepairReport()
+        for receipt in try stuckReceipts(now: now) {
+            switch receipt.status {
+            case .registered:
+                if await observer.observes(receipt),
+                   (try? store.completeObservedHandoff(
+                    taskID: receipt.taskID, subtaskID: receipt.subtaskID,
+                    sessionID: receipt.providerSessionID)) == true {
+                    report.completedHandoffs.append(try store.load(
+                        taskID: receipt.taskID, subtaskID: receipt.subtaskID) ?? receipt)
+                } else {
+                    try store.markFailed(taskID: receipt.taskID, subtaskID: receipt.subtaskID)
+                    report.failedReceipts.append(try store.load(
+                        taskID: receipt.taskID, subtaskID: receipt.subtaskID) ?? receipt)
+                }
+            case .launched:
+                var repaired = false
+                if let sessionID = await observer.observedSessionID(
+                    taskID: receipt.taskID, subtaskID: receipt.subtaskID),
+                   (try? store.register(
+                    taskID: receipt.taskID, subtaskID: receipt.subtaskID,
+                    providerSessionID: sessionID)) != nil {
+                    try? store.markOrchestrationPrepared(
+                        taskID: receipt.taskID, subtaskID: receipt.subtaskID)
+                    _ = try? store.completeObservedHandoff(
+                        taskID: receipt.taskID, subtaskID: receipt.subtaskID,
+                        sessionID: sessionID)
+                    repaired = (try? store.load(
+                        taskID: receipt.taskID, subtaskID: receipt.subtaskID))?
+                        .handoffCompletedAt != nil
+                }
+                if repaired {
+                    report.completedHandoffs.append(try store.load(
+                        taskID: receipt.taskID, subtaskID: receipt.subtaskID) ?? receipt)
+                } else {
+                    try store.markFailed(taskID: receipt.taskID, subtaskID: receipt.subtaskID)
+                    report.failedReceipts.append(try store.load(
+                        taskID: receipt.taskID, subtaskID: receipt.subtaskID) ?? receipt)
+                }
+            case .starting, .failed:
+                continue
+            }
+        }
+        return report
+    }
+
+    private func stuckReceipts(now: Date) throws -> [AgentStartupReceipt] {
+        let directory = root.appendingPathComponent("logs/agent-startups", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+        let store = AgentStartupReceiptStore(root: root)
+        var receipts: [AgentStartupReceipt] = []
+        for taskDirectory in try FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles])
+        where (try? taskDirectory.resourceValues(forKeys: [.isDirectoryKey])
+            .isDirectory) == true {
+            let taskID = taskDirectory.lastPathComponent
+            let files = try FileManager.default.contentsOfDirectory(
+                at: taskDirectory, includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles])
+            for file in files where file.pathExtension == "json" {
+                let subtaskID = file.deletingPathExtension().lastPathComponent
+                guard let receipt = try? store.load(taskID: taskID, subtaskID: subtaskID)
+                else { continue }
+                switch receipt.status {
+                case .registered where receipt.handoffCompletedAt == nil
+                    && now.timeIntervalSince(receipt.updatedAt) >= launchedTimeout:
+                    receipts.append(receipt)
+                case .launched
+                    where now.timeIntervalSince(receipt.updatedAt) >= launchedTimeout:
+                    receipts.append(receipt)
+                default:
+                    continue
+                }
+            }
+        }
+        return receipts.sorted { $0.createdAt < $1.createdAt }
     }
 }

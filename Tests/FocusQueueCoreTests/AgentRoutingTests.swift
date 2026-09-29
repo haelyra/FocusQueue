@@ -358,6 +358,123 @@ struct AgentRoutingTests {
         #expect(claudeLoaded.providerResumeCommand?.prefix(3)
             == ["claude", "--resume", "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"])
     }
+
+    @Test("The startup repair sweep completes observed stuck receipts and fails abandoned ones")
+    func startupRepairSweep() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "agent-startup-repair-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = AgentStartupReceiptStore(root: root)
+        let old = Date(timeIntervalSinceNow: -3_600)
+        let registeredSession = "11111111-2222-4333-8444-555555555555"
+        let launchedSession = "22222222-3333-4444-8555-666666666666"
+        let registeredReceipt = repairReceipt(
+            routeID: UUID().uuidString.lowercased(), status: .registered, taskID: "FOC-201",
+            subtaskID: "aaaaaaaa-0000-4000-8000-000000000001",
+            providerSessionID: registeredSession, at: old)
+        try store.save(registeredReceipt)
+        let launchedReceipt = repairReceipt(
+            routeID: UUID().uuidString.lowercased(), status: .launched, taskID: "FOC-202",
+            subtaskID: "aaaaaaaa-0000-4000-8000-000000000002",
+            providerSessionID: launchedSession, at: old)
+        try store.save(launchedReceipt)
+        let abandonedReceipt = repairReceipt(
+            routeID: UUID().uuidString.lowercased(), status: .launched, taskID: "FOC-203",
+            subtaskID: "aaaaaaaa-0000-4000-8000-000000000003",
+            providerSessionID: nil, at: old)
+        try store.save(abandonedReceipt)
+        let freshReceipt = repairReceipt(
+            routeID: UUID().uuidString.lowercased(), status: .launched, taskID: "FOC-204",
+            subtaskID: "aaaaaaaa-0000-4000-8000-000000000004",
+            providerSessionID: nil, at: Date())
+        try store.save(freshReceipt)
+        let registrationsDirectory = root.appendingPathComponent(
+            "external-agent-sessions", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: registrationsDirectory, withIntermediateDirectories: true)
+        for (id, taskID, subtaskID, sessionID) in [
+            ("reg-one", "FOC-201", registeredReceipt.subtaskID, registeredSession),
+            ("reg-two", "FOC-202", launchedReceipt.subtaskID, launchedSession),
+        ] {
+            let registration = ExternalAgentRegistration(
+                id: id, provider: .codex, sessionID: sessionID,
+                agentID: nil, parentSessionID: nil, cwd: "/repo/worktree", title: "Routed",
+                taskID: taskID, subtaskID: subtaskID, reason: nil,
+                eventName: "ProcessDiscovery", updatedAt: Date(),
+                tmux: nil, paneID: nil, socketPath: nil)
+            try JSONEncoder().encode(registration).write(
+                to: registrationsDirectory.appendingPathComponent("\(id).json"),
+                options: .atomic)
+        }
+
+        let report = try await AgentStartupRepair(root: root, launchedTimeout: 30).run()
+
+        #expect(report.completedHandoffs.map(\.taskID).sorted() == ["FOC-201", "FOC-202"])
+        #expect(report.failedReceipts.map(\.taskID) == ["FOC-203"])
+        let completedRegistered = try #require(try store.load(
+            taskID: "FOC-201", subtaskID: registeredReceipt.subtaskID))
+        #expect(completedRegistered.status == .registered)
+        #expect(completedRegistered.handoffCompletedAt != nil)
+        let completedLaunched = try #require(try store.load(
+            taskID: "FOC-202", subtaskID: launchedReceipt.subtaskID))
+        #expect(completedLaunched.status == .registered)
+        #expect(completedLaunched.providerSessionID == launchedSession)
+        #expect(completedLaunched.handoffCompletedAt != nil)
+        let failed = try #require(try store.load(
+            taskID: "FOC-203", subtaskID: abandonedReceipt.subtaskID))
+        #expect(failed.status == .failed)
+        let untouched = try #require(try store.load(
+            taskID: "FOC-204", subtaskID: freshReceipt.subtaskID))
+        #expect(untouched.status == .launched)
+        #expect(untouched.handoffCompletedAt == nil)
+        // The sweep is idempotent: nothing remains stuck on a second pass.
+        let secondPass = try await AgentStartupRepair(root: root, launchedTimeout: 30).run()
+        #expect(secondPass.completedHandoffs.isEmpty)
+        #expect(secondPass.failedReceipts.isEmpty)
+    }
+
+    @Test("The startup repair sweep fails a stuck registered receipt with no observed registration")
+    func startupRepairFailsUnobservedRegisteredReceipt() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "agent-startup-repair-stale-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = AgentStartupReceiptStore(root: root)
+        let receipt = repairReceipt(
+            routeID: UUID().uuidString.lowercased(), status: .registered, taskID: "FOC-205",
+            subtaskID: "aaaaaaaa-0000-4000-8000-000000000005",
+            providerSessionID: "33333333-4444-4555-8666-777777777777",
+            at: Date(timeIntervalSinceNow: -3_600))
+        try store.save(receipt)
+
+        let report = try await AgentStartupRepair(root: root, launchedTimeout: 30).run()
+
+        #expect(report.completedHandoffs.isEmpty)
+        #expect(report.failedReceipts.map(\.taskID) == ["FOC-205"])
+        #expect(try store.load(taskID: "FOC-205", subtaskID: receipt.subtaskID)?
+            .status == .failed)
+    }
+}
+
+private func repairReceipt(
+    routeID: String, status: AgentStartupStatus, taskID: String, subtaskID: String,
+    providerSessionID: String?, at date: Date
+) -> AgentStartupReceipt {
+    AgentStartupReceipt(
+        routeID: routeID, status: status, taskID: taskID, subtaskID: subtaskID,
+        title: "Repair \(taskID)", description: "Stuck routed startup",
+        provider: .codex, providerSessionID: providerSessionID, promptByteCount: 12,
+        promptSHA256: AgentStartupReceipt.promptDigest("Repair \(taskID)"),
+        workspace: AgentWorkspace(path: "/repo/worktree", repositoryPath: "/repo"),
+        runtime: .init(
+            mode: .tmux, tmuxExecutable: "/mock/tmux", tmuxServerName: "focus-queue",
+            tmuxName: "fq-task-\(taskID.lowercased())", tmuxServerPID: 101,
+            tmuxCreatedAt: 102, tmuxPaneID: "%3", tmuxPanePID: 111, tty: "/dev/ttys003",
+            terminalApplication: "WezTerm", attachCommand: ["tmux", "attach"]),
+        context: AgentStartupContextPaths(
+            taskPlan: "/support/tasks/\(taskID)/plan.md",
+            taskContext: "/support/tasks/\(taskID)/context.json",
+            taskLog: "/support/tasks/\(taskID)/agent-log.md"),
+        source: .init(cwd: "/repo"), createdAt: date, updatedAt: date)
 }
 
 private extension Array where Element == String {

@@ -101,24 +101,52 @@ public struct QueueRouterRuntime: Codable, Equatable, Sendable {
   }
 }
 
+/// Tracks every live one-shot queue router. Each router owns a record under
+/// `agent-routes/routers/<router tmux name>.json`, keyed by its tmux session
+/// name so concurrent routers never cross-talk. Up to
+/// `maximumActiveRouters` routers may run at once; the legacy single record
+/// `active-queue-router.json` still counts as one active router so an
+/// in-flight router from an older app version resolves normally.
 public struct QueueRouterRuntimeStore: Sendable {
+  public static let maximumActiveRouters = 4
+
   public let root: URL
 
   public init(root: URL) { self.root = root }
 
-  public var url: URL {
+  private var directory: URL {
     root.appendingPathComponent("agent-routes", isDirectory: true)
-      .appendingPathComponent("active-queue-router.json")
+  }
+
+  /// The legacy single-router record, kept as the recovery locator and honored
+  /// as one active router while it exists.
+  public var url: URL {
+    directory.appendingPathComponent("active-queue-router.json")
+  }
+
+  private var routersDirectory: URL {
+    directory.appendingPathComponent("routers", isDirectory: true)
+  }
+
+  public func url(routerID: String) throws -> URL {
+    try TmuxController.validateName(routerID)
+    return routersDirectory.appendingPathComponent(routerID + ".json")
   }
 
   public func save(_ runtime: QueueRouterRuntime) throws {
-    let destination = url
+    let destination = try url(routerID: runtime.tmuxName)
     try FileManager.default.createDirectory(
-      at: destination.deletingLastPathComponent(), withIntermediateDirectories: true,
+      at: routersDirectory, withIntermediateDirectories: true,
       attributes: [.posixPermissions: 0o700])
     try withLock {
       var merged = runtime
-      if let saved = try load() {
+      var migratedLegacy = false
+      var saved = try load(routerID: runtime.tmuxName)
+      if saved == nil, let legacy = try loadLegacy(), legacy.tmuxName == runtime.tmuxName {
+        saved = legacy
+        migratedLegacy = true
+      }
+      if let saved {
         guard saved.capability == runtime.capability else {
           throw TaskContextError.commandFailed(
             "Another queue router owns the active recovery record.")
@@ -146,32 +174,75 @@ public struct QueueRouterRuntimeStore: Sendable {
             claimedRouteID: merged.claimedRouteID)
         }
       }
-      try saveUnlocked(merged)
+      try saveUnlocked(merged, to: destination)
+      if migratedLegacy {
+        try? FileManager.default.removeItem(at: url)
+      }
     }
   }
 
+  /// Reserves one router slot. Returns the conflicting record when this exact
+  /// tmux identity is already reserved, and throws once
+  /// `maximumActiveRouters` concurrent routers are active.
   public func reserve(_ runtime: QueueRouterRuntime) throws -> QueueRouterRuntime? {
     try FileManager.default.createDirectory(
-      at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+      at: routersDirectory, withIntermediateDirectories: true,
       attributes: [.posixPermissions: 0o700])
     return try withLock {
-      if let saved = try load() { return saved }
-      try saveUnlocked(runtime)
+      if let saved = try load(matching: runtime.tmuxName) { return saved }
+      guard try activeRoutersUnlocked().count < Self.maximumActiveRouters else {
+        throw TaskContextError.commandFailed(
+          "Focus Queue already runs \(Self.maximumActiveRouters) routers. Wait for one to finish before routing another objective.")
+      }
+      try saveUnlocked(runtime, to: url(routerID: runtime.tmuxName))
       return nil
     }
   }
 
+  /// The single active router, for callers from before parallel routers: the
+  /// legacy record when present, otherwise the only per-router record.
   public func load() throws -> QueueRouterRuntime? {
-    guard let data = try secureAgentRoutingData(at: url) else { return nil }
+    if let legacy = try loadLegacy() { return legacy }
+    let records = try perRouterRecords()
+    return records.count == 1 ? records[0] : nil
+  }
+
+  /// The record for one router identity: its per-router record, or the legacy
+  /// record while an older app's router with that tmux name is still tracked.
+  public func load(routerID: String) throws -> QueueRouterRuntime? {
+    let source = try url(routerID: routerID)
+    guard let data = try secureAgentRoutingData(at: source) else { return nil }
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .iso8601
-    return try decoder.decode(QueueRouterRuntime.self, from: data)
+    let record = try decoder.decode(QueueRouterRuntime.self, from: data)
+    guard record.tmuxName == routerID else {
+      throw TaskContextError.commandFailed("The router recovery record is misfiled.")
+    }
+    return record
+  }
+
+  public func load(matching tmuxName: String) throws -> QueueRouterRuntime? {
+    if let record = try load(routerID: tmuxName) { return record }
+    if let legacy = try loadLegacy(), legacy.tmuxName == tmuxName { return legacy }
+    return nil
+  }
+
+  /// Every active router: per-router records plus the legacy record when no
+  /// per-router record owns the same tmux identity. Unreadable records fail
+  /// closed so a damaged reservation blocks new routing instead of being lost.
+  public func activeRouters() throws -> [QueueRouterRuntime] {
+    try withLock { try activeRoutersUnlocked() }
   }
 
   public func clear(matching tmuxName: String) throws {
     try withLock {
-      guard let saved = try load(), saved.tmuxName == tmuxName else { return }
-      try FileManager.default.removeItem(at: url)
+      if let destination = try? url(routerID: tmuxName),
+         FileManager.default.fileExists(atPath: destination.path) {
+        try FileManager.default.removeItem(at: destination)
+      }
+      if let legacy = try loadLegacy(), legacy.tmuxName == tmuxName {
+        try FileManager.default.removeItem(at: url)
+      }
     }
   }
 
@@ -182,12 +253,12 @@ public struct QueueRouterRuntimeStore: Sendable {
       throw TaskContextError.commandFailed("The queue router capability is invalid.")
     }
     return try withLock {
-      guard var runtime = try load(),
-            runtime.capability.caseInsensitiveCompare(capability) == .orderedSame,
-            runtime.tmuxName == sourceTmuxName else {
+      guard let located = try locatedRecord(
+        capability: capability, sourceTmuxName: sourceTmuxName) else {
         throw TaskContextError.commandFailed(
           "This queue router is not authorized for the submitted objective.")
       }
+      var runtime = located.record
       let authoritativePrompt = runtime.objective ?? prompt
       guard runtime.objectiveSHA256 == AgentStartupReceipt.promptDigest(authoritativePrompt),
             runtime.objective != nil
@@ -200,7 +271,7 @@ public struct QueueRouterRuntimeStore: Sendable {
           "This queue router already inspected its one allowed route.")
       }
       runtime.claimedRouteID = routeID.lowercased()
-      try saveUnlocked(runtime)
+      try saveUnlocked(runtime, to: located.destination)
       return authoritativePrompt
     }
   }
@@ -208,10 +279,9 @@ public struct QueueRouterRuntimeStore: Sendable {
   public func authorizeStart(
     capability: String, sourceTmuxName: String, routeID: String
   ) throws {
-    guard let runtime = try load(),
-          runtime.capability.caseInsensitiveCompare(capability) == .orderedSame,
-          runtime.tmuxName == sourceTmuxName,
-          runtime.claimedRouteID == routeID.lowercased() else {
+    guard let located = try locatedRecord(
+      capability: capability, sourceTmuxName: sourceTmuxName),
+          located.record.claimedRouteID == routeID.lowercased() else {
       throw TaskContextError.commandFailed(
         "This route start is not authorized by the active queue router.")
     }
@@ -219,16 +289,71 @@ public struct QueueRouterRuntimeStore: Sendable {
 
   public func releaseClaim(capability: String, routeID: String) throws {
     try withLock {
-      guard var runtime = try load(),
-            runtime.capability.caseInsensitiveCompare(capability) == .orderedSame,
-            runtime.claimedRouteID == routeID.lowercased() else { return }
-      runtime.claimedRouteID = nil
-      try saveUnlocked(runtime)
+      for record in try allRecordsUnlocked() where record.record.claimedRouteID == routeID.lowercased()
+        && record.record.capability.caseInsensitiveCompare(capability) == .orderedSame {
+        var runtime = record.record
+        runtime.claimedRouteID = nil
+        try saveUnlocked(runtime, to: record.destination)
+      }
     }
   }
 
+  private func loadLegacy() throws -> QueueRouterRuntime? {
+    guard let data = try secureAgentRoutingData(at: url) else { return nil }
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    return try decoder.decode(QueueRouterRuntime.self, from: data)
+  }
+
+  private func perRouterRecords() throws -> [QueueRouterRuntime] {
+    guard FileManager.default.fileExists(atPath: routersDirectory.path) else { return [] }
+    return try FileManager.default.contentsOfDirectory(
+      at: routersDirectory, includingPropertiesForKeys: nil,
+      options: [.skipsHiddenFiles])
+      .filter { $0.pathExtension == "json" }
+      .map { source in
+        let routerID = source.deletingPathExtension().lastPathComponent
+        guard let record = try load(routerID: routerID) else {
+          throw TaskContextError.commandFailed("The router recovery record is unreadable.")
+        }
+        return record
+      }
+      .sorted { $0.startedAt < $1.startedAt }
+  }
+
+  private func activeRoutersUnlocked() throws -> [QueueRouterRuntime] {
+    var records = try perRouterRecords()
+    if let legacy = try loadLegacy(),
+       !records.contains(where: { $0.tmuxName == legacy.tmuxName }) {
+      records.append(legacy)
+    }
+    return records.sorted { $0.startedAt < $1.startedAt }
+  }
+
+  private func allRecordsUnlocked() throws -> [(record: QueueRouterRuntime, destination: URL)] {
+    var records = try perRouterRecords().map {
+      (record: $0, destination: try url(routerID: $0.tmuxName))
+    }
+    if let legacy = try loadLegacy(),
+       !records.contains(where: { $0.record.tmuxName == legacy.tmuxName }) {
+      records.append((record: legacy, destination: url))
+    }
+    return records
+  }
+
+  private func locatedRecord(
+    capability: String, sourceTmuxName: String
+  ) throws -> (record: QueueRouterRuntime, destination: URL)? {
+    guard UUID(uuidString: capability) != nil else { return nil }
+    for record in try allRecordsUnlocked()
+    where record.record.tmuxName == sourceTmuxName
+      && record.record.capability.caseInsensitiveCompare(capability) == .orderedSame {
+      return record
+    }
+    return nil
+  }
+
   private func withLock<T>(_ body: () throws -> T) throws -> T {
-    let directory = url.deletingLastPathComponent()
     try FileManager.default.createDirectory(
       at: directory, withIntermediateDirectories: true,
       attributes: [.posixPermissions: 0o700])
@@ -242,8 +367,7 @@ public struct QueueRouterRuntimeStore: Sendable {
     return try body()
   }
 
-  private func saveUnlocked(_ runtime: QueueRouterRuntime) throws {
-    let destination = url
+  private func saveUnlocked(_ runtime: QueueRouterRuntime, to destination: URL) throws {
     let values = try? destination.resourceValues(forKeys: [.isSymbolicLinkKey])
     guard values?.isSymbolicLink != true else {
       throw TaskContextError.commandFailed("The router recovery record is an unsafe symbolic link.")
@@ -420,7 +544,7 @@ public actor QueueObjectiveRouter: QueueObjectiveRouting {
     if let existing = try store.reserve(pending) {
       throw QueueRouterLaunchUnconfirmedError(
         runtime: existing,
-        detail: "Another Focus Queue window already reserved the active router.")
+        detail: "Another Focus Queue window already reserved this router.")
     }
     let controller = TmuxController(
       runner: runner, serverName: tmuxServerName,
@@ -471,7 +595,7 @@ public actor QueueObjectiveRouter: QueueObjectiveRouting {
   ) async throws -> QueueRouterOutcome {
     let deadline = Date().addingTimeInterval(max(0, timeoutSeconds))
     while true {
-      let outcome = try currentOutcome(runtime, supportDirectory: supportDirectory)
+      let outcome = try await currentOutcome(runtime, supportDirectory: supportDirectory)
       if case .waiting = outcome, Date() < deadline {
         try await Task.sleep(for: .milliseconds(250))
         continue
@@ -482,18 +606,25 @@ public actor QueueObjectiveRouter: QueueObjectiveRouting {
         } catch {
           return .failed(
             routeID: routeID,
-            recoveryPath: QueueRouterRuntimeStore(root: supportDirectory).url.path,
-            message: "Assigned to \(taskID), but the router terminal could not be closed safely. \(error.localizedDescription)")
+            recoveryPath: Self.recoveryPath(runtime, supportDirectory: supportDirectory),
+            message: "Assigned to \(taskID), but the router terminal \(runtime.tmuxName) could not be closed safely. Its reservation was cleared so routing continues; close that tmux session manually if it still runs. \(error.localizedDescription)")
         }
       }
       return outcome
     }
   }
 
+  private static func recoveryPath(
+    _ runtime: QueueRouterRuntime, supportDirectory: URL
+  ) -> String {
+    let store = QueueRouterRuntimeStore(root: supportDirectory)
+    return (try? store.url(routerID: runtime.tmuxName).path) ?? store.url.path
+  }
+
   public func currentOutcome(
     _ runtime: QueueRouterRuntime,
     supportDirectory: URL
-  ) throws -> QueueRouterOutcome {
+  ) async throws -> QueueRouterOutcome {
     let routeStore = AgentRouteStore(root: supportDirectory)
     guard let intent = try routeStore.latest(
       sourceTmuxName: runtime.tmuxName, createdAfter: runtime.startedAt)
@@ -512,6 +643,12 @@ public actor QueueObjectiveRouter: QueueObjectiveRouting {
       return .registered(
         routeID: intent.routeID, taskID: taskID, subtaskID: subtaskID)
     case .registered:
+      // A router that exited before finalizing its receipt still completes
+      // once the successor's registration is observable.
+      if await completeObservedHandoff(receipt, supportDirectory: supportDirectory) {
+        return .registered(
+          routeID: intent.routeID, taskID: taskID, subtaskID: subtaskID)
+      }
       return .waiting(routeID: intent.routeID, recoveryPath: receiptPath)
     case .failed:
       return .failed(
@@ -520,6 +657,17 @@ public actor QueueObjectiveRouter: QueueObjectiveRouting {
     case .starting, .launched:
       return .waiting(routeID: intent.routeID, recoveryPath: receiptPath)
     }
+  }
+
+  private func completeObservedHandoff(
+    _ receipt: AgentStartupReceipt, supportDirectory: URL
+  ) async -> Bool {
+    guard await AgentStartupObserver(root: supportDirectory).observes(receipt) else {
+      return false
+    }
+    return (try? AgentStartupReceiptStore(root: supportDirectory).completeObservedHandoff(
+      taskID: receipt.taskID, subtaskID: receipt.subtaskID,
+      sessionID: receipt.providerSessionID)) ?? false
   }
 
   public func recoveryReference(
@@ -544,7 +692,7 @@ public actor QueueObjectiveRouter: QueueObjectiveRouting {
       }
       return reference
     } catch TmuxError.stopped {
-      let outcome = try currentOutcome(runtime, supportDirectory: supportDirectory)
+      let outcome = try await currentOutcome(runtime, supportDirectory: supportDirectory)
       switch outcome {
       case .waiting(nil, _):
         try QueueRouterRuntimeStore(root: supportDirectory).clear(
@@ -580,6 +728,12 @@ public actor QueueObjectiveRouter: QueueObjectiveRouting {
       }
       try await controller.stop(reference)
     } catch TmuxError.stopped { }
+    catch {
+      // A stuck terminal must never hold a router slot: free the reservation
+      // and let the caller surface the orphan session for manual recovery.
+      try? QueueRouterRuntimeStore(root: supportDirectory).clear(matching: runtime.tmuxName)
+      throw error
+    }
     try QueueRouterRuntimeStore(root: supportDirectory).clear(matching: runtime.tmuxName)
   }
 
@@ -587,12 +741,12 @@ public actor QueueObjectiveRouter: QueueObjectiveRouting {
     _ runtime: QueueRouterRuntime,
     supportDirectory: URL
   ) throws -> QueueRouterRuntime {
-    guard let saved = try QueueRouterRuntimeStore(root: supportDirectory).load() else {
+    guard let saved = try QueueRouterRuntimeStore(root: supportDirectory)
+      .load(matching: runtime.tmuxName) else {
       guard runtime.confirmedReference != nil else { throw TmuxError.changed }
       return runtime
     }
-    guard saved.tmuxName == runtime.tmuxName,
-          saved.capability == runtime.capability else {
+    guard saved.capability == runtime.capability else {
       throw TmuxError.changed
     }
     return saved

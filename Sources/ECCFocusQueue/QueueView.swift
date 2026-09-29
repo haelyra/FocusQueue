@@ -348,9 +348,16 @@ struct QueueView: View {
           .buttonStyle(.borderedProminent)
           .minimumHitTarget()
           .disabled(
-            model.isRoutingObjective || model.hasRouterRecovery
+            model.routerCapacityRemaining == 0
               || routerObjectiveDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
           .help("Assign this objective and open its agent")
+      }
+      if model.routerCapacityRemaining < QueueRouterRuntimeStore.maximumActiveRouters {
+        Text(model.routerCapacityRemaining == 0
+          ? "All \(QueueRouterRuntimeStore.maximumActiveRouters) router slots are in use."
+          : "\(model.routerCapacityRemaining) of \(QueueRouterRuntimeStore.maximumActiveRouters) router slots free.")
+          .font(.caption).foregroundStyle(.secondary)
+          .accessibilityLabel("Router capacity: \(model.routerCapacityRemaining) of \(QueueRouterRuntimeStore.maximumActiveRouters) slots free")
       }
       if let status = model.routerStatus {
         Text(status)
@@ -374,6 +381,14 @@ struct QueueView: View {
     }
     .padding(12)
     .notificationSurface(radius: 14)
+    .alert("Router startup repair", isPresented: Binding(
+      get: { model.startupRepairAlert != nil },
+      set: { if !$0 { model.startupRepairAlert = nil } }
+    )) {
+      Button("OK", role: .cancel) { model.startupRepairAlert = nil }
+    } message: {
+      Text(model.startupRepairAlert ?? "")
+    }
   }
 
   private func submitRouterObjective() {

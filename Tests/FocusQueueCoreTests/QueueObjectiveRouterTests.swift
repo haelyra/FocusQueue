@@ -159,13 +159,14 @@ struct QueueObjectiveRouterTests {
       startedAt: Date(), objectiveSHA256: AgentStartupReceipt.promptDigest(original))
     let store = QueueRouterRuntimeStore(root: root)
     try store.save(runtime)
+    let recordURL = try store.url(routerID: runtime.tmuxName)
     var stored = try #require(
-      JSONSerialization.jsonObject(with: Data(contentsOf: store.url)) as? [String: Any])
+      JSONSerialization.jsonObject(with: Data(contentsOf: recordURL)) as? [String: Any])
     stored["objective"] = original
     try JSONSerialization.data(withJSONObject: stored, options: [.prettyPrinted, .sortedKeys])
-      .write(to: store.url, options: .atomic)
+      .write(to: recordURL, options: .atomic)
     try FileManager.default.setAttributes(
-      [.posixPermissions: 0o600], ofItemAtPath: store.url.path)
+      [.posixPermissions: 0o600], ofItemAtPath: recordURL.path)
     var configuration = SetupEnvironment.starter(supportDirectory: root)
     configuration.projects = []
 
@@ -222,33 +223,240 @@ struct QueueObjectiveRouterTests {
     #expect(try store.load()?.confirmedReference == first)
   }
 
-  @Test("An active router reservation prevents a second launcher from starting tmux")
-  func activeReservationPreventsSecondLaunch() async throws {
+  @Test("Concurrent router launches coexist, each with its own reservation record")
+  func parallelRouterLaunchesCoexist() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
-      "queue-router-reservation-\(UUID().uuidString)", isDirectory: true)
+      "queue-router-parallel-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let support = root.appendingPathComponent("support")
-    let active = try QueueRouterRuntime(
-      tmuxName: "fq-router-active", tmuxExecutable: "/mock/tmux", startedAt: Date(),
-      objectiveSHA256: AgentStartupReceipt.promptDigest("First objective"))
-    try QueueRouterRuntimeStore(root: support).save(active)
     let runner = QueueRouterRunner()
     let router = QueueObjectiveRouter(runner: runner)
 
-    do {
+    let first = try await router.launch(
+      objective: "First objective", repositoryPath: root.path,
+      supportDirectory: support, tmuxExecutable: "/mock/tmux")
+    let second = try await router.launch(
+      objective: "Second objective", repositoryPath: root.path,
+      supportDirectory: support, tmuxExecutable: "/mock/tmux")
+
+    #expect(first.tmuxName != second.tmuxName)
+    #expect(first.capability != second.capability)
+    let starts = await runner.calls.filter { $0.arguments.contains("new-session") }
+    #expect(starts.count == 2)
+    let store = QueueRouterRuntimeStore(root: support)
+    let active = try store.activeRouters()
+    #expect(Set(active.map(\.tmuxName)) == Set([first.tmuxName, second.tmuxName]))
+    #expect(try store.load(matching: first.tmuxName)?.capability == first.capability)
+    #expect(try store.load(matching: second.tmuxName)?.capability == second.capability)
+  }
+
+  @Test("Router reservations are refused beyond the concurrency cap and recover after a clear")
+  func routerReservationsRefuseBeyondCapacity() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "queue-router-cap-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let support = root.appendingPathComponent("support")
+    let store = QueueRouterRuntimeStore(root: support)
+    var names: [String] = []
+    for index in 0..<QueueRouterRuntimeStore.maximumActiveRouters {
+      let name = "fq-router-cap-\(index)"
+      names.append(name)
+      let runtime = try QueueRouterRuntime(
+        tmuxName: name, tmuxExecutable: "/mock/tmux", startedAt: Date(),
+        objectiveSHA256: AgentStartupReceipt.promptDigest("Objective \(index)"))
+      #expect(try store.reserve(runtime) == nil)
+    }
+    #expect(try store.activeRouters().count == QueueRouterRuntimeStore.maximumActiveRouters)
+    let overflow = try QueueRouterRuntime(
+      tmuxName: "fq-router-cap-overflow", tmuxExecutable: "/mock/tmux", startedAt: Date(),
+      objectiveSHA256: AgentStartupReceipt.promptDigest("One objective too many"))
+    #expect(throws: TaskContextError.self) {
+      try store.reserve(overflow)
+    }
+    let runner = QueueRouterRunner()
+    let router = QueueObjectiveRouter(runner: runner)
+    await #expect(throws: TaskContextError.self) {
       _ = try await router.launch(
-        objective: "Second objective", repositoryPath: root.path,
+        objective: "One objective too many", repositoryPath: root.path,
         supportDirectory: support, tmuxExecutable: "/mock/tmux")
-      Issue.record("Expected the existing active router to block launch")
-    } catch let error as QueueRouterLaunchUnconfirmedError {
-      #expect(error.runtime.tmuxName == active.tmuxName)
-      #expect(error.runtime.capability == active.capability)
     }
     #expect(await runner.calls.isEmpty)
-    let retained = try QueueRouterRuntimeStore(root: support).load()
-    #expect(retained?.tmuxName == active.tmuxName)
-    #expect(retained?.capability == active.capability)
+
+    try store.clear(matching: names[0])
+    let freed = try QueueRouterRuntime(
+      tmuxName: "fq-router-cap-freed", tmuxExecutable: "/mock/tmux", startedAt: Date(),
+      objectiveSHA256: AgentStartupReceipt.promptDigest("Replacement objective"))
+    #expect(try store.reserve(freed) == nil)
+    #expect(try store.activeRouters().count == QueueRouterRuntimeStore.maximumActiveRouters)
+  }
+
+  @Test("A legacy single-router record counts as one active router until it migrates")
+  func legacyRecordCountsAsActiveRouter() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "queue-router-legacy-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = QueueRouterRuntimeStore(root: root)
+    // Whole-second timestamp: the ISO8601 record format drops fractions.
+    let startedAt = Date(timeIntervalSince1970: 1_760_000_000)
+    let legacy = try QueueRouterRuntime(
+      tmuxName: "fq-router-legacy", tmuxExecutable: "/mock/tmux", startedAt: startedAt,
+      objectiveSHA256: AgentStartupReceipt.promptDigest("Legacy in-flight objective"))
+    try FileManager.default.createDirectory(
+      at: store.url.deletingLastPathComponent(), withIntermediateDirectories: true,
+      attributes: [.posixPermissions: 0o700])
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    try encoder.encode(legacy).write(to: store.url, options: .atomic)
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o600], ofItemAtPath: store.url.path)
+
+    #expect(try store.load() == legacy)
+    #expect(try store.load(matching: legacy.tmuxName) == legacy)
+    #expect(try store.activeRouters() == [legacy])
+    for index in 0..<(QueueRouterRuntimeStore.maximumActiveRouters - 1) {
+      let runtime = try QueueRouterRuntime(
+        tmuxName: "fq-router-new-\(index)", tmuxExecutable: "/mock/tmux", startedAt: Date(),
+        objectiveSHA256: AgentStartupReceipt.promptDigest("New objective \(index)"))
+      #expect(try store.reserve(runtime) == nil)
+    }
+    let overflow = try QueueRouterRuntime(
+      tmuxName: "fq-router-over-legacy", tmuxExecutable: "/mock/tmux", startedAt: Date(),
+      objectiveSHA256: AgentStartupReceipt.promptDigest("Beyond the cap"))
+    #expect(throws: TaskContextError.self) {
+      try store.reserve(overflow)
+    }
+
+    // Saving the legacy router's confirmed identity migrates its record.
+    let reference = TmuxSessionReference(
+      name: legacy.tmuxName, serverPID: 42, createdAt: 7,
+      paneID: "%9", panePID: 99, tty: "/dev/ttys009", executable: "/mock/tmux")
+    let confirmed = QueueRouterRuntime(
+      tmux: reference, startedAt: startedAt, capability: legacy.capability,
+      objectiveSHA256: legacy.objectiveSHA256)
+    try store.save(confirmed)
+    #expect(!FileManager.default.fileExists(atPath: store.url.path))
+    #expect(try store.load(matching: legacy.tmuxName)?.confirmedReference == reference)
+    #expect(try store.activeRouters().count == QueueRouterRuntimeStore.maximumActiveRouters)
+
+    try store.clear(matching: legacy.tmuxName)
+    #expect(try store.load() == nil)
+    #expect(try store.activeRouters().count == QueueRouterRuntimeStore.maximumActiveRouters - 1)
+  }
+
+  @Test("A registered receipt without a finalized handoff completes once its registration is observed")
+  func registeredReceiptCompletesOnObservedRegistration() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "queue-router-observed-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let routeID = UUID().uuidString.lowercased()
+    let subtaskID = UUID().uuidString.lowercased()
+    let sessionID = "11111111-2222-4333-8444-555555555555"
+    let startedAt = Date()
+    let tmux = TmuxSessionReference(
+      name: "fq-router-observed", serverPID: 1, createdAt: 1,
+      paneID: "%1", panePID: 2, tty: "/dev/ttys001", executable: "/mock/tmux")
+    let routeStore = AgentRouteStore(root: root)
+    try routeStore.save(.init(
+      routeID: routeID, prompt: "Route observed work", provider: .codex,
+      source: .init(cwd: "/repo", tmuxName: tmux.name), origin: .queueComposer,
+      inferredProjectID: "focus", repositoryPath: "/repo", createdAt: startedAt))
+    try routeStore.claim(routeID: routeID, subtaskID: subtaskID)
+    try routeStore.setDestination(routeID: routeID, taskID: "FOC-124")
+    let receipts = AgentStartupReceiptStore(root: root)
+    try receipts.save(.init(
+      routeID: routeID, status: .registered, taskID: "FOC-124",
+      subtaskID: subtaskID, title: "Observed work", description: "Do the work",
+      provider: .codex, providerSessionID: sessionID, promptByteCount: 19,
+      promptSHA256: AgentStartupReceipt.promptDigest("Route observed work"),
+      workspace: AgentWorkspace(path: "/repo/worktree", repositoryPath: "/repo"),
+      context: AgentStartupContextPaths(
+        taskPlan: "/support/tasks/FOC-124/plan.md",
+        taskContext: "/support/tasks/FOC-124/context.json",
+        taskLog: "/support/tasks/FOC-124/agent-log.md"),
+      source: .init(cwd: "/repo", tmuxName: tmux.name)))
+    let router = QueueObjectiveRouter()
+    let runtime = QueueRouterRuntime(tmux: tmux, startedAt: startedAt)
+    let pending = try await router.currentOutcome(runtime, supportDirectory: root)
+    #expect(pending == .waiting(
+      routeID: routeID,
+      recoveryPath: try receipts.url(taskID: "FOC-124", subtaskID: subtaskID).path))
+
+    let registration = ExternalAgentRegistration(
+      id: "observed-registration", provider: .codex, sessionID: sessionID,
+      agentID: nil, parentSessionID: nil, cwd: "/repo/worktree", title: "Observed work",
+      taskID: "FOC-124", subtaskID: subtaskID, reason: nil,
+      eventName: "ProcessDiscovery", updatedAt: Date(),
+      tmux: nil, paneID: nil, socketPath: nil)
+    let registrationsDirectory = root.appendingPathComponent(
+      "external-agent-sessions", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: registrationsDirectory, withIntermediateDirectories: true)
+    try JSONEncoder().encode(registration).write(
+      to: registrationsDirectory.appendingPathComponent("observed-registration.json"),
+      options: .atomic)
+
+    let outcome = try await router.currentOutcome(runtime, supportDirectory: root)
+    #expect(outcome == .registered(
+      routeID: routeID, taskID: "FOC-124", subtaskID: subtaskID))
+    #expect(try receipts.load(taskID: "FOC-124", subtaskID: subtaskID)?
+      .handoffCompletedAt != nil)
+  }
+
+  @Test("A router terminal that cannot be closed still frees its reservation")
+  func closeRegisteredRouterClearsReservationWhenStopFails() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "queue-router-orphan-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let routeID = UUID().uuidString.lowercased()
+    let subtaskID = UUID().uuidString.lowercased()
+    let sessionID = "11111111-2222-4333-8444-555555555555"
+    let startedAt = Date()
+    let reference = TmuxSessionReference(
+      name: "fq-router-stuck", serverPID: 321, createdAt: 1000,
+      paneID: "%7", panePID: 456, tty: "/dev/ttys007", executable: "/mock/tmux")
+    let routeStore = AgentRouteStore(root: root)
+    try routeStore.save(.init(
+      routeID: routeID, prompt: "Route stuck-close work", provider: .codex,
+      source: .init(cwd: "/repo", tmuxName: reference.name), origin: .queueComposer,
+      inferredProjectID: "focus", repositoryPath: "/repo", createdAt: startedAt))
+    try routeStore.claim(routeID: routeID, subtaskID: subtaskID)
+    try routeStore.setDestination(routeID: routeID, taskID: "FOC-125")
+    let receipts = AgentStartupReceiptStore(root: root)
+    try receipts.save(.init(
+      routeID: routeID, status: .registered, taskID: "FOC-125",
+      subtaskID: subtaskID, title: "Stuck close", description: "Do the work",
+      provider: .codex, providerSessionID: sessionID, promptByteCount: 22,
+      promptSHA256: AgentStartupReceipt.promptDigest("Route stuck-close work"),
+      workspace: AgentWorkspace(path: "/repo/worktree", repositoryPath: "/repo"),
+      context: AgentStartupContextPaths(
+        taskPlan: "/support/tasks/FOC-125/plan.md",
+        taskContext: "/support/tasks/FOC-125/context.json",
+        taskLog: "/support/tasks/FOC-125/agent-log.md"),
+      source: .init(cwd: "/repo", tmuxName: reference.name),
+      orchestrationPreparedAt: startedAt, handoffCompletedAt: startedAt))
+    let runtime = QueueRouterRuntime(
+      tmux: reference, startedAt: startedAt,
+      objectiveSHA256: AgentStartupReceipt.promptDigest("Route stuck-close work"))
+    let store = QueueRouterRuntimeStore(root: root)
+    try store.save(runtime)
+
+    let router = QueueObjectiveRouter(runner: UnclosableRouterRunner(reference: reference))
+    let outcome = try await router.waitForOutcome(
+      runtime, supportDirectory: root, timeoutSeconds: 0)
+
+    guard case .failed(let failedRouteID, _, let message) = outcome else {
+      Issue.record("Expected a failed outcome, got \(outcome)")
+      return
+    }
+    #expect(failedRouteID == routeID)
+    #expect(message.contains(reference.name))
+    #expect(try store.load(matching: reference.name) == nil)
+    let replacement = try QueueRouterRuntime(
+      tmuxName: "fq-router-replacement", tmuxExecutable: "/mock/tmux", startedAt: Date(),
+      objectiveSHA256: AgentStartupReceipt.promptDigest("Replacement objective"))
+    #expect(try store.reserve(replacement) == nil)
   }
 
   @Test("Confirmed recovery rejects a replacement with the same tmux name")
@@ -404,8 +612,10 @@ struct QueueObjectiveRouterTests {
       supportDirectory: support,
       tmuxExecutable: tmuxExecutable, shellPath: shell.path)
 
+    // Shell redirection creates the capture files before their content lands,
+    // so wait until every capture is non-empty.
     for _ in 0..<40 where ![environmentCapture, argumentCapture, inspectionCapture]
-      .allSatisfy({ FileManager.default.fileExists(atPath: $0.path) }) {
+      .allSatisfy({ ((try? Data(contentsOf: $0))?.isEmpty == false) }) {
       try await Task.sleep(for: .milliseconds(50))
     }
 
@@ -487,5 +697,26 @@ private actor StoppedRouterRunner: ProcessRunning {
     .init(
       exitCode: 1, standardOutput: "", standardError: "no sessions",
       timedOut: false)
+  }
+}
+
+private actor UnclosableRouterRunner: ProcessRunning {
+  private let line: String
+
+  init(reference: TmuxSessionReference) {
+    line = "\(reference.name)|\(reference.serverPID)|\(reference.createdAt)"
+      + "|\(reference.paneID)|\(reference.panePID)|\(reference.tty)|0\n"
+  }
+
+  func run(_ specification: ProcessSpecification) -> ProcessResult {
+    if specification.arguments.contains("kill-pane") {
+      return .init(
+        exitCode: 1, standardOutput: "", standardError: "can't kill pane: no pane",
+        timedOut: false)
+    }
+    if specification.arguments.contains("display-message") {
+      return .init(exitCode: 0, standardOutput: line, standardError: "", timedOut: false)
+    }
+    return .init(exitCode: 0, standardOutput: "", standardError: "", timedOut: false)
   }
 }

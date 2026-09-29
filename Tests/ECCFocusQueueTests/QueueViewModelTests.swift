@@ -67,7 +67,7 @@ struct QueueViewModelTests {
     #expect(model.routerStatus?.contains("ECC-101") == true)
   }
 
-  @Test("A queue objective starts one headless router and clears only after registration")
+  @Test("Parallel queue objectives each start a headless router and clear after registration")
   func queueObjectiveRouterRegistration() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -80,14 +80,43 @@ struct QueueViewModelTests {
       routeID: "route-one", taskID: "ECC-101", subtaskID: "agent-one"))
     let model = await fixture.model(agent: ControlledQueueAgent(), objectiveRouter: router)
     var completion: Bool?
+    var secondCompletion: Bool?
 
     model.routeObjective("Fix exact agent recall") { completion = $0 }
-    model.routeObjective("Duplicate click") { _ in }
+    model.routeObjective("Route a parallel objective") { secondCompletion = $0 }
 
-    try await eventually { !model.isRoutingObjective && completion == true }
-    #expect(await router.launchCount == 1)
-    #expect(await router.objectives == ["Fix exact agent recall"])
+    try await eventually {
+      !model.isRoutingObjective && completion == true && secondCompletion == true
+    }
+    #expect(await router.launchCount == 2)
+    #expect(await router.objectives == ["Fix exact agent recall", "Route a parallel objective"])
     #expect(model.routerStatus?.contains("ECC-101") == true)
+    #expect(!model.hasRouterRecovery)
+  }
+
+  @Test("Objectives route in parallel up to the router capacity, then the next is refused")
+  func routeObjectiveParallelCapacity() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    var configuration = try JSONDecoder().decode(
+      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    configuration.projects[0].repositoryPath = fixture.root.path
+    configuration.tmuxExecutable = "/usr/bin/true"
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
+    let router = ControlledObjectiveRouter(outcome: .waiting(
+      routeID: "route-cap", recoveryPath: "/tmp/route-cap.json"))
+    let model = await fixture.model(agent: ControlledQueueAgent(), objectiveRouter: router)
+
+    for index in 1...QueueRouterRuntimeStore.maximumActiveRouters {
+      model.routeObjective("Objective \(index)") { _ in }
+    }
+    var refused: Bool?
+    model.routeObjective("One objective too many") { refused = $0 }
+
+    #expect(refused == false)
+    #expect(model.routerCapacityRemaining == 0)
+    #expect(model.routerStatus?.contains("\(QueueRouterRuntimeStore.maximumActiveRouters) routers") == true)
+    try await eventually { await router.launchCount == QueueRouterRuntimeStore.maximumActiveRouters }
   }
 
   @Test("A pending router keeps its recovery locator and an empty objective never launches")
@@ -112,8 +141,10 @@ struct QueueViewModelTests {
     try await eventually { !model.isRoutingObjective }
     #expect(model.routerRecoveryPath == "/tmp/route-two.json")
     #expect(model.routerStatus?.contains("still working") == true)
-    model.routeObjective("Do not duplicate the pending route") { _ in }
-    #expect(await router.launchCount == 1)
+    // A pending router no longer blocks a parallel objective below the cap.
+    model.routeObjective("Route a parallel objective") { _ in }
+    try await eventually { await router.launchCount == 2 }
+    try await eventually { !model.isRoutingObjective }
     #expect(model.hasRouterRecovery)
   }
 
@@ -177,7 +208,7 @@ struct QueueViewModelTests {
     #expect(model.hasRouterRecovery)
   }
 
-  @Test("A persisted router recovery blocks duplicate submission after app restart")
+  @Test("A persisted router recovery survives restart and routing continues while capacity remains")
   func queueObjectiveRouterRecoverySurvivesRestart() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -194,11 +225,13 @@ struct QueueViewModelTests {
       routeID: nil, recoveryPath: QueueRouterRuntimeStore(root: fixture.paths.supportDirectory).url.path))
 
     let model = await fixture.model(agent: ControlledQueueAgent(), objectiveRouter: router)
-    model.routeObjective("Do not duplicate after restart") { _ in }
+    // The recovered router occupies one slot; a fresh objective still routes.
+    model.routeObjective("Route a fresh objective after restart") { _ in }
 
+    try await eventually { await router.launchCount == 1 }
+    try await eventually { !model.isRoutingObjective }
     #expect(model.hasRouterRecovery)
-    #expect(await router.launchCount == 0)
-    #expect(model.routerStatus?.contains("previous router") == true)
+    #expect(model.routerStatus?.contains("still working") == true)
   }
 
   @Test("A malformed router recovery blocks routing without blocking queue bootstrap")

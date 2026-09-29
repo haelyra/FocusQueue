@@ -33,6 +33,42 @@ struct ProviderProcessDiscoveryTests {
         #expect(records.first { $0.provider == .claude }?.tty == nil)
     }
 
+    @Test("Codex discovery retains distinct sibling identities and their parent")
+    func codexSiblingMetadata() async throws {
+        let sibling = "44444444-4444-4444-8444-444444444444"
+        let fixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "focus-queue-provider-metadata-\(UUID())", isDirectory: true)
+        let fixture = fixtureRoot.appendingPathComponent(".codex/sessions", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+        try FileManager.default.createDirectory(at: fixture, withIntermediateDirectories: true)
+        let childURL = fixture.appendingPathComponent("rollout-\(child).jsonl")
+        let siblingURL = fixture.appendingPathComponent("rollout-\(sibling).jsonl")
+        for (url, id, source) in [
+            (childURL, child, "{\"subagent\":{\"thread_spawn\":{\"nickname\":\"vibrant-otter\",\"agent_path\":\"/root/registration_hardening\"}}}"),
+            (siblingURL, sibling, "{\"subagent\":{\"thread_spawn\":{\"agent_path\":\"/root/title_audit\"}}}"),
+        ] {
+            try Data("""
+            {"type":"session_meta","payload":{"id":"\(id)","session_id":"\(parent)","parent_thread_id":"\(parent)","source":\(source)}}
+            """.utf8).write(to: url)
+        }
+        let runner = ProviderDiscoveryRunner([
+            "40 ttys040 /opt/codex\n",
+            "p40\nfcwd\nn/tmp/repository\n"
+                + "n/Users/example/.codex/thread-writer-locks/\(child).lock\n"
+                + "n/Users/example/.codex/thread-writer-locks/\(sibling).lock\n"
+                + "n\(childURL.path)\nn\(siblingURL.path)\n",
+        ])
+
+        let records = try await WezTermController(runner: runner)
+            .knownProviderProcesses(requireComplete: true)
+
+        #expect(records.map(\.sessionID).sorted() == [child, sibling].sorted())
+        #expect(records.allSatisfy { $0.parentSessionID == parent })
+        #expect(records.allSatisfy { $0.isSubagent })
+        #expect(Dictionary(uniqueKeysWithValues: records.map { ($0.sessionID, $0.promptHint) })
+            == [child: "registration hardening", sibling: "title audit"])
+    }
+
     @Test("A starting process with no writer lock makes a complete stopped check unknown")
     func noIdentityFailsClosed() async throws {
         let outputs = ["40 ttys040 /opt/codex\n",

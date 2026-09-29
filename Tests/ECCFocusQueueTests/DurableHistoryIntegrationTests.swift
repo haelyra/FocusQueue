@@ -7,7 +7,7 @@ import FocusQueueCore
 @Suite("Durable history integration")
 @MainActor
 struct DurableHistoryIntegrationTests {
-  @Test("Unmanaged registrations are ignored while the saved assignment remains durable")
+  @Test("Skipped registrations remain pending while the saved assignment remains durable")
   func unmanagedRegistrationIsIgnored() async throws {
     let fixture = try await DurableFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -25,7 +25,7 @@ struct DurableHistoryIntegrationTests {
     #expect(Set(library.tasks.filter { taskIDs.contains($0.id) }.map(\.ticketID)) == ["ECC-301"])
     #expect(library.sessions.filter { $0.nativeSessionID == nativeID }.count == 1)
     #expect(try await AgentRegistrationInbox(
-      directory: fixture.paths.agentRegistrationsDirectory).pending().isEmpty)
+      directory: fixture.paths.agentRegistrationsDirectory).pending() == [registration])
   }
 
   @Test("Conversation cache truncation and restart keep every archived message")

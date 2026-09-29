@@ -178,6 +178,30 @@ else:
             ENTRY.begin_tracking(["resume", self.session_id], "resume", self.session_id, self.support)
         self.assertFalse((self.support / "worktrees").exists())
 
+    def test_managed_route_preserves_authorized_launch_correlation(self):
+        launch_id = str(uuid.uuid4())
+        environment = {
+            "FOCUS_QUEUE_LAUNCH_ID": launch_id,
+            "FOCUS_QUEUE_AGENT_CONTEXT": str(
+                self.support / "tracking/placements" / f"{launch_id}.json"),
+            "FOCUS_QUEUE_TASK_ID": "ECC-35",
+            "FOCUS_QUEUE_SUBTASK_ID": launch_id,
+            "FOCUS_QUEUE_RUNTIME_MODE": "tmux",
+        }
+        with mock.patch.dict(os.environ, environment, clear=True):
+            path, record, _ = ENTRY.begin_tracking(
+                ["--cd", str(self.root), "continue routed work"],
+                "new", None, self.support, isolate=False)
+            self.assertEqual(record["launchID"], launch_id)
+            self.assertEqual(os.environ["FOCUS_QUEUE_LAUNCH_ID"], launch_id)
+            parent_payload = path.read_bytes()
+            nested_path, nested, _ = ENTRY.begin_tracking(
+                ["--cd", str(self.root), "inspect nested work"],
+                "new", None, self.support, isolate=False)
+            self.assertNotEqual(nested["launchID"], launch_id)
+            self.assertNotEqual(nested_path, path)
+            self.assertEqual(path.read_bytes(), parent_payload)
+
     def test_resume_uuid_overrides_inherited_parent_task_and_agent(self):
         parent_session = str(uuid.uuid4())
         resumed = self.root / "resumed-workspace"

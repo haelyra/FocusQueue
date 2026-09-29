@@ -20,11 +20,15 @@ public struct AgentActivityEvent: Sendable, Equatable {
     }
 
     public static func latest(in data: Data, provider: AgentProvider, sessionID: String) -> Self? {
+        events(in: data, provider: provider, sessionID: sessionID).last
+    }
+
+    public static func events(in data: Data, provider: AgentProvider, sessionID: String) -> [Self] {
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let plain = ISO8601DateFormatter()
-        var latest: Self?
-        for line in data.split(separator: 10) {
+        var events: [(offset: Int, event: Self)] = []
+        for (offset, line) in data.split(separator: 10).enumerated() {
             guard let record = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
                   let timestamp = record["timestamp"] as? String,
                   let date = fractional.date(from: timestamp) ?? plain.date(from: timestamp) else { continue }
@@ -91,18 +95,31 @@ public struct AgentActivityEvent: Sendable, Equatable {
             guard let kind else { continue }
             let id = (record["uuid"] as? String ?? record["id"] as? String ?? timestamp) + ":\(kind)"
             let event = Self(id: id, date: date, kind: kind, summary: String(summary.prefix(2_000)))
-            if date >= (latest?.date ?? .distantPast) { latest = event }
+            events.append((offset, event))
         }
-        return latest
+        return events.sorted {
+            $0.event.date == $1.event.date ? $0.offset < $1.offset : $0.event.date < $1.event.date
+        }.map(\.event)
     }
 }
 
 public actor AgentActivityObserver {
+    private struct Cursor {
+        var path: String
+        var fileIdentity: String
+        var offset: UInt64
+        var pending = Data()
+        var latest: AgentActivityEvent?
+        var continuityProbe = Data()
+        var bytesRead = 0
+    }
+
     private let codexRoot: URL
     private let claudeRoot: URL
     private var locations: [String: URL] = [:]
     private var searchedAt: [String: Date] = [:]
     private var scans: [String: (stamp: String, files: [URL])] = [:]
+    private var cursors: [String: Cursor] = [:]
 
     public init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
         codexRoot = ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) }
@@ -111,28 +128,149 @@ public actor AgentActivityObserver {
             ?? home.appendingPathComponent(".claude")
     }
 
-    init(codexRoot: URL, claudeRoot: URL) {
+    public init(codexRoot: URL, claudeRoot: URL) {
         self.codexRoot = codexRoot
         self.claudeRoot = claudeRoot
     }
 
-    public func latest(for agent: TaskSubtask) throws -> AgentActivityEvent? {
-        guard let sessionID = agent.sessionID, UUID(uuidString: sessionID) != nil else { return nil }
+    public func events(for agent: TaskSubtask) throws -> [AgentActivityEvent] {
+        guard let sessionID = agent.sessionID, UUID(uuidString: sessionID) != nil else { return [] }
         let key = agent.provider.rawValue + ":" + sessionID.lowercased()
+        let root = agent.provider == .codex ? codexRoot.appendingPathComponent("sessions") : claudeRoot.appendingPathComponent("projects")
+        if let location = locations[key], !FileManager.default.fileExists(atPath: location.path) {
+            locations[key] = nil
+            searchedAt[key] = nil
+            scans[root.path] = nil
+        }
         if locations[key] == nil, Date().timeIntervalSince(searchedAt[key] ?? .distantPast) >= 60 {
             searchedAt[key] = Date()
-            let root = agent.provider == .codex ? codexRoot.appendingPathComponent("sessions") : claudeRoot.appendingPathComponent("projects")
             let suffix = (sessionID + ".jsonl").lowercased()
             locations[key] = sessionFiles(root: root).first {
                 $0.lastPathComponent.lowercased().hasSuffix(suffix)
             }
         }
-        guard let url = locations[key] else { return nil }
+        guard let url = locations[key] else { return [] }
+        let identity = try fileIdentity(at: url)
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         let end = try handle.seekToEnd()
-        try handle.seek(toOffset: end > 262_144 ? end - 262_144 : 0)
-        return AgentActivityEvent.latest(in: try handle.readToEnd() ?? Data(), provider: agent.provider, sessionID: sessionID)
+        let priorBytesRead = cursors[key]?.bytesRead ?? 0
+        let needsReset: Bool
+        if let cursor = cursors[key] {
+            needsReset = cursor.path != url.path || cursor.fileIdentity != identity
+                || end < cursor.offset || !continuityMatches(cursor, in: handle)
+        } else {
+            needsReset = true
+        }
+        if needsReset {
+            let start = end > 262_144 ? end - 262_144 : 0
+            cursors[key] = Cursor(path: url.path, fileIdentity: identity,
+                offset: start, bytesRead: priorBytesRead)
+        }
+        guard var cursor = cursors[key], end > cursor.offset else { return [] }
+        var startedInsideFile = needsReset && cursor.offset > 0 && cursor.pending.isEmpty
+        if end - cursor.offset > 262_144 {
+            cursor.offset = end - 262_144
+            cursor.pending.removeAll(keepingCapacity: false)
+            startedInsideFile = true
+        }
+        try handle.seek(toOffset: cursor.offset)
+        var appended = try handle.readToEnd() ?? Data()
+        cursor.bytesRead += appended.count
+        cursor.offset = end
+        if startedInsideFile {
+            if let newline = appended.firstIndex(of: 10) {
+                appended.removeSubrange(appended.startIndex...newline)
+            } else {
+                appended.removeAll(keepingCapacity: false)
+            }
+        }
+        var available = cursor.pending
+        available.append(appended)
+        if available.count > 262_144 {
+            available = Data(available.suffix(262_144))
+            if let newline = available.firstIndex(of: 10) {
+                available.removeSubrange(available.startIndex...newline)
+            } else {
+                available.removeAll(keepingCapacity: false)
+            }
+        }
+        let parsed = parsedPrefix(available, provider: agent.provider, sessionID: sessionID)
+        cursor.pending = parsed.pending
+        if let event = parsed.events.last,
+           event.date >= (cursor.latest?.date ?? .distantPast) {
+            cursor.latest = event
+        }
+        cursor.continuityProbe = try continuityProbe(endingAt: cursor.offset, in: handle)
+        cursors[key] = cursor
+        return parsed.events
+    }
+
+    public func latest(for agent: TaskSubtask) throws -> AgentActivityEvent? {
+        _ = try events(for: agent)
+        guard let sessionID = agent.sessionID else { return nil }
+        return cursors[agent.provider.rawValue + ":" + sessionID.lowercased()]?.latest
+    }
+
+    /// Test-visible instrumentation for proving that unchanged transcript bytes
+    /// are not reread on every refresh.
+    func bytesRead(for agent: TaskSubtask) -> Int {
+        guard let sessionID = agent.sessionID else { return 0 }
+        return cursors[agent.provider.rawValue + ":" + sessionID.lowercased()]?.bytesRead ?? 0
+    }
+
+    private func fileIdentity(at url: URL) throws -> String {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        return "\(attributes[.systemNumber] ?? ""):\(attributes[.systemFileNumber] ?? "")"
+    }
+
+    private func parsedPrefix(
+        _ data: Data, provider: AgentProvider, sessionID: String
+    ) -> (events: [AgentActivityEvent], pending: Data) {
+        guard !data.isEmpty else { return ([], Data()) }
+        let complete: Data
+        var pending: Data
+        if let newline = data.lastIndex(of: 10) {
+            complete = data[data.startIndex...newline]
+            pending = Data(data[data.index(after: newline)...])
+        } else {
+            complete = Data()
+            pending = data
+        }
+        var events = AgentActivityEvent.events(
+            in: complete, provider: provider, sessionID: sessionID)
+        if !pending.isEmpty,
+           (try? JSONSerialization.jsonObject(with: pending)) != nil {
+            events.append(contentsOf: AgentActivityEvent.events(
+                in: pending, provider: provider, sessionID: sessionID))
+            pending.removeAll(keepingCapacity: false)
+        } else if pending.count > 262_144 {
+            pending = Data(pending.suffix(262_144))
+        }
+        events = events.enumerated().sorted {
+            $0.element.date == $1.element.date
+                ? $0.offset < $1.offset : $0.element.date < $1.element.date
+        }.map(\.element)
+        var latestResultIndex: Int?
+        var latestStateIndex: Int?
+        for (index, event) in events.enumerated() {
+            if case .result = event.kind { latestResultIndex = index }
+            else { latestStateIndex = index }
+        }
+        let relevant = [latestResultIndex, latestStateIndex].compactMap { $0 }.sorted().map { events[$0] }
+        return (relevant, pending)
+    }
+
+    private func continuityMatches(_ cursor: Cursor, in handle: FileHandle) -> Bool {
+        guard !cursor.continuityProbe.isEmpty else { return true }
+        return (try? continuityProbe(endingAt: cursor.offset, in: handle)) == cursor.continuityProbe
+    }
+
+    private func continuityProbe(endingAt offset: UInt64, in handle: FileHandle) throws -> Data {
+        let length = min(UInt64(256), offset)
+        guard length > 0 else { return Data() }
+        try handle.seek(toOffset: offset - length)
+        return try handle.read(upToCount: Int(length)) ?? Data()
     }
 
     /// A directory's modification time and entry count change when a session

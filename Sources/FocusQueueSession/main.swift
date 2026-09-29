@@ -334,7 +334,11 @@ enum SessionRegistrationError: Error, LocalizedError {
                 intent = try routeStore.load(routeID: routeID) ?? intent
             } else if receipt.orchestrationPreparedAt != nil,
                       receipt.status == .registered {
-                if receipt.status == .registered, receipt.handoffCompletedAt == nil,
+                try await AgentRegistrationInbox(
+                    directory: root.appendingPathComponent(
+                        "agent-registrations", isDirectory: true)
+                ).republishRegisteredRoute(receipt, supportDirectory: root)
+                if receipt.handoffCompletedAt == nil,
                    let sessionID = receipt.providerSessionID {
                     _ = try finalizeRouteHandoffIfReady(
                         root: root, routeID: routeID, taskID: taskID,
@@ -605,6 +609,9 @@ enum SessionRegistrationError: Error, LocalizedError {
                     provider: provider, sessionID: sessionID)
                 try receiptStore.register(
                     taskID: taskID, subtaskID: subtaskID, providerSessionID: sessionID)
+                try await publishRouteRegistration(
+                    root: root, taskID: taskID, subtaskID: subtaskID,
+                    provider: provider, sessionID: sessionID.lowercased())
                 _ = try finalizeRouteHandoffIfReady(
                     root: root, routeID: routeID, taskID: taskID,
                     subtaskID: subtaskID, sessionID: sessionID.lowercased(),
@@ -617,6 +624,9 @@ enum SessionRegistrationError: Error, LocalizedError {
         }
         if receipt.status == .registered, receipt.handoffCompletedAt == nil,
            let sessionID = receipt.providerSessionID {
+            try await publishRouteRegistration(
+                root: root, taskID: taskID, subtaskID: subtaskID,
+                provider: provider, sessionID: sessionID.lowercased())
             _ = try finalizeRouteHandoffIfReady(
                 root: root, routeID: routeID, taskID: taskID,
                 subtaskID: subtaskID, sessionID: sessionID,
@@ -634,6 +644,21 @@ enum SessionRegistrationError: Error, LocalizedError {
             routerAction: receipt.handoffCompletedAt != nil
                 ? "exit" : "wait-for-registration",
             replayed: false, startedAt: Date()))
+    }
+
+    private static func publishRouteRegistration(
+        root: URL, taskID: String, subtaskID: String,
+        provider: AgentProvider, sessionID: String
+    ) async throws {
+        guard let context = try await TaskContextStore(root: root).load(ticketID: taskID) else {
+            throw TaskContextError.commandFailed(
+                "The routed agent could not publish its registered session.")
+        }
+        try await AgentRegistrationInbox(
+            directory: root.appendingPathComponent("agent-registrations", isDirectory: true)
+        ).submitRegisteredSession(
+            context: context, subtaskID: subtaskID, provider: provider,
+            sessionID: sessionID, supportDirectory: root)
     }
 
     @discardableResult
@@ -680,7 +705,7 @@ enum SessionRegistrationError: Error, LocalizedError {
         let library = DurableLibraryStore(root: root)
         var state = try await stateStore.load()
         let contexts = try await contextStore.loadAll()
-        let registrations = try await inbox.pending()
+        let registrations = try await inbox.pendingRecords()
         let removedSessions = state.agentSessions.count
         let removedSubtasks = contexts.reduce(0) { $0 + $1.subtasks.count }
 
@@ -1092,7 +1117,8 @@ enum SessionRegistrationError: Error, LocalizedError {
                 ? environment["FOCUS_QUEUE_SUBTASK_ID"] : nil,
             provider: provider, sessionID: event.providerSessionID,
             tmuxName: environment["FOCUS_QUEUE_TMUX_NAME"], tmuxPaneID: environment["TMUX_PANE"],
-            createTaskIfNeeded: event.prompt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false),
+            createTaskIfNeeded: !event.isSubagent
+                && event.prompt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false),
             configuration: config)
         if placement?.status == .blockedConflict {
             throw TaskContextError.commandFailed(placement?.reason ?? "Agent placement conflicts with its working directory.")
@@ -1109,7 +1135,7 @@ enum SessionRegistrationError: Error, LocalizedError {
         }
         let registry = ExternalAgentRegistry(root: root)
         let record = try await registry.register(event, provider: provider,
-            explicitTaskID: explicitTaskID ?? placement?.taskID,
+            explicitTaskID: explicitTaskID ?? (event.isSubagent ? nil : placement?.taskID),
             environment: environment, tmux: runtime, paneID: directPane,
             socketPath: environment["WEZTERM_UNIX_SOCKET"])
         if let receipt = routedReceipt {

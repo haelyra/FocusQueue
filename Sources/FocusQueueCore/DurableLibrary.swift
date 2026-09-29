@@ -21,6 +21,7 @@ public struct LibrarySubtask: Codable, Equatable, Sendable, Identifiable {
     public var status: String
     public var progressSummary: String
     public var lastHeartbeatAt: Date?
+    public var lastOutputAt: Date?
     public var isCurrent = true
     public var parentSubtaskID: String?
     public var mergedIntoSubtaskID: String?
@@ -399,6 +400,7 @@ public actor DurableLibraryStore {
             let entry = LibrarySubtask(id: prior.map { task.subtasks[$0].id } ?? UUID(), legacyID: subtask.id,
                 title: subtask.title, status: subtask.status.rawValue, progressSummary: subtask.progressSummary,
                 lastHeartbeatAt: subtask.lastHeartbeatAt,
+                lastOutputAt: subtask.lastOutputAt,
                 isCurrent: subtask.parentSubtaskID == nil && subtask.mergedIntoSubtaskID == nil,
                 parentSubtaskID: subtask.parentSubtaskID, mergedIntoSubtaskID: subtask.mergedIntoSubtaskID)
             if let prior { task.subtasks[prior] = entry } else { task.subtasks.append(entry) }
@@ -453,7 +455,9 @@ public actor DurableLibraryStore {
             var entry = library.tasks[index].subtasks.first { $0.legacyID == subtask.id }
             if entry == nil {
                 entry = LibrarySubtask(id: UUID(), legacyID: subtask.id, title: subtask.title,
-                    status: subtask.status.rawValue, progressSummary: subtask.progressSummary, lastHeartbeatAt: subtask.lastHeartbeatAt, isCurrent: false)
+                    status: subtask.status.rawValue, progressSummary: subtask.progressSummary,
+                    lastHeartbeatAt: subtask.lastHeartbeatAt, lastOutputAt: subtask.lastOutputAt,
+                    isCurrent: false)
                 library.tasks[index].subtasks.append(entry!)
             }
             if let nativeID = subtask.sessionID, !nativeID.isEmpty {

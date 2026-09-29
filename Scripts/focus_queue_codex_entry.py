@@ -478,7 +478,21 @@ def begin_tracking(arguments, mode, session_id, support, *, isolate=True, on_cha
         if path.is_symlink():
             raise EntryError("Tracking storage is redirected. Restore it before launching an agent.")
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    launch_id = str(uuid.uuid4())
+    inherited_launch = canonical_uuid(os.environ.get("FOCUS_QUEUE_LAUNCH_ID"))
+    inherited_context = os.environ.get("FOCUS_QUEUE_AGENT_CONTEXT")
+    expected_context = (support / "tracking/placements" / f"{inherited_launch}.json"
+                        if inherited_launch else None)
+    preserves_managed_launch = (
+        inherited_launch is not None
+        and not os.environ.get("FOCUS_QUEUE_PROVIDER_ENTRY_LAUNCH_ID")
+        and isinstance(inherited_context, str)
+        and Path(inherited_context).resolve() == expected_context.resolve()
+        and bool(os.environ.get("FOCUS_QUEUE_TASK_ID"))
+        and bool(os.environ.get("FOCUS_QUEUE_SUBTASK_ID"))
+        and os.environ.get("FOCUS_QUEUE_RUNTIME_MODE") in {"tmux", "terminal"}
+    )
+    launch_id = inherited_launch if preserves_managed_launch else str(uuid.uuid4())
+    os.environ["FOCUS_QUEUE_PROVIDER_ENTRY_LAUNCH_ID"] = launch_id
     path = directory / (launch_id + ".json")
     placement_path = placement_directory / (launch_id + ".json")
     source = selected_directory(arguments)

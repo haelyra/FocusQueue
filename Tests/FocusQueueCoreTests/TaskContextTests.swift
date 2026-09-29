@@ -25,6 +25,12 @@ func taskContextSessionBinding() {
     #expect(TaskSessionBinding.providerSession(environment: nested)?.0 == .claude)
     #expect(TaskSessionBinding.providerSession(environment: nested)?.1 == "claude-id")
     #expect(TaskSessionBinding.providerSession(environment: ["CODEX_THREAD_ID": "codex-id", "CLAUDE_SESSION_ID": "claude-id"]) == nil)
+    let codexChild = [
+        "CODEX_THREAD_ID": "child-thread",
+        "CODEX_SESSION_ID": "inherited-root",
+        "FOCUS_QUEUE_PROVIDER": "codex",
+    ]
+    #expect(TaskSessionBinding.providerSession(environment: codexChild)?.1 == "child-thread")
 }
 
 @Test("Task context preserves edited plans, detects save conflicts, and snapshots previous content")
@@ -592,4 +598,87 @@ func staleAgentWithoutTimestampsDoesNotMatch() {
     let agent = staleFixture(status: .idle, attention: .interrupted)
     #expect(agent.lastHeartbeatAt == nil)
     #expect(!agent.isStaleAgentCandidate(now: now))
+}
+
+@Test("Legacy subtasks decode without an output timestamp")
+func taskSubtaskLegacyOutputTimestampDecoding() throws {
+    let data = Data(#"{"id":"legacy","title":"Legacy agent"}"#.utf8)
+    let decoded = try JSONDecoder().decode(TaskSubtask.self, from: data)
+    #expect(decoded.lastOutputAt == nil)
+
+    var current = decoded
+    current.lastOutputAt = Date(timeIntervalSinceReferenceDate: 123)
+    let roundTrip = try JSONDecoder().decode(TaskSubtask.self, from: JSONEncoder().encode(current))
+    #expect(roundTrip.lastOutputAt == current.lastOutputAt)
+}
+
+@Test("Progress and prompt heartbeats do not count as agent output")
+func taskSubtaskOutputTimestampLifecycle() async throws {
+    let root = try contextFixture(); defer { try? FileManager.default.removeItem(at: root) }
+    let store = TaskContextStore(root: root)
+    let initial = try await store.ensureContext(ticket: contextTicket())
+    let sessionID = UUID().uuidString
+    var agent = TaskSubtask(id: "worker", title: "Worker", provider: .codex,
+        sessionID: sessionID, status: .working)
+    agent.workspace = AgentWorkspace(path: root.path, repositoryPath: root.path)
+    _ = try await store.upsertSubtask(ticketID: initial.ticketID, subtask: agent)
+
+    let progressAt = Date(timeIntervalSinceReferenceDate: 200)
+    let progress = try await store.updateProgress(ticketID: initial.ticketID,
+        subtaskID: agent.id, status: .working, summary: "Still working", now: progressAt)
+    #expect(progress.subtasks[0].lastHeartbeatAt == progressAt)
+    #expect(progress.subtasks[0].lastOutputAt == nil)
+
+    let prompt = try await store.registerExternalSession(ticketID: initial.ticketID,
+        provider: .codex, sessionID: sessionID, title: "Later prompt", cwd: root.path,
+        preferredSubtaskID: agent.id, allowFreshAssociation: true,
+        tmux: nil, paneID: nil, socketPath: nil, eventName: "UserPromptSubmit")
+    #expect(prompt.subtasks[0].lastOutputAt == nil)
+
+    let stopped = try await store.registerExternalSession(ticketID: initial.ticketID,
+        provider: .codex, sessionID: sessionID, title: "Worker", cwd: root.path,
+        preferredSubtaskID: agent.id, allowFreshAssociation: true,
+        tmux: nil, paneID: nil, socketPath: nil, eventName: "Stop")
+    #expect(stopped.subtasks[0].lastOutputAt != nil)
+
+    let completionAt = try #require(stopped.subtasks[0].lastOutputAt).addingTimeInterval(1)
+    let completed = try await store.updateProgress(ticketID: initial.ticketID,
+        subtaskID: agent.id, status: .completed, summary: "Done", now: completionAt)
+    #expect(completed.subtasks[0].lastOutputAt == completionAt)
+    let archive = completed.contextDirectory.appendingPathComponent("archive")
+    let snapshots = try FileManager.default.contentsOfDirectory(at: archive,
+        includingPropertiesForKeys: nil).compactMap { directory -> TaskContext? in
+            let data = try? Data(contentsOf: directory.appendingPathComponent("context.json"))
+            return data.flatMap { try? JSONDecoder().decode(TaskContext.self, from: $0) }
+        }
+    #expect(snapshots.contains { $0.subtasks.first?.lastOutputAt == completionAt })
+}
+
+@Test("Explicit results and assignment completion propagate monotonic output time")
+func taskSubtaskOutputTimestampPropagation() async throws {
+    let root = try contextFixture(); defer { try? FileManager.default.removeItem(at: root) }
+    let store = TaskContextStore(root: root)
+    let initial = try await store.ensureContext(ticket: contextTicket())
+    var assignment = TaskSubtask(id: "assignment", title: "Assignment", runtimeMode: nil)
+    assignment.isAssignmentOnly = true
+    var agent = TaskSubtask(id: "agent", title: "Agent", sessionID: UUID().uuidString)
+    agent.parentSubtaskID = assignment.id
+    _ = try await store.upsertSubtask(ticketID: initial.ticketID, subtask: assignment)
+    _ = try await store.upsertSubtask(ticketID: initial.ticketID, subtask: agent)
+
+    let result = try await store.reportAttention(ticketID: initial.ticketID,
+        subtaskID: agent.id, attention: nil, summary: "Review this", result: true)
+    let resultAt = try #require(result.subtasks.first { $0.id == agent.id }?.resultAt)
+    #expect(result.subtasks.first { $0.id == agent.id }?.lastOutputAt == resultAt)
+
+    let completionAt = resultAt.addingTimeInterval(10)
+    let completed = try await store.updateProgress(ticketID: initial.ticketID,
+        subtaskID: assignment.id, status: .completed, summary: "Approved", now: completionAt)
+    #expect(completed.subtasks.first { $0.id == assignment.id }?.lastOutputAt == completionAt)
+    #expect(completed.subtasks.first { $0.id == agent.id }?.lastOutputAt == completionAt)
+
+    let older = try await store.updateProgress(ticketID: initial.ticketID,
+        subtaskID: agent.id, status: .completed, summary: "Late duplicate",
+        now: resultAt.addingTimeInterval(-10))
+    #expect(older.subtasks.first { $0.id == agent.id }?.lastOutputAt == completionAt)
 }

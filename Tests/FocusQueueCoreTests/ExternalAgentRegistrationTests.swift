@@ -100,6 +100,32 @@ struct ExternalAgentRegistrationTests {
         #expect(try await registry.register(event, provider: .codex).taskID == "ECC-101")
     }
 
+    @Test("A provider session with multiple active task owners fails closed")
+    func duplicateActiveOwnersFailClosed() async throws {
+        let (root, store) = try await fixture(twoTasks: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionID = UUID().uuidString.lowercased()
+        for taskID in ["ECC-101", "ECC-102"] {
+            var subtask = TaskSubtask(
+                id: "agent-\(taskID.lowercased())", title: "Duplicate owner",
+                provider: .codex, sessionID: sessionID, status: .working)
+            subtask.workspace = AgentWorkspace(path: root.path, repositoryPath: root.path)
+            _ = try await store.upsertSubtask(ticketID: taskID, subtask: subtask)
+        }
+
+        let record = try await ExternalAgentRegistry(root: root).register(
+            .init(sessionID: sessionID, cwd: root.path, hookEventName: "ProcessDiscovery"),
+            provider: .codex,
+            explicitTaskID: "ECC-101",
+            environment: ["FOCUS_QUEUE_TASK_ID": "ECC-101"])
+
+        #expect(record.taskID == nil)
+        #expect(record.subtaskID == nil)
+        #expect(record.reason?.contains("Several active tasks claim") == true)
+        #expect(try await store.load(ticketID: "ECC-101")?.subtasks.count == 1)
+        #expect(try await store.load(ticketID: "ECC-102")?.subtasks.count == 1)
+    }
+
     @Test("Subagent start uses its own UUID and discovery shares the same receipt")
     func subagentIdentity() async throws {
         let (root, store) = try await fixture()
@@ -124,6 +150,33 @@ struct ExternalAgentRegistrationTests {
             hookEventName: "SubagentStart", agentID: "opaque-child"), provider: .claude)
         #expect(opaque.sessionID == nil)
         #expect(opaque.taskID == nil)
+    }
+
+    @Test("Discovered siblings inherit their uniquely registered parent task")
+    func discoveredSiblingsInheritParentTask() async throws {
+        let (root, store) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = ExternalAgentRegistry(root: root)
+        let parentID = UUID().uuidString
+        let siblings = [UUID().uuidString, UUID().uuidString]
+        let parent = try await registry.register(.init(
+            sessionID: parentID, cwd: root.path, hookEventName: "SessionStart"
+        ), provider: .codex, explicitTaskID: "ECC-101")
+
+        for sibling in siblings {
+            let child = try await registry.register(.init(
+                sessionID: sibling, cwd: root.path, hookEventName: "ProcessDiscovery",
+                parentSessionID: parentID
+            ), provider: .codex)
+            #expect(child.taskID == "ECC-101")
+            #expect(child.subtaskID != parent.subtaskID)
+        }
+
+        let context = try #require(try await store.load(ticketID: "ECC-101"))
+        #expect(context.subtasks.count == 3)
+        #expect(Set(context.subtasks.compactMap(\.sessionID))
+            == Set([parentID.lowercased()] + siblings.map { $0.lowercased() }))
+        #expect(try await registry.registrations().count == 3)
     }
 
     @Test("Concurrent event writers retain one association and a useful prompt title")
@@ -186,6 +239,30 @@ struct ExternalAgentRegistrationTests {
         saved = try #require(try await store.load(ticketID: "ECC-101")?.subtasks.first)
         #expect(saved.title == "Fix blank agent startup")
         #expect(saved.assignmentDescription == "Fix blank agent startup.")
+    }
+
+    @Test("Discovery metadata cannot replace a routed title and description")
+    func discoveryPreservesRoutedIdentity() async throws {
+        let (root, store) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionID = UUID().uuidString
+        var agent = TaskSubtask(
+            id: "routed-agent", title: "Repair agent tracking",
+            assignmentDescription: "Keep routed agents visible and uniquely identified.",
+            provider: .codex, status: .queued)
+        agent.workspace = AgentWorkspace(path: root.path, repositoryPath: root.path)
+        _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: agent)
+
+        _ = try await ExternalAgentRegistry(root: root).register(.init(
+            sessionID: sessionID, cwd: root.path, hookEventName: "ProcessDiscovery",
+            prompt: "Stale launch metadata that must not become the display identity."
+        ), provider: .codex, environment: [
+            "FOCUS_QUEUE_TASK_ID": "ECC-101", "FOCUS_QUEUE_SUBTASK_ID": agent.id,
+        ])
+
+        let saved = try #require(try await store.load(ticketID: "ECC-101")?.subtasks.first)
+        #expect(saved.title == "Repair agent tracking")
+        #expect(saved.assignmentDescription == "Keep routed agents visible and uniquely identified.")
     }
 
     @Test("Discovery never changes completed work or counts presence as activity")

@@ -42,21 +42,29 @@ public struct ExternalAgentEvent: Codable, Sendable {
     public var prompt: String?
     public var agentID: String?
     public var parentSessionID: String?
+    public var discoveredAsSubagent: Bool?
 
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id", cwd, hookEventName = "hook_event_name", prompt
         case agentID = "agent_id", parentSessionID = "parent_session_id"
+        case discoveredAsSubagent = "focus_queue_discovered_subagent"
     }
 
     public init(sessionID: String, cwd: String, hookEventName: String,
-                prompt: String? = nil, agentID: String? = nil, parentSessionID: String? = nil) {
+                prompt: String? = nil, agentID: String? = nil, parentSessionID: String? = nil,
+                discoveredAsSubagent: Bool? = nil) {
         self.sessionID = sessionID; self.cwd = cwd; self.hookEventName = hookEventName
         self.prompt = prompt; self.agentID = agentID; self.parentSessionID = parentSessionID
+        self.discoveredAsSubagent = discoveredAsSubagent
     }
 
-    public var isSubagent: Bool { ["SubagentStart", "SubagentStop"].contains(hookEventName) }
+    public var isSubagent: Bool {
+        discoveredAsSubagent == true || parentSessionID?.isEmpty == false
+            || ["SubagentStart", "SubagentStop"].contains(hookEventName)
+    }
     public var providerSessionID: String? {
-        let candidate = isSubagent ? agentID : sessionID
+        let candidate = ["SubagentStart", "SubagentStop"].contains(hookEventName)
+            ? agentID : sessionID
         return candidate.flatMap { UUID(uuidString: $0) == nil ? nil : $0.lowercased() }
     }
 }
@@ -173,7 +181,10 @@ public actor ExternalAgentRegistry {
             !context.subtasks.contains { $0.id == inheritedSubtask && $0.provider == provider && $0.agentRemovedAt == nil }
         } != false
         let chosen: TaskContext?
-        if let explicit {
+        if existing.count > 1 {
+            chosen = nil
+            record.reason = "Several active tasks claim this provider session. Resolve the duplicate ownership before attaching it."
+        } else if let explicit {
             chosen = contexts.first { $0.ticketID == explicit }
             if chosen == nil { record.reason = "Task context is missing or incomplete. Session retained for placement." }
         } else if (priorDeleted || tombstoned || staleInherited) && existing.isEmpty {

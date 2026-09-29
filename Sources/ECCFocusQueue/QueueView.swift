@@ -473,7 +473,7 @@ struct QueueView: View {
         completionUnread: entry.agent.completionUnread,
         sessionError: model.agentSessionError(for: entry.agent, ticketID: entry.ticket.id))
     } activity: { entry in
-      entry.agent.resultAt ?? entry.agent.lastHeartbeatAt
+      AgentOutputTimestamp.value(for: entry.agent)
     }
   }
 
@@ -2446,10 +2446,10 @@ private struct ArchivedSubtaskRow: View {
             confirmsDeletion = true
           }
         } label: {
-          Image(systemName: "ellipsis.circle")
-            .font(.system(size: 17, weight: .semibold))
+          VerticalOverflowIcon()
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .fixedSize()
         .minimumHitTarget()
         .accessibilityLabel("More options for completed subtask \(subtask.title)")
@@ -2936,10 +2936,10 @@ private struct TicketCard: View {
             deletingSubtask = subtask
           }
         } label: {
-          Image(systemName: "ellipsis.circle")
-            .font(.system(size: 17, weight: .semibold))
+          VerticalOverflowIcon()
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .fixedSize()
         .minimumHitTarget()
         .accessibilityLabel("More options for work item \(subtask.title)")
@@ -3013,13 +3013,13 @@ private struct TicketCard: View {
           archivingAgent = agent
         }
       } label: {
-        Image(systemName: "ellipsis.circle")
-          .font(.system(size: 17, weight: .semibold))
+        VerticalOverflowIcon()
       }
       .menuStyle(.borderlessButton)
+      .menuIndicator(.hidden)
       .fixedSize()
       .minimumHitTarget()
-      .accessibilityLabel("More options for work item \(agent.title)")
+      .accessibilityLabel("More options for agent \(agent.title)")
       .help("Open, edit, complete, inspect, or archive this agent")
     }
     .padding(9)
@@ -3217,8 +3217,6 @@ private struct AgentRowLabel: View {
   let ticket: DashboardTicket
   let model: QueueViewModel
   let isOpening: Bool
-  private let lastOutputFormatter = RelativeDateTimeFormatter()
-
   var body: some View {
     HStack(alignment: .top, spacing: 8) {
       if isOpening {
@@ -3241,23 +3239,29 @@ private struct AgentRowLabel: View {
             hasUnreadCompletion: agent.completionUnread,
             isOpening: isOpening,
             issue: model.agentSessionError(for: agent, ticketID: ticket.id),
-            attention: agent.attention)
+            attention: agent.attention,
+            lastOutputAt: AgentOutputTimestamp.value(for: agent))
         }
         Text(agent.workDescription)
           .font(.system(size: 11))
           .foregroundStyle(.secondary)
           .lineLimit(2)
-        Text("\(agent.provider.displayName) · \(agent.sessionID.map { String($0.suffix(6)) } ?? String(agent.id.suffix(6))) · \(agent.progressSummary.isEmpty ? "Awaiting first update" : agent.progressSummary)")
-          .font(.system(size: 10))
-          .foregroundStyle(.secondary)
-          .lineLimit(2)
-        if let lastOutputAt = agent.resultAt ?? agent.lastHeartbeatAt {
-          Text("Last output \(lastOutputFormatter.localizedString(for: lastOutputAt, relativeTo: Date()))")
-            .font(.caption2)
+        if let progressSummary {
+          Text(progressSummary)
+            .font(.system(size: 10))
             .foregroundStyle(.secondary)
+            .lineLimit(2)
         }
       }
     }
+  }
+
+  private var progressSummary: String? {
+    let summary = agent.progressSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !summary.isEmpty,
+      summary.localizedCaseInsensitiveCompare(agent.workDescription) != .orderedSame
+    else { return nil }
+    return summary
   }
 }
 
@@ -3318,14 +3322,12 @@ private struct AgentViewRow: View {
           }
           .disabled(model.launchingTaskIDs.contains(ticket.id) || ticket.isCompleted)
         } label: {
-          Image(systemName: "ellipsis")
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(Color.primary.opacity(0.05), in: Capsule())
+          VerticalOverflowIcon()
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .fixedSize()
+        .minimumHitTarget()
         .accessibilityLabel("More options for task \(ticket.id)")
       }
       .padding(.leading, 33)
@@ -3338,23 +3340,36 @@ private struct AgentViewRow: View {
   }
 }
 
-private struct AgentStatusIndicator: View {
+struct AgentStatusIndicator: View {
   let status: TaskSubtaskStatus
   let hasUnreadCompletion: Bool
   let isOpening: Bool
   let issue: String?
   var attention: AgentAttention? = nil
+  var lastOutputAt: Date? = nil
 
   @Environment(\.queueAccentStyle) private var accentStyle
 
+  @ViewBuilder
   var body: some View {
-    HStack(spacing: 5) {
+    if lastOutputAt == nil {
+      indicator(now: nil)
+    } else {
+      TimelineView(.periodic(from: .now, by: 60)) { timeline in
+        indicator(now: timeline.date)
+      }
+    }
+  }
+
+  private func indicator(now: Date?) -> some View {
+    let displayLabel = label(now: now)
+    return HStack(spacing: 5) {
       if isOpening {
         ProgressView().controlSize(.mini)
       } else {
         Image(systemName: icon)
       }
-      Text(label)
+      Text(displayLabel)
     }
     .font(.system(size: 10, weight: .semibold))
     .foregroundStyle(color)
@@ -3362,11 +3377,17 @@ private struct AgentStatusIndicator: View {
     .background(color.opacity(0.12), in: Capsule())
     .fixedSize()
     .accessibilityElement(children: .ignore)
-    .accessibilityLabel("Agent status: \(label)")
+    .accessibilityLabel("Agent status: \(displayLabel)")
     .help(issue ?? helpText)
   }
 
-  private var label: String {
+  private func label(now: Date?) -> String {
+    let statusLabel = statusLabel
+    guard let lastOutputAt, let now else { return statusLabel }
+    return "\(statusLabel) · \(AgentOutputAgeFormatter.string(from: lastOutputAt, relativeTo: now))"
+  }
+
+  private var statusLabel: String {
     if isOpening { return "Opening" }
     if issue != nil { return "Problem" }
     if let attention { return attention.label }
@@ -3424,6 +3445,40 @@ private struct AgentStatusIndicator: View {
     case .idle: return "The agent has not sent a progress update within five minutes."
     case .blocked: return "The agent reported a blocker or session problem."
     }
+  }
+}
+
+enum AgentOutputAgeFormatter {
+  static func string(from outputAt: Date, relativeTo now: Date) -> String {
+    let elapsed = max(0, now.timeIntervalSince(outputAt))
+    if elapsed < 60 { return "now" }
+    if elapsed < 3_600 { return "\(max(1, Int(elapsed / 60)))m ago" }
+    if elapsed < 86_400 {
+      let tenths = Int((elapsed / 360).rounded())
+      let hours = tenths / 10
+      let remainder = tenths % 10
+      return remainder == 0 ? "\(hours)h ago" : "\(hours).\(remainder)h ago"
+    }
+    let days = max(1, Int(elapsed / 86_400))
+    return "\(days) \(days == 1 ? "day" : "days") ago"
+  }
+}
+
+enum AgentOutputTimestamp {
+  static func value(for agent: TaskSubtask) -> Date? {
+    agent.lastOutputAt ?? agent.resultAt
+  }
+}
+
+struct VerticalOverflowIcon: View {
+  var body: some View {
+    VStack(spacing: 2) {
+      ForEach(0..<3, id: \.self) { _ in
+        Circle().frame(width: 3, height: 3)
+      }
+    }
+    .foregroundStyle(.secondary)
+    .frame(width: 15, height: 19)
   }
 }
 
@@ -3680,11 +3735,10 @@ private struct AgentSessionPicker: View {
               .foregroundStyle(.secondary).frame(width: 22)
           }
           VStack(alignment: .leading, spacing: 3) {
-            Text(model.subtasks(for: ticket.id).first { $0.id == session.subtaskID }?.title
-              ?? "Managed \(session.provider.displayName) session")
+            Text(agentTitle(session))
               .font(.system(size: 12, weight: .semibold)).lineLimit(2)
-            Text(sessionDetail(session))
-              .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+            Text(agentPurpose(session))
+              .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
             if session.tmux != nil {
               Label("Persistent tmux session", systemImage: "network")
                 .font(.caption2).foregroundStyle(.secondary)
@@ -3695,31 +3749,27 @@ private struct AgentSessionPicker: View {
         .disabled(model.isOpening(session))
         .accessibilityLabel(
           model.isOpening(session)
-            ? "Opening \(session.provider.displayName) agent, \(session.tabTitle)"
-            : "View \(session.provider.displayName) agent, \(session.tabTitle), session \(session.sessionID)"
+            ? "Opening agent \(agentTitle(session))"
+            : "View agent \(agentTitle(session))"
         )
 
       Button { model.archiveAgent(session, from: ticket) } label: {
         Image(systemName: "archivebox").font(.system(size: 13, weight: .semibold))
       }.buttonStyle(.plain).minimumHitTarget()
-        .accessibilityLabel("Archive agent \(session.tabTitle)")
+        .accessibilityLabel("Archive agent \(agentTitle(session))")
         .help("Archive this agent and retain its conversation and workspace")
     }.padding(.horizontal, 10).padding(.vertical, 8)
       .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 10))
   }
 
-  private func displayPath(_ path: String) -> String {
-    path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+  private func agentTitle(_ session: TaskAgentSession) -> String {
+    model.subtasks(for: ticket.id).first { $0.id == session.subtaskID }?.title
+      ?? session.tabTitle
   }
 
-  private func sessionDetail(_ session: TaskAgentSession) -> String {
-    let agent = model.subtasks(for: ticket.id).first { $0.id == session.subtaskID }
-    return ([session.provider.displayName]
-      + [agent?.launchConfiguration?.model, agent?.launchConfiguration?.effort]
-        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-        .filter { !$0.isEmpty }
-      + [displayPath(session.workingDirectory)])
-      .joined(separator: " · ")
+  private func agentPurpose(_ session: TaskAgentSession) -> String {
+    model.subtasks(for: ticket.id).first { $0.id == session.subtaskID }?.workDescription
+      ?? "Managed agent session"
   }
 
  }

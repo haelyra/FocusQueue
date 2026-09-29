@@ -12,7 +12,7 @@ public enum AgentRuntimeMode: String, Codable, CaseIterable, Sendable {
 
 public enum TaskSessionBinding {
     public static func providerSession(environment: [String: String]) -> (AgentProvider, String)? {
-        let codex = (environment["CODEX_SESSION_ID"] ?? environment["CODEX_THREAD_ID"]).flatMap { $0.isEmpty ? nil : $0 }
+        let codex = (environment["CODEX_THREAD_ID"] ?? environment["CODEX_SESSION_ID"]).flatMap { $0.isEmpty ? nil : $0 }
         let claude = environment["CLAUDE_SESSION_ID"].flatMap { $0.isEmpty ? nil : $0 }
         if let hint = environment["FOCUS_QUEUE_PROVIDER"].flatMap(AgentProvider.init(rawValue:)) {
             return (hint == .codex ? codex : claude).map { (hint, $0) }
@@ -78,6 +78,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     public var status: TaskSubtaskStatus
     public var progressSummary: String
     public var lastHeartbeatAt: Date?
+    public var lastOutputAt: Date?
     public var completionUnread: Bool
     public var includeInitializationPrompt: Bool
     public var tmux: TmuxSessionReference?
@@ -214,6 +215,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
                 assignmentDescription: String = "", provider: AgentProvider = .codex,
                 sessionID: String? = nil, status: TaskSubtaskStatus = .queued,
                 progressSummary: String = "", lastHeartbeatAt: Date? = nil,
+                lastOutputAt: Date? = nil,
                 completionUnread: Bool = false, includeInitializationPrompt: Bool = true,
                 tmux: TmuxSessionReference? = nil,
                 runtimeMode: AgentRuntimeMode? = .tmux,
@@ -221,7 +223,8 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         self.id = id; self.title = title; self.assignmentDescription = assignmentDescription
         self.provider = provider; self.sessionID = sessionID
         self.status = status; self.progressSummary = progressSummary
-        self.lastHeartbeatAt = lastHeartbeatAt; self.completionUnread = completionUnread
+        self.lastHeartbeatAt = lastHeartbeatAt; self.lastOutputAt = lastOutputAt
+        self.completionUnread = completionUnread
         self.includeInitializationPrompt = includeInitializationPrompt
         self.tmux = tmux
         self.runtimeMode = runtimeMode
@@ -230,7 +233,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, assignmentDescription, provider, sessionID, status, progressSummary, lastHeartbeatAt, completionUnread, includeInitializationPrompt, tmux
+        case id, title, assignmentDescription, provider, sessionID, status, progressSummary, lastHeartbeatAt, lastOutputAt, completionUnread, includeInitializationPrompt, tmux
         case runtimeMode, terminalPaneID, terminalSocketPath, workspace, workspaceHistory, initialPrompt, agentRemovedAt, tracksCompletion, completionOverrideAt
         case completionTerminalRetained
         case isAssignmentOnly, parentSubtaskID, associatedSubtaskIDs, mergedIntoSubtaskID, attention, resultID, resultSummary, resultAt, observedEventID, observedEventAt, completedRuntimeOpenedAt
@@ -250,6 +253,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
             ? .queued : try values.decodeIfPresent(TaskSubtaskStatus.self, forKey: .status) ?? .queued
         progressSummary = try values.decodeIfPresent(String.self, forKey: .progressSummary) ?? ""
         lastHeartbeatAt = try values.decodeIfPresent(Date.self, forKey: .lastHeartbeatAt)
+        lastOutputAt = try values.decodeIfPresent(Date.self, forKey: .lastOutputAt)
         completionUnread = try values.decodeIfPresent(Bool.self, forKey: .completionUnread) ?? false
         includeInitializationPrompt = try values.decodeIfPresent(Bool.self, forKey: .includeInitializationPrompt) ?? true
         tmux = try values.decodeIfPresent(TmuxSessionReference.self, forKey: .tmux)
@@ -777,6 +781,7 @@ public actor TaskContextStore {
     ) throws -> TaskContext {
         let description = description.trimmingCharacters(in: .whitespacesAndNewlines)
         let workDescription = String((description.isEmpty ? title : description).prefix(2_000))
+        let now = Date()
         return try mutate(ticketID: ticketID) { context in
             let sameSession: (TaskSubtask) -> Bool = {
                 $0.provider == provider && $0.sessionID?.lowercased() == sessionID.lowercased()
@@ -833,7 +838,11 @@ public actor TaskContextStore {
             if ["UserPromptSubmit", "SubagentStart"].contains(eventName) { context.subtasks[index].status = .working }
             else if ["Stop", "SubagentStop", "SessionEnd"].contains(eventName) { context.subtasks[index].status = .idle }
             if eventName != "ProcessDiscovery" || context.subtasks[index].lastHeartbeatAt == nil {
-                context.subtasks[index].lastHeartbeatAt = Date()
+                context.subtasks[index].lastHeartbeatAt = now
+            }
+            if ["Stop", "SubagentStop"].contains(eventName) {
+                context.subtasks[index].lastOutputAt = max(
+                    context.subtasks[index].lastOutputAt ?? .distantPast, now)
             }
         }
     }
@@ -974,6 +983,8 @@ public actor TaskContextStore {
                 context.subtasks[index].resultID = UUID().uuidString
                 context.subtasks[index].resultSummary = String(summary.prefix(2_000))
                 context.subtasks[index].resultAt = context.subtasks[index].lastHeartbeatAt
+                context.subtasks[index].lastOutputAt = max(
+                    context.subtasks[index].lastOutputAt ?? .distantPast, now)
                 if context.subtasks[index].isAssignmentOnly {
                     let target = context.canonicalSubtaskID(subtaskID)
                     for i in context.subtasks.indices where context.subtasks[i].hasAgent && context.assignmentIDs(for: context.subtasks[i]).contains(target) {
@@ -985,6 +996,8 @@ public actor TaskContextStore {
                         context.subtasks[i].resultID = UUID().uuidString
                         context.subtasks[i].resultSummary = String(summary.prefix(2_000))
                         context.subtasks[i].resultAt = now
+                        context.subtasks[i].lastOutputAt = max(
+                            context.subtasks[i].lastOutputAt ?? .distantPast, now)
                     }
                 }
             }
@@ -1093,19 +1106,22 @@ public actor TaskContextStore {
     @discardableResult public func reportAttention(ticketID: String, subtaskID: String,
         attention: AgentAttention?, summary: String, result: Bool = false, expectedHeartbeat: Date? = nil
     ) throws -> TaskContext {
-        try mutate(ticketID: ticketID, archiveChanges: true) { context in
+        let now = Date()
+        return try mutate(ticketID: ticketID, archiveChanges: true) { context in
             guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
             guard context.subtasks[index].status != .completed, context.subtasks[index].agentRemovedAt == nil else { return }
             if let expectedHeartbeat, context.subtasks[index].lastHeartbeatAt != expectedHeartbeat { return }
             context.subtasks[index].attention = attention
             context.subtasks[index].status = attention?.isProblem == true ? .blocked : .idle
             context.subtasks[index].progressSummary = String(summary.prefix(2_000))
-            context.subtasks[index].lastHeartbeatAt = Date()
+            context.subtasks[index].lastHeartbeatAt = now
             if result {
                 context.subtasks[index].completionUnread = true
                 context.subtasks[index].resultID = UUID().uuidString
                 context.subtasks[index].resultSummary = String(summary.prefix(2_000))
                 context.subtasks[index].resultAt = context.subtasks[index].lastHeartbeatAt
+                context.subtasks[index].lastOutputAt = max(
+                    context.subtasks[index].lastOutputAt ?? .distantPast, now)
             }
         }
     }
@@ -1114,25 +1130,47 @@ public actor TaskContextStore {
         try mutate(ticketID: ticketID) { context in
             guard let i = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
             guard context.subtasks[i].isAgentVisible, context.subtasks[i].status != .completed,
-                  context.subtasks[i].observedEventID != event.id,
-                  event.date >= (context.subtasks[i].observedEventAt ?? .distantPast),
-                  event.date >= (context.subtasks[i].lastHeartbeatAt ?? .distantPast) else { return }
-            context.subtasks[i].observedEventID = event.id
-            context.subtasks[i].observedEventAt = event.date
-            context.subtasks[i].lastHeartbeatAt = event.date
-            if !event.summary.isEmpty { context.subtasks[i].progressSummary = event.summary }
+                  context.subtasks[i].observedEventID != event.id else { return }
+            let isNewestObservedEvent = event.date >= (context.subtasks[i].observedEventAt ?? .distantPast)
+            let isCurrentActivity = event.date >= (context.subtasks[i].lastHeartbeatAt ?? .distantPast)
+            let isNewResult: Bool
+            if case .result = event.kind {
+                isNewResult = context.subtasks[i].resultID != event.id
+                    && event.date >= (context.subtasks[i].resultAt ?? .distantPast)
+            } else {
+                isNewResult = false
+            }
+            guard (isNewestObservedEvent && isCurrentActivity) || isNewResult else { return }
+            if isNewestObservedEvent {
+                context.subtasks[i].observedEventID = event.id
+                context.subtasks[i].observedEventAt = event.date
+            }
             switch event.kind {
             case .working:
+                guard isCurrentActivity else { return }
+                context.subtasks[i].lastHeartbeatAt = event.date
+                if !event.summary.isEmpty { context.subtasks[i].progressSummary = event.summary }
                 context.subtasks[i].status = .working
                 context.subtasks[i].attention = nil
             case .result:
-                context.subtasks[i].status = .idle
-                context.subtasks[i].attention = nil
-                context.subtasks[i].completionUnread = true
-                context.subtasks[i].resultID = event.id
-                context.subtasks[i].resultSummary = event.summary
-                context.subtasks[i].resultAt = event.date
+                if isNewResult {
+                    context.subtasks[i].completionUnread = true
+                    context.subtasks[i].resultID = event.id
+                    context.subtasks[i].resultSummary = event.summary
+                    context.subtasks[i].resultAt = event.date
+                    context.subtasks[i].lastOutputAt = max(
+                        context.subtasks[i].lastOutputAt ?? .distantPast, event.date)
+                }
+                if isCurrentActivity {
+                    context.subtasks[i].lastHeartbeatAt = event.date
+                    if !event.summary.isEmpty { context.subtasks[i].progressSummary = event.summary }
+                    context.subtasks[i].status = .idle
+                    context.subtasks[i].attention = nil
+                }
             case .attention(let attention):
+                guard isCurrentActivity else { return }
+                context.subtasks[i].lastHeartbeatAt = event.date
+                if !event.summary.isEmpty { context.subtasks[i].progressSummary = event.summary }
                 context.subtasks[i].status = attention.isProblem ? .blocked : .idle
                 context.subtasks[i].attention = attention
             }

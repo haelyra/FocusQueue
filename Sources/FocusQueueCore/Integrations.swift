@@ -178,6 +178,9 @@ public struct RunningAgentSession: Identifiable, Equatable, Sendable {
     public var id: String { "\(provider.rawValue):\(sessionID):\(pane.paneID)" }
     public let provider: AgentProvider
     public let sessionID: String
+    public let parentSessionID: String?
+    public let isSubagent: Bool
+    public let promptHint: String?
     public let workingDirectory: String
     public let tabTitle: String
     public let pane: WezTermPane
@@ -185,12 +188,18 @@ public struct RunningAgentSession: Identifiable, Equatable, Sendable {
     public init(
         provider: AgentProvider,
         sessionID: String,
+        parentSessionID: String? = nil,
+        isSubagent: Bool = false,
+        promptHint: String? = nil,
         workingDirectory: String,
         tabTitle: String,
         pane: WezTermPane
     ) {
         self.provider = provider
         self.sessionID = sessionID
+        self.parentSessionID = parentSessionID
+        self.isSubagent = isSubagent
+        self.promptHint = promptHint
         self.workingDirectory = workingDirectory
         self.tabTitle = tabTitle
         self.pane = pane
@@ -200,13 +209,19 @@ public struct RunningAgentSession: Identifiable, Equatable, Sendable {
 public struct KnownProviderProcess: Sendable, Equatable {
     public let provider: AgentProvider
     public let sessionID: String
+    public let parentSessionID: String?
+    public let isSubagent: Bool
+    public let promptHint: String?
     public let processID: Int32
     public let tty: String?
     public let cwd: String
 
-    public init(provider: AgentProvider, sessionID: String, processID: Int32, tty: String?, cwd: String) {
+    public init(provider: AgentProvider, sessionID: String, parentSessionID: String? = nil,
+                isSubagent: Bool = false, promptHint: String? = nil,
+                processID: Int32, tty: String?, cwd: String) {
         self.provider = provider; self.sessionID = sessionID; self.processID = processID
-        self.tty = tty; self.cwd = cwd
+        self.parentSessionID = parentSessionID; self.isSubagent = isSubagent
+        self.promptHint = promptHint; self.tty = tty; self.cwd = cwd
     }
 }
 
@@ -1178,8 +1193,14 @@ public actor WezTermController: WezTermControlling {
             if ids.isEmpty, requireComplete {
                 throw WezTermError.actionFailed("A provider process has no exact session identity yet. Retry after startup.")
             }
+            let codexMetadata = process.provider == .codex
+                ? codexSessionMetadataByID(from: candidates) : [:]
             for sessionID in ids.sorted() where seen.insert(process.provider.rawValue + ":" + sessionID).inserted {
+                let metadata = codexMetadata[sessionID]
                 result.append(KnownProviderProcess(provider: process.provider, sessionID: sessionID,
+                    parentSessionID: metadata?.parentSessionID,
+                    isSubagent: metadata?.isSubagent == true,
+                    promptHint: metadata?.promptHint,
                     processID: process.pid, tty: process.tty == "??" ? nil : "/dev/" + process.tty, cwd: cwd))
             }
         }
@@ -1272,7 +1293,7 @@ public actor WezTermController: WezTermControlling {
         guard lsofResult.succeeded else {
             throw WezTermError.actionFailed("Could not verify agent process ownership. No absence was assumed. \(Self.failureDetail(lsofResult))")
         }
-        let sessionsByPID = sessionIDsByProcess(
+        let sessionsByPID = sessionIdentitiesByProcess(
             inLsofOutput: lsofResult.standardOutput,
             providersByPID: providersByPID,
             preferredSession: preferredSession
@@ -1283,17 +1304,21 @@ public actor WezTermController: WezTermControlling {
 
         for process in paneProcesses {
             guard let pane = panesByTTY[process.tty] else { continue }
-            guard let sessionID = sessionsByPID[process.pid] else { continue }
-            let identity = "\(process.provider.rawValue):\(sessionID)"
-            guard seenSessions.insert(identity).inserted else { continue }
+            for session in sessionsByPID[process.pid] ?? [] {
+                let identity = "\(process.provider.rawValue):\(session.sessionID)"
+                guard seenSessions.insert(identity).inserted else { continue }
 
-            discovered.append(RunningAgentSession(
-                provider: process.provider,
-                sessionID: sessionID,
-                workingDirectory: Self.pathFromWezTermCWD(pane.cwd),
-                tabTitle: Self.displayTitle(for: pane),
-                pane: pane
-            ))
+                discovered.append(RunningAgentSession(
+                    provider: process.provider,
+                    sessionID: session.sessionID,
+                    parentSessionID: session.parentSessionID,
+                    isSubagent: session.isSubagent,
+                    promptHint: session.promptHint,
+                    workingDirectory: Self.pathFromWezTermCWD(pane.cwd),
+                    tabTitle: Self.displayTitle(for: pane),
+                    pane: pane
+                ))
+            }
         }
 
         return discovered.sorted {
@@ -1318,11 +1343,11 @@ public actor WezTermController: WezTermControlling {
         }
     }
 
-    private func sessionIDsByProcess(
+    private func sessionIdentitiesByProcess(
         inLsofOutput output: String,
         providersByPID: [Int32: AgentProvider],
         preferredSession: TaskAgentSession?
-    ) -> [Int32: String] {
+    ) -> [Int32: [DiscoveredSessionIdentity]] {
         var currentPID: Int32?
         var outputByPID: [Int32: [String]] = [:]
 
@@ -1336,84 +1361,119 @@ public actor WezTermController: WezTermControlling {
             outputByPID[currentPID, default: []].append(line)
         }
 
-        var sessions: [Int32: String] = [:]
+        var sessions: [Int32: [DiscoveredSessionIdentity]] = [:]
         for (pid, lines) in outputByPID {
             guard let provider = providersByPID[pid] else { continue }
             let candidates = Self.sessionCandidates(
                 for: provider,
                 inLsofOutput: lines.joined(separator: "\n")
             )
-            guard let sessionID = resolvedSessionID(
+            let identities = resolvedSessionIdentities(
                 provider: provider,
                 candidates: candidates,
                 preferredSession: preferredSession
-            ) else { continue }
-            sessions[pid] = sessionID
+            )
+            if !identities.isEmpty { sessions[pid] = identities }
         }
         return sessions
     }
 
-    private func resolvedSessionID(
+    private func resolvedSessionIdentities(
         provider: AgentProvider,
         candidates: [AgentSessionCandidate],
         preferredSession: TaskAgentSession?
-    ) -> String? {
+    ) -> [DiscoveredSessionIdentity] {
+        let codexMetadata = provider == .codex
+            ? codexSessionMetadataByID(from: candidates) : [:]
         if provider == .codex {
             let locks = candidates.filter(\.isWriterLock)
             if !locks.isEmpty {
-                let ownedIDs = Set(locks.map(\.sessionID))
-                let ownedRoots = Set(locks.map { lock in
-                    candidates.first(where: { !$0.isWriterLock && $0.sessionID == lock.sessionID })
-                        .flatMap { canonicalCodexSessionID(from: $0) } ?? lock.sessionID
-                })
-                if let preferredSession, preferredSession.provider == provider {
-                    let preferredID = preferredSession.sessionID.lowercased()
-                    if ownedIDs.contains(preferredID) || ownedRoots.contains(preferredID) {
-                        return preferredID
-                    }
-                }
                 // An open historical transcript is evidence of reading, not
                 // ownership. Only locked threads may identify this process.
-                return ownedRoots.count == 1 ? ownedRoots.first : nil
+                return Dictionary(grouping: locks, by: \.sessionID).keys.sorted().map { sessionID in
+                    let metadata = codexMetadata[sessionID]
+                    return DiscoveredSessionIdentity(
+                        sessionID: sessionID, parentSessionID: metadata?.parentSessionID,
+                        isSubagent: metadata?.isSubagent == true,
+                        promptHint: metadata?.promptHint)
+                }
             }
 
-            let transcriptRoots = Set(candidates.compactMap { canonicalCodexSessionID(from: $0) })
-            if transcriptRoots.count > 1 { return nil }
-            if let root = transcriptRoots.first { return root }
+            let transcriptRoots = Set(candidates.compactMap {
+                Self.canonicalCodexSessionID(for: $0, metadataBySessionID: codexMetadata)
+            })
+            if transcriptRoots.count > 1 { return [] }
+            if let root = transcriptRoots.first {
+                return [.init(sessionID: root, parentSessionID: nil, isSubagent: false,
+                    promptHint: nil)]
+            }
         }
 
         if let preferredSession,
            preferredSession.provider == provider {
             let preferredID = preferredSession.sessionID.lowercased()
             if candidates.contains(where: { $0.sessionID == preferredID }) {
-                return preferredID
+                return [.init(sessionID: preferredID, parentSessionID: nil, isSubagent: false,
+                    promptHint: nil)]
             }
             if provider == .codex,
-               candidates.contains(where: {
-                   canonicalCodexSessionID(from: $0) == preferredID
+               codexMetadata.values.contains(where: {
+                   ($0.parentSessionID ?? $0.sessionID) == preferredID
                }) {
-                return preferredID
+                return [.init(sessionID: preferredID, parentSessionID: nil, isSubagent: false,
+                    promptHint: nil)]
             }
         }
 
         guard provider == .codex else {
             let sessionIDs = Set(candidates.map(\.sessionID))
-            return sessionIDs.count == 1 ? sessionIDs.first : nil
+            return sessionIDs.count == 1
+                ? [.init(sessionID: sessionIDs.first!, parentSessionID: nil, isSubagent: false,
+                    promptHint: nil)] : []
         }
 
         let transcriptRoots = Set(candidates.compactMap { candidate in
-            candidate.isWriterLock ? nil : canonicalCodexSessionID(from: candidate)
+            candidate.isWriterLock ? nil : Self.canonicalCodexSessionID(
+                for: candidate, metadataBySessionID: codexMetadata)
         })
-        if transcriptRoots.count == 1 { return transcriptRoots.first }
-        if transcriptRoots.count > 1 { return nil }
+        if transcriptRoots.count == 1 {
+            return [.init(sessionID: transcriptRoots.first!, parentSessionID: nil,
+                isSubagent: false, promptHint: nil)]
+        }
+        if transcriptRoots.count > 1 { return [] }
 
         let writerLockSessions = Set(
             candidates.filter(\.isWriterLock).map(\.sessionID)
         )
-        return writerLockSessions.count == 1 ? writerLockSessions.first : nil
+        return writerLockSessions.count == 1
+            ? [.init(sessionID: writerLockSessions.first!, parentSessionID: nil,
+                isSubagent: false, promptHint: nil)] : []
     }
 
-    private func canonicalCodexSessionID(from candidate: AgentSessionCandidate) -> String? {
+    private static func canonicalCodexSessionID(
+        for candidate: AgentSessionCandidate,
+        metadataBySessionID: [String: CodexSessionMetadata]
+    ) -> String? {
+        guard let metadata = metadataBySessionID[candidate.sessionID] else { return nil }
+        return metadata.parentSessionID ?? metadata.sessionID
+    }
+
+    private func codexSessionMetadataByID(
+        from candidates: [AgentSessionCandidate]
+    ) -> [String: CodexSessionMetadata] {
+        var result: [String: CodexSessionMetadata] = [:]
+        for candidate in candidates where !candidate.isWriterLock {
+            guard result[candidate.sessionID] == nil,
+                  let metadata = codexSessionMetadata(from: candidate)
+            else { continue }
+            result[metadata.sessionID] = metadata
+        }
+        return result
+    }
+
+    private func codexSessionMetadata(
+        from candidate: AgentSessionCandidate
+    ) -> CodexSessionMetadata? {
         guard !candidate.isWriterLock,
               let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: candidate.path))
         else { return nil }
@@ -1428,14 +1488,59 @@ public actor WezTermController: WezTermControlling {
         let sourceIsSubagent = (payload["source"] as? [String: Any])?["subagent"] != nil
             || payload["thread_source"] as? String == "subagent"
             || payload["parent_thread_id"] is String
-        let identityKeys = sourceIsSubagent
-            ? ["session_id", "parent_thread_id", "id"]
-            : ["id", "session_id"]
-        for key in identityKeys {
+        var sessionID: String?
+        for key in ["id", "session_id"] {
             guard let value = payload[key] as? String,
                   UUID(uuidString: value) != nil
             else { continue }
-            return value.lowercased()
+            sessionID = value.lowercased()
+            break
+        }
+        guard let sessionID else { return nil }
+        var parentSessionID: String?
+        if sourceIsSubagent {
+            for key in ["parent_thread_id", "session_id"] {
+                guard let value = payload[key] as? String,
+                      UUID(uuidString: value) != nil,
+                      value.caseInsensitiveCompare(sessionID) != .orderedSame
+                else { continue }
+                parentSessionID = value.lowercased()
+                break
+            }
+        }
+        return CodexSessionMetadata(
+            sessionID: sessionID, parentSessionID: parentSessionID,
+            isSubagent: sourceIsSubagent,
+            promptHint: sourceIsSubagent ? Self.codexSubagentPromptHint(payload: payload) : nil)
+    }
+
+    private static func codexSubagentPromptHint(payload: [String: Any]) -> String? {
+        guard let source = payload["source"] as? [String: Any],
+              let subagent = source["subagent"] as? [String: Any]
+        else { return nil }
+        let threadSpawn = subagent["thread_spawn"] as? [String: Any]
+        for container in [threadSpawn, subagent].compactMap({ $0 }) {
+            for key in ["agent_path"] {
+                guard var value = container[key] as? String else { continue }
+                value = value.split(separator: "/").last.map(String.init) ?? value
+                value = value.replacingOccurrences(of: "_", with: " ")
+                    .replacingOccurrences(of: "-", with: " ")
+                let normalized = value.split(whereSeparator: \.isWhitespace)
+                    .joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !normalized.isEmpty, !normalized.contains("\0") else { continue }
+                return String(normalized.prefix(200))
+            }
+        }
+        for container in [threadSpawn, subagent].compactMap({ $0 }) {
+            for key in ["nickname", "agent_nickname"] {
+                guard var value = container[key] as? String else { continue }
+                value = value.replacingOccurrences(of: "_", with: " ")
+                    .replacingOccurrences(of: "-", with: " ")
+                let normalized = value.split(whereSeparator: \.isWhitespace)
+                    .joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !normalized.isEmpty, !normalized.contains("\0") else { continue }
+                return String(normalized.prefix(200))
+            }
         }
         return nil
     }
@@ -1571,6 +1676,20 @@ private struct AgentSessionCandidate {
     let sessionID: String
     let path: String
     let isWriterLock: Bool
+}
+
+private struct DiscoveredSessionIdentity {
+    let sessionID: String
+    let parentSessionID: String?
+    let isSubagent: Bool
+    let promptHint: String?
+}
+
+private struct CodexSessionMetadata {
+    let sessionID: String
+    let parentSessionID: String?
+    let isSubagent: Bool
+    let promptHint: String?
 }
 
 public struct VerificationRunResult: Equatable, Sendable {

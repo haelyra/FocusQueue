@@ -54,8 +54,8 @@ private struct ExternalAgentsInboxView: View {
               HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
                   Text(registration.title).font(.headline).lineLimit(3)
-                  Text(registration.provider.displayName + " · " + String((registration.sessionID ?? registration.agentID ?? registration.id).suffix(8)))
-                    .font(.caption.monospaced()).foregroundStyle(.secondary)
+                  Text(registration.workDescription ?? "Work details are required before placement.")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(3)
                 }
                 Spacer()
                 Menu("Assign task") {
@@ -67,8 +67,6 @@ private struct ExternalAgentsInboxView: View {
               }
               Text(registration.cwd).font(.caption).foregroundStyle(.secondary)
                 .lineLimit(2).textSelection(.enabled)
-              Text(registration.workDescription ?? "Work details are required before placement.")
-                .font(.caption).foregroundStyle(.secondary).lineLimit(3)
               if let reason = registration.reason {
                 Text(reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
               }
@@ -229,7 +227,7 @@ struct TaskSessionsView: View {
               }
               HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                  Text(assignment(pane)?.1.title ?? "Shell \(pane.id)").font(.callout)
+                  Text(assignment(pane)?.1.title ?? "Unassigned shell").font(.callout)
                   if let (_, agent) = assignment(pane) {
                     Text(agent.workDescription).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                     if let configuration = launchConfiguration(agent) {
@@ -272,16 +270,16 @@ struct TaskSessionsView: View {
   private func paneTile(_ pane: TmuxPaneSnapshot) -> some View {
     Button { open(pane) } label: {
       VStack(alignment: .leading, spacing: 4) {
-        Label(assignment(pane)?.1.provider.displayName ?? "Terminal", systemImage: "terminal")
-          .font(.caption).foregroundStyle(.secondary)
-        Text(assignment(pane)?.1.title ?? "Shell \(pane.id)").font(.callout.bold()).lineLimit(3)
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
+          Image(systemName: "terminal").foregroundStyle(.secondary)
+          Text(assignment(pane)?.1.title ?? "Unassigned shell").font(.callout.bold()).lineLimit(3)
+        }
         if let (_, agent) = assignment(pane) {
           Text(agent.workDescription).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
           if let configuration = launchConfiguration(agent) {
             Text(configuration).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
           }
         }
-        Text(pane.id).font(.caption2.monospaced()).foregroundStyle(.secondary)
       }.padding(10).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(pane.isActive ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.05),
           in: RoundedRectangle(cornerRadius: 8))
@@ -292,10 +290,10 @@ struct TaskSessionsView: View {
         perform { controller, _ in try await controller.swap(source.reference, with: pane.reference) }
         return true
       }
-      .accessibilityLabel("Open \(assignment(pane)?.1.title ?? pane.id)")
+      .accessibilityLabel("Open \(assignment(pane)?.1.title ?? "unassigned shell")")
       .contextMenu {
         ForEach(taskPanes.filter { $0.id != pane.id }) { other in
-          Button("Swap with \(assignment(other)?.1.title ?? other.id)") {
+          Button("Swap with \(assignment(other)?.1.title ?? "unassigned shell")") {
             perform { controller, _ in try await controller.swap(pane.reference, with: other.reference) }
           }
         }

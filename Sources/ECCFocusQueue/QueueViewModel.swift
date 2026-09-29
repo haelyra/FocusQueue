@@ -240,7 +240,7 @@ final class QueueViewModel {
   @ObservationIgnored private var refreshInFlight = false
   @ObservationIgnored private var projectRefreshPending = false
   @ObservationIgnored private var lastActivityCheck = Date()
-  @ObservationIgnored private let agentActivityObserver = AgentActivityObserver()
+  @ObservationIgnored private let agentActivityObserver: AgentActivityObserver
   @ObservationIgnored private var quotaFallbackedSubtaskKeys: Set<String> = []
   @ObservationIgnored private var quotaFallbackAtByTicketID: [String: Date] = [:]
   @ObservationIgnored private var escalationAutoLaunchInFlight = false
@@ -299,6 +299,7 @@ final class QueueViewModel {
     routerUndoWindowSeconds: Double = 3,
     agentLaunchLogger: AgentLaunchLogger? = nil,
     connectorDiagnosticsRunner: any ProcessRunning = FoundationProcessRunner(),
+    agentActivityObserver: AgentActivityObserver = AgentActivityObserver(),
     discoverExternalAgents: (@Sendable () async throws -> [KnownProviderProcess])? = nil,
     labelTmuxPane: @escaping @Sendable (TmuxSessionReference, String) async -> Void = { reference, title in
       _ = try? await TmuxController().label(reference, title: title)
@@ -352,6 +353,7 @@ final class QueueViewModel {
     self.agentLaunchLogger = agentLaunchLogger
       ?? AgentLaunchLogger(supportDirectory: paths.supportDirectory)
     self.connectorDiagnosticsRunner = connectorDiagnosticsRunner
+    self.agentActivityObserver = agentActivityObserver
   }
 
   var openTickets: [DashboardTicket] {
@@ -1364,15 +1366,17 @@ final class QueueViewModel {
         visibleAgents(for: ticket.id).map { (ticketID: ticket.id, subtask: $0) }
       }
       for entry in observed {
-        if let event = try? await agentActivityObserver.latest(for: entry.subtask) {
-          do {
-            taskContexts[entry.ticketID] = try await taskContextStore.observeActivity(
-              ticketID: entry.ticketID, subtaskID: entry.subtask.id, event: event)
-            if case .attention(.quotaExhausted) = event.kind,
-               let ticket = tickets.first(where: { $0.id == entry.ticketID }) {
-              await applyQuotaFallback(ticket: ticket, subtaskID: entry.subtask.id)
-            }
-          } catch { actionMessages[entry.ticketID] = error.localizedDescription }
+        if let events = try? await agentActivityObserver.events(for: entry.subtask) {
+          for event in events {
+            do {
+              taskContexts[entry.ticketID] = try await taskContextStore.observeActivity(
+                ticketID: entry.ticketID, subtaskID: entry.subtask.id, event: event)
+              if case .attention(.quotaExhausted) = event.kind,
+                 let ticket = tickets.first(where: { $0.id == entry.ticketID }) {
+                await applyQuotaFallback(ticket: ticket, subtaskID: entry.subtask.id)
+              }
+            } catch { actionMessages[entry.ticketID] = error.localizedDescription }
+          }
         }
       }
       let terminalSnapshot = await taskAgentLauncher.runtimeSnapshot(
@@ -2817,11 +2821,13 @@ final class QueueViewModel {
 
   func importAgentRegistrations() async {
     do {
-      let registrations = try await agentRegistrationInbox.pending()
-      guard !registrations.isEmpty else { return }
+      let pendingRecords = try await agentRegistrationInbox.pendingRecords()
+      guard !pendingRecords.isEmpty else { return }
       await captureDurableState(localState)
       let external = try await ExternalAgentRegistry(root: paths.supportDirectory).registrations()
-      for registration in registrations {
+      var imported: [PendingAgentRegistration] = []
+      for pending in pendingRecords {
+        let registration = pending.session
         // CLI hooks can arrive before the app's next context poll or bootstrap.
         if let fresh = try await taskContextStore.load(ticketID: registration.ticketID),
           taskContexts[registration.ticketID] != fresh { taskContexts[registration.ticketID] = fresh }
@@ -2841,6 +2847,7 @@ final class QueueViewModel {
         else { continue }
         upsertAgentSession(registration)
         await bindSubtask(to: registration)
+        imported.append(pending)
         actionMessages[registration.ticketID] = subtask.runtimeMode == .tmux
           ? "\(registration.provider.displayName) is running and registered in tmux. Click \(subtask.title) to open its exact terminal session."
           : registration.paneID != nil
@@ -2849,7 +2856,7 @@ final class QueueViewModel {
       }
       try await stateStore.save(localState)
       await captureDurableState(localState)
-      await agentRegistrationInbox.acknowledge(registrations)
+      await agentRegistrationInbox.acknowledge(imported)
     } catch {
       loadError = "Could not import agent registration: \(error.localizedDescription)"
     }
@@ -2928,7 +2935,7 @@ final class QueueViewModel {
       // Idle polls recover half as often; active agents keep the fast cadence.
       let recoveryDue = lastExternalAgentDiscovery == nil
         || Date().timeIntervalSince(lastExternalAgentDiscovery!) >= (hasActiveVisibleAgents ? 15 : 30)
-      if shouldForceReferenceDiscovery || (!force && recoveryDue) {
+      if shouldForceReferenceDiscovery || recoveryDue {
         // A reference gets one immediate attempt. If it is too early to find
         // the provider UUID, the normal bounded recovery interval takes over.
         forcedIntakeReferenceKeys.formUnion(currentReferenceKeys)
@@ -2954,12 +2961,17 @@ final class QueueViewModel {
               matching: tmux, supportDirectory: paths.supportDirectory)
             { prompt = metadata.initialPrompt }
           }
+          if prompt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+            prompt = process.promptHint
+          }
           let environment: [String: String] = intake.map { receipt in
             receipt.discoveryEnvironment(in:
               receipt.taskID.flatMap { taskContexts[$0.uppercased()] })
           } ?? [:]
           let registration = try await registry.register(ExternalAgentEvent(sessionID: process.sessionID,
-            cwd: process.cwd, hookEventName: "ProcessDiscovery", prompt: prompt), provider: process.provider,
+            cwd: process.cwd, hookEventName: "ProcessDiscovery", prompt: prompt,
+            parentSessionID: process.parentSessionID,
+            discoveredAsSubagent: process.isSubagent), provider: process.provider,
             explicitTaskID: intake?.taskID, environment: environment,
             tmux: tmux, paneID: terminal?.paneID, socketPath: terminal?.socketPath)
           if var session = registration.session {
@@ -3245,7 +3257,7 @@ final class QueueViewModel {
       do {
         await captureDurableState(localState)
         await captureDurableContexts(Array(taskContexts.values))
-        let registrations = try await agentRegistrationInbox.pending()
+        let registrations = try await agentRegistrationInbox.pendingRecords()
         for ticket in dashboard.tickets {
           for subtask in visibleAgents(for: ticket.id) { await retireAgent(subtask, for: ticket) }
         }

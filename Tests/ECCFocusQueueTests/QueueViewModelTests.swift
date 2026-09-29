@@ -291,6 +291,71 @@ struct QueueViewModelTests {
     try await eventually { dashboards.loads > loadBaseline }
   }
 
+  @Test("Discovered Codex subagent metadata supplies a readable title once")
+  func discoveredSubagentPromptHintNamesAgent() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    let parentID = UUID().uuidString.lowercased()
+    let childID = UUID().uuidString.lowercased()
+    let rootPath = fixture.root.path
+    var parent = TaskSubtask(id: "parent-agent", title: "Parent agent", sessionID: parentID)
+    parent.workspace = AgentWorkspace(path: rootPath, repositoryPath: rootPath)
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: parent)
+
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(), terminalController: LabelRecorder(),
+      discoverExternalAgents: {
+      [KnownProviderProcess(
+        provider: .codex, sessionID: childID, parentSessionID: parentID,
+        isSubagent: true, promptHint: "registration fix", processID: 42,
+        tty: nil, cwd: rootPath)]
+      })
+    model.setPanelVisible(false)
+    model.setPanelVisible(true)
+    await model.refresh()
+
+    try await eventually {
+      let context = try await store.load(ticketID: "ECC-101")
+      return context?.subtasks.contains {
+        $0.sessionID == childID && $0.title == "Registration fix"
+          && $0.assignmentDescription == "registration fix"
+      } == true
+    }
+  }
+
+  @Test("Transcript observer retains a result followed by newer working activity")
+  func transcriptObserverAppliesEveryEventInOnePoll() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let sessionID = UUID().uuidString
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: TaskSubtask(
+      id: "observed-worker", title: "Observed worker", provider: .codex,
+      sessionID: sessionID))
+    let transcriptRoot = fixture.root.appendingPathComponent("activity")
+    let sessions = transcriptRoot.appendingPathComponent(".codex/sessions/2026/09/29")
+    try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+    let result = #"{"timestamp":"2026-09-29T18:00:00Z","type":"event_msg","payload":{"type":"turn_complete","thread_id":"\#(sessionID)","last_agent_message":"Ready to review"}}"#
+    let working = #"{"timestamp":"2026-09-29T18:01:00Z","type":"event_msg","payload":{"type":"turn_started","thread_id":"\#(sessionID)"}}"#
+    try Data("\(result)\n\(working)\n".utf8).write(to:
+      sessions.appendingPathComponent("rollout-observer-\(sessionID).jsonl"))
+    let observer = AgentActivityObserver(
+      codexRoot: transcriptRoot.appendingPathComponent(".codex"),
+      claudeRoot: transcriptRoot.appendingPathComponent(".claude"))
+
+    _ = await fixture.model(agent: ControlledQueueAgent(), agentActivityObserver: observer)
+
+    let context = try #require(try await store.load(ticketID: "ECC-101"))
+    let agent = try #require(context.subtasks.first { $0.id == "observed-worker" })
+    #expect(agent.status == .working)
+    #expect(agent.completionUnread)
+    #expect(agent.resultSummary == "Ready to review")
+    #expect(agent.lastOutputAt == ISO8601DateFormatter().date(from: "2026-09-29T18:00:00Z"))
+  }
+
   @Test("Background polling reuses an unchanged dashboard and detects atomic updates")
   func backgroundPollingSkipsUnchangedDashboard() async throws {
     let fixture = try await Fixture()
@@ -2806,6 +2871,7 @@ private struct Fixture {
              routerMonitorIntervalSeconds: Double = 2,
              routerUndoWindowSeconds: Double = 0,
              connectorDiagnosticsRunner: any ProcessRunning = FoundationProcessRunner(),
+             agentActivityObserver: AgentActivityObserver = AgentActivityObserver(),
              discoverExternalAgents: @escaping @Sendable () async throws -> [KnownProviderProcess] = { [] },
              labelTmuxPane: @escaping @Sendable (TmuxSessionReference, String) async -> Void = { _, _ in },
              identifyManagedAgent: (@Sendable (TaskSubtask, WezTermConfiguration) async throws -> String?)? = nil,
@@ -2821,6 +2887,7 @@ private struct Fixture {
       routerMonitorIntervalSeconds: routerMonitorIntervalSeconds,
       routerUndoWindowSeconds: routerUndoWindowSeconds,
       connectorDiagnosticsRunner: connectorDiagnosticsRunner,
+      agentActivityObserver: agentActivityObserver,
       discoverExternalAgents: discoverExternalAgents,
       labelTmuxPane: labelTmuxPane,
       maintenanceEnabled: false,

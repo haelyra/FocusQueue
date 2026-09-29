@@ -1094,8 +1094,8 @@ func wezTermAgentDiscoveryIsBatched() async throws {
   #expect(invocations[2].arguments == ["-a", "-p", "30447,64829", "-Fn"])
 }
 
-@Test("Running Codex discovery resolves a subagent transcript to its canonical root")
-func wezTermCodexDiscoveryUsesCanonicalRootSession() async throws {
+@Test("Running Codex discovery preserves a subagent identity and its canonical parent")
+func wezTermCodexDiscoveryPreservesSubagentSession() async throws {
   let rootSessionID = "01a0696a-6348-79f0-8dbd-0c421c0bea7c"
   let subagentSessionID = "01a069ab-f291-75e2-836e-e9c47a86f0f6"
   let fixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -1107,7 +1107,7 @@ func wezTermCodexDiscoveryUsesCanonicalRootSession() async throws {
   let embeddedInstructions = String(repeating: "x", count: 70_000)
   try Data(
     """
-    {"type":"session_meta","payload":{"id":"\(subagentSessionID)","session_id":"\(rootSessionID)","parent_thread_id":"\(rootSessionID)","source":{"subagent":{}},"base_instructions":"\(embeddedInstructions)"}}
+    {"type":"session_meta","payload":{"id":"\(subagentSessionID)","session_id":"\(rootSessionID)","parent_thread_id":"\(rootSessionID)","source":{"subagent":{"thread_spawn":{"nickname":"registration-fix"}}},"base_instructions":"\(embeddedInstructions)"}}
     """.utf8
   ).write(to: subagentURL)
 
@@ -1131,7 +1131,10 @@ func wezTermCodexDiscoveryUsesCanonicalRootSession() async throws {
     configuration: WezTermConfiguration(executable: "/mock/wezterm")
   )
 
-  #expect(agents.map(\.sessionID) == [rootSessionID])
+  #expect(agents.map(\.sessionID) == [subagentSessionID])
+  #expect(agents.map(\.parentSessionID) == [rootSessionID])
+  #expect(agents.allSatisfy { $0.isSubagent })
+  #expect(agents.map(\.promptHint) == ["registration fix"])
 }
 
 @Test("Running Codex discovery rejects multiple unrelated root sessions in one process")
@@ -1192,8 +1195,153 @@ func agentRegistrationInboxRoundTrip() async throws {
 
   try await inbox.submit(session)
   #expect(try await inbox.pending() == [session])
-  await inbox.acknowledge([session])
+  await inbox.acknowledge(try await inbox.pendingRecords())
   #expect(try await inbox.pending().isEmpty)
+}
+
+@Test("Agent registration inbox coalesces repeated identity publication")
+func agentRegistrationInboxIsIdempotent() async throws {
+  let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+    "focus-queue-agent-registration-idempotent-\(UUID())", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let inbox = AgentRegistrationInbox(directory: directory)
+  try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+  let legacy = TaskAgentSession(
+    ticketID: "ECC-035", provider: .codex,
+    sessionID: "11111111-2222-3333-4444-555555555555",
+    tabTitle: "Legacy", workingDirectory: "/Users/test/worktree", paneID: 32)
+  try JSONEncoder().encode(legacy).write(
+    to: directory.appendingPathComponent("\(legacy.id.uuidString).json"))
+  for paneID in [33, 34] {
+    try await inbox.submit(TaskAgentSession(
+      ticketID: "ECC-035", provider: .codex,
+      sessionID: "11111111-2222-3333-4444-555555555555",
+      tabTitle: "Agent", workingDirectory: "/Users/test/worktree", paneID: paneID))
+  }
+
+  let pending = try await inbox.pending()
+  #expect(pending.count == 1)
+  #expect(pending.first?.paneID == 34)
+}
+
+@Test("Agent registration acknowledgement retains a newer stable-file generation")
+func agentRegistrationInboxAcknowledgesExactGeneration() async throws {
+  let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+    "focus-queue-agent-registration-generation-\(UUID())", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let inbox = AgentRegistrationInbox(directory: directory)
+  let sessionID = "11111111-2222-3333-4444-555555555555"
+  try await inbox.submit(TaskAgentSession(
+    ticketID: "ECC-035", provider: .codex, sessionID: sessionID,
+    tabTitle: "First", workingDirectory: "/Users/test/worktree", paneID: 33))
+  let firstGeneration = try await inbox.pendingRecords()
+
+  try await inbox.submit(TaskAgentSession(
+    ticketID: "ECC-035", provider: .codex, sessionID: sessionID,
+    tabTitle: "Newer", workingDirectory: "/Users/test/worktree", paneID: 34))
+  await inbox.acknowledge(firstGeneration)
+
+  let retained = try await inbox.pending()
+  #expect(retained.count == 1)
+  #expect(retained.first?.tabTitle == "Newer")
+  #expect(retained.first?.paneID == 34)
+}
+
+@Test("Agent registration inbox rejects redirected storage and uses private permissions")
+func agentRegistrationInboxUsesPrivateStorage() async throws {
+  let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+    "focus-queue-agent-registration-private-\(UUID())", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  let directory = root.appendingPathComponent("inbox", isDirectory: true)
+  let session = TaskAgentSession(
+    ticketID: "ECC-035", provider: .codex,
+    sessionID: "11111111-2222-3333-4444-555555555555",
+    tabTitle: "Private", workingDirectory: "/Users/test/worktree", paneID: 33)
+  try await AgentRegistrationInbox(directory: directory).submit(session)
+  let directoryMode = try FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as? NSNumber
+  let payload = try #require(try FileManager.default.contentsOfDirectory(
+    at: directory, includingPropertiesForKeys: nil).first)
+  let payloadMode = try FileManager.default.attributesOfItem(atPath: payload.path)[.posixPermissions] as? NSNumber
+  #expect(directoryMode?.intValue == 0o700)
+  #expect(payloadMode?.intValue == 0o600)
+
+  let target = root.appendingPathComponent("target", isDirectory: true)
+  let redirected = root.appendingPathComponent("redirected", isDirectory: true)
+  try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+  try FileManager.default.createSymbolicLink(at: redirected, withDestinationURL: target)
+  await #expect(throws: TaskContextError.self) {
+    try await AgentRegistrationInbox(directory: redirected).submit(session)
+  }
+}
+
+@Test("A registered route session publishes its canonical task row immediately")
+func routedAgentRegistrationPublishesToInbox() async throws {
+  let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+    "focus-queue-routed-registration-\(UUID())", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  let store = TaskContextStore(root: root)
+  var context = try await store.ensureContext(ticket: DashboardTicket(
+    id: "ECC-035", title: "Agent tracking", status: "open", summary: ""))
+  let sessionID = UUID().uuidString.lowercased()
+  var subtask = TaskSubtask(
+    id: UUID().uuidString.lowercased(), title: "Register routed agents",
+    assignmentDescription: "Publish the successor as soon as its identity is known.",
+    provider: .codex, sessionID: sessionID)
+  subtask.workspace = AgentWorkspace(path: "/Users/test/worktree", repositoryPath: "/Users/test")
+  context = try await store.upsertSubtask(ticketID: context.ticketID, subtask: subtask)
+  let inbox = AgentRegistrationInbox(
+    directory: root.appendingPathComponent("agent-registrations", isDirectory: true))
+
+  try await inbox.submitRegisteredSession(
+    context: context, subtaskID: subtask.id, provider: .codex,
+    sessionID: sessionID, supportDirectory: root)
+
+  let published = try #require(try await inbox.pending().first)
+  #expect(published.ticketID == "ECC-035")
+  #expect(published.subtaskID == subtask.id)
+  #expect(published.sessionID == sessionID)
+  #expect(published.tabTitle == "Register routed agents")
+}
+
+@Test("A registered route replay republishes a missing pre-upgrade inbox record")
+func registeredRouteReplayRepublishesCanonicalSession() async throws {
+  let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+    "focus-queue-routed-registration-replay-\(UUID())", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  let store = TaskContextStore(root: root)
+  var context = try await store.ensureContext(ticket: DashboardTicket(
+    id: "ECC-035", title: "Agent tracking", status: "open", summary: ""))
+  let sessionID = UUID().uuidString.lowercased()
+  var subtask = TaskSubtask(
+    id: UUID().uuidString.lowercased(), title: "Recover route publication",
+    assignmentDescription: "Republish the canonical route registration.",
+    provider: .codex, sessionID: sessionID)
+  subtask.workspace = AgentWorkspace(path: "/Users/test/worktree", repositoryPath: "/Users/test")
+  context = try await store.upsertSubtask(ticketID: context.ticketID, subtask: subtask)
+  let receipt = AgentStartupReceipt(
+    routeID: UUID().uuidString.lowercased(), status: .registered,
+    taskID: context.ticketID, subtaskID: subtask.id,
+    title: subtask.title, description: subtask.workDescription,
+    provider: .codex, providerSessionID: sessionID,
+    promptByteCount: 1, promptSHA256: AgentStartupReceipt.promptDigest("x"),
+    workspace: try #require(subtask.workspace),
+    context: .init(capsule: "/tmp/capsule", projectPlan: nil,
+      taskPlan: context.planPath, taskContext: context.contextDirectory
+        .appendingPathComponent("context.json").path,
+      taskLog: context.contextDirectory.appendingPathComponent("agent-log.md").path),
+    source: .init(cwd: "/Users/test/worktree"),
+    orchestrationPreparedAt: Date(), handoffCompletedAt: Date())
+  let inbox = AgentRegistrationInbox(
+    directory: root.appendingPathComponent("agent-registrations", isDirectory: true))
+  #expect(try await inbox.pending().isEmpty)
+
+  try await inbox.republishRegisteredRoute(receipt, supportDirectory: root)
+
+  let published = try #require(try await inbox.pending().first)
+  #expect(published.ticketID == context.ticketID)
+  #expect(published.subtaskID == subtask.id)
+  #expect(published.sessionID == sessionID)
+  #expect(published.tabTitle == subtask.title)
 }
 
 @Test("Agent terminal labels keep the task stable and distinguish the session")

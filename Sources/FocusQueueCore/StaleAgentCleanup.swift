@@ -4,11 +4,11 @@ extension TaskSubtask {
     /// Inactivity window after which an unowned agent becomes a cleanup candidate.
     public static let staleAgentInactivityThreshold: TimeInterval = 5 * 24 * 60 * 60
 
-    /// Most recent recorded activity: the later of the last heartbeat or result.
+    /// Most recent recorded activity across presence and output timestamps.
     /// Records without either fall back to their earliest known timestamp so they
     /// can still age out; agents with no timestamps at all are never stale.
     public var staleAgentLastActivity: Date? {
-        if let latest = [lastHeartbeatAt, resultAt].compactMap({ $0 }).max() { return latest }
+        if let latest = [lastHeartbeatAt, lastOutputAt, resultAt].compactMap({ $0 }).max() { return latest }
         return [observedEventAt, completionOverrideAt].compactMap { $0 }.min()
     }
 

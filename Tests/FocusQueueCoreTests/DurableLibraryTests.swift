@@ -47,6 +47,20 @@ struct DurableLibraryTests {
         #expect(library.documents.contains { $0.kind == "central-plan" })
     }
 
+    @Test("Durable library retains output time independently from heartbeat")
+    func outputTimestamp() async throws {
+        let root = try libraryFixture(); defer { try? FileManager.default.removeItem(at: root) }
+        var context = try makeLibraryContext(root)
+        let outputAt = Date(timeIntervalSinceReferenceDate: 654)
+        context.subtasks[0].lastOutputAt = outputAt
+        context.subtasks[0].lastHeartbeatAt = outputAt.addingTimeInterval(30)
+        let store = DurableLibraryStore(root: root)
+        _ = try await store.reconcile(contexts: [context])
+        let subtask = try #require(try await store.snapshot().tasks.first?.subtasks.first)
+        #expect(subtask.lastOutputAt == outputAt)
+        #expect(subtask.lastHeartbeatAt == context.subtasks[0].lastHeartbeatAt)
+    }
+
     @Test("Reassignment and detachment retain previous task links")
     func assignmentHistory() async throws {
         let root = try libraryFixture(); defer { try? FileManager.default.removeItem(at: root) }

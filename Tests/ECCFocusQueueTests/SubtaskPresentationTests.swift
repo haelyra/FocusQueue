@@ -57,6 +57,58 @@ struct SubtaskPresentationTests {
     #expect(presentation.agents.map(\.id) == ["visible"])
   }
 
+  @Test("Last output age uses compact deterministic boundaries")
+  func compactLastOutputAge() {
+    let now = Date(timeIntervalSinceReferenceDate: 1_000_000)
+    #expect(AgentOutputAgeFormatter.string(from: now.addingTimeInterval(-59), relativeTo: now) == "now")
+    #expect(AgentOutputAgeFormatter.string(from: now.addingTimeInterval(-60), relativeTo: now) == "1m ago")
+    #expect(AgentOutputAgeFormatter.string(from: now.addingTimeInterval(-1_800), relativeTo: now) == "30m ago")
+    #expect(AgentOutputAgeFormatter.string(from: now.addingTimeInterval(-12_600), relativeTo: now) == "3.5h ago")
+    #expect(AgentOutputAgeFormatter.string(from: now.addingTimeInterval(-86_400), relativeTo: now) == "1 day ago")
+    #expect(AgentOutputAgeFormatter.string(from: now.addingTimeInterval(-172_800), relativeTo: now) == "2 days ago")
+    #expect(AgentOutputAgeFormatter.string(from: now.addingTimeInterval(60), relativeTo: now) == "now")
+  }
+
+  @Test("Last output timestamp migrates from result time without using heartbeat")
+  func legacyLastOutputTimestamp() {
+    let heartbeatAt = Date(timeIntervalSinceReferenceDate: 1_000_000)
+    let resultAt = heartbeatAt.addingTimeInterval(-600)
+    let outputAt = heartbeatAt.addingTimeInterval(-60)
+
+    var legacy = TaskSubtask(
+      title: "Legacy agent", status: .completed, lastHeartbeatAt: heartbeatAt)
+    legacy.resultAt = resultAt
+    #expect(AgentOutputTimestamp.value(for: legacy) == resultAt)
+
+    var current = legacy
+    current.lastOutputAt = outputAt
+    #expect(AgentOutputTimestamp.value(for: current) == outputAt)
+
+    var heartbeatOnly = TaskSubtask(
+      title: "Heartbeat only", status: .working, lastHeartbeatAt: heartbeatAt)
+    heartbeatOnly.resultAt = nil
+    #expect(AgentOutputTimestamp.value(for: heartbeatOnly) == nil)
+  }
+
+  @Test("Production agent status renders last output in the status chip")
+  func agentStatusRendersLastOutputAge() {
+    let view = AgentStatusIndicator(
+      status: .working,
+      hasUnreadCompletion: true,
+      isOpening: false,
+      issue: nil,
+      lastOutputAt: Date().addingTimeInterval(-1_800))
+      .frame(width: 220, height: 44)
+    let host = NSHostingView(rootView: view)
+    host.layoutSubtreeIfNeeded()
+    #expect(host.fittingSize.width > 0)
+    #expect(host.fittingSize.height >= 44)
+    let overflow = NSHostingView(rootView: VerticalOverflowIcon())
+    overflow.layoutSubtreeIfNeeded()
+    #expect(overflow.fittingSize.width >= 15)
+    #expect(overflow.fittingSize.height >= 19)
+  }
+
   private func height<V: View>(of view: V) -> CGFloat {
     let host = NSHostingView(rootView: view.frame(width: 150))
     host.layoutSubtreeIfNeeded()

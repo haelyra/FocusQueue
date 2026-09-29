@@ -70,6 +70,7 @@ extension TaskContext {
                 provider: agent.provider, status: agent.status,
                 progressSummary: agent.progressSummary,
                 lastHeartbeatAt: agent.lastHeartbeatAt,
+                lastOutputAt: agent.lastOutputAt,
                 includeInitializationPrompt: agent.includeInitializationPrompt,
                 runtimeMode: nil)
             assignment.workspace = agent.workspace

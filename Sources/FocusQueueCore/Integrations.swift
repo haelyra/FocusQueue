@@ -1693,12 +1693,19 @@ private struct CodexSessionMetadata {
 }
 
 public struct VerificationRunResult: Equatable, Sendable {
+    public enum Verdict: String, Equatable, Sendable {
+        case accepted
+        case needsWork = "needs-work"
+    }
+
     public let succeeded: Bool
+    public let verdict: Verdict?
     public let summary: String
     public let log: String
 
-    public init(succeeded: Bool, summary: String, log: String) {
+    public init(succeeded: Bool, verdict: Verdict? = nil, summary: String, log: String) {
         self.succeeded = succeeded
+        self.verdict = verdict
         self.summary = summary
         self.log = log
     }
@@ -1734,6 +1741,7 @@ public actor CodexCompletionVerifier: CompletionVerifying {
         guard configuration.enabled else {
             return VerificationRunResult(
                 succeeded: false,
+                verdict: nil,
                 summary: "Codex completion review is disabled in config.json.",
                 log: "Verifier disabled."
             )
@@ -1741,11 +1749,12 @@ public actor CodexCompletionVerifier: CompletionVerifying {
 
         let promptURL = requestFile.deletingPathExtension().appendingPathExtension("prompt.txt")
         let prompt = """
-        Review completion intent for ticket \(ticketID).
+        Review completion intent for ticket \(ticketID). This is an evidence-gathering review, not a request to judge only the contents of the request record.
         The local request record is at \(requestFile.path).
-        Read the request first. Lead your response with one short sentence stating the specific missing evidence or accepted result, then details. Do not lead with "Completion rejected", a subtask UUID, or a generic verdict.
-        Re-read the workspace instructions and repository evidence. Do not trust the checkbox as completion evidence. For parent task closure only, read the canonical dashboard, PR state, and doneWhen; never resolve a parent while resolutionPrs is unmerged. For subtask closure, assess only that assignment and its recorded changes and checks. Do not require the entire parent's success criteria, merged PRs, or unrelated work to accept a subtask. A user-requested undo or cancellation is a valid completed assignment when verified. Do not require live UI automation where workspace instructions prohibit it; explain any remaining manual check concisely. Do not inspect or transmit unrelated private notes.
-        The request may contain contextPath and subtaskID. Read the central plan and context.json in contextPath when present. If subtaskID is present, review only that named subtask; do not close the parent task. After checks actually pass, run focus-queue-session complete <ticketID> <subtaskID> "concise evidence and checks" using the request's actual identifiers. On disagreement, leave the subtask open and explain the missing evidence. For parent completion, require all subtasks completed. Preserve worktrees and branches: the host archives context and performs guarded cleanup after canonical completion. Never force-remove, reset, or merge branches as part of this review.
+        Read the request first. It contains exact dashboardPath, workspacePath, contextPath, taskTitle, doneWhen, and optional subtaskID pointers when available. Then actively gather evidence from the canonical dashboard entry; context.json; the central plan; relevant agent-log entries; the assigned workspace's status, commits, and diff; linked PR state; and the affected workflow's recorded or runnable checks. Do not reject merely because evidence is absent from the sparse request JSON. Search the named sources yourself and run safe, relevant read-only or verification commands when evidence is incomplete.
+        Re-read the workspace instructions and repository evidence. Do not trust the checkbox, prose claims, a clean tree, or process exit alone as completion evidence. Compare the requested outcome and doneWhen against concrete implementation and verification. For parent task closure only, require every completion-tracked subtask to be complete and never accept while a required resolutionPr is unmerged. For subtask closure, assess only that assignment and its recorded changes and checks. Do not require the entire parent's success criteria, merged PRs, or unrelated work to accept a subtask. A user-requested undo or cancellation is a valid completed assignment when verified. Do not require live UI automation where workspace instructions prohibit it; state the exact remaining manual check only when it is material. Do not inspect or transmit unrelated private notes.
+        This review is read-only. Do not edit the dashboard, task context, branches, worktrees, or source files, and do not run a completion command. The host applies an accepted verdict atomically and retains review evidence. Preserve worktrees and branches; never force-remove, reset, merge, commit, push, or install as part of this review.
+        Your first non-empty output line must be exactly ACCEPT or NEEDS_WORK. Use ACCEPT only when the available evidence demonstrates the applicable requested outcome and checks. Use NEEDS_WORK for a real evidence or implementation gap. After that marker, lead with one short sentence stating the accepted result or the specific missing evidence, then concise details. Do not use a generic verdict sentence.
         """
         try files.write(Data(prompt.utf8), to: promptURL)
 
@@ -1771,9 +1780,22 @@ public actor CodexCompletionVerifier: CompletionVerifying {
         let fallback = result.timedOut
             ? "Codex review timed out and remains pending."
             : "Codex review failed with exit code \(result.exitCode)."
+        let lines = trimmedOutput.split(whereSeparator: \.isNewline).map(String.init)
+        let marker = lines.first?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let verdict: VerificationRunResult.Verdict? = switch marker {
+        case "ACCEPT": .accepted
+        case "NEEDS_WORK": .needsWork
+        default: nil
+        }
+        let summaryBody = lines.dropFirst(verdict == nil ? 0 : 1).joined(separator: "\n")
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        let missingVerdict = result.succeeded && verdict == nil
+          ? "Completion reviewer returned no structured verdict. Retry the review."
+          : fallback
         return VerificationRunResult(
             succeeded: result.succeeded,
-            summary: trimmedOutput.isEmpty ? fallback : trimmedOutput,
+            verdict: verdict,
+            summary: summaryBody.isEmpty ? missingVerdict : summaryBody,
             log: combinedLog.isEmpty ? fallback : combinedLog
         )
     }

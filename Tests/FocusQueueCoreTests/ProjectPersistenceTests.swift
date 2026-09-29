@@ -35,7 +35,25 @@ func legacyConfigurationCreatesEffectiveProject() throws {
   #expect(project.dashboardPath == "/tmp/ECC/dashboard.json")
   #expect(project.workspacePath == "/tmp/ECC")
   #expect(configuration.dailyReport.enabled)
+  #expect(configuration.completionReviewEnabled)
   #expect(configuration.appName == "ECC Focus Queue")
+}
+
+@Test("Completion review preference persists independently of the agent verifier")
+func completionReviewPreferencePersists() async throws {
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent("focus-queue-review-setting-\(UUID().uuidString)", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  let repository = JSONConfigurationRepository(url: root.appendingPathComponent("config.json"))
+  var configuration = AppConfiguration.eccDefault(homeDirectory: root)
+  configuration.completionReviewEnabled = false
+  configuration.verifier.enabled = true
+
+  try await repository.save(configuration)
+  let reloaded = try await repository.loadOrCreate(default: .eccDefault(homeDirectory: root))
+
+  #expect(!reloaded.completionReviewEnabled)
+  #expect(reloaded.verifier.enabled)
 }
 
 @Test("Legacy repository project catalog does not shadow queue project migration")

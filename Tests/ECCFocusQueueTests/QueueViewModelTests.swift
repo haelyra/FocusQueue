@@ -1710,6 +1710,61 @@ struct QueueViewModelTests {
     #expect(model.reportAttentionTitle == "Your daily report is ready")
   }
 
+  @Test("An accepted parent review closes the canonical task and retains its evidence pointers")
+  func acceptedParentReviewClosesTask() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.paths.supportDirectory)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(), verifier: AcceptedCompletionVerifier())
+
+    model.requestCompletion(for: fixture.tickets[0])
+    try await eventually {
+      model.latestReview(for: "ECC-101")?.status == .accepted
+        && model.dashboard.tickets.first(where: { $0.id == "ECC-101" })?.isCompleted == true
+    }
+
+    let completed = try #require(model.dashboard.tickets.first { $0.id == "ECC-101" })
+    #expect(completed.completion?.completedBy == "completion-review")
+    #expect(completed.completion?.reason == "Requested behavior and workflow checks are verified.")
+    let request = try #require(model.latestReview(for: "ECC-101"))
+    let persisted = try JSONDecoder().decode(
+      CompletionRequest.self, from: Data(contentsOf: URL(fileURLWithPath: request.requestFilePath)))
+    #expect(persisted.dashboardPath == fixture.root.appendingPathComponent("dashboard.json").path)
+    #expect(persisted.workspacePath == fixture.root.path)
+    #expect(persisted.taskTitle == "Task ECC-101")
+  }
+
+  @Test("Disabling completion review makes the completion control an explicit user override")
+  func disabledReviewUsesTaskOverride() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.paths.supportDirectory)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    _ = try await store.upsertSubtask(ticketID: "ECC-101",
+      subtask: TaskSubtask(id: "unfinished", title: "Unfinished work", status: .working))
+    let model = await fixture.model(agent: ControlledQueueAgent())
+
+    model.setCompletionReviewEnabled(false)
+    model.requestCompletion(for: fixture.tickets[0])
+    try await eventually {
+      model.dashboard.tickets.first(where: { $0.id == "ECC-101" })?.isCompleted == true
+    }
+
+    let completed = try #require(model.dashboard.tickets.first { $0.id == "ECC-101" })
+    #expect(completed.completion?.completedBy == "user-override")
+    #expect(model.subtasks(for: "ECC-101").first?.status == .completed)
+    #expect(model.subtasks(for: "ECC-101").first?.completionOverrideAt != nil)
+    #expect(model.localState.completionRequests.isEmpty)
+    try await eventually {
+      try JSONDecoder().decode(
+        AppConfiguration.self,
+        from: Data(contentsOf: fixture.paths.configurationFile)
+      ).completionReviewEnabled == false
+    }
+  }
+
   @Test("Subtask closure requires persisted completion evidence and keeps the parent task open", arguments: [false, true])
   func subtaskClosureRequiresEvidence(persistCompletion: Bool) async throws {
     let fixture = try await Fixture()
@@ -1782,7 +1837,7 @@ struct QueueViewModelTests {
     let verifier = CountingRefusalVerifier()
     let model = await fixture.model(agent: ControlledQueueAgent(), verifier: verifier)
     if !customerConcern {
-      try await eventually { model.latestReview(for: ticket.id)?.status == .failed }
+      try await eventually { model.latestReview(for: ticket.id)?.status == .needsWork }
       #expect(await verifier.ticketIDs == [ticket.id])
       #expect(model.localState.completionRequests.count == 1)
       #expect(model.latestReview(for: ticket.id)?.subtaskID == nil)
@@ -1799,7 +1854,7 @@ struct QueueViewModelTests {
     #expect(await verifier.ticketIDs == (customerConcern ? [] : [ticket.id]))
     #expect(model.dashboard.tickets.first?.isOpen == true)
     if !customerConcern {
-      #expect(model.latestReview(for: ticket.id)?.status == .failed)
+      #expect(model.latestReview(for: ticket.id)?.status == .needsWork)
       #expect(model.latestReview(for: ticket.id)?.summary == "Acceptance evidence still missing")
     }
   }
@@ -2821,6 +2876,14 @@ private actor SuspendedRenameDashboardRepository: DashboardManaging {
     return updated
   }
 
+  func resolveTicket(
+    id: String, reason: String, evidence: [String], completedBy: String,
+    in url: URL, expectedRevision: DashboardRevision
+  ) async throws -> DashboardSnapshot {
+    try await base.resolveTicket(id: id, reason: reason, evidence: evidence,
+      completedBy: completedBy, in: url, expectedRevision: expectedRevision)
+  }
+
   func resumeRename() {
     renameContinuation?.resume()
     renameContinuation = nil
@@ -2937,6 +3000,13 @@ private final class CountingDashboardRepository: DashboardManaging, @unchecked S
     id: String, to title: String, in url: URL, expectedRevision: DashboardRevision
   ) async throws -> DashboardSnapshot {
     try await base.renameTicket(id: id, to: title, in: url, expectedRevision: expectedRevision)
+  }
+  func resolveTicket(
+    id: String, reason: String, evidence: [String], completedBy: String,
+    in url: URL, expectedRevision: DashboardRevision
+  ) async throws -> DashboardSnapshot {
+    try await base.resolveTicket(id: id, reason: reason, evidence: evidence,
+      completedBy: completedBy, in: url, expectedRevision: expectedRevision)
   }
 }
 
@@ -3298,12 +3368,21 @@ private struct SubtaskVerifier: CompletionVerifying {
   let persistCompletion: Bool
   func verify(ticketID: String, requestFile: URL, workspace: String,
     configuration: VerifierConfiguration) async throws -> VerificationRunResult {
-    let request = try JSONDecoder().decode(CompletionRequest.self, from: Data(contentsOf: requestFile))
-    if persistCompletion, let subtaskID = request.subtaskID {
-      _ = try await store.updateProgress(ticketID: ticketID, subtaskID: subtaskID,
-        status: .completed, summary: "Headless verification passed")
-    }
-    return VerificationRunResult(succeeded: true, summary: "Review finished", log: "Test evidence")
+    _ = store
+    _ = try JSONDecoder().decode(CompletionRequest.self, from: Data(contentsOf: requestFile))
+    return VerificationRunResult(succeeded: true,
+      verdict: persistCompletion ? .accepted : .needsWork,
+      summary: persistCompletion ? "Headless verification passed" : "Review needs more evidence",
+      log: "Test evidence")
+  }
+}
+
+private struct AcceptedCompletionVerifier: CompletionVerifying {
+  func verify(ticketID: String, requestFile: URL, workspace: String,
+    configuration: VerifierConfiguration) async throws -> VerificationRunResult {
+    VerificationRunResult(succeeded: true, verdict: .accepted,
+      summary: "Requested behavior and workflow checks are verified.",
+      log: "Inspected plan, context, repository state, and affected workflow checks.")
   }
 }
 
@@ -3312,7 +3391,7 @@ private actor CountingRefusalVerifier: CompletionVerifying {
   func verify(ticketID: String, requestFile: URL, workspace: String,
     configuration: VerifierConfiguration) async throws -> VerificationRunResult {
     ticketIDs.append(ticketID)
-    return VerificationRunResult(succeeded: false,
+    return VerificationRunResult(succeeded: true, verdict: .needsWork,
       summary: "Acceptance evidence still missing", log: "Headless review refusal")
   }
 }
@@ -3325,7 +3404,7 @@ private actor ControlledCompletionVerifier: CompletionVerifying {
     await withCheckedContinuation { pending = $0 }
   }
   func reply() {
-    pending?.resume(returning: VerificationRunResult(succeeded: false,
+    pending?.resume(returning: VerificationRunResult(succeeded: true, verdict: .needsWork,
       summary: "A late review still needs evidence", log: "Retained review evidence"))
     pending = nil
   }

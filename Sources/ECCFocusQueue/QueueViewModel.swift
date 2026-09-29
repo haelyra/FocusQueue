@@ -1343,7 +1343,8 @@ final class QueueViewModel {
       if ticket.isCompleted, cleanupSignatures[ticket.id] != context.updatedAt {
         cleanupSignatures[ticket.id] = context.updatedAt
         await finalizeCompletedTask(ticket)
-      } else if ticket.isOpen, ticket.queueTaskKind != .customerConcern,
+      } else if config.completionReviewEnabled, ticket.isOpen,
+                ticket.queueTaskKind != .customerConcern,
                 !context.focusSubtasks.filter(\.tracksCompletion).isEmpty, context.focusSubtasks.filter(\.tracksCompletion).allSatisfy({ $0.status == .completed }),
                 !context.subtasks.contains(where: { $0.completionOverrideAt != nil }),
                 !localState.completionRequests.contains(where: {
@@ -2749,6 +2750,10 @@ final class QueueViewModel {
 
   func requestCompletion(for ticket: DashboardTicket) {
     guard ticket.isOpen else { return }
+    guard config.completionReviewEnabled else {
+      skipReviewAndComplete(ticket)
+      return
+    }
     if let review = latestReview(for: ticket.id), [.pending, .running].contains(review.status) {
       actionMessages[ticket.id] = "Completion review is already \(review.status.rawValue)."
       return
@@ -2757,7 +2762,9 @@ final class QueueViewModel {
     let id = UUID()
     let requestURL = reviewArtifacts.requestURL(for: id)
     let request = CompletionRequest(id: id, ticketID: ticket.id, requestFilePath: requestURL.path,
-      contextPath: taskContexts[ticket.id]?.contextDirectory.path)
+      contextPath: taskContexts[ticket.id]?.contextDirectory.path,
+      dashboardPath: config.dashboardPath, workspacePath: defaultRepository(for: ticket),
+      taskTitle: ticket.title, doneWhen: ticket.doneWhen)
     localState.completionRequests.append(request)
     actionMessages[ticket.id] = "Completion review queued. The dashboard is unchanged."
     persistLocalState()
@@ -2766,13 +2773,20 @@ final class QueueViewModel {
 
   func requestSubtaskCompletion(_ subtask: TaskSubtask, for ticket: DashboardTicket) {
     guard subtask.status != .completed else { return }
+    guard config.completionReviewEnabled else {
+      overrideCompletion(subtask, for: ticket)
+      return
+    }
     guard !localState.completionRequests.contains(where: {
       $0.ticketID == ticket.id && $0.subtaskID == subtask.id && [.pending, .running].contains($0.status)
     }) else { return }
     let id = UUID()
     let request = CompletionRequest(id: id, ticketID: ticket.id,
       requestFilePath: reviewArtifacts.requestURL(for: id).path, subtaskID: subtask.id,
-      contextPath: taskContexts[ticket.id]?.contextDirectory.path)
+      contextPath: taskContexts[ticket.id]?.contextDirectory.path,
+      dashboardPath: config.dashboardPath,
+      workspacePath: subtask.workspace?.path ?? defaultRepository(for: ticket),
+      taskTitle: ticket.title, doneWhen: ticket.doneWhen)
     localState.completionRequests.append(request)
     actionMessages[ticket.id] = "Reviewing \(subtask.title) before recording completion."
     persistLocalState()
@@ -2780,6 +2794,10 @@ final class QueueViewModel {
   }
 
   func retryReview(for ticket: DashboardTicket) {
+    guard config.completionReviewEnabled else {
+      skipReviewAndComplete(ticket)
+      return
+    }
     guard let review = latestReview(for: ticket.id),
       [.failed, .needsWork].contains(review.status)
     else {
@@ -2793,6 +2811,38 @@ final class QueueViewModel {
     }
     persistLocalState()
     scheduleReview(requestID: review.id)
+  }
+
+  func skipReviewAndComplete(_ ticket: DashboardTicket) {
+    guard ticket.isOpen else { return }
+    actionMessages[ticket.id] = "Marking complete by user override…"
+    Task {
+      do {
+        try await validateCanonicalCompletion(
+          ticketID: ticket.id, dashboardPath: config.dashboardPath)
+        if let context = taskContexts[ticket.id] {
+          let openAssignments = context.focusSubtasks.filter {
+            $0.tracksCompletion && $0.status != .completed
+          }
+          for subtask in openAssignments {
+            taskContexts[ticket.id] = try await taskContextStore.overrideCompletion(
+              ticketID: ticket.id, subtaskID: subtask.id)
+          }
+        }
+        let resolved = try await resolveCanonicalTicket(
+          ticketID: ticket.id,
+          dashboardPath: config.dashboardPath,
+          reason: "Marked complete by explicit user override without completion review.",
+          evidence: [],
+          completedBy: "user-override")
+        settleParentReviewsByOverride(ticketID: ticket.id)
+        persistLocalState()
+        if let resolved { await finalizeCompletedTask(resolved) }
+        actionMessages[ticket.id] = "Task marked complete by user override."
+      } catch {
+        actionMessages[ticket.id] = "Could not mark complete: \(error.localizedDescription)"
+      }
+    }
   }
 
   func focusTerminal(for ticket: DashboardTicket) {
@@ -3819,25 +3869,58 @@ final class QueueViewModel {
       let result = try await verifier.verify(
         ticketID: request.ticketID,
         requestFile: URL(fileURLWithPath: request.requestFilePath),
-        workspace: request.subtaskID.flatMap { id in subtasks(for: request.ticketID).first(where: { $0.id == id })?.workspace?.path }
+        workspace: request.workspacePath
+          ?? request.subtaskID.flatMap { id in subtasks(for: request.ticketID).first(where: { $0.id == id })?.workspace?.path }
           ?? taskContexts[request.ticketID]?.worktreePath ?? taskContexts[request.ticketID]?.projectRepositoryPath ?? config.workspacePath,
         configuration: reviewConfiguration
       )
       let logURL = try await reviewArtifacts.writeLog(result.log, for: request.id)
-      await refresh()
-      let canonicalTicket = dashboard.tickets.first { $0.id == request.ticketID }
-      if request.subtaskID != nil {
-        let context = try await taskContextStore.load(ticketID: request.ticketID)
-        taskContexts[request.ticketID] = context
-        let completed = completionSubtask(for: request)
-        request.status = completed?.completionOverrideAt != nil
-          || (result.succeeded && completed?.status == .completed)
-          ? .accepted : (result.succeeded ? .needsWork : .failed)
-      } else {
-        request.status = canonicalTicket?.isOpen == false && result.succeeded
-          ? .accepted : (result.succeeded ? .needsWork : .failed)
+      guard localState.completionRequests.first(where: { $0.id == request.id })?.status == .running else {
+        updateReview(request.id) {
+          $0.logPath = logURL.path
+          $0.updatedAt = Date()
+        }
+        if let settled = localState.completionRequests.first(where: { $0.id == request.id }) {
+          try? await reviewArtifacts.writeRequest(settled)
+        }
+        try? await stateStore.save(localState)
+        return
       }
-      request.summary = result.summary
+      var completedTicket: DashboardTicket?
+      if !result.succeeded {
+        request.status = .failed
+      } else if result.verdict == .needsWork {
+        request.status = .needsWork
+      } else if result.verdict == .accepted, let subtaskID = request.subtaskID {
+        taskContexts[request.ticketID] = try await taskContextStore.updateProgress(
+          ticketID: request.ticketID, subtaskID: subtaskID, status: .completed,
+          summary: result.summary)
+        request.status = .accepted
+      } else if result.verdict == .accepted {
+        let context = try await taskContextStore.reconcileSubtasks(ticketID: request.ticketID)
+        taskContexts[request.ticketID] = context
+        let unfinished = context.focusSubtasks.filter {
+          $0.tracksCompletion && $0.status != .completed
+        }
+        if unfinished.isEmpty {
+          let evidence = [request.contextPath.map { "\($0)/plan.md" },
+            request.contextPath.map { "\($0)/agent-log.md" }, logURL.path]
+            .compactMap { $0 }
+          completedTicket = try await resolveCanonicalTicket(
+            ticketID: request.ticketID,
+            dashboardPath: request.dashboardPath ?? config.dashboardPath,
+            reason: result.summary,
+            evidence: evidence,
+            completedBy: "completion-review")
+          request.status = .accepted
+        } else {
+          request.status = .needsWork
+          request.summary = "Completion review accepted the evidence, but \(unfinished.count) completion-tracked work item\(unfinished.count == 1 ? " is" : "s are") still open."
+        }
+      } else {
+        request.status = .failed
+      }
+      if request.summary == nil { request.summary = result.summary }
       request.logPath = logURL.path
       request.updatedAt = Date()
       replaceReview(request)
@@ -3847,15 +3930,18 @@ final class QueueViewModel {
         request.status == .accepted
         ? (completionSubtask(for: request)?.completionOverrideAt != nil
           ? "Subtask marked complete. Review history saved." : "Completion evidence accepted.")
-        : "Review needs attention: \(result.summary)"
-      if request.status == .accepted, request.subtaskID == nil, let canonicalTicket {
-        await finalizeCompletedTask(canonicalTicket)
+        : "Review needs attention: \(request.summary ?? result.summary)"
+      if request.status == .accepted, request.subtaskID == nil, let completedTicket {
+        await finalizeCompletedTask(completedTicket)
       } else if request.status == .accepted {
         closureMessages[request.ticketID] = nil
       } else if request.status != .accepted, request.subtaskID == nil {
-        closureMessages[request.ticketID] = result.summary
+        closureMessages[request.ticketID] = request.summary ?? result.summary
       }
     } catch {
+      guard localState.completionRequests.first(where: { $0.id == request.id })?.status == .running else {
+        return
+      }
       if completionSubtask(for: request)?.completionOverrideAt != nil {
         settleOverriddenReviews(ticketID: request.ticketID)
         try? await stateStore.save(localState)
@@ -3891,6 +3977,68 @@ final class QueueViewModel {
         completionSubtask(for: request)?.completionOverrideAt != nil else { continue }
       localState.completionRequests[index].status = .accepted
       localState.completionRequests[index].updatedAt = Date()
+    }
+  }
+
+  private func settleParentReviewsByOverride(ticketID: String) {
+    for index in localState.completionRequests.indices {
+      guard localState.completionRequests[index].ticketID == ticketID,
+        localState.completionRequests[index].subtaskID == nil,
+        localState.completionRequests[index].status != .accepted else { continue }
+      reviewTasks[localState.completionRequests[index].id]?.cancel()
+      localState.completionRequests[index].status = .accepted
+      localState.completionRequests[index].summary =
+        "Completion review skipped by explicit user override."
+      localState.completionRequests[index].updatedAt = Date()
+    }
+  }
+
+  @discardableResult
+  private func resolveCanonicalTicket(
+    ticketID: String,
+    dashboardPath: String,
+    reason: String,
+    evidence: [String],
+    completedBy: String
+  ) async throws -> DashboardTicket? {
+    let url = URL(fileURLWithPath: dashboardPath)
+    let snapshot = try await dashboardRepository.loadSnapshot(from: url)
+    guard let ticket = snapshot.document.tickets.first(where: { $0.id == ticketID }) else {
+      throw DashboardMutationError.ticketNotFound(ticketID)
+    }
+    if ticket.isCompleted { return ticket }
+    let mergedPRs = Set(ticket.prs.filter(\.isMerged).map(\.number))
+    let unmerged = Set(ticket.resolutionPrs).subtracting(mergedPRs)
+    guard unmerged.isEmpty else {
+      throw TaskContextError.commandFailed(
+        "Required resolution PRs are not merged: \(unmerged.sorted().map(String.init).joined(separator: ", ")).")
+    }
+    let updated = try await dashboardRepository.resolveTicket(
+      id: ticketID, reason: reason, evidence: evidence, completedBy: completedBy,
+      in: url, expectedRevision: snapshot.revision)
+    if URL(fileURLWithPath: config.dashboardPath).standardizedFileURL == url.standardizedFileURL {
+      dashboard = updated.document
+      await captureDurableDashboard(updated.document)
+      lastDashboardStamp = nil
+      lastDashboardRead = nil
+    }
+    return updated.document.tickets.first(where: { $0.id == ticketID })
+  }
+
+  private func validateCanonicalCompletion(
+    ticketID: String,
+    dashboardPath: String
+  ) async throws {
+    let snapshot = try await dashboardRepository.loadSnapshot(
+      from: URL(fileURLWithPath: dashboardPath))
+    guard let ticket = snapshot.document.tickets.first(where: { $0.id == ticketID }) else {
+      throw DashboardMutationError.ticketNotFound(ticketID)
+    }
+    let mergedPRs = Set(ticket.prs.filter(\.isMerged).map(\.number))
+    let unmerged = Set(ticket.resolutionPrs).subtracting(mergedPRs)
+    guard unmerged.isEmpty else {
+      throw TaskContextError.commandFailed(
+        "Required resolution PRs are not merged: \(unmerged.sorted().map(String.init).joined(separator: ", ")).")
     }
   }
 
@@ -4018,6 +4166,24 @@ final class QueueViewModel {
 
   func setAutoExitCompletedAgents(_ enabled: Bool) {
     config.autoExitCompletedAgents = enabled
+    persistConfiguration()
+  }
+
+  func setCompletionReviewEnabled(_ enabled: Bool) {
+    guard config.completionReviewEnabled != enabled else { return }
+    config.completionReviewEnabled = enabled
+    if !enabled {
+      for index in localState.completionRequests.indices
+      where [.pending, .running].contains(localState.completionRequests[index].status) {
+        let request = localState.completionRequests[index]
+        reviewTasks[request.id]?.cancel()
+        localState.completionRequests[index].status = .failed
+        localState.completionRequests[index].summary =
+          "Completion review was disabled before it finished. Use the completion control to mark the task complete by user override."
+        localState.completionRequests[index].updatedAt = Date()
+      }
+      persistLocalState()
+    }
     persistConfiguration()
   }
 

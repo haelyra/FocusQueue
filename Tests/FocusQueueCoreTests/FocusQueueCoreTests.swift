@@ -1424,7 +1424,7 @@ func configValidation() {
 func codexReviewArguments() async throws {
   let runner = MockProcessRunner(results: [
     ProcessResult(
-      exitCode: 0, standardOutput: "More evidence is needed.", standardError: "", timedOut: false)
+      exitCode: 0, standardOutput: "NEEDS_WORK\nMore evidence is needed.", standardError: "", timedOut: false)
   ])
   let root = FileManager.default.temporaryDirectory
     .appendingPathComponent("focus-queue-codex-test-\(UUID().uuidString)", isDirectory: true)
@@ -1449,10 +1449,42 @@ func codexReviewArguments() async throws {
   let invocation = try #require(await runner.specifications.first)
 
   #expect(result.succeeded)
+  #expect(result.verdict == .needsWork)
+  #expect(result.summary == "More evidence is needed.")
   #expect(invocation.arguments.contains("focus-codex-verifier"))
   #expect(invocation.arguments.contains("--timeout"))
   #expect(invocation.arguments.contains("--prompt-file"))
   #expect(invocation.arguments.contains("workspace-write"))
+  let promptIndex = try #require(invocation.arguments.firstIndex(of: "--prompt-file"))
+  let prompt = try String(contentsOfFile: invocation.arguments[promptIndex + 1], encoding: .utf8)
+  #expect(prompt.contains("actively gather evidence"))
+  #expect(prompt.contains("agent-log entries"))
+  #expect(prompt.contains("This review is read-only"))
+  #expect(prompt.contains("exactly ACCEPT or NEEDS_WORK"))
+}
+
+@Test("Codex completion review parses an explicit acceptance verdict")
+func codexReviewAcceptanceVerdict() async throws {
+  let runner = MockProcessRunner(results: [
+    ProcessResult(exitCode: 0,
+      standardOutput: "ACCEPT\nThe requested outcome and affected workflow checks are verified.",
+      standardError: "", timedOut: false)
+  ])
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent("focus-queue-codex-acceptance-\(UUID().uuidString)", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+  let request = root.appendingPathComponent("request.json")
+  try Data("{}".utf8).write(to: request)
+
+  let result = try await CodexCompletionVerifier(runner: runner).verify(
+    ticketID: "FOC-010", requestFile: request, workspace: root.path,
+    configuration: VerifierConfiguration(enabled: true, executable: "/mock/reviewer",
+      sessionName: "completion-review", timeoutSeconds: 60, maxTurns: 12))
+
+  #expect(result.succeeded)
+  #expect(result.verdict == .accepted)
+  #expect(result.summary == "The requested outcome and affected workflow checks are verified.")
 }
 
 @Test("Codex Queue chat uses a separate bounded session and explicit edit boundary")

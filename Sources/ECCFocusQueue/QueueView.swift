@@ -1647,6 +1647,14 @@ private struct QueueSettingsView: View {
             )
           }
           settingsSection(
+            title: "Completion review",
+            detail: "When enabled, a read-only Codex reviewer gathers task evidence before the app closes a task. When disabled, the completion control records an explicit user override instead."
+          ) {
+            Toggle("Review tasks before completion", isOn: Binding(
+              get: { model.config.completionReviewEnabled },
+              set: { model.setCompletionReviewEnabled($0) }))
+          }
+          settingsSection(
             title: "Agent completion",
             detail: "After completion, leave the terminal open with a command to continue the same conversation. Turn this off to keep the agent running."
           ) {
@@ -2684,10 +2692,22 @@ private struct TicketCard: View {
           .accessibilityLabel(
             isChecked
               ? "Completion review \(review?.status.rawValue ?? "requested") for \(ticket.id)"
-              : "Request completion review for \(ticket.id)"
-          ).accessibilityHint("Queues Codex evidence review without directly closing the task.")
-          .help("Queue an evidence-based Codex completion review")
+              : (model.config.completionReviewEnabled
+                ? "Request completion review for \(ticket.id)"
+                : "Mark \(ticket.id) complete by user override")
+          ).accessibilityHint(model.config.completionReviewEnabled
+            ? "Queues Codex evidence review before closing the task."
+            : "Marks the task complete by explicit user override without review.")
+          .help(model.config.completionReviewEnabled
+            ? "Queue an evidence-based Codex completion review"
+            : "Mark complete by user override without review")
 
+      }
+      .contextMenu {
+        Button("Skip review and mark as complete", systemImage: "checkmark.circle") {
+          model.skipReviewAndComplete(ticket)
+        }
+        .disabled(!ticket.isOpen)
       }
 
       VStack(alignment: .leading, spacing: 7) {

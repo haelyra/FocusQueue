@@ -183,7 +183,7 @@ public actor JSONConfigurationRepository: ConfigurationLoading {
         "appName", "dashboardPath", "workspacePath", "defaultPlacement",
         "refreshIntervalSeconds", "dailyRoutines", "wezTerm", "verifier", "dailyReport",
         "persistentTerminals", "tmuxExecutable", "setupCompleted", "focusQueueProjects",
-        "focusQueueSelectedProjectID", "projects", "selectedProjectID",
+        "focusQueueSelectedProjectID", "projects", "selectedProjectID", "completionReviewEnabled",
     ]
 
     private enum LegacyProjectMetadata: Equatable {
@@ -350,6 +350,14 @@ public protocol DashboardManaging: DashboardLoading {
         in url: URL,
         expectedRevision: DashboardRevision
     ) async throws -> DashboardSnapshot
+    func resolveTicket(
+        id: String,
+        reason: String,
+        evidence: [String],
+        completedBy: String,
+        in url: URL,
+        expectedRevision: DashboardRevision
+    ) async throws -> DashboardSnapshot
 }
 
 public extension DashboardManaging {
@@ -467,6 +475,45 @@ public actor JSONDashboardRepository: DashboardManaging {
                 in: url,
                 expectedRevision: expectedRevision
             )
+        }
+    }
+
+    public func resolveTicket(
+        id: String,
+        reason: String,
+        evidence: [String],
+        completedBy: String,
+        in url: URL,
+        expectedRevision: DashboardRevision
+    ) throws -> DashboardSnapshot {
+        try locked(url: url) {
+            let currentData = try currentData(at: url, expectedRevision: expectedRevision)
+            var object = try dashboardObject(from: currentData)
+            var tickets = try ticketObjects(in: object)
+            guard let index = tickets.firstIndex(where: {
+                ticketID(in: $0).caseInsensitiveCompare(id) == .orderedSame
+            }) else {
+                throw DashboardMutationError.ticketNotFound(id)
+            }
+            let timestamp = ISO8601DateFormatter().string(from: Date())
+            var completion = tickets[index]["completion"] as? [String: Any] ?? [:]
+            let existingResolutionPRs = tickets[index]["resolutionPrs"] as? [Int]
+              ?? completion["resolutionPrs"] as? [Int] ?? []
+            var retainedEvidence = completion["evidence"] as? [String] ?? []
+            for item in evidence where !retainedEvidence.contains(item) {
+                retainedEvidence.append(item)
+            }
+            completion["outcome"] = "completed"
+            completion["reason"] = reason
+            completion["resolutionPrs"] = existingResolutionPRs
+            completion["evidence"] = retainedEvidence
+            completion["completedBy"] = completedBy
+            tickets[index]["status"] = "resolved"
+            tickets[index]["completedAt"] = timestamp
+            tickets[index]["updatedAt"] = timestamp
+            tickets[index]["completion"] = completion
+            object["tickets"] = tickets
+            return try save(object, to: url, expectedRevision: expectedRevision)
         }
     }
 

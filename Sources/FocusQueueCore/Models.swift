@@ -263,6 +263,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var tmuxExecutable: String?
   public var setupCompleted: Bool?
   public var automaticAgentRouting: Bool
+  public var completionReviewEnabled: Bool
   public var autoExitCompletedAgents: Bool
   public var agentUsageBarEnabled: Bool
   public var agentProviderFallbackOrder: [AgentProvider]
@@ -306,6 +307,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.verifier = verifier
     self.dailyReport = dailyReport
     self.automaticAgentRouting = false
+    self.completionReviewEnabled = true
     self.autoExitCompletedAgents = true
     self.agentUsageBarEnabled = true
     self.agentProviderFallbackOrder = Self.defaultAgentProviderFallbackOrder
@@ -326,6 +328,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case appName, dashboardPath, workspacePath, defaultPlacement, refreshIntervalSeconds
     case dailyRoutines, wezTerm, verifier, dailyReport, persistentTerminals, tmuxExecutable, setupCompleted
     case automaticAgentRouting
+    case completionReviewEnabled
     case autoExitCompletedAgents
     case agentUsageBarEnabled
     case agentProviderFallbackOrder
@@ -349,6 +352,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     tmuxExecutable = try container.decodeIfPresent(String.self, forKey: .tmuxExecutable)
     setupCompleted = try container.decodeIfPresent(Bool.self, forKey: .setupCompleted)
     automaticAgentRouting = try container.decodeIfPresent(Bool.self, forKey: .automaticAgentRouting) ?? false
+    completionReviewEnabled =
+      try container.decodeIfPresent(Bool.self, forKey: .completionReviewEnabled) ?? true
     autoExitCompletedAgents = try container.decodeIfPresent(Bool.self, forKey: .autoExitCompletedAgents) ?? true
     agentUsageBarEnabled = try container.decodeIfPresent(Bool.self, forKey: .agentUsageBarEnabled) ?? true
     // Unknown providers (for example from a newer build) are skipped, never fatal.
@@ -424,6 +429,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encodeIfPresent(tmuxExecutable, forKey: .tmuxExecutable)
     try container.encodeIfPresent(setupCompleted, forKey: .setupCompleted)
     try container.encode(automaticAgentRouting, forKey: .automaticAgentRouting)
+    try container.encode(completionReviewEnabled, forKey: .completionReviewEnabled)
     try container.encode(autoExitCompletedAgents, forKey: .autoExitCompletedAgents)
     try container.encode(agentUsageBarEnabled, forKey: .agentUsageBarEnabled)
     try container.encode(agentProviderFallbackOrder, forKey: .agentProviderFallbackOrder)
@@ -1316,6 +1322,10 @@ public struct CompletionRequest: Codable, Identifiable, Equatable, Sendable {
   public let requestFilePath: String
   public let subtaskID: String?
   public let contextPath: String?
+  public let dashboardPath: String?
+  public let workspacePath: String?
+  public let taskTitle: String?
+  public let doneWhen: String?
 
   public init(
     id: UUID = UUID(),
@@ -1327,7 +1337,11 @@ public struct CompletionRequest: Codable, Identifiable, Equatable, Sendable {
     logPath: String? = nil,
     requestFilePath: String,
     subtaskID: String? = nil,
-    contextPath: String? = nil
+    contextPath: String? = nil,
+    dashboardPath: String? = nil,
+    workspacePath: String? = nil,
+    taskTitle: String? = nil,
+    doneWhen: String? = nil
   ) {
     self.id = id
     self.ticketID = ticketID
@@ -1339,6 +1353,10 @@ public struct CompletionRequest: Codable, Identifiable, Equatable, Sendable {
     self.requestFilePath = requestFilePath
     self.subtaskID = subtaskID
     self.contextPath = contextPath
+    self.dashboardPath = dashboardPath
+    self.workspacePath = workspacePath
+    self.taskTitle = taskTitle
+    self.doneWhen = doneWhen
   }
 }
 

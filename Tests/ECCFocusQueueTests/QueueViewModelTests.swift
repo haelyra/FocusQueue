@@ -2820,6 +2820,36 @@ struct QueueViewModelTests {
     #expect(await runner.commands.contains { $0.arguments.contains("new-session") } == false)
   }
 
+  @Test("The program log mirror skips registration status noise and stays quiet after a clear")
+  func programLogMirrorFilterAndClearPersistence() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = ProgramLogStore()
+    let model = await fixture.model(agent: ControlledQueueAgent(), programLog: store)
+
+    let registrationStatus =
+      "Codex is running and registered in tmux. Click Build thing to open its exact terminal session."
+    let recoveryError =
+      "The provider process is running and registered in tmux session ecc-focus-queue-task-ecc-101, but WezTerm did not open its view. Click the subtask to retry."
+    #expect(QueueViewModel.programLogSkips(registrationStatus))
+    #expect(!QueueViewModel.programLogSkips(recoveryError))
+
+    store.clear()
+    model.recordProgramLogChange(registrationStatus, level: .info, category: "Task ECC-101")
+    #expect(store.entries.isEmpty)
+
+    model.recordProgramLogChange(recoveryError, level: .error, category: "Task ECC-101")
+    #expect(store.entries.map(\.message) == [recoveryError])
+
+    store.clear()
+    model.recordProgramLogChange(recoveryError, level: .error, category: "Task ECC-101")
+    #expect(store.entries.isEmpty)
+
+    model.recordProgramLogChange(
+      "WezTerm opened the recovered session view.", level: .info, category: "Task ECC-101")
+    #expect(store.entries.map(\.message) == ["WezTerm opened the recovered session view."])
+  }
+
   private func eventually(
     maxAttempts: Int = 200,
     _ condition: @MainActor () async throws -> Bool

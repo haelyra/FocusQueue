@@ -1149,20 +1149,21 @@ struct QueueAgentChatView: View {
     GeometryReader { geometry in
       VStack(spacing: 10) {
         if ticketID == nil {
-          Text("Scope: \(model.projectScopeName)").font(.caption).foregroundStyle(.secondary)
+          Text("All projects · Active: \(model.projectScopeName)")
+            .font(.caption).foregroundStyle(.secondary)
         }
         ScrollViewReader { proxy in
           ScrollView {
-            LazyVStack(spacing: 9) {
+            LazyVStack(spacing: 0) {
               if messages.isEmpty {
                 Text(
                   "Discuss this task, refine its success criteria, or ask for a plan update. Decisions stay with the task."
                 )
                 .font(.callout).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(14)
               }
               ForEach(messages) { message in
-                messageRow(message).id(message.id)
+                QueueChatMessageRow(message: message, ticketID: ticketID).id(message.id)
               }
               if isRespondingHere {
                 HStack(spacing: 9) {
@@ -1171,14 +1172,20 @@ struct QueueAgentChatView: View {
                     .font(.system(size: 12)).foregroundStyle(.secondary)
                   Spacer()
                 }
-                .padding(.horizontal, 13).padding(.vertical, 11)
-                .notificationSurface(radius: 16)
+                .padding(.horizontal, 15).padding(.vertical, 13)
+                .frame(maxWidth: .infinity)
+                .background(QueueChatMessageRow.surface(for: .agent, colorScheme: colorScheme))
                 .id("queue-agent-progress")
               }
             }
-            .padding(.horizontal, 2).padding(.vertical, 2)
+            .frame(maxWidth: .infinity)
           }
           .scrollIndicators(.automatic)
+          .background(QueueChatMessageRow.surface(for: .agent, colorScheme: colorScheme),
+            in: RoundedRectangle(cornerRadius: 12))
+          .clipShape(RoundedRectangle(cornerRadius: 12))
+          .overlay(RoundedRectangle(cornerRadius: 12)
+            .stroke(Color.primary.opacity(0.10), lineWidth: 1))
           .onChange(of: messages.count) { _, _ in
             scrollToBottom(using: proxy)
           }
@@ -1251,41 +1258,6 @@ struct QueueAgentChatView: View {
       if !isResponding { focusComposer() }
     }
     .onChange(of: focusRequest) { _, _ in focusComposer() }
-  }
-
-  @ViewBuilder
-  private func messageRow(_ message: QueueChatMessage) -> some View {
-    VStack(alignment: .leading, spacing: 7) {
-      Label(
-        message.role == .agent ? "ORCHESTRATOR" : "YOU",
-        systemImage: message.role == .agent ? "terminal" : "person.crop.circle"
-      )
-      .font(.system(size: 10, weight: .semibold, design: .monospaced)).foregroundStyle(.secondary)
-      if let selection = message.canvasSelection {
-        HStack(spacing: 6) {
-          Image(systemName: selection.kind.systemImage)
-          Text(selection.kind.title)
-          Text(selection.compactExcerpt).lineLimit(1)
-        }
-        .font(.system(size: 10.5, weight: .medium))
-        .foregroundStyle(Color.accentColor)
-        .padding(.horizontal, 8).padding(.vertical, 5)
-        .background(Color.accentColor.opacity(0.09), in: RoundedRectangle(cornerRadius: 7))
-      }
-      Text(message.text)
-        .font(.system(size: 13))
-        .textSelection(.enabled)
-        .fixedSize(horizontal: false, vertical: true)
-    }.frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.horizontal, 13).padding(.vertical, 12)
-      .background(outputSurface(message.role), in: RoundedRectangle(cornerRadius: 10))
-      .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.07), lineWidth: 1))
-      .accessibilityElement(children: .combine)
-  }
-
-  private func outputSurface(_ role: QueueChatRole) -> Color {
-    if colorScheme == .dark { return Color(white: role == .agent ? 0.12 : 0.21) }
-    return Color(white: role == .agent ? 0.90 : 0.97)
   }
 
   private func send() {
@@ -1361,6 +1333,46 @@ struct QueueAgentChatView: View {
         proxy.scrollTo(last.id, anchor: .bottom)
       }
     }
+  }
+}
+
+struct QueueChatMessageRow: View {
+  let message: QueueChatMessage
+  let ticketID: String?
+  @Environment(\.colorScheme) private var colorScheme
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 9) {
+      Label(
+        message.role == .agent ? (ticketID == nil ? "QCHAT" : "ORCHESTRATOR") : "YOU",
+        systemImage: message.role == .agent ? "terminal" : "person.crop.circle"
+      )
+      .font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.secondary)
+      if let selection = message.canvasSelection {
+        HStack(spacing: 6) {
+          Image(systemName: selection.kind.systemImage)
+          Text(selection.kind.title)
+          Text(selection.compactExcerpt).lineLimit(1)
+        }
+        .font(.system(size: 10.5, weight: .medium))
+        .foregroundStyle(Color.accentColor)
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .background(Color.accentColor.opacity(0.09), in: RoundedRectangle(cornerRadius: 7))
+      }
+      ChatMarkdownView(message.text)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.horizontal, 15).padding(.vertical, 14)
+    .background(Self.surface(for: message.role, colorScheme: colorScheme))
+    .overlay(alignment: .bottom) {
+      Rectangle().fill(Color.primary.opacity(0.11)).frame(height: 1)
+    }
+    .accessibilityElement(children: .contain)
+  }
+
+  static func surface(for role: QueueChatRole, colorScheme: ColorScheme) -> Color {
+    if colorScheme == .dark { return Color(white: role == .agent ? 0.14 : 0.20) }
+    return Color(white: role == .agent ? 0.985 : 0.935)
   }
 }
 

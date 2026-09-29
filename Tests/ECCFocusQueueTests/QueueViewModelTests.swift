@@ -1,5 +1,7 @@
+import AppKit
 import Foundation
 import Observation
+import SwiftUI
 import Testing
 import FocusQueueCore
 import Darwin
@@ -395,6 +397,30 @@ struct QueueViewModelTests {
     #expect(projectScopes.count == 1 && projectScopes[0] == nil)
     await agent.reply("APP-001 is in App.")
     try await eventually { !model.isQueueAgentResponding }
+  }
+
+  @Test("Production Queue chat rows render a continuous formatted exchange headlessly")
+  func queueChatTranscriptRenders() throws {
+    let user = QueueChatMessage(role: .user, text: "Show the code change")
+    let agent = QueueChatMessage(role: .agent,
+      text: "**Done** with the update.\n\n```swift\nlet ready = true\n```")
+    for scheme in [ColorScheme.light, .dark] {
+      let view = VStack(spacing: 0) {
+        QueueChatMessageRow(message: user, ticketID: nil)
+        QueueChatMessageRow(message: agent, ticketID: nil)
+      }
+      .frame(width: 420, height: 480, alignment: .top)
+      .background(QueueChatMessageRow.surface(for: .agent, colorScheme: scheme))
+      .environment(\.colorScheme, scheme)
+      let renderer = ImageRenderer(content: view)
+      renderer.proposedSize = ProposedViewSize(width: 420, height: 480)
+      let image = try #require(renderer.cgImage)
+      #expect(image.width >= 420 && image.height >= 480)
+      if let base = ProcessInfo.processInfo.environment["FOC_CHAT_SNAPSHOT"] {
+        let data = try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
+        try data.write(to: URL(fileURLWithPath: base + (scheme == .light ? "-light.png" : "-dark.png")))
+      }
+    }
   }
 
   @Test("Project selection scopes task creation, task rename, and survives restart")

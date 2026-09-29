@@ -61,6 +61,28 @@ struct QueueOrderTests {
         #expect(ordered.map(\.id) == ["ECC-2", "ECC-4", "ECC-3", "ECC-5", "ECC-6", "ECC-7", "ECC-8"])
     }
 
+    @Test("Recent prompts sort newest first above an unchanged saved queue")
+    func recentPromptTier() {
+        let baseline = QueueOrderStore.orderedTickets(
+            tickets, savedIDs: ["ECC-8", "ECC-2", "ECC-5", "ECC-1"])
+        let now = Date(timeIntervalSinceReferenceDate: 1_000_000)
+        let ordered = QueueOrderStore.prioritizingRecentPrompts(
+            baseline,
+            lastPromptAtByTicketID: [
+                "ECC-3": now.addingTimeInterval(-60),
+                "ECC-6": now.addingTimeInterval(-3_600),
+                "ECC-8": now.addingTimeInterval(-(3 * 24 * 60 * 60 + 1)),
+                "ECC-2": now.addingTimeInterval(60),
+            ],
+            now: now)
+
+        #expect(ordered.map(\.id) == [
+            "ECC-3", "ECC-6", "ECC-8", "ECC-2", "ECC-5", "ECC-1", "ECC-4", "ECC-7",
+        ])
+        #expect(QueueOrderStore.prioritizingRecentPrompts(
+            baseline, lastPromptAtByTicketID: [:], now: now) == baseline)
+    }
+
     @Test("Invalid moves leave disk unchanged and reset clears legacy deferral")
     func invalidAndReset() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

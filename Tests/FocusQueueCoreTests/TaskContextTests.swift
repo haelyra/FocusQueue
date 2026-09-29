@@ -628,18 +628,29 @@ func taskSubtaskOutputTimestampLifecycle() async throws {
         subtaskID: agent.id, status: .working, summary: "Still working", now: progressAt)
     #expect(progress.subtasks[0].lastHeartbeatAt == progressAt)
     #expect(progress.subtasks[0].lastOutputAt == nil)
+    #expect(progress.lastPromptAt == nil)
 
     let prompt = try await store.registerExternalSession(ticketID: initial.ticketID,
         provider: .codex, sessionID: sessionID, title: "Later prompt", cwd: root.path,
         preferredSubtaskID: agent.id, allowFreshAssociation: true,
         tmux: nil, paneID: nil, socketPath: nil, eventName: "UserPromptSubmit")
     #expect(prompt.subtasks[0].lastOutputAt == nil)
+    let promptAt = try #require(prompt.lastPromptAt)
 
     let stopped = try await store.registerExternalSession(ticketID: initial.ticketID,
         provider: .codex, sessionID: sessionID, title: "Worker", cwd: root.path,
         preferredSubtaskID: agent.id, allowFreshAssociation: true,
         tmux: nil, paneID: nil, socketPath: nil, eventName: "Stop")
     #expect(stopped.subtasks[0].lastOutputAt != nil)
+    #expect(stopped.lastPromptAt == promptAt)
+
+    let ignoredOlderPrompt = try await store.recordPrompt(
+        ticketID: initial.ticketID, at: promptAt.addingTimeInterval(-60))
+    #expect(ignoredOlderPrompt.lastPromptAt == promptAt)
+    let laterPromptAt = promptAt.addingTimeInterval(60)
+    let laterPrompt = try await store.recordPrompt(
+        ticketID: initial.ticketID, at: laterPromptAt)
+    #expect(laterPrompt.lastPromptAt == laterPromptAt)
 
     let completionAt = try #require(stopped.subtasks[0].lastOutputAt).addingTimeInterval(1)
     let completed = try await store.updateProgress(ticketID: initial.ticketID,

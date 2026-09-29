@@ -307,6 +307,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
     public var baseBranch: String?
     public var managedWorktree = false
     public var subtasks: [TaskSubtask] = []
+    public var lastPromptAt: Date? = nil
     public var removedAgentSessionKeys: [String]?
     public var updatedAt: Date
 
@@ -837,6 +838,9 @@ public actor TaskContextStore {
             // A stopped response is not completed work. Completion remains explicit.
             if ["UserPromptSubmit", "SubagentStart"].contains(eventName) { context.subtasks[index].status = .working }
             else if ["Stop", "SubagentStop", "SessionEnd"].contains(eventName) { context.subtasks[index].status = .idle }
+            if eventName == "UserPromptSubmit" {
+                context.lastPromptAt = max(context.lastPromptAt ?? .distantPast, now)
+            }
             if eventName != "ProcessDiscovery" || context.subtasks[index].lastHeartbeatAt == nil {
                 context.subtasks[index].lastHeartbeatAt = now
             }
@@ -1001,6 +1005,14 @@ public actor TaskContextStore {
                     }
                 }
             }
+        }
+    }
+
+    @discardableResult public func recordPrompt(
+        ticketID: String, at promptAt: Date = Date()
+    ) throws -> TaskContext {
+        try mutate(ticketID: ticketID) { context in
+            context.lastPromptAt = max(context.lastPromptAt ?? .distantPast, promptAt)
         }
     }
 

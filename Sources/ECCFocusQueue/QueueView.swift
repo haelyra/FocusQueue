@@ -3492,14 +3492,15 @@ enum AgentOutputTimestamp {
 
 struct VerticalOverflowIcon: View {
   var body: some View {
-    VStack(spacing: 2.5) {
-      ForEach(0..<3, id: \.self) { _ in
-        Circle()
-          .fill(Color(nsColor: .secondaryLabelColor))
-          .frame(width: 3.5, height: 3.5)
-      }
-    }
-    .frame(width: 18, height: 22)
+    Image(systemName: "ellipsis")
+      .symbolRenderingMode(.monochrome)
+      .font(.system(size: 16, weight: .bold))
+      .foregroundStyle(Color.white)
+      .rotationEffect(.degrees(90))
+      .frame(width: 20, height: 24)
+      .compositingGroup()
+      .shadow(color: .black.opacity(0.55), radius: 0.75, y: 0.5)
+      .zIndex(10)
   }
 }
 

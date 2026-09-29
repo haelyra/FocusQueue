@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import time
 
 BINARY = Path(__file__).parents[1] / ".build/debug/focus-queue-session"
 
@@ -80,6 +81,24 @@ class QueueOrderCLITests(unittest.TestCase):
             self.command(*arguments, expected=1)
             self.assertEqual(self.command("list"), before)
         self.assertEqual(self.command("reset"), ["ECC-029", "ECC-035", "ECC-040"])
+
+    def test_recent_agent_prompts_temporarily_lead_the_saved_queue(self):
+        self.assertEqual(self.command("move", "ECC-035", "top"),
+                         ["ECC-035", "ECC-040", "ECC-029"])
+        now = time.time() - 978307200
+        for ticket, age in [("ECC-029", 60), ("ECC-040", 3600), ("ECC-035", 3 * 86400 + 1)]:
+            task = self.root / "tasks" / ticket
+            task.mkdir(parents=True)
+            plan = task / "plan.md"
+            plan.write_text(f"# {ticket}\n")
+            (task / "context.json").write_text(json.dumps({
+                "schemaVersion": 2, "ticketID": ticket, "title": ticket,
+                "summary": "", "successCriteria": "", "planPath": str(plan),
+                "managedWorktree": False, "subtasks": [], "updatedAt": now,
+                "lastPromptAt": now - age,
+            }))
+
+        self.assertEqual(self.command("list"), ["ECC-029", "ECC-040", "ECC-035"])
 
     def test_simultaneous_helpers_keep_both_moves(self):
         self.command("reset")

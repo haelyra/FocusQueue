@@ -45,6 +45,27 @@ public struct QueueOrderStore: Sendable {
         return saved + canonical.filter { remaining.removeValue(forKey: $0.id) != nil }
     }
 
+    /// Prompt activity temporarily lifts a task above its saved queue position.
+    /// The untouched baseline resumes as soon as the three-day window expires.
+    public static func prioritizingRecentPrompts(
+        _ tickets: [DashboardTicket],
+        lastPromptAtByTicketID: [String: Date],
+        now: Date = Date(),
+        window: TimeInterval = 3 * 24 * 60 * 60
+    ) -> [DashboardTicket] {
+        let cutoff = now.addingTimeInterval(-window)
+        let recent = tickets.enumerated().compactMap { index, ticket -> (Int, DashboardTicket, Date)? in
+            guard let promptAt = lastPromptAtByTicketID[ticket.id],
+                  promptAt >= cutoff, promptAt <= now else { return nil }
+            return (index, ticket, promptAt)
+        }.sorted {
+            if $0.2 != $1.2 { return $0.2 > $1.2 }
+            return $0.0 < $1.0
+        }
+        let recentIDs = Set(recent.map { $0.1.id })
+        return recent.map(\.1) + tickets.filter { !recentIDs.contains($0.id) }
+    }
+
     @discardableResult
     public func move(_ ticketID: String, to placement: QueuePlacement,
                      tickets: [DashboardTicket], fallbackIDs: [String], visibleIDs: Set<String>? = nil) throws -> [String] {

@@ -105,25 +105,35 @@ struct SubtaskPresentationTests {
     #expect(host.fittingSize.height >= 44)
     let overflow = NSHostingView(rootView: VerticalOverflowIcon())
     overflow.layoutSubtreeIfNeeded()
-    #expect(overflow.fittingSize.width >= 18)
-    #expect(overflow.fittingSize.height >= 22)
-    for appearanceName in [NSAppearance.Name.aqua, .darkAqua] {
-      let appearance = try! #require(NSAppearance(named: appearanceName))
-      var contrast = 0.0
-      appearance.performAsCurrentDrawingAppearance {
-        let dot = NSColor.secondaryLabelColor.usingColorSpace(.deviceRGB)!
-        let background = NSColor.windowBackgroundColor.usingColorSpace(.deviceRGB)!
-        let dotComponents = [dot.redComponent, dot.greenComponent, dot.blueComponent]
-        let backgroundComponents = [
-          background.redComponent, background.greenComponent, background.blueComponent,
-        ]
-        let effective = zip(dotComponents, backgroundComponents).map {
-          $0 * dot.alphaComponent + $1 * (1 - dot.alphaComponent)
-        }
-        contrast = zip(effective, backgroundComponents).map { abs($0 - $1) }.max() ?? 0
+    #expect(overflow.fittingSize.width >= 20)
+    #expect(overflow.fittingSize.height >= 24)
+
+    let rendered = NSHostingView(rootView: ZStack {
+      Color.black
+      Menu {
+        Button("Inspect") {}
+      } label: {
+        VerticalOverflowIcon()
       }
-      #expect(contrast > 0.2)
+      .menuStyle(.borderlessButton)
+      .menuIndicator(.hidden)
+      .frame(width: 44, height: 44)
+    }.frame(width: 44, height: 44))
+    rendered.frame = NSRect(x: 0, y: 0, width: 44, height: 44)
+    rendered.layoutSubtreeIfNeeded()
+    let bitmap = try! #require(rendered.bitmapImageRepForCachingDisplay(in: rendered.bounds))
+    rendered.cacheDisplay(in: rendered.bounds, to: bitmap)
+    var brightestPixel = 0.0
+    for x in 0..<bitmap.pixelsWide {
+      for y in 0..<bitmap.pixelsHigh {
+        guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+        brightestPixel = max(brightestPixel,
+          [color.redComponent, color.greenComponent, color.blueComponent].max() ?? 0)
+      }
     }
+    // The native Menu applies control antialiasing, but the foreground dots
+    // must remain visibly near-white instead of disappearing into the row.
+    #expect(brightestPixel > 0.75)
   }
 
   private func height<V: View>(of view: V) -> CGFloat {

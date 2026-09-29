@@ -361,21 +361,26 @@ final class QueueViewModel {
   }
 
   private var allOpenTickets: [DashboardTicket] {
+    let baseline: [DashboardTicket]
     if let savedQueueOrder {
-      return QueueOrderStore.orderedTickets(dashboard.tickets, savedIDs: savedQueueOrder)
+      baseline = QueueOrderStore.orderedTickets(dashboard.tickets, savedIDs: savedQueueOrder)
+    } else {
+      let ordered = DashboardOrdering.openTickets(
+        in: dashboard.tickets,
+        deferredTicketIDs: localState.deferredTicketIDs
+      )
+      let noBacklogIDs = Set(
+        recurringPRProgressByTicketID.compactMap { ticketID, progress in
+          progress.openCount == 0 ? ticketID : nil
+        }
+      )
+      let closurePending = dashboard.tickets.filter { $0.isCompleted && closureMessages[$0.id] != nil }
+      baseline = closurePending + ordered.filter { !noBacklogIDs.contains($0.id) }
+        + ordered.filter { noBacklogIDs.contains($0.id) }
     }
-    let ordered = DashboardOrdering.openTickets(
-      in: dashboard.tickets,
-      deferredTicketIDs: localState.deferredTicketIDs
-    )
-    let noBacklogIDs = Set(
-      recurringPRProgressByTicketID.compactMap { ticketID, progress in
-        progress.openCount == 0 ? ticketID : nil
-      }
-    )
-    let closurePending = dashboard.tickets.filter { $0.isCompleted && closureMessages[$0.id] != nil }
-    return closurePending + ordered.filter { !noBacklogIDs.contains($0.id) }
-      + ordered.filter { noBacklogIDs.contains($0.id) }
+    return QueueOrderStore.prioritizingRecentPrompts(
+      baseline,
+      lastPromptAtByTicketID: taskContexts.compactMapValues(\.lastPromptAt))
   }
 
   var completedTickets: [DashboardTicket] {
@@ -2412,6 +2417,9 @@ final class QueueViewModel {
           phase = "saving the confirmed tmux process"
           taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
             ticketID: ticket.id, subtaskID: subtask.id, tmux: tmux)
+          if includePrompt {
+            taskContexts[ticket.id] = try await taskContextStore.recordPrompt(ticketID: ticket.id)
+          }
           subtask.tmux = tmux
           await recordAgentLaunch(
             subtask, ticketID: ticket.id, phase: "tmux-confirm", outcome: "succeeded",
@@ -2436,6 +2444,9 @@ final class QueueViewModel {
           taskContexts[ticket.id] = try await taskContextStore.setDirectRuntime(
             ticketID: ticket.id, subtaskID: subtask.id, paneID: receipt.paneID,
             socketPath: receipt.socketPath)
+          if includePrompt {
+            taskContexts[ticket.id] = try await taskContextStore.recordPrompt(ticketID: ticket.id)
+          }
           await recordAgentLaunch(
             subtask, ticketID: ticket.id, phase: "direct-confirm", outcome: "succeeded",
             message: "WezTerm returned the exact pane created for the agent.",

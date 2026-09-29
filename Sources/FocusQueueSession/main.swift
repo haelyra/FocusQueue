@@ -153,7 +153,14 @@ enum SessionRegistrationError: Error, LocalizedError {
                 tickets: dashboard.tickets, fallbackIDs: fallback, visibleIDs: visible)
         default: throw SessionRegistrationError.usage
         }
-        let order = QueueOrderStore.orderedTickets(dashboard.tickets, savedIDs: try store.load() ?? fallback)
+        let baseline = QueueOrderStore.orderedTickets(
+            dashboard.tickets, savedIDs: try store.load() ?? fallback)
+        let contexts = try await TaskContextStore(root: root).loadAvailableForDiscovery()
+        let promptDates = Dictionary(uniqueKeysWithValues: contexts.compactMap { context in
+            context.lastPromptAt.map { (context.ticketID, $0) }
+        })
+        let order = QueueOrderStore.prioritizingRecentPrompts(
+            baseline, lastPromptAtByTicketID: promptDates)
         try emit(["order": order.filter { visible?.contains($0.id) ?? true }.map(\.id)])
         notifyContextChanged()
     }
@@ -552,6 +559,7 @@ enum SessionRegistrationError: Error, LocalizedError {
 
         let launcher = TaskAgentLauncher()
         let runtime: TmuxSessionReference
+        var sentPromptNow = false
         if let recoveredLaunchRuntime {
             runtime = recoveredLaunchRuntime
             providerStarted = true
@@ -562,6 +570,7 @@ enum SessionRegistrationError: Error, LocalizedError {
                     includePrompt: true, tmuxExecutable: tmuxExecutable,
                     usageBarEnabled: configuration.agentUsageBarEnabled)
                 providerStarted = true
+                sentPromptNow = true
             } catch let error as TmuxError where error.mayHaveStarted {
                 providerStarted = true
                 throw error
@@ -583,6 +592,9 @@ enum SessionRegistrationError: Error, LocalizedError {
         receipt = try receiptStore.load(taskID: taskID, subtaskID: subtaskID) ?? receipt
         _ = try await contextStore.setManagedRuntime(
             ticketID: taskID, subtaskID: subtaskID, tmux: runtime)
+        if sentPromptNow {
+            _ = try await contextStore.recordPrompt(ticketID: taskID)
+        }
         subtask.tmux = runtime
         do {
             _ = try await WezTermController().openManagedAgentRuntime(

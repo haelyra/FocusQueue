@@ -289,6 +289,28 @@ struct QueueViewModelTests {
     try await eventually { dashboards.loads > loadBaseline }
   }
 
+  @Test("Background polling reuses an unchanged dashboard and detects atomic updates")
+  func backgroundPollingSkipsUnchangedDashboard() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let repository = CountingDashboardRepository()
+    let model = await fixture.model(agent: ControlledQueueAgent(), dashboardRepository: repository)
+    await model.refresh()
+    let baseline = repository.loads
+    await model.refresh()
+    #expect(repository.loads == baseline)
+
+    let dashboardURL = URL(fileURLWithPath: model.config.dashboardPath)
+    let updated = DashboardDocument(tickets: model.dashboard.tickets.map { ticket in
+      ticket.id == "ECC-101" ? DashboardTicket(id: ticket.id,
+        title: "Changed outside the app", status: "open", summary: "External update") : ticket
+    })
+    try JSONEncoder().encode(updated).write(to: dashboardURL, options: .atomic)
+    await model.refresh()
+    #expect(repository.loads == baseline + 1)
+    #expect(model.dashboard.tickets[0].title == "Changed outside the app")
+  }
+
   @Test("macOS Terminal rejects direct agents before any launch side effect")
   func macTerminalRequiresTmux() async throws {
     let fixture = try await Fixture()
@@ -342,6 +364,37 @@ struct QueueViewModelTests {
     #expect(model.projects.contains { $0.id == "focus-queue" && $0.name == "Focus Queue" })
     #expect(model.selectedProject?.id == configuration.selectedProjectID)
     #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
+  }
+
+  @Test("Central QChat receives every project dashboard while another project is selected")
+  func centralChatReadsOtherProjects() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let otherWorkspace = fixture.root.appendingPathComponent("another-project")
+    let otherDashboard = otherWorkspace.appendingPathComponent("dashboard.json")
+    try FileManager.default.createDirectory(at: otherWorkspace, withIntermediateDirectories: true)
+    try JSONEncoder().encode(DashboardDocument(tickets: [
+      DashboardTicket(id: "APP-001", title: "Other project task", status: "open", summary: "")
+    ])).write(to: otherDashboard)
+    var config = try JSONDecoder().decode(AppConfiguration.self,
+      from: Data(contentsOf: fixture.paths.configurationFile))
+    config.projects.append(ProjectConfiguration(id: "app", name: "App",
+      dashboardPath: otherDashboard.path, workspacePath: otherWorkspace.path))
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(config)
+    let agent = ControlledQueueAgent()
+    let model = await fixture.model(agent: agent)
+
+    #expect(model.selectedProjectID != "app")
+    #expect(model.sendQueueAgentMessage("What is APP-001 about?"))
+    try await eventually { await agent.hasPendingReply }
+    let sent = try #require(await agent.messages.first)
+    #expect(sent.contains("App (app): dashboard \(otherDashboard.path)"))
+    #expect(sent.contains("all readable without changing the UI selection"))
+    #expect(!sent.contains("Ask the user to switch projects"))
+    let projectScopes = await agent.projectScopes
+    #expect(projectScopes.count == 1 && projectScopes[0] == nil)
+    await agent.reply("APP-001 is in App.")
+    try await eventually { !model.isQueueAgentResponding }
   }
 
   @Test("Project selection scopes task creation, task rename, and survives restart")
@@ -3127,12 +3180,14 @@ private actor PaneLabelRecorder {
 
 private actor ControlledQueueAgent: QueueAgentChatting {
   private(set) var messages: [String] = []
+  private(set) var projectScopes: [String?] = []
   private var pending: CheckedContinuation<QueueAgentReply, any Error>?
   var hasPendingReply: Bool { pending != nil }
 
   func send(message: String, dashboardPath: String, workspace: String, visibleOrder: [String],
     deferredTicketIDs: [String], configuration: VerifierConfiguration) async throws -> QueueAgentReply {
     messages.append(message)
+    projectScopes.append(configuration.projectScopeID)
     return try await withCheckedThrowingContinuation { pending = $0 }
   }
 

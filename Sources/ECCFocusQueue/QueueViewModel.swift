@@ -37,6 +37,19 @@ private struct PendingRouterSubmission {
   let completion: (@MainActor (Bool) -> Void)?
 }
 
+private struct DashboardFileStamp: Equatable, Sendable {
+  let modifiedAt: Date?
+  let size: UInt64?
+  let inode: UInt64?
+
+  static func read(at url: URL) throws -> Self {
+    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+    return Self(modifiedAt: attributes[.modificationDate] as? Date,
+      size: (attributes[.size] as? NSNumber)?.uint64Value,
+      inode: (attributes[.systemFileNumber] as? NSNumber)?.uint64Value)
+  }
+}
+
 @MainActor
 @Observable
 final class QueueViewModel {
@@ -203,6 +216,10 @@ final class QueueViewModel {
   @ObservationIgnored private var lastDurableContexts: [String: TaskContext] = [:]
   @ObservationIgnored private var durableDocumentStamps: [String: DurableDocumentStamp] = [:]
   @ObservationIgnored private var lastContextRefresh: Date?
+  @ObservationIgnored private var lastDashboardRead: Date?
+  @ObservationIgnored private var lastDashboardStamp: DashboardFileStamp?
+  @ObservationIgnored private var lastDurableContextScan: Date?
+  @ObservationIgnored private var lastExternalRegistrationRefresh: Date?
   @ObservationIgnored private var reportStateSaveTask: Task<Void, Never>?
   @ObservationIgnored private var cleanupSignatures: [String: Date] = [:]
   @ObservationIgnored private var lastReportRefresh: Date?
@@ -619,6 +636,8 @@ final class QueueViewModel {
         dashboard = snapshot.document
         savedQueueOrder = nil
         sourceModificationDate = nil
+        lastDashboardStamp = nil
+        lastDashboardRead = nil
         lastSync = nil
         taskContexts = await availableTaskContexts()
         maintenanceReceipts.removeAll()
@@ -705,6 +724,8 @@ final class QueueViewModel {
       loadError = nil
       savedQueueOrder = nil
       sourceModificationDate = nil
+      lastDashboardStamp = nil
+      lastDashboardRead = nil
       lastSync = nil
       taskContexts = await availableTaskContexts()
       maintenanceReceipts.removeAll()
@@ -891,19 +912,25 @@ final class QueueViewModel {
     do {
       let projectID = config.selectedProjectID
       let dashboardURL = URL(fileURLWithPath: config.dashboardPath)
-      async let document = dashboardRepository.load(from: dashboardURL)
-      async let modificationDate = dashboardRepository.modificationDate(at: dashboardURL)
-      let updatedDashboard = try await document
-      guard projectID == config.selectedProjectID else { return }
-      if dashboard != updatedDashboard { dashboard = updatedDashboard }
-      await captureDurableDashboard(updatedDashboard)
+      let now = Date()
+      let stamp = try await Task.detached(priority: .utility) {
+        try DashboardFileStamp.read(at: dashboardURL)
+      }.value
+      let needsDashboardRead = userInitiated || lastDashboardStamp != stamp
+        || lastDashboardRead.map { now.timeIntervalSince($0) >= 60 } ?? true
+      if needsDashboardRead {
+        let updatedDashboard = try await dashboardRepository.load(from: dashboardURL)
+        guard projectID == config.selectedProjectID else { return }
+        if dashboard != updatedDashboard { dashboard = updatedDashboard }
+        if lastDurableDashboard != updatedDashboard { await captureDurableDashboard(updatedDashboard) }
+        lastDashboardStamp = stamp
+        lastDashboardRead = now
+      }
       guard projectID == config.selectedProjectID else { return }
       let updatedOrder = try queueOrderStore.load()
       if savedQueueOrder != updatedOrder { savedQueueOrder = updatedOrder }
       pruneDeferredTickets()
-      let updatedModificationDate = try await modificationDate
-      if sourceModificationDate != updatedModificationDate { sourceModificationDate = updatedModificationDate }
-      let now = Date()
+      if sourceModificationDate != stamp.modifiedAt { sourceModificationDate = stamp.modifiedAt }
       // The footer displays minute precision. Polling every two seconds does
       // not require republishing that unchanged label through the queue view.
       if lastSync == nil || Int(now.timeIntervalSince1970 / 60) != Int(lastSync!.timeIntervalSince1970 / 60) {
@@ -1048,7 +1075,11 @@ final class QueueViewModel {
     let scopedMessage: String
     var agentConfiguration = config.verifier
     agentConfiguration.supportDirectory = paths.supportDirectory.path
-    agentConfiguration.projectScopeID = ticketID.flatMap { id in dashboard.tickets.first { $0.id == id }?.projectID } ?? selectedProjectID
+    // Central QChat can inspect every configured project. Task chat retains its
+    // task's project scope for task-specific helpers.
+    agentConfiguration.projectScopeID = ticketID.map { id in
+      dashboard.tickets.first { $0.id == id }?.projectID ?? selectedProjectID
+    } ?? nil
     agentConfiguration.contextDirectory =
       paths.supportDirectory.appendingPathComponent("tasks").path
     let contextualMessage =
@@ -1064,9 +1095,11 @@ final class QueueViewModel {
         """
       scopedMessage = taskScope + "Project: \(context.projectName ?? context.projectID ?? "Unassigned"). " + contextScope + contextualMessage
     } else {
-      let scope = "Project scope: \(projectScopeName). Project ID: \(selectedProjectID ?? ProjectCatalog.otherID). Allowed task IDs: \(projectTickets.map(\.id).joined(separator: ", ")). "
-      let rules = "Preserve projectID and unknown fields on edits. New tasks use \(selectedProject?.id ?? "the Other project"). Restrict actions to this project's dashboard. Ask the user to switch projects before acting on another dashboard.\n\n"
-      scopedMessage = scope + rules + contextualMessage
+      let catalog = config.projects.map { project in
+        "- \(project.name) (\(project.id)): dashboard \(project.dashboardPath); workspace \(project.workspacePath)"
+      }.joined(separator: "\n")
+      let scope = "Selected project: \(projectScopeName) (\(selectedProjectID ?? ProjectCatalog.otherID)). Selected task IDs: \(projectTickets.map(\.id).joined(separator: ", ")).\nConfigured projects, all readable without changing the UI selection:\n\(catalog)\n"
+      scopedMessage = scope + "Read the dashboard for the project named in the user's request. Preserve projectID and unknown fields on edits to the selected dashboard.\n\n" + contextualMessage
     }
     queueChatTask = Task { [weak self] in
       guard let self else { return }
@@ -1379,7 +1412,11 @@ final class QueueViewModel {
     }) { subtaskActivityRevision &+= 1 }
     lastActivityCheck = now
     await reloadPresentedPlan()
-    await captureDurableContexts(Array(taskContexts.values))
+    let nowForDurability = Date()
+    if taskContexts != baseline || lastDurableContextScan.map({ nowForDurability.timeIntervalSince($0) >= 30 }) ?? true {
+      lastDurableContextScan = nowForDurability
+      await captureDurableContexts(Array(taskContexts.values))
+    }
     await captureDurableState(localState)
   }
 
@@ -2871,6 +2908,9 @@ final class QueueViewModel {
   }
 
   func refreshExternalAgentRegistrations(force: Bool = false) async {
+    let now = Date()
+    guard force || lastExternalRegistrationRefresh.map({ now.timeIntervalSince($0) >= 10 }) ?? true else { return }
+    lastExternalRegistrationRefresh = now
     let registry = ExternalAgentRegistry(root: paths.supportDirectory)
     do {
       let receipts = AgentIntakeStore.unresolved(root: paths.supportDirectory)
@@ -3627,6 +3667,8 @@ final class QueueViewModel {
     let wasHidden = !panelVisible
     panelVisible = visible
     if visible, wasHidden {
+      lastDashboardRead = nil
+      lastExternalRegistrationRefresh = nil
       Task { await refresh() }
     }
   }

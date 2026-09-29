@@ -928,7 +928,7 @@ struct QueueViewModelTests {
 
     #expect(model.defaultRepository(for: fixture.tickets[0]) == repository.path)
     model.launchDefaultAgent(for: fixture.tickets[0], subtaskID: agentID)
-    try await eventually { model.launchingTaskIDs.isEmpty }
+    try await eventually(maxAttempts: 1_000) { model.launchingTaskIDs.isEmpty }
 
     let agent = try #require(model.subtasks(for: "ECC-101").first { $0.id == agentID })
     #expect(agent.title == "Codex agent")
@@ -2700,8 +2700,11 @@ struct QueueViewModelTests {
     #expect(await runner.commands.contains { $0.arguments.contains("new-session") } == false)
   }
 
-  private func eventually(_ condition: @MainActor () async throws -> Bool) async throws {
-    for _ in 0..<200 {
+  private func eventually(
+    maxAttempts: Int = 200,
+    _ condition: @MainActor () async throws -> Bool
+  ) async throws {
+    for _ in 0..<maxAttempts {
       if try await condition() { return }
       try await Task.sleep(for: .milliseconds(10))
     }

@@ -3234,7 +3234,7 @@ private struct AgentRowLabel: View {
             .font(.system(size: 12, weight: .semibold))
             .lineLimit(2)
           Spacer(minLength: 3)
-          AgentStatusIndicator(
+          AgentStatusCluster(
             status: model.effectiveStatus(for: agent),
             hasUnreadCompletion: agent.completionUnread,
             isOpening: isOpening,
@@ -3346,30 +3346,17 @@ struct AgentStatusIndicator: View {
   let isOpening: Bool
   let issue: String?
   var attention: AgentAttention? = nil
-  var lastOutputAt: Date? = nil
 
   @Environment(\.queueAccentStyle) private var accentStyle
 
-  @ViewBuilder
   var body: some View {
-    if lastOutputAt == nil {
-      indicator(now: nil)
-    } else {
-      TimelineView(.periodic(from: .now, by: 60)) { timeline in
-        indicator(now: timeline.date)
-      }
-    }
-  }
-
-  private func indicator(now: Date?) -> some View {
-    let displayLabel = label(now: now)
-    return HStack(spacing: 5) {
+    HStack(spacing: 5) {
       if isOpening {
         ProgressView().controlSize(.mini)
       } else {
         Image(systemName: icon)
       }
-      Text(displayLabel)
+      Text(statusLabel)
     }
     .font(.system(size: 10, weight: .semibold))
     .foregroundStyle(color)
@@ -3377,14 +3364,8 @@ struct AgentStatusIndicator: View {
     .background(color.opacity(0.12), in: Capsule())
     .fixedSize()
     .accessibilityElement(children: .ignore)
-    .accessibilityLabel("Agent status: \(displayLabel)")
+    .accessibilityLabel("Agent status: \(statusLabel)")
     .help(issue ?? helpText)
-  }
-
-  private func label(now: Date?) -> String {
-    let statusLabel = statusLabel
-    guard let lastOutputAt, let now else { return statusLabel }
-    return "\(statusLabel) · \(AgentOutputAgeFormatter.string(from: lastOutputAt, relativeTo: now))"
   }
 
   private var statusLabel: String {
@@ -3448,6 +3429,45 @@ struct AgentStatusIndicator: View {
   }
 }
 
+struct AgentStatusCluster: View {
+  let status: TaskSubtaskStatus
+  let hasUnreadCompletion: Bool
+  let isOpening: Bool
+  let issue: String?
+  var attention: AgentAttention? = nil
+  var lastOutputAt: Date? = nil
+
+  var body: some View {
+    HStack(spacing: 8) {
+      AgentStatusIndicator(
+        status: status,
+        hasUnreadCompletion: hasUnreadCompletion,
+        isOpening: isOpening,
+        issue: issue,
+        attention: attention)
+      if let lastOutputAt {
+        AgentOutputAgeLabel(outputAt: lastOutputAt)
+      }
+    }
+    .fixedSize()
+  }
+}
+
+struct AgentOutputAgeLabel: View {
+  let outputAt: Date
+
+  var body: some View {
+    TimelineView(.periodic(from: .now, by: 60)) { timeline in
+      Text(AgentOutputAgeFormatter.string(from: outputAt, relativeTo: timeline.date))
+        .font(.system(size: 10, weight: .medium))
+        .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+        .fixedSize()
+        .accessibilityLabel(
+          "Last output \(AgentOutputAgeFormatter.string(from: outputAt, relativeTo: timeline.date))")
+    }
+  }
+}
+
 enum AgentOutputAgeFormatter {
   static func string(from outputAt: Date, relativeTo now: Date) -> String {
     let elapsed = max(0, now.timeIntervalSince(outputAt))
@@ -3472,13 +3492,14 @@ enum AgentOutputTimestamp {
 
 struct VerticalOverflowIcon: View {
   var body: some View {
-    VStack(spacing: 2) {
+    VStack(spacing: 2.5) {
       ForEach(0..<3, id: \.self) { _ in
-        Circle().frame(width: 3, height: 3)
+        Circle()
+          .fill(Color(nsColor: .secondaryLabelColor))
+          .frame(width: 3.5, height: 3.5)
       }
     }
-    .foregroundStyle(.secondary)
-    .frame(width: 15, height: 19)
+    .frame(width: 18, height: 22)
   }
 }
 

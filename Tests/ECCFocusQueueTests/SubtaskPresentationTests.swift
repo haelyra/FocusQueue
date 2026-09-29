@@ -90,9 +90,9 @@ struct SubtaskPresentationTests {
     #expect(AgentOutputTimestamp.value(for: heartbeatOnly) == nil)
   }
 
-  @Test("Production agent status renders last output in the status chip")
-  func agentStatusRendersLastOutputAge() {
-    let view = AgentStatusIndicator(
+  @Test("Production agent status renders output age beside the status chip")
+  func agentStatusSeparatesLastOutputAge() {
+    let view = AgentStatusCluster(
       status: .working,
       hasUnreadCompletion: true,
       isOpening: false,
@@ -105,8 +105,25 @@ struct SubtaskPresentationTests {
     #expect(host.fittingSize.height >= 44)
     let overflow = NSHostingView(rootView: VerticalOverflowIcon())
     overflow.layoutSubtreeIfNeeded()
-    #expect(overflow.fittingSize.width >= 15)
-    #expect(overflow.fittingSize.height >= 19)
+    #expect(overflow.fittingSize.width >= 18)
+    #expect(overflow.fittingSize.height >= 22)
+    for appearanceName in [NSAppearance.Name.aqua, .darkAqua] {
+      let appearance = try! #require(NSAppearance(named: appearanceName))
+      var contrast = 0.0
+      appearance.performAsCurrentDrawingAppearance {
+        let dot = NSColor.secondaryLabelColor.usingColorSpace(.deviceRGB)!
+        let background = NSColor.windowBackgroundColor.usingColorSpace(.deviceRGB)!
+        let dotComponents = [dot.redComponent, dot.greenComponent, dot.blueComponent]
+        let backgroundComponents = [
+          background.redComponent, background.greenComponent, background.blueComponent,
+        ]
+        let effective = zip(dotComponents, backgroundComponents).map {
+          $0 * dot.alphaComponent + $1 * (1 - dot.alphaComponent)
+        }
+        contrast = zip(effective, backgroundComponents).map { abs($0 - $1) }.max() ?? 0
+      }
+      #expect(contrast > 0.2)
+    }
   }
 
   private func height<V: View>(of view: V) -> CGFloat {

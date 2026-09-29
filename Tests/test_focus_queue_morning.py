@@ -397,6 +397,84 @@ except module.TerminationRequested:
 
         self.assertFalse(run.call_args.kwargs["check"])
 
+    def test_mail_reader_timeout_is_retried_once_and_recovers(self):
+        timeout_payload = {
+            "status": "error",
+            "verified": False,
+            "errorCode": "mail_reader_timeout",
+            "error": "Mail reader timed out after 90 seconds",
+        }
+        ok_payload = {
+            "status": "ok",
+            "verified": True,
+            "mailboxes": ["INBOX"],
+            "truncated": False,
+            "hardTruncated": False,
+            "results": [
+                {
+                    "sourceKey": "email:one",
+                    "messageId": "<one@example.com>",
+                    "mailbox": "INBOX",
+                    "receivedAt": "2026-09-09T12:00:00Z",
+                }
+            ],
+        }
+        config = {
+            "lookbackHours": 24,
+            "maxEmailMessages": 50,
+            "_configPath": "/tmp/focus-queue-test-ingestion.json",
+            "emailAddress": "haley@example.com",
+        }
+        completed = [
+            subprocess.CompletedProcess([], 2, json.dumps(timeout_payload), ""),
+            subprocess.CompletedProcess([], 0, json.dumps(ok_payload), ""),
+        ]
+
+        with mock.patch.dict(os.environ, {"FOCUS_QUEUE_MAIL_HELPER": "0"}), mock.patch.object(
+            MODULE, "apple_mail_store", side_effect=OSError("local store unavailable")
+        ), mock.patch.object(MODULE, "run_command", side_effect=completed) as run, mock.patch.object(
+            MODULE.time, "sleep"
+        ) as sleep:
+            result = MODULE.collect_mail(config)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(len(result["messages"]), 1)
+        self.assertEqual(run.call_count, 2)
+        sleep.assert_called_once_with(MODULE.MAIL_READER_TIMEOUT_RETRY_DELAY_SECONDS)
+
+    def test_mail_reader_persistent_timeout_keeps_the_timeout_failure(self):
+        timeout_payload = {
+            "status": "error",
+            "verified": False,
+            "errorCode": "mail_reader_timeout",
+            "error": "Mail reader timed out after 90 seconds",
+        }
+        config = {
+            "lookbackHours": 24,
+            "maxEmailMessages": 50,
+            "_configPath": "/tmp/focus-queue-test-ingestion.json",
+            "emailAddress": "haley@example.com",
+        }
+        completed = subprocess.CompletedProcess([], 2, json.dumps(timeout_payload), "")
+
+        with mock.patch.dict(os.environ, {"FOCUS_QUEUE_MAIL_HELPER": "0"}), mock.patch.object(
+            MODULE, "apple_mail_store", side_effect=OSError("local store unavailable")
+        ), mock.patch.object(MODULE, "run_command", return_value=completed) as run, mock.patch.object(
+            MODULE.time, "sleep"
+        ):
+            result = MODULE.collect_mail(config)
+
+        expected_code, expected_detail = MODULE.mail_collection_failure(
+            OSError("local store unavailable"),
+            MODULE.ReconciliationError("mail_reader_timeout: Mail reader timed out after 90 seconds"),
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["errorCode"], expected_code)
+        self.assertEqual(result["errorCode"], "mail_reader_timeout")
+        self.assertEqual(result["error"], expected_detail)
+        self.assertEqual(result["errors"], [expected_detail])
+        self.assertEqual(run.call_count, 2)
+
     def test_mail_reader_pagination_stops_at_the_global_collection_bound(self):
         page = {
             "status": "ok",

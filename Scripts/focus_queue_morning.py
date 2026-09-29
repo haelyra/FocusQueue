@@ -54,6 +54,7 @@ VALID_LINK_SCHEMES = {"http", "https", "message", "tg", "vscode"}
 MAX_COLLECTED_MESSAGES_PER_SOURCE = 5_000
 MAX_DAILY_REPORT_MESSAGES_PER_SOURCE = 500
 MAX_DAILY_REPORT_MAIL_PAGE_SIZE = 10
+MAIL_READER_TIMEOUT_RETRY_DELAY_SECONDS = 3
 PROMPT_ENVELOPE_TOKEN_RESERVE = 1_024
 
 
@@ -987,10 +988,18 @@ def collect_mail(config: dict[str, Any]) -> dict[str, Any]:
                 "truncated": False,
                 "errors": [str(error)[:300]],
             }
-        try:
-            return collect_mail_via_reader_app(config, error)
-        except (OSError, subprocess.TimeoutExpired, sqlite3.Error, ReconciliationError) as helper_error:
-            error_code, detail = mail_collection_failure(error, helper_error)
+        helper_attempts = 0
+        while True:
+            try:
+                return collect_mail_via_reader_app(config, error)
+            except (OSError, subprocess.TimeoutExpired, sqlite3.Error, ReconciliationError) as helper_error:
+                error_code, detail = mail_collection_failure(error, helper_error)
+                # Mail.app AppleEvent timeouts (-1712) are often transient, so
+                # retry the reader once before reporting the failure.
+                if error_code != "mail_reader_timeout" or helper_attempts >= 1:
+                    break
+                helper_attempts += 1
+                time.sleep(MAIL_READER_TIMEOUT_RETRY_DELAY_SECONDS)
         return {
             "status": "error",
             "account": config["emailAddress"],

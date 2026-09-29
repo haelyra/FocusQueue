@@ -1899,7 +1899,7 @@ func codexQueueAgentRedactsRawProcessFailure() async {
     Issue.record("Failed Queue process did not throw")
   } catch {
     #expect(error.localizedDescription.contains("worker exited with code 7"))
-    #expect(error.localizedDescription.contains("private Queue chat log"))
+    #expect(error.localizedDescription.contains("private diagnostic log"))
     #expect(!error.localizedDescription.contains("customer@example.com"))
     #expect(!error.localizedDescription.contains("private-value"))
     #expect(!error.localizedDescription.contains("secret"))

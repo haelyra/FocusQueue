@@ -1,5 +1,74 @@
 import Foundation
 
+enum WorkerFailureDiagnostics {
+    static func knownDetail(from result: ProcessResult) -> String? {
+        let raw = result.standardError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? result.standardOutput
+            : result.standardError
+        let normalized = raw.lowercased()
+        if normalized.contains("mail_reader_busy") || normalized.contains("mail reader is busy") {
+            return "the Mail reader is busy with another request. The current request will continue; retry after it finishes"
+        }
+        if normalized.contains("mail_reader_timeout") || normalized.contains("mail reader timed out") {
+            return "the protected Mail reader timed out. Confirm the configured mail provider is available, then retry"
+        }
+        if normalized.contains("gmail_authorization_required") {
+            return "Gmail authorization expired or is missing. Run focus-mail authorize, then retry"
+        }
+        if normalized.contains("gmail_permission_denied") {
+            return "Gmail denied the read-only request. Reauthorize the configured account and confirm Gmail API access"
+        }
+        if normalized.contains("gmail_rate_limited") {
+            return "Gmail temporarily rate-limited the connector. Retry after a short delay"
+        }
+        if normalized.contains("gmail_account_mismatch") {
+            return "the authorized Gmail account does not match the configured emailAddress"
+        }
+        if normalized.contains("gmail_oauth_client") {
+            return "the Gmail Desktop-app OAuth client is missing, invalid, or not private"
+        }
+        if normalized.contains("gmail_network_failed") {
+            return "the Gmail API could not be reached. Check the network connection and retry"
+        }
+        if normalized.contains("mail_permission_required")
+            || normalized.contains("not authorized to send apple events")
+            || normalized.contains("-1743") {
+            return "Mail access needs approval for ECC Focus Mail Reader > Mail in System Settings > Privacy & Security > Automation. Older applet and python entries are separate identities"
+        }
+        if normalized.contains("mailbox_not_configured") || normalized.contains("mailbox is not configured") {
+            return "the requested mailbox is outside the configured Mail scope. Choose a configured mailbox or update emailMailboxes in ingestion settings, then retry"
+        }
+        if normalized.contains("mail_account_unavailable") {
+            return "the configured account is unavailable in Apple Mail. Confirm its address and enabled status, then retry"
+        }
+        if normalized.contains("mailbox_unavailable") {
+            return "the configured mailboxes were not found in Apple Mail. Review the mailbox names in ingestion settings, then retry"
+        }
+        if normalized.contains("mail_runtime_permission_required") || normalized.contains("operation not permitted") {
+            return "the worker was denied access to a local process or file. Review the private diagnostic log for the blocked resource"
+        }
+        if normalized.contains("mail_reader_not_installed")
+            || normalized.contains("mail reader app is not installed") {
+            return "the protected Mail reader is missing. Reinstall Focus Queue, then retry"
+        }
+        if normalized.contains("classification failed")
+            || normalized.contains("no-tools")
+            || normalized.contains("classifier manifest")
+            || normalized.contains("rejected the required no-tools controls") {
+            return "the message classifier failed its safety or compatibility check. Update Focus Queue or Codex, then retry"
+        }
+        if normalized.contains("missing ingestion settings") || normalized.contains("configuration") {
+            return "the worker configuration is incomplete or invalid. Review its settings, then retry"
+        }
+        return nil
+    }
+
+    static func detail(from result: ProcessResult) -> String {
+        knownDetail(from: result)
+            ?? "the worker exited with code \(result.exitCode). See the private diagnostic log for details"
+    }
+}
+
 public enum DailyReportAutomation {
     public struct Presentation: Equatable, Sendable {
         public let message: String
@@ -57,6 +126,12 @@ public enum DailyReportAutomation {
             return Presentation(message: "Daily report completed.", isError: false)
         }
         if result.exitCode == 2 {
+            if let detail = WorkerFailureDiagnostics.knownDetail(from: result) {
+                return Presentation(
+                    message: "Daily report completed with partial platform coverage: \(detail). It will retry automatically.",
+                    isError: true
+                )
+            }
             return Presentation(
                 message: "Daily report completed with partial platform coverage and will retry automatically.",
                 isError: true
@@ -70,56 +145,7 @@ public enum DailyReportAutomation {
     }
 
     private static func safeDiagnosticDetail(from result: ProcessResult) -> String {
-        let raw = result.standardError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? result.standardOutput
-            : result.standardError
-        let normalized = raw.lowercased()
-        if normalized.contains("mail_reader_busy") || normalized.contains("mail reader is busy") {
-            return "the Mail reader is busy with another request. The current request will continue; retry after it finishes"
-        }
-        if normalized.contains("mail_reader_timeout") || normalized.contains("mail reader timed out") {
-            return "the protected Mail reader timed out. Confirm the configured mail provider is available, then retry"
-        }
-        if normalized.contains("gmail_authorization_required") {
-            return "Gmail authorization expired or is missing. Run focus-mail authorize, then retry"
-        }
-        if normalized.contains("gmail_permission_denied") {
-            return "Gmail denied the read-only request. Reauthorize the configured account and confirm Gmail API access"
-        }
-        if normalized.contains("gmail_rate_limited") {
-            return "Gmail temporarily rate-limited the connector. Retry after a short delay"
-        }
-        if normalized.contains("gmail_account_mismatch") {
-            return "the authorized Gmail account does not match the configured emailAddress"
-        }
-        if normalized.contains("gmail_oauth_client") {
-            return "the Gmail Desktop-app OAuth client is missing, invalid, or not private"
-        }
-        if normalized.contains("gmail_network_failed") {
-            return "the Gmail API could not be reached. Check the network connection and retry"
-        }
-        if normalized.contains("mail_permission_required")
-            || normalized.contains("not authorized to send apple events")
-            || normalized.contains("-1743") {
-            return "Mail access needs approval for ECC Focus Mail Reader > Mail in System Settings > Privacy & Security > Automation. Older applet and python entries are separate identities"
-        }
-        if normalized.contains("mailbox_not_configured") || normalized.contains("mailbox is not configured") {
-            return "the requested mailbox is outside the configured Mail scope. Review emailMailboxes in ingestion settings, then retry"
-        }
-        if normalized.contains("mail_runtime_permission_required") || normalized.contains("operation not permitted") {
-            return "the worker was denied access to a local process or file. Review the private daily report log for the blocked resource"
-        }
-        if normalized.contains("mail_reader_not_installed")
-            || normalized.contains("mail reader app is not installed") {
-            return "the protected Mail reader is missing. Reinstall Focus Queue, then retry"
-        }
-        if normalized.contains("codex") || normalized.contains("classification failed") {
-            return "the message classifier failed its safety or compatibility check. Update Focus Queue or Codex, then retry"
-        }
-        if normalized.contains("missing ingestion settings") || normalized.contains("configuration") {
-            return "the daily report configuration is incomplete or invalid. Review its settings, then retry"
-        }
-        return "the worker exited with code \(result.exitCode). See the private daily report log for details"
+        WorkerFailureDiagnostics.detail(from: result)
     }
 }
 
@@ -1006,8 +1032,27 @@ public actor WezTermController: WezTermControlling {
                 path.contains("/.codex/sessions/") || path.contains("/.codex/archived_sessions/")
             case .claude:
                 path.contains("/.claude/projects/")
+            case .kimi:
+                path.contains("/.kimi-code/sessions/")
             }
-            guard isProviderTranscript, path.hasSuffix(".jsonl") else { continue }
+            guard isProviderTranscript else { continue }
+            if provider == .kimi {
+                // A running kimi keeps its per-session files open; the session
+                // directory name is the provider session ID.
+                guard let component = path.split(separator: "/")
+                    .map(String.init)
+                    .first(where: { AgentProvider.kimi.isValidSessionID($0) })
+                else { continue }
+                if !candidates.contains(where: { $0.sessionID == component }) {
+                    candidates.append(AgentSessionCandidate(
+                        sessionID: component,
+                        path: path,
+                        isWriterLock: false
+                    ))
+                }
+                continue
+            }
+            guard path.hasSuffix(".jsonl") else { continue }
             let stem = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
             let groups = stem.split(separator: "-")
             guard groups.count >= 5 else { continue }
@@ -1479,6 +1524,7 @@ public actor WezTermController: WezTermControlling {
             switch command {
             case "codex": provider = .codex
             case "claude": provider = .claude
+            case "kimi": provider = .kimi
             default: return nil
             }
             let arguments = invocation.dropFirst().map(String.init)
@@ -2276,62 +2322,7 @@ public actor CodexQueueAgent: QueueAgentChatting {
             }
             return "the request timed out after \(runTimeoutSeconds) seconds; retry the request"
         }
-        let raw = result.standardError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? result.standardOutput
-            : result.standardError
-        let normalized = raw.lowercased()
-        if normalized.contains("mail_reader_busy") || normalized.contains("mail reader is busy") {
-            return "the Mail reader is busy with another request. The current request will continue; retry after it finishes"
-        }
-        if normalized.contains("mail_reader_timeout") || normalized.contains("mail reader timed out") {
-            return "the protected Mail reader timed out. Confirm the configured mail provider is available, then retry"
-        }
-        if normalized.contains("gmail_authorization_required") {
-            return "Gmail authorization expired or is missing. Run focus-mail authorize, then retry"
-        }
-        if normalized.contains("gmail_permission_denied") {
-            return "Gmail denied the read-only request. Reauthorize the configured account and confirm Gmail API access"
-        }
-        if normalized.contains("gmail_rate_limited") {
-            return "Gmail temporarily rate-limited the connector. Retry after a short delay"
-        }
-        if normalized.contains("gmail_account_mismatch") {
-            return "the authorized Gmail account does not match the configured emailAddress"
-        }
-        if normalized.contains("gmail_oauth_client") {
-            return "the Gmail Desktop-app OAuth client is missing, invalid, or not private"
-        }
-        if normalized.contains("gmail_network_failed") {
-            return "the Gmail API could not be reached. Check the network connection and retry"
-        }
-        if normalized.contains("mail_permission_required")
-            || normalized.contains("not authorized to send apple events")
-            || normalized.contains("-1743") {
-            return "Mail access needs approval for ECC Focus Mail Reader > Mail in System Settings > Privacy & Security > Automation. Older applet and python entries are separate identities"
-        }
-        if normalized.contains("mailbox_not_configured") || normalized.contains("mailbox is not configured") {
-            return "the requested mailbox is outside the configured Mail scope. Choose a configured mailbox or update emailMailboxes in ingestion settings, then retry"
-        }
-        if normalized.contains("mail_account_unavailable") {
-            return "the configured account is unavailable in Apple Mail. Confirm its address and enabled status, then retry"
-        }
-        if normalized.contains("mailbox_unavailable") {
-            return "the configured mailboxes were not found in Apple Mail. Review the mailbox names in ingestion settings, then retry"
-        }
-        if normalized.contains("mail_runtime_permission_required") || normalized.contains("operation not permitted") {
-            return "the worker was denied access to a local process or file. Review the private Queue chat log for the blocked resource and retry the Mail status check"
-        }
-        if normalized.contains("mail_reader_not_installed")
-            || normalized.contains("mail reader app is not installed") {
-            return "the protected Mail reader is missing. Reinstall Focus Queue, then retry"
-        }
-        if normalized.contains("codex") || normalized.contains("classification failed") {
-            return "the Queue assistant failed its safety or compatibility check. Update Focus Queue or Codex, then retry"
-        }
-        if normalized.contains("configuration") {
-            return "the Queue assistant configuration is incomplete or invalid. Review its settings, then retry"
-        }
-        return "the worker exited with code \(result.exitCode). See the private Queue chat log for details"
+        return WorkerFailureDiagnostics.detail(from: result)
     }
 
     private func preservePrivateFailureLog(_ log: String) {

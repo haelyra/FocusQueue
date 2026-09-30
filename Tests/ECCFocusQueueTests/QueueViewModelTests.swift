@@ -2675,6 +2675,48 @@ struct QueueViewModelTests {
     #expect(await router.providers == [.claude])
   }
 
+  @Test("The configured default provider and model drive quick actions and the router")
+  func configuredDefaultProviderAndModel() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    var configuration = try JSONDecoder().decode(
+      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    configuration.projects[0].repositoryPath = fixture.root.path
+    configuration.tmuxExecutable = "/usr/bin/true"
+    configuration.defaultAgentProvider = .kimi
+    configuration.defaultAgentModels = [.kimi: "kimi-code/k3"]
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
+    let router = ControlledObjectiveRouter(outcome: .registered(
+      routeID: "route-kimi", taskID: "ECC-101", subtaskID: "agent-one"))
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(), objectiveRouter: router, routerUndoWindowSeconds: 0.01)
+
+    #expect(model.defaultAgentProvider == .kimi)
+    #expect(model.defaultAgentModel(for: .kimi) == "kimi-code/k3")
+    #expect(model.defaultAgentModel(for: .codex) == nil)
+    #expect(model.preferredNewAgentProvider(stored: nil) == .kimi)
+    #expect(model.preferredNewAgentProvider(stored: .claude) == .claude)
+    #expect(model.agentModelChoices(for: .kimi).map(\.label).first == "Default")
+
+    model.routeObjective("Route with the configured default provider")
+    try await eventually { !model.isRoutingObjective && model.routerStatus?.contains("ECC-101") == true }
+    #expect(await router.providers == [.kimi])
+    #expect(await router.models == ["kimi-code/k3"])
+
+    model.setDefaultAgentProvider(.claude)
+    #expect(model.defaultAgentProvider == .claude)
+    model.setDefaultAgentModel("sonnet", for: .claude)
+    #expect(model.defaultAgentModel(for: .claude) == "sonnet")
+    model.setDefaultAgentModel("", for: .claude)
+    #expect(model.defaultAgentModel(for: .claude) == nil)
+    try await eventually {
+      let saved = try JSONDecoder().decode(
+        AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+      return saved.defaultAgentProvider == .claude
+        && saved.defaultAgentModels == [.kimi: "kimi-code/k3"]
+    }
+  }
+
   @Test("Quota fallback claims the next installed provider once per subtask inside a per-ticket cooldown")
   func quotaFallbackDecision() async throws {
     let fixture = try await Fixture()
@@ -2733,7 +2775,7 @@ struct QueueViewModelTests {
       executableAvailable: { _ in true }) == .claude)
     #expect(QueueViewModel.escalationProvider(requested: "claude", fallbackOrder: [.codex, .claude],
       executableAvailable: { $0 == .codex }) == .codex)
-    #expect(QueueViewModel.escalationProvider(requested: "kimi", fallbackOrder: [.codex, .claude],
+    #expect(QueueViewModel.escalationProvider(requested: "bogus", fallbackOrder: [.codex, .claude],
       executableAvailable: { $0 == .claude }) == .claude)
     #expect(QueueViewModel.escalationProvider(requested: nil, fallbackOrder: [.codex, .claude],
       executableAvailable: { _ in false }) == nil)
@@ -2851,6 +2893,36 @@ struct QueueViewModelTests {
     #expect(model.subtasks(for: "ECC-101").isEmpty)
     #expect(FileManager.default.fileExists(atPath: requests.appendingPathComponent("ECC-101.json").path))
     #expect(await runner.commands.contains { $0.arguments.contains("new-session") } == false)
+  }
+
+  @Test("The program log mirror skips registration status noise and stays quiet after a clear")
+  func programLogMirrorFilterAndClearPersistence() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = ProgramLogStore()
+    let model = await fixture.model(agent: ControlledQueueAgent(), programLog: store)
+
+    let registrationStatus =
+      "Codex is running and registered in tmux. Click Build thing to open its exact terminal session."
+    let recoveryError =
+      "The provider process is running and registered in tmux session ecc-focus-queue-task-ecc-101, but WezTerm did not open its view. Click the subtask to retry."
+    #expect(QueueViewModel.programLogSkips(registrationStatus))
+    #expect(!QueueViewModel.programLogSkips(recoveryError))
+
+    store.clear()
+    model.recordProgramLogChange(registrationStatus, level: .info, category: "Task ECC-101")
+    #expect(store.entries.isEmpty)
+
+    model.recordProgramLogChange(recoveryError, level: .error, category: "Task ECC-101")
+    #expect(store.entries.map(\.message) == [recoveryError])
+
+    store.clear()
+    model.recordProgramLogChange(recoveryError, level: .error, category: "Task ECC-101")
+    #expect(store.entries.isEmpty)
+
+    model.recordProgramLogChange(
+      "WezTerm opened the recovered session view.", level: .info, category: "Task ECC-101")
+    #expect(store.entries.map(\.message) == ["WezTerm opened the recovered session view."])
   }
 
   private func eventually(
@@ -3048,6 +3120,7 @@ private actor ControlledObjectiveRouter: QueueObjectiveRouting {
   private(set) var waitCount = 0
   private(set) var objectives: [String] = []
   private(set) var providers: [AgentProvider] = []
+  private(set) var models: [String?] = []
   private var outcomes: [QueueRouterOutcome]
 
   init(outcome: QueueRouterOutcome) { outcomes = [outcome] }
@@ -3059,16 +3132,17 @@ private actor ControlledObjectiveRouter: QueueObjectiveRouting {
   ) async throws -> QueueRouterRuntime {
     try await launch(
       objective: objective, repositoryPath: repositoryPath, supportDirectory: supportDirectory,
-      tmuxExecutable: tmuxExecutable, shellPath: shellPath, provider: .codex)
+      tmuxExecutable: tmuxExecutable, shellPath: shellPath, provider: .codex, model: nil)
   }
 
   func launch(
     objective: String, repositoryPath: String, supportDirectory: URL,
-    tmuxExecutable: String, shellPath: String?, provider: AgentProvider
+    tmuxExecutable: String, shellPath: String?, provider: AgentProvider, model: String?
   ) async throws -> QueueRouterRuntime {
     launchCount += 1
     objectives.append(objective)
     providers.append(provider)
+    models.append(model)
     try await Task.sleep(for: .milliseconds(30))
     let reference = try TmuxController.decode(
       "fq-router-test|1|1|%1|2|/dev/ttys001|0\n", executable: tmuxExecutable)[0]

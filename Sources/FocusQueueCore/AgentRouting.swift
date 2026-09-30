@@ -712,9 +712,9 @@ public struct AgentStartupReceiptStore: Sendable {
     }
 
     public func register(taskID: String, subtaskID: String, providerSessionID: String) throws {
-        guard UUID(uuidString: providerSessionID) != nil else { return }
         try withLock(taskID: taskID, subtaskID: subtaskID) {
-            guard var receipt = try load(taskID: taskID, subtaskID: subtaskID) else { return }
+            guard var receipt = try load(taskID: taskID, subtaskID: subtaskID),
+                  receipt.provider.isValidSessionID(providerSessionID) else { return }
             if let savedSessionID = receipt.providerSessionID,
                savedSessionID.caseInsensitiveCompare(providerSessionID) != .orderedSame {
                 throw TaskContextError.commandFailed(
@@ -729,17 +729,14 @@ public struct AgentStartupReceiptStore: Sendable {
             var profile: [String] = []
             if let model = receipt.model { profile += ["--model", model] }
             if let effort = receipt.effort {
-                profile += receipt.provider == .codex
-                    ? ["-c", "model_reasoning_effort=\(effort)"]
-                    : ["--effort", effort]
+                profile += receipt.provider.effortArguments(effort: effort)
             }
             let contextDirectory = URL(fileURLWithPath: receipt.context.taskContext)
                 .deletingLastPathComponent().path
-            receipt.providerResumeCommand = receipt.provider == .codex
-                ? [receipt.provider.executableName, "resume", providerSessionID.lowercased(),
-                   "--cd", receipt.workspace.path] + profile + ["--add-dir", contextDirectory]
-                : [receipt.provider.executableName, "--resume", providerSessionID.lowercased()]
-                    + profile + ["--add-dir", contextDirectory]
+            receipt.providerResumeCommand = [receipt.provider.executableName]
+                + receipt.provider.resumeArguments(sessionID: providerSessionID.lowercased())
+                + (receipt.provider == .codex ? ["--cd", receipt.workspace.path] : [])
+                + profile + ["--add-dir", contextDirectory]
             receipt.status = .registered
             receipt.updatedAt = Date()
             let destination = try url(taskID: taskID, subtaskID: subtaskID)
@@ -750,12 +747,12 @@ public struct AgentStartupReceiptStore: Sendable {
     public func reserveProviderSession(
         taskID: String, subtaskID: String, providerSessionID: String
     ) throws {
-        guard UUID(uuidString: providerSessionID) != nil else {
-            throw TaskContextError.invalidIdentifier
-        }
         try withLock(taskID: taskID, subtaskID: subtaskID) {
             guard var receipt = try load(taskID: taskID, subtaskID: subtaskID) else {
                 throw TaskContextError.commandFailed("The startup receipt is missing.")
+            }
+            guard receipt.provider.isValidSessionID(providerSessionID) else {
+                throw TaskContextError.invalidIdentifier
             }
             if let savedSessionID = receipt.providerSessionID ?? receipt.reservedProviderSessionID,
                savedSessionID.caseInsensitiveCompare(providerSessionID) != .orderedSame {
@@ -772,12 +769,15 @@ public struct AgentStartupReceiptStore: Sendable {
     public func completeHandoff(
         taskID: String, subtaskID: String, expectedSessionID: String
     ) throws {
-        guard UUID(uuidString: expectedSessionID) != nil else {
-            throw TaskContextError.invalidIdentifier
-        }
         try withLock(taskID: taskID, subtaskID: subtaskID) {
-            guard var receipt = try load(taskID: taskID, subtaskID: subtaskID),
-                  receipt.status == .registered,
+            guard var receipt = try load(taskID: taskID, subtaskID: subtaskID) else {
+                throw TaskContextError.commandFailed(
+                    "The routed agent is not registered and prepared, so its handoff cannot be completed.")
+            }
+            guard receipt.provider.isValidSessionID(expectedSessionID) else {
+                throw TaskContextError.invalidIdentifier
+            }
+            guard receipt.status == .registered,
                   receipt.providerSessionID?.caseInsensitiveCompare(expectedSessionID)
                     == .orderedSame,
                   receipt.orchestrationPreparedAt != nil else {

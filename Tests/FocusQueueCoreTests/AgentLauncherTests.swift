@@ -66,6 +66,7 @@ func assignedWorkerClearsRouterEnvironment() async throws {
   focus_capture() { builtin printf '%s\\0' "$@"; }
   alias codex='focus_capture alias'
   claude() { focus_capture function "$@"; }
+  kimi() { focus_capture function "$@"; }
   """
   let zshrc = root.appendingPathComponent(".zshrc")
   let bashrc = root.appendingPathComponent("bashrc")
@@ -152,6 +153,42 @@ func exactCodexResumeRecipe() async throws {
   #expect(arguments == ["resume", sessionID, "--cd", root.path,
     "--model", "gpt-test", "-c", "model_reasoning_effort=high",
     "--add-dir", context.contextDirectory.path])
+}
+
+@Test("Kimi launches with --prompt, skips effort flags, and resumes through --session")
+func kimiLaunchAndResumeRecipe() throws {
+  let context = TaskContext(ticketID: "ECC-1", title: "Kimi launch", summary: "",
+    successCriteria: "Checks pass", planPath: "/tmp/support/tasks/ECC-1/plan.md",
+    worktreePath: "/tmp/worktree", updatedAt: Date())
+
+  var fresh = TaskSubtask(title: "Fresh kimi", provider: .kimi)
+  fresh.launchConfiguration = AgentLaunchConfiguration(model: "kimi-code/k3", effort: "high")
+  let launch = try TaskAgentLauncher.command(context: context, subtask: fresh,
+    supportDirectory: URL(fileURLWithPath: "/tmp/support"))
+  let modelIndex = try #require(launch.firstIndex(of: "--model"))
+  #expect(launch[launch.index(after: modelIndex)] == "kimi-code/k3")
+  #expect(!launch.contains("--effort"))
+  #expect(!launch.contains { $0.hasPrefix("model_reasoning_effort=") })
+  // Kimi has no positional prompt; the prompt goes through --prompt with no `--`.
+  let promptIndex = try #require(launch.firstIndex(of: "--prompt"))
+  #expect(launch[launch.index(after: promptIndex)] == context.agentPrompt(subtask: fresh))
+  #expect(!launch.contains("--"))
+
+  for sessionID in ["session_11111111-2222-4333-8444-555555555555", "01HZ8KJ9X0AVBR1C2D3E4F5G6H"] {
+    let resumed = TaskSubtask(title: "Resume kimi", provider: .kimi, sessionID: sessionID)
+    let command = try TaskAgentLauncher.command(context: context, subtask: resumed,
+      supportDirectory: URL(fileURLWithPath: "/tmp/support"), includePrompt: false)
+    let sessionIndex = try #require(command.firstIndex(of: "--session"))
+    #expect(command[command.index(after: sessionIndex)] == sessionID)
+    #expect(!command.contains("--prompt"))
+    #expect(!command.contains("--resume"))
+  }
+
+  let invalid = TaskSubtask(title: "Bad kimi", provider: .kimi, sessionID: "not a session")
+  #expect(throws: TaskContextError.self) {
+    try TaskAgentLauncher.command(context: context, subtask: invalid,
+      supportDirectory: URL(fileURLWithPath: "/tmp/support"))
+  }
 }
 
 private actor AgentLaunchRunner: ProcessRunning {

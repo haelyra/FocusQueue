@@ -13,9 +13,9 @@ enum SessionRegistrationError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .usage:
-            "Usage: focus-queue-session intake-changed | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | route inspect --prompt <text> [--cwd <path>] [--provider codex|claude] | route start <ROUTE-UUID> (--task <TASK-ID> | --project <PROJECT-ID> --task-title <TITLE>) --title <TITLE> --description <TEXT> [--provider codex|claude] [--model <MODEL>] [--effort <EFFORT>] [--repository <PATH>] [--workspace existing|isolated-clean|isolated-snapshot] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reset | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
+            "Usage: focus-queue-session intake-changed | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | route inspect --prompt <text> [--cwd <path>] [--provider codex|claude|kimi] | route start <ROUTE-UUID> (--task <TASK-ID> | --project <PROJECT-ID> --task-title <TITLE>) --title <TITLE> --description <TEXT> [--provider codex|claude|kimi] [--model <MODEL>] [--effort <EFFORT>] [--repository <PATH>] [--workspace existing|isolated-clean|isolated-snapshot] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reset | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
         case .missingSessionIdentity:
-            "No Codex or Claude session ID was found in the environment or current WezTerm pane."
+            "No Codex, Claude, or Kimi session ID was found in the environment or current WezTerm pane."
         case .missingManagedRuntime:
             "This pane has no saved Focus Queue runtime identity. Start the agent from New Agent in Focus Queue."
         case .missingLibraryTask(let ticketID):
@@ -522,11 +522,10 @@ enum SessionRegistrationError: Error, LocalizedError {
             providerLaunchCommand += ["--model", model]
         }
         if let effort = subtask.launchConfiguration?.effort {
-            providerLaunchCommand += provider == .codex
-                ? ["-c", "model_reasoning_effort=\(effort)"]
-                : ["--effort", effort]
+            providerLaunchCommand += provider.effortArguments(effort: effort)
         }
-        providerLaunchCommand += ["--add-dir", context.contextDirectory.path, "<initial-prompt>"]
+        providerLaunchCommand += ["--add-dir", context.contextDirectory.path]
+        providerLaunchCommand += provider == .kimi ? ["--prompt", "<initial-prompt>"] : ["<initial-prompt>"]
         var receipt: AgentStartupReceipt
         let receiptURL: URL
         if let replayReceipt {
@@ -741,7 +740,8 @@ enum SessionRegistrationError: Error, LocalizedError {
     /// unrelated process or creating a replacement.
     private static func runtimeCommand(arguments: [String]) async throws {
         if arguments.count == 4, arguments[1] == "locate",
-           let provider = AgentProvider(rawValue: arguments[2]), UUID(uuidString: arguments[3]) != nil {
+           let provider = AgentProvider(rawValue: arguments[2]),
+           provider.isValidSessionID(arguments[3]) {
             try await locateRuntime(provider: provider, sessionID: arguments[3].lowercased())
             return
         }

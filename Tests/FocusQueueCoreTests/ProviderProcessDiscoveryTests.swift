@@ -220,4 +220,35 @@ struct ProviderProcessDiscoveryTests {
             provider: .claude, sessionID: parent, retryDelay: .zero) == nil)
         #expect(await runner.outputs.isEmpty)
     }
+
+    @Test("A Kimi process resolves from its open session directory like an exact identity")
+    func kimiSessionDirectoryIdentity() async throws {
+        let kimi = "session_55555555-5555-4555-8555-555555555555"
+        let runner = ProviderDiscoveryRunner([
+            "40 ttys040 /opt/kimi\n",
+            "p40\nfcwd\nn/tmp/repository\nf8\nn/Users/example/.kimi-code/sessions/\(kimi)/wire.jsonl\n",
+        ])
+        let scan = try await WezTermController(runner: runner).knownProviderProcesses(requireComplete: true)
+        #expect(scan.resolved.map(\.sessionID) == [kimi])
+        #expect(scan.resolved.first?.provider == .kimi)
+        #expect(scan.unresolved.isEmpty)
+        let locator = ProviderDiscoveryRunner([
+            "40 ttys040 /opt/kimi\n",
+            "p40\nfcwd\nn/tmp/repository\nf8\nn/Users/example/.kimi-code/sessions/\(kimi)/wire.jsonl\n",
+        ])
+        #expect(try await WezTermController(runner: locator).locateProviderProcess(
+            provider: .kimi, sessionID: kimi, retryDelay: .zero)?.processID == 40)
+    }
+
+    @Test("An unresolved Kimi process keeps the conservative fail-closed posture")
+    func unresolvedKimiFailsClosed() async throws {
+        let sample = ["40 ttys040 /opt/kimi\n", "p40\nfcwd\nn/tmp/repository\n"]
+        let runner = ProviderDiscoveryRunner(sample + sample + sample + sample)
+        await #expect(throws: WezTermError.self) {
+            try await WezTermController(runner: runner).locateProviderProcess(
+                provider: .kimi, sessionID: "session_55555555-5555-4555-8555-555555555555",
+                retryDelay: .zero)
+        }
+        #expect(await runner.outputs.isEmpty)
+    }
 }

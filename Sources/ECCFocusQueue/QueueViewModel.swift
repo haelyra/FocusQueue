@@ -91,7 +91,7 @@ final class QueueViewModel {
   private(set) var dailyReportRunFailed = false {
     didSet {
       if dailyReportRunFailed, let dailyReportRunMessage {
-        programLog.record(dailyReportRunMessage, level: .error, category: "Daily report")
+        recordProgramLogChange(dailyReportRunMessage, level: .error, category: "Daily report")
       }
     }
   }
@@ -106,7 +106,7 @@ final class QueueViewModel {
   private(set) var recurringPRProgressErrors: [String: String] = [:] {
     didSet {
       for (ticketID, message) in recurringPRProgressErrors where oldValue[ticketID] != message {
-        programLog.record(message, level: .error, category: "Pull request \(ticketID)")
+        recordProgramLogChange(message, level: .error, category: "Pull request \(ticketID)")
       }
     }
   }
@@ -172,7 +172,7 @@ final class QueueViewModel {
   private(set) var agentSessionErrors: [String: String] = [:] {
     didSet {
       for (key, message) in agentSessionErrors where oldValue[key] != message {
-        programLog.record(message, level: .error, category: "Agent \(key)")
+        recordProgramLogChange(message, level: .error, category: "Agent \(key)")
       }
     }
   }
@@ -200,6 +200,7 @@ final class QueueViewModel {
 
   @ObservationIgnored private let paths: AppPaths
   @ObservationIgnored private let programLog: ProgramLogStore
+  @ObservationIgnored private var lastRecordedProgramLogMessages: [String: String] = [:]
   @ObservationIgnored private let configurationRepository: any ConfigurationLoading
   @ObservationIgnored private let dailyReportRepository: any DailyReportStoring
   @ObservationIgnored private let dailyReportApprovalRepository: any DailyReportApprovalStoring
@@ -2202,7 +2203,8 @@ final class QueueViewModel {
       let runtime = try await objectiveRouter.launch(
         objective: objective, repositoryPath: repository,
         supportDirectory: paths.supportDirectory,
-        tmuxExecutable: tmuxExecutable, shellPath: nil, provider: provider)
+        tmuxExecutable: tmuxExecutable, shellPath: nil, provider: provider,
+        model: defaultAgentModel(for: provider))
       trackRouterRuntime(runtime, provider: provider)
       routerStatus = "Router started. Waiting for the assigned agent…"
       let outcome = try await objectiveRouter.waitForOutcome(
@@ -2611,6 +2613,7 @@ final class QueueViewModel {
     completion: (@MainActor (Bool) -> Void)? = nil
   ) {
     let provider = provider ?? defaultAgentProvider
+    let model = model ?? defaultAgentModel(for: provider)
     let existingTitles = Set(
       taskItems(for: ticket.id).map {
         $0.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -2635,7 +2638,38 @@ final class QueueViewModel {
   }
 
   var defaultAgentProvider: AgentProvider {
-    config.agentProviderFallbackOrder.first ?? .codex
+    config.defaultAgentProvider ?? config.agentProviderFallbackOrder.first ?? .codex
+  }
+
+  /// A configured default model; nil launches the provider without `--model`.
+  func defaultAgentModel(for provider: AgentProvider) -> String? {
+    config.defaultAgentModels[provider]
+  }
+
+  func agentModelChoices(for provider: AgentProvider) -> [AgentModelChoice] {
+    let configured = config.agentModelChoices
+    return (configured.isEmpty ? AppConfiguration.defaultAgentModelChoices : configured)
+      .filter { $0.provider == provider }
+  }
+
+  func setDefaultAgentProvider(_ provider: AgentProvider) {
+    guard config.defaultAgentProvider != provider else { return }
+    config.defaultAgentProvider = provider
+    persistConfiguration()
+  }
+
+  func setDefaultAgentModel(_ model: String?, for provider: AgentProvider) {
+    let trimmed = model?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let normalized = trimmed.flatMap { $0.isEmpty ? nil : $0 }
+    guard config.defaultAgentModels[provider] != normalized else { return }
+    config.defaultAgentModels[provider] = normalized
+    persistConfiguration()
+  }
+
+  /// New Agent quick actions follow the configured default until the user
+  /// explicitly picks a provider (only then is the AppStorage key written).
+  func preferredNewAgentProvider(stored: AgentProvider?) -> AgentProvider {
+    stored ?? defaultAgentProvider
   }
 
   /// The next configured provider after the failing one whose CLI is installed.
@@ -4400,19 +4434,30 @@ final class QueueViewModel {
 
   private func logChangedError(_ message: String?, previous: String?, category: String) {
     guard let message, message != previous else { return }
-    programLog.record(message, level: .error, category: category)
+    recordProgramLogChange(message, level: .error, category: category)
   }
 
   private func logChangedMessages(
     _ messages: [String: String], previous: [String: String], categoryPrefix: String
   ) {
     for (identifier, message) in messages where previous[identifier] != message {
-      programLog.record(
+      recordProgramLogChange(
         message,
         level: Self.logLevel(for: message),
         category: "\(categoryPrefix) \(identifier)"
       )
     }
+  }
+
+  func recordProgramLogChange(_ message: String, level: ProgramLogLevel, category: String) {
+    guard !Self.programLogSkips(message) else { return }
+    guard lastRecordedProgramLogMessages[category] != message else { return }
+    lastRecordedProgramLogMessages[category] = message
+    programLog.record(message, level: level, category: category)
+  }
+
+  static func programLogSkips(_ message: String) -> Bool {
+    message.contains("is running and registered in tmux.")
   }
 
   private static func logLevel(for message: String) -> ProgramLogLevel {

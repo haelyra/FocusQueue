@@ -19,10 +19,12 @@ class AgentShellScanTests(unittest.TestCase):
             (root / ".zshrc").write_text(
                 f"touch '{sentinel}'\nalias codex='SECRET_ALIAS_VALUE codex --dangerous'\n"
                 "function claude() { SECRET_FUNCTION_VALUE; }\n"
+                "alias kimi='SECRET_KIMI_ALIAS kimi --verbose'\n"
             )
             result = module.scan(root, "/bin/zsh")
             self.assertEqual(result["providers"]["codex"]["kinds"], ["alias"])
             self.assertEqual(result["providers"]["claude"]["kinds"], ["function"])
+            self.assertEqual(result["providers"]["kimi"]["kinds"], ["alias"])
             self.assertNotIn("SECRET", json.dumps(result))
             self.assertFalse(sentinel.exists())
 

@@ -63,12 +63,12 @@ struct AgentLifecycleTests {
     func resume(provider: AgentProvider) throws {
         let context = TaskContext(ticketID: "ECC-777", title: "Lifecycle", summary: "", successCriteria: "",
             planPath: "/tmp/support/tasks/ECC-777/plan.md", worktreePath: "/tmp/new-parent", updatedAt: Date())
-        let id = UUID().uuidString
+        let id = provider == .kimi ? "session_\(UUID().uuidString.lowercased())" : UUID().uuidString
         var subtask = TaskSubtask(title: "Old assignment", provider: provider, sessionID: id)
         subtask.workspace = AgentWorkspace(path: "/tmp/original workspace", repositoryPath: "/tmp/repo", branch: "feature", managed: false)
         subtask.initialPrompt = "NEVER REPLAY THIS"
         let command = try TaskAgentLauncher.command(context: context, subtask: subtask, supportDirectory: URL(fileURLWithPath: "/tmp/support"))
-        #expect(command.contains(provider == .codex ? "resume" : "--resume"))
+        #expect(command.contains(provider == .codex ? "resume" : provider == .kimi ? "--session" : "--resume"))
         #expect(command.contains(id))
         #expect(command.contains("/tmp/original workspace"))
         #expect(!command.contains("/tmp/new-parent"))

@@ -132,6 +132,12 @@ struct ProgramLogView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
           }
+          .onAppear {
+            guard let identifier = store.entries.last?.id else { return }
+            DispatchQueue.main.async {
+              proxy.scrollTo(identifier, anchor: .bottom)
+            }
+          }
           .onChange(of: store.entries.last?.id) { _, identifier in
             guard let identifier else { return }
             proxy.scrollTo(identifier, anchor: .bottom)

@@ -33,7 +33,7 @@ struct AgentCompletionTerminalTests {
       let agent = TaskSubtask(title: "Done", provider: provider, sessionID: UUID().uuidString, status: .completed)
       let message = try AgentCompletionMessage(context: context, subtask: agent, taskCompleted: false)
       #expect(message.text.contains("Agent exited. Subtask for ECC-TEST is complete."))
-      let capture = "codex() { printf '%s\\n' \"$PWD\" \"$@\"; }; claude() { printf '%s\\n' \"$PWD\" \"$@\"; }; "
+      let capture = "codex() { printf '%s\\n' \"$PWD\" \"$@\"; }; claude() { printf '%s\\n' \"$PWD\" \"$@\"; }; kimi() { printf '%s\\n' \"$PWD\" \"$@\"; }; "
       let result = try await FoundationProcessRunner().run(.init(executable: "/bin/sh", arguments: ["-c", capture + message.resumeCommand]))
       #expect(result.succeeded)
       let captured = result.standardOutput.split(separator: "\n").map(String.init)

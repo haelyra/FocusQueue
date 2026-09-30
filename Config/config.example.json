@@ -31,7 +31,11 @@
     {"provider": "claude", "label": "Default"},
     {"provider": "claude", "label": "sonnet", "model": "sonnet"},
     {"provider": "claude", "label": "opus", "model": "opus"},
-    {"provider": "claude", "label": "haiku", "model": "haiku"}
+    {"provider": "claude", "label": "haiku", "model": "haiku"},
+    {"provider": "kimi", "label": "Default"},
+    {"provider": "kimi", "label": "K3", "model": "kimi-code/k3"},
+    {"provider": "kimi", "label": "K2.8 Preview", "model": "kimi-code/kimi-for-coding"},
+    {"provider": "kimi", "label": "K2.7 Code Highspeed", "model": "kimi-code/kimi-for-coding-highspeed"}
   ],
   "dailyRoutines": [
     {

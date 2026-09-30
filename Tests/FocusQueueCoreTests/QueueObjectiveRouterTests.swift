@@ -29,6 +29,29 @@ struct QueueObjectiveRouterTests {
     #expect(command.contains(repository))
   }
 
+  @Test("Router command follows the configured provider: kimi gets --prompt and an optional model")
+  func providerCommand() throws {
+    let repository = "/tmp/repository"
+    let support = URL(fileURLWithPath: "/tmp/support")
+    let objective = "Route this work"
+
+    let kimi = QueueObjectiveRouter.command(
+      objective: objective, repositoryPath: repository, supportDirectory: support,
+      provider: .kimi, model: "kimi-code/k3")
+
+    let modelIndex = try #require(kimi.firstIndex(of: "--model"))
+    #expect(kimi[kimi.index(after: modelIndex)] == "kimi-code/k3")
+    let promptIndex = try #require(kimi.firstIndex(of: "--prompt"))
+    #expect(kimi[kimi.index(after: promptIndex)] == objective)
+    #expect(kimi.filter { $0 == objective }.count == 1)
+
+    let codex = QueueObjectiveRouter.command(
+      objective: objective, repositoryPath: repository, supportDirectory: support,
+      provider: .codex)
+    #expect(!codex.contains("--prompt"))
+    #expect(codex.last == objective)
+  }
+
   @Test("One composer submission starts exactly one router tmux session in the selected repository")
   func singleLaunch() async throws {
     let repository = FileManager.default.temporaryDirectory.appendingPathComponent(

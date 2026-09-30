@@ -173,8 +173,10 @@ func agentModelChoiceConfiguration() throws {
     AppConfiguration.self, from: JSONEncoder().encode(config))
   #expect(roundTripped.agentModelChoices == config.agentModelChoices)
   #expect(AppConfiguration.defaultAgentModelChoices.map(\.provider)
-    == [.codex, .codex, .codex, .codex, .claude, .claude, .claude, .claude])
+    == [.codex, .codex, .codex, .codex, .claude, .claude, .claude, .claude,
+        .kimi, .kimi, .kimi, .kimi])
   #expect(AppConfiguration.defaultAgentModelChoices.first(where: { $0.model == nil && $0.provider == .claude })?.label == "Default")
+  #expect(AppConfiguration.defaultAgentModelChoices.first(where: { $0.model == nil && $0.provider == .kimi })?.label == "Default")
 }
 
 @Test("Daily report documents retain platform counts, messages, tasks, and exact usage")
@@ -296,7 +298,7 @@ func agentProviderFallbackDecoding() throws {
   #expect(legacy.agentEscalationAutoLaunch)
 
   // Unknown providers are skipped and duplicates collapse.
-  object["agentProviderFallbackOrder"] = ["kimi", "claude", "claude", "codex"]
+  object["agentProviderFallbackOrder"] = ["bogus", "claude", "claude", "codex"]
   object["agentEscalationAutoLaunch"] = false
   let filtered = try JSONDecoder().decode(
     AppConfiguration.self, from: JSONSerialization.data(withJSONObject: object))
@@ -304,7 +306,7 @@ func agentProviderFallbackDecoding() throws {
   #expect(!filtered.agentEscalationAutoLaunch)
 
   // An entirely unknown list falls back to the default instead of decoding empty.
-  object["agentProviderFallbackOrder"] = ["kimi"]
+  object["agentProviderFallbackOrder"] = ["bogus"]
   let unknown = try JSONDecoder().decode(
     AppConfiguration.self, from: JSONSerialization.data(withJSONObject: object))
   #expect(unknown.agentProviderFallbackOrder == [.codex, .claude])
@@ -314,6 +316,64 @@ func agentProviderFallbackDecoding() throws {
   let roundTrip = try JSONDecoder().decode(
     AppConfiguration.self, from: encoder.encode(configuration))
   #expect(roundTrip.agentProviderFallbackOrder == [.claude, .codex])
+}
+
+@Test("Kimi is a first-class provider with its own symbol, resume flag, and session ID shapes")
+func kimiProviderIdentity() throws {
+  let provider = try #require(AgentProvider(rawValue: "kimi"))
+  #expect(provider.displayName == "Kimi")
+  #expect(provider.executableName == "kimi")
+  #expect(Set(AgentProvider.allCases.map(\.symbolName)).count == AgentProvider.allCases.count)
+  #expect(provider.resumeArguments(sessionID: "session_x") == ["--session", "session_x"])
+  // Kimi has no reasoning-effort flag; an effort choice is dropped.
+  #expect(provider.effortArguments(effort: "high").isEmpty)
+  #expect(AgentProvider.codex.effortArguments(effort: "high") == ["-c", "model_reasoning_effort=high"])
+  #expect(AgentProvider.claude.effortArguments(effort: "high") == ["--effort", "high"])
+
+  #expect(provider.isValidSessionID("session_11111111-2222-4333-8444-555555555555"))
+  #expect(provider.isValidSessionID("01HZ8KJ9X0AVBR1C2D3E4F5G6H"))
+  #expect(provider.isValidSessionID("01hz8kj9x0avbr1c2d3e4f5g6h"))
+  #expect(!provider.isValidSessionID("11111111-2222-4333-8444-555555555555"))
+  #expect(!provider.isValidSessionID("session_not-a-uuid"))
+  #expect(!provider.isValidSessionID("not-a-session"))
+  #expect(AgentProvider.codex.isValidSessionID("11111111-2222-4333-8444-555555555555"))
+  #expect(!AgentProvider.codex.isValidSessionID("session_11111111-2222-4333-8444-555555555555"))
+
+  let decoded = try JSONDecoder().decode(AgentProvider.self, from: Data("\"kimi\"".utf8))
+  #expect(decoded == .kimi)
+}
+
+@Test("Default provider and per-provider default models decode with backward-compatible defaults")
+func defaultProviderConfigurationDecoding() throws {
+  let encoder = JSONEncoder()
+  let configuration = AppConfiguration.eccDefault(homeDirectory: URL(fileURLWithPath: "/tmp/provider-home"))
+  #expect(configuration.defaultAgentProvider == nil)
+  #expect(configuration.defaultAgentModels.isEmpty)
+
+  // A legacy configuration without the new keys decodes to the defaults.
+  var object = try #require(
+    try JSONSerialization.jsonObject(with: encoder.encode(configuration)) as? [String: Any])
+  object.removeValue(forKey: "defaultAgentProvider")
+  object.removeValue(forKey: "defaultAgentModels")
+  let legacy = try JSONDecoder().decode(
+    AppConfiguration.self, from: JSONSerialization.data(withJSONObject: object))
+  #expect(legacy.defaultAgentProvider == nil)
+  #expect(legacy.defaultAgentModels.isEmpty)
+
+  // Unknown provider keys and blank models are skipped, never fatal.
+  object["defaultAgentProvider"] = "kimi"
+  object["defaultAgentModels"] = ["kimi": "kimi-code/k3", "bogus": "ignored", "claude": "  "]
+  let decoded = try JSONDecoder().decode(
+    AppConfiguration.self, from: JSONSerialization.data(withJSONObject: object))
+  #expect(decoded.defaultAgentProvider == .kimi)
+  #expect(decoded.defaultAgentModels == [.kimi: "kimi-code/k3"])
+
+  var configured = configuration
+  configured.defaultAgentProvider = .claude
+  configured.defaultAgentModels = [.kimi: "kimi-code/k3"]
+  let roundTrip = try JSONDecoder().decode(AppConfiguration.self, from: encoder.encode(configured))
+  #expect(roundTrip.defaultAgentProvider == .claude)
+  #expect(roundTrip.defaultAgentModels == [.kimi: "kimi-code/k3"])
 }
 
 @Test("Missed-run approval is a portable persisted contract")
@@ -1061,6 +1121,26 @@ func wezTermAgentDiscovery() async throws {
     inLsofOutput:
       "n/Users/hira/.codex/thread-writer-locks/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.lock"
   ) == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+}
+
+@Test("Kimi session discovery takes the session directory from lsof output")
+func kimiSessionDiscovery() {
+  #expect(WezTermController.sessionID(
+    for: .kimi,
+    inLsofOutput: """
+      n/Users/hira/.kimi-code/logs/kimi-code.log
+      n/Users/hira/.kimi-code/sessions/wd_project_26ddd165f41f/session_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/logs/kimi-code.log
+      """
+  ) == "session_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+  #expect(WezTermController.sessionID(
+    for: .kimi,
+    inLsofOutput:
+      "n/Users/hira/.kimi-code/sessions/wd_project_26ddd165f41f/01HZ8KJ9X0AVBR1C2D3E4F5G6H/state.json"
+  ) == "01HZ8KJ9X0AVBR1C2D3E4F5G6H")
+  #expect(WezTermController.sessionID(
+    for: .kimi,
+    inLsofOutput: "n/Users/hira/.kimi-code/logs/kimi-code.log"
+  ) == nil)
 }
 
 @Test("Running agent discovery inspects all processes in one batch")
@@ -1899,7 +1979,7 @@ func codexQueueAgentRedactsRawProcessFailure() async {
     Issue.record("Failed Queue process did not throw")
   } catch {
     #expect(error.localizedDescription.contains("worker exited with code 7"))
-    #expect(error.localizedDescription.contains("private Queue chat log"))
+    #expect(error.localizedDescription.contains("private diagnostic log"))
     #expect(!error.localizedDescription.contains("customer@example.com"))
     #expect(!error.localizedDescription.contains("private-value"))
     #expect(!error.localizedDescription.contains("secret"))

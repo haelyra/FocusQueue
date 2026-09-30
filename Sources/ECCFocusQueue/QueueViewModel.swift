@@ -2157,7 +2157,8 @@ final class QueueViewModel {
       let runtime = try await objectiveRouter.launch(
         objective: objective, repositoryPath: repository,
         supportDirectory: paths.supportDirectory,
-        tmuxExecutable: tmuxExecutable, shellPath: nil, provider: provider)
+        tmuxExecutable: tmuxExecutable, shellPath: nil, provider: provider,
+        model: defaultAgentModel(for: provider))
       guard activeRouterSubmissionID == submissionID else { return }
       routerRuntime = runtime
       routerProvider = provider
@@ -2542,6 +2543,7 @@ final class QueueViewModel {
     completion: (@MainActor (Bool) -> Void)? = nil
   ) {
     let provider = provider ?? defaultAgentProvider
+    let model = model ?? defaultAgentModel(for: provider)
     let existingTitles = Set(
       taskItems(for: ticket.id).map {
         $0.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -2566,7 +2568,38 @@ final class QueueViewModel {
   }
 
   var defaultAgentProvider: AgentProvider {
-    config.agentProviderFallbackOrder.first ?? .codex
+    config.defaultAgentProvider ?? config.agentProviderFallbackOrder.first ?? .codex
+  }
+
+  /// A configured default model; nil launches the provider without `--model`.
+  func defaultAgentModel(for provider: AgentProvider) -> String? {
+    config.defaultAgentModels[provider]
+  }
+
+  func agentModelChoices(for provider: AgentProvider) -> [AgentModelChoice] {
+    let configured = config.agentModelChoices
+    return (configured.isEmpty ? AppConfiguration.defaultAgentModelChoices : configured)
+      .filter { $0.provider == provider }
+  }
+
+  func setDefaultAgentProvider(_ provider: AgentProvider) {
+    guard config.defaultAgentProvider != provider else { return }
+    config.defaultAgentProvider = provider
+    persistConfiguration()
+  }
+
+  func setDefaultAgentModel(_ model: String?, for provider: AgentProvider) {
+    let trimmed = model?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let normalized = trimmed.flatMap { $0.isEmpty ? nil : $0 }
+    guard config.defaultAgentModels[provider] != normalized else { return }
+    config.defaultAgentModels[provider] = normalized
+    persistConfiguration()
+  }
+
+  /// New Agent quick actions follow the configured default until the user
+  /// explicitly picks a provider (only then is the AppStorage key written).
+  func preferredNewAgentProvider(stored: AgentProvider?) -> AgentProvider {
+    stored ?? defaultAgentProvider
   }
 
   /// The next configured provider after the failing one whose CLI is installed.

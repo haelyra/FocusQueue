@@ -16,7 +16,7 @@ def scan(home: Path, shell: str) -> dict:
              if shell_name == "zsh" else
              [".bash_profile", ".bash_login", ".profile", ".bashrc", ".bash_aliases", ".aliases"])
     providers = {name: {"kinds": [], "sourceFiles": [], "executableOnInstallerPath": shutil.which(name) is not None}
-                 for name in ("codex", "claude")}
+                 for name in ("codex", "claude", "kimi")}
     for name in names:
         path = home / name
         try:

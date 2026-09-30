@@ -287,7 +287,8 @@ public protocol QueueObjectiveRouting: Sendable {
     supportDirectory: URL,
     tmuxExecutable: String,
     shellPath: String?,
-    provider: AgentProvider
+    provider: AgentProvider,
+    model: String?
   ) async throws -> QueueRouterRuntime
 
   func waitForOutcome(
@@ -309,7 +310,8 @@ public extension QueueObjectiveRouting {
     supportDirectory: URL,
     tmuxExecutable: String,
     shellPath: String?,
-    provider _: AgentProvider
+    provider _: AgentProvider,
+    model _: String?
   ) async throws -> QueueRouterRuntime {
     try await launch(
       objective: objective, repositoryPath: repositoryPath,
@@ -358,7 +360,8 @@ public actor QueueObjectiveRouter: QueueObjectiveRouting {
     supportDirectory: URL,
     capability: String = UUID().uuidString.lowercased(),
     shellPath: String? = nil,
-    provider: AgentProvider = .codex
+    provider: AgentProvider = .codex,
+    model: String? = nil
   ) -> [String] {
     let cleared = [
       "FOCUS_QUEUE_TASK_ID", "FOCUS_QUEUE_SUBTASK_ID", "FOCUS_QUEUE_RUNTIME_MODE",
@@ -371,8 +374,13 @@ public actor QueueObjectiveRouter: QueueObjectiveRouting {
       "FOCUS_QUEUE_ROUTER_SOURCE=queue-composer",
       "FOCUS_QUEUE_ROUTER_CAPABILITY=\(capability)",
     ]
+    var providerArguments: [String] = []
+    if let model = model?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
+      providerArguments += ["--model", model]
+    }
+    providerArguments += provider == .kimi ? ["--prompt", objective] : [objective]
     return ["/usr/bin/env"] + cleared + environment + InteractiveAgentShell.command(
-      provider: provider, arguments: [objective], shellPath: shellPath,
+      provider: provider, arguments: providerArguments, shellPath: shellPath,
       workingDirectory: repositoryPath)
   }
 
@@ -386,7 +394,7 @@ public actor QueueObjectiveRouter: QueueObjectiveRouting {
     try await launch(
       objective: objective, repositoryPath: repositoryPath,
       supportDirectory: supportDirectory, tmuxExecutable: tmuxExecutable,
-      shellPath: shellPath, provider: .codex)
+      shellPath: shellPath, provider: .codex, model: nil)
   }
 
   public func launch(
@@ -395,7 +403,8 @@ public actor QueueObjectiveRouter: QueueObjectiveRouting {
     supportDirectory: URL,
     tmuxExecutable: String,
     shellPath: String? = nil,
-    provider: AgentProvider = .codex
+    provider: AgentProvider = .codex,
+    model: String? = nil
   ) async throws -> QueueRouterRuntime {
     let objective = objective.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !objective.isEmpty else {
@@ -433,7 +442,7 @@ public actor QueueObjectiveRouter: QueueObjectiveRouting {
         command: Self.command(
           objective: objective, repositoryPath: repository,
           supportDirectory: supportDirectory, capability: capability, shellPath: shellPath,
-          provider: provider),
+          provider: provider, model: model),
         executable: tmuxExecutable)
       let confirmed = QueueRouterRuntime(
         tmux: tmux, startedAt: startedAt, capability: capability,

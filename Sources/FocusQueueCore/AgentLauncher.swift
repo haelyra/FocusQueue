@@ -64,24 +64,20 @@ public actor TaskAgentLauncher {
     }
     if let effort = subtask.launchConfiguration?.effort?.trimmingCharacters(in: .whitespacesAndNewlines),
        !effort.isEmpty {
-      providerArguments += subtask.provider == .codex
-        ? ["-c", "model_reasoning_effort=\(effort)"]
-        : ["--effort", effort]
+      providerArguments += subtask.provider.effortArguments(effort: effort)
     }
     providerArguments += ["--add-dir", context.contextDirectory.path]
     if let sessionID = subtask.sessionID {
-      guard UUID(uuidString: sessionID) != nil else {
+      guard subtask.provider.isValidSessionID(sessionID) else {
         throw TaskContextError.commandFailed("The saved provider session ID is invalid.")
       }
       providerArguments = subtask.provider == .codex
         ? ["resume", sessionID, "--cd", directory] + providerArguments
-        : ["--resume", sessionID] + providerArguments
+        : subtask.provider.resumeArguments(sessionID: sessionID) + providerArguments
     } else if includePrompt && subtask.includeInitializationPrompt {
-      if subtask.provider == .claude { providerArguments.append("--") }
-      providerArguments.append(context.agentPrompt(subtask: subtask))
+      providerArguments += promptArguments(for: subtask.provider, prompt: context.agentPrompt(subtask: subtask))
     } else if includePrompt {
-      if subtask.provider == .claude { providerArguments.append("--") }
-      providerArguments.append(context.agentBootstrap(subtask: subtask))
+      providerArguments += promptArguments(for: subtask.provider, prompt: context.agentBootstrap(subtask: subtask))
     }
     var focusEnvironment = [
             "/usr/bin/env", "-u", "FOCUS_QUEUE_ROUTER", "-u", "FOCUS_QUEUE_ROUTER_SOURCE",
@@ -100,6 +96,16 @@ public actor TaskAgentLauncher {
     }
     return focusEnvironment + InteractiveAgentShell.command(provider: subtask.provider, arguments: providerArguments,
           shellPath: shellPath, workingDirectory: directory)
+  }
+
+  /// Codex takes a positional prompt, Claude one after `--`; Kimi only accepts
+  /// prompts through `--prompt` (non-interactive mode, exits when done).
+  private static func promptArguments(for provider: AgentProvider, prompt: String) -> [String] {
+    switch provider {
+    case .codex: [prompt]
+    case .claude: ["--", prompt]
+    case .kimi: ["--prompt", prompt]
+    }
   }
 
   public func identify(subtask: TaskSubtask, configuration: WezTermConfiguration) async throws -> String? {

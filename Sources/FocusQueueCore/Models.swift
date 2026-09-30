@@ -272,6 +272,10 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public static let defaultAgentProviderFallbackOrder: [AgentProvider] = [.codex, .claude]
   public var agentModelChoices: [AgentModelChoice]
   public var autoArchiveStaleAgents: Bool
+  /// An explicit default provider; nil keeps the legacy fallback-order default.
+  public var defaultAgentProvider: AgentProvider?
+  /// Per-provider default models; a missing or empty value launches without `--model`.
+  public var defaultAgentModels: [AgentProvider: String]
 
   public static let defaultAgentModelChoices: [AgentModelChoice] = [
     AgentModelChoice(provider: .codex, label: "Default"),
@@ -282,6 +286,10 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     AgentModelChoice(provider: .claude, label: "sonnet", model: "sonnet"),
     AgentModelChoice(provider: .claude, label: "opus", model: "opus"),
     AgentModelChoice(provider: .claude, label: "haiku", model: "haiku"),
+    AgentModelChoice(provider: .kimi, label: "Default"),
+    AgentModelChoice(provider: .kimi, label: "K3", model: "kimi-code/k3"),
+    AgentModelChoice(provider: .kimi, label: "K2.8 Preview", model: "kimi-code/kimi-for-coding"),
+    AgentModelChoice(provider: .kimi, label: "K2.7 Code Highspeed", model: "kimi-code/kimi-for-coding-highspeed"),
   ]
 
   public init(
@@ -314,6 +322,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.agentEscalationAutoLaunch = true
     self.agentModelChoices = Self.defaultAgentModelChoices
     self.autoArchiveStaleAgents = false
+    self.defaultAgentProvider = nil
+    self.defaultAgentModels = [:]
     let effectiveProjects = projects ?? [Self.legacyProject(
       appName: appName,
       dashboardPath: dashboardPath,
@@ -335,6 +345,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case agentEscalationAutoLaunch
     case agentModelChoices
     case autoArchiveStaleAgents
+    case defaultAgentProvider, defaultAgentModels
     case focusQueueProjects, focusQueueSelectedProjectID, projects, selectedProjectID
   }
 
@@ -367,6 +378,14 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     agentModelChoices = try container.decodeIfPresent([AgentModelChoice].self, forKey: .agentModelChoices)
       ?? Self.defaultAgentModelChoices
     autoArchiveStaleAgents = try container.decodeIfPresent(Bool.self, forKey: .autoArchiveStaleAgents) ?? false
+    defaultAgentProvider = try container.decodeIfPresent(String.self, forKey: .defaultAgentProvider)
+      .flatMap { AgentProvider(rawValue: $0.lowercased()) }
+    defaultAgentModels = ((try container.decodeIfPresent([String: String].self, forKey: .defaultAgentModels)) ?? [:])
+      .reduce(into: [:]) { models, pair in
+        guard let provider = AgentProvider(rawValue: pair.key.lowercased()) else { return }
+        let model = pair.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !model.isEmpty { models[provider] = model }
+      }
     dailyReport =
       try container.decodeIfPresent(DailyReportConfiguration.self, forKey: .dailyReport)
       ?? DailyReportConfiguration()
@@ -436,6 +455,10 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encode(agentEscalationAutoLaunch, forKey: .agentEscalationAutoLaunch)
     try container.encode(agentModelChoices, forKey: .agentModelChoices)
     try container.encode(autoArchiveStaleAgents, forKey: .autoArchiveStaleAgents)
+    try container.encodeIfPresent(defaultAgentProvider, forKey: .defaultAgentProvider)
+    try container.encode(
+      Dictionary(uniqueKeysWithValues: defaultAgentModels.map { ($0.key.rawValue, $0.value) }),
+      forKey: .defaultAgentModels)
   }
 
   public var selectedProject: ProjectConfiguration? {
@@ -1389,11 +1412,13 @@ public struct WindowSnapshot: Codable, Equatable, Sendable {
 public enum AgentProvider: String, Codable, CaseIterable, Equatable, Sendable {
   case codex
   case claude
+  case kimi
 
   public var displayName: String {
     switch self {
     case .codex: "Codex"
     case .claude: "Claude"
+    case .kimi: "Kimi"
     }
   }
 
@@ -1404,6 +1429,7 @@ public enum AgentProvider: String, Codable, CaseIterable, Equatable, Sendable {
     switch self {
     case .codex: "chevron.left.forwardslash.chevron.right"
     case .claude: "sparkles"
+    case .kimi: "moon.stars"
     }
   }
 
@@ -1411,6 +1437,33 @@ public enum AgentProvider: String, Codable, CaseIterable, Equatable, Sendable {
     switch self {
     case .codex: ["resume", sessionID]
     case .claude: ["--resume", sessionID]
+    case .kimi: ["--session", sessionID]
+    }
+  }
+
+  /// Codex and Claude thread IDs are UUIDs. Kimi sessions are ULIDs or, in
+  /// current releases, `session_`-prefixed UUID directory names.
+  public func isValidSessionID(_ sessionID: String) -> Bool {
+    switch self {
+    case .codex, .claude:
+      return UUID(uuidString: sessionID) != nil
+    case .kimi:
+      if sessionID.hasPrefix("session_"),
+         UUID(uuidString: String(sessionID.dropFirst("session_".count))) != nil {
+        return true
+      }
+      let crockfordBase32 = Set("0123456789abcdefghjkmnpqrstvwxyz")
+      return sessionID.count == 26
+        && sessionID.lowercased().allSatisfy(crockfordBase32.contains)
+    }
+  }
+
+  /// Kimi has no reasoning-effort flag, so an effort choice is dropped there.
+  public func effortArguments(effort: String) -> [String] {
+    switch self {
+    case .codex: ["-c", "model_reasoning_effort=\(effort)"]
+    case .claude: ["--effort", effort]
+    case .kimi: []
     }
   }
 }

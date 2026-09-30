@@ -1635,6 +1635,31 @@ private struct QueueSettingsView: View {
             }
           }
           settingsSection(
+            title: "Default agent provider",
+            detail: "New agents, router objectives, and quick launches start with this provider and its default model unless you pick another one."
+          ) {
+            VStack(alignment: .leading, spacing: 10) {
+              Picker("Provider", selection: Binding(
+                get: { model.defaultAgentProvider },
+                set: { model.setDefaultAgentProvider($0) }
+              )) {
+                ForEach(AgentProvider.allCases, id: \.self) { provider in
+                  Label(provider.displayName, systemImage: provider.symbolName).tag(provider)
+                }
+              }.pickerStyle(.segmented).labelsHidden()
+              Picker("Default model", selection: Binding(
+                get: { model.config.defaultAgentModels[model.defaultAgentProvider] ?? "" },
+                set: { model.setDefaultAgentModel($0, for: model.defaultAgentProvider) }
+              )) {
+                ForEach(model.agentModelChoices(for: model.defaultAgentProvider)) { choice in
+                  Text(choice.label).tag(choice.model ?? "")
+                }
+              }
+              Text("Default launches the provider without a model flag.")
+                .font(.caption).foregroundStyle(.secondary)
+            }
+          }
+          settingsSection(
             title: "Agent routing",
             detail: "Automatically place fresh agents into the matching project, task, isolated workspace, and managed tmux session."
           ) {
@@ -2506,8 +2531,12 @@ private struct TicketCard: View {
   @State private var deletingSubtask: TaskSubtask?
   @State private var completingAgent: TaskSubtask?
   @State private var archivingAgent: TaskSubtask?
-  @AppStorage("newAgentProvider") private var newAgentProvider: AgentProvider = .codex
+  @AppStorage("newAgentProvider") private var storedNewAgentProvider: AgentProvider?
   @Environment(\.queueAccentStyle) private var accentStyle
+
+  private var newAgentProvider: AgentProvider {
+    model.preferredNewAgentProvider(stored: storedNewAgentProvider)
+  }
 
   private var review: CompletionRequest? { model.latestReview(for: ticket.id) }
   private var isChecked: Bool { model.ticketIsChecked(ticket) }
@@ -3292,7 +3321,11 @@ private struct AgentViewRow: View {
   let agent: TaskSubtask
   let model: QueueViewModel
   @State private var showsLinks = false
-  @AppStorage("newAgentProvider") private var newAgentProvider: AgentProvider = .codex
+  @AppStorage("newAgentProvider") private var storedNewAgentProvider: AgentProvider?
+
+  private var newAgentProvider: AgentProvider {
+    model.preferredNewAgentProvider(stored: storedNewAgentProvider)
+  }
 
   private var isOpening: Bool { model.isOpening(agent, ticketID: ticket.id) }
 

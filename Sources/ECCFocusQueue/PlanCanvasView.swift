@@ -461,7 +461,11 @@ struct NewTaskAgentView: View {
   @Environment(\.dismiss) private var dismiss
   @State private var title = ""
   @State private var prompt = ""
-  @AppStorage("newAgentProvider") private var provider: AgentProvider = .codex
+  @AppStorage("newAgentProvider") private var storedProvider: AgentProvider?
+  private var provider: AgentProvider {
+    get { model.preferredNewAgentProvider(stored: storedProvider) }
+    nonmutating set { storedProvider = newValue }
+  }
   @State private var repository = ""
   @State private var modelName = ""
   @State private var effort = ""
@@ -530,7 +534,7 @@ struct NewTaskAgentView: View {
             .accessibilityLabel("Work item description")
           Text("Every item keeps this title and description with its agent, workspace, and terminal.")
             .font(.caption).foregroundStyle(.secondary)
-          Picker("Provider", selection: $provider) {
+          Picker("Provider", selection: Binding(get: { provider }, set: { provider = $0 })) {
             ForEach(AgentProvider.allCases, id: \.self) { Text($0.displayName).tag($0) }
           }.pickerStyle(.segmented)
           HStack {
@@ -587,7 +591,7 @@ struct NewTaskAgentView: View {
             Text("macOS Terminal uses tmux for reliable launch and recall.")
               .font(.caption).foregroundStyle(.secondary)
           }
-          Text("Uses your login shell's codex or claude alias, function, or command and custom flags.")
+          Text("Uses your login shell's codex, claude, or kimi alias, function, or command and custom flags.")
             .font(.caption).foregroundStyle(.secondary)
         }.padding(2).disabled(isStarting)
       }

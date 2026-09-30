@@ -997,8 +997,27 @@ public actor WezTermController: WezTermControlling {
                 path.contains("/.codex/sessions/") || path.contains("/.codex/archived_sessions/")
             case .claude:
                 path.contains("/.claude/projects/")
+            case .kimi:
+                path.contains("/.kimi-code/sessions/")
             }
-            guard isProviderTranscript, path.hasSuffix(".jsonl") else { continue }
+            guard isProviderTranscript else { continue }
+            if provider == .kimi {
+                // A running kimi keeps its per-session files open; the session
+                // directory name is the provider session ID.
+                guard let component = path.split(separator: "/")
+                    .map(String.init)
+                    .first(where: { AgentProvider.kimi.isValidSessionID($0) })
+                else { continue }
+                if !candidates.contains(where: { $0.sessionID == component }) {
+                    candidates.append(AgentSessionCandidate(
+                        sessionID: component,
+                        path: path,
+                        isWriterLock: false
+                    ))
+                }
+                continue
+            }
+            guard path.hasSuffix(".jsonl") else { continue }
             let stem = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
             let groups = stem.split(separator: "-")
             guard groups.count >= 5 else { continue }
@@ -1363,6 +1382,7 @@ public actor WezTermController: WezTermControlling {
             switch command {
             case "codex": provider = .codex
             case "claude": provider = .claude
+            case "kimi": provider = .kimi
             default: return nil
             }
             return AgentProcess(pid: pid, tty: String(fields[1]), provider: provider)

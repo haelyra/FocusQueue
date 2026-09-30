@@ -56,6 +56,9 @@ public struct AgentPlacementCapsule: Codable, Equatable, Sendable {
     public var taskLogPath: String?
     public var capsulePath: String
     public var reason: String?
+    /// The launch objective, retained so app-side discovery can name and bind
+    /// the agent even when provider hooks are not installed.
+    public var promptHint: String?
 }
 
 public struct AgentPlacementCapsuleStore: Sendable {
@@ -223,7 +226,8 @@ public actor AgentPlacementResolver {
                 ? "The working directory matches more than one project. Choose a task or project before writing."
                 : conflictingPath
                 ? "The task and working directory identify different projects. Open the task's repository before writing."
-                : context == nil ? "Project identified. Waiting for a task objective." : nil)
+                : context == nil ? "Project identified. Waiting for a task objective." : nil,
+            promptHint: prompt.isEmpty ? nil : String(prompt.prefix(4_000)))
         try AgentPlacementCapsuleStore(root: root).save(capsule)
         return capsule
     }

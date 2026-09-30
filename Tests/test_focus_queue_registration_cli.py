@@ -195,6 +195,26 @@ class RegistrationCLITests(unittest.TestCase):
         self.assertEqual(published[0]["subtaskID"], agent_id)
         self.assertEqual(published[0]["sessionID"], session_id)
 
+    def test_prompt_derived_title_and_first_seen_timestamp_survive_updates(self):
+        session_id = str(uuid.uuid4())
+        started = self.command("register-event", "--provider", "codex",
+            payload=self.event(session_id))
+        record_path = (self.support / "external-agent-sessions"
+            / f"{started['registrationID']}.json")
+        record = json.loads(record_path.read_text())
+        self.assertTrue(record["title"].startswith("Codex · "), record["title"])
+        self.assertEqual(record["registeredAt"], record["updatedAt"])
+        first_seen = record["registeredAt"]
+
+        prompted = self.command("register-event", "--provider", "codex",
+            payload=self.event(session_id, "UserPromptSubmit",
+                prompt="Fix the registration title regression"))
+        self.assertEqual(prompted["registrationID"], started["registrationID"])
+        record = json.loads(record_path.read_text())
+        self.assertEqual(record["title"], "Fix the registration title regression")
+        self.assertEqual(record["registeredAt"], first_seen)
+        self.assertGreaterEqual(record["updatedAt"], first_seen)
+
     def test_add_requires_a_title_and_brief_description(self):
         self.command("add", "ECC-401", "codex", "Named work item", expected=1)
         self.assertEqual(self.context()["subtasks"], [])

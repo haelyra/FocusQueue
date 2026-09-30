@@ -67,6 +67,10 @@ private struct ExternalAgentsInboxView: View {
               }
               Text(registration.cwd).font(.caption).foregroundStyle(.secondary)
                 .lineLimit(2).textSelection(.enabled)
+              if registration.registeredAt > .distantPast {
+                Text("Registered \(registration.registeredAt, style: .relative) ago")
+                  .font(.caption).foregroundStyle(.secondary)
+              }
               if let reason = registration.reason {
                 Text(reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
               }

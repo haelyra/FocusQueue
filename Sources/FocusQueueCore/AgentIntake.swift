@@ -111,7 +111,7 @@ public struct AgentIntakeReceipt: Decodable, Identifiable, Sendable {
             workDescription: note ?? title ?? "Codex agent awaiting launch details.",
             taskID: taskID, subtaskID: launchID,
             reason: note ?? "Tracked launch. Waiting for provider identity and optional task details.",
-            eventName: phase ?? "pending", updatedAt: .distantPast, tmux: reference)
+            eventName: phase ?? "pending", updatedAt: .distantPast, registeredAt: .distantPast, tmux: reference)
     }
 
     /// Unresolved launch receipts remain visible until the user dismisses them

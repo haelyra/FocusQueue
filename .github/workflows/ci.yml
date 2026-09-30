@@ -24,6 +24,10 @@ jobs:
         # observation state. Explicit serialization prevents cross-test fixtures
         # from impersonating live agents or delaying heartbeat transitions.
         run: swift test --no-parallel
+      - name: Build session helper
+        # The registration CLI tests drive .build/debug/focus-queue-session,
+        # which swift test does not necessarily produce.
+        run: swift build
       - name: Python tests
         run: python3 -m unittest discover -s Tests -p 'test_*.py'
       - name: Shell syntax

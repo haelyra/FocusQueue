@@ -570,6 +570,11 @@ public struct AgentStartupReceipt: Codable, Equatable, Sendable {
     public var providerResumeCommand: [String]?
     public var promptByteCount: Int
     public var promptSHA256: String
+    /// The routed objective, retained so app-side discovery can name and bind
+    /// the agent at first appearance without provider hooks.
+    public var promptHint: String?
+    /// Set when post-launch validation found the registration incomplete.
+    public var registrationIssue: String?
     public var workspace: AgentWorkspace
     public var runtime: AgentStartupRuntime?
     public var context: AgentStartupContextPaths
@@ -587,7 +592,8 @@ public struct AgentStartupReceipt: Codable, Equatable, Sendable {
                 providerVersion: String? = nil, reservedProviderSessionID: String? = nil,
                 providerSessionID: String? = nil,
                 providerLaunchCommand: [String] = [], providerResumeCommand: [String]? = nil,
-                promptByteCount: Int, promptSHA256: String, workspace: AgentWorkspace,
+                promptByteCount: Int, promptSHA256: String, promptHint: String? = nil,
+                registrationIssue: String? = nil, workspace: AgentWorkspace,
                 runtime: AgentStartupRuntime? = nil, context: AgentStartupContextPaths,
                 source: AgentRouteSource, orchestrationPreparedAt: Date? = nil,
                 handoffCompletedAt: Date? = nil,
@@ -612,6 +618,8 @@ public struct AgentStartupReceipt: Codable, Equatable, Sendable {
         self.providerResumeCommand = providerResumeCommand
         self.promptByteCount = promptByteCount
         self.promptSHA256 = promptSHA256
+        self.promptHint = promptHint
+        self.registrationIssue = registrationIssue
         self.workspace = workspace
         self.runtime = runtime
         self.context = context
@@ -839,6 +847,20 @@ public struct AgentStartupReceiptStore: Sendable {
         }
     }
 
+    /// Records a post-launch completeness failure without changing the receipt's
+    /// lifecycle status; the launched agent stays resumable while the queue
+    /// surfaces the missing registration data.
+    public func recordRegistrationIssue(taskID: String, subtaskID: String, issue: String) throws {
+        try withLock(taskID: taskID, subtaskID: subtaskID) {
+            guard var receipt = try load(taskID: taskID, subtaskID: subtaskID),
+                  receipt.registrationIssue != issue else { return }
+            receipt.registrationIssue = issue
+            receipt.updatedAt = Date()
+            let destination = try url(taskID: taskID, subtaskID: subtaskID)
+            try saveUnlocked(receipt, destination: destination)
+        }
+    }
+
     private func withLock<T>(
         taskID: String, subtaskID: String, _ body: () throws -> T
     ) throws -> T {
@@ -924,13 +946,17 @@ public struct AgentStartupObserver: Sendable {
 public struct AgentStartupRepairReport: Equatable, Sendable {
     public var completedHandoffs: [AgentStartupReceipt]
     public var failedReceipts: [AgentStartupReceipt]
+    /// Registered agents whose registration is missing required launch data.
+    public var registrationIssues: [AgentRegistrationIssue]
 
     public init(
         completedHandoffs: [AgentStartupReceipt] = [],
-        failedReceipts: [AgentStartupReceipt] = []
+        failedReceipts: [AgentStartupReceipt] = [],
+        registrationIssues: [AgentRegistrationIssue] = []
     ) {
         self.completedHandoffs = completedHandoffs
         self.failedReceipts = failedReceipts
+        self.registrationIssues = registrationIssues
     }
 }
 
@@ -993,7 +1019,37 @@ public struct AgentStartupRepair: Sendable {
                 continue
             }
         }
+        for receipt in report.completedHandoffs {
+            if let issue = await registrationIssue(for: receipt) {
+                try? store.recordRegistrationIssue(
+                    taskID: receipt.taskID, subtaskID: receipt.subtaskID,
+                    issue: issue.missingFields.joined(separator: ", "))
+                report.registrationIssues.append(issue)
+            }
+        }
         return report
+    }
+
+    /// A completed handoff must still hold a complete registration record:
+    /// task and provider session always, the tmux reference for managed
+    /// sessions, and worktree plus branch for isolated workspaces.
+    private func registrationIssue(
+        for receipt: AgentStartupReceipt
+    ) async -> AgentRegistrationIssue? {
+        let records = (try? await ExternalAgentRegistry(root: root).registrations()) ?? []
+        guard let record = records.first(where: {
+            $0.taskID?.caseInsensitiveCompare(receipt.taskID) == .orderedSame
+                && $0.subtaskID == receipt.subtaskID
+        }) else {
+            return AgentRegistrationIssue(
+                registrationID: receipt.routeID, title: receipt.title,
+                taskID: receipt.taskID, subtaskID: receipt.subtaskID,
+                missingFields: ["registration record"])
+        }
+        let subtask = try? await TaskContextStore(root: root)
+            .load(ticketID: receipt.taskID)?
+            .subtasks.first(where: { $0.id == receipt.subtaskID })
+        return AgentRegistrationValidator.issue(record: record, subtask: subtask)
     }
 
     private func stuckReceipts(now: Date) throws -> [AgentStartupReceipt] {

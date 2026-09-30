@@ -396,6 +396,20 @@ public actor TaskAgentLauncher {
       agentTitle: "\(subtask.provider.displayName): \(subtask.title)",
       directory: (subtask.workspace?.path ?? context.worktreePath)!, command: command,
       executable: tmuxExecutable)
+    // Give process discovery the same prompt source the shell entry points
+    // record, so naming works even when provider hooks are not installed.
+    let trimmedInitialPrompt = subtask.initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let metadataPrompt: String? = {
+      guard subtask.sessionID == nil, includePrompt else { return nil }
+      if subtask.includeInitializationPrompt {
+        return trimmedInitialPrompt.isEmpty ? subtask.title : trimmedInitialPrompt
+      }
+      return trimmedInitialPrompt.isEmpty ? nil : trimmedInitialPrompt
+    }()
+    try? ExternalAgentLaunchMetadata(
+      initialPrompt: metadataPrompt, reference: reference,
+      provider: subtask.provider, cwd: subtask.workspace?.path ?? context.worktreePath
+    ).save(name: "\(reference.name)-\(subtask.id)", supportDirectory: supportDirectory)
     try? await runtime.label(reference, title: "\(subtask.provider.displayName): \(subtask.title)")
     try? await configureManagedPresentation(
       context: context, supportDirectory: supportDirectory,

@@ -389,6 +389,14 @@ struct QueueView: View {
     } message: {
       Text(model.startupRepairAlert ?? "")
     }
+    .alert("Agent registration incomplete", isPresented: Binding(
+      get: { model.registrationValidationAlert != nil },
+      set: { if !$0 { model.registrationValidationAlert = nil } }
+    )) {
+      Button("OK", role: .cancel) { model.registrationValidationAlert = nil }
+    } message: {
+      Text(model.registrationValidationAlert ?? "")
+    }
   }
 
   private func submitRouterObjective() {

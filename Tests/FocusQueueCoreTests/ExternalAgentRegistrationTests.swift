@@ -283,4 +283,208 @@ struct ExternalAgentRegistrationTests {
         #expect(after.taskID == nil)
         #expect(try await store.load(ticketID: "ECC-101")?.subtasks.first?.status == .completed)
     }
+
+    @Test("registeredAt is set on first registration, preserved across updates, and legacy records decode")
+    func registeredAtFirstSeenAndLegacyDecode() async throws {
+        let (root, _) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = ExternalAgentRegistry(root: root)
+        let sessionID = UUID().uuidString
+        let first = try await registry.register(.init(
+            sessionID: sessionID, cwd: root.path, hookEventName: "SessionStart"), provider: .codex)
+        #expect(first.registeredAt == first.updatedAt)
+        try await Task.sleep(for: .milliseconds(20))
+        let second = try await registry.register(.init(
+            sessionID: sessionID, cwd: root.path, hookEventName: "ProcessDiscovery"), provider: .codex)
+        #expect(abs(second.registeredAt.timeIntervalSince(first.registeredAt)) < 0.001)
+        #expect(second.updatedAt > first.updatedAt)
+
+        // Records saved before first-seen tracking fall back to their last update.
+        let file = root.appendingPathComponent(
+            "external-agent-sessions/\(first.id).json")
+        var legacy = try #require(try JSONSerialization.jsonObject(
+            with: Data(contentsOf: file)) as? [String: Any])
+        legacy.removeValue(forKey: "registeredAt")
+        try JSONSerialization.data(withJSONObject: legacy).write(to: file)
+        let decoded = try #require(try await registry.registrations().first { $0.id == first.id })
+        #expect(abs(decoded.registeredAt.timeIntervalSince(decoded.updatedAt)) < 0.001)
+        #expect(decoded.taskID == "ECC-101")
+    }
+
+    @Test("A discovery prompt hint upgrades the provider-code fallback title without hooks")
+    func promptHintUpgradesFallbackTitle() async throws {
+        let (root, store) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = ExternalAgentRegistry(root: root)
+        let sessionID = UUID().uuidString
+        let fallback = try await registry.register(.init(
+            sessionID: sessionID, cwd: root.path, hookEventName: "SessionStart"), provider: .codex)
+        #expect(fallback.title == "Codex · \(sessionID.suffix(6))")
+        #expect(fallback.taskID == "ECC-101")
+
+        let discovered = try await registry.register(.init(
+            sessionID: sessionID, cwd: root.path, hookEventName: "ProcessDiscovery",
+            prompt: "Review the queue registration flow"), provider: .codex)
+        #expect(discovered.title == "Review the queue registration flow")
+        #expect(discovered.subtaskID == fallback.subtaskID)
+        let saved = try #require(try await store.load(ticketID: "ECC-101")?.subtasks.first)
+        #expect(saved.title == "Review the queue registration flow")
+        #expect(abs(discovered.registeredAt.timeIntervalSince(fallback.registeredAt)) < 0.001)
+
+        // The real first prompt still adopts over a provisional fallback title.
+        let hookedSession = UUID().uuidString
+        _ = try await registry.register(.init(
+            sessionID: hookedSession, cwd: root.path, hookEventName: "SessionStart"), provider: .codex)
+        _ = try await registry.register(.init(
+            sessionID: hookedSession, cwd: root.path, hookEventName: "UserPromptSubmit",
+            prompt: "Fix the actual registration bug"), provider: .codex)
+        let adopted = try #require(try await store.load(ticketID: "ECC-101")?.subtasks
+            .first { $0.sessionID == hookedSession.lowercased() })
+        #expect(adopted.title == "Fix the actual registration bug")
+    }
+
+    @Test("Discovery binds a routed launch through its environment and keeps the routed identity")
+    func routedDiscoveryBindsThroughLaunchEnvironment() async throws {
+        let (root, store) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var agent = TaskSubtask(
+            id: "routed-launch", title: "Repair agent tracking",
+            assignmentDescription: "Keep routed agents visible and uniquely identified.",
+            provider: .codex, status: .queued)
+        agent.workspace = AgentWorkspace(
+            path: root.path, repositoryPath: root.path, branch: "fq/ecc-101/routed", managed: true)
+        _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: agent)
+        let tmux = TmuxSessionReference(name: "fq-task-ecc-101", serverPID: 10,
+            createdAt: 20, paneID: "%3", panePID: 30, tty: "/dev/ttys003",
+            executable: "/mock/tmux")
+        let sessionID = UUID().uuidString
+        // The hint supplies the fixed task, agent, and objective the router knew.
+        let record = try await ExternalAgentRegistry(root: root).register(.init(
+            sessionID: sessionID, cwd: root.path, hookEventName: "ProcessDiscovery",
+            prompt: "Repair agent tracking and keep agents visible"), provider: .codex,
+            environment: ["FOCUS_QUEUE_TASK_ID": "ECC-101", "FOCUS_QUEUE_SUBTASK_ID": agent.id],
+            tmux: tmux)
+        #expect(record.taskID == "ECC-101")
+        #expect(record.subtaskID == agent.id)
+        #expect(record.sessionID == sessionID.lowercased())
+        #expect(record.tmux == tmux)
+        #expect(record.registeredAt <= Date())
+        let saved = try #require(try await store.load(ticketID: "ECC-101")?.subtasks.first)
+        #expect(saved.title == "Repair agent tracking")
+        #expect(try await store.load(ticketID: "ECC-101")?.subtasks.count == 1)
+        #expect(AgentRegistrationValidator.missingFields(record: record, subtask: saved) == [])
+    }
+
+    @Test("App-written launch metadata loads with its prompt for discovery naming")
+    func launchMetadataSaveLoad() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("launch-metadata-save-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reference = TmuxSessionReference(name: "fq-task-ecc-101", serverPID: 10,
+            createdAt: 20, paneID: "%3", panePID: 30, tty: "/dev/ttys003",
+            executable: "/mock/tmux")
+        try ExternalAgentLaunchMetadata(
+            initialPrompt: "Fix pane registration", reference: reference,
+            provider: .codex, cwd: "/tmp"
+        ).save(name: "fq-task-ecc-101-agent-1", supportDirectory: root)
+        let loaded = try #require(try ExternalAgentLaunchMetadata.load(
+            matching: reference, supportDirectory: root))
+        #expect(loaded.initialPrompt == "Fix pane registration")
+        #expect(loaded.provider == "codex")
+        let file = root.appendingPathComponent(
+            "shell/launch-metadata/fq-task-ecc-101-agent-1.json")
+        #expect((try? FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions]
+            as? Int) == 0o600)
+    }
+
+    @Test("Completeness validation flags missing task, session, tmux, worktree, and branch data")
+    func completenessValidation() throws {
+        let tmux = TmuxSessionReference(name: "fq-task-ecc-101", serverPID: 10,
+            createdAt: 20, paneID: "%3", panePID: 30, tty: "/dev/ttys003",
+            executable: "/mock/tmux")
+        func record(taskID: String? = "ECC-101",
+                    sessionID: String? = UUID().uuidString,
+                    tmux: TmuxSessionReference? = nil) -> ExternalAgentRegistration {
+            ExternalAgentRegistration(
+                id: UUID().uuidString, provider: .codex, sessionID: sessionID,
+                cwd: "/tmp", title: "Agent", taskID: taskID,
+                eventName: "ProcessDiscovery", updatedAt: Date(), tmux: tmux)
+        }
+        #expect(AgentRegistrationValidator.missingFields(
+            record: record(taskID: nil), subtask: nil) == ["task"])
+        #expect(AgentRegistrationValidator.missingFields(
+            record: record(sessionID: nil), subtask: nil) == ["provider session"])
+        #expect(AgentRegistrationValidator.missingFields(record: record(), subtask: nil) == [])
+
+        // Managed tmux agents require their tmux reference.
+        var managed = TaskSubtask(id: "managed", title: "Managed", provider: .codex,
+            runtimeMode: .tmux)
+        #expect(AgentRegistrationValidator.missingFields(
+            record: record(), subtask: managed) == ["tmux session"])
+        #expect(AgentRegistrationValidator.missingFields(
+            record: record(tmux: tmux), subtask: managed) == [])
+        managed.tmux = tmux
+        #expect(AgentRegistrationValidator.missingFields(
+            record: record(), subtask: managed) == [])
+
+        // Isolated-workspace launches require the worktree and its branch.
+        var isolated = TaskSubtask(id: "isolated", title: "Isolated", provider: .codex,
+            runtimeMode: nil)
+        isolated.workspace = AgentWorkspace(path: "/tmp/wt", repositoryPath: "/tmp", managed: true)
+        #expect(AgentRegistrationValidator.missingFields(
+            record: record(), subtask: isolated) == ["branch"])
+        isolated.workspace = AgentWorkspace(
+            path: "/tmp/wt", repositoryPath: "/tmp", branch: "fq/ecc-101/isolated", managed: true)
+        #expect(AgentRegistrationValidator.missingFields(
+            record: record(), subtask: isolated) == [])
+        let issue = AgentRegistrationValidator.issue(
+            record: record(taskID: nil, sessionID: nil), subtask: nil)
+        #expect(issue?.missingFields == ["task", "provider session"])
+        #expect(issue?.summary.contains("missing task, provider session") == true)
+    }
+
+    @Test("Attach, hook, and launcher launch paths each produce a complete registration")
+    func launchPathsProduceCompleteRegistrations() async throws {
+        let (root, store) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = ExternalAgentRegistry(root: root)
+
+        // focus-queue-session attach <TICKET-ID> from the agent's pane.
+        let attached = try await registry.register(.init(
+            sessionID: UUID().uuidString, cwd: root.path, hookEventName: "ExplicitAttach"),
+            provider: .claude, explicitTaskID: "ECC-101")
+        #expect(attached.taskID == "ECC-101")
+        #expect(attached.subtaskID != nil)
+        #expect(attached.sessionID != nil)
+        #expect(attached.registeredAt <= Date())
+
+        // Provider hook register-event with the first prompt.
+        let hooked = try await registry.register(.init(
+            sessionID: UUID().uuidString, cwd: root.path, hookEventName: "UserPromptSubmit",
+            prompt: "Summarize the routing plan"), provider: .codex)
+        #expect(hooked.taskID == "ECC-101")
+        #expect(hooked.title == "Summarize the routing plan")
+        #expect(hooked.registeredAt <= Date())
+
+        // New-agent launcher: provisional agent plus inherited launch environment.
+        var agent = TaskSubtask(id: "launcher-agent", title: "Agent 1", provider: .codex,
+            status: .queued, includeInitializationPrompt: false, runtimeMode: .terminal)
+        agent.workspace = AgentWorkspace(path: root.path, repositoryPath: root.path)
+        _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: agent)
+        let launched = try await registry.register(.init(
+            sessionID: UUID().uuidString, cwd: root.path, hookEventName: "SessionStart"),
+            provider: .codex,
+            environment: ["FOCUS_QUEUE_TASK_ID": "ECC-101", "FOCUS_QUEUE_SUBTASK_ID": agent.id],
+            paneID: 42, socketPath: "/tmp/wezterm.sock")
+        #expect(launched.taskID == "ECC-101")
+        #expect(launched.subtaskID == agent.id)
+        #expect(launched.paneID == 42)
+        #expect(launched.registeredAt <= Date())
+
+        for record in [attached, hooked, launched] {
+            let subtask = try await store.load(ticketID: "ECC-101")?.subtasks
+                .first { $0.id == record.subtaskID }
+            #expect(AgentRegistrationValidator.missingFields(record: record, subtask: subtask) == [])
+        }
+    }
 }

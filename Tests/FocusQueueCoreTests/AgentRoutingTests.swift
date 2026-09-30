@@ -453,6 +453,114 @@ struct AgentRoutingTests {
         #expect(try store.load(taskID: "FOC-205", subtaskID: receipt.subtaskID)?
             .status == .failed)
     }
+
+    @Test("The startup repair sweep flags an incomplete registration and records it on the receipt")
+    func startupRepairFlagsIncompleteRegistration() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "agent-startup-repair-incomplete-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = AgentStartupReceiptStore(root: root)
+        let sessionID = "44444444-5555-4666-8777-888888888888"
+        let subtaskID = "aaaaaaaa-0000-4000-8000-000000000006"
+        let receipt = repairReceipt(
+            routeID: UUID().uuidString.lowercased(), status: .registered, taskID: "FOC-206",
+            subtaskID: subtaskID, providerSessionID: sessionID,
+            at: Date(timeIntervalSinceNow: -3_600))
+        try store.save(receipt)
+        // The observed registration is missing the managed tmux reference.
+        let registrationsDirectory = root.appendingPathComponent(
+            "external-agent-sessions", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: registrationsDirectory, withIntermediateDirectories: true)
+        let registration = ExternalAgentRegistration(
+            id: "reg-incomplete", provider: .codex, sessionID: sessionID,
+            cwd: "/repo/worktree", title: "Routed", taskID: "FOC-206",
+            subtaskID: subtaskID, eventName: "ProcessDiscovery", updatedAt: Date())
+        try JSONEncoder().encode(registration).write(
+            to: registrationsDirectory.appendingPathComponent("reg-incomplete.json"),
+            options: .atomic)
+        let contextStore = TaskContextStore(root: root)
+        _ = try await contextStore.ensureContext(ticket: DashboardTicket(
+            id: "FOC-206", title: "FOC-206", status: "open", summary: ""))
+        _ = try await contextStore.upsertSubtask(ticketID: "FOC-206", subtask: TaskSubtask(
+            id: subtaskID, title: "Routed", provider: .codex,
+            sessionID: sessionID, status: .working, runtimeMode: .tmux))
+
+        let report = try await AgentStartupRepair(root: root, launchedTimeout: 30).run()
+
+        #expect(report.completedHandoffs.map(\.taskID) == ["FOC-206"])
+        #expect(report.failedReceipts.isEmpty)
+        #expect(report.registrationIssues.count == 1)
+        #expect(report.registrationIssues.first?.missingFields == ["tmux session"])
+        #expect(report.registrationIssues.first?.taskID == "FOC-206")
+        let saved = try #require(try store.load(taskID: "FOC-206", subtaskID: subtaskID))
+        #expect(saved.registrationIssue == "tmux session")
+        #expect(saved.status == .registered)
+    }
+
+    @Test("Routed launch hints bind by session or exact tmux identity and carry the objective")
+    func routedLaunchHints() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "routed-launch-hints-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tmux = TmuxSessionReference(name: "fq-task-ecc-101", serverPID: 10,
+            createdAt: 20, paneID: "%3", panePID: 30, tty: "/dev/ttys003",
+            executable: "/mock/tmux")
+        let sessionID = UUID().uuidString.lowercased()
+        let receiptStore = AgentStartupReceiptStore(root: root)
+        try receiptStore.save(AgentStartupReceipt(
+            routeID: UUID().uuidString.lowercased(), status: .launched, taskID: "ECC-101",
+            subtaskID: "agent-1", title: "Repair tracking", description: "Repair it.",
+            provider: .codex, providerSessionID: sessionID,
+            promptByteCount: 10, promptSHA256: AgentStartupReceipt.promptDigest("Review it"),
+            promptHint: "Review the registration flow",
+            workspace: AgentWorkspace(
+                path: "/tmp/wt", repositoryPath: "/tmp", branch: "fq/x", managed: true),
+            runtime: .init(
+                tmux: tmux, tmuxServerName: "focus-queue",
+                terminalApplication: "WezTerm", terminalSocketPath: nil,
+                attachCommand: ["tmux", "attach"]),
+            context: AgentStartupContextPaths(
+                taskPlan: "/tmp/plan.md", taskContext: "/tmp/context.json",
+                taskLog: "/tmp/log.md"),
+            source: .init(cwd: "/tmp")))
+        // Failed receipts carry no binding authority.
+        var failed = try #require(try receiptStore.load(taskID: "ECC-101", subtaskID: "agent-1"))
+        failed.subtaskID = "agent-failed"
+        failed.status = .failed
+        try receiptStore.save(failed)
+        try AgentPlacementCapsuleStore(root: root).save(AgentPlacementCapsule(
+            launchID: UUID().uuidString.lowercased(), generatedAt: Date(), status: .placed,
+            projectID: "focus", projectName: "Focus", taskPrefix: "ECC",
+            taskID: "ECC-102", assignmentID: "agent-2", agentID: "agent-2",
+            provider: .claude, sessionID: nil, repositoryPath: nil,
+            repositoryRemote: nil, workspacePath: "/tmp", branch: nil,
+            tmuxName: "fq-task-ecc-102", tmuxPaneID: "%9",
+            projectPlanPath: "/tmp/p.md", taskPlanPath: nil, taskLogPath: nil,
+            capsulePath: "/tmp/c.json", reason: nil,
+            promptHint: "Fix the capsule naming"))
+
+        let hints = RoutedLaunchHintStore.hints(root: root)
+
+        #expect(Set(hints.map(\.subtaskID)) == ["agent-1", "agent-2"])
+        let bySession = try #require(RoutedLaunchHintStore.match(
+            sessionID: sessionID, provider: .codex, tmux: nil, hints: hints))
+        #expect(bySession.taskID == "ECC-101")
+        #expect(bySession.promptHint == "Review the registration flow")
+        let byTmux = try #require(RoutedLaunchHintStore.match(
+            sessionID: UUID().uuidString, provider: .codex, tmux: tmux, hints: hints))
+        #expect(byTmux.subtaskID == "agent-1")
+        let byPane = try #require(RoutedLaunchHintStore.match(
+            sessionID: UUID().uuidString, provider: .claude,
+            tmux: TmuxSessionReference(name: "fq-task-ecc-102", serverPID: 99,
+                createdAt: 1, paneID: "%9", panePID: 2, tty: "/dev/ttys099",
+                executable: "/mock/tmux"),
+            hints: hints))
+        #expect(byPane.taskID == "ECC-102")
+        #expect(byPane.promptHint == "Fix the capsule naming")
+        #expect(RoutedLaunchHintStore.match(
+            sessionID: UUID().uuidString, provider: .claude, tmux: nil, hints: hints) == nil)
+    }
 }
 
 private func repairReceipt(

@@ -552,6 +552,7 @@ enum SessionRegistrationError: Error, LocalizedError {
                 providerLaunchCommand: providerLaunchCommand,
                 promptByteCount: intent.prompt.utf8.count,
                 promptSHA256: AgentStartupReceipt.promptDigest(intent.prompt),
+                promptHint: String(intent.prompt.prefix(4_000)),
                 workspace: subtask.workspace!, context: paths, source: intent.source)
             receiptURL = try receiptStore.save(receipt)
             receiptSaved = true

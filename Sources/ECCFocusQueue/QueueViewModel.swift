@@ -163,6 +163,10 @@ final class QueueViewModel {
   /// Set when the launch-time startup-receipt sweep had to fail stuck routed
   /// agents; QueueView presents it as a hard alert.
   var startupRepairAlert: String?
+  /// Set when a managed agent's registration stayed incomplete past its
+  /// post-launch window; QueueView presents it as a hard alert.
+  var registrationValidationAlert: String?
+  private var reportedRegistrationIssueIDs: Set<String> = []
   private(set) var openingSubtaskIDs: Set<String> = []
   private(set) var openingAgentSessionIDs: Set<String> = []
   private(set) var agentSessionErrors: [String: String] = [:] {
@@ -570,12 +574,14 @@ final class QueueViewModel {
       // Unstick routed startup receipts before recovering routers so their
       // outcomes resolve immediately instead of wedging router slots. A sweep
       // failure must not block the rest of bootstrap.
-      if let repair = try? await AgentStartupRepair(root: paths.supportDirectory).run(),
-         !repair.failedReceipts.isEmpty {
-        let summaries = repair.failedReceipts.map {
-          "\($0.taskID) (\($0.title.isEmpty ? $0.subtaskID : $0.title))"
-        }.joined(separator: ", ")
-        startupRepairAlert = "Routed agent startups that never finished were marked failed: \(summaries). Route the work again from the Router agent."
+      if let repair = try? await AgentStartupRepair(root: paths.supportDirectory).run() {
+        if !repair.failedReceipts.isEmpty {
+          let summaries = repair.failedReceipts.map {
+            "\($0.taskID) (\($0.title.isEmpty ? $0.subtaskID : $0.title))"
+          }.joined(separator: ", ")
+          startupRepairAlert = "Routed agent startups that never finished were marked failed: \(summaries). Route the work again from the Router agent."
+        }
+        repair.registrationIssues.forEach(reportRegistrationIssue)
       }
       do {
         let routerStore = QueueRouterRuntimeStore(root: paths.supportDirectory)
@@ -2973,6 +2979,15 @@ final class QueueViewModel {
         upsertAgentSession(registration)
         await bindSubtask(to: registration)
         imported.append(pending)
+        let missing = AgentRegistrationValidator.missingFields(
+          session: registration, subtask: subtask)
+        if !missing.isEmpty {
+          let key = Self.subtaskKey(ticketID: registration.ticketID, subtaskID: subtaskID)
+          agentSessionErrors[key] = "Registration incomplete: missing \(missing.joined(separator: ", "))."
+          reportRegistrationIssue(AgentRegistrationIssue(
+            registrationID: registration.sessionID, title: subtask.title,
+            taskID: registration.ticketID, subtaskID: subtaskID, missingFields: missing))
+        }
         completeRouteHandoffIfObserved(
           taskID: registration.ticketID, subtaskID: subtaskID,
           sessionID: registration.sessionID)
@@ -2999,6 +3014,64 @@ final class QueueViewModel {
     guard let subtaskID, let sessionID else { return }
     try? AgentStartupReceiptStore(root: paths.supportDirectory)
       .completeObservedHandoff(taskID: taskID, subtaskID: subtaskID, sessionID: sessionID)
+  }
+
+  /// Managed launches are held to the completeness bar only after their
+  /// post-launch registration window. External sessions discovered without a
+  /// launch identity stay placeable inbox entries instead of errors.
+  private static let registrationValidationWindow: TimeInterval = 45
+
+  private func validateRegistrationCompleteness(records: [ExternalAgentRegistration]) {
+    let now = Date()
+    var hints: [RoutedLaunchHint]?
+    var flaggedKeys: Set<String> = []
+    for record in records {
+      guard now.timeIntervalSince(record.registeredAt) >= Self.registrationValidationWindow
+      else { continue }
+      let subtask = record.taskID
+        .flatMap { taskContexts[$0.uppercased()] }?
+        .subtasks.first { $0.id == record.subtaskID }
+      var managed = subtask.map {
+        $0.runtimeMode == .tmux || $0.runtimeMode == .terminal || $0.workspace?.managed == true
+      } ?? false
+      if !managed, let sessionID = record.sessionID {
+        let allHints = hints ?? RoutedLaunchHintStore.hints(root: paths.supportDirectory)
+        hints = allHints
+        managed = RoutedLaunchHintStore.match(
+          sessionID: sessionID, provider: record.provider,
+          tmux: record.tmux, hints: allHints) != nil
+      }
+      guard managed,
+            let issue = AgentRegistrationValidator.issue(record: record, subtask: subtask)
+      else { continue }
+      if let taskID = issue.taskID, let subtaskID = issue.subtaskID {
+        let key = Self.subtaskKey(ticketID: taskID, subtaskID: subtaskID)
+        flaggedKeys.insert(key)
+        let message = "Registration incomplete: missing \(issue.missingFields.joined(separator: ", "))."
+        if agentSessionErrors[key] != message { agentSessionErrors[key] = message }
+      }
+      reportRegistrationIssue(issue)
+    }
+    // Clear self-raised errors once their record becomes complete again.
+    let resolvedKeys = agentSessionErrors.filter {
+      $0.value.hasPrefix("Registration incomplete:") && !flaggedKeys.contains($0.key)
+    }.map(\.key)
+    for key in resolvedKeys { agentSessionErrors[key] = nil }
+  }
+
+  private func reportRegistrationIssue(_ issue: AgentRegistrationIssue) {
+    let identity = issue.registrationID + "|" + issue.missingFields.joined(separator: ",")
+    guard reportedRegistrationIssueIDs.insert(identity).inserted else { return }
+    programLog.record(
+      "Agent registration incomplete: \(issue.summary).",
+      level: .error, category: "Agent registration")
+    let text = "Agent registration is incomplete: \(issue.summary). "
+      + "Re-register the agent from its pane with focus-queue-session attach <TASK-ID>."
+    if let existing = registrationValidationAlert, !existing.isEmpty {
+      registrationValidationAlert = existing + "\n\n" + text
+    } else {
+      registrationValidationAlert = text
+    }
   }
 
   func importProvisionalAgentIntakes(_ receipts: [AgentIntakeReceipt]) async throws {
@@ -3087,6 +3160,7 @@ final class QueueViewModel {
           tmuxPanes = (try? await TmuxController().panes(executable: executable)) ?? []
         } else { tmuxPanes = [] }
         let terminals = discovered.isEmpty ? [] : ((try? await terminalController.listAttachablePanes(configuration: config.wezTerm)) ?? [])
+        let routedHints = discovered.isEmpty ? [] : RoutedLaunchHintStore.hints(root: paths.supportDirectory)
         for process in discovered {
           let tmux = process.tty.flatMap { tty in tmuxPanes.first { $0.reference.tty == tty }?.reference }
           let terminal = tmux == nil ? process.tty.flatMap { tty in terminals.first { $0.ttyName == tty } } : nil
@@ -3100,12 +3174,25 @@ final class QueueViewModel {
               matching: tmux, supportDirectory: paths.supportDirectory)
             { prompt = metadata.initialPrompt }
           }
+          // A router or app launch fixes the task, agent, and objective before
+          // the provider session exists; bind discovery to that identity so
+          // routed agents register promptly with a prompt-derived title.
+          let launchHint = intake == nil
+            ? RoutedLaunchHintStore.match(
+              sessionID: process.sessionID, provider: process.provider,
+              tmux: tmux, hints: routedHints)
+            : nil
+          if prompt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+            prompt = launchHint?.promptHint
+          }
           if prompt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
             prompt = process.promptHint
           }
           let environment: [String: String] = intake.map { receipt in
             receipt.discoveryEnvironment(in:
               receipt.taskID.flatMap { taskContexts[$0.uppercased()] })
+          } ?? launchHint.map {
+            ["FOCUS_QUEUE_TASK_ID": $0.taskID, "FOCUS_QUEUE_SUBTASK_ID": $0.subtaskID]
           } ?? [:]
           let registration = try await registry.register(ExternalAgentEvent(sessionID: process.sessionID,
             cwd: process.cwd, hookEventName: "ProcessDiscovery", prompt: prompt,
@@ -3133,6 +3220,7 @@ final class QueueViewModel {
         + AgentIntakeStore.pending(root: paths.supportDirectory).filter { $0.taskID == nil }
       if unassignedAgentRegistrations != unassigned { unassignedAgentRegistrations = unassigned }
       if externalAgentRegistrationError != nil { externalAgentRegistrationError = nil }
+      validateRegistrationCompleteness(records: records)
       await importAgentRegistrations()
     } catch {
       // Existing hook receipts remain useful when process inspection is unavailable.

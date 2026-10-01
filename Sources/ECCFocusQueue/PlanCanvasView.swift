@@ -538,12 +538,24 @@ struct NewTaskAgentView: View {
             ForEach(AgentProvider.allCases, id: \.self) { Text($0.displayName).tag($0) }
           }.pickerStyle(.segmented)
           HStack {
-            TextField("Model (optional)", text: $modelName)
-              .accessibilityLabel("Agent model")
-            TextField("Effort (optional)", text: $effort)
-              .accessibilityLabel("Agent reasoning effort")
+            Picker("Model", selection: $modelName) {
+              ForEach(model.agentModelChoices(for: provider)) { choice in
+                Text(choice.label).tag(choice.model ?? "")
+              }
+            }.accessibilityLabel("Agent model")
+            Picker("Effort", selection: $effort) {
+              Text("Default").tag("")
+              ForEach(AppConfiguration.agentEffortLevels, id: \.self) { level in
+                Text(level).tag(level)
+              }
+            }.accessibilityLabel("Agent reasoning effort")
           }
-          Text("Explicit model and effort choices are saved with the agent and reused for exact conversation recall. Leave them empty to use your alias or provider defaults.")
+          .onChange(of: provider) { _, _ in
+            if !model.agentModelChoices(for: provider).contains(where: { ($0.model ?? "") == modelName }) {
+              modelName = ""
+            }
+          }
+          Text("Explicit model and effort choices are saved with the agent and reused for exact conversation recall. Leave them on Default to use your alias or provider defaults.")
             .font(.caption).foregroundStyle(.secondary)
           TextField("Source checkout", text: $repository).accessibilityLabel("Source checkout")
           if let project = model.project(for: ticket) {

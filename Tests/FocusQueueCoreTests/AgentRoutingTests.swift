@@ -19,6 +19,39 @@ struct AgentRoutingTests {
         #expect(roundTrip.automaticAgentRouting == true)
     }
 
+    @Test("Older configured model choices gain new built-in providers and keep custom entries")
+    func modelChoiceMigration() throws {
+        let starter = SetupEnvironment.starter(
+            supportDirectory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        var object = try #require(
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(starter)) as? [String: Any])
+        object["agentModelChoices"] = [
+            ["provider": "codex", "label": "Default"],
+            ["provider": "codex", "label": "gpt-5.5", "model": "gpt-5.5"],
+            ["provider": "codex", "label": "Custom build", "model": "custom-model"],
+        ]
+        let decoded = try JSONDecoder().decode(
+            AppConfiguration.self, from: JSONSerialization.data(withJSONObject: object))
+
+        #expect(decoded.agentModelChoices.contains(
+            AgentModelChoice(provider: .kimi, label: "K3", model: "kimi-code/k3")))
+        #expect(decoded.agentModelChoices.contains(
+            AgentModelChoice(provider: .codex, label: "Custom build", model: "custom-model")))
+        #expect(decoded.agentModelChoices.first == AgentModelChoice(provider: .codex, label: "Default"))
+        #expect(decoded.agentModelChoices.last == AgentModelChoice(
+            provider: .codex, label: "Custom build", model: "custom-model"))
+    }
+
+    @Test("Default agent efforts survive a configuration round-trip")
+    func defaultAgentEffortRoundTrip() throws {
+        var configuration = AppConfiguration.eccDefault()
+        configuration.defaultAgentEfforts[.claude] = "high"
+        let decoded = try JSONDecoder().decode(
+            AppConfiguration.self, from: JSONEncoder().encode(configuration))
+        #expect(decoded.defaultAgentEfforts[.claude] == "high")
+        #expect(decoded.defaultAgentEfforts[.codex] == nil)
+    }
+
     @Test("Inspection is read-only and returns enough information for one start command")
     func inspectRoute() async throws {
         let fixture = try await RoutingFixture()

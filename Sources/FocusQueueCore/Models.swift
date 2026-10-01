@@ -276,21 +276,52 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var defaultAgentProvider: AgentProvider?
   /// Per-provider default models; a missing or empty value launches without `--model`.
   public var defaultAgentModels: [AgentProvider: String]
+  /// Per-provider default efforts; a missing or empty value launches without an effort flag.
+  public var defaultAgentEfforts: [AgentProvider: String]
 
+  /// Newest models first within each provider group. Mirrors the current
+  /// Codex, Claude Code, and Kimi Code lineups (Kimi aliases match the managed
+  /// `kimi provider list` entries).
   public static let defaultAgentModelChoices: [AgentModelChoice] = [
     AgentModelChoice(provider: .codex, label: "Default"),
+    AgentModelChoice(provider: .codex, label: "gpt-6-astra", model: "gpt-6-astra"),
+    AgentModelChoice(provider: .codex, label: "gpt-6-sol", model: "gpt-6-sol"),
+    AgentModelChoice(provider: .codex, label: "gpt-6-luna", model: "gpt-6-luna"),
+    AgentModelChoice(provider: .codex, label: "gpt-5.6-sol", model: "gpt-5.6-sol"),
+    AgentModelChoice(provider: .codex, label: "gpt-5.6-terra", model: "gpt-5.6-terra"),
+    AgentModelChoice(provider: .codex, label: "gpt-5.6-luna", model: "gpt-5.6-luna"),
+    AgentModelChoice(provider: .codex, label: "gpt-5.5-pro", model: "gpt-5.5-pro"),
     AgentModelChoice(provider: .codex, label: "gpt-5.5", model: "gpt-5.5"),
     AgentModelChoice(provider: .codex, label: "gpt-5.4", model: "gpt-5.4"),
     AgentModelChoice(provider: .codex, label: "gpt-5.2", model: "gpt-5.2"),
     AgentModelChoice(provider: .claude, label: "Default"),
-    AgentModelChoice(provider: .claude, label: "sonnet", model: "sonnet"),
+    AgentModelChoice(provider: .claude, label: "opus-5.5", model: "claude-opus-5-5"),
+    AgentModelChoice(provider: .claude, label: "sonnet-5.5", model: "claude-sonnet-5-5"),
+    AgentModelChoice(provider: .claude, label: "opus-5", model: "claude-opus-5"),
+    AgentModelChoice(provider: .claude, label: "sonnet-5", model: "claude-sonnet-5"),
+    AgentModelChoice(provider: .claude, label: "haiku-4.5", model: "claude-haiku-4-5"),
     AgentModelChoice(provider: .claude, label: "opus", model: "opus"),
+    AgentModelChoice(provider: .claude, label: "sonnet", model: "sonnet"),
     AgentModelChoice(provider: .claude, label: "haiku", model: "haiku"),
     AgentModelChoice(provider: .kimi, label: "Default"),
     AgentModelChoice(provider: .kimi, label: "K3", model: "kimi-code/k3"),
+    AgentModelChoice(provider: .kimi, label: "K3-256k", model: "kimi-code/k3-256k"),
     AgentModelChoice(provider: .kimi, label: "K2.8 Preview", model: "kimi-code/kimi-for-coding"),
     AgentModelChoice(provider: .kimi, label: "K2.7 Code Highspeed", model: "kimi-code/kimi-for-coding-highspeed"),
   ]
+
+  /// Built-in choices lead in newest-first order; configured entries whose
+  /// provider/label pair is not built in keep their place afterward, so older
+  /// configs gain new providers and models without losing custom entries.
+  public static func mergedAgentModelChoices(_ configured: [AgentModelChoice]) -> [AgentModelChoice] {
+    let defaults = Self.defaultAgentModelChoices
+    let builtInIDs = Set(defaults.map(\.id))
+    return defaults + configured.filter { !builtInIDs.contains($0.id) }
+  }
+
+  /// Effort levels accepted by agent launches (Codex `model_reasoning_effort`,
+  /// Claude `--effort`). Kimi has no launch-time effort flag and ignores these.
+  public static let agentEffortLevels = ["low", "medium", "high", "xhigh", "max"]
 
   public init(
     appName: String,
@@ -324,6 +355,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.autoArchiveStaleAgents = false
     self.defaultAgentProvider = nil
     self.defaultAgentModels = [:]
+    self.defaultAgentEfforts = [:]
     let effectiveProjects = projects ?? [Self.legacyProject(
       appName: appName,
       dashboardPath: dashboardPath,
@@ -345,7 +377,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case agentEscalationAutoLaunch
     case agentModelChoices
     case autoArchiveStaleAgents
-    case defaultAgentProvider, defaultAgentModels
+    case defaultAgentProvider, defaultAgentModels, defaultAgentEfforts
     case focusQueueProjects, focusQueueSelectedProjectID, projects, selectedProjectID
   }
 
@@ -375,8 +407,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     agentProviderFallbackOrder = fallbackOrder.isEmpty ? Self.defaultAgentProviderFallbackOrder : fallbackOrder
     agentEscalationAutoLaunch =
       try container.decodeIfPresent(Bool.self, forKey: .agentEscalationAutoLaunch) ?? true
-    agentModelChoices = try container.decodeIfPresent([AgentModelChoice].self, forKey: .agentModelChoices)
-      ?? Self.defaultAgentModelChoices
+    agentModelChoices = Self.mergedAgentModelChoices(
+      (try container.decodeIfPresent([AgentModelChoice].self, forKey: .agentModelChoices)) ?? [])
     autoArchiveStaleAgents = try container.decodeIfPresent(Bool.self, forKey: .autoArchiveStaleAgents) ?? false
     defaultAgentProvider = try container.decodeIfPresent(String.self, forKey: .defaultAgentProvider)
       .flatMap { AgentProvider(rawValue: $0.lowercased()) }
@@ -385,6 +417,12 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         guard let provider = AgentProvider(rawValue: pair.key.lowercased()) else { return }
         let model = pair.value.trimmingCharacters(in: .whitespacesAndNewlines)
         if !model.isEmpty { models[provider] = model }
+      }
+    defaultAgentEfforts = ((try container.decodeIfPresent([String: String].self, forKey: .defaultAgentEfforts)) ?? [:])
+      .reduce(into: [:]) { efforts, pair in
+        guard let provider = AgentProvider(rawValue: pair.key.lowercased()) else { return }
+        let effort = pair.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !effort.isEmpty { efforts[provider] = effort }
       }
     dailyReport =
       try container.decodeIfPresent(DailyReportConfiguration.self, forKey: .dailyReport)
@@ -459,6 +497,9 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encode(
       Dictionary(uniqueKeysWithValues: defaultAgentModels.map { ($0.key.rawValue, $0.value) }),
       forKey: .defaultAgentModels)
+    try container.encode(
+      Dictionary(uniqueKeysWithValues: defaultAgentEfforts.map { ($0.key.rawValue, $0.value) }),
+      forKey: .defaultAgentEfforts)
   }
 
   public var selectedProject: ProjectConfiguration? {

@@ -2614,6 +2614,7 @@ final class QueueViewModel {
   ) {
     let provider = provider ?? defaultAgentProvider
     let model = model ?? defaultAgentModel(for: provider)
+    let effort = effort ?? defaultAgentEffort(for: provider)
     let existingTitles = Set(
       taskItems(for: ticket.id).map {
         $0.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -2646,6 +2647,11 @@ final class QueueViewModel {
     config.defaultAgentModels[provider]
   }
 
+  /// A configured default effort; nil launches the provider without an effort flag.
+  func defaultAgentEffort(for provider: AgentProvider) -> String? {
+    config.defaultAgentEfforts[provider]
+  }
+
   func agentModelChoices(for provider: AgentProvider) -> [AgentModelChoice] {
     let configured = config.agentModelChoices
     return (configured.isEmpty ? AppConfiguration.defaultAgentModelChoices : configured)
@@ -2663,6 +2669,14 @@ final class QueueViewModel {
     let normalized = trimmed.flatMap { $0.isEmpty ? nil : $0 }
     guard config.defaultAgentModels[provider] != normalized else { return }
     config.defaultAgentModels[provider] = normalized
+    persistConfiguration()
+  }
+
+  func setDefaultAgentEffort(_ effort: String?, for provider: AgentProvider) {
+    let trimmed = effort?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let normalized = trimmed.flatMap { $0.isEmpty ? nil : $0 }
+    guard config.defaultAgentEfforts[provider] != normalized else { return }
+    config.defaultAgentEfforts[provider] = normalized
     persistConfiguration()
   }
 

@@ -581,7 +581,7 @@ struct QueueView: View {
       Picker("Queue section", selection: $selectedTab) {
         Text("Focus \(model.openTickets.count)").tag(QueueTab.focus)
         Text("Completed \(model.completedTodayTickets.count)").tag(QueueTab.completed)
-        Text("Queue chat").tag(QueueTab.agent)
+        Text("QChat").tag(QueueTab.agent)
       }
       .pickerStyle(.segmented)
       .labelsHidden()
@@ -1190,8 +1190,8 @@ struct QueueAgentChatView: View {
               }
               if isRespondingHere {
                 HStack(spacing: 9) {
-                  ProgressView().controlSize(.small)
-                  Text("Codex is checking the queue…")
+                  QueueChatEllipsisIndicator()
+                  Text("\(model.defaultAgentProvider.displayName) is checking the queue…")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
                   Spacer()
                 }
@@ -1205,9 +1205,9 @@ struct QueueAgentChatView: View {
           }
           .scrollIndicators(.automatic)
           .background(QueueChatMessageRow.surface(for: .agent, colorScheme: colorScheme),
-            in: RoundedRectangle(cornerRadius: 12))
-          .clipShape(RoundedRectangle(cornerRadius: 12))
-          .overlay(RoundedRectangle(cornerRadius: 12)
+            in: Rectangle())
+          .clipShape(Rectangle())
+          .overlay(Rectangle()
             .stroke(Color.primary.opacity(0.10), lineWidth: 1))
           .onChange(of: messages.count) { _, _ in
             scrollToBottom(using: proxy)
@@ -1257,7 +1257,7 @@ struct QueueAgentChatView: View {
             }
             .focused($composerIsFocused)
             .onSubmit(send)
-            .accessibilityLabel("Message the Codex Queue agent")
+            .accessibilityLabel("Message the queue agent")
 
             Button(action: send) {
               Image(systemName: "arrow.up.circle.fill")
@@ -1270,7 +1270,7 @@ struct QueueAgentChatView: View {
                 || model.isQueueAgentResponding
                 || model.reportIsRunning
             )
-            .accessibilityLabel("Send message to Codex Queue agent")
+            .accessibilityLabel("Send message to queue agent")
           }
         }
         .animation(.easeOut(duration: 0.16), value: canvasSelection?.wrappedValue?.id)
@@ -1355,6 +1355,22 @@ struct QueueAgentChatView: View {
       } else if let last = messages.last {
         proxy.scrollTo(last.id, anchor: .bottom)
       }
+    }
+  }
+}
+
+/// Cycles ".", "..", "...", then a blank frame instead of a spinner.
+private struct QueueChatEllipsisIndicator: View {
+  private static let frames = [".", "..", "...", " "]
+  private static let frameInterval: TimeInterval = 0.4
+
+  var body: some View {
+    TimelineView(.periodic(from: .now, by: Self.frameInterval)) { context in
+      let index = Int(context.date.timeIntervalSince1970 / Self.frameInterval)
+      Text(Self.frames[index % Self.frames.count])
+        .font(.system(size: 12, weight: .bold, design: .monospaced))
+        .foregroundStyle(.secondary)
+        .frame(width: 14, alignment: .leading)
     }
   }
 }
@@ -1678,7 +1694,16 @@ private struct QueueSettingsView: View {
                   Text(choice.label).tag(choice.model ?? "")
                 }
               }
-              Text("Default launches the provider without a model flag.")
+              Picker("Default effort", selection: Binding(
+                get: { model.config.defaultAgentEfforts[model.defaultAgentProvider] ?? "" },
+                set: { model.setDefaultAgentEffort($0, for: model.defaultAgentProvider) }
+              )) {
+                Text("Default").tag("")
+                ForEach(AppConfiguration.agentEffortLevels, id: \.self) { effort in
+                  Text(effort).tag(effort)
+                }
+              }
+              Text("Default launches the provider without a model or effort flag. Kimi has no launch-time effort flag and follows its own config.")
                 .font(.caption).foregroundStyle(.secondary)
             }
           }
@@ -2029,6 +2054,7 @@ struct RenamableTaskTitle: View {
   let weight: Font.Weight
   let maximumLines: Int
   var openAction: (() -> Void)? = nil
+  var openHint: String? = nil
   @State private var isRenaming = false
   @State private var draft = ""
 
@@ -2044,9 +2070,9 @@ struct RenamableTaskTitle: View {
         Button("Rename task", systemImage: "pencil") { beginRename() }
       }
       .accessibilityAction(named: "Rename task", beginRename)
-      .help(openAction == nil
+      .help(openHint ?? (openAction == nil
         ? "Double-click to rename this task"
-        : "Click to open this task's agents. Double-click to rename the task.")
+        : "Click to open this task's agents. Double-click to rename the task."))
       .alert("Rename task", isPresented: $isRenaming) {
         TextField("Task title", text: $draft)
         Button("Save") {
@@ -2554,6 +2580,7 @@ private struct TicketCard: View {
   @State private var deletingSubtask: TaskSubtask?
   @State private var completingAgent: TaskSubtask?
   @State private var archivingAgent: TaskSubtask?
+  @State private var isCollapsedToTitle = false
   @AppStorage("newAgentProvider") private var storedNewAgentProvider: AgentProvider?
   @Environment(\.queueAccentStyle) private var accentStyle
 
@@ -2601,19 +2628,21 @@ private struct TicketCard: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       summary
-      taskOverview
-      agentControls
-      Button(action: toggleCardDisclosure) {
-        HStack {
-          Text(model.isExpanded(ticket.id) ? "Hide task details" : "Task details")
-          Spacer()
-          Image(systemName: model.isExpanded(ticket.id) ? "chevron.up" : "chevron.down")
-        }.font(.system(size: 12, weight: .semibold)).padding(.horizontal, 14)
-          .frame(minHeight: 36).contentShape(Rectangle())
-      }.buttonStyle(.plain).accessibilityLabel("\(model.isExpanded(ticket.id) ? "Collapse" : "Expand") \(ticket.id) details")
-      if model.isExpanded(ticket.id) {
-        Divider().opacity(0.45).padding(.horizontal, 14)
-        details.padding(.top, 11).transition(.opacity.combined(with: .move(edge: .top)))
+      if !isCollapsedToTitle {
+        taskOverview
+        agentControls
+        Button(action: toggleCardDisclosure) {
+          HStack {
+            Text(model.isExpanded(ticket.id) ? "Hide task details" : "Task details")
+            Spacer()
+            Image(systemName: model.isExpanded(ticket.id) ? "chevron.up" : "chevron.down")
+          }.font(.system(size: 12, weight: .semibold)).padding(.horizontal, 14)
+            .frame(minHeight: 36).contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityLabel("\(model.isExpanded(ticket.id) ? "Collapse" : "Expand") \(ticket.id) details")
+        if model.isExpanded(ticket.id) {
+          Divider().opacity(0.45).padding(.horizontal, 14)
+          details.padding(.top, 11).transition(.opacity.combined(with: .move(edge: .top)))
+        }
       }
     }.notificationSurface(radius: 18)
       .sheet(isPresented: $showsNewAgent) {
@@ -2766,7 +2795,13 @@ private struct TicketCard: View {
         HStack(alignment: .top, spacing: 10) {
           RenamableTaskTitle(
             ticket: ticket, model: model, size: 16, weight: .semibold,
-            maximumLines: 3, openAction: { model.openTaskAgents(for: ticket) })
+            maximumLines: 3,
+            openAction: {
+              withAnimation(.easeInOut(duration: 0.18)) { isCollapsedToTitle.toggle() }
+            },
+            openHint: isCollapsedToTitle
+              ? "Click to expand this task. Double-click to rename the task."
+              : "Click to collapse this task to its title and status. Double-click to rename the task.")
           VStack(alignment: .trailing, spacing: 3) {
             Text(summaryProgressLabel).font(
               .system(size: 12, weight: .semibold).monospacedDigit()

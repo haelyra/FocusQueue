@@ -142,7 +142,8 @@ struct ChatMarkdownView: View {
   @ViewBuilder private func blockView(_ block: ChatMarkdownBlock) -> some View {
     switch block {
     case .paragraph(let text):
-      Text(ChatMarkdown.inline(text)).font(.system(size: 13))
+      Text(ChatMarkdown.inline(text)).font(.system(size: 13, weight: .light))
+        .lineSpacing(3)
         .fixedSize(horizontal: false, vertical: true)
     case .heading(let level, let text):
       Text(ChatMarkdown.inline(text))
@@ -155,7 +156,8 @@ struct ChatMarkdownView: View {
     case .quote(let text):
       HStack(alignment: .top, spacing: 10) {
         Rectangle().fill(Color.accentColor.opacity(0.65)).frame(width: 2)
-        Text(ChatMarkdown.inline(text)).font(.system(size: 13))
+        Text(ChatMarkdown.inline(text)).font(.system(size: 13, weight: .light))
+          .lineSpacing(3)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -187,8 +189,8 @@ struct ChatMarkdownView: View {
   private func listRow(marker: String, text: String) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: 8) {
       Text(marker).foregroundStyle(.secondary).frame(minWidth: 15, alignment: .trailing)
-      Text(ChatMarkdown.inline(text)).fixedSize(horizontal: false, vertical: true)
+      Text(ChatMarkdown.inline(text)).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
     }
-    .font(.system(size: 13))
+    .font(.system(size: 13, weight: .light))
   }
 }

@@ -2149,16 +2149,27 @@ final class QueueViewModel {
         }
         // A missing or closed saved view does not prove the conversation stopped.
         // External terminals and IDEs may still own it. Only a complete, exact
-        // provider process scan can authorize a new resume process.
-        if let sessionID = subtask.sessionID,
-          let running = try await locateExistingAgent(subtask.provider, sessionID) {
-          throw TaskContextError.commandFailed(
-            "This conversation is already running in \(running.cwd). Open its existing terminal. No second agent was started.")
+        // provider process scan can authorize a new resume process. A Codex
+        // sub-agent thread resumes through its lineage root, so the guard must
+        // check the same identity the resume will use.
+        if let sessionID = subtask.sessionID {
+          let resumeIdentity = subtask.provider == .codex
+            ? CodexSessionLineage.root(of: sessionID) : sessionID
+          if let running = try await locateExistingAgent(subtask.provider, resumeIdentity) {
+            throw TaskContextError.commandFailed(
+              "This conversation is already running in \(running.cwd). Open its existing terminal. No second agent was started.")
+          }
         }
         guard var context = try await taskContextStore.load(ticketID: ticket.id) else {
           throw TaskContextError.missingContext(ticket.id)
         }
         var assignment = context.subtasks.first(where: { $0.id == subtask.id }) ?? subtask
+        // Codex resumes a sub-agent thread through its root conversation; keep
+        // the saved record on the identity that later opens will observe live.
+        if assignment.provider == .codex, let saved = assignment.sessionID {
+          let root = CodexSessionLineage.root(of: saved)
+          if root.caseInsensitiveCompare(saved) != .orderedSame { assignment.sessionID = root }
+        }
         // Old records recover their original launch directory before inheriting a task default.
         if assignment.workspace == nil {
           let path = session(for: subtask, ticketID: ticket.id)?.workingDirectory

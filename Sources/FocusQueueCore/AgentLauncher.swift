@@ -29,6 +29,69 @@ public enum InteractiveAgentShell {
   }
 }
 
+/// Codex refuses to resume an unloaded multi-agent sub-agent thread directly;
+/// only the root conversation of its lineage accepts a native resume. Rollout
+/// metadata records each thread's parent, so the resumable identity for any
+/// saved session is the root ancestor of its family.
+public enum CodexSessionLineage {
+  public static func root(of sessionID: String, codexRoot: URL? = nil) -> String {
+    let home = codexRoot
+      ?? ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) }
+      ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex", isDirectory: true)
+    var current = sessionID.lowercased()
+    var visited: Set<String> = [current]
+    var resolved = false
+    while let parent = parentThreadID(of: current, codexRoot: home), !visited.contains(parent) {
+      visited.insert(parent)
+      current = parent
+      resolved = true
+    }
+    // Without rollout evidence the saved identity is already the resume target;
+    // preserve it byte-for-byte, including case.
+    return resolved ? current : sessionID
+  }
+
+  private static func parentThreadID(of sessionID: String, codexRoot: URL) -> String? {
+    guard UUID(uuidString: sessionID) != nil else { return nil }
+    for subdirectory in ["sessions", "archived_sessions"] {
+      let root = codexRoot.appendingPathComponent(subdirectory, isDirectory: true)
+      guard let enumerator = FileManager.default.enumerator(
+        at: root, includingPropertiesForKeys: nil,
+        options: [.skipsHiddenFiles, .skipsPackageDescendants])
+      else { continue }
+      for case let file as URL in enumerator {
+        guard file.pathExtension == "jsonl",
+              file.lastPathComponent.lowercased().contains(sessionID),
+              let handle = try? FileHandle(forReadingFrom: file),
+              let line = try? handle.readLine(),
+              let record = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+              let payload = record["payload"] as? [String: Any]
+        else { continue }
+        try? handle.close()
+        for key in ["parent_thread_id", "session_id"] {
+          if let parent = (payload[key] as? String)?.lowercased(),
+             parent != sessionID, UUID(uuidString: parent) != nil {
+            return parent
+          }
+        }
+        return nil
+      }
+    }
+    return nil
+  }
+}
+
+extension FileHandle {
+  fileprivate func readLine() throws -> String? {
+    var data = Data()
+    while let byte = try read(upToCount: 1), !byte.isEmpty {
+      if byte[0] == 0x0A { break }
+      data.append(byte)
+    }
+    return data.isEmpty ? nil : String(data: data, encoding: .utf8)
+  }
+}
+
 public struct DirectAgentLaunchReceipt: Equatable, Sendable {
   public let paneID: Int
   public let socketPath: String?
@@ -53,7 +116,7 @@ public actor TaskAgentLauncher {
 
   public static func command(context: TaskContext, subtask: TaskSubtask, supportDirectory: URL,
                              includePrompt: Bool = true, shellPath: String? = nil,
-                             usageBarEnabled: Bool = true) throws -> [String] {
+                             usageBarEnabled: Bool = true, codexRoot: URL? = nil) throws -> [String] {
     guard let directory = (subtask.workspace?.path ?? context.worktreePath), directory.hasPrefix("/") else {
       throw TaskContextError.unsafeWorktree("Choose a task worktree before launching an agent.")
     }
@@ -72,7 +135,7 @@ public actor TaskAgentLauncher {
         throw TaskContextError.commandFailed("The saved provider session ID is invalid.")
       }
       providerArguments = subtask.provider == .codex
-        ? ["resume", sessionID, "--cd", directory] + providerArguments
+        ? ["resume", CodexSessionLineage.root(of: sessionID, codexRoot: codexRoot), "--cd", directory] + providerArguments
         : subtask.provider.resumeArguments(sessionID: sessionID) + providerArguments
     } else if includePrompt && subtask.includeInitializationPrompt {
       providerArguments += promptArguments(for: subtask.provider, prompt: context.agentPrompt(subtask: subtask))

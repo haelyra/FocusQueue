@@ -251,4 +251,71 @@ struct ProviderProcessDiscoveryTests {
         }
         #expect(await runner.outputs.isEmpty)
     }
+
+    private func makeCodexRoot(directories: [String]) throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "focus-queue-codex-scope-\(UUID())", isDirectory: true)
+        let sessions = root.appendingPathComponent("sessions/2026/09/21", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        var lines = ["{\"type\":\"session_meta\",\"payload\":{\"id\":\"\(parent)\",\"cwd\":\"\(directories[0])\"}}"]
+        lines += directories.dropFirst().map {
+            "{\"type\":\"turn_context\",\"payload\":{\"cwd\":\"\($0)\"}}"
+        }
+        try Data((lines.joined(separator: "\n") + "\n").utf8).write(
+            to: sessions.appendingPathComponent("rollout-2026-09-21T14-40-52-\(parent).jsonl"))
+        return root
+    }
+
+    @Test("An unresolved Codex process in another workspace does not block the requested session")
+    func unrelatedCodexWorkspaceDoesNotBlock() async throws {
+        let codexRoot = try makeCodexRoot(directories: ["/tmp/repository"])
+        defer { try? FileManager.default.removeItem(at: codexRoot) }
+        let runner = ProviderDiscoveryRunner([
+            "40 ttys040 /opt/codex\n",
+            "p40\nfcwd\nn/tmp/other\n",
+        ])
+        #expect(try await WezTermController(runner: runner, codexRoot: codexRoot).locateProviderProcess(
+            provider: .codex, sessionID: parent, retryDelay: .zero) == nil)
+        #expect(await runner.outputs.isEmpty)
+    }
+
+    @Test("An unresolved Codex process in the session workspace keeps duplicate-resume protection")
+    func sameWorkspaceCodexStillFailsClosed() async throws {
+        let codexRoot = try makeCodexRoot(directories: ["/tmp/repository"])
+        defer { try? FileManager.default.removeItem(at: codexRoot) }
+        let sample = ["40 ttys040 /opt/codex\n", "p40\nfcwd\nn/tmp/repository\n"]
+        let runner = ProviderDiscoveryRunner(sample + sample + sample + sample)
+        await #expect(throws: WezTermError.self) {
+            try await WezTermController(runner: runner, codexRoot: codexRoot).locateProviderProcess(
+                provider: .codex, sessionID: parent, retryDelay: .zero)
+        }
+        #expect(await runner.outputs.isEmpty)
+    }
+
+    @Test("A Codex process in a later resume directory recorded by the rollout also blocks")
+    func resumedDirectoryCodexStillFailsClosed() async throws {
+        let codexRoot = try makeCodexRoot(directories: ["/tmp/repository", "/tmp/resumed"])
+        defer { try? FileManager.default.removeItem(at: codexRoot) }
+        let sample = ["40 ttys040 /opt/codex\n", "p40\nfcwd\nn/tmp/resumed\n"]
+        let runner = ProviderDiscoveryRunner(sample + sample + sample + sample)
+        await #expect(throws: WezTermError.self) {
+            try await WezTermController(runner: runner, codexRoot: codexRoot).locateProviderProcess(
+                provider: .codex, sessionID: parent, retryDelay: .zero)
+        }
+        #expect(await runner.outputs.isEmpty)
+    }
+
+    @Test("A Codex session with no readable rollout keeps the conservative fail-closed posture")
+    func unknownRolloutCodexFailsClosed() async throws {
+        let codexRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "focus-queue-codex-missing-\(UUID())", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: codexRoot) }
+        let sample = ["40 ttys040 /opt/codex\n", "p40\nfcwd\nn/tmp/other\n"]
+        let runner = ProviderDiscoveryRunner(sample + sample + sample + sample)
+        await #expect(throws: WezTermError.self) {
+            try await WezTermController(runner: runner, codexRoot: codexRoot).locateProviderProcess(
+                provider: .codex, sessionID: parent, retryDelay: .zero)
+        }
+        #expect(await runner.outputs.isEmpty)
+    }
 }

@@ -243,6 +243,45 @@ else:
         self.assertNotIn("agentID", record)
         self.assertNotEqual(record["cwd"], str(parent.resolve()))
 
+    def test_same_task_sibling_rows_share_one_conversation_family(self):
+        shared = self.root / "shared-workspace"
+        shared.mkdir()
+        folder = self.support / "tasks/ECC-1"
+        folder.mkdir(parents=True)
+        (folder / "context.json").write_text(json.dumps({"subtasks":[
+            {"id":"root-agent", "sessionID":self.session_id,
+             "workspace":{"path":str(shared), "managed":False}},
+            {"id":"sub-agent", "sessionID":self.session_id,
+             "workspace":{"path":str(shared), "managed":False}},
+        ]}))
+        environment = {"FOCUS_QUEUE_TASK_ID":"ECC-1", "FOCUS_QUEUE_SUBTASK_ID":"sub-agent"}
+        with mock.patch.dict(os.environ, environment, clear=True):
+            _, record, arguments = ENTRY.begin_tracking(
+                ["resume", self.session_id], "resume", self.session_id, self.support)
+        self.assertEqual(record["taskID"], "ECC-1")
+        self.assertEqual(record["agentID"], "sub-agent")
+        self.assertEqual(record["cwd"], str(shared.resolve()))
+        self.assertEqual(arguments[:2], ["--cd", str(shared.resolve())])
+        # Without a task hint the same single task still owns the conversation.
+        with mock.patch.dict(os.environ, {}, clear=True):
+            _, record, _ = ENTRY.begin_tracking(
+                ["resume", self.session_id], "resume", self.session_id, self.support)
+        self.assertEqual(record["taskID"], "ECC-1")
+        self.assertEqual(record["agentID"], "root-agent")
+
+    def test_resume_owned_by_two_tasks_still_fails_closed(self):
+        for task_id in ("ECC-1", "ECC-2"):
+            workspace = self.root / f"workspace-{task_id}"
+            workspace.mkdir()
+            folder = self.support / "tasks" / task_id
+            folder.mkdir(parents=True)
+            (folder / "context.json").write_text(json.dumps({"subtasks":[{
+                "id":"agent", "sessionID":self.session_id,
+                "workspace":{"path":str(workspace), "managed":False},
+            }]}))
+        with mock.patch.dict(os.environ, {}, clear=True), self.assertRaises(ENTRY.EntryError):
+            ENTRY.begin_tracking(["resume", self.session_id], "resume", self.session_id, self.support)
+
     def test_prompt_metadata_is_only_unambiguous_positional_input(self):
         self.assertEqual(ENTRY.initial_prompt(["-m", "model", "-C", "subdir", "fix the bug"]), "fix the bug")
         self.assertEqual(ENTRY.initial_prompt(["resume", self.session_id, "continue"]), "continue")

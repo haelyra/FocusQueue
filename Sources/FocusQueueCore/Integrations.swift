@@ -451,23 +451,31 @@ public actor WezTermController: WezTermControlling {
     private let candidateSockets: [String]?
     private let labelAttempts: Int
     private let claudeRootOverride: URL?
+    private let codexRootOverride: URL?
     private static let processSnapshotTTL: TimeInterval = 3
     private var processSnapshots: [String: (fetchedAt: Date, result: ProcessResult)] = [:]
     private var processSnapshotTasks: [String: Task<ProcessResult, Error>] = [:]
     private var resolvedSockets: [String: String] = [:]
 
     public init(runner: any ProcessRunning = FoundationProcessRunner(), candidateSockets: [String]? = nil,
-                verificationAttempts: Int = 10, claudeRoot: URL? = nil) {
+                verificationAttempts: Int = 10, claudeRoot: URL? = nil, codexRoot: URL? = nil) {
         self.runner = runner
         self.candidateSockets = candidateSockets
         self.labelAttempts = max(1, min(verificationAttempts, 10))
         self.claudeRootOverride = claudeRoot
+        self.codexRootOverride = codexRoot
     }
 
     private var claudeRoot: URL {
         claudeRootOverride
             ?? ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"].map { URL(fileURLWithPath: $0) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude", isDirectory: true)
+    }
+
+    private var codexRoot: URL {
+        codexRootOverride
+            ?? ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex", isDirectory: true)
     }
 
     /// Reuses a socket that already answered this controller so refresh passes
@@ -1238,11 +1246,56 @@ public actor WezTermController: WezTermControlling {
     /// ownership cannot be scoped to a project, always plausibly owns the
     /// target. A Claude process is scoped by its project directory: it can own
     /// the target only when the target transcript lives in the same project.
-    private func unresolvedProcessCouldOwn(_ process: UnresolvedProviderProcess, sessionID: String) -> Bool {
+    /// A Codex process is scoped by the working directories its rollout
+    /// records: it can own the target only when it runs in one of them.
+    public func unresolvedProcessCouldOwn(_ process: UnresolvedProviderProcess, sessionID: String) -> Bool {
         guard let cwd = process.cwd else { return true }
-        guard process.provider == .claude else { return true }
-        guard let projectDirectory = claudeProjectDirectory(containingTranscript: sessionID) else { return true }
-        return Self.claudeProjectDirectoryName(forWorkingDirectory: cwd) == projectDirectory
+        switch process.provider {
+        case .claude:
+            guard let projectDirectory = claudeProjectDirectory(containingTranscript: sessionID) else { return true }
+            return Self.claudeProjectDirectoryName(forWorkingDirectory: cwd) == projectDirectory
+        case .codex:
+            let recorded = codexSessionWorkingDirectories(sessionID: sessionID)
+            guard !recorded.isEmpty else { return true }
+            let processPath = Self.standardizedPath(cwd, resolvingSymlinks: true)
+            return recorded.contains { Self.standardizedPath($0, resolvingSymlinks: true) == processPath }
+        case .kimi:
+            return true
+        }
+    }
+
+    /// Every working directory a Codex conversation has used, from its saved
+    /// rollout. A resumed session may record additional directories in later
+    /// turn contexts, so all of them identify plausible owners.
+    private func codexSessionWorkingDirectories(sessionID: String) -> [String] {
+        let target = sessionID.lowercased()
+        guard UUID(uuidString: target) != nil else { return [] }
+        for subdirectory in ["sessions", "archived_sessions"] {
+            let root = codexRoot.appendingPathComponent(subdirectory, isDirectory: true)
+            guard let enumerator = FileManager.default.enumerator(
+                at: root, includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles, .skipsPackageDescendants])
+            else { continue }
+            for case let file as URL in enumerator
+            where file.pathExtension == "jsonl" && file.lastPathComponent.lowercased().contains(target) {
+                guard let handle = try? FileHandle(forReadingFrom: file) else { return [] }
+                defer { try? handle.close() }
+                guard let data = try? handle.readToEnd(), let text = String(data: data, encoding: .utf8)
+                else { return [] }
+                var directories: [String] = []
+                for line in text.split(whereSeparator: \Character.isNewline) {
+                    guard line.contains("\"cwd\""),
+                          let record = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                          let payload = record["payload"] as? [String: Any],
+                          let cwd = payload["cwd"] as? String, cwd.hasPrefix("/"),
+                          !directories.contains(cwd)
+                    else { continue }
+                    directories.append(cwd)
+                }
+                return directories
+            }
+        }
+        return []
     }
 
     public func knownProviderProcesses(provider: AgentProvider? = nil,
@@ -1854,8 +1907,9 @@ public actor WezTermController: WezTermControlling {
         return url.path
     }
 
-    private static func standardizedPath(_ path: String) -> String {
-        URL(fileURLWithPath: path).standardizedFileURL.path
+    private static func standardizedPath(_ path: String, resolvingSymlinks: Bool = false) -> String {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        return (resolvingSymlinks ? url.resolvingSymlinksInPath() : url).path
     }
 
     private static func failureDetail(_ result: ProcessResult) -> String {

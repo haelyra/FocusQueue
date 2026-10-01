@@ -1227,9 +1227,17 @@ enum SessionRegistrationError: Error, LocalizedError {
                         status: "running", sessionID: sessionID, processID: Int(appeared.processID)))
                     return
                 }
-                // "Stopped" is only emitted when every live process is accounted
-                // for; an unverified process keeps the state unknown.
-                guard complete.unresolved.isEmpty else {
+                // "Stopped" is only emitted when no live process could plausibly
+                // own the requested session; unrelated identity-less processes
+                // (another project's agent, a daemon) never block a resume.
+                var blocked = false
+                for process in complete.unresolved {
+                    if await controller.unresolvedProcessCouldOwn(process, sessionID: sessionID) {
+                        blocked = true
+                        break
+                    }
+                }
+                guard !blocked else {
                     throw WezTermError.actionFailed("A provider process has no exact session identity yet. Retry after startup.")
                 }
                 try emit(RuntimeLocationResult(status: "stopped", sessionID: sessionID)); return

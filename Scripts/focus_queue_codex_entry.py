@@ -541,9 +541,15 @@ def begin_tracking(arguments, mode, session_id, support, *, isolate=True, on_cha
             try:
                 value = json.loads(context.read_text())
                 rows = value.get("subtasks") or []
-                assigned = next((row for row in rows if isinstance(row, dict) and (
-                    (session_id and canonical_uuid(row.get("sessionID")) == session_id)
-                    or (not session_id and record.get("agentID") and row.get("id") == record["agentID"]))), None)
+                claiming = [row for row in rows if isinstance(row, dict)
+                            and session_id and canonical_uuid(row.get("sessionID")) == session_id]
+                assigned = next((row for row in claiming
+                                 if inherited_agent_id and row.get("id") == inherited_agent_id), None)
+                if assigned is None and claiming:
+                    assigned = claiming[0]
+                if assigned is None and not session_id and record.get("agentID"):
+                    assigned = next((row for row in rows if isinstance(row, dict)
+                                     and row.get("id") == record["agentID"]), None)
                 if assigned and session_id:
                     matched_session_assignment = True
                     record.update(taskID=task_id.upper(), agentID=assigned.get("id"))
@@ -568,10 +574,17 @@ def begin_tracking(arguments, mode, session_id, support, *, isolate=True, on_cha
                             matches.append((context.parent.name, row))
                 except (OSError, ValueError, AttributeError, TypeError):
                     continue
-            if len(matches) > 1:
+            owning_tasks = {name for name, _ in matches}
+            if len(owning_tasks) > 1:
                 raise EntryError("Multiple task records own this conversation. Resolve its placement before resuming.")
             if matches:
-                task_id, row = matches[0]
+                # Several rows of one task may legitimately reference the same
+                # conversation family; keep the clicked agent when it is known.
+                task_id = matches[0][0]
+                task_rows = [row for _, row in matches]
+                row = next((candidate for candidate in task_rows
+                            if inherited_agent_id and candidate.get("id") == inherited_agent_id),
+                           task_rows[0])
                 candidate = row.get("workspace")
                 saved = candidate if isinstance(candidate, dict) else None
                 record.update(taskID=task_id, agentID=row.get("id"))

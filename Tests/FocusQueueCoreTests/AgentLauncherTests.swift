@@ -155,6 +155,47 @@ func exactCodexResumeRecipe() async throws {
     "--add-dir", context.contextDirectory.path])
 }
 
+@Test("A Codex sub-agent resume targets the root of its conversation lineage")
+func subagentResumeTargetsLineageRoot() throws {
+  let fixture = FileManager.default.temporaryDirectory.appendingPathComponent(
+    "lineage-resume-\(UUID().uuidString)", isDirectory: true)
+  let sessions = fixture.appendingPathComponent("sessions/2026/09/24", isDirectory: true)
+  try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: fixture) }
+  let rootID = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
+  let middleID = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
+  let leafID = "cccccccc-3333-4333-8333-cccccccccccc"
+  for (name, id, parent) in [
+    ("rollout-2026-09-24T01-00-00-\(rootID)", rootID, nil as String?),
+    ("rollout-2026-09-24T01-10-00-\(middleID)", middleID, rootID),
+    ("rollout-2026-09-24T01-20-00-\(leafID)", leafID, middleID),
+  ] {
+    let parentField = parent.map { ",\"parent_thread_id\":\"\($0)\"" } ?? ""
+    try Data(("{\"type\":\"session_meta\",\"payload\":{\"id\":\"\(id)\"\(parentField),"
+      + "\"source\":{\"subagent\":{\"thread_spawn\":{}}}}}\n").utf8)
+      .write(to: sessions.appendingPathComponent("\(name).jsonl"))
+  }
+  #expect(CodexSessionLineage.root(of: leafID, codexRoot: fixture) == rootID)
+  #expect(CodexSessionLineage.root(of: rootID, codexRoot: fixture) == rootID)
+  #expect(CodexSessionLineage.root(of: "dddddddd-4444-4444-8444-dddddddddddd",
+    codexRoot: fixture) == "dddddddd-4444-4444-8444-dddddddddddd")
+
+  let workspace = fixture.appendingPathComponent("workspace", isDirectory: true)
+  try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+  let context = TaskContext(ticketID: "ECC-1", title: "Resume", summary: "",
+    successCriteria: "Exact conversation", planPath: workspace.appendingPathComponent("plan.md").path,
+    worktreePath: workspace.path, updatedAt: Date())
+  var subtask = TaskSubtask(id: "sub-agent", title: "Review sub-agent", provider: .codex,
+    sessionID: leafID, includeInitializationPrompt: false, runtimeMode: .tmux)
+  subtask.workspace = AgentWorkspace(path: workspace.path, repositoryPath: workspace.path)
+  let launch = try TaskAgentLauncher.command(
+    context: context, subtask: subtask, supportDirectory: fixture,
+    includePrompt: false, shellPath: "/bin/zsh", codexRoot: fixture)
+  let resumeIndex = try #require(launch.firstIndex(of: "resume"))
+  #expect(launch[launch.index(after: resumeIndex)] == rootID)
+  #expect(!launch.contains(leafID))
+}
+
 @Test("Kimi launches with --prompt, skips effort flags, and resumes through --session")
 func kimiLaunchAndResumeRecipe() throws {
   let context = TaskContext(ticketID: "ECC-1", title: "Kimi launch", summary: "",

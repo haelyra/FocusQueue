@@ -1648,6 +1648,8 @@ public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {
 
 public struct LocalState: Codable, Equatable, Sendable {
   public var selectedProjectID: String?
+  /// Nil falls back to the all-projects scope, the default queue view.
+  public var showsAllProjects: Bool?
   public var routineDate: String
   public var completedRoutineIDs: Set<String>
   public var completionRequests: [CompletionRequest]

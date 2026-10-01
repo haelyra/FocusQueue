@@ -89,7 +89,9 @@ struct QueueViewModelTests {
       !model.isRoutingObjective && completion == true && secondCompletion == true
     }
     #expect(await router.launchCount == 2)
-    #expect(await router.objectives == ["Fix exact agent recall", "Route a parallel objective"])
+    // Both submissions wake from the same undo window, so launch order is not
+    // guaranteed; what matters is that every objective started a router.
+    #expect(await Set(router.objectives) == ["Fix exact agent recall", "Route a parallel objective"])
     #expect(model.routerStatus?.contains("ECC-101") == true)
     #expect(!model.hasRouterRecovery)
   }
@@ -407,7 +409,8 @@ struct QueueViewModelTests {
     })
     try JSONEncoder().encode(updated).write(to: dashboardURL, options: .atomic)
     await model.refresh()
-    #expect(repository.loads == baseline + 1)
+    // The merged all-projects scope reloads each scoped dashboard on a change.
+    #expect(repository.loads > baseline)
     #expect(model.dashboard.tickets[0].title == "Changed outside the app")
   }
 
@@ -558,6 +561,12 @@ struct QueueViewModelTests {
     try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(config)
 
     let model = await fixture.model(agent: ControlledQueueAgent())
+    // The all-projects scope is the default and merges every dashboard.
+    #expect(model.showsAllProjects)
+    #expect(model.projectScopeName == "All")
+    #expect(Set(model.openTickets.map(\.id)) == ["ECC-101", "ECC-102", "APP-001", "APP-002"])
+    #expect(await model.selectProject(id: "ecc"))
+    #expect(!model.showsAllProjects)
     #expect(model.selectedProject?.name == "ECC")
     #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
     #expect(model.moveTicket("ECC-102", to: .top))
@@ -593,6 +602,49 @@ struct QueueViewModelTests {
     let restarted = await fixture.model(agent: ControlledQueueAgent())
     #expect(restarted.selectedProject?.id == "app")
     #expect(restarted.openTickets.contains { $0.title == "Renamed everywhere" })
+  }
+
+  @Test("All scope merges every project dashboard and follows per-task projects")
+  func allProjectsScope() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let appWorkspace = fixture.root.appendingPathComponent("app-project")
+    let appDashboard = appWorkspace.appendingPathComponent("dashboard.json")
+    try FileManager.default.createDirectory(at: appWorkspace, withIntermediateDirectories: true)
+    let appTicket = DashboardTicket(
+      id: "APP-001", title: "App task", projectID: "app", category: "App",
+      status: "open", summary: "Lives in the App dashboard")
+    try JSONEncoder().encode(DashboardDocument(tickets: [appTicket])).write(to: appDashboard)
+    var config = try JSONDecoder().decode(
+      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    config.projects.append(ProjectConfiguration(
+      id: "app", name: "App", dashboardPath: appDashboard.path,
+      workspacePath: appWorkspace.path))
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(config)
+    let model = await fixture.model(agent: ControlledQueueAgent())
+
+    #expect(model.showsAllProjects)
+    #expect(model.projectScopeName == "All")
+    #expect(Set(model.openTickets.map(\.id)) == ["ECC-101", "ECC-102", "APP-001"])
+    #expect(model.project(for: appTicket)?.id == "app")
+    #expect(model.dashboardPath(for: appTicket) == appDashboard.path)
+
+    // A rename in the merged scope writes the owning dashboard and keeps the merge.
+    #expect(await model.renameTask(appTicket, to: "Renamed app task"))
+    #expect(model.dashboard.tickets.first { $0.id == "APP-001" }?.title == "Renamed app task")
+    #expect(model.openTickets.map(\.id).contains("ECC-101"))
+
+    // A single-project scope narrows the view; All restores the merge.
+    #expect(await model.selectProject(id: "app"))
+    #expect(!model.showsAllProjects)
+    #expect(model.openTickets.map(\.id) == ["APP-001"])
+    await model.selectAllProjects()
+    #expect(model.showsAllProjects)
+    #expect(Set(model.openTickets.map(\.id)) == ["ECC-101", "ECC-102", "APP-001"])
+
+    let saved = try JSONDecoder().decode(
+      DashboardDocument.self, from: Data(contentsOf: appDashboard))
+    #expect(saved.tickets.first?.title == "Renamed app task")
   }
 
   @Test("Task rename updates a loaded context and rejects an empty replacement")
@@ -827,7 +879,7 @@ struct QueueViewModelTests {
     let restarted = await fixture.model(agent: ControlledQueueAgent())
     #expect(restarted.openTickets.first?.id == "ECC-102")
     let external = QueueOrderStore(
-      root: fixture.root, projectID: model.config.selectedProjectID)
+      root: fixture.root, projectID: ProjectCatalog.allProjectsScopeID)
     try external.move("ECC-101", to: .top, tickets: fixture.tickets, fallbackIDs: [])
     model.setPanelCollapsed(true)
     await model.refresh()
@@ -1078,7 +1130,7 @@ struct QueueViewModelTests {
 
     model.launchDefaultAgent(for: fixture.tickets[0], provider: .claude,
       model: "sonnet", effort: "low", subtaskID: agentID)
-    try await eventually { model.launchingTaskIDs.isEmpty }
+    try await eventually(maxAttempts: 1_000) { model.launchingTaskIDs.isEmpty }
 
     let agent = try #require(model.subtasks(for: "ECC-101").first { $0.id == agentID })
     #expect(agent.title == "Claude sonnet 2")

@@ -58,7 +58,9 @@ final class QueueViewModel {
   private(set) var localState = LocalState()
   private(set) var savedQueueOrder: [String]?
   private var queueOrderStore: QueueOrderStore {
-    QueueOrderStore(root: paths.supportDirectory, projectID: config.selectedProjectID)
+    QueueOrderStore(
+      root: paths.supportDirectory,
+      projectID: showsAllProjects ? ProjectCatalog.allProjectsScopeID : config.selectedProjectID)
   }
   private(set) var lastSync: Date?
   private(set) var sourceModificationDate: Date?
@@ -431,7 +433,11 @@ final class QueueViewModel {
   var selectedProjectID: String? {
     config.selectedProjectID
   }
-  var projectScopeName: String { selectedProject?.name ?? "No project" }
+  /// The all-projects scope is the default; picking a single project opts out.
+  var showsAllProjects: Bool { localState.showsAllProjects ?? true }
+  var projectScopeName: String {
+    showsAllProjects ? "All" : selectedProject?.name ?? "No project"
+  }
   var activeProjects: [ProjectDefinition] { config.projects.filter { $0.archivedAt == nil } }
   var projectTickets: [DashboardTicket] { dashboard.tickets }
   var hasUnassignedTasks: Bool { false }
@@ -441,16 +447,29 @@ final class QueueViewModel {
       return owner == selectedProjectID
     }
   }
-  func project(for ticket: DashboardTicket) -> ProjectDefinition? { selectedProject }
+  func project(for ticket: DashboardTicket) -> ProjectDefinition? {
+    guard showsAllProjects else { return selectedProject }
+    if let match = config.projects.first(where: { $0.id == ticket.projectID }) { return match }
+    if let category = ticket.category,
+       let match = config.projects.first(where: { $0.name == category }) { return match }
+    return selectedProject
+  }
+  /// The dashboard file that owns a ticket. Single-project scope stays aligned
+  /// with `config.dashboardPath`; the all-projects scope resolves per ticket.
+  func dashboardPath(for ticket: DashboardTicket) -> String {
+    let path = project(for: ticket)?.dashboardPath.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return path.isEmpty ? config.dashboardPath : path
+  }
   func includesInProject(_ ticket: DashboardTicket) -> Bool { true }
   func revealProject(for ticketID: String) {}
   func defaultRepository(for ticket: DashboardTicket) -> String {
     let context = taskContexts[ticket.id]
+    let ticketProject = project(for: ticket)
     // New agents branch from the task's canonical project repository. An
     // existing agent worktree belongs only to that agent and must never become
     // the source checkout for the next one-click launch.
-    return [context?.projectRepositoryPath, selectedProject?.repositoryPath,
-            context?.repositoryPath, selectedProject?.workspacePath,
+    return [context?.projectRepositoryPath, ticketProject?.repositoryPath,
+            context?.repositoryPath, ticketProject?.workspacePath,
             ticket.worktree, context?.worktreePath]
       .compactMap { $0 }.first { !$0.isEmpty } ?? config.workspacePath
   }
@@ -555,12 +574,62 @@ final class QueueViewModel {
 
   /// Read-only disk load so agent boxes render before any reconciliation runs.
   private func primePresentationFromDisk() async {
-    let dashboardURL = URL(fileURLWithPath: config.dashboardPath)
-    if let document = try? await dashboardRepository.load(from: dashboardURL) {
-      dashboard = document
+    if showsAllProjects {
+      if let merged = try? await loadAllProjectsDashboard() { dashboard = merged }
+    } else {
+      let dashboardURL = URL(fileURLWithPath: config.dashboardPath)
+      if let document = try? await dashboardRepository.load(from: dashboardURL) {
+        dashboard = document
+      }
     }
     if let order = try? queueOrderStore.load() { savedQueueOrder = order }
     taskContexts = await availableTaskContexts()
+  }
+
+  /// Distinct dashboard files for every unarchived project, Other included.
+  private var scopedDashboardURLs: [URL] {
+    ProjectCatalog.mergedDashboardURLs(in: config.projects)
+  }
+
+  /// Merges every project dashboard into one presentation document. A damaged
+  /// or missing project dashboard is skipped rather than failing the scope.
+  private func loadAllProjectsDashboard() async throws -> DashboardDocument {
+    var tickets: [DashboardTicket] = []
+    var seenIDs = Set<String>()
+    var updatedAt: String?
+    for url in scopedDashboardURLs {
+      guard let document = try? await dashboardRepository.load(from: url) else { continue }
+      if let stamp = document.updatedAt, stamp > (updatedAt ?? "") { updatedAt = stamp }
+      for ticket in document.tickets where seenIDs.insert(ticket.id).inserted {
+        tickets.append(ticket)
+      }
+    }
+    return DashboardDocument(updatedAt: updatedAt, tickets: tickets)
+  }
+
+  /// Replaces the merged dashboard after a per-project write in the
+  /// all-projects scope; single-project scope updates the document directly.
+  private func reloadMergedDashboard() async {
+    guard let merged = try? await loadAllProjectsDashboard() else { return }
+    dashboard = merged
+    await captureDurableDashboard(merged)
+  }
+
+  private func allProjectsStamp() async throws -> DashboardFileStamp {
+    var modifiedAt: Date?
+    var size: UInt64 = 0
+    var found = false
+    for url in scopedDashboardURLs {
+      let stamp = try? await Task.detached(priority: .utility) {
+        try DashboardFileStamp.read(at: url)
+      }.value
+      guard let stamp else { continue }
+      found = true
+      if let date = stamp.modifiedAt, date > (modifiedAt ?? .distantPast) { modifiedAt = date }
+      size += stamp.size ?? 0
+    }
+    guard found else { throw CocoaError(.fileReadNoSuchFile) }
+    return DashboardFileStamp(modifiedAt: modifiedAt, size: size, inode: nil)
   }
 
   /// Tolerant read-only contexts. Swap whole dictionaries so the panel never
@@ -667,14 +736,18 @@ final class QueueViewModel {
       let selectionChanged = reloaded.selectedProjectID != config.selectedProjectID
         || reloaded.dashboardPath != config.dashboardPath
       if selectionChanged {
-        let snapshot = try await dashboardRepository.loadSnapshot(
+        let snapshot = showsAllProjects ? nil : try await dashboardRepository.loadSnapshot(
           from: URL(fileURLWithPath: reloaded.dashboardPath))
         config = reloaded
         closeAgentUpdate()
         closePlan()
         setQueueChatInspectorPresented(false)
         setDailyReportPresented(false)
-        dashboard = snapshot.document
+        if let snapshot {
+          dashboard = snapshot.document
+        } else if let merged = try? await loadAllProjectsDashboard() {
+          dashboard = merged
+        }
         savedQueueOrder = nil
         sourceModificationDate = nil
         lastDashboardStamp = nil
@@ -690,7 +763,11 @@ final class QueueViewModel {
         documentConversations.removeAll()
         lastContextRefresh = nil
         lastDurableDashboard = nil
-        await captureDurableDashboard(snapshot.document)
+        if let snapshot {
+          await captureDurableDashboard(snapshot.document)
+        } else {
+          await captureDurableDashboard(dashboard)
+        }
       } else {
         config = reloaded
       }
@@ -739,10 +816,37 @@ final class QueueViewModel {
   }
 
   @discardableResult
+  /// Switches the queue to the merged all-projects scope (the default view).
+  func selectAllProjects() async {
+    guard !showsAllProjects else { return }
+    localState.showsAllProjects = true
+    persistLocalState()
+    closeAgentUpdate()
+    closePlan()
+    setQueueChatInspectorPresented(false)
+    setDailyReportPresented(false)
+    savedQueueOrder = nil
+    sourceModificationDate = nil
+    lastDashboardStamp = nil
+    lastDashboardRead = nil
+    lastSync = nil
+    expandedTicketIDs.removeAll()
+    if let merged = try? await loadAllProjectsDashboard() {
+      dashboard = merged
+      await captureDurableDashboard(merged)
+    }
+    taskContexts = await availableTaskContexts()
+    if refreshInFlight {
+      projectRefreshPending = true
+    } else {
+      await refresh(forceRecurringPRProgress: true, userInitiated: true)
+    }
+  }
+
   func selectProject(id: String) async -> Bool {
-    guard config.selectedProjectID != id,
-      let project = config.projects.first(where: { $0.id == id })
-    else { return config.selectedProjectID == id }
+    guard let project = config.projects.first(where: { $0.id == id }) else { return false }
+    // Re-picking the persisted project still leaves the all-projects scope.
+    guard showsAllProjects || config.selectedProjectID != id else { return true }
 
     configurationSaveTask?.cancel()
     await configurationSaveTask?.value
@@ -755,6 +859,8 @@ final class QueueViewModel {
       guard updated.selectProject(id: id) else { return false }
       try await configurationRepository.save(updated)
       config = updated
+      localState.showsAllProjects = false
+      persistLocalState()
       programLog.record("Selected project \(project.name).", category: "Projects")
 
       closeAgentUpdate()
@@ -838,7 +944,9 @@ final class QueueViewModel {
       let updated = try await dashboardRepository.createTicket(
         ticket, in: url, expectedRevision: snapshot.revision,
         checking: otherDashboards)
-      if config.selectedProjectID == project.id {
+      if showsAllProjects {
+        await reloadMergedDashboard()
+      } else if config.selectedProjectID == project.id {
         dashboard = updated.document
         await captureDurableDashboard(updated.document)
       }
@@ -855,7 +963,7 @@ final class QueueViewModel {
   @discardableResult
   func renameTask(_ ticket: DashboardTicket, to title: String) async -> Bool {
     let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !title.isEmpty, let project = selectedProject else {
+    guard !title.isEmpty, let project = project(for: ticket) ?? selectedProject else {
       actionMessages[ticket.id] = "Give the task a readable title."
       return false
     }
@@ -866,8 +974,13 @@ final class QueueViewModel {
       let updated = try await dashboardRepository.renameTicket(
         id: ticket.id, to: title, in: url, expectedRevision: snapshot.revision)
       let renamed = updated.document.tickets.first(where: { $0.id == ticket.id })
-      if config.selectedProjectID == projectID {
-        dashboard = updated.document
+      let isVisibleScope = showsAllProjects || config.selectedProjectID == projectID
+      if isVisibleScope {
+        if showsAllProjects {
+          await reloadMergedDashboard()
+        } else {
+          dashboard = updated.document
+        }
         if var liveContext = taskContexts[ticket.id] {
           liveContext.title = title
           taskContexts[ticket.id] = liveContext
@@ -887,7 +1000,7 @@ final class QueueViewModel {
         if contextExists {
           do {
             let repaired = try await taskContextStore.ensureContext(ticket: renamed)
-            if config.selectedProjectID == projectID {
+            if isVisibleScope {
               taskContexts[ticket.id] = repaired
               await captureDurableContexts(Array(taskContexts.values))
             }
@@ -896,8 +1009,10 @@ final class QueueViewModel {
           }
         }
       }
-      if config.selectedProjectID == projectID {
-        await captureDurableDashboard(updated.document)
+      if isVisibleScope {
+        if !showsAllProjects {
+          await captureDurableDashboard(updated.document)
+        }
         actionMessages[ticket.id] = contextRepairError.map {
           "Task title updated. Context repair will retry: \($0)"
         } ?? "Task title updated."
@@ -952,18 +1067,32 @@ final class QueueViewModel {
     }
     do {
       let projectID = config.selectedProjectID
-      let dashboardURL = URL(fileURLWithPath: config.dashboardPath)
+      let showingAll = showsAllProjects
       let now = Date()
-      let stamp = try await Task.detached(priority: .utility) {
-        try DashboardFileStamp.read(at: dashboardURL)
-      }.value
+      let stamp: DashboardFileStamp
+      if showingAll {
+        stamp = try await allProjectsStamp()
+      } else {
+        let dashboardURL = URL(fileURLWithPath: config.dashboardPath)
+        stamp = try await Task.detached(priority: .utility) {
+          try DashboardFileStamp.read(at: dashboardURL)
+        }.value
+      }
       let needsDashboardRead = userInitiated || lastDashboardStamp != stamp
         || lastDashboardRead.map { now.timeIntervalSince($0) >= 60 } ?? true
       if needsDashboardRead {
-        let updatedDashboard = try await dashboardRepository.load(from: dashboardURL)
-        guard projectID == config.selectedProjectID else { return }
-        if dashboard != updatedDashboard { dashboard = updatedDashboard }
-        if lastDurableDashboard != updatedDashboard { await captureDurableDashboard(updatedDashboard) }
+        if showingAll {
+          let merged = try await loadAllProjectsDashboard()
+          guard showsAllProjects else { return }
+          if dashboard != merged { dashboard = merged }
+          if lastDurableDashboard != merged { await captureDurableDashboard(merged) }
+        } else {
+          let dashboardURL = URL(fileURLWithPath: config.dashboardPath)
+          let updatedDashboard = try await dashboardRepository.load(from: dashboardURL)
+          guard projectID == config.selectedProjectID else { return }
+          if dashboard != updatedDashboard { dashboard = updatedDashboard }
+          if lastDurableDashboard != updatedDashboard { await captureDurableDashboard(updatedDashboard) }
+        }
         lastDashboardStamp = stamp
         lastDashboardRead = now
       }
@@ -2881,7 +3010,7 @@ final class QueueViewModel {
     let requestURL = reviewArtifacts.requestURL(for: id)
     let request = CompletionRequest(id: id, ticketID: ticket.id, requestFilePath: requestURL.path,
       contextPath: taskContexts[ticket.id]?.contextDirectory.path,
-      dashboardPath: config.dashboardPath, workspacePath: defaultRepository(for: ticket),
+      dashboardPath: dashboardPath(for: ticket), workspacePath: defaultRepository(for: ticket),
       taskTitle: ticket.title, doneWhen: ticket.doneWhen)
     localState.completionRequests.append(request)
     actionMessages[ticket.id] = "Completion review queued. The dashboard is unchanged."
@@ -2902,7 +3031,7 @@ final class QueueViewModel {
     let request = CompletionRequest(id: id, ticketID: ticket.id,
       requestFilePath: reviewArtifacts.requestURL(for: id).path, subtaskID: subtask.id,
       contextPath: taskContexts[ticket.id]?.contextDirectory.path,
-      dashboardPath: config.dashboardPath,
+      dashboardPath: dashboardPath(for: ticket),
       workspacePath: subtask.workspace?.path ?? defaultRepository(for: ticket),
       taskTitle: ticket.title, doneWhen: ticket.doneWhen)
     localState.completionRequests.append(request)
@@ -2934,10 +3063,11 @@ final class QueueViewModel {
   func skipReviewAndComplete(_ ticket: DashboardTicket) {
     guard ticket.isOpen else { return }
     actionMessages[ticket.id] = "Marking complete by user override…"
+    let ticketDashboardPath = dashboardPath(for: ticket)
     Task {
       do {
         try await validateCanonicalCompletion(
-          ticketID: ticket.id, dashboardPath: config.dashboardPath)
+          ticketID: ticket.id, dashboardPath: ticketDashboardPath)
         if let context = taskContexts[ticket.id] {
           let openAssignments = context.focusSubtasks.filter {
             $0.tracksCompletion && $0.status != .completed
@@ -2949,7 +3079,7 @@ final class QueueViewModel {
         }
         let resolved = try await resolveCanonicalTicket(
           ticketID: ticket.id,
-          dashboardPath: config.dashboardPath,
+          dashboardPath: ticketDashboardPath,
           reason: "Marked complete by explicit user override without completion review.",
           evidence: [],
           completedBy: "user-override")
@@ -4235,7 +4365,11 @@ final class QueueViewModel {
     let updated = try await dashboardRepository.resolveTicket(
       id: ticketID, reason: reason, evidence: evidence, completedBy: completedBy,
       in: url, expectedRevision: snapshot.revision)
-    if URL(fileURLWithPath: config.dashboardPath).standardizedFileURL == url.standardizedFileURL {
+    if showsAllProjects {
+      await reloadMergedDashboard()
+      lastDashboardStamp = nil
+      lastDashboardRead = nil
+    } else if URL(fileURLWithPath: config.dashboardPath).standardizedFileURL == url.standardizedFileURL {
       dashboard = updated.document
       await captureDurableDashboard(updated.document)
       lastDashboardStamp = nil

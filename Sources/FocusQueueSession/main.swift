@@ -124,13 +124,31 @@ enum SessionRegistrationError: Error, LocalizedError {
     private static func queueCommand(arguments: [String]) async throws {
         let root = supportDirectory(environment: ProcessInfo.processInfo.environment)
         let config = try loadConfiguration(from: root)
-        let dashboard = try await JSONDashboardRepository().load(from: URL(fileURLWithPath: config.dashboardPath))
-        let store = QueueOrderStore(root: root, projectID: config.selectedProjectID)
         let state = try await JSONLocalStateStore(url: root.appendingPathComponent("state.json")).load()
+        let showsAllProjects = state.showsAllProjects ?? true
+        let repository = JSONDashboardRepository()
+        let dashboard: DashboardDocument
+        if showsAllProjects {
+            var tickets: [DashboardTicket] = []
+            var seen = Set<String>()
+            for url in ProjectCatalog.mergedDashboardURLs(in: config.projects) {
+                guard let document = try? await repository.load(from: url) else { continue }
+                for ticket in document.tickets where seen.insert(ticket.id).inserted {
+                    tickets.append(ticket)
+                }
+            }
+            dashboard = DashboardDocument(tickets: tickets)
+        } else {
+            dashboard = try await repository.load(from: URL(fileURLWithPath: config.dashboardPath))
+        }
+        let store = QueueOrderStore(
+            root: root,
+            projectID: showsAllProjects ? ProjectCatalog.allProjectsScopeID : config.selectedProjectID)
         let fallback = DashboardOrdering.openTickets(in: dashboard.tickets,
             deferredTicketIDs: state.deferredTicketIDs).map(\.id)
         let requestedScope = ProcessInfo.processInfo.environment["FOCUS_QUEUE_PROJECT_ID"].flatMap { $0.isEmpty ? nil : $0 }
-        guard requestedScope == nil || requestedScope == config.selectedProjectID else {
+        guard requestedScope == nil || requestedScope == config.selectedProjectID
+            || (showsAllProjects && config.projects.contains { $0.id == requestedScope }) else {
             throw TaskContextError.commandFailed(
                 "The requested project is not the active dashboard. Select it before changing its queue.")
         }

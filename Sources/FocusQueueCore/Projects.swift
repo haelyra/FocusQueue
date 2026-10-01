@@ -133,6 +133,20 @@ public enum ProjectCatalog {
         if selection == unassignedID { return project(for: ticket, in: projects) == nil }
         return project(for: ticket, in: projects)?.id == selection
     }
+
+    /// Queue-order scope shared by the app and its agent helper while the
+    /// all-projects view is active.
+    public static let allProjectsScopeID = "all-projects"
+
+    /// Distinct dashboard files for every unarchived project, Other included.
+    public static func mergedDashboardURLs(in projects: [ProjectDefinition]) -> [URL] {
+        var seen = Set<String>()
+        return projects.filter { $0.archivedAt == nil }
+            .map { $0.dashboardPath.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .map { URL(fileURLWithPath: $0).standardizedFileURL }
+            .filter { seen.insert($0.path).inserted }
+    }
 }
 
 /// Worktrees share their Git common directory. Explicit remote aliases also allow another clone.

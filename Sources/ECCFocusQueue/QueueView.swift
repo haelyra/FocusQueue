@@ -445,7 +445,7 @@ struct QueueView: View {
       if focusTickets.isEmpty {
         ContentUnavailableView(
           "Queue is clear", systemImage: "checkmark.circle",
-          description: Text("No open tasks are present in \(model.selectedProject?.name ?? "the selected project").")
+          description: Text("No open tasks are present in \(model.showsAllProjects ? "any project" : model.selectedProject?.name ?? "the selected project").")
         ).frame(maxWidth: .infinity).notificationSurface(radius: 18)
       } else if agentViewEnabled {
         agentViewList(for: focusTickets)
@@ -751,11 +751,21 @@ struct QueueView: View {
     VStack(alignment: .leading, spacing: 3) {
       HStack(alignment: .firstTextBaseline) {
         Menu {
+          Button {
+            Task { await model.selectAllProjects() }
+          } label: {
+            if model.showsAllProjects {
+              Label("All", systemImage: "checkmark")
+            } else {
+              Text("All")
+            }
+          }
+          Divider()
           ForEach(model.projects) { project in
             Button {
               Task { _ = await model.selectProject(id: project.id) }
             } label: {
-              if project.id == model.selectedProject?.id {
+              if !model.showsAllProjects, project.id == model.selectedProject?.id {
                 Label(project.name, systemImage: "checkmark")
               } else {
                 Text(project.name)
@@ -764,7 +774,7 @@ struct QueueView: View {
           }
         } label: {
           HStack(spacing: 5) {
-            Text(model.selectedProject?.name ?? "Select project")
+            Text(model.showsAllProjects ? "All" : (model.selectedProject?.name ?? "Select project"))
               .font(.system(size: 19, weight: .bold, design: .rounded))
             Image(systemName: "chevron.down")
               .font(.system(size: 10, weight: .bold))
@@ -774,8 +784,8 @@ struct QueueView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .accessibilityLabel("Working project: \(model.selectedProject?.name ?? "none")")
-        .help("Choose the working project")
+        .accessibilityLabel("Working project: \(model.projectScopeName)")
+        .help("Choose the working project; All shows every project including Other")
         Spacer()
         Text(headerCountLabel).font(
           .system(size: 11, weight: .semibold).monospacedDigit()
@@ -1172,7 +1182,7 @@ struct QueueAgentChatView: View {
     GeometryReader { geometry in
       VStack(spacing: 10) {
         if ticketID == nil {
-          Text("All projects · Active: \(model.projectScopeName)")
+          Text(model.showsAllProjects ? "All projects" : "All projects · Active: \(model.projectScopeName)")
             .font(.caption).foregroundStyle(.secondary)
         }
         ScrollViewReader { proxy in

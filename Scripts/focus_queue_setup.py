@@ -124,6 +124,8 @@ def planned_paths(home: Path, selected: set[str]) -> list[dict[str, Any]]:
         (home / ".local/bin/focus-queue-session", "session_helper", ("terminal_sessions", "agent_launch")),
         (support / "automation", "automation_runtime", ("agent_chat", "daily_reports", "mail_connector", "discord_connector")),
         (home / ".local/bin/focus-queue-codex", "agent_helper", ("agent_chat", "daily_reports")),
+        (home / ".local/bin/focus-queue-claude", "agent_helper", ("agent_chat", "daily_reports")),
+        (home / ".local/bin/focus-queue-kimi", "agent_helper", ("agent_chat", "daily_reports")),
         (support / "ingestion.json", "source_configuration", ("daily_reports", "mail_connector", "discord_connector", "telegram_connector", "github_connector")),
         (support / "ingestion", "source_cache", "daily_reports"),
         (home / ".local/bin/focus-queue-report", "report_helper", "daily_reports"),

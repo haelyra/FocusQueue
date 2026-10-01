@@ -84,7 +84,10 @@ public enum DailyReportAutomation {
         scriptPath: String,
         configurationPath: String,
         runtimePath: String,
-        request: DailyReportRunRequest
+        request: DailyReportRunRequest,
+        agentProvider: AgentProvider? = nil,
+        agentModel: String? = nil,
+        agentEffort: String? = nil
     ) -> [String] {
         var arguments = [
             scriptPath,
@@ -102,6 +105,15 @@ public enum DailyReportAutomation {
         }
         if request.recheck {
             arguments.append("--recheck")
+        }
+        if let agentProvider {
+            arguments.append(contentsOf: ["--agent-provider", agentProvider.rawValue])
+        }
+        if let agentModel, !agentModel.isEmpty {
+            arguments.append(contentsOf: ["--agent-model", agentModel])
+        }
+        if let agentEffort, !agentEffort.isEmpty {
+            arguments.append(contentsOf: ["--agent-effort", agentEffort])
         }
         return arguments
     }
@@ -2185,46 +2197,38 @@ public protocol QueueAgentChatting: Sendable {
         workspace: String,
         visibleOrder: [String],
         deferredTicketIDs: [String],
-        configuration: VerifierConfiguration
+        configuration: VerifierConfiguration,
+        model: String?,
+        effort: String?
     ) async throws -> QueueAgentReply
+    func reset(configuration: VerifierConfiguration) async throws
 }
 
 public enum QueueAgentError: Error, LocalizedError {
-    case disabled
-    case failed(String)
+    case disabled(AgentProvider)
+    case failed(AgentProvider, String)
 
     public var errorDescription: String? {
         switch self {
-        case .disabled:
-            "Codex Queue chat is disabled in config.json."
-        case .failed(let detail):
-            "Codex Queue chat failed: \(detail)"
+        case .disabled(let provider):
+            "\(provider.displayName) Queue chat is disabled in config.json."
+        case .failed(let provider, let detail):
+            "\(provider.displayName) Queue chat failed: \(detail)"
         }
     }
 }
 
-public actor CodexQueueAgent: QueueAgentChatting {
-    public static let sessionName = "ecc-focus-queue-codex-v1"
-    /// Document requests use separate harness lock/state directories, so a
-    /// hidden central conversation cannot serialize or time out a document chat.
-    public static func documentRuntimeArguments(_ configuration: VerifierConfiguration) -> [String] {
-        guard configuration.sessionName.range(of: #"^ecc-focus-queue-task-[A-Za-z0-9_-]+-document-[a-f0-9]{16}$"#, options: .regularExpression) != nil,
-              let context = configuration.contextDirectory else { return [] }
-        let directory = URL(fileURLWithPath: context).appendingPathComponent("document-agents")
-            .appendingPathComponent(String(configuration.sessionName.suffix(16)))
-        return ["--runtime", directory.path]
-    }
-    private static let errorLogURL = URL(
-        fileURLWithPath: "/Users/hira/Library/Application Support/ECC Focus Queue/queue-chat.last-error.log"
-    )
-    private static let mailEvidenceURL = URL(
+/// Proof-receipt rules are identical for every provider's queue agent, so
+/// verification lives in one shared verifier rather than with any harness.
+struct QueueAgentEvidenceVerifier {
+    static let mailEvidenceURL = URL(
         fileURLWithPath: "/Users/hira/Library/Application Support/ECC Focus Queue/mail-proofs/mail-response.json"
     )
-    private static let discordEvidenceURL = URL(
+    static let discordEvidenceURL = URL(
         fileURLWithPath: "/Users/hira/Library/Application Support/ECC Focus Queue/connector-proofs/discord-response.json"
     )
 
-    private struct MailEvidenceReceipt: Decodable {
+    struct MailEvidenceReceipt: Decodable {
         struct Message: Decodable {
             let id: String
             let messageId: String
@@ -2243,7 +2247,7 @@ public actor CodexQueueAgent: QueueAgentChatting {
         let message: Message?
     }
 
-    private struct DiscordEvidenceReceipt: Decodable {
+    struct DiscordEvidenceReceipt: Decodable {
         struct Guild: Decodable {
             let id: String
             let name: String?
@@ -2273,145 +2277,10 @@ public actor CodexQueueAgent: QueueAgentChatting {
         let inaccessibleChannels: [Channel]?
     }
 
-    private let runner: any ProcessRunning
-    private let files: any FileAccessing
+    let files: any FileAccessing
+    let provider: AgentProvider
 
-    public init(
-        runner: any ProcessRunning = FoundationProcessRunner(),
-        files: any FileAccessing = SystemFileAccessor()
-    ) {
-        self.runner = runner
-        self.files = files
-    }
-
-    public func send(
-        message: String,
-        dashboardPath: String,
-        workspace: String,
-        visibleOrder: [String],
-        deferredTicketIDs: [String],
-        configuration: VerifierConfiguration
-    ) async throws -> QueueAgentReply {
-        guard configuration.enabled else { throw QueueAgentError.disabled }
-
-        let promptURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("focus-queue-chat-\(UUID().uuidString).txt")
-        defer { try? FileManager.default.removeItem(at: promptURL) }
-        let prompt = Self.prompt(
-            message: message,
-            dashboardPath: dashboardPath,
-            workspace: workspace,
-            visibleOrder: visibleOrder,
-            deferredTicketIDs: deferredTicketIDs
-        )
-        try files.write(Data(prompt.utf8), to: promptURL)
-
-        let requestStartedAt = Date()
-        let runTimeoutSeconds = Self.runTimeoutSeconds(
-            for: message,
-            configuredTimeoutSeconds: configuration.timeoutSeconds
-        )
-        let result = try await runner.run(ProcessSpecification(
-            executable: configuration.executable,
-            arguments: Self.documentRuntimeArguments(configuration) + [
-                "chat",
-                "--session", configuration.sessionName.hasPrefix("ecc-focus-queue-task-")
-                    ? configuration.sessionName : Self.sessionName,
-                "--workspace", workspace,
-                "--prompt-file", promptURL.path,
-                "--timeout", String(runTimeoutSeconds),
-            ] + (configuration.contextDirectory.map { ["--context-dir", $0] } ?? []),
-            workingDirectory: workspace,
-            environment: CodexCompletionVerifier.agentEnvironment(configuration),
-            timeoutSeconds: runTimeoutSeconds + 15
-        ))
-
-        let output = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-        let log = [result.standardOutput, result.standardError]
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n\n")
-
-        guard result.succeeded, !output.isEmpty else {
-            preservePrivateFailureLog(log)
-            throw QueueAgentError.failed(Self.safeFailureDetail(
-                from: result,
-                message: message,
-                runTimeoutSeconds: runTimeoutSeconds
-            ))
-        }
-        var verifiedOutput = output
-        if Self.requiresMailEvidence(message) {
-            if Self.isBlockedMailResponse(verifiedOutput) {
-                preservePrivateFailureLog(log)
-                throw QueueAgentError.failed(Self.safeFailureDetail(
-                    from: result,
-                    message: message,
-                    runTimeoutSeconds: runTimeoutSeconds
-                ))
-            }
-            verifiedOutput = try verifyMailEvidence(
-                in: verifiedOutput,
-                for: message,
-                requestStartedAt: requestStartedAt
-            )
-        }
-        if Self.requiresDiscordEvidence(message) {
-            verifiedOutput = try verifyDiscordEvidence(
-                in: verifiedOutput,
-                for: message,
-                requestStartedAt: requestStartedAt
-            )
-        }
-        return QueueAgentReply(message: verifiedOutput, log: log)
-    }
-
-    static func safeFailureDetail(
-        from result: ProcessResult,
-        message: String,
-        runTimeoutSeconds: Int
-    ) -> String {
-        if result.timedOut {
-            if requiresMailEvidence(message) {
-                return "Mail check timed out after \(runTimeoutSeconds) seconds. Confirm the Mail helper is available, then retry."
-            }
-            return "the request timed out after \(runTimeoutSeconds) seconds; retry the request"
-        }
-        return WorkerFailureDiagnostics.detail(from: result)
-    }
-
-    private func preservePrivateFailureLog(_ log: String) {
-        guard !log.isEmpty else { return }
-        try? files.write(Data(log.utf8), to: Self.errorLogURL)
-    }
-
-    static func runTimeoutSeconds(
-        for message: String,
-        configuredTimeoutSeconds: Int
-    ) -> Int {
-        let normalized = message.lowercased()
-        let bulkInboxPhrases = [
-            "entire inbox", "whole inbox", "all my inbox", "all of my inbox",
-            "catch up", "caught up", "scan my inbox", "scan through my inbox",
-            "inbox backlog", "add relevant tasks", "create tasks from",
-        ]
-        guard requiresMailEvidence(message) else {
-            return configuredTimeoutSeconds
-        }
-        if bulkInboxPhrases.contains(where: normalized.contains) {
-            return max(configuredTimeoutSeconds, 600)
-        }
-        return max(configuredTimeoutSeconds, 180)
-    }
-
-    static func isDailyReportRunRequest(_ message: String) -> Bool {
-        DailyReportChatCommand.parse(
-            message,
-            enabledPlatforms: DailyReportPlatform.allCases
-        ) != nil
-    }
-
-
-    private static func requiresMailEvidence(_ message: String) -> Bool {
+    static func requiresMailEvidence(_ message: String) -> Bool {
         let normalized = message.lowercased()
         return [
             "email", "e-mail", "mailbox", "inbox", "apple mail", "himalaya",
@@ -2420,7 +2289,7 @@ public actor CodexQueueAgent: QueueAgentChatting {
         ].contains { normalized.contains($0) }
     }
 
-    private static func requiredMailOperation(for message: String) -> String? {
+    static func requiredMailOperation(for message: String) -> String? {
         let normalized = message.lowercased()
         if normalized.contains("open") { return "open" }
         if ["read", "what did", "said", "wrote", "reply", "response", "content", "quote"]
@@ -2434,12 +2303,12 @@ public actor CodexQueueAgent: QueueAgentChatting {
         return "search"
     }
 
-    private static func requiresDiscordEvidence(_ message: String) -> Bool {
+    static func requiresDiscordEvidence(_ message: String) -> Bool {
         let normalized = message.lowercased()
         return normalized.contains("discord") || normalized.contains("discord.com/channels/")
     }
 
-    private static func requiredDiscordOperation(for message: String) -> String? {
+    static func requiredDiscordOperation(for message: String) -> String? {
         let normalized = message.lowercased()
         if ["read", "what did", "said", "wrote", "content", "quote"]
             .contains(where: { normalized.contains($0) }) {
@@ -2452,7 +2321,16 @@ public actor CodexQueueAgent: QueueAgentChatting {
         return nil
     }
 
-    private func verifyMailEvidence(
+    static func isBlockedMailResponse(_ output: String) -> Bool {
+        let normalized = output.lowercased()
+        return normalized.contains("blocked")
+            && [
+                "focus-mail", "mail reader", "mail connector", "verified connector",
+                "operation not permitted", "timed out",
+            ].contains(where: normalized.contains)
+    }
+
+    func verifyMailEvidence(
         in output: String,
         for message: String,
         requestStartedAt: Date
@@ -2464,7 +2342,8 @@ public actor CodexQueueAgent: QueueAgentChatting {
             $0.trimmingCharacters(in: .whitespaces).hasPrefix(proofPrefix)
         }) else {
             throw QueueAgentError.failed(
-                "mail answer withheld because Codex did not provide current-turn verified mail evidence"
+                provider,
+                "mail answer withheld because \(provider.displayName) did not provide current-turn verified mail evidence"
             )
         }
         let nonce = proofLine
@@ -2485,23 +2364,27 @@ public actor CodexQueueAgent: QueueAgentChatting {
               !receipt.account.isEmpty
         else {
             throw QueueAgentError.failed(
+                provider,
                 "mail answer withheld because its proof receipt was missing, stale, or invalid"
             )
         }
         if let requiredOperation = Self.requiredMailOperation(for: message),
            receipt.operation != requiredOperation {
             throw QueueAgentError.failed(
-                "mail answer withheld because Codex performed \(receipt.operation), not the required \(requiredOperation) operation"
+                provider,
+                "mail answer withheld because \(provider.displayName) performed \(receipt.operation), not the required \(requiredOperation) operation"
             )
         }
         if receipt.operation == "open", receipt.opened != true {
             throw QueueAgentError.failed(
+                provider,
                 "mail answer withheld because Apple Mail did not confirm the open request"
             )
         }
         if ["read", "open"].contains(receipt.operation),
            (receipt.message?.id.isEmpty != false || receipt.message?.messageId.isEmpty != false) {
             throw QueueAgentError.failed(
+                provider,
                 "mail answer withheld because the read receipt lacked stable message identifiers"
             )
         }
@@ -2519,16 +2402,7 @@ public actor CodexQueueAgent: QueueAgentChatting {
         return "\(answer)\n\n\(verification)"
     }
 
-    private static func isBlockedMailResponse(_ output: String) -> Bool {
-        let normalized = output.lowercased()
-        return normalized.contains("blocked")
-            && [
-                "focus-mail", "mail reader", "mail connector", "verified connector",
-                "operation not permitted", "timed out",
-            ].contains(where: normalized.contains)
-    }
-
-    private func verifyDiscordEvidence(
+    func verifyDiscordEvidence(
         in output: String,
         for message: String,
         requestStartedAt: Date
@@ -2540,7 +2414,8 @@ public actor CodexQueueAgent: QueueAgentChatting {
             $0.trimmingCharacters(in: .whitespaces).hasPrefix(proofPrefix)
         }) else {
             throw QueueAgentError.failed(
-                "Discord answer withheld because Codex did not provide current-turn verified Discord evidence"
+                provider,
+                "Discord answer withheld because \(provider.displayName) did not provide current-turn verified Discord evidence"
             )
         }
         let nonce = proofLine
@@ -2561,18 +2436,21 @@ public actor CodexQueueAgent: QueueAgentChatting {
               !receipt.guild.id.isEmpty
         else {
             throw QueueAgentError.failed(
+                provider,
                 "Discord answer withheld because its proof receipt was missing, stale, or invalid"
             )
         }
         if let requiredOperation = Self.requiredDiscordOperation(for: message),
            receipt.operation != requiredOperation {
             throw QueueAgentError.failed(
-                "Discord answer withheld because Codex performed \(receipt.operation), not the required \(requiredOperation) operation"
+                provider,
+                "Discord answer withheld because \(provider.displayName) performed \(receipt.operation), not the required \(requiredOperation) operation"
             )
         }
         if receipt.operation == "read",
            (receipt.message?.id.isEmpty != false || receipt.message?.channelId.isEmpty != false) {
             throw QueueAgentError.failed(
+                provider,
                 "Discord answer withheld because the read receipt lacked stable message identifiers"
             )
         }
@@ -2600,8 +2478,13 @@ public actor CodexQueueAgent: QueueAgentChatting {
         }
         return "\(answer)\n\nVerified Discord evidence: \(receipt.guild.name ?? receipt.guild.id) · \(detail) · \(coverage) · retrieved \(receipt.retrievedAt)"
     }
+}
 
-    public static func prompt(
+/// The queue-chat system prompt is provider-neutral except for its identity
+/// line, so every provider enforces the same queue, project, and evidence rules.
+public enum QueueAgentPrompt {
+    public static func build(
+        provider: AgentProvider,
         message: String,
         dashboardPath: String,
         workspace: String,
@@ -2613,7 +2496,7 @@ public actor CodexQueueAgent: QueueAgentChatting {
             ? "none"
             : deferredTicketIDs.joined(separator: ", ")
         return """
-        You are the Codex Queue agent for Focus Queue.
+        You are the \(provider.displayName) Queue agent for Focus Queue.
 
         The user controls the local queue order. You are authorized to reorder tasks when the user requests it, including choosing an order when they ask you to prioritize the queue. Use `focus-queue-session queue list` to read the current order, then `focus-queue-session queue move <TASK-ID> top|bottom` or `focus-queue-session queue move <TASK-ID> before|after <TARGET-ID>`. Use `focus-queue-session queue reset` only when asked to restore priority sorting. Run queue list afterward to verify. These commands save positions on this Mac and the app refreshes automatically. Moving a task preserves the relative order of all other tasks. Saved positions take precedence over priority, timestamps, and automatic recurring-task placement. New tasks append in priority order. Do not edit state.json or the canonical dashboard to reorder tasks.
 
@@ -2650,5 +2533,371 @@ public actor CodexQueueAgent: QueueAgentChatting {
         \(message)
         </queue-user-message>
         """
+    }
+}
+
+/// One implementation drives every provider's chat harness; the providers differ
+/// only in identity, executable, and default session name.
+public actor HarnessQueueAgent: QueueAgentChatting {
+    public let provider: AgentProvider
+
+    public static func sessionName(for provider: AgentProvider) -> String {
+        "ecc-focus-queue-\(provider.rawValue)-v1"
+    }
+
+    /// Document requests use separate harness lock/state directories, so a
+    /// hidden central conversation cannot serialize or time out a document chat.
+    public static func documentRuntimeArguments(_ configuration: VerifierConfiguration) -> [String] {
+        guard configuration.sessionName.range(of: #"^ecc-focus-queue-task-[A-Za-z0-9_-]+-document-[a-f0-9]{16}$"#, options: .regularExpression) != nil,
+              let context = configuration.contextDirectory else { return [] }
+        let directory = URL(fileURLWithPath: context).appendingPathComponent("document-agents")
+            .appendingPathComponent(String(configuration.sessionName.suffix(16)))
+        return ["--runtime", directory.path]
+    }
+
+    private static let errorLogURL = URL(
+        fileURLWithPath: "/Users/hira/Library/Application Support/ECC Focus Queue/queue-chat.last-error.log"
+    )
+
+    private let runner: any ProcessRunning
+    private let files: any FileAccessing
+
+    public init(
+        provider: AgentProvider,
+        runner: any ProcessRunning = FoundationProcessRunner(),
+        files: any FileAccessing = SystemFileAccessor()
+    ) {
+        self.provider = provider
+        self.runner = runner
+        self.files = files
+    }
+
+    public func send(
+        message: String,
+        dashboardPath: String,
+        workspace: String,
+        visibleOrder: [String],
+        deferredTicketIDs: [String],
+        configuration: VerifierConfiguration,
+        model: String? = nil,
+        effort: String? = nil
+    ) async throws -> QueueAgentReply {
+        guard configuration.enabled else { throw QueueAgentError.disabled(provider) }
+
+        let promptURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("focus-queue-chat-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: promptURL) }
+        let prompt = QueueAgentPrompt.build(
+            provider: provider,
+            message: message,
+            dashboardPath: dashboardPath,
+            workspace: workspace,
+            visibleOrder: visibleOrder,
+            deferredTicketIDs: deferredTicketIDs
+        )
+        try files.write(Data(prompt.utf8), to: promptURL)
+
+        let requestStartedAt = Date()
+        let runTimeoutSeconds = Self.runTimeoutSeconds(
+            for: message,
+            configuredTimeoutSeconds: configuration.timeoutSeconds
+        )
+        let requestedModel = model?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requestedEffort = effort?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var arguments = Self.documentRuntimeArguments(configuration) + [
+            "chat",
+            "--session", Self.resolvedSessionName(for: configuration, provider: provider),
+            "--workspace", workspace,
+            "--prompt-file", promptURL.path,
+            "--timeout", String(runTimeoutSeconds),
+        ]
+        if let contextDirectory = configuration.contextDirectory {
+            arguments.append(contentsOf: ["--context-dir", contextDirectory])
+        }
+        if let requestedModel, !requestedModel.isEmpty {
+            arguments.append(contentsOf: ["--model", requestedModel])
+        }
+        if let requestedEffort, !requestedEffort.isEmpty {
+            arguments.append(contentsOf: ["--effort", requestedEffort])
+        }
+        let result = try await runner.run(ProcessSpecification(
+            executable: configuration.executable,
+            arguments: arguments,
+            workingDirectory: workspace,
+            environment: CodexCompletionVerifier.agentEnvironment(configuration),
+            timeoutSeconds: runTimeoutSeconds + 15
+        ))
+
+        let output = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let log = [result.standardOutput, result.standardError]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+
+        guard result.succeeded, !output.isEmpty else {
+            preservePrivateFailureLog(log)
+            throw QueueAgentError.failed(provider, Self.safeFailureDetail(
+                from: result,
+                message: message,
+                runTimeoutSeconds: runTimeoutSeconds
+            ))
+        }
+        let evidence = QueueAgentEvidenceVerifier(files: files, provider: provider)
+        var verifiedOutput = output
+        if QueueAgentEvidenceVerifier.requiresMailEvidence(message) {
+            if QueueAgentEvidenceVerifier.isBlockedMailResponse(verifiedOutput) {
+                preservePrivateFailureLog(log)
+                throw QueueAgentError.failed(provider, Self.safeFailureDetail(
+                    from: result,
+                    message: message,
+                    runTimeoutSeconds: runTimeoutSeconds
+                ))
+            }
+            verifiedOutput = try evidence.verifyMailEvidence(
+                in: verifiedOutput,
+                for: message,
+                requestStartedAt: requestStartedAt
+            )
+        }
+        if QueueAgentEvidenceVerifier.requiresDiscordEvidence(message) {
+            verifiedOutput = try evidence.verifyDiscordEvidence(
+                in: verifiedOutput,
+                for: message,
+                requestStartedAt: requestStartedAt
+            )
+        }
+        return QueueAgentReply(message: verifiedOutput, log: log)
+    }
+
+    public func reset(configuration: VerifierConfiguration) async throws {
+        guard configuration.enabled else { throw QueueAgentError.disabled(provider) }
+        let result = try await runner.run(ProcessSpecification(
+            executable: configuration.executable,
+            arguments: Self.documentRuntimeArguments(configuration) + [
+                "reset",
+                "--session", Self.resolvedSessionName(for: configuration, provider: provider),
+            ],
+            environment: CodexCompletionVerifier.agentEnvironment(configuration),
+            timeoutSeconds: 30
+        ))
+        guard result.succeeded else {
+            throw QueueAgentError.failed(provider, WorkerFailureDiagnostics.detail(from: result))
+        }
+    }
+
+    private static func resolvedSessionName(
+        for configuration: VerifierConfiguration,
+        provider: AgentProvider
+    ) -> String {
+        configuration.sessionName.hasPrefix("ecc-focus-queue-task-")
+            ? configuration.sessionName : sessionName(for: provider)
+    }
+
+    static func safeFailureDetail(
+        from result: ProcessResult,
+        message: String,
+        runTimeoutSeconds: Int
+    ) -> String {
+        if result.timedOut {
+            if QueueAgentEvidenceVerifier.requiresMailEvidence(message) {
+                return "Mail check timed out after \(runTimeoutSeconds) seconds. Confirm the Mail helper is available, then retry."
+            }
+            return "the request timed out after \(runTimeoutSeconds) seconds; retry the request"
+        }
+        return WorkerFailureDiagnostics.detail(from: result)
+    }
+
+    private func preservePrivateFailureLog(_ log: String) {
+        guard !log.isEmpty else { return }
+        try? files.write(Data(log.utf8), to: Self.errorLogURL)
+    }
+
+    static func runTimeoutSeconds(
+        for message: String,
+        configuredTimeoutSeconds: Int
+    ) -> Int {
+        let normalized = message.lowercased()
+        let bulkInboxPhrases = [
+            "entire inbox", "whole inbox", "all my inbox", "all of my inbox",
+            "catch up", "caught up", "scan my inbox", "scan through my inbox",
+            "inbox backlog", "add relevant tasks", "create tasks from",
+        ]
+        guard QueueAgentEvidenceVerifier.requiresMailEvidence(message) else {
+            return configuredTimeoutSeconds
+        }
+        if bulkInboxPhrases.contains(where: normalized.contains) {
+            return max(configuredTimeoutSeconds, 600)
+        }
+        return max(configuredTimeoutSeconds, 180)
+    }
+
+    static func isDailyReportRunRequest(_ message: String) -> Bool {
+        DailyReportChatCommand.parse(
+            message,
+            enabledPlatforms: DailyReportPlatform.allCases
+        ) != nil
+    }
+}
+
+public actor CodexQueueAgent: QueueAgentChatting {
+    public static let sessionName = HarnessQueueAgent.sessionName(for: .codex)
+
+    public static func documentRuntimeArguments(_ configuration: VerifierConfiguration) -> [String] {
+        HarnessQueueAgent.documentRuntimeArguments(configuration)
+    }
+
+    public static func prompt(
+        message: String,
+        dashboardPath: String,
+        workspace: String,
+        visibleOrder: [String],
+        deferredTicketIDs: [String]
+    ) -> String {
+        QueueAgentPrompt.build(
+            provider: .codex,
+            message: message,
+            dashboardPath: dashboardPath,
+            workspace: workspace,
+            visibleOrder: visibleOrder,
+            deferredTicketIDs: deferredTicketIDs
+        )
+    }
+
+    static func safeFailureDetail(
+        from result: ProcessResult,
+        message: String,
+        runTimeoutSeconds: Int
+    ) -> String {
+        HarnessQueueAgent.safeFailureDetail(
+            from: result,
+            message: message,
+            runTimeoutSeconds: runTimeoutSeconds
+        )
+    }
+
+    static func runTimeoutSeconds(
+        for message: String,
+        configuredTimeoutSeconds: Int
+    ) -> Int {
+        HarnessQueueAgent.runTimeoutSeconds(
+            for: message,
+            configuredTimeoutSeconds: configuredTimeoutSeconds
+        )
+    }
+
+    static func isDailyReportRunRequest(_ message: String) -> Bool {
+        HarnessQueueAgent.isDailyReportRunRequest(message)
+    }
+
+    private let harness: HarnessQueueAgent
+
+    public init(
+        runner: any ProcessRunning = FoundationProcessRunner(),
+        files: any FileAccessing = SystemFileAccessor()
+    ) {
+        harness = HarnessQueueAgent(provider: .codex, runner: runner, files: files)
+    }
+
+    public func send(
+        message: String,
+        dashboardPath: String,
+        workspace: String,
+        visibleOrder: [String],
+        deferredTicketIDs: [String],
+        configuration: VerifierConfiguration,
+        model: String? = nil,
+        effort: String? = nil
+    ) async throws -> QueueAgentReply {
+        try await harness.send(
+            message: message,
+            dashboardPath: dashboardPath,
+            workspace: workspace,
+            visibleOrder: visibleOrder,
+            deferredTicketIDs: deferredTicketIDs,
+            configuration: configuration,
+            model: model,
+            effort: effort
+        )
+    }
+
+    public func reset(configuration: VerifierConfiguration) async throws {
+        try await harness.reset(configuration: configuration)
+    }
+}
+
+public actor ClaudeQueueAgent: QueueAgentChatting {
+    public static let sessionName = HarnessQueueAgent.sessionName(for: .claude)
+
+    private let harness: HarnessQueueAgent
+
+    public init(
+        runner: any ProcessRunning = FoundationProcessRunner(),
+        files: any FileAccessing = SystemFileAccessor()
+    ) {
+        harness = HarnessQueueAgent(provider: .claude, runner: runner, files: files)
+    }
+
+    public func send(
+        message: String,
+        dashboardPath: String,
+        workspace: String,
+        visibleOrder: [String],
+        deferredTicketIDs: [String],
+        configuration: VerifierConfiguration,
+        model: String? = nil,
+        effort: String? = nil
+    ) async throws -> QueueAgentReply {
+        try await harness.send(
+            message: message,
+            dashboardPath: dashboardPath,
+            workspace: workspace,
+            visibleOrder: visibleOrder,
+            deferredTicketIDs: deferredTicketIDs,
+            configuration: configuration,
+            model: model,
+            effort: effort
+        )
+    }
+
+    public func reset(configuration: VerifierConfiguration) async throws {
+        try await harness.reset(configuration: configuration)
+    }
+}
+
+public actor KimiQueueAgent: QueueAgentChatting {
+    public static let sessionName = HarnessQueueAgent.sessionName(for: .kimi)
+
+    private let harness: HarnessQueueAgent
+
+    public init(
+        runner: any ProcessRunning = FoundationProcessRunner(),
+        files: any FileAccessing = SystemFileAccessor()
+    ) {
+        harness = HarnessQueueAgent(provider: .kimi, runner: runner, files: files)
+    }
+
+    public func send(
+        message: String,
+        dashboardPath: String,
+        workspace: String,
+        visibleOrder: [String],
+        deferredTicketIDs: [String],
+        configuration: VerifierConfiguration,
+        model: String? = nil,
+        effort: String? = nil
+    ) async throws -> QueueAgentReply {
+        try await harness.send(
+            message: message,
+            dashboardPath: dashboardPath,
+            workspace: workspace,
+            visibleOrder: visibleOrder,
+            deferredTicketIDs: deferredTicketIDs,
+            configuration: configuration,
+            model: model,
+            effort: effort
+        )
+    }
+
+    public func reset(configuration: VerifierConfiguration) async throws {
+        try await harness.reset(configuration: configuration)
     }
 }

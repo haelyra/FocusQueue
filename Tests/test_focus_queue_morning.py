@@ -2146,6 +2146,139 @@ except module.TerminationRequested:
 
         self.assertEqual(proposals["newTasks"][0]["summary"], "original summary")
 
+    def test_agent_provider_defaults_to_codex_and_validates_values(self):
+        self.assertEqual(MODULE.agent_provider({}), "codex")
+        self.assertEqual(MODULE.agent_provider({"agentProvider": " Claude "}), "claude")
+        with self.assertRaisesRegex(MODULE.ReconciliationError, "agentProvider"):
+            MODULE.agent_provider({"agentProvider": "gemini"})
+
+    def test_agent_executable_resolves_provider_siblings(self):
+        config = {"agentExecutable": "/x/bin/focus-queue-codex"}
+        self.assertEqual(MODULE.agent_executable(config), "/x/bin/focus-queue-codex")
+        config["agentProvider"] = "claude"
+        self.assertEqual(MODULE.agent_executable(config), "/x/bin/focus-queue-claude")
+        config["claudeAgentExecutable"] = "/opt/custom/claude-harness"
+        self.assertEqual(MODULE.agent_executable(config), "/opt/custom/claude-harness")
+        config["agentProvider"] = "kimi"
+        self.assertEqual(MODULE.agent_executable(config), "/x/bin/focus-queue-kimi")
+
+    def test_default_deep_pass_model_is_provider_aware(self):
+        self.assertIsNone(MODULE.default_deep_pass_model("claude"))
+        self.assertIsNone(MODULE.default_deep_pass_model("kimi"))
+        self.assertTrue(MODULE.default_deep_pass_model("codex"))
+        self.assertTrue(MODULE.default_deep_pass_model())
+
+    def test_classify_uses_provider_executable_and_threads_model_and_effort(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = {
+                "agentExecutable": "/x/bin/focus-queue-codex",
+                "agentProvider": "claude",
+                "agentModel": "opus",
+                "agentEffort": "high",
+                "maxNewTasksPerRun": 5,
+            }
+            completed = subprocess.CompletedProcess([], 0, '{"version": 1}', "")
+            with mock.patch.object(MODULE, "run_command", return_value=completed) as run:
+                MODULE.classify(config, {}, Path(temporary))
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[0], "/x/bin/focus-queue-claude")
+        self.assertEqual(command[command.index("--model") + 1], "opus")
+        self.assertEqual(command[command.index("--effort") + 1], "high")
+        self.assertIn("--disable-tools", command)
+
+    def test_classify_omits_model_and_effort_when_unconfigured(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = {
+                "agentExecutable": "/x/bin/focus-queue-codex",
+                "maxNewTasksPerRun": 5,
+            }
+            completed = subprocess.CompletedProcess([], 0, '{"version": 1}', "")
+            with mock.patch.object(MODULE, "run_command", return_value=completed) as run:
+                MODULE.classify(config, {}, Path(temporary))
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[0], "/x/bin/focus-queue-codex")
+        self.assertNotIn("--model", command)
+        self.assertNotIn("--effort", command)
+
+    def test_deep_pass_omits_model_for_non_codex_defaults_and_threads_effort(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = {
+                "agentExecutable": "/x/bin/focus-queue-codex",
+                "agentProvider": "kimi",
+                "agentEffort": "low",
+            }
+            completed = subprocess.CompletedProcess([], 0, '{"researchSummary": "x"}', "")
+            with mock.patch.object(MODULE, "run_command", return_value=completed) as run:
+                MODULE.run_deep_pass(config, "prompt", Path(temporary), model=None)
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[0], "/x/bin/focus-queue-kimi")
+        self.assertNotIn("--model", command)
+        self.assertEqual(command[command.index("--effort") + 1], "low")
+
+    def test_deep_pass_keeps_the_codex_pinned_default_model(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = {"agentExecutable": "/x/bin/focus-queue-codex"}
+            completed = subprocess.CompletedProcess([], 0, '{"researchSummary": "x"}', "")
+            with mock.patch.object(MODULE, "run_command", return_value=completed) as run:
+                MODULE.run_deep_pass(
+                    config, "prompt", Path(temporary),
+                    model=MODULE.default_deep_pass_model("codex"),
+                )
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[0], "/x/bin/focus-queue-codex")
+        self.assertEqual(
+            command[command.index("--model") + 1],
+            MODULE.default_deep_pass_model("codex"),
+        )
+        self.assertNotIn("--effort", command)
+
+    def test_apply_deep_passes_prefers_agent_model_and_drops_codex_default_for_claude(self):
+        proposals = {
+            "newTasks": [{
+                "customerConcern": True,
+                "title": "Fix the customer crash",
+                "summary": "s",
+                "next": "n",
+                "sourceKeys": [],
+                "sourceLinks": [],
+            }]
+        }
+        findings = {"researchSummary": "r", "evidenceLinks": [], "planSteps": []}
+        for config, expected in [
+            ({"agentExecutable": "/x/focus-queue-codex", "agentProvider": "claude",
+              "agentModel": "sonnet", "deepPassModel": "gpt-5.5"}, "sonnet"),
+            ({"agentExecutable": "/x/focus-queue-codex", "agentProvider": "kimi"}, None),
+            ({"agentExecutable": "/x/focus-queue-codex", "deepPassModel": "gpt-5.2"}, "gpt-5.2"),
+        ]:
+            with self.subTest(config=config), tempfile.TemporaryDirectory() as temporary, \
+                    mock.patch.object(MODULE, "run_deep_pass", return_value=findings) as deep:
+                MODULE.apply_deep_passes(config, proposals, [], Path(temporary))
+                self.assertEqual(deep.call_args.kwargs["model"], expected)
+
+    def test_main_folds_agent_flags_into_the_loaded_config(self):
+        captured = {}
+        config = {"dailyReport": {"enabledPlatforms": ["email"]}}
+
+        def collection(config_arg, *_args, **_kwargs):
+            captured["config"] = config_arg
+            return {}, None
+
+        with mock.patch.object(sys, "argv", [
+            "focus_queue_morning.py", "dry-run",
+            "--agent-provider", "claude", "--agent-model", "opus", "--agent-effort", "low",
+        ]), mock.patch.object(MODULE, "load_config", return_value=config), mock.patch.object(
+            MODULE, "run_diagnostic_collection", side_effect=collection
+        ), mock.patch.object(MODULE, "compact_summary", return_value=""):
+            self.assertEqual(MODULE.main(), 0)
+
+        self.assertEqual(captured["config"]["agentProvider"], "claude")
+        self.assertEqual(captured["config"]["agentModel"], "opus")
+        self.assertEqual(captured["config"]["agentEffort"], "low")
+
 
 class FocusQueueTriageTests(unittest.TestCase):
     def test_bulk_signals_classify_promotional(self):

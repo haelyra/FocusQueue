@@ -500,6 +500,102 @@ struct QueueViewModelTests {
     try await eventually { !model.isQueueAgentResponding }
   }
 
+  @Test("Queue chat follows the configured default provider, model, and effort at send time")
+  func queueChatFollowsProviderSettings() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let codexAgent = ControlledQueueAgent()
+    let claudeAgent = ControlledQueueAgent()
+    let model = await fixture.model(agent: codexAgent, queueAgentFactory: { provider in
+      provider == .claude ? claudeAgent : codexAgent
+    })
+
+    model.setDefaultAgentProvider(.claude)
+    model.setDefaultAgentModel("claude-sonnet-5", for: .claude)
+    model.setDefaultAgentEffort("high", for: .claude)
+
+    #expect(model.sendQueueAgentMessage("Why is ECC-102 second?"))
+    try await eventually { await claudeAgent.hasPendingReply }
+
+    #expect(await codexAgent.messages.isEmpty)
+    #expect(await claudeAgent.messages.count == 1)
+    #expect(await claudeAgent.sentModels.first == "claude-sonnet-5")
+    #expect(await claudeAgent.sentEfforts.first == "high")
+    let executable = try #require(await claudeAgent.sentExecutables.first)
+    #expect(executable.hasSuffix("/.local/bin/focus-queue-claude"))
+    #expect(model.queueChatAgentSummary == "Claude · sonnet-5 · high")
+
+    await claudeAgent.reply("ECC-101 outranks ECC-102.")
+    try await eventually { !model.isQueueAgentResponding }
+
+    model.setDefaultAgentProvider(.codex)
+    #expect(model.sendQueueAgentMessage("And now with Codex?"))
+    try await eventually { await codexAgent.hasPendingReply }
+    #expect(await codexAgent.sentExecutables.first == model.config.verifier.executable)
+    await codexAgent.reply("Same order.")
+    try await eventually { !model.isQueueAgentResponding }
+  }
+
+  @Test("Cancelling a queue chat stops without an error bubble")
+  func queueChatCancellationIsSilent() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let agent = ControlledQueueAgent()
+    let model = await fixture.model(agent: agent)
+    let baseline = model.chatMessages(ticketID: nil).count
+
+    #expect(model.sendQueueAgentMessage("Scan the queue for me."))
+    try await eventually { await agent.hasPendingReply }
+
+    model.cancelQueueAgentMessage()
+    await agent.failPending()
+    try await eventually { !model.isQueueAgentResponding }
+
+    let messages = model.chatMessages(ticketID: nil)
+    #expect(messages.count == baseline + 1)
+    #expect(messages.last?.role == .user)
+  }
+
+  @Test("Clearing the queue chat erases the transcript and resets the provider session")
+  func clearQueueChatResetsSession() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let agent = ControlledQueueAgent()
+    let model = await fixture.model(agent: agent)
+
+    #expect(model.sendQueueAgentMessage("Remember this exchange."))
+    try await eventually { await agent.hasPendingReply }
+    await agent.reply("Noted.")
+    try await eventually { !model.isQueueAgentResponding }
+    #expect(model.chatMessages(ticketID: nil).count > 1)
+
+    model.clearQueueChat(ticketID: nil)
+    try await eventually { await !agent.resetSessionNames.isEmpty }
+
+    #expect(model.chatMessages(ticketID: nil).isEmpty)
+    #expect(model.loadError == nil)
+    let transcriptURL = fixture.paths.supportDirectory
+      .appendingPathComponent("queue-conversation.json")
+    let persisted = try JSONDecoder().decode(
+      [QueueChatMessage].self, from: Data(contentsOf: transcriptURL))
+    #expect(persisted.isEmpty)
+  }
+
+  @Test("Clearing a task chat resets its task-scoped harness session")
+  func clearTaskChatResetsTaskSession() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let agent = ControlledQueueAgent()
+    let model = await fixture.model(agent: agent)
+
+    model.clearQueueChat(ticketID: "ECC-101")
+    try await eventually { await !agent.resetSessionNames.isEmpty }
+
+    #expect(await agent.resetSessionNames == ["ecc-focus-queue-task-ecc-101"])
+    #expect(model.chatMessages(ticketID: "ECC-101").isEmpty)
+    #expect(model.loadError == nil)
+  }
+
   @Test("Production Queue chat rows render a continuous formatted exchange headlessly")
   func queueChatTranscriptRenders() throws {
     let user = QueueChatMessage(role: .user, text: "Show the code change")
@@ -3096,12 +3192,14 @@ private struct Fixture {
              labelTmuxPane: @escaping @Sendable (TmuxSessionReference, String) async -> Void = { _, _ in },
              identifyManagedAgent: (@Sendable (TaskSubtask, WezTermConfiguration) async throws -> String?)? = nil,
              providerExecutableAvailable: (@Sendable (AgentProvider) -> Bool)? = nil,
+             queueAgentFactory: (@Sendable (AgentProvider) -> any QueueAgentChatting)? = nil,
              locateExistingAgent: @escaping @Sendable (AgentProvider, String) async throws -> KnownProviderProcess? = { _, _ in nil }) async -> QueueViewModel {
     let boundary = ForbiddenExternalActions()
     let model = QueueViewModel(paths: paths, programLog: programLog,
       dashboardRepository: dashboardRepository,
       terminalController: terminalController ?? boundary,
-      verifier: verifier ?? boundary, queueAgent: agent, pullRequestQueueLoader: boundary,
+      verifier: verifier ?? boundary, queueAgent: agent, queueAgentFactory: queueAgentFactory,
+      pullRequestQueueLoader: boundary,
       taskAgentLauncher: taskAgentLauncher,
       objectiveRouter: objectiveRouter,
       routerMonitorIntervalSeconds: routerMonitorIntervalSeconds,
@@ -3506,18 +3604,35 @@ private actor PaneLabelRecorder {
 private actor ControlledQueueAgent: QueueAgentChatting {
   private(set) var messages: [String] = []
   private(set) var projectScopes: [String?] = []
+  private(set) var sentModels: [String?] = []
+  private(set) var sentEfforts: [String?] = []
+  private(set) var sentExecutables: [String] = []
+  private(set) var resetSessionNames: [String] = []
   private var pending: CheckedContinuation<QueueAgentReply, any Error>?
   var hasPendingReply: Bool { pending != nil }
 
   func send(message: String, dashboardPath: String, workspace: String, visibleOrder: [String],
-    deferredTicketIDs: [String], configuration: VerifierConfiguration) async throws -> QueueAgentReply {
+    deferredTicketIDs: [String], configuration: VerifierConfiguration,
+    model: String?, effort: String?) async throws -> QueueAgentReply {
     messages.append(message)
     projectScopes.append(configuration.projectScopeID)
+    sentModels.append(model)
+    sentEfforts.append(effort)
+    sentExecutables.append(configuration.executable)
     return try await withCheckedThrowingContinuation { pending = $0 }
+  }
+
+  func reset(configuration: VerifierConfiguration) async throws {
+    resetSessionNames.append(configuration.sessionName)
   }
 
   func reply(_ message: String) {
     pending?.resume(returning: QueueAgentReply(message: message, log: "headless test"))
+    pending = nil
+  }
+
+  func failPending(_ error: any Error = CancellationError()) {
+    pending?.resume(throwing: error)
     pending = nil
   }
 }

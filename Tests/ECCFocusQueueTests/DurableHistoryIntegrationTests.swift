@@ -158,5 +158,6 @@ private struct DurableForbiddenActions: WezTermControlling, CompletionVerifying,
   func focusOrResume(session: TaskAgentSession, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult { try denied() }
   func verify(ticketID: String, requestFile: URL, workspace: String, configuration: VerifierConfiguration) async throws -> VerificationRunResult { try denied() }
   func load(repository: String, closedSince: String) async throws -> PullRequestQueueSnapshot { try denied() }
-  func send(message: String, dashboardPath: String, workspace: String, visibleOrder: [String], deferredTicketIDs: [String], configuration: VerifierConfiguration) async throws -> QueueAgentReply { try denied() }
+  func send(message: String, dashboardPath: String, workspace: String, visibleOrder: [String], deferredTicketIDs: [String], configuration: VerifierConfiguration, model: String?, effort: String?) async throws -> QueueAgentReply { try denied() }
+  func reset(configuration: VerifierConfiguration) async throws { let _: Void = try denied() }
 }

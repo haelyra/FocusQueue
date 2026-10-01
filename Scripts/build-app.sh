@@ -33,7 +33,8 @@ bundle_path="$staging_dir/$product_name.app"
 automation_resources="$bundle_path/Contents/Resources/automation"
 /bin/mkdir -p "$automation_resources/Scripts" "$automation_resources/Config"
 for script in \
-  focus_queue_morning.py focus_queue_codex.py focus_queue_lock.py focus_queue_mail.py focus_queue_gmail.py \
+  focus_queue_morning.py focus_queue_codex.py focus_queue_claude.py focus_queue_kimi.py \
+  focus_queue_lock.py focus_queue_mail.py focus_queue_gmail.py \
   focus_queue_discord.py focus_queue_connectors.py focus_queue_triage.py focus-queue-mail.js; do
   /bin/cp "$project_dir/Scripts/$script" "$automation_resources/Scripts/$script"
 done

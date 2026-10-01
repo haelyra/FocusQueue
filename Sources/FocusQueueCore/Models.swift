@@ -126,23 +126,34 @@ public struct DailyReportConfiguration: Codable, Equatable, Sendable {
   public var scheduleMinute: Int
   public var maximumTokens: Int
   public var enabledPlatforms: [DailyReportPlatform]
+  /// An explicit sweep provider; nil follows the default agent provider.
+  public var agentProvider: AgentProvider?
+  public var agentModel: String?
+  public var agentEffort: String?
 
   public init(
     enabled: Bool = true,
     scheduleHour: Int = 8,
     scheduleMinute: Int = 0,
     maximumTokens: Int = 75_000,
-    enabledPlatforms: [DailyReportPlatform] = DailyReportPlatform.allCases
+    enabledPlatforms: [DailyReportPlatform] = DailyReportPlatform.allCases,
+    agentProvider: AgentProvider? = nil,
+    agentModel: String? = nil,
+    agentEffort: String? = nil
   ) {
     self.enabled = enabled
     self.scheduleHour = scheduleHour
     self.scheduleMinute = scheduleMinute
     self.maximumTokens = maximumTokens
     self.enabledPlatforms = enabledPlatforms
+    self.agentProvider = agentProvider
+    self.agentModel = agentModel
+    self.agentEffort = agentEffort
   }
 
   private enum CodingKeys: String, CodingKey {
     case enabled, scheduleHour, scheduleMinute, maximumTokens, enabledPlatforms
+    case agentProvider, agentModel, agentEffort
   }
 
   public init(from decoder: any Decoder) throws {
@@ -154,6 +165,22 @@ public struct DailyReportConfiguration: Codable, Equatable, Sendable {
     enabledPlatforms =
       try container.decodeIfPresent([DailyReportPlatform].self, forKey: .enabledPlatforms)
       ?? DailyReportPlatform.allCases
+    agentProvider = try container.decodeIfPresent(String.self, forKey: .agentProvider)
+      .flatMap { AgentProvider(rawValue: $0.lowercased()) }
+    agentModel = try container.decodeIfPresent(String.self, forKey: .agentModel)
+    agentEffort = try container.decodeIfPresent(String.self, forKey: .agentEffort)
+  }
+
+  public func encode(to encoder: any Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(enabled, forKey: .enabled)
+    try container.encode(scheduleHour, forKey: .scheduleHour)
+    try container.encode(scheduleMinute, forKey: .scheduleMinute)
+    try container.encode(maximumTokens, forKey: .maximumTokens)
+    try container.encode(enabledPlatforms, forKey: .enabledPlatforms)
+    try container.encodeIfPresent(agentProvider?.rawValue, forKey: .agentProvider)
+    try container.encodeIfPresent(agentModel, forKey: .agentModel)
+    try container.encodeIfPresent(agentEffort, forKey: .agentEffort)
   }
 }
 
@@ -278,6 +305,9 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var defaultAgentModels: [AgentProvider: String]
   /// Per-provider default efforts; a missing or empty value launches without an effort flag.
   public var defaultAgentEfforts: [AgentProvider: String]
+  /// Chat harness executable overrides; Codex chat keeps using `verifier.executable`.
+  public var claudeChatExecutable: String?
+  public var kimiChatExecutable: String?
 
   /// Newest models first within each provider group. Mirrors the current
   /// Codex, Claude Code, and Kimi Code lineups (Kimi aliases match the managed
@@ -323,6 +353,17 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   /// Claude `--effort`). Kimi has no launch-time effort flag and ignores these.
   public static let agentEffortLevels = ["low", "medium", "high", "xhigh", "max"]
 
+  /// The chat harness for a provider. Codex reuses the verifier harness;
+  /// Claude and Kimi fall back to their managed `~/.local/bin` launchers.
+  public func chatExecutable(for provider: AgentProvider) -> String {
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    switch provider {
+    case .codex: return verifier.executable
+    case .claude: return claudeChatExecutable ?? "\(home)/.local/bin/focus-queue-claude"
+    case .kimi: return kimiChatExecutable ?? "\(home)/.local/bin/focus-queue-kimi"
+    }
+  }
+
   public init(
     appName: String,
     dashboardPath: String,
@@ -356,6 +397,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.defaultAgentProvider = nil
     self.defaultAgentModels = [:]
     self.defaultAgentEfforts = [:]
+    self.claudeChatExecutable = nil
+    self.kimiChatExecutable = nil
     let effectiveProjects = projects ?? [Self.legacyProject(
       appName: appName,
       dashboardPath: dashboardPath,
@@ -378,6 +421,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case agentModelChoices
     case autoArchiveStaleAgents
     case defaultAgentProvider, defaultAgentModels, defaultAgentEfforts
+    case claudeChatExecutable, kimiChatExecutable
     case focusQueueProjects, focusQueueSelectedProjectID, projects, selectedProjectID
   }
 
@@ -424,6 +468,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         let effort = pair.value.trimmingCharacters(in: .whitespacesAndNewlines)
         if !effort.isEmpty { efforts[provider] = effort }
       }
+    claudeChatExecutable = try container.decodeIfPresent(String.self, forKey: .claudeChatExecutable)
+    kimiChatExecutable = try container.decodeIfPresent(String.self, forKey: .kimiChatExecutable)
     dailyReport =
       try container.decodeIfPresent(DailyReportConfiguration.self, forKey: .dailyReport)
       ?? DailyReportConfiguration()
@@ -500,6 +546,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encode(
       Dictionary(uniqueKeysWithValues: defaultAgentEfforts.map { ($0.key.rawValue, $0.value) }),
       forKey: .defaultAgentEfforts)
+    try container.encodeIfPresent(claudeChatExecutable, forKey: .claudeChatExecutable)
+    try container.encodeIfPresent(kimiChatExecutable, forKey: .kimiChatExecutable)
   }
 
   public var selectedProject: ProjectConfiguration? {
@@ -675,17 +723,28 @@ public struct DailyReportRunRequest: Equatable, Sendable {
   public let platforms: [DailyReportPlatform]
   public let comprehensive: Bool
   public let recheck: Bool
+  /// Resolved sweep agent selection; nil follows the configured daily-report or
+  /// default provider settings at run time.
+  public let agentProvider: AgentProvider?
+  public let agentModel: String?
+  public let agentEffort: String?
 
   public init(
     trigger: DailyReportTrigger,
     platforms: [DailyReportPlatform],
     comprehensive: Bool,
-    recheck: Bool
+    recheck: Bool,
+    agentProvider: AgentProvider? = nil,
+    agentModel: String? = nil,
+    agentEffort: String? = nil
   ) {
     self.trigger = trigger
     self.platforms = platforms
     self.comprehensive = comprehensive
     self.recheck = recheck
+    self.agentProvider = agentProvider
+    self.agentModel = agentModel
+    self.agentEffort = agentEffort
   }
 }
 

@@ -2261,9 +2261,10 @@ def classify(config: dict[str, Any], bundle: dict[str, Any], runtime: Path) -> d
             os.fsync(handle.fileno())
             prompt_path = Path(handle.name)
         prompt_path.chmod(0o600)
+        classification_model = str(config.get("agentModel") or "").strip() or None
         result = run_command(
             [
-                str(config["agentExecutable"]),
+                agent_executable(config),
                 "run",
                 "--workspace",
                 str(classifier_workspace),
@@ -2278,7 +2279,8 @@ def classify(config: dict[str, Any], bundle: dict[str, Any], runtime: Path) -> d
                 str(PROPOSAL_SCHEMA),
                 "--usage-file",
                 str(usage_path),
-            ],
+            ]
+            + agent_run_model_effort_arguments(config, classification_model),
             cwd=classifier_workspace,
             timeout=150,
         )
@@ -2318,13 +2320,50 @@ def prepare_proposals(
     return proposals
 
 
-def default_deep_pass_model() -> str:
+def default_deep_pass_model(provider: str = "codex") -> str | None:
+    if provider != "codex":
+        # Only Codex pins a bundled no-tools catalog model; other providers use
+        # their own CLI default unless a model is configured explicitly.
+        return None
     try:
         import focus_queue_codex
 
         return str(focus_queue_codex.NO_TOOLS_MODEL_PREFERENCES[0])
     except Exception:
         return "gpt-5.5"
+
+
+AGENT_PROVIDERS = ("codex", "claude", "kimi")
+
+
+def agent_provider(config: dict[str, Any]) -> str:
+    provider = str(config.get("agentProvider") or "codex").strip().casefold()
+    if provider not in AGENT_PROVIDERS:
+        raise ReconciliationError(
+            f"agentProvider must be one of {', '.join(AGENT_PROVIDERS)} (got {provider!r})"
+        )
+    return provider
+
+
+def agent_executable(config: dict[str, Any]) -> str:
+    provider = agent_provider(config)
+    if provider == "codex":
+        return str(config["agentExecutable"])
+    explicit = config.get(f"{provider}AgentExecutable")
+    if explicit:
+        return str(Path(str(explicit)).expanduser())
+    base = Path(str(config["agentExecutable"])).expanduser()
+    return str(base.parent / f"focus-queue-{provider}")
+
+
+def agent_run_model_effort_arguments(config: dict[str, Any], model: str | None) -> list[str]:
+    arguments: list[str] = []
+    effort = str(config.get("agentEffort") or "").strip()
+    if model:
+        arguments.extend(["--model", model])
+    if effort:
+        arguments.extend(["--effort", effort])
+    return arguments
 
 
 def deep_pass_prompt(proposal: dict[str, Any], bodies: list[str]) -> str:
@@ -2365,7 +2404,7 @@ def run_deep_pass(
     prompt: str,
     runtime: Path,
     *,
-    model: str,
+    model: str | None,
 ) -> dict[str, Any]:
     runtime.mkdir(parents=True, exist_ok=True)
     prompt_path: Path | None = None
@@ -2390,7 +2429,7 @@ def run_deep_pass(
         prompt_path.chmod(0o600)
         result = run_command(
             [
-                str(config["agentExecutable"]),
+                agent_executable(config),
                 "run",
                 "--workspace",
                 str(classifier_workspace),
@@ -2401,11 +2440,10 @@ def run_deep_pass(
                 "--sandbox",
                 "read-only",
                 "--disable-tools",
-                "--model",
-                model,
                 "--usage-file",
                 str(usage_path),
-            ],
+            ]
+            + agent_run_model_effort_arguments(config, model),
             cwd=classifier_workspace,
             timeout=280,
         )
@@ -2515,7 +2553,12 @@ def apply_deep_passes(
         for item in checked_messages
         if item.get("sourceKey")
     }
-    model = str(config.get("deepPassModel") or default_deep_pass_model())
+    provider = agent_provider(config)
+    model = (
+        str(config.get("agentModel") or "").strip()
+        or str(config.get("deepPassModel") or "").strip()
+        or default_deep_pass_model(provider)
+    )
     for task in flagged:
         bodies: list[str] = []
         for source_key in task.get("sourceKeys", []):
@@ -3205,10 +3248,19 @@ def main() -> int:
     parser.add_argument("--trigger", choices=["scheduled", "manual", "chat"], default="scheduled")
     parser.add_argument("--comprehensive", action="store_true")
     parser.add_argument("--recheck", action="store_true")
+    parser.add_argument("--agent-provider", choices=list(AGENT_PROVIDERS))
+    parser.add_argument("--agent-model")
+    parser.add_argument("--agent-effort")
     arguments = parser.parse_args()
 
     try:
         config = load_config(arguments.config)
+        if arguments.agent_provider:
+            config["agentProvider"] = arguments.agent_provider
+        if arguments.agent_model:
+            config["agentModel"] = arguments.agent_model
+        if arguments.agent_effort:
+            config["agentEffort"] = arguments.agent_effort
         enabled_platforms = set(config["dailyReport"]["enabledPlatforms"])
         platforms = set(arguments.platforms or []) or enabled_platforms
         if arguments.comprehensive:

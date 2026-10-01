@@ -32,5 +32,10 @@
   "maxEmailMessages": 200,
   "maxNewTasksPerRun": 20,
   "agentExecutable": "/absolute/path/to/focus-queue-codex",
+  "agentProvider": "codex",
+  "claudeAgentExecutable": "/absolute/path/to/focus-queue-claude",
+  "kimiAgentExecutable": "/absolute/path/to/focus-queue-kimi",
+  "agentModel": "gpt-5.5",
+  "agentEffort": "high",
   "telegramBotUsername": "your_bot"
 }

@@ -592,6 +592,126 @@ class FocusQueueCodexTests(unittest.TestCase):
                 self.assertEqual(MODULE.main(), 0)
                 self.assertEqual(called.call_args.args[0].context_dir, Path("/tmp/context"))
 
+    def test_chat_threads_model_and_effort_into_initial_resume_and_retry(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prompt = root / "prompt.txt"
+            prompt.write_text("Continue task")
+            arguments = argparse.Namespace(
+                runtime=root / "runtime", session="task", workspace=root,
+                prompt_file=prompt, timeout=60, context_dir=None,
+                model="gpt-5.4", effort="low",
+            )
+            with mock.patch.object(MODULE, "run_codex", side_effect=[
+                ("First", "thread-1"),
+                MODULE.CodexHarnessError("unknown thread"),
+                ("Retry", "thread-2"),
+            ]) as run, contextlib.redirect_stdout(io.StringIO()):
+                MODULE.chat(arguments)
+                MODULE.chat(arguments)
+            for call in run.call_args_list:
+                self.assertEqual(call.kwargs["model"], "gpt-5.4")
+                self.assertEqual(call.kwargs["effort"], "low")
+
+    def test_run_codex_appends_model_and_effort_in_the_tool_enabled_path(self):
+        captured = {}
+
+        class FakeProcess:
+            returncode = 0
+            pid = 123
+
+            def __init__(self, command, **_kwargs):
+                captured["command"] = command
+                Path(command[command.index("--output-last-message") + 1]).write_text("done")
+
+            def communicate(self, **_kwargs):
+                return ('{"type":"thread.started","thread_id":"thread-123"}\n', "")
+
+            def poll(self):
+                return 0
+
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            MODULE, "resolve_codex", return_value="/usr/bin/codex"
+        ), mock.patch.object(MODULE.subprocess, "Popen", FakeProcess):
+            MODULE.run_codex(
+                prompt="work", workspace=Path(temporary),
+                runtime=Path(temporary) / "runtime", timeout=10,
+                sandbox="workspace-write", thread_id=None, output_schema=None,
+                model="gpt-5.4", effort="low",
+            )
+
+        command = captured["command"]
+        self.assertEqual(command[command.index("--model") + 1], "gpt-5.4")
+        index = command.index("model_reasoning_effort=low")
+        self.assertEqual(command[index - 1], "-c")
+
+    def test_disable_tools_keeps_catalog_model_and_appends_effort_override(self):
+        captured = {}
+
+        class FakeProcess:
+            returncode = 0
+            pid = 123
+
+            def __init__(self, command, **_kwargs):
+                captured["command"] = command
+                Path(command[command.index("--output-last-message") + 1]).write_text("done")
+
+            def communicate(self, **_kwargs):
+                return ('{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}\n', "")
+
+            def poll(self):
+                return 0
+
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            MODULE, "resolve_codex", return_value="/usr/bin/codex"
+        ), mock.patch.object(
+            MODULE,
+            "discover_no_tools_codex_capabilities",
+            return_value=(("shell_tool",), ('web_search="disabled"',)),
+        ) as discover, mock.patch.object(MODULE.subprocess, "Popen", FakeProcess):
+            MODULE.run_codex(
+                prompt="classify", workspace=Path(temporary),
+                runtime=Path(temporary) / "runtime", timeout=10,
+                sandbox="read-only", thread_id=None, output_schema=None,
+                disable_tools=True, model="gpt-5.4", effort="medium",
+            )
+
+        self.assertEqual(discover.call_args.kwargs["model"], "gpt-5.4")
+        command = captured["command"]
+        self.assertNotIn("--model", command)
+        index = command.index("model_reasoning_effort=medium")
+        self.assertEqual(command[index - 1], "-c")
+
+    def test_run_once_forwards_model_and_effort(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prompt = root / "prompt.txt"
+            prompt.write_text("Classify source")
+            arguments = argparse.Namespace(
+                runtime=root / "runtime", workspace=root, prompt_file=prompt,
+                timeout=60, context_dir=None, sandbox="read-only", output_schema=None,
+                usage_file=None, disable_tools=True, model="gpt-5.2", effort="high",
+            )
+            with mock.patch.object(MODULE, "run_codex", return_value=("Done", None)) as run:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    MODULE.run_once(arguments)
+            self.assertEqual(run.call_args.kwargs["model"], "gpt-5.2")
+            self.assertEqual(run.call_args.kwargs["effort"], "high")
+
+    def test_cli_accepts_model_and_effort_for_chat_and_run(self):
+        for command, handler, extra in [("chat", "chat", ["--session", "task"]),
+                                        ("run", "run_once", [])]:
+            with self.subTest(command=command), mock.patch.object(sys, "argv", [
+                str(SCRIPT), "--runtime", "/tmp/runtime", command,
+                "--workspace", "/tmp", "--prompt-file", "/tmp/prompt.txt",
+                "--model", "gpt-5.4", "--effort", "low", *extra,
+            ]), mock.patch.object(MODULE, handler, return_value=0) as called:
+                self.assertEqual(MODULE.main(), 0)
+                parsed = called.call_args.args[0]
+                self.assertEqual(parsed.model, "gpt-5.4")
+                self.assertEqual(parsed.effort, "low")
+                self.assertEqual(parsed.runtime, Path("/tmp/runtime"))
+
 
 if __name__ == "__main__":
     unittest.main()

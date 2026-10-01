@@ -8,10 +8,12 @@ private actor DocumentTestAgent: QueueAgentChatting {
     var requests: [(String, String)] = []
     var pending: [String: CheckedContinuation<QueueAgentReply, any Error>] = [:]
     func send(message: String, dashboardPath: String, workspace: String, visibleOrder: [String],
-              deferredTicketIDs: [String], configuration: VerifierConfiguration) async throws -> QueueAgentReply {
+              deferredTicketIDs: [String], configuration: VerifierConfiguration,
+              model: String?, effort: String?) async throws -> QueueAgentReply {
         requests.append((configuration.sessionName, message))
         return try await withCheckedThrowingContinuation { pending[configuration.sessionName] = $0 }
     }
+    func reset(configuration: VerifierConfiguration) async throws {}
     func finish(_ session: String, message: String) { pending.removeValue(forKey: session)?.resume(returning: .init(message: message, log: "")) }
 }
 

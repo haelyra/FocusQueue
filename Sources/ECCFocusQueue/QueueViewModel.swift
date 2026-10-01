@@ -212,7 +212,8 @@ final class QueueViewModel {
   @ObservationIgnored private let terminalController: any WezTermControlling
   @ObservationIgnored private let agentRegistrationInbox: AgentRegistrationInbox
   @ObservationIgnored private let verifier: any CompletionVerifying
-  @ObservationIgnored private let queueAgent: any QueueAgentChatting
+  @ObservationIgnored private var queueAgents: [AgentProvider: any QueueAgentChatting]
+  @ObservationIgnored private let queueAgentFactory: @Sendable (AgentProvider) -> any QueueAgentChatting
   @ObservationIgnored private let pullRequestQueueLoader: any PullRequestQueueLoading
   @ObservationIgnored private let taskContextStore: TaskContextStore
   @ObservationIgnored private let taskWorktreeManager = TaskWorktreeManager()
@@ -310,6 +311,7 @@ final class QueueViewModel {
     agentRegistrationInbox: AgentRegistrationInbox? = nil,
     verifier: any CompletionVerifying = CodexCompletionVerifier(),
     queueAgent: any QueueAgentChatting = CodexQueueAgent(),
+    queueAgentFactory: (@Sendable (AgentProvider) -> any QueueAgentChatting)? = nil,
     pullRequestQueueLoader: any PullRequestQueueLoading = GitHubPullRequestQueueLoader(),
     taskAgentLauncher: TaskAgentLauncher = TaskAgentLauncher(),
     objectiveRouter: any QueueObjectiveRouting = QueueObjectiveRouter(),
@@ -362,7 +364,14 @@ final class QueueViewModel {
     self.agentRegistrationInbox =
       agentRegistrationInbox ?? AgentRegistrationInbox(directory: paths.agentRegistrationsDirectory)
     self.verifier = verifier
-    self.queueAgent = queueAgent
+    self.queueAgents = [.codex: queueAgent]
+    self.queueAgentFactory = queueAgentFactory ?? { provider in
+      switch provider {
+      case .codex: CodexQueueAgent()
+      case .claude: ClaudeQueueAgent()
+      case .kimi: KimiQueueAgent()
+      }
+    }
     self.pullRequestQueueLoader = pullRequestQueueLoader
     self.taskAgentLauncher = taskAgentLauncher
     self.objectiveRouter = objectiveRouter
@@ -1246,7 +1255,11 @@ final class QueueViewModel {
       ?? selectedProject?.repositoryPath ?? config.workspacePath
     let deferredTicketIDs = savedQueueOrder == nil ? localState.deferredTicketIDs.filter { scopedTaskIDs.contains($0) } : []
     let scopedMessage: String
+    let provider = defaultAgentProvider
+    let chatModel = Self.normalizedChatOption(defaultAgentModel(for: provider))
+    let chatEffort = Self.normalizedChatOption(defaultAgentEffort(for: provider))
     var agentConfiguration = config.verifier
+    agentConfiguration.executable = config.chatExecutable(for: provider)
     agentConfiguration.supportDirectory = paths.supportDirectory.path
     // Central QChat can inspect every configured project. Task chat retains its
     // task's project scope for task-specific helpers.
@@ -1284,13 +1297,15 @@ final class QueueViewModel {
         for id in scopedTaskIDs.filter({ self.taskContexts[$0] != nil }) {
           self.taskContexts[id] = try await self.taskContextStore.reconcileSubtasks(ticketID: id)
         }
-        let reply = try await self.queueAgent.send(
+        let reply = try await self.queueAgent(for: provider).send(
           message: scopedMessage,
           dashboardPath: self.config.dashboardPath,
           workspace: chatWorkspace,
           visibleOrder: visibleOrder,
           deferredTicketIDs: deferredTicketIDs,
-          configuration: agentConfiguration
+          configuration: agentConfiguration,
+          model: chatModel,
+          effort: chatEffort
         )
         self.appendChat(QueueChatMessage(role: .agent, text: reply.message), ticketID: ticketID)
         if await self.reloadConfigurationFromDisk() {
@@ -1300,12 +1315,80 @@ final class QueueViewModel {
         if self.dailyReport == nil {
           await self.reloadDailyReport()
         }
+      } catch is CancellationError {
+        // User-cancelled; the defer above already reset the chat state.
       } catch {
         self.appendChat(
           QueueChatMessage(role: .agent, text: error.localizedDescription), ticketID: ticketID)
       }
     }
     return true
+  }
+
+  func queueAgent(for provider: AgentProvider) -> any QueueAgentChatting {
+    if let existing = queueAgents[provider] { return existing }
+    let agent = queueAgentFactory(provider)
+    queueAgents[provider] = agent
+    return agent
+  }
+
+  /// Empty or whitespace-only settings launch the harness without the flag.
+  private static func normalizedChatOption(_ value: String?) -> String? {
+    let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.flatMap { $0.isEmpty ? nil : $0 }
+  }
+
+  func cancelQueueAgentMessage() {
+    queueChatTask?.cancel()
+  }
+
+  /// Clears the visible transcript and resets the provider's harness session so
+  /// the next message starts a fresh thread.
+  func clearQueueChat(ticketID: String?) {
+    if respondingTicketID == ticketID { queueChatTask?.cancel() }
+    if let ticketID { taskChatMessages[ticketID] = [] } else { queueChatMessages = [] }
+    let provider = defaultAgentProvider
+    var resetConfiguration = config.verifier
+    resetConfiguration.executable = config.chatExecutable(for: provider)
+    resetConfiguration.supportDirectory = paths.supportDirectory.path
+    resetConfiguration.contextDirectory =
+      paths.supportDirectory.appendingPathComponent("tasks").path
+    if let ticketID {
+      resetConfiguration.sessionName = "ecc-focus-queue-task-\(ticketID.lowercased())"
+      if let context = taskContexts[ticketID] {
+        resetConfiguration.contextDirectory = context.contextDirectory.path
+      }
+    }
+    let agent = queueAgent(for: provider)
+    let scope = "conversation-\(ticketID ?? "queue")"
+    Task { [weak self] in
+      guard let self else { return }
+      do {
+        try await self.conversationStore.save([], ticketID: ticketID)
+        self.recordDurableError(nil, scope: scope)
+      } catch {
+        self.recordDurableError(error, scope: scope)
+      }
+      do {
+        try await agent.reset(configuration: resetConfiguration)
+      } catch {
+        self.loadError =
+          "Could not reset the \(provider.displayName) chat session: \(error.localizedDescription)"
+      }
+    }
+  }
+
+  /// Caption for the chat header, e.g. "Codex · gpt-5.5 · high".
+  var queueChatAgentSummary: String {
+    let provider = defaultAgentProvider
+    var parts = [provider.displayName]
+    if let model = Self.normalizedChatOption(defaultAgentModel(for: provider)) {
+      parts.append(agentModelChoices(for: provider).first { $0.model == model }?.label ?? model)
+    }
+    if let effort = Self.normalizedChatOption(defaultAgentEffort(for: provider)) {
+      parts.append(effort)
+    }
+    return parts.joined(separator: " · ")
   }
 
   var isInspectorPresented: Bool {
@@ -1446,8 +1529,13 @@ final class QueueViewModel {
     guard let document = DocumentPaneLocation.normalized(url), let context = taskContexts[ticketID] else { return nil }
     let key = DocumentConversation.key(document: document, taskID: ticketID)
     if let existing = documentConversations[key] { return existing }
+    let provider = defaultAgentProvider
+    var documentConfiguration = config.verifier
+    documentConfiguration.executable = config.chatExecutable(for: provider)
     let conversation = DocumentConversation(document: document, context: context, support: paths.supportDirectory,
-      agent: queueAgent, configuration: config.verifier, dashboardPath: config.dashboardPath, workspace: config.workspacePath)
+      agent: queueAgent(for: provider), configuration: documentConfiguration, dashboardPath: config.dashboardPath, workspace: config.workspacePath,
+      model: Self.normalizedChatOption(defaultAgentModel(for: provider)),
+      effort: Self.normalizedChatOption(defaultAgentEffort(for: provider)))
     documentConversations[key] = conversation
     return conversation
   }
@@ -3821,11 +3909,15 @@ final class QueueViewModel {
 
   func runComprehensiveDailyReport() {
     guard !reportIsRunning else { return }
+    let provider = dailyReportAgentProvider
     let request = DailyReportRunRequest(
       trigger: .manual,
       platforms: config.dailyReport.enabledPlatforms,
       comprehensive: true,
-      recheck: false
+      recheck: false,
+      agentProvider: provider,
+      agentModel: config.dailyReport.agentModel ?? defaultAgentModel(for: provider),
+      agentEffort: config.dailyReport.agentEffort ?? defaultAgentEffort(for: provider)
     )
     configurationSaveTask?.cancel()
     Task { [weak self] in
@@ -3931,6 +4023,32 @@ final class QueueViewModel {
   func setDailyReportMaximumTokens(_ maximumTokens: Int) {
     config.dailyReport.maximumTokens = min(max(maximumTokens, 10_000), 1_000_000)
     persistConfiguration()
+  }
+
+  func setDailyReportAgentProvider(_ provider: AgentProvider?) {
+    guard config.dailyReport.agentProvider != provider else { return }
+    config.dailyReport.agentProvider = provider
+    persistConfiguration()
+  }
+
+  func setDailyReportAgentModel(_ model: String?) {
+    let normalized = Self.normalizedChatOption(model)
+    guard config.dailyReport.agentModel != normalized else { return }
+    config.dailyReport.agentModel = normalized
+    persistConfiguration()
+  }
+
+  func setDailyReportAgentEffort(_ effort: String?) {
+    let normalized = Self.normalizedChatOption(effort)
+    guard config.dailyReport.agentEffort != normalized else { return }
+    config.dailyReport.agentEffort = normalized
+    persistConfiguration()
+  }
+
+  /// The provider the sweep runs, following the default provider unless the
+  /// daily-report settings pin a specific one.
+  var dailyReportAgentProvider: AgentProvider {
+    config.dailyReport.agentProvider ?? defaultAgentProvider
   }
 
   func setDailyReportPlatform(_ platform: DailyReportPlatform, enabled: Bool) {

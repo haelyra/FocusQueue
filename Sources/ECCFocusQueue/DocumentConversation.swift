@@ -78,11 +78,15 @@ final class DocumentConversation {
     @ObservationIgnored private let configuration: VerifierConfiguration
     @ObservationIgnored private let dashboardPath: String
     @ObservationIgnored private let workspace: String
+    @ObservationIgnored private let model: String?
+    @ObservationIgnored private let effort: String?
 
     init(document: URL, context: TaskContext, support: URL, agent: any QueueAgentChatting,
-         configuration: VerifierConfiguration, dashboardPath: String, workspace: String) {
+         configuration: VerifierConfiguration, dashboardPath: String, workspace: String,
+         model: String? = nil, effort: String? = nil) {
         self.document = document; self.taskID = context.ticketID; self.context = context
         self.agent = agent; self.dashboardPath = dashboardPath; self.workspace = context.worktreePath ?? context.repositoryPath ?? context.projectRepositoryPath ?? workspace
+        self.model = model; self.effort = effort
         let key = Self.key(document: document, taskID: context.ticketID)
         var config = configuration
         config.sessionName = "ecc-focus-queue-task-\(context.ticketID.lowercased())-document-\(key.prefix(16))"
@@ -117,7 +121,8 @@ final class DocumentConversation {
                 try await store.save(messages)
                 let prompt = try await reader.prompt(document: document, context: context, request: request, history: history)
                 let reply = try await agent.send(message: prompt, dashboardPath: dashboardPath, workspace: workspace,
-                    visibleOrder: [context.ticketID], deferredTicketIDs: [], configuration: configuration)
+                    visibleOrder: [context.ticketID], deferredTicketIDs: [], configuration: configuration,
+                    model: model, effort: effort)
                 messages.append(QueueChatMessage(role: .agent, text: reply.message))
             } catch { messages.append(QueueChatMessage(role: .agent, text: error.localizedDescription)) }
             do { try await store.save(messages) }

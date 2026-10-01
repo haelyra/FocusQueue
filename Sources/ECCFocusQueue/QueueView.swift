@@ -1171,6 +1171,7 @@ struct QueueAgentChatView: View {
   var canvasSelection: Binding<PlanCanvasSelection?>? = nil
   var focusRequest = 0
   @FocusState private var composerIsFocused: Bool
+  @State private var showsClearConfirmation = false
   @Environment(\.colorScheme) private var colorScheme
 
   private var messages: [QueueChatMessage] { model.chatMessages(ticketID: ticketID) }
@@ -1181,6 +1182,7 @@ struct QueueAgentChatView: View {
   var body: some View {
     GeometryReader { geometry in
       VStack(spacing: 10) {
+        chatSettingsBar
         if ticketID == nil {
           Text(model.showsAllProjects ? "All projects" : "All projects · Active: \(model.projectScopeName)")
             .font(.caption).foregroundStyle(.secondary)
@@ -1199,10 +1201,10 @@ struct QueueAgentChatView: View {
                 QueueChatMessageRow(message: message, ticketID: ticketID).id(message.id)
               }
               if isRespondingHere {
-                HStack(spacing: 9) {
-                  QueueChatEllipsisIndicator()
-                  Text("\(model.defaultAgentProvider.displayName) is checking the queue…")
+                HStack(spacing: 4) {
+                  Text("\(model.defaultAgentProvider.displayName) is checking the queue")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
+                  QueueChatEllipsisIndicator()
                   Spacer()
                 }
                 .padding(.horizontal, 15).padding(.vertical, 13)
@@ -1237,50 +1239,58 @@ struct QueueAgentChatView: View {
               .transition(.opacity.combined(with: .move(edge: .bottom)))
           }
 
-          HStack(alignment: .bottom, spacing: 8) {
-            TextField(
-              ticketID == nil
-                ? "Ask about order or request a task change"
-                : "Discuss this task or update its plan",
+          HStack(alignment: .bottom, spacing: 4) {
+            QueueChatComposerTextView(
               text: $draft,
-              axis: .vertical
+              isFocused: $composerIsFocused,
+              maxHeight: composerMaxHeight(geometry.size.height),
+              onSend: send
             )
-            .textFieldStyle(.plain)
-            .font(.system(size: 13))
-            .lineLimit(1...100)
-            .frame(
-              height: composerHeight(
-                availableWidth: geometry.size.width,
-                availableHeight: geometry.size.height
-              ),
-              alignment: .topLeading
-            )
-            .padding(.horizontal, 13).padding(.vertical, 11)
-            .notificationSurface(radius: 16)
-            .overlay {
-              RoundedRectangle(cornerRadius: 16)
-                .stroke(
-                  composerIsFocused ? Color.accentColor.opacity(0.8) : Color.clear,
-                  lineWidth: 1.5
+            .fixedSize(horizontal: false, vertical: true)
+            .overlay(alignment: .topLeading) {
+              if draft.isEmpty {
+                Text(
+                  ticketID == nil
+                    ? "Ask about order or request a task change"
+                    : "Discuss this task or update its plan"
                 )
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
                 .allowsHitTesting(false)
+              }
             }
-            .focused($composerIsFocused)
-            .onSubmit(send)
+            .padding(.leading, 13)
+            .padding(.vertical, 11)
             .accessibilityLabel("Message the queue agent")
 
-            Button(action: send) {
-              Image(systemName: "arrow.up.circle.fill")
+            Button {
+              if isRespondingHere { model.cancelQueueAgentMessage() } else { send() }
+            } label: {
+              Image(systemName: isRespondingHere ? "stop.circle.fill" : "arrow.up.circle.fill")
                 .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
                 .frame(width: 42, height: 42)
+                .padding(.trailing, 4)
             }
             .buttonStyle(.plain)
             .disabled(
-              draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || model.isQueueAgentResponding
-                || model.reportIsRunning
+              !isRespondingHere
+                && (model.isQueueAgentResponding
+                  || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                  || model.reportIsRunning)
             )
-            .accessibilityLabel("Send message to queue agent")
+            .accessibilityLabel(
+              isRespondingHere ? "Stop the queue agent response" : "Send message to queue agent"
+            )
+          }
+          .notificationSurface(radius: 16)
+          .overlay {
+            RoundedRectangle(cornerRadius: 16)
+              .stroke(
+                composerIsFocused ? Color.accentColor.opacity(0.8) : Color.clear,
+                lineWidth: 1.5
+              )
+              .allowsHitTesting(false)
           }
         }
         .animation(.easeOut(duration: 0.16), value: canvasSelection?.wrappedValue?.id)
@@ -1291,6 +1301,72 @@ struct QueueAgentChatView: View {
       if !isResponding { focusComposer() }
     }
     .onChange(of: focusRequest) { _, _ in focusComposer() }
+  }
+
+  private var chatSettingsBar: some View {
+    HStack(spacing: 8) {
+      Image(systemName: model.defaultAgentProvider.symbolName)
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(.secondary)
+      Text(model.queueChatAgentSummary)
+        .font(.caption).foregroundStyle(.secondary)
+      Spacer()
+      Menu {
+        Picker("Provider", selection: Binding(
+          get: { model.defaultAgentProvider },
+          set: { model.setDefaultAgentProvider($0) }
+        )) {
+          ForEach(AgentProvider.allCases, id: \.self) { provider in
+            Label(provider.displayName, systemImage: provider.symbolName).tag(provider)
+          }
+        }
+        Picker("Model", selection: Binding(
+          get: { model.config.defaultAgentModels[model.defaultAgentProvider] ?? "" },
+          set: { model.setDefaultAgentModel($0, for: model.defaultAgentProvider) }
+        )) {
+          ForEach(model.agentModelChoices(for: model.defaultAgentProvider)) { choice in
+            Text(choice.label).tag(choice.model ?? "")
+          }
+        }
+        Picker("Effort", selection: Binding(
+          get: { model.config.defaultAgentEfforts[model.defaultAgentProvider] ?? "" },
+          set: { model.setDefaultAgentEffort($0, for: model.defaultAgentProvider) }
+        )) {
+          Text("Default").tag("")
+          ForEach(AppConfiguration.agentEffortLevels, id: \.self) { effort in
+            Text(effort).tag(effort)
+          }
+        }
+        Divider()
+        Button("Clear Conversation", systemImage: "trash", role: .destructive) {
+          showsClearConfirmation = true
+        }
+      } label: {
+        Image(systemName: "ellipsis.circle")
+          .font(.system(size: 15))
+          .foregroundStyle(.secondary)
+          .frame(width: 28, height: 28)
+          .contentShape(Rectangle())
+      }
+      .menuStyle(.borderlessButton)
+      .menuIndicator(.hidden)
+      .fixedSize()
+      .accessibilityLabel("Chat settings")
+    }
+    .confirmationDialog(
+      "Clear this conversation?",
+      isPresented: $showsClearConfirmation,
+      titleVisibility: .visible
+    ) {
+      Button("Clear Conversation", role: .destructive) {
+        model.clearQueueChat(ticketID: ticketID)
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(
+        "The transcript is erased and the next message starts a fresh \(model.defaultAgentProvider.displayName) session."
+      )
+    }
   }
 
   private func send() {
@@ -1337,17 +1413,8 @@ struct QueueAgentChatView: View {
     )
   }
 
-  private func composerHeight(availableWidth: CGFloat, availableHeight: CGFloat) -> CGFloat {
-    let textWidth = max(80, availableWidth - 76)
-    let content = draft.isEmpty ? " " : draft
-    let bounds = (content as NSString).boundingRect(
-      with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
-      options: [.usesLineFragmentOrigin, .usesFontLeading],
-      attributes: [.font: NSFont.systemFont(ofSize: 13)]
-    )
-    let contentHeight = ceil(bounds.height) + 22
-    let maximumHeight = max(120, availableHeight * 0.7)
-    return min(max(42, contentHeight), maximumHeight)
+  private func composerMaxHeight(_ paneHeight: CGFloat) -> CGFloat {
+    max(120, paneHeight * 0.7)
   }
 
   private func focusComposer() {
@@ -1369,6 +1436,107 @@ struct QueueAgentChatView: View {
   }
 }
 
+/// NSTextView-backed composer: Return sends, Shift/Option+Return inserts a
+/// newline, and the view grows with its content up to the cap before scrolling.
+private struct QueueChatComposerTextView: NSViewRepresentable {
+  @Binding var text: String
+  var isFocused: FocusState<Bool>.Binding
+  var maxHeight: CGFloat
+  var onSend: () -> Void
+
+  func makeCoordinator() -> Coordinator {
+    Coordinator(text: $text, isFocused: isFocused)
+  }
+
+  func makeNSView(context: Context) -> NSScrollView {
+    let textView = QueueChatComposerNSTextView()
+    textView.onSend = onSend
+    textView.delegate = context.coordinator
+    textView.isRichText = false
+    textView.drawsBackground = false
+    textView.font = NSFont.systemFont(ofSize: 13)
+    textView.textContainerInset = .zero
+    textView.textContainer?.lineFragmentPadding = 0
+    textView.isVerticallyResizable = true
+    textView.isHorizontallyResizable = false
+    textView.autoresizingMask = [.width]
+    textView.textContainer?.widthTracksTextView = true
+    textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+    let scrollView = NSScrollView()
+    scrollView.drawsBackground = false
+    scrollView.hasVerticalScroller = true
+    scrollView.autohidesScrollers = true
+    scrollView.documentView = textView
+    return scrollView
+  }
+
+  func updateNSView(_ scrollView: NSScrollView, context: Context) {
+    guard let textView = scrollView.documentView as? QueueChatComposerNSTextView else { return }
+    textView.onSend = onSend
+    if textView.string != text {
+      textView.string = text
+      textView.scrollToEndOfDocument(nil)
+    }
+    if isFocused.wrappedValue, scrollView.window?.firstResponder != textView {
+      DispatchQueue.main.async {
+        scrollView.window?.makeFirstResponder(textView)
+      }
+    }
+  }
+
+  func sizeThatFits(
+    _ proposal: ProposedViewSize, nsView: NSScrollView, context: Context
+  ) -> CGSize? {
+    guard let textView = nsView.documentView as? NSTextView,
+          let layoutManager = textView.layoutManager,
+          let container = textView.textContainer
+    else { return nil }
+    layoutManager.ensureLayout(for: container)
+    let contentHeight = ceil(layoutManager.usedRect(for: container).height)
+    return CGSize(
+      width: proposal.width ?? 100,
+      height: min(max(20, contentHeight), maxHeight)
+    )
+  }
+
+  final class Coordinator: NSObject, NSTextViewDelegate {
+    private var text: Binding<String>
+    private var isFocused: FocusState<Bool>.Binding
+
+    init(text: Binding<String>, isFocused: FocusState<Bool>.Binding) {
+      self.text = text
+      self.isFocused = isFocused
+    }
+
+    func textDidChange(_ notification: Notification) {
+      guard let textView = notification.object as? NSTextView else { return }
+      text.wrappedValue = textView.string
+    }
+
+    func textDidEndEditing(_ notification: Notification) {
+      isFocused.wrappedValue = false
+    }
+  }
+}
+
+private final class QueueChatComposerNSTextView: NSTextView {
+  var onSend: (() -> Void)?
+
+  override func keyDown(with event: NSEvent) {
+    // 36 = Return, 76 = keypad Enter
+    guard event.keyCode == 36 || event.keyCode == 76 else {
+      super.keyDown(with: event)
+      return
+    }
+    let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+    if modifiers.contains(.shift) || modifiers.contains(.option) {
+      insertText("\n", replacementRange: selectedRange())
+    } else {
+      onSend?()
+    }
+  }
+}
+
 /// Cycles ".", "..", "...", then a blank frame instead of a spinner.
 private struct QueueChatEllipsisIndicator: View {
   private static let frames = [".", "..", "...", " "]
@@ -1380,7 +1548,9 @@ private struct QueueChatEllipsisIndicator: View {
       Text(Self.frames[index % Self.frames.count])
         .font(.system(size: 12, weight: .bold, design: .monospaced))
         .foregroundStyle(.secondary)
-        .frame(width: 14, alignment: .leading)
+        .fixedSize()
+        .lineLimit(1)
+        .frame(minWidth: 16, alignment: .leading)
     }
   }
 }
@@ -1834,6 +2004,36 @@ private struct QueueSettingsView: View {
                   Spacer()
                   Text(model.config.dailyReport.maximumTokens.formatted())
                     .monospacedDigit().foregroundStyle(.secondary)
+                }
+              }
+
+              Picker("Agent", selection: Binding(
+                get: { model.config.dailyReport.agentProvider },
+                set: { model.setDailyReportAgentProvider($0) }
+              )) {
+                Text("Follow default provider").tag(AgentProvider?.none)
+                ForEach(AgentProvider.allCases, id: \.self) { provider in
+                  Label(provider.displayName, systemImage: provider.symbolName)
+                    .tag(AgentProvider?.some(provider))
+                }
+              }
+              if let sweepProvider = model.config.dailyReport.agentProvider {
+                Picker("Model", selection: Binding(
+                  get: { model.config.dailyReport.agentModel ?? "" },
+                  set: { model.setDailyReportAgentModel($0) }
+                )) {
+                  ForEach(model.agentModelChoices(for: sweepProvider)) { choice in
+                    Text(choice.label).tag(choice.model ?? "")
+                  }
+                }
+                Picker("Effort", selection: Binding(
+                  get: { model.config.dailyReport.agentEffort ?? "" },
+                  set: { model.setDailyReportAgentEffort($0) }
+                )) {
+                  Text("Default").tag("")
+                  ForEach(AppConfiguration.agentEffortLevels, id: \.self) { effort in
+                    Text(effort).tag(effort)
+                  }
                 }
               }
 

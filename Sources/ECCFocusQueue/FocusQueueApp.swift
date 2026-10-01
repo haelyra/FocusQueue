@@ -524,13 +524,21 @@ import UserNotifications
     }
     do {
       try Task.checkCancellation()
+      let sweepProvider = request.agentProvider ?? model.dailyReportAgentProvider
       let result = try await morningRunner.run(ProcessSpecification(
         executable: "/usr/bin/python3",
         arguments: DailyReportAutomation.arguments(
           scriptPath: script.path,
           configurationPath: paths.ingestionConfigurationFile.path,
           runtimePath: paths.ingestionRuntimeDirectory.path,
-          request: request
+          request: request,
+          agentProvider: sweepProvider,
+          agentModel: request.agentModel
+            ?? model.config.dailyReport.agentModel
+            ?? model.defaultAgentModel(for: sweepProvider),
+          agentEffort: request.agentEffort
+            ?? model.config.dailyReport.agentEffort
+            ?? model.defaultAgentEffort(for: sweepProvider)
         ),
         workingDirectory: model.config.workspacePath,
         environment: [

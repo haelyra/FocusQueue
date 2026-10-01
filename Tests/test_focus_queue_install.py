@@ -21,6 +21,8 @@ class InstallerTests(unittest.TestCase):
     automation_files = (
         "Scripts/focus_queue_morning.py",
         "Scripts/focus_queue_codex.py",
+        "Scripts/focus_queue_claude.py",
+        "Scripts/focus_queue_kimi.py",
         "Scripts/focus_queue_lock.py",
         "Scripts/focus_queue_mail.py",
         "Scripts/focus_queue_gmail.py",

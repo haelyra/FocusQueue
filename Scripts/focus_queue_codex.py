@@ -534,6 +534,7 @@ def run_codex(
     output_schema: Path | None,
     usage_file: Path | None = None,
     model: str | None = None,
+    effort: str | None = None,
     expose_evidence_directories: bool = False,
     expose_queue_order: bool = False,
     disable_tools: bool = False,
@@ -610,6 +611,10 @@ def run_codex(
             command.extend(["--add-dir", str(queue_order_directory.resolve())])
         if context_directory is not None and allow_extra_writes:
             command.extend(["--add-dir", str(context_directory)])
+        if model is not None and not disable_tools:
+            command.extend(["--model", model])
+        if effort is not None:
+            command.extend(["-c", f"model_reasoning_effort={effort}"])
         if output_schema is not None:
             command.extend(["--output-schema", str(output_schema)])
         if thread_id:
@@ -709,6 +714,8 @@ def chat(arguments: argparse.Namespace) -> int:
                 output_schema=None,
                 expose_evidence_directories=True,
                 expose_queue_order=True,
+                model=getattr(arguments, "model", None),
+                effort=getattr(arguments, "effort", None),
                 context_directory=getattr(arguments, "context_dir", None),
             )
         except CodexHarnessError as error:
@@ -731,6 +738,8 @@ def chat(arguments: argparse.Namespace) -> int:
                 output_schema=None,
                 expose_evidence_directories=True,
                 expose_queue_order=True,
+                model=getattr(arguments, "model", None),
+                effort=getattr(arguments, "effort", None),
                 context_directory=getattr(arguments, "context_dir", None),
             )
         thread_id = observed_thread or prior_thread
@@ -755,6 +764,7 @@ def run_once(arguments: argparse.Namespace) -> int:
         usage_file=arguments.usage_file,
         disable_tools=arguments.disable_tools,
         model=getattr(arguments, "model", None),
+        effort=getattr(arguments, "effort", None),
         context_directory=getattr(arguments, "context_dir", None),
     )
     print(reply)
@@ -782,6 +792,8 @@ def main() -> int:
     chat_parser.add_argument("--context-dir", type=Path)
     chat_parser.add_argument("--prompt-file", type=Path, required=True)
     chat_parser.add_argument("--timeout", type=int, default=120)
+    chat_parser.add_argument("--model", help="Override the chat model slug")
+    chat_parser.add_argument("--effort", help="Override the chat reasoning effort level")
 
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--workspace", type=Path, required=True)
@@ -793,6 +805,7 @@ def main() -> int:
     run_parser.add_argument("--usage-file", type=Path)
     run_parser.add_argument("--disable-tools", action="store_true")
     run_parser.add_argument("--model", help="Override the pinned no-tools model slug")
+    run_parser.add_argument("--effort", help="Override the reasoning effort level")
     run_parser.add_argument("--label")
 
     reset_parser = subparsers.add_parser("reset")

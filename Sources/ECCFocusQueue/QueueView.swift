@@ -8,9 +8,9 @@ enum QueueChromeMetrics {
   static let notificationBadgeFill = NSColor.systemYellow
   static let notificationBadgeForeground = NSColor.black
 
-  static func notificationPopoverHeight(for count: Int) -> CGFloat {
-    min(max(CGFloat(count) * 76 + 20, 96), 280)
-  }
+  static let notificationPanelMinWidth: CGFloat = 300
+  static let notificationPanelIdealWidth: CGFloat = 380
+  static let notificationPanelMaxWidth: CGFloat = 480
 }
 
 enum RouterComposerKeyboardAction: Equatable {
@@ -89,18 +89,28 @@ struct QueueView: View {
     }
   }
 
+  private var showsNotificationPanel: Bool { notificationsExpanded && notificationCount > 0 }
+
   private var expandedPanel: some View {
     HStack(spacing: 12) {
       if model.isInspectorPresented, model.windowPlacement == .upperRight {
         inspector
         Divider()
       }
+      if showsNotificationPanel, model.windowPlacement == .upperRight {
+        notificationsPanel
+        Divider()
+      }
       queuePane
         .frame(
           minWidth: 380,
           idealWidth: 440,
-          maxWidth: model.isInspectorPresented ? 440 : .infinity
+          maxWidth: (model.isInspectorPresented || showsNotificationPanel) ? 440 : .infinity
         )
+      if showsNotificationPanel, model.windowPlacement != .upperRight {
+        Divider()
+        notificationsPanel
+      }
       if model.isInspectorPresented, model.windowPlacement != .upperRight {
         Divider()
         inspector
@@ -201,20 +211,37 @@ struct QueueView: View {
     (model.showsReportNotification ? 1 : 0) + model.notificationAgentUpdates.count
   }
 
-  private var notificationFeed: some View {
-    ScrollView {
-      LazyVStack(spacing: 8) {
-        if model.showsReportNotification { reportStatusBanner }
-        ForEach(model.notificationAgentUpdates) { attention in attentionBanner(attention) }
+  private var notificationsPanel: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack {
+        Label("Notifications", systemImage: "bell.fill").font(.headline)
+        Spacer()
+        Button {
+          withAnimation(.easeInOut(duration: 0.18)) { notificationsExpanded = false }
+        } label: {
+          Image(systemName: "xmark")
+        }
+        .buttonStyle(.plain)
+        .minimumHitTarget()
+        .accessibilityLabel("Close notifications panel")
+        .help("Close notifications")
       }
-      .padding(10)
+      ScrollView {
+        LazyVStack(spacing: 8) {
+          if model.showsReportNotification { reportStatusBanner }
+          ForEach(model.notificationAgentUpdates) { attention in attentionBanner(attention) }
+        }
+        .padding(.vertical, 2)
+      }
+      .scrollIndicators(.automatic)
     }
-    .scrollIndicators(.automatic)
+    .padding(12)
     .frame(
-      width: 380,
-      height: QueueChromeMetrics.notificationPopoverHeight(for: notificationCount)
+      minWidth: QueueChromeMetrics.notificationPanelMinWidth,
+      idealWidth: QueueChromeMetrics.notificationPanelIdealWidth,
+      maxWidth: QueueChromeMetrics.notificationPanelMaxWidth,
+      maxHeight: .infinity
     )
-    .background(.background)
   }
 
   private var reportStatusBanner: some View {
@@ -232,7 +259,9 @@ struct QueueView: View {
             VStack(alignment: .leading, spacing: 3) {
               Text("Global · " + model.reportAttentionTitle).font(.system(size: 12, weight: .semibold))
               Text(model.reportAttentionMessage)
-                .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
             }
             Spacer(minLength: 0)
             Image(systemName: "chevron.right").font(.caption)
@@ -272,13 +301,33 @@ struct QueueView: View {
     SwipeToClearNotification {
       withAnimation(.easeInOut(duration: 0.18)) { model.dismissAgentUpdate(attention) }
     } content: {
-      HStack(alignment: .top, spacing: 9) {
-        Button { model.openAgentUpdate(attention) } label: {
-          VStack(alignment: .leading, spacing: 4) {
-            Text(attention.conciseReason).font(.system(size: 12, weight: .semibold)).lineLimit(3)
-            Text("\(attention.ticketID) · \(attention.title)").font(.system(size: 11)).foregroundStyle(.secondary)
-          }.frame(maxWidth: .infinity, alignment: .leading)
-        }.buttonStyle(.plain).help("Read the explanation and review details")
+      VStack(alignment: .leading, spacing: 6) {
+        HStack(alignment: .top, spacing: 7) {
+          VStack(alignment: .leading, spacing: 3) {
+            Text(attention.conciseReason).font(.system(size: 12, weight: .semibold))
+              .fixedSize(horizontal: false, vertical: true)
+            Text("\(attention.ticketID) · \(attention.title)")
+              .font(.system(size: 11)).foregroundStyle(.secondary)
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+          Button { model.openAgentUpdate(attention) } label: {
+            Image(systemName: "chevron.right").font(.caption)
+          }
+          .buttonStyle(.plain)
+          .minimumHitTarget()
+          .accessibilityLabel("Open update details for \(attention.title)")
+          .help("Read the explanation and review details")
+        }
+        if !attention.summary.isEmpty, attention.summary != attention.conciseReason {
+          Text(attention.summary)
+            .font(.system(size: 11)).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
+        }
+        if attention.date != .distantPast {
+          Text(attention.date.formatted(date: .abbreviated, time: .shortened))
+            .font(.system(size: 10)).foregroundStyle(.tertiary)
+        }
         if attention.review != nil, let ticket = model.dashboard.tickets.first(where: { $0.id == attention.ticketID }),
            let subtask = model.subtasks(for: ticket.id).first(where: { $0.id == attention.subtaskID }) {
           Button("Override") { model.overrideCompletion(subtask, for: ticket) }
@@ -841,9 +890,6 @@ struct QueueView: View {
             : "Open \(notificationCount) notifications"
         )
         .help(notificationsExpanded ? "Close notifications" : "Show notifications")
-        .popover(isPresented: $notificationsExpanded, arrowEdge: .top) {
-          notificationFeed
-        }
         Button {
           settingsTarget = nil
           withAnimation(.easeInOut(duration: 0.18)) { screen = .settings }
@@ -3357,9 +3403,8 @@ private struct TicketCard: View {
           open: model.open
         )
       }
-      DisclosureGroup("Full source description") {
-        Text(ticket.summary).font(.system(size: 13)).textSelection(.enabled)
-          .frame(maxWidth: .infinity, alignment: .leading)
+      if !ticket.summary.isEmpty {
+        DetailBlock(title: "Description", text: ticket.summary)
       }
       if let next = ticket.next, !next.isEmpty { DetailBlock(title: "Next", text: next) }
       if let doneWhen = ticket.doneWhen, !doneWhen.isEmpty {

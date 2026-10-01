@@ -12,8 +12,9 @@ struct NotificationLayoutTests {
     #expect(QueueChromeMetrics.sectionSpacing == 4)
     #expect(QueueChromeMetrics.notificationBadgeFill == NSColor.systemYellow)
     #expect(QueueChromeMetrics.notificationBadgeForeground == NSColor.black)
-    #expect(QueueChromeMetrics.notificationPopoverHeight(for: 1) == 96)
-    #expect(QueueChromeMetrics.notificationPopoverHeight(for: 10) == 280)
+    #expect(QueueChromeMetrics.notificationPanelMinWidth == 300)
+    #expect(QueueChromeMetrics.notificationPanelIdealWidth == 380)
+    #expect(QueueChromeMetrics.notificationPanelMaxWidth == 480)
   }
 
   @Test("Swipe affordance does not stretch a notification into the available panel height",

@@ -1170,7 +1170,9 @@ private struct NewTaskSheet: View {
 
       Form {
         TextField("Task title", text: $title)
-        TextField("Summary", text: $summary, axis: .vertical).lineLimit(2...5)
+        TextField("Description", text: $summary, axis: .vertical).lineLimit(2...5)
+        Text("Answer what, why, and how in 1-2 direct sentences each, so the purpose is clear at a glance.")
+          .font(.caption).foregroundStyle(.secondary)
         TextField("Done when", text: $doneWhen, axis: .vertical).lineLimit(2...5)
         Picker("Priority", selection: $priority) {
           Text("Low").tag("low")

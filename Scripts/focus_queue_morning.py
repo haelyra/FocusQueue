@@ -2174,6 +2174,7 @@ TASK POLICY
 - Use critical only for active security, broken default branch, failed release/deploy, or an owner-blocking emergency. Use high for same-day maintainer work, medium for normal actionable work, and low for optional cleanup.
 - Return at most {maximum_tasks} new tasks.
 - The selected dashboard already determines the project. Do not invent or change project ownership during classification.
+- Write every new task summary so a returning reader understands the purpose at a glance: 1-2 sentences each for what the task is, why it matters, and how it is done. Be direct; never open with commit hashes, branch names, or internal jargon.
 
 OUTPUT SCHEMA
 {{
@@ -2194,7 +2195,7 @@ OUTPUT SCHEMA
       "priority": "critical|high|medium|low",
       "customerConcern": false,
       "severity": "critical|high|medium|low; only when customerConcern is true",
-      "summary": "minimal paraphrase of the actionable request",
+      "summary": "what the task is, why it matters, and how it is done; 1-2 direct sentences each, no commit hashes or jargon",
       "next": "single concrete next action",
       "doneWhen": "observable completion condition",
       "sourceKeys": ["exact sourceKey for every supporting message"],

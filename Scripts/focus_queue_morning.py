@@ -2114,6 +2114,14 @@ def build_daily_report(
         f"Created {len(result.get('created', []))} linked task(s) and updated "
         f"{len(result.get('updated', []))} existing task(s)."
     )
+    description_warnings = result.get("descriptionWarnings", [])
+    if description_warnings:
+        shown = "; ".join(str(warning) for warning in description_warnings[:3])
+        application_summary += (
+            f" {len(description_warnings)} new task description(s) need the "
+            f"what/why/how format: {shown}"
+            + ("; …" if len(description_warnings) > 3 else "")
+        )
     summary = bounded_sentences(
         f"{summary} {application_summary}",
         maximum_sentences=5,
@@ -2650,6 +2658,40 @@ def valid_links(value: Any) -> list[dict[str, str]]:
     return links
 
 
+DESCRIPTION_MAX_SENTENCE_WORDS = 45
+_COMMIT_OPENING = re.compile(
+    r"^\s*(?:installed|committed?|at|from|in)\s+([\[\(]?[0-9a-f]{7,40}[\]\)]?)"
+    r"|^\s*([\[\(]?[0-9a-f]{7,40}[\]\)]?)[\s:,-]",
+    re.IGNORECASE,
+)
+
+
+def description_format_issues(text: Any) -> list[str]:
+    """Return format violations for a task description; empty means compliant.
+
+    Task descriptions answer what, why, and how directly: 1-2 simple sentences
+    for each (3-6 total), never opening with a commit hash or code. Empty text
+    is allowed because task creation falls back to the title.
+    """
+    summary = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not summary:
+        return []
+    issues: list[str] = []
+    opening = _COMMIT_OPENING.match(summary)
+    token = next(
+        (group.strip("[]()") for group in (opening.groups() if opening else ()) if group), "")
+    if token and any(character.isdigit() for character in token):
+        issues.append("never open with a commit hash or code; start with what the task is")
+    sentences = [part for part in re.split(r"(?<=[.!?])\s+", summary) if part.strip()]
+    if not 3 <= len(sentences) <= 6:
+        issues.append(
+            "use 1-2 sentences each for what, why, and how "
+            f"(3-6 sentences total; found {len(sentences)})")
+    if any(len(sentence.split()) > DESCRIPTION_MAX_SENTENCE_WORDS for sentence in sentences):
+        issues.append(f"keep every sentence simple (at most {DESCRIPTION_MAX_SENTENCE_WORDS} words)")
+    return issues
+
+
 def next_ticket_number(tickets: list[dict[str, Any]], prefix: str = "ECC") -> int:
     numbers = []
     for ticket in tickets:
@@ -2714,6 +2756,7 @@ def apply_proposals(
         updated: list[str] = []
         task_references_by_source_key: dict[str, list[dict[str, str]]] = {}
         customer_concern_tasks: list[dict[str, Any]] = []
+        description_warnings: list[str] = []
 
         def add_task_references(source_keys: Any, ticket: dict[str, Any]) -> None:
             if not isinstance(source_keys, list):
@@ -2789,6 +2832,9 @@ def apply_proposals(
             if proposal.get("customerConcern") is True:
                 task["taskType"] = "customer-concern"
                 customer_concern_tasks.append(task)
+            format_issues = description_format_issues(task["summary"])
+            if format_issues:
+                description_warnings.append(f"{ticket_id}: {'; '.join(format_issues)}")
             tickets.insert(0, task)
             existing_by_id[ticket_id] = task
             for link in links:
@@ -2841,6 +2887,7 @@ def apply_proposals(
                 {"id": str(task.get("id") or ""), "title": str(task.get("title") or "")}
                 for task in customer_concern_tasks
             ],
+            "descriptionWarnings": description_warnings,
         }
         if application_journal_path is not None:
             application_journal = load_json(application_journal_path)
@@ -3159,7 +3206,7 @@ def _run_reconciliation(
             "progressNotes": [],
             "ignoredCount": 0,
         }
-        result = {"created": [], "updated": [], "taskReferencesBySourceKey": {}, "customerConcernTasks": []}
+        result = {"created": [], "updated": [], "taskReferencesBySourceKey": {}, "customerConcernTasks": [], "descriptionWarnings": []}
         write_private_json(runtime / "latest-proposals.json", proposals)
 
     usage = report_token_usage(checked_messages=checked_messages, usage=observed_usage)

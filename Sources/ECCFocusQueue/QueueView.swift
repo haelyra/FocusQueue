@@ -1160,6 +1160,8 @@ private struct NewTaskSheet: View {
     model.projects.first { $0.id == projectID }
   }
 
+  private var descriptionIssues: [String] { TaskDescriptionFormat.issues(for: summary) }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       VStack(alignment: .leading, spacing: 3) {
@@ -1171,8 +1173,14 @@ private struct NewTaskSheet: View {
       Form {
         TextField("Task title", text: $title)
         TextField("Description", text: $summary, axis: .vertical).lineLimit(2...5)
-        Text("Answer what, why, and how in 1-2 direct sentences each, so the purpose is clear at a glance.")
-          .font(.caption).foregroundStyle(.secondary)
+        if descriptionIssues.isEmpty {
+          Text("Answer what, why, and how in 1-2 direct sentences each, so the purpose is clear at a glance.")
+            .font(.caption).foregroundStyle(.secondary)
+        } else {
+          ForEach(descriptionIssues, id: \.self) { issue in
+            Text(issue).font(.caption).foregroundStyle(.orange)
+          }
+        }
         TextField("Done when", text: $doneWhen, axis: .vertical).lineLimit(2...5)
         Picker("Priority", selection: $priority) {
           Text("Low").tag("low")
@@ -1204,6 +1212,7 @@ private struct NewTaskSheet: View {
         .keyboardShortcut(.defaultAction)
         .disabled(
           isSaving || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !descriptionIssues.isEmpty
             || project == nil)
       }
     }

@@ -702,6 +702,82 @@ except module.TerminationRequested:
         text = "One. Two. Three. Four. Five. Six."
         self.assertEqual(MODULE.bounded_sentences(text, maximum_sentences=3), "One. Two. Three.")
 
+    def test_description_format_accepts_direct_what_why_how(self):
+        text = (
+            "What: Ship the panel that tracks ECC tasks. "
+            "Why: The old design loads the user's working memory. "
+            "How: A durable library registers agents and records evidence."
+        )
+        self.assertEqual(MODULE.description_format_issues(text), [])
+
+    def test_description_format_rejects_commit_hash_openings(self):
+        for text in (
+            "Installed c14198d adds project views. It retains tracking. Acceptance remains.",
+            "c14198d adds project views. It retains tracking. Acceptance remains.",
+        ):
+            issues = MODULE.description_format_issues(text)
+            self.assertTrue(any("commit hash" in issue for issue in issues), text)
+
+    def test_description_format_ignores_plain_word_openings(self):
+        text = (
+            "Defaced dashboards confused readers. The queue now shows descriptions directly. "
+            "It renders the summary inline in every task detail."
+        )
+        self.assertEqual(MODULE.description_format_issues(text), [])
+
+    def test_description_format_requires_three_to_six_simple_sentences(self):
+        short = MODULE.description_format_issues("Track tasks. Keep evidence organized.")
+        self.assertTrue(any("3-6 sentences" in issue for issue in short))
+        long_text = " ".join(f"Sentence number {index}." for index in range(1, 8))
+        long_issues = MODULE.description_format_issues(long_text)
+        self.assertTrue(any("3-6 sentences" in issue for issue in long_issues))
+        run_on = " ".join(f"word{index}" for index in range(50))
+        issues = MODULE.description_format_issues(f"{run_on}. Short one. Short two.")
+        self.assertTrue(any("simple" in issue for issue in issues))
+        self.assertEqual(MODULE.description_format_issues(""), [])
+
+    def test_apply_proposals_reports_description_format_warnings(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dashboard = root / "dashboard.json"
+            dashboard.write_text(json.dumps({"tickets": []}), encoding="utf-8")
+            package = root / "package.json"
+            package.write_text(
+                json.dumps({"scripts": {"check": "node -e ''"}}),
+                encoding="utf-8",
+            )
+            config = {
+                "dashboardPath": str(dashboard),
+                "dashboardDirectory": str(root),
+                "maxNewTasksPerRun": 20,
+            }
+            proposal = {
+                "newTasks": [
+                    {
+                        "title": "Investigate reported failure",
+                        "category": "Bug",
+                        "priority": "high",
+                        "summary": "Installed c14198d adds repository-backed project views.",
+                        "next": "Reproduce the failure.",
+                        "doneWhen": "The cause is fixed.",
+                        "sourceLinks": [
+                            {
+                                "label": "Report",
+                                "url": "https://discord.com/channels/1/2/3",
+                                "type": "discord",
+                            }
+                        ],
+                    },
+                ],
+                "updates": [],
+            }
+            result = MODULE.apply_proposals(config, proposal, root / "runtime")
+            self.assertEqual(result["created"], ["ECC-001"])
+            warnings = result["descriptionWarnings"]
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("ECC-001", warnings[0])
+            self.assertIn("commit hash", warnings[0])
+
     def test_report_records_zero_tokens_when_no_codex_turn_was_needed(self):
         usage = MODULE.report_token_usage(checked_messages=[], usage=None)
         self.assertEqual(usage["totalTokens"], 0)

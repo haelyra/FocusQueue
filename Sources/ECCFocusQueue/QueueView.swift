@@ -1361,54 +1361,33 @@ struct QueueAgentChatView: View {
   }
 
   private var chatSettingsBar: some View {
-    HStack(spacing: 8) {
-      Image(systemName: model.defaultAgentProvider.symbolName)
-        .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(.secondary)
-      Text(model.queueChatAgentSummary)
-        .font(.caption).foregroundStyle(.secondary)
-      Spacer()
-      Menu {
-        Picker("Provider", selection: Binding(
-          get: { model.defaultAgentProvider },
-          set: { model.setDefaultAgentProvider($0) }
-        )) {
-          ForEach(AgentProvider.allCases, id: \.self) { provider in
-            Label(provider.displayName, systemImage: provider.symbolName).tag(provider)
-          }
-        }
-        Picker("Model", selection: Binding(
-          get: { model.config.defaultAgentModels[model.defaultAgentProvider] ?? "" },
-          set: { model.setDefaultAgentModel($0, for: model.defaultAgentProvider) }
-        )) {
-          ForEach(model.agentModelChoices(for: model.defaultAgentProvider)) { choice in
-            Text(choice.label).tag(choice.model ?? "")
-          }
-        }
-        Picker("Effort", selection: Binding(
-          get: { model.config.defaultAgentEfforts[model.defaultAgentProvider] ?? "" },
-          set: { model.setDefaultAgentEffort($0, for: model.defaultAgentProvider) }
-        )) {
-          Text("Default").tag("")
-          ForEach(AppConfiguration.agentEffortLevels, id: \.self) { effort in
-            Text(effort).tag(effort)
-          }
-        }
-        Divider()
-        Button("Clear Conversation", systemImage: "trash", role: .destructive) {
-          showsClearConfirmation = true
-        }
-      } label: {
-        Image(systemName: "ellipsis.circle")
-          .font(.system(size: 15))
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 8) {
+        Image(systemName: model.defaultAgentProvider.symbolName)
+          .font(.system(size: 11, weight: .semibold))
           .foregroundStyle(.secondary)
-          .frame(width: 28, height: 28)
-          .contentShape(Rectangle())
+        Text(model.queueChatAgentSummary)
+          .font(.caption).foregroundStyle(.secondary)
+        Spacer()
       }
-      .menuStyle(.borderlessButton)
-      .menuIndicator(.hidden)
-      .fixedSize()
-      .accessibilityLabel("Chat settings")
+      HStack(spacing: 8) {
+        chatProviderMenu
+        chatModelMenu
+        chatEffortMenu
+        Spacer(minLength: 0)
+        Button {
+          showsClearConfirmation = true
+        } label: {
+          Image(systemName: "trash")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(width: 24, height: 24)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel("Clear conversation")
+        .help("Erase this conversation and start a fresh session")
+      }
     }
     .confirmationDialog(
       "Clear this conversation?",
@@ -1424,6 +1403,100 @@ struct QueueAgentChatView: View {
         "The transcript is erased and the next message starts a fresh \(model.defaultAgentProvider.displayName) session."
       )
     }
+  }
+
+  private var chatProviderMenu: some View {
+    Menu {
+      ForEach(AgentProvider.allCases, id: \.self) { provider in
+        Button {
+          model.setDefaultAgentProvider(provider)
+        } label: {
+          if model.defaultAgentProvider == provider {
+            Label(provider.displayName, systemImage: "checkmark")
+          } else {
+            Text(provider.displayName)
+          }
+        }
+      }
+    } label: {
+      chatToolbarMenuLabel(model.defaultAgentProvider.displayName)
+    }
+    .menuStyle(.borderlessButton)
+    .menuIndicator(.hidden)
+    .fixedSize()
+    .accessibilityLabel("Chat provider: \(model.defaultAgentProvider.displayName)")
+    .help("Choose the chat provider")
+  }
+
+  private var chatModelMenu: some View {
+    let provider = model.defaultAgentProvider
+    let current = model.config.defaultAgentModels[provider] ?? ""
+    let choices = model.agentModelChoices(for: provider)
+    let currentLabel = choices.first { ($0.model ?? "") == current }?.label
+      ?? (current.isEmpty ? "Default" : current)
+    return Menu {
+      ForEach(choices) { choice in
+        Button {
+          model.setDefaultAgentModel(choice.model, for: provider)
+        } label: {
+          if (choice.model ?? "") == current {
+            Label(choice.label, systemImage: "checkmark")
+          } else {
+            Text(choice.label)
+          }
+        }
+      }
+    } label: {
+      chatToolbarMenuLabel(currentLabel)
+    }
+    .menuStyle(.borderlessButton)
+    .menuIndicator(.hidden)
+    .fixedSize()
+    .accessibilityLabel("Chat model: \(currentLabel)")
+    .help("Choose the chat model")
+  }
+
+  private var chatEffortMenu: some View {
+    let provider = model.defaultAgentProvider
+    let current = model.config.defaultAgentEfforts[provider] ?? ""
+    return Menu {
+      Button {
+        model.setDefaultAgentEffort(nil, for: provider)
+      } label: {
+        if current.isEmpty {
+          Label("Default", systemImage: "checkmark")
+        } else {
+          Text("Default")
+        }
+      }
+      ForEach(AppConfiguration.agentEffortLevels, id: \.self) { effort in
+        Button {
+          model.setDefaultAgentEffort(effort, for: provider)
+        } label: {
+          if current == effort {
+            Label(effort, systemImage: "checkmark")
+          } else {
+            Text(effort)
+          }
+        }
+      }
+    } label: {
+      chatToolbarMenuLabel(current.isEmpty ? "Default" : current)
+    }
+    .menuStyle(.borderlessButton)
+    .menuIndicator(.hidden)
+    .fixedSize()
+    .accessibilityLabel("Chat effort: \(current.isEmpty ? "Default" : current)")
+    .help("Choose the chat reasoning effort")
+  }
+
+  private func chatToolbarMenuLabel(_ text: String) -> some View {
+    HStack(spacing: 3) {
+      Text(text).font(.caption).lineLimit(1)
+      Image(systemName: "chevron.down")
+        .font(.system(size: 7, weight: .bold))
+    }
+    .foregroundStyle(.secondary)
   }
 
   private func send() {
@@ -1616,14 +1689,35 @@ struct QueueChatMessageRow: View {
   let message: QueueChatMessage
   let ticketID: String?
   @Environment(\.colorScheme) private var colorScheme
+  @State private var didCopy = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 9) {
-      Label(
-        message.role == .agent ? (ticketID == nil ? "QCHAT" : "ORCHESTRATOR") : "YOU",
-        systemImage: message.role == .agent ? "terminal" : "person.crop.circle"
-      )
-      .font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.secondary)
+      HStack(spacing: 6) {
+        Label(
+          message.role == .agent ? (ticketID == nil ? "QCHAT" : "ORCHESTRATOR") : "YOU",
+          systemImage: message.role == .agent ? "terminal" : "person.crop.circle"
+        )
+        .font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.secondary)
+        Spacer()
+        Button {
+          NSPasteboard.general.clearContents()
+          NSPasteboard.general.setString(message.text, forType: .string)
+          didCopy = true
+          Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            didCopy = false
+          }
+        } label: {
+          Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel("Copy message")
+        .help("Copy message text")
+      }
       if let selection = message.canvasSelection {
         HStack(spacing: 6) {
           Image(systemName: selection.kind.systemImage)
@@ -1643,6 +1737,7 @@ struct QueueChatMessageRow: View {
     .overlay(alignment: .bottom) {
       Rectangle().fill(Color.primary.opacity(0.11)).frame(height: 1)
     }
+    .textSelection(.enabled)
     .accessibilityElement(children: .contain)
   }
 
@@ -3081,7 +3176,26 @@ private struct TicketCard: View {
           if recurringProgress?.openCount == 0 {
             StatusPill(text: "No open PRs", color: .secondary)
           } else {
-            StatusPill(text: ticket.priority, color: priorityColor)
+            Menu {
+              ForEach(["critical", "high", "medium", "low"], id: \.self) { priority in
+                Button {
+                  Task { await model.setTaskPriority(ticket, to: priority) }
+                } label: {
+                  if ticket.priority.caseInsensitiveCompare(priority) == .orderedSame {
+                    Label(priority.capitalized, systemImage: "checkmark")
+                  } else {
+                    Text(priority.capitalized)
+                  }
+                }
+              }
+            } label: {
+              StatusPill(text: ticket.priority, color: priorityColor)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel("Priority: \(ticket.priority)")
+            .help("Change task priority")
           }
           StatusPill(text: ticket.status, color: statusColor)
           if ticket.isRecurringPullRequestTask {

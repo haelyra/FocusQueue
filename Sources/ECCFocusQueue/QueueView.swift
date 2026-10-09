@@ -45,6 +45,9 @@ struct QueueView: View {
   @State private var notificationsExpanded = false
   @State private var settingsTarget: QueueSettingsTarget?
   @State private var showsStaleAgentCleanupConfirmation = false
+  /// Counted when the cleanup is requested. Scanning every task's agents in
+  /// the body ran on each render and dominated queue redraws.
+  @State private var staleAgentCandidateCount = 0
   @AppStorage("agentViewEnabled") private var agentViewEnabled = false
 
   private let completedPageSize = 12
@@ -480,7 +483,10 @@ struct QueueView: View {
               agentViewEnabled ? "Task view" : "Agent view",
               systemImage: agentViewEnabled ? "rectangle.stack" : "person.2")
           }
-          Button("Clean up stale agents…") { showsStaleAgentCleanupConfirmation = true }
+          Button("Clean up stale agents…") {
+            staleAgentCandidateCount = model.staleAgentCandidates().count
+            showsStaleAgentCleanupConfirmation = true
+          }
           Button("Restore priority order") { model.resetQueueOrder() }
         } label: { Image(systemName: "arrow.up.arrow.down") }
           .menuStyle(.borderlessButton).fixedSize()
@@ -519,10 +525,6 @@ struct QueueView: View {
           : "These agents are interrupted or idle with no live process and no activity in 5 days. Archiving keeps them recallable under Archived agents with provider resume."
       )
     }
-  }
-
-  private var staleAgentCandidateCount: Int {
-    model.staleAgentCandidates().count
   }
 
   private struct AgentViewEntry: Identifiable {

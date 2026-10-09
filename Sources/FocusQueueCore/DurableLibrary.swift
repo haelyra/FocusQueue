@@ -405,10 +405,12 @@ public actor DurableLibraryStore {
                 parentSubtaskID: subtask.parentSubtaskID, mergedIntoSubtaskID: subtask.mergedIntoSubtaskID)
             if let prior { task.subtasks[prior] = entry } else { task.subtasks.append(entry) }
         }
+        let links = SubtaskLinks(context.subtasks)
         for subtask in context.subtasks {
             if let nativeID = subtask.sessionID, !nativeID.isEmpty {
                 let sessionID = ensureSession(provider: subtask.provider.rawValue, nativeID: nativeID, in: &library, device: device)
-                let linked = Set(task.subtasks.filter { context.assignmentIDs(for: subtask).contains($0.legacyID) }.map(\.id))
+                let assignmentIDs = links.assignmentIDs(for: subtask)
+                let linked = Set(task.subtasks.filter { assignmentIDs.contains($0.legacyID) }.map(\.id))
                 if subtask.isAgentVisible {
                     for id in linked { assign(taskID: taskID, sessionID: sessionID, subtaskID: id, source: "task-context", into: &library) }
                 }
@@ -579,7 +581,8 @@ public actor DurableLibraryStore {
             throw DurableLibraryError.invalidData("Conversation must be an array of messages")
         }
         var messages: [[String: Any]] = []
-        if let existing = library.documents.first(where: { $0.sourcePath == source.standardizedFileURL.path && $0.sourceDeviceID == device.id && $0.kind == "conversation" }), let latest = existing.revisions.last {
+        let sourcePath = source.standardizedFileURL.path
+        if let existing = library.documents.first(where: { $0.sourcePath == sourcePath && $0.sourceDeviceID == device.id && $0.kind == "conversation" }), let latest = existing.revisions.last {
             let saved = try safeData(directory.appendingPathComponent(latest.blobPath))
             guard let decoded = try JSONSerialization.jsonObject(with: saved) as? [[String: Any]] else {
                 throw DurableLibraryError.invalidData("Retained conversation is unreadable")
@@ -600,7 +603,9 @@ public actor DurableLibraryStore {
             throw DurableLibraryError.invalidData("Document exceeds the current 64 MiB retention limit; original source remains available")
         }
         let digest = Self.digest(data)
-        let prior = library.documents.firstIndex { $0.sourcePath == source.standardizedFileURL.path && $0.sourceDeviceID == device.id && $0.kind == kind }
+        // Standardize once. Doing it inside the scan made a full import quadratic in URL work.
+        let sourcePath = source.standardizedFileURL.path
+        let prior = library.documents.firstIndex { $0.sourcePath == sourcePath && $0.sourceDeviceID == device.id && $0.kind == kind }
         if let prior, library.documents[prior].revisions.last?.sha256 == digest { return }
         let ext = source.pathExtension.lowercased() == "md" ? "md" : "json"
         let path = "blobs/\(digest).\(ext)"

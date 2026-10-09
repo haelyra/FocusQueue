@@ -25,19 +25,72 @@ public enum AgentAttention: String, Codable, Sendable, CaseIterable {
     }
 }
 
-extension TaskContext {
-    public func canonicalSubtaskID(_ id: String) -> String {
+/// Merge links resolved once per context. A record's merge target comes from
+/// the first record with its ID, so duplicate IDs resolve exactly as a linear
+/// `first(where:)` scan would.
+struct SubtaskLinks {
+    private var mergeTargets: [String: String] = [:]
+    private var knownIDs = Set<String>()
+
+    init(_ subtasks: [TaskSubtask]) {
+        for subtask in subtasks where knownIDs.insert(subtask.id).inserted {
+            if let target = subtask.mergedIntoSubtaskID { mergeTargets[subtask.id] = target }
+        }
+    }
+
+    func canonical(_ id: String) -> String {
         var current = id
         var seen = Set<String>()
-        while seen.insert(current).inserted,
-              let next = subtasks.first(where: { $0.id == current })?.mergedIntoSubtaskID {
+        while seen.insert(current).inserted, let next = mergeTargets[current] {
             current = next
         }
         return current
     }
 
+    func assignmentIDs(for agent: TaskSubtask) -> Set<String> {
+        Set(([agent.parentSubtaskID ?? agent.id] + agent.associatedSubtaskIDs).map(canonical))
+    }
+}
+
+/// Every agent lookup a render needs, answered from one pass over the context.
+/// Agents keep the most-recent-heartbeat order that per-call lookups produced.
+struct AssignmentIndex {
+    let links: SubtaskLinks
+    private let agents: [TaskSubtask]
+    private let agentPositionsByAssignment: [String: [Int]]
+
+    init(_ subtasks: [TaskSubtask]) {
+        links = SubtaskLinks(subtasks)
+        // Swift's sort is stable, so sorting only the agents preserves the
+        // relative order the full-list sort gave them.
+        agents = subtasks.filter(\.hasAgent).sorted {
+            ($0.lastHeartbeatAt ?? .distantPast) > ($1.lastHeartbeatAt ?? .distantPast)
+        }
+        var positions: [String: [Int]] = [:]
+        for (position, agent) in agents.enumerated() {
+            for id in links.assignmentIDs(for: agent) { positions[id, default: []].append(position) }
+        }
+        agentPositionsByAssignment = positions
+    }
+
+    func agents(for subtaskID: String, includingRemoved: Bool = false) -> [TaskSubtask] {
+        var seen = Set<String>()
+        return (agentPositionsByAssignment[links.canonical(subtaskID)] ?? []).compactMap { position in
+            let agent = agents[position]
+            guard includingRemoved || agent.isAgentVisible || agent.completionUnread else { return nil }
+            let identity = agent.sessionID.map { agent.provider.rawValue + ":" + $0.lowercased() } ?? agent.id
+            return seen.insert(identity).inserted ? agent : nil
+        }
+    }
+}
+
+extension TaskContext {
+    public func canonicalSubtaskID(_ id: String) -> String {
+        SubtaskLinks(subtasks).canonical(id)
+    }
+
     public func assignmentIDs(for agent: TaskSubtask) -> Set<String> {
-        Set(([agent.parentSubtaskID ?? agent.id] + agent.associatedSubtaskIDs).map(canonicalSubtaskID))
+        SubtaskLinks(subtasks).assignmentIDs(for: agent)
     }
 
     /// Older contexts stored one record as both the work assignment and its
@@ -93,17 +146,25 @@ extension TaskContext {
 
     /// Assignments survive runtime removal and have a stable order within each priority.
     public var focusSubtasks: [TaskSubtask] {
-        subtasks.enumerated().filter { $0.element.parentSubtaskID == nil && $0.element.mergedIntoSubtaskID == nil }
-            .sorted {
-                let lhs = priority($0.element), rhs = priority($1.element)
-                return lhs == rhs ? $0.offset < $1.offset : lhs < rhs
-            }.map(\.element)
+        focusSubtasks(using: AssignmentIndex(subtasks))
+    }
+
+    /// Each assignment's priority is computed once, not once per comparison.
+    func focusSubtasks(using index: AssignmentIndex, now: Date = Date()) -> [TaskSubtask] {
+        var ranked: [(offset: Int, rank: Int)] = []
+        for (offset, subtask) in subtasks.enumerated()
+        where subtask.parentSubtaskID == nil && subtask.mergedIntoSubtaskID == nil {
+            ranked.append((offset, priority(subtask, index: index, now: now)))
+        }
+        ranked.sort { $0.rank == $1.rank ? $0.offset < $1.offset : $0.rank < $1.rank }
+        return ranked.map { subtasks[$0.offset] }
     }
 
     /// The queue presents assignments and provider runtimes as one item type.
     /// Legacy split records stay readable, but their assignment metadata is
     /// folded into the visible runtime instead of producing a second UI row.
     public var taskItems: [TaskSubtask] {
+        let index = AssignmentIndex(subtasks)
         var items: [TaskSubtask] = []
         var seenRecords = Set<String>()
         var seenSessions = Set<String>()
@@ -115,8 +176,8 @@ extension TaskContext {
             }
             items.append(item)
         }
-        for root in focusSubtasks {
-            let linked = agents(for: root.id)
+        for root in focusSubtasks(using: index) {
+            let linked = index.agents(for: root.id)
             if root.isAssignmentOnly, !linked.isEmpty {
                 for var agent in linked {
                     if agent.assignmentDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -137,13 +198,7 @@ extension TaskContext {
     }
 
     public func agents(for subtaskID: String, includingRemoved: Bool = false) -> [TaskSubtask] {
-        var seen = Set<String>()
-        return subtasks.sorted { ($0.lastHeartbeatAt ?? .distantPast) > ($1.lastHeartbeatAt ?? .distantPast) }.filter { agent in
-            guard agent.hasAgent, assignmentIDs(for: agent).contains(canonicalSubtaskID(subtaskID)),
-                  includingRemoved || agent.isAgentVisible || agent.completionUnread else { return false }
-            let identity = agent.sessionID.map { agent.provider.rawValue + ":" + $0.lowercased() } ?? agent.id
-            return seen.insert(identity).inserted
-        }
+        AssignmentIndex(subtasks).agents(for: subtaskID, includingRemoved: includingRemoved)
     }
 
     public func canAutomaticallyRetire(_ agent: TaskSubtask) -> Bool {
@@ -155,20 +210,23 @@ extension TaskContext {
         }
     }
 
-    private func priority(_ subtask: TaskSubtask) -> Int {
-        let agents = agents(for: subtask.id)
-        if subtask.effectiveStatus() == .working || agents.contains(where: { $0.effectiveStatus() == .working }) { return 0 }
+    private func priority(_ subtask: TaskSubtask, index: AssignmentIndex, now: Date) -> Int {
+        let agents = index.agents(for: subtask.id)
+        if subtask.effectiveStatus(now: now) == .working || agents.contains(where: { $0.effectiveStatus(now: now) == .working }) { return 0 }
         if subtask.status == .blocked || agents.contains(where: { $0.attention != nil }) { return 1 }
-        if subtask.effectiveStatus() == .idle { return 2 }
+        if subtask.effectiveStatus(now: now) == .idle { return 2 }
         if subtask.status == .queued { return 3 }
         return 4
     }
 
     mutating func refreshAssignmentStatuses() {
+        // Only statuses and workspaces change below, so merge links stay valid
+        // for the whole pass.
+        let links = SubtaskLinks(subtasks)
         for index in subtasks.indices where subtasks[index].parentSubtaskID == nil && subtasks[index].mergedIntoSubtaskID == nil {
             guard subtasks[index].completionOverrideAt == nil else { continue }
             let hasLinkedRecords = subtasks.contains {
-                $0.id != subtasks[index].id && assignmentIDs(for: $0).contains(subtasks[index].id)
+                $0.id != subtasks[index].id && links.assignmentIDs(for: $0).contains(subtasks[index].id)
             }
             guard hasLinkedRecords else { continue }
             let children = agents(for: subtasks[index].id, includingRemoved: true)

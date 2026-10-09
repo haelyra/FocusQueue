@@ -8,6 +8,10 @@ public enum QueuePlacement: Sendable {
 /// Shared by the app and its agent helper. A separate file prevents unrelated
 /// cached app state from overwriting an agent's queue changes.
 public struct QueueOrderStore: Sendable {
+    /// Posted after a saved order changes outside the app, so the queue shows
+    /// the new order immediately instead of on its next poll.
+    public static let changeNotificationName = "com.haelyra.ecc-focus-queue.queue-order"
+
     public let directory: URL
     private let projectID: String?
     private var legacyFile: URL { directory.appendingPathComponent("order.json") }

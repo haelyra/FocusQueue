@@ -81,6 +81,12 @@ import UserNotifications
       name: Notification.Name(ProjectCatalogChangeNotification.name),
       object: nil
     )
+    DistributedNotificationCenter.default().addObserver(
+      self,
+      selector: #selector(reloadQueueOrder(_:)),
+      name: Notification.Name(QueueOrderStore.changeNotificationName),
+      object: nil
+    )
     model.placementHandler = { [weak self] placement in
       self?.positionPanelOnCurrentDisplay(placement, animated: true)
     }
@@ -322,6 +328,10 @@ import UserNotifications
 
   @objc private func importAgentRegistration(_ notification: Notification) {
     Task { await model.refreshExternalAgentRegistrations(force: true) }
+  }
+
+  @objc private func reloadQueueOrder(_ notification: Notification) {
+    model.reloadQueueOrder()
   }
 
   @objc private func reloadProjectCatalog(_ notification: Notification) {

@@ -94,6 +94,35 @@ struct DurableHistoryIntegrationTests {
     #expect(attributes[.modificationDate] as? Date == updated[.modificationDate] as? Date)
   }
 
+  @Test("Heartbeat-only context changes wait for a meaningful change before reaching history")
+  func heartbeatOnlyChangeLeavesManifestUntouched() async throws {
+    let fixture = try await DurableFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let contexts = TaskContextStore(root: fixture.root)
+    var agent = TaskSubtask(id: "agent-one", title: "Agent", sessionID: UUID().uuidString,
+      status: .working, lastHeartbeatAt: Date())
+    let model = await fixture.model()
+    try await contexts.upsertSubtask(ticketID: "ECC-301", subtask: agent)
+    try await Task.sleep(for: .milliseconds(2100))
+    await model.refresh()
+    let store = DurableLibraryStore(root: fixture.root)
+    let captured = try await store.summary()
+
+    // Agents heartbeat constantly. Each one used to rewrite the whole manifest.
+    agent.lastHeartbeatAt = Date().addingTimeInterval(5)
+    try await contexts.upsertSubtask(ticketID: "ECC-301", subtask: agent)
+    try await Task.sleep(for: .milliseconds(2100))
+    await model.refresh()
+    #expect(model.subtasks(for: "ECC-301").first?.lastHeartbeatAt == agent.lastHeartbeatAt)
+    #expect(try await store.summary().revision == captured.revision)
+
+    agent.status = .blocked
+    try await contexts.upsertSubtask(ticketID: "ECC-301", subtask: agent)
+    try await Task.sleep(for: .milliseconds(2100))
+    await model.refresh()
+    #expect(try await store.summary().revision > captured.revision)
+  }
+
   @Test("Reports created after bootstrap enter history without a full migration")
   func newReportIsCapturedIncrementally() async throws {
     let fixture = try await DurableFixture()

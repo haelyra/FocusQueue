@@ -232,6 +232,8 @@ final class QueueViewModel {
   @ObservationIgnored private var lastDurableDashboard: DashboardDocument?
   @ObservationIgnored private var lastDurableReports: [String: DailyReportDocument] = [:]
   @ObservationIgnored private var lastDurableContexts: [String: TaskContext] = [:]
+  @ObservationIgnored private var lastDurableVolatileFlush: Date?
+  static let durableVolatileFlushInterval: TimeInterval = 10 * 60
   @ObservationIgnored private var durableDocumentStamps: [String: DurableDocumentStamp] = [:]
   @ObservationIgnored private var lastContextRefresh: Date?
   @ObservationIgnored private var lastDashboardRead: Date?
@@ -258,6 +260,7 @@ final class QueueViewModel {
   @ObservationIgnored private(set) var bootstrapTail: Task<Void, Never>?
   @ObservationIgnored private var refreshInFlight = false
   @ObservationIgnored private var projectRefreshPending = false
+  @ObservationIgnored private var followUpRefreshPending = false
   @ObservationIgnored private var lastActivityCheck = Date()
   @ObservationIgnored private let agentActivityObserver: AgentActivityObserver
   @ObservationIgnored private var quotaFallbackedSubtaskKeys: Set<String> = []
@@ -1097,9 +1100,14 @@ final class QueueViewModel {
       if showsActivity { isRefreshing = false }
       if projectRefreshPending {
         projectRefreshPending = false
+        followUpRefreshPending = false
         Task { @MainActor [weak self] in
           await self?.refresh(forceRecurringPRProgress: true, userInitiated: true)
         }
+      } else if followUpRefreshPending {
+        followUpRefreshPending = false
+        lastDashboardRead = nil
+        Task { @MainActor [weak self] in await self?.refresh() }
       }
     }
     do {
@@ -1240,6 +1248,29 @@ final class QueueViewModel {
     } catch { loadError = error.localizedDescription }
   }
 
+  /// Refreshes now, or once more right after the refresh in flight. An agent
+  /// reply must not be lost because the periodic poll happened to be running.
+  func refreshSoon() async {
+    lastDashboardRead = nil
+    guard !refreshInFlight else {
+      followUpRefreshPending = true
+      return
+    }
+    await refresh()
+  }
+
+  /// Reads only the saved order file. Agents and the CLI change the order on
+  /// demand, so the queue follows that signal instead of waiting for the next
+  /// full refresh, which also polls processes, contexts, and reports.
+  func reloadQueueOrder() {
+    do {
+      let updated = try queueOrderStore.load()
+      if savedQueueOrder != updated { savedQueueOrder = updated }
+    } catch {
+      // The next full refresh reports a persistent read failure.
+    }
+  }
+
   @discardableResult
   func moveTicketToRest(_ ticketID: String) -> Bool {
     let others = openTickets.filter { $0.isOpen && $0.id != ticketID }
@@ -1347,9 +1378,11 @@ final class QueueViewModel {
           effort: chatEffort
         )
         self.appendChat(QueueChatMessage(role: .agent, text: reply.message), ticketID: ticketID)
-        if await self.reloadConfigurationFromDisk() {
-          await self.refresh()
-        }
+        // The agent edits the queue, dashboards, and settings through the CLI.
+        // Show its saved result now so the reply and the queue agree.
+        _ = await self.reloadConfigurationFromDisk()
+        self.reloadQueueOrder()
+        await self.refreshSoon()
         await self.reloadPresentedPlan()
         if self.dailyReport == nil {
           await self.reloadDailyReport()
@@ -3271,6 +3304,7 @@ final class QueueViewModel {
       let pendingRecords = try await agentRegistrationInbox.pendingRecords()
       guard !pendingRecords.isEmpty else { return }
       await captureDurableState(localState)
+      let stateBeforeImport = localState
       let external = try await ExternalAgentRegistry(root: paths.supportDirectory).registrations()
       var imported: [PendingAgentRegistration] = []
       for pending in pendingRecords {
@@ -3313,8 +3347,12 @@ final class QueueViewModel {
             ? "\(registration.provider.displayName) is running in its saved WezTerm pane. Click \(subtask.title) to focus it."
             : "Session tracked. Continue in its existing terminal; Focus Queue will check it before resuming."
       }
-      try await stateStore.save(localState)
-      await captureDurableState(localState)
+      // Hooks re-send unchanged registrations constantly. Rewriting identical
+      // state here also rewrote durable history on every refresh.
+      if localState != stateBeforeImport {
+        try await stateStore.save(localState)
+        await captureDurableState(localState)
+      }
       await agentRegistrationInbox.acknowledge(imported)
     } catch {
       loadError = "Could not import agent registration: \(error.localizedDescription)"
@@ -4594,6 +4632,7 @@ final class QueueViewModel {
       lastDurableState = nil
       lastDurableDashboard = nil
       lastDurableContexts.removeAll()
+      lastDurableVolatileFlush = nil
       durableErrors.removeAll()
       durableRetryAfter.removeAll()
       recordImportWarnings(summary.warnings)
@@ -4626,11 +4665,25 @@ final class QueueViewModel {
   }
 
   private func captureDurableContexts(_ contexts: [TaskContext]) async {
-    let changed = contexts.filter { lastDurableContexts[$0.ticketID] != $0 }
+    // Heartbeats and `updatedAt` move on nearly every poll. Recording each
+    // move rewrote the whole history manifest and added a revision per task
+    // per minute, so volatile-only changes wait for a meaningful change or the
+    // periodic flush.
+    let now = Date()
+    let flushVolatile = lastDurableVolatileFlush.map {
+      now.timeIntervalSince($0) >= Self.durableVolatileFlushInterval
+    } ?? true
+    let changed = contexts.filter { context in
+      guard let recorded = lastDurableContexts[context.ticketID] else { return true }
+      guard recorded != context else { return false }
+      return flushVolatile || recorded.withoutVolatileFields != context.withoutVolatileFields
+    }
+    if changed.isEmpty, flushVolatile { lastDurableVolatileFlush = now }
     if !changed.isEmpty, durableRetryAfter["contexts"].map({ $0 <= Date() }) ?? true {
       do {
         let summary = try await durableLibrary.reconcile(contexts: changed)
         for context in changed { lastDurableContexts[context.ticketID] = context }
+        if flushVolatile { lastDurableVolatileFlush = now }
         recordDurableError(nil, scope: "contexts")
         recordImportWarnings(summary.warnings)
       } catch { recordDurableError(error, scope: "contexts") }

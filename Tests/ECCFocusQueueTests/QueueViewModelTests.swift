@@ -1006,6 +1006,58 @@ struct QueueViewModelTests {
     #expect(try external.load() == [])
   }
 
+  @Test("A chat reply shows the agent's saved order even while a refresh is still running")
+  func chatReorderIsVisibleDuringSlowRefresh() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let agent = ControlledQueueAgent()
+    let dashboards = HeldDashboardRepository()
+    let model = await fixture.model(agent: agent, dashboardRepository: dashboards)
+    #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
+
+    #expect(model.sendQueueAgentMessage("Put ECC-102 first"))
+    try await eventually { await agent.hasPendingReply }
+    // The periodic refresh is still reading dashboards when the reply lands,
+    // which made the reply's own refresh a no-op.
+    await dashboards.hold()
+    let slowRefresh = Task { await model.refresh(userInitiated: true) }
+    try await eventually { await dashboards.heldLoads > 0 }
+    // The agent saves through focus-queue-session, which writes this store.
+    try QueueOrderStore(root: fixture.root, projectID: ProjectCatalog.allProjectsScopeID)
+      .setOrder(["ECC-102"], tickets: fixture.tickets, fallbackIDs: [])
+    await agent.reply("ECC-102 is now first.")
+
+    try await eventually { !model.isQueueAgentResponding }
+    #expect(model.openTickets.map(\.id) == ["ECC-102", "ECC-101"])
+
+    // The skipped refresh runs once the slow one finishes.
+    let loadsBeforeRelease = await dashboards.completedLoads
+    await dashboards.release()
+    await slowRefresh.value
+    try await eventually { await dashboards.completedLoads >= loadsBeforeRelease + 2 }
+  }
+
+  @Test("A queue change signal reloads the saved order without a full refresh")
+  func queueOrderSignalReloadsOrder() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
+
+    try QueueOrderStore(root: fixture.root, projectID: ProjectCatalog.allProjectsScopeID)
+      .move("ECC-102", to: .top, tickets: fixture.tickets, fallbackIDs: [])
+    #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
+    model.reloadQueueOrder()
+    #expect(model.openTickets.map(\.id) == ["ECC-102", "ECC-101"])
+
+    // A missing order file restores priority order rather than keeping a stale one.
+    try FileManager.default.removeItem(at: QueueOrderStore(
+      root: fixture.root, projectID: ProjectCatalog.allProjectsScopeID).storageURL)
+    model.reloadQueueOrder()
+    #expect(model.savedQueueOrder == nil)
+    #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
+  }
+
   @Test("Queued work items can exist without agents and retain their description")
   func standaloneSubtaskCreation() async throws {
     let fixture = try await Fixture()
@@ -3260,6 +3312,62 @@ private struct Fixture {
     let directory = paths.ingestionRuntimeDirectory.appendingPathComponent("reports/2026-09-10")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     try JSONEncoder().encode(report).write(to: directory.appendingPathComponent("\(report.runID).json"))
+  }
+}
+
+/// Suspends dashboard reads while held, standing in for a slow periodic refresh.
+private actor HeldDashboardRepository: DashboardManaging {
+  private let base = JSONDashboardRepository()
+  private var holding = false
+  private var held: [CheckedContinuation<Void, Never>] = []
+  private(set) var completedLoads = 0
+  var heldLoads: Int { held.count }
+
+  func hold() { holding = true }
+  func release() {
+    holding = false
+    let waiting = held
+    held.removeAll()
+    for continuation in waiting { continuation.resume() }
+  }
+
+  func load(from url: URL) async throws -> DashboardDocument {
+    if holding { await withCheckedContinuation { held.append($0) } }
+    defer { completedLoads += 1 }
+    return try await base.load(from: url)
+  }
+  func modificationDate(at url: URL) async throws -> Date? { try await base.modificationDate(at: url) }
+  func loadSnapshot(from url: URL) async throws -> DashboardSnapshot {
+    try await base.loadSnapshot(from: url)
+  }
+  func createTicket(
+    _ ticket: DashboardTicket, in url: URL, expectedRevision: DashboardRevision,
+    checking otherDashboardURLs: [URL]
+  ) async throws -> DashboardSnapshot {
+    try await base.createTicket(ticket, in: url, expectedRevision: expectedRevision,
+      checking: otherDashboardURLs)
+  }
+  func renameTicket(
+    id: String, to title: String, in url: URL, expectedRevision: DashboardRevision
+  ) async throws -> DashboardSnapshot {
+    try await base.renameTicket(id: id, to: title, in: url, expectedRevision: expectedRevision)
+  }
+  func resolveTicket(
+    id: String, reason: String, evidence: [String], completedBy: String,
+    in url: URL, expectedRevision: DashboardRevision
+  ) async throws -> DashboardSnapshot {
+    try await base.resolveTicket(id: id, reason: reason, evidence: evidence,
+      completedBy: completedBy, in: url, expectedRevision: expectedRevision)
+  }
+  func setTicketPriority(
+    id: String, to priority: String, in url: URL, expectedRevision: DashboardRevision
+  ) async throws -> DashboardSnapshot {
+    try await base.setTicketPriority(id: id, to: priority, in: url, expectedRevision: expectedRevision)
+  }
+  func setTicketStatus(
+    id: String, to status: String, in url: URL, expectedRevision: DashboardRevision
+  ) async throws -> DashboardSnapshot {
+    try await base.setTicketStatus(id: id, to: status, in: url, expectedRevision: expectedRevision)
   }
 }
 

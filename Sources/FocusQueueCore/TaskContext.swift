@@ -1301,15 +1301,7 @@ public actor TaskContextStore {
         let archive = context.contextDirectory.appendingPathComponent("archive", isDirectory: true)
         let plan = try Data(contentsOf: URL(fileURLWithPath: context.planPath))
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        var meaningfulContext = context
-        meaningfulContext.updatedAt = Date(timeIntervalSince1970: 0)
-        for index in meaningfulContext.subtasks.indices {
-            meaningfulContext.subtasks[index].lastHeartbeatAt = nil
-            meaningfulContext.subtasks[index].completionUnread = false
-            meaningfulContext.subtasks[index].observedEventID = nil
-            meaningfulContext.subtasks[index].observedEventAt = nil
-        }
-        var content = try encoder.encode(meaningfulContext)
+        var content = try encoder.encode(context.withoutVolatileFields)
         content.append(plan)
         let fingerprint = SHA256.hash(data: content).map { String(format: "%02x", $0) }.joined()
         let destination = archive.appendingPathComponent("snapshot-\(fingerprint)", isDirectory: true)
@@ -1337,5 +1329,22 @@ public actor TaskContextStore {
         guard flock(descriptor, LOCK_EX) == 0 else { throw CocoaError(.fileWriteUnknown) }
         defer { flock(descriptor, LOCK_UN) }
         return try body()
+    }
+}
+
+extension TaskContext {
+    /// The context without fields that change on every heartbeat or poll.
+    /// Equal results describe the same work, so callers can skip rewriting
+    /// snapshots and history when only these fields moved.
+    public var withoutVolatileFields: TaskContext {
+        var context = self
+        context.updatedAt = Date(timeIntervalSince1970: 0)
+        for index in context.subtasks.indices {
+            context.subtasks[index].lastHeartbeatAt = nil
+            context.subtasks[index].completionUnread = false
+            context.subtasks[index].observedEventID = nil
+            context.subtasks[index].observedEventAt = nil
+        }
+        return context
     }
 }

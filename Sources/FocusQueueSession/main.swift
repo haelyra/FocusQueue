@@ -184,6 +184,11 @@ enum SessionRegistrationError: Error, LocalizedError {
         let order = QueueOrderStore.prioritizingRecentPrompts(
             baseline, lastPromptAtByTicketID: promptDates)
         try emit(["order": order.filter { visible?.contains($0.id) ?? true }.map(\.id)])
+        if arguments.dropFirst().first != "list" {
+            DistributedNotificationCenter.default().postNotificationName(
+                Notification.Name(QueueOrderStore.changeNotificationName),
+                object: nil, userInfo: nil, deliverImmediately: true)
+        }
         notifyContextChanged()
     }
 

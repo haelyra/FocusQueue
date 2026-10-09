@@ -1759,11 +1759,11 @@ public struct LocalState: Codable, Equatable, Sendable {
       $0.provider == session.provider
         && $0.sessionID.caseInsensitiveCompare(session.sessionID) == .orderedSame
     }
-    let previous = agentSessions.first(where: matchesIdentity)
+    let position = agentSessions.firstIndex(where: matchesIdentity)
+    let previous = position.map { agentSessions[$0] }
     let persistedID = previous?.id ?? session.id
     let sameTask = previous?.ticketID == session.ticketID ? previous : nil
-    agentSessions.removeAll(where: matchesIdentity)
-    agentSessions.append(TaskAgentSession(
+    let updated = TaskAgentSession(
       id: persistedID,
       ticketID: session.ticketID,
       provider: session.provider,
@@ -1779,7 +1779,18 @@ public struct LocalState: Codable, Equatable, Sendable {
       supportDirectory: session.supportDirectory ?? sameTask?.supportDirectory,
       resumePrompt: nil,
       tmux: session.tmux ?? previous?.tmux
-    ))
+    )
+    // Replace in place. Re-registering an unchanged session must leave the
+    // saved state identical, or every hook event rewrites state and history.
+    guard let position else {
+      agentSessions.append(updated)
+      return
+    }
+    agentSessions[position] = updated
+    var index = agentSessions.index(after: position)
+    while index < agentSessions.endIndex {
+      if matchesIdentity(agentSessions[index]) { agentSessions.remove(at: index) } else { index += 1 }
+    }
   }
 
   private enum CodingKeys: String, CodingKey {

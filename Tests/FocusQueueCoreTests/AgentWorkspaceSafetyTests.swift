@@ -244,6 +244,90 @@ struct AgentWorkspaceSafetyTests {
         #expect(explicit.path == fixture.repository.path)
         #expect(!explicit.managed)
     }
+
+    @Test("Managed root markers survive macOS device-number drift across remounts")
+    func markerDeviceDrift() async throws {
+        let fixture = try await WorkspaceSafetyFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let manager = TaskWorktreeManager()
+        let store = TaskContextStore(root: fixture.support)
+        _ = try await manager.provisionAgent(ticketID: "ECC-035", subtaskID: UUID().uuidString,
+            path: fixture.repository.path, policy: .isolatedCommittedSnapshot, store: store)
+        let root = TaskWorktreeManager.managedRoot(repositoryPath: fixture.repository.path)
+        let markerURL = root.appendingPathComponent(".focus-queue-worktrees.json")
+        var marker = try #require(try JSONSerialization.jsonObject(
+            with: Data(contentsOf: markerURL)) as? [String: Any])
+        let identity = try #require(marker["repositoryIdentity"] as? String)
+        let drifted = try #require(Self.replacingDevice(in: identity, with: "1"))
+        #expect(drifted != identity)
+        marker["repositoryIdentity"] = drifted
+        try JSONSerialization.data(withJSONObject: marker, options: [.sortedKeys])
+            .write(to: markerURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: markerURL.path)
+
+        // Provisioning must succeed and self-heal the marker back to the live device.
+        _ = try await manager.provisionAgent(ticketID: "ECC-036", subtaskID: UUID().uuidString,
+            path: fixture.repository.path, policy: .isolatedCommittedSnapshot, store: store)
+        let healed = try #require(try JSONSerialization.jsonObject(
+            with: Data(contentsOf: markerURL)) as? [String: Any])
+        #expect(healed["repositoryIdentity"] as? String == identity)
+    }
+
+    @Test("A marker whose repository inode differs is still rejected as a different repository")
+    func markerInodeMismatch() async throws {
+        let fixture = try await WorkspaceSafetyFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let manager = TaskWorktreeManager()
+        let store = TaskContextStore(root: fixture.support)
+        _ = try await manager.provisionAgent(ticketID: "ECC-035", subtaskID: UUID().uuidString,
+            path: fixture.repository.path, policy: .isolatedCommittedSnapshot, store: store)
+        let root = TaskWorktreeManager.managedRoot(repositoryPath: fixture.repository.path)
+        let markerURL = root.appendingPathComponent(".focus-queue-worktrees.json")
+        var marker = try #require(try JSONSerialization.jsonObject(
+            with: Data(contentsOf: markerURL)) as? [String: Any])
+        let identity = try #require(marker["repositoryIdentity"] as? String)
+        marker["repositoryIdentity"] = try #require(Self.replacingInode(in: identity, with: "1"))
+        try JSONSerialization.data(withJSONObject: marker, options: [.sortedKeys])
+            .write(to: markerURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: markerURL.path)
+
+        await #expect(throws: TaskContextError.self) {
+            try await manager.provisionAgent(ticketID: "ECC-036", subtaskID: UUID().uuidString,
+                path: fixture.repository.path, policy: .isolatedCommittedSnapshot, store: store)
+        }
+    }
+
+    @Test("Saved workspaces reopen after device-number drift without losing replacement protection")
+    func workspaceDeviceDrift() async throws {
+        let fixture = try await WorkspaceSafetyFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let manager = TaskWorktreeManager()
+        let store = TaskContextStore(root: fixture.support)
+        let saved = try await manager.provisionAgent(ticketID: "ECC-035", subtaskID: UUID().uuidString,
+            path: fixture.repository.path, policy: .isolatedCommittedSnapshot, store: store)
+        var drifted = saved
+        drifted.repositoryIdentity = Self.replacingDevice(
+            in: try #require(saved.repositoryIdentity), with: "1")
+        try await manager.validate(drifted)
+
+        var replaced = saved
+        replaced.repositoryIdentity = Self.replacingInode(
+            in: try #require(saved.repositoryIdentity), with: "1")
+        await #expect(throws: TaskContextError.self) { try await manager.validate(replaced) }
+    }
+
+    private static func replacingDevice(in identity: String, with device: String) -> String? {
+        guard let inodeSeparator = identity.lastIndex(of: ":") else { return nil }
+        let tail = identity[inodeSeparator...]
+        let head = identity[..<inodeSeparator]
+        guard let deviceSeparator = head.lastIndex(of: ":") else { return nil }
+        return "\(head[..<deviceSeparator]):\(device)\(tail)"
+    }
+
+    private static func replacingInode(in identity: String, with inode: String) -> String? {
+        guard let inodeSeparator = identity.lastIndex(of: ":") else { return nil }
+        return "\(identity[..<inodeSeparator]):\(inode)"
+    }
 }
 
 private struct WorkspaceSafetyFixture {

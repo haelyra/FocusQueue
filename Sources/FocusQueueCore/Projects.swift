@@ -227,6 +227,21 @@ public struct ProjectTaskStore: Sendable {
         return taskID
     }
 
+    /// Removes a task only while it still carries this route's marker, so a
+    /// failed launch can roll back the task it created without deleting a
+    /// task someone else has since claimed or edited.
+    public func removeUnclaimedRouteTask(ticketID: String, routeID: String) throws {
+        guard UUID(uuidString: routeID) != nil else { throw TaskContextError.invalidIdentifier }
+        try update { tickets in
+            guard let index = tickets.firstIndex(where: {
+                ($0["id"] as? String)?.caseInsensitiveCompare(ticketID) == .orderedSame
+            }), (tickets[index]["focusQueueRouteID"] as? String)?.lowercased() == routeID.lowercased() else {
+                return
+            }
+            tickets.remove(at: index)
+        }
+    }
+
     public func taskID(forRoute routeID: String) throws -> String? {
         guard UUID(uuidString: routeID) != nil else { throw TaskContextError.invalidIdentifier }
         return try ProjectFileLock.withLock(file: dashboardURL) {

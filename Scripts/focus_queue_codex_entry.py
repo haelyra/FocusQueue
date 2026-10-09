@@ -260,15 +260,21 @@ def repository_identity(source):
 
 
 def same_repository_identity(left, right):
-    """Compare canonical filesystem identity across macOS path aliases."""
+    """Compare canonical filesystem identity across macOS path aliases.
+
+    Identities embed the device number (st_dev), which macOS reassigns every
+    time the volume mounts, so a stored identity from before a reboot never
+    matches exactly. The canonical path and inode decide; the device is
+    ignored.
+    """
     if not isinstance(left, str) or not isinstance(right, str):
         return False
     try:
-        left_path, left_device, left_inode = left.rsplit(":", 2)
-        right_path, right_device, right_inode = right.rsplit(":", 2)
+        left_path, _left_device, left_inode = left.rsplit(":", 2)
+        right_path, _right_device, right_inode = right.rsplit(":", 2)
     except ValueError:
         return False
-    return (left_device == right_device and left_inode == right_inode
+    return (left_inode == right_inode
             and Path(left_path).resolve() == Path(right_path).resolve())
 
 

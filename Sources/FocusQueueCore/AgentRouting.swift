@@ -135,6 +135,22 @@ public enum AgentRouteInspectionStatus: String, Codable, Equatable, Sendable {
     case noRepositoryMatch = "no-repository-match"
 }
 
+/// One selectable routing destination, listed in every inspection packet so the
+/// router can choose a project explicitly instead of accepting the inference.
+public struct AgentRouteProjectOption: Codable, Equatable, Sendable {
+    public var id: String
+    public var name: String
+    public var taskPrefix: String
+    public var repositoryPath: String?
+
+    public init(id: String, name: String, taskPrefix: String, repositoryPath: String?) {
+        self.id = id
+        self.name = name
+        self.taskPrefix = taskPrefix
+        self.repositoryPath = repositoryPath
+    }
+}
+
 public struct AgentRouteInspection: Codable, Equatable, Sendable {
     public let schemaVersion: Int
     public let status: AgentRouteInspectionStatus
@@ -145,6 +161,7 @@ public struct AgentRouteInspection: Codable, Equatable, Sendable {
     public let repositoryPath: String?
     public let projectPlanPath: String?
     public let candidates: [AgentRouteCandidate]
+    public let projects: [AgentRouteProjectOption]
     public let source: AgentRouteSource
     public let startCommand: String
     public let newTaskCommand: String
@@ -154,6 +171,7 @@ public struct AgentRouteInspection: Codable, Equatable, Sendable {
                 automaticRoutingEnabled: Bool, inferredProjectID: String?,
                 inferredProjectName: String?, repositoryPath: String?,
                 projectPlanPath: String?, candidates: [AgentRouteCandidate],
+                projects: [AgentRouteProjectOption] = [],
                 source: AgentRouteSource, startCommand: String,
                 newTaskCommand: String, requiredParameters: [String]) {
         schemaVersion = 1
@@ -165,6 +183,7 @@ public struct AgentRouteInspection: Codable, Equatable, Sendable {
         self.repositoryPath = repositoryPath
         self.projectPlanPath = projectPlanPath
         self.candidates = candidates
+        self.projects = projects
         self.source = source
         self.startCommand = startCommand
         self.newTaskCommand = newTaskCommand
@@ -338,6 +357,16 @@ public struct AgentRouteStore: Sendable {
         try save(intent)
     }
 
+    /// Rolls back a destination recorded for a launch that failed before the
+    /// provider started, so a retry creates a fresh task instead of
+    /// rediscovering the rolled-back one.
+    public func clearDestination(routeID: String, taskID: String) throws {
+        guard var intent = try load(routeID: routeID),
+              intent.taskID?.caseInsensitiveCompare(taskID) == .orderedSame else { return }
+        intent.taskID = nil
+        try save(intent)
+    }
+
     /// A launch that failed before writing a durable startup receipt may retry
     /// with the same task and subtask identities. Once a receipt exists, callers
     /// must replay it instead of releasing the claim.
@@ -411,10 +440,20 @@ public actor AgentRouteCoordinator {
         }
         let activeProjects = configuration.projects.filter { $0.archivedAt == nil }
         var matchedProject: ProjectDefinition?
-        for candidate in activeProjects where !candidate.repositoryPath.isEmpty {
-            if try await repositoryResolver.matches(path: request.source.cwd, project: candidate) {
-                matchedProject = candidate
-                break
+        // An explicit project mention in the objective ("ECC PRs", "ECC-041",
+        // a project name) states the destination project. The launch directory
+        // is only a fallback signal — people start sessions from anywhere.
+        let promptMatches = activeProjects.filter {
+            !$0.repositoryPath.isEmpty && Self.promptMentionsProject(prompt, $0)
+        }
+        if promptMatches.count == 1 {
+            matchedProject = promptMatches[0]
+        } else {
+            for candidate in activeProjects where !candidate.repositoryPath.isEmpty {
+                if try await repositoryResolver.matches(path: request.source.cwd, project: candidate) {
+                    matchedProject = candidate
+                    break
+                }
             }
         }
         let project = matchedProject
@@ -451,10 +490,26 @@ public actor AgentRouteCoordinator {
             inferredProjectID: project?.id, inferredProjectName: project?.name,
             repositoryPath: matchedProject?.repositoryPath ?? request.source.cwd,
             projectPlanPath: projectPlan,
-            candidates: candidates, source: request.source,
+            candidates: candidates,
+            projects: activeProjects.map { AgentRouteProjectOption(
+                id: $0.id, name: $0.name, taskPrefix: $0.taskPrefix,
+                repositoryPath: $0.repositoryPath.isEmpty ? nil : $0.repositoryPath) },
+            source: request.source,
             startCommand: "focus-queue-session route start \(routeID) --task <TASK-ID> --title <TITLE> --description <DESCRIPTION> --provider \(request.provider.rawValue) --workspace isolated-snapshot",
             newTaskCommand: "focus-queue-session route start \(routeID) --project \(project?.id ?? ProjectCatalog.otherID) --task-title <TASK-TITLE> --title <SUBTASK-TITLE> --description <DESCRIPTION> --provider \(request.provider.rawValue) --workspace isolated-snapshot",
             requiredParameters: ["task-or-project", "title", "description", "provider", "workspace"])
+    }
+
+    /// Whole-word, case-insensitive mention of a project's ID, name, or task
+    /// prefix. A ticket ID like "ECC-041" matches its project's prefix.
+    static func promptMentionsProject(_ prompt: String, _ project: ProjectDefinition) -> Bool {
+        [project.id, project.name, project.taskPrefix].contains { term in
+            guard !term.isEmpty else { return false }
+            let pattern = "\\b\(NSRegularExpression.escapedPattern(for: term))\\b"
+            return (try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]))
+                .map { $0.firstMatch(in: prompt, range: NSRange(prompt.startIndex..., in: prompt)) != nil }
+                ?? false
+        }
     }
 }
 

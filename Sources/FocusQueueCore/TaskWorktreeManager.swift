@@ -40,6 +40,34 @@ public actor TaskWorktreeManager {
         let repositoryIdentity: String
     }
 
+    /// Repository identities embed the device number (`st_dev`), which macOS
+    /// reassigns every time the volume mounts, so a stored identity from before
+    /// a reboot never matches exactly. The canonical path and inode decide
+    /// whether two identities name the same repository; the device is ignored.
+    nonisolated static func sameRepositoryIdentity(_ left: String, _ right: String) -> Bool {
+        if left == right { return true }
+        func parse(_ value: String) -> (path: String, inode: Substring)? {
+            guard let inodeSeparator = value.lastIndex(of: ":") else { return nil }
+            let inode = value[value.index(after: inodeSeparator)...]
+            let head = value[..<inodeSeparator]
+            guard let deviceSeparator = head.lastIndex(of: ":") else { return nil }
+            return (String(head[..<deviceSeparator]), inode)
+        }
+        guard let lhs = parse(left), let rhs = parse(right), lhs.inode == rhs.inode else {
+            return false
+        }
+        return URL(fileURLWithPath: lhs.path).standardizedFileURL.resolvingSymlinksInPath().path
+            == URL(fileURLWithPath: rhs.path).standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    nonisolated static func sameRepositoryIdentity(_ left: String?, _ right: String?) -> Bool {
+        switch (left, right) {
+        case (.none, .none): return true
+        case let (.some(left), .some(right)): return sameRepositoryIdentity(left, right)
+        default: return false
+        }
+    }
+
     public nonisolated static func managedRoot(repositoryPath: String) -> URL {
         let repository = URL(fileURLWithPath: repositoryPath).standardizedFileURL
         return repository.appendingPathComponent(".worktrees", isDirectory: true)
@@ -157,7 +185,7 @@ public actor TaskWorktreeManager {
                 sameSelection = !createWorktree && saved.path == path
             }
             guard sameSelection,
-                  saved.repositoryIdentity == source.repositoryIdentity else {
+                  Self.sameRepositoryIdentity(saved.repositoryIdentity, source.repositoryIdentity) else {
                 throw TaskContextError.unsafeWorktree("This agent already has a different assigned workspace. Reopen it from the task, or start a new agent to choose another workspace.")
             }
             try await restoreIfNeeded(saved, ticketID: ticketID, subtaskID: subtaskID, store: store)
@@ -195,8 +223,8 @@ public actor TaskWorktreeManager {
         }
         let actual = try await workspace(at: saved.path)
         let expectedRepository = try await repositoryIdentity(in: saved.repositoryPath)
-        guard actual.repositoryIdentity == expectedRepository,
-              saved.repositoryIdentity == nil || actual.repositoryIdentity == saved.repositoryIdentity,
+        guard Self.sameRepositoryIdentity(actual.repositoryIdentity, expectedRepository),
+              saved.repositoryIdentity.map({ Self.sameRepositoryIdentity(actual.repositoryIdentity, $0) }) ?? true,
               saved.gitDirectory == nil || actual.gitDirectory == saved.gitDirectory else {
             throw TaskContextError.unsafeWorktree("Workspace identity changed. Restore the assigned checkout or record an approved workspace change before reopening.")
         }
@@ -549,9 +577,17 @@ public actor TaskWorktreeManager {
                 // Another process may have claimed this empty root for the same repository.
             }
         }
-        guard try readMarker(at: marker) == expected else {
-            throw TaskContextError.unsafeWorktree(
-                "Managed worktree storage belongs to a different repository: \(root.path)")
+        let storedMarker = try readMarker(at: marker)
+        if storedMarker != expected {
+            guard storedMarker.schemaVersion == expected.schemaVersion,
+                  storedMarker.repositoryPath == expected.repositoryPath,
+                  Self.sameRepositoryIdentity(storedMarker.repositoryIdentity, expected.repositoryIdentity) else {
+                throw TaskContextError.unsafeWorktree(
+                    "Managed worktree storage belongs to a different repository: \(root.path)")
+            }
+            // Only the device number drifted across a remount or reboot.
+            // Refresh the marker so it carries the current identity again.
+            try replaceMarker(expected, at: marker)
         }
         return root
     }
@@ -576,6 +612,41 @@ public actor TaskWorktreeManager {
 
     private struct POSIXMarkerError: Error {
         let code: Int32
+    }
+
+    /// Atomically replace an existing marker (used when only the unstable
+    /// device number drifted). Writes a temporary sibling and renames over the
+    /// marker so readers never observe a partial file.
+    private func replaceMarker(_ marker: ManagedRootMarker, at url: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        var data = try encoder.encode(marker)
+        data.append(0x0A)
+        let temporary = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(Self.markerName).\(UUID().uuidString).tmp")
+        let descriptor = Darwin.open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        guard descriptor >= 0 else { throw POSIXMarkerError(code: errno) }
+        do {
+            try data.withUnsafeBytes { bytes in
+                var offset = 0
+                while offset < bytes.count {
+                    let written = Darwin.write(descriptor, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                    guard written > 0 else { throw POSIXMarkerError(code: errno) }
+                    offset += written
+                }
+            }
+            guard Darwin.fsync(descriptor) == 0 else { throw POSIXMarkerError(code: errno) }
+            Darwin.close(descriptor)
+        } catch {
+            Darwin.close(descriptor)
+            try? FileManager.default.removeItem(at: temporary)
+            throw error
+        }
+        guard Darwin.rename(temporary.path, url.path) == 0 else {
+            let code = errno
+            try? FileManager.default.removeItem(at: temporary)
+            throw POSIXMarkerError(code: code)
+        }
     }
 
     private func writeMarker(_ marker: ManagedRootMarker, to url: URL) throws {

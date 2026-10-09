@@ -87,6 +87,95 @@ struct AgentRoutingTests {
         }
     }
 
+    @Test("An objective naming a project routes to it even from another project's repository")
+    func promptMentionSelectsProject() async throws {
+        let fixture = try await RoutingFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let (configuration, eccRepository) = try await fixture.addingProject(
+            id: "ecc", name: "ECC", prefix: "ECC")
+
+        let packet = try await AgentRouteCoordinator(root: fixture.support).inspect(
+            .init(prompt: "Resolve the open ECC PRs", provider: .codex,
+                  source: .init(cwd: fixture.repository.path, tmuxName: "router")),
+            configuration: configuration)
+
+        #expect(packet.inferredProjectID == "ecc")
+        #expect(packet.repositoryPath == eccRepository.path)
+        #expect(packet.newTaskCommand.contains("--project ecc"))
+        #expect(packet.projects.map(\.id).contains("focus"))
+        #expect(packet.projects.map(\.id).contains("ecc"))
+        #expect(packet.projects.map(\.id).contains("other"))
+        // A ticket ID names its project through the prefix.
+        let byTicket = try await AgentRouteCoordinator(root: fixture.support).inspect(
+            .init(prompt: "Finish ECC-041 before Friday", provider: .codex,
+                  source: .init(cwd: fixture.repository.path, tmuxName: "router")),
+            configuration: configuration)
+        #expect(byTicket.inferredProjectID == "ecc")
+    }
+
+    @Test("An objective naming two projects falls back to launch-directory inference")
+    func ambiguousPromptFallsBackToCwd() async throws {
+        let fixture = try await RoutingFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let (configuration, _) = try await fixture.addingProject(id: "ecc", name: "ECC", prefix: "ECC")
+
+        let packet = try await AgentRouteCoordinator(root: fixture.support).inspect(
+            .init(prompt: "Sync the ECC changes into Focus", provider: .codex,
+                  source: .init(cwd: fixture.repository.path, tmuxName: "router")),
+            configuration: configuration)
+
+        #expect(packet.inferredProjectID == "focus")
+    }
+
+    @Test("An objective with no project signal lands in Other with the launch directory recorded")
+    func noSignalGoesToOther() async throws {
+        let fixture = try await RoutingFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let plain = fixture.root.appendingPathComponent("plain")
+        try FileManager.default.createDirectory(at: plain, withIntermediateDirectories: true)
+
+        let packet = try await AgentRouteCoordinator(root: fixture.support).inspect(
+            .init(prompt: "Organize the vacation photos", provider: .codex,
+                  source: .init(cwd: plain.path, tmuxName: "router")),
+            configuration: fixture.configuration)
+
+        #expect(packet.inferredProjectID == "other")
+        #expect(packet.repositoryPath == plain.path)
+    }
+
+    @Test("A failed launch can roll back only its own unclaimed routed task and destination")
+    func routeRollbackPrimitives() async throws {
+        let fixture = try await RoutingFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let store = ProjectTaskStore(dashboardURL: fixture.dashboard, supportDirectory: fixture.support)
+        let project = try #require(fixture.configuration.projects.first { $0.id == "focus" })
+        let routeID = UUID().uuidString.lowercased()
+        let created = try store.create(title: "Routed", summary: "s", project: project, routeID: routeID)
+
+        // A different route must not remove it.
+        try store.removeUnclaimedRouteTask(ticketID: created, routeID: UUID().uuidString.lowercased())
+        var document = try await JSONDashboardRepository().load(from: fixture.dashboard)
+        #expect(document.tickets.contains { $0.id == created })
+
+        // The owning route removes it while the marker is intact.
+        try store.removeUnclaimedRouteTask(ticketID: created, routeID: routeID)
+        document = try await JSONDashboardRepository().load(from: fixture.dashboard)
+        #expect(!document.tickets.contains { $0.id == created })
+
+        // clearDestination only clears a matching destination.
+        let routeStore = AgentRouteStore(root: fixture.support)
+        let packet = try await AgentRouteCoordinator(root: fixture.support).inspect(
+            .init(prompt: "Roll back a failed launch", provider: .codex,
+                  source: .init(cwd: fixture.repository.path, tmuxName: "router")),
+            configuration: fixture.configuration)
+        try routeStore.claim(routeID: packet.routeID, subtaskID: UUID().uuidString.lowercased())
+        try routeStore.setDestination(routeID: packet.routeID, taskID: "FOC-900")
+        try routeStore.clearDestination(routeID: packet.routeID, taskID: "FOC-901")
+        #expect(try routeStore.load(routeID: packet.routeID)?.taskID == "FOC-900")
+        try routeStore.clearDestination(routeID: packet.routeID, taskID: "FOC-900")
+        #expect(try routeStore.load(routeID: packet.routeID)?.taskID == nil)
+    }
+
     @Test("An explicit queue composer route remains available when shell interception is disabled")
     func explicitComposerRoute() async throws {
         let fixture = try await RoutingFixture()
@@ -666,5 +755,30 @@ private struct RoutingFixture {
         let document = try await JSONDashboardRepository().load(from: dashboard)
         let ticket = try #require(document.tickets.first { $0.id == taskID })
         _ = try await TaskContextStore(root: support).ensureContext(ticket: ticket, project: project)
+    }
+
+    func addingProject(id: String, name: String, prefix: String) async throws
+        -> (configuration: AppConfiguration, repository: URL) {
+        let repo = root.appendingPathComponent("repository-\(id)")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        let runner = FoundationProcessRunner()
+        for arguments in [
+            ["init", "-q", "-b", "main"],
+            ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+             "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Fixture", "--allow-empty"],
+        ] {
+            let result = try await runner.run(.init(
+                executable: "/usr/bin/git", arguments: arguments, workingDirectory: repo.path))
+            guard result.succeeded else { throw TaskContextError.commandFailed(result.standardError) }
+        }
+        let dashboardURL = root.appendingPathComponent("dashboard-\(id).json")
+        try Data("{\"tickets\": []}".utf8).write(to: dashboardURL)
+        var updated = configuration
+        updated.projects = ProjectCatalog.ensuringOther(
+            in: updated.projects.filter { $0.id != ProjectCatalog.otherID } + [ProjectDefinition(
+                id: id, name: name, dashboardPath: dashboardURL.path,
+                workspacePath: repo.path, taskPrefix: prefix, repositoryPath: repo.path)],
+            supportDirectory: support)
+        return (try updated.validated(), repo)
     }
 }

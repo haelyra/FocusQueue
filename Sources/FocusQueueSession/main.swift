@@ -375,6 +375,12 @@ enum SessionRegistrationError: Error, LocalizedError {
             options[arguments[index]] = arguments[index + 1]
             index += 2
         }
+        let knownOptions: Set<String> = ["--task", "--project", "--task-title", "--title",
+            "--description", "--provider", "--model", "--effort", "--repository", "--workspace"]
+        if let unknown = options.keys.first(where: { !knownOptions.contains($0) }) {
+            throw TaskContextError.commandFailed(
+                "Unknown route start option: \(unknown). Check for typos; no launch was attempted.")
+        }
         let requestedTaskID = options["--task"]?.uppercased()
         let requestedProjectID = options["--project"]
         guard (requestedTaskID != nil) != (requestedProjectID != nil),
@@ -494,6 +500,19 @@ enum SessionRegistrationError: Error, LocalizedError {
             throw TaskContextError.commandFailed(
                 "The selected repository does not belong to \(project.name).")
         }
+        // Provisioning always needs a real Git checkout. Fail before any record
+        // is created when the workspace cannot exist, so a mistargeted route
+        // never leaves an orphan ticket behind.
+        let gitProbe = try? await FoundationProcessRunner().run(.init(
+            executable: "/usr/bin/git",
+            arguments: ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            workingDirectory: repositoryPath))
+        guard gitProbe?.succeeded == true else {
+            throw TaskContextError.commandFailed(
+                "No agent workspace can be provisioned: \(repositoryPath) is not inside a Git repository. "
+                    + "Re-run route start with --project <project-id> --repository <checkout-path> "
+                    + "naming the project and repository this objective belongs to.")
+        }
 
         var taskID: String?
         var ticket: DashboardTicket?
@@ -538,11 +557,13 @@ enum SessionRegistrationError: Error, LocalizedError {
                 try? routeStore.releaseClaim(routeID: routeID, subtaskID: subtaskID)
             }
         }
+        var createdTicketID: String?
         if let newTaskTitle {
             let createdID = try ProjectTaskStore(dashboardURL: dashboardURL, supportDirectory: root)
                 .create(
                     title: newTaskTitle, summary: String(intent.prompt.prefix(2_000)),
                     project: project, routeID: routeID)
+            createdTicketID = createdID
             taskID = createdID
             ticket = DashboardTicket(id: createdID, title: newTaskTitle, projectID: project.id,
                                      status: "backlog", summary: String(intent.prompt.prefix(2_000)))
@@ -554,38 +575,56 @@ enum SessionRegistrationError: Error, LocalizedError {
             try routeStore.setDestination(routeID: routeID, taskID: taskID)
         }
         let contextStore = TaskContextStore(root: root)
+        let contextDirectory = try await contextStore.directory(ticketID: taskID)
+        let contextPreexisted = FileManager.default.fileExists(atPath: contextDirectory.path)
         let lease = try await TaskMaintenance.lease(ticketID: taskID, root: root)
         defer { lease.release() }
-        let context = try await contextStore.ensureContext(ticket: ticket, project: project)
         let version = await providerVersion(provider)
+        let context: TaskContext
         var subtask: TaskSubtask
-        if let saved = context.subtasks.first(where: { $0.id == subtaskID }) {
-            guard saved.provider == provider, saved.workspace != nil else {
-                throw TaskContextError.commandFailed(
-                    "The saved route assignment no longer matches this retry.")
+        let capsule: AgentPlacementCapsule
+        do {
+            context = try await contextStore.ensureContext(ticket: ticket, project: project)
+            if let saved = context.subtasks.first(where: { $0.id == subtaskID }) {
+                guard saved.provider == provider, saved.workspace != nil else {
+                    throw TaskContextError.commandFailed(
+                        "The saved route assignment no longer matches this retry.")
+                }
+                subtask = saved
+            } else {
+                subtask = TaskSubtask(
+                    id: subtaskID, title: String(title.prefix(200)),
+                    assignmentDescription: String(description.prefix(2_000)), provider: provider,
+                    status: .queued, progressSummary: "Automatic route accepted.",
+                    includeInitializationPrompt: true, runtimeMode: .tmux)
+                subtask.initialPrompt = intent.prompt
+                subtask.workspace = try await TaskWorktreeManager().provisionAgent(
+                    ticketID: taskID, subtaskID: subtaskID, path: repositoryPath,
+                    policy: workspacePolicy, store: contextStore)
+                subtask.launchConfiguration = AgentLaunchConfiguration(
+                    routeID: routeID, model: options["--model"], effort: options["--effort"],
+                    providerVersion: version)
+                _ = try await contextStore.upsertSubtask(ticketID: taskID, subtask: subtask)
             }
-            subtask = saved
-        } else {
-            subtask = TaskSubtask(
-                id: subtaskID, title: String(title.prefix(200)),
-                assignmentDescription: String(description.prefix(2_000)), provider: provider,
-                status: .queued, progressSummary: "Automatic route accepted.",
-                includeInitializationPrompt: true, runtimeMode: .tmux)
-            subtask.initialPrompt = intent.prompt
-            subtask.workspace = try await TaskWorktreeManager().provisionAgent(
-                ticketID: taskID, subtaskID: subtaskID, path: repositoryPath,
-                policy: workspacePolicy, store: contextStore)
-            subtask.launchConfiguration = AgentLaunchConfiguration(
-                routeID: routeID, model: options["--model"], effort: options["--effort"],
-                providerVersion: version)
-            _ = try await contextStore.upsertSubtask(ticketID: taskID, subtask: subtask)
-        }
-        let capsule = try await AgentPlacementResolver(root: root).resolve(.init(
-            launchID: routeID, cwd: subtask.workspace!.path, prompt: intent.prompt,
-            explicitTaskID: taskID, assignmentID: subtaskID, provider: provider,
-            createTaskIfNeeded: false), configuration: configuration)
-        guard capsule.status == .placed else {
-            throw TaskContextError.commandFailed(capsule.reason ?? "The routed workspace conflicts with the selected task.")
+            capsule = try await AgentPlacementResolver(root: root).resolve(.init(
+                launchID: routeID, cwd: subtask.workspace!.path, prompt: intent.prompt,
+                explicitTaskID: taskID, assignmentID: subtaskID, provider: provider,
+                createTaskIfNeeded: false), configuration: configuration)
+            guard capsule.status == .placed else {
+                throw TaskContextError.commandFailed(capsule.reason ?? "The routed workspace conflicts with the selected task.")
+            }
+        } catch {
+            // Roll back everything this call created so the route can retry
+            // cleanly instead of stranding an agentless ticket.
+            if let createdTicketID {
+                try? ProjectTaskStore(dashboardURL: dashboardURL, supportDirectory: root)
+                    .removeUnclaimedRouteTask(ticketID: createdTicketID, routeID: routeID)
+                try? routeStore.clearDestination(routeID: routeID, taskID: createdTicketID)
+                if !contextPreexisted {
+                    try? FileManager.default.removeItem(at: contextDirectory)
+                }
+            }
+            throw error
         }
         guard let tmuxExecutable = configuration.tmuxExecutable ?? SetupEnvironment.executable("tmux") else {
             throw TmuxError.unavailable("Automatic routing requires tmux.")

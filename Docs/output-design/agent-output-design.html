@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Designing Agent Outputs for Fast Comprehension</title>
+<style>
+  @page {
+    size: letter;
+    margin: 2.2cm 2.4cm 2.6cm 2.4cm;
+    @bottom-center {
+      content: "Agent Output Design — page " counter(page) " of " counter(pages);
+      font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+      font-size: 8pt;
+      color: #8a8f98;
+    }
+  }
+  html { font-size: 10.5pt; }
+  body {
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    color: #1d2129;
+    line-height: 1.5;
+    max-width: 68ch;
+  }
+  h1 {
+    font-size: 21pt;
+    line-height: 1.2;
+    margin: 0 0 2pt 0;
+    letter-spacing: -0.2pt;
+  }
+  h2 {
+    font-size: 14pt;
+    margin: 26pt 0 6pt 0;
+    padding-top: 8pt;
+    border-top: 2.5pt solid #1d2129;
+    letter-spacing: -0.1pt;
+  }
+  h3 {
+    font-size: 11.5pt;
+    margin: 16pt 0 4pt 0;
+    color: #2b4c7e;
+  }
+  p { margin: 5pt 0; }
+  ul, ol { margin: 5pt 0 8pt 0; padding-left: 18pt; }
+  li { margin: 2.5pt 0; }
+  code {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 9pt;
+    background: #f2f4f7;
+    padding: 0.5pt 3pt;
+    border-radius: 3pt;
+  }
+  .meta {
+    color: #5c6370;
+    font-size: 9.5pt;
+    margin-bottom: 20pt;
+  }
+  .bluf {
+    background: #eef4fc;
+    border-left: 4pt solid #2b4c7e;
+    padding: 10pt 12pt;
+    margin: 14pt 0;
+  }
+  .bluf .label, .callout .label {
+    font-size: 8.5pt;
+    font-weight: 700;
+    letter-spacing: 1.2pt;
+    text-transform: uppercase;
+    color: #2b4c7e;
+    display: block;
+    margin-bottom: 3pt;
+  }
+  .callout {
+    background: #f6f7f9;
+    border-left: 4pt solid #9aa3af;
+    padding: 9pt 12pt;
+    margin: 12pt 0;
+  }
+  .callout .label { color: #5c6370; }
+  .wwh { margin: 10pt 0; }
+  .wwh p { margin: 4pt 0; }
+  .wwh .tag {
+    display: inline-block;
+    font-weight: 700;
+    color: #2b4c7e;
+    width: 38pt;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 8pt 0 14pt 0;
+    font-size: 9.5pt;
+  }
+  th {
+    text-align: left;
+    border-bottom: 1.5pt solid #1d2129;
+    padding: 4pt 6pt 4pt 0;
+    font-size: 8.5pt;
+    text-transform: uppercase;
+    letter-spacing: 0.6pt;
+    color: #5c6370;
+  }
+  td {
+    border-bottom: 0.5pt solid #d7dbe0;
+    padding: 4.5pt 6pt 4.5pt 0;
+    vertical-align: top;
+  }
+  .ev-strong { color: #1a7f37; font-weight: 700; white-space: nowrap; }
+  .ev-mod { color: #9a6700; font-weight: 700; white-space: nowrap; }
+  .ev-weak { color: #8a8f98; font-weight: 700; white-space: nowrap; }
+  .template {
+    background: #f6f7f9;
+    border: 0.75pt solid #d7dbe0;
+    border-radius: 4pt;
+    padding: 10pt 14pt;
+    margin: 10pt 0;
+    font-size: 9.8pt;
+  }
+  .template .sec {
+    font-weight: 700;
+    color: #2b4c7e;
+    margin-top: 7pt;
+  }
+  .template .sec:first-child { margin-top: 0; }
+  .avoid {
+    background: #fdf0ef;
+    border-left: 4pt solid #b3332b;
+    padding: 9pt 12pt;
+    margin: 12pt 0;
+  }
+  .avoid .label {
+    font-size: 8.5pt; font-weight: 700; letter-spacing: 1.2pt;
+    text-transform: uppercase; color: #b3332b; display: block; margin-bottom: 3pt;
+  }
+  .srcs { font-size: 8.8pt; color: #3d434e; }
+  .srcs li { margin: 2pt 0; }
+  .pagebreak { page-break-before: always; }
+  a { color: #2b4c7e; text-decoration: none; }
+  .small { font-size: 9pt; color: #5c6370; }
+</style>
+</head>
+<body>
+
+<h1>Designing Agent Outputs for Fast Comprehension</h1>
+<div class="meta">
+Research synthesis and implementation plan for the ECC Focus Queue output system &middot; 2026-10-05 &middot; Prepared for the system-prompt and Focus Queue integration work that follows
+</div>
+
+<div class="bluf">
+  <span class="label">Bottom line up front</span>
+  Your five-part structure (BLUF &rarr; what/why/how per step &rarr; big-picture fit &rarr; QA instructions &rarr; next steps) is directionally correct and well supported by the evidence. The research adds four things it is missing: <b>(1)</b> a stage badge so the orchestrator always knows where a task sits in the development pipeline, <b>(2)</b> mandatory evidence per claim (command + result, never prose assertions) plus an explicit &ldquo;not verified&rdquo; list — the single strongest counter to agent overconfidence, <b>(3)</b> a ranked rule set for sentence- and layout-level writing, where the highest-yield rule is deleting everything that carries no information, and <b>(4)</b> enforcement mechanisms, because prompting alone does not fix sycophancy — structure does.
+</div>
+
+<div class="wwh">
+  <p><span class="tag">What</span>A research-backed design for how AI coding agents should format their output, plus a phased plan to implement it as a system-prompt insert integrated with Focus Queue.</p>
+  <p><span class="tag">Why</span>You orchestrate multiple agents with a small attention budget; current outputs are long, self-favorable, and hard to verify. Comprehension research and AI-oversight research converge on the same fixes.</p>
+  <p><span class="tag">How</span>Three parallel research streams (ADHD/plain-language guidelines, comprehension-and-retention science, AI-agent oversight practice) were synthesized against your existing brainstorm; every recommendation below is tagged with its evidence strength and source.</p>
+</div>
+
+<h2>1. The problem, stated precisely</h2>
+<p>An orchestrator running several agents must do three things fast, repeatedly: <b>re-ground</b> (what is this task, where is it), <b>evaluate</b> (is the work correct and complete), and <b>decide</b> (approve, redirect, kill, or move on). Agent output today works against all three: it is long, mixes conclusion with process, asserts success in prose, and buries the verification surface. Two findings from the research frame why this is urgent rather than cosmetic:</p>
+<ul>
+  <li><b>Automation complacency peaks in exactly your configuration.</b> The complacency literature (Goddard et al.; Parasuraman &amp; Manzey) identifies three preconditions — a highly-but-not-perfectly reliable system, high workload, and multitasking. Managing N parallel agents is the textbook worst case. Design, not discipline, is the fix.</li>
+  <li><b>Sycophancy is trained in, not prompted out.</b> Preference training rewards agreement and confidence (Sharma et al., five frontier models). Asking the model nicely to be honest has limited effect; requiring evidence fields and independent grading has structural effect.</li>
+</ul>
+<p>ADHD-relevant mechanism: adult ADHD reading-comprehension deficits trace to <b>sustained attention and working memory</b>, not vocabulary or decoding (Segal 2023; Kofler et al. 2019). So the goal is not simpler words — it is lower memory load and attention cost per unit of text, with state externalized onto the page.</p>
+
+<h2>2. What the research says: presentation rules</h2>
+<p>Evidence grades: <span class="ev-strong">Strong</span> = meta-analyses or large replicated literatures. <span class="ev-mod">Moderate</span> = replicated studies with boundary conditions. <span class="ev-weak">Practice</span> = professional convention, thin direct evidence.</p>
+
+<h3>2.1 Highest-yield rules, ranked by evidence weight</h3>
+<table>
+  <tr><th style="width:4%">#</th><th style="width:62%">Rule</th><th style="width:14%">Evidence</th><th>Key source</th></tr>
+  <tr><td>1</td><td><b>Cut everything that carries no information.</b> No filler, no restating the prompt, no narrating what a table already shows, no &ldquo;great question.&rdquo; This is the single largest measured effect on learning (coherence principle, g &asymp; 1.0). Each fact appears once, in its best form.</td><td class="ev-strong">Strong</td><td>Mayer / Cromley &amp; Chen 2025; Chandler &amp; Sweller</td></tr>
+  <tr><td>2</td><td><b>Conclusion first, then labeled sections.</b> BLUF, then fixed labeled chunks. Structured (labeled) summaries measurably beat unstructured prose; signaling via headings improves recall, and <i>disproportionately helps taxed readers</i>.</td><td class="ev-strong">Strong</td><td>Hartley; Lorch &amp; Lorch; Naumann et al. 2007</td></tr>
+  <tr><td>3</td><td><b>Concrete specifics, never abstractions.</b> &ldquo;writes to <code>Config/ecc.config.json</code>&rdquo; beats &ldquo;updates the configuration.&rdquo; Concrete referents are recalled reliably better; exact paths and IDs also act as retrieval cues later.</td><td class="ev-strong">Strong</td><td>Concreteness effect (Paivio); Dunlosky et al. 2013</td></tr>
+  <tr><td>4</td><td><b>Information-dense lead words in headings and bullets.</b> Readers follow &ldquo;information scent&rdquo; and scan the left edge; headings like &ldquo;Overview&rdquo; or &ldquo;Details&rdquo; are dead zones. Headings must name outcomes, files, decisions.</td><td class="ev-strong">Strong</td><td>NN/g F-pattern &amp; information foraging</td></tr>
+  <tr><td>5</td><td><b>Direct, conversational tone.</b> &ldquo;I changed X&rdquo; not &ldquo;the modification of X was performed.&rdquo; Active voice, first/second person (personalization, g &asymp; 0.7).</td><td class="ev-strong">Strong</td><td>Mayer; plainlanguage.gov; CDC Index</td></tr>
+  <tr><td>6</td><td><b>One structural table or diagram when &ge;3 parts interact.</b> Dual coding: a table carrying real structure beats a paragraph (g &asymp; 0.68). But never narrate what the visual already shows (redundancy effect <i>hurts</i> learning).</td><td class="ev-strong">Strong</td><td>Mayer; Chandler &amp; Sweller 1991</td></tr>
+  <tr><td>7</td><td><b>Define components before mechanism.</b> A one-line &ldquo;components involved&rdquo; note before a dense change description (pre-training principle, median effect &asymp; 0.75).</td><td class="ev-mod">Moderate</td><td>Mayer pre-training; CORE review</td></tr>
+  <tr><td>8</td><td><b>Keep annotations adjacent to their referent.</b> File path next to the claim about the file; decision next to the diff. Forcing the reader to integrate separated sources costs comprehension (split-attention effect).</td><td class="ev-strong">Strong</td><td>Sweller CLT</td></tr>
+  <tr><td>9</td><td><b>End with a short self-verification checklist.</b> Retrieval beats rereading (61% vs 40% recall after one week); asking the reader to check or predict engages generative processing.</td><td class="ev-strong">Strong</td><td>Roediger &amp; Karpicke 2006</td></tr>
+  <tr><td>10</td><td><b>One worked example inside the rules.</b> A complete annotated example of a good report teaches the format better than the rules alone (worked-example effect).</td><td class="ev-strong">Strong</td><td>Sweller / Cooper</td></tr>
+</table>
+
+<h3>2.2 Sentence- and layout-level rules (style-guide conventions, institutionally backed)</h3>
+<ul>
+  <li><b>One idea per sentence.</b> More than one conjunction or comma &rarr; split. Hard limit &asymp;25 words, average target 15&ndash;20. (plainlanguage.gov; GOV.UK/ONS; ASD-STE100)</li>
+  <li><b>One idea per paragraph; &le;4 sentences.</b> A one-sentence paragraph is valid. First sentence of each paragraph carries the point — a reader scanning only first sentences should still get the gist. (W3C COGA; NN/g inverted pyramid)</li>
+  <li><b>Lists over prose; number steps, bullet options.</b> Scannable formatting alone gave +47% measured usability; concision +58%; objective tone +27% — and the effects compound (+124% combined). (NN/g 1997)</li>
+  <li><b>Descriptive headings, not clever or generic ones.</b> Avoid question headings (slower to scan) and print-era labels (&ldquo;Introduction,&rdquo; &ldquo;Background&rdquo;).</li>
+  <li><b>No double negatives, no metaphors or idioms, simple tense.</b> Define jargon once, then use one term consistently — do not paraphrase-repeat. (W3C COGA)</li>
+  <li><b>Bold key words sparingly.</b> Overuse reads as shouting and destroys the signal. (W3C COGA)</li>
+  <li><b>Externalize state; never make the reader hold context.</b> Restate ticket, stage, and goal in the output itself. Assume the reader just reopened this session cold. (W3C COGA &ldquo;restore context&rdquo;; St Andrews ADHD guidance)</li>
+  <li><b>Progressive disclosure.</b> Fixed short layer always visible (BLUF + what/why/how); detail available but never interleaved with the summary. (Nielsen 2006; St Andrews)</li>
+</ul>
+
+<div class="callout">
+  <span class="label">Honest evidence note</span>
+  No controlled studies test specific formatting rules on adults with ADHD. The ADHD-specific guidance is practitioner consensus extrapolated from (a) general usability research and (b) cognitive-accessibility work, justified by the established mechanism (working-memory and sustained-attention load). The strategy is therefore: apply the load-reduction rules that help everyone, weighted harder. The numeric thresholds (25-word sentences, 15-word averages) are style-guide conventions — the most defensible numbers available, not ADHD-validated constants.
+</div>
+
+<h2>3. What the research says: verification and staying on track</h2>
+
+<h3>3.1 The completion report must show evidence, not assertions</h3>
+<ul>
+  <li><b>Evidence per claim.</b> Anthropic's guidance: agents stop when work &ldquo;looks done,&rdquo; so every completion claim needs a verifiable artifact — the command run and what it returned, test counts, a screenshot. &ldquo;Tests: 47 pass, 0 fail, 3 skipped&rdquo; calibrates trust; &ldquo;I'm confident this works&rdquo; does not. Reviewing evidence is faster than re-running verification.</li>
+  <li><b>A mandatory &ldquo;not verified&rdquo; list.</b> The strongest single anti-overconfidence device: the agent must explicitly name what it did <i>not</i> check. If verification belongs to a later stage, it says so and names the stage — this resolves your open question: <b>state the gap, don't fill it in silently.</b></li>
+  <li><b>Calibrated confidence only.</b> Miscalibrated confidence is worse than none (arXiv 2402.07632). Confidence must be tied to evidence (&ldquo;tested&rdquo; / &ldquo;untested area&rdquo;), never a feeling. Uniform confidence trains blanket acceptance.</li>
+  <li><b>Never let the worker grade itself.</b> A fresh-context reviewer subagent that tries to refute the result removes self-grading bias. Symmetric failure mode: reviewers prompted to find gaps always find some — severity-filter findings to correctness and stated requirements only.</li>
+</ul>
+
+<h3>3.2 Stage as state, not prose</h3>
+<ul>
+  <li><b>Artifacts define stages.</b> Idea &rarr; spec &rarr; plan &rarr; diff &rarr; test evidence &rarr; review. Each stage produces a durable artifact; stage is derived from which artifacts exist, never from the agent's self-report. (Anthropic; Google Jules exposes explicit session-state enums.)</li>
+  <li><b>Definition of done is written before implementation.</b> The spec ends with an end-to-end verification step, so completion claims are checkable against a pre-registered criterion.</li>
+  <li><b>The report maps to your pipeline:</b> idea/concept &rarr; planning &rarr; implementation &rarr; testing &rarr; quality check/refinement &rarr; deployment &rarr; deployed-verification. Every output opens by naming its stage and the artifact that proves it.</li>
+</ul>
+
+<h3>3.3 Review-surface design</h3>
+<ul>
+  <li><b>CL-description standard.</b> Google's code-review practice is the canonical answer to &ldquo;agent outputs are too long&rdquo;: a standalone first line stating <i>what</i>, a body stating <i>why</i> plus known shortcomings, evidence attached. &ldquo;Fix bug&rdquo; and &ldquo;Phase 1&rdquo; are explicitly anti-patterns.</li>
+  <li><b>Small review units.</b> Defect detection peaks at 200&ndash;400 lines per review and collapses beyond ~400; effectiveness drops after 60&ndash;90 minutes. Agent tasks should be scoped so each produces a reviewable diff — never a multi-thousand-line dump.</li>
+  <li><b>Decision rules, not vibes.</b> Named failure patterns give the orchestrator crisp actions: &ldquo;if you can't verify it, don't ship it&rdquo;; more than 2 corrections &rarr; restart with a better prompt rather than keep correcting.</li>
+  <li><b>Design against complacency.</b> Vary scrutiny by confidence; use targeted confirm questions (&ldquo;this assumes X applies — correct?&rdquo;) instead of blanket approval; track acceptance rates — if high- and low-confidence outputs are accepted at the same rate, complacency has set in.</li>
+</ul>
+
+<h2>4. Integration: the output contract</h2>
+<p>Your five-part structure survives contact with the research almost intact. The synthesis below keeps your skeleton, adds the stage badge and the evidence/not-verified machinery, and converts your open questions into defaults. This is the format the system-prompt insert will specify.</p>
+
+<div class="template">
+  <div class="sec">0 &middot; Stage badge <span class="small">(always, one line)</span></div>
+  <div><code>[Stage: implementation → testing] [Task: ECC-123 short-name] [Artifact: Tests/FooTests.swift, 12 pass]</code><br>
+  Names where the task sits in the pipeline and the artifact that proves it. Stage is derived from artifacts, not claimed.</div>
+
+  <div class="sec">1 &middot; BLUF <span class="small">(always, 1–2 sentences)</span></div>
+  <div>The result and the one thing the user must know or do. Re-grounds a cold reader in under ten seconds.</div>
+
+  <div class="sec">2 &middot; What / Why / How <span class="small">(always, one short paragraph)</span></div>
+  <div><b>What</b> changed — concrete: exact paths, IDs, values. <b>Why</b> — the line connecting change to request. <b>How we know</b> — the evidence: command run + result. Your existing FocusQ structure; unchanged, because it is the structured-abstract pattern with the strongest direct support.</div>
+
+  <div class="sec">3 &middot; Decision log <span class="small">(per major step or design choice; skip trivia)</span></div>
+  <div>For each: <b>What</b> was decided &middot; <b>Why</b> (reasoning + rejected alternatives when they exist) &middot; <b>How verified</b> (evidence, or explicit &ldquo;not verified — verification planned in testing stage&rdquo;). Justification is mandatory <i>precisely because</i> forcing the agent to produce it catches errors before they ship — your instinct is confirmed by the evidence-guided-prompting finding that requiring evidence before verdict measurably reduces wrong, self-favorable judgments.</div>
+
+  <div class="sec">4 &middot; Big-picture fit <span class="small">(conditional — only when load-bearing)</span></div>
+  <div>Why this integrates with the whole: branding checklist + Playwright sanity checks (your UI example), or determinism + cost-rate math against the PRD (your backend example). <b>Default: omit.</b> Include only when the change touches architecture, multiple subsystems, or deviates from plan. Rule 1 (cut what carries no information) outranks completeness; per-step justifications usually already cover it — your own doubt here was correct.</div>
+
+  <div class="sec">5 &middot; QA instructions <span class="small">(scaled to task, but near-always present)</span></div>
+  <div>The fastest path to production-like verification: exact commands, what to observe, expected result. Scales from &ldquo;tell me if you like how it looks&rdquo; to a full sandbox walkthrough. Written so a cold reader can execute without reconstructing context. Ends with a short check-yourself list when the change is behavioral.</div>
+
+  <div class="sec">6 &middot; Next steps <span class="small">(always unless task is verifiably done)</span></div>
+  <div>What remains before &ldquo;done,&rdquo; concerns, discoveries that open new routes, and the decision the user faces next, if any.</div>
+</div>
+
+<h3>4.1 Standing language rules (apply to every section)</h3>
+<ol>
+  <li>Sentences: one idea, &le;25 words, active voice, direct (&ldquo;I changed X&rdquo;).</li>
+  <li>Concrete referents: paths with line numbers (<code>Sources/FocusQueueCore/Queue.swift:42</code>), ticket IDs, exact values.</li>
+  <li>Lead words carry information: every heading, bullet, and paragraph starts with the operative content.</li>
+  <li>Lists over prose. One structural table/diagram when &ge;3 parts interact; never duplicate it in prose.</li>
+  <li>Each fact stated once. No filler, no restating the request, no self-praise.</li>
+  <li>Define components before mechanism when the reader may not hold them in memory.</li>
+  <li>Claims about correctness always attach evidence or an explicit &ldquo;not verified&rdquo; marker.</li>
+</ol>
+
+<h2>5. Enforcement: making justification actually happen</h2>
+<p>Your open question — how to enforce justification rather than hope for it — has a two-part answer from the research: <b>required fields with explicit nulls</b>, and <b>structural independence between worker and grader</b>.</p>
+<ol>
+  <li><b>Format as fields, not vibes.</b> The template is a contract: every section is present or explicitly marked <code>N/A — reason</code>. An absent justification is a visible defect, not a stylistic choice. This converts honesty from a behavior the model must choose into a hole it must explain.</li>
+  <li><b>Evidence-before-verdict ordering.</b> The &ldquo;How verified&rdquo; field physically precedes any completion claim. Evidence-guided ordering measurably reduces self-favorable judgments; it also operationalizes your observation that forcing justification prevents errors — the agent must confront the evidence before writing the claim.</li>
+  <li><b>The &ldquo;not verified&rdquo; list is mandatory and specific.</b> Not &ldquo;some edge cases untested&rdquo; but &ldquo;error path for empty config untested; covered in testing stage.&rdquo; Gaps name the stage that will close them.</li>
+  <li><b>Fresh-context verifier for high-stakes completions.</b> A lightweight second agent reviews the report against the diff and tries to refute it; findings are severity-filtered (correctness and stated requirements only) so the human is not drowned.</li>
+  <li><b>Pre-registered definition of done.</b> The planning stage writes the end-to-end verification step; the completion report is checked against it. This makes &ldquo;done&rdquo; a comparison, not an adjective.</li>
+  <li><b>Small-diffs scoping.</b> Tasks are sized to produce 200&ndash;400-line review units so the human's review is physically feasible.</li>
+  <li><b>One worked example in the prompt.</b> The system-prompt insert contains a complete annotated example report. Models imitate format from examples far more reliably than from rules alone (worked-example effect).</li>
+  <li><b>Complacency metrics (Focus Queue layer).</b> Track acceptance rate by confidence level and time-to-accept. Flattening acceptance rates trigger increased friction selectively, per the trust-adaptive-intervention pattern.</li>
+</ol>
+
+<h2>6. Implementation plan</h2>
+<table>
+  <tr><th style="width:16%">Phase</th><th style="width:44%">Deliverable</th><th style="width:22%">Verification</th><th>Depends on</th></tr>
+  <tr><td><b>1 &middot; Prompt insert</b></td><td>The output contract (&sect;4) + language rules (&sect;4.1) + one worked example, as a system-prompt module for Codex/Claude entry points (<code>Scripts/focus_queue_*_entry.py</code>).</td><td>Run 3&ndash;5 representative tasks (bugfix, feature, research) through both old and new prompts; score outputs against the contract field-by-field.</td><td>—</td></tr>
+  <tr><td><b>2 &middot; Stage state</b></td><td>Stage badge wired to Focus Queue task state: stage derived from artifacts (spec file, plan, diff, test results) registered per ticket, matching your task-session association flow.</td><td>Stage displayed in Focus Queue matches artifact reality for a live task across at least three stage transitions.</td><td>Phase 1</td></tr>
+  <tr><td><b>3 &middot; Detail extraction</b></td><td>Connect to the planned proactive extraction system: full decision logs, diffs, and evidence are extracted to task storage; chat output carries the summary layer plus pointers. This is progressive disclosure implemented at the data layer — no detail lost, summary never polluted.</td><td>Given a completed session, every claim in the summary resolves to a stored artifact; the summary itself stays within length limits.</td><td>Phase 1, extraction system</td></tr>
+  <tr><td><b>4 &middot; Verifier pass</b></td><td>Lightweight fresh-context verifier for completion reports on high-stakes tasks, with severity filtering.</td><td>Verifier catches a planted error in a sample report; false-positive rate low enough that findings fit in 3 bullets.</td><td>Phase 1</td></tr>
+  <tr><td><b>5 &middot; Metrics</b></td><td>Acceptance-rate-by-confidence and time-to-accept logging in Focus Queue; complacency-flattening alert.</td><td>Dashboard shows the two metrics for a week of real usage.</td><td>Phase 2</td></tr>
+</table>
+<p class="small">Phases 1 and 2 are the core and stand alone. Phases 3&ndash;5 compound the value but each is independently skippable.</p>
+
+<h2>7. Discussion: things to experiment with</h2>
+<ul>
+  <li><b>A/B the contract against current outputs.</b> Take five completed sessions, re-render their final reports in the new format, and time yourself answering: what changed, is it verified, what do I do next. This is cheap and tells you if the format pays before any enforcement machinery is built.</li>
+  <li><b>&ldquo;Where am I likely wrong?&rdquo;</b> A required self-critique line in the decision log for high-stakes choices. Promising from the sycophancy-mitigation literature, but risks boilerplate; test whether answers stay specific.</li>
+  <li><b>Targeted confirm questions.</b> Instead of &ldquo;please review,&rdquo; the agent asks one specific question about its weakest assumption (&ldquo;this assumes the config schema didn't change — correct?&rdquo;). Intentional friction that forces engagement at exactly the uncertain point.</li>
+  <li><b>Diagram rule calibration.</b> The &ldquo;&ge;3 interacting parts &rarr; one structural visual&rdquo; threshold is a guess. Watch where ASCII diagrams help vs. where they become decoration (which violates rule 1).</li>
+  <li><b>Confidence vocabulary.</b> Two levels (tested / not tested) are calibratable; a five-point scale is not. Resist richer scales until metrics show the coarse one is limiting decisions.</li>
+  <li><b>Length budget.</b> A hard budget (e.g., BLUF + What/Why/How &le; 100 words) forces the compression that rule 1 demands. Worth testing whether agents honor it or route around it with dense fragments.</li>
+  <li><b>Session-reopen regrounding.</b> Since BLUF's job is re-grounding a cold reader, test the first screen of every report against &ldquo;10-second rule&rdquo;: can you state task, stage, result, and next action after ten seconds?</li>
+</ul>
+
+<h2>8. Sources</h2>
+<ol class="srcs">
+  <li>Nielsen Norman Group — Inverted Pyramid; Chunking; F-Pattern; Information Foraging; Concise/Scannable/Objective (1997). nngroup.com/articles/</li>
+  <li>W3C Cognitive Accessibility (COGA) Techniques. w3c.github.io/coga/techniques/</li>
+  <li>plainlanguage.gov guidelines; CDC Clear Communication Index; National Archives plain-writing principles.</li>
+  <li>GOV.UK / ONS content-design manuals; ASD-STE100 Simplified Technical English.</li>
+  <li>University of St Andrews — Designing for users with ADHD (2025). digitalcommunications.wp.st-andrews.ac.uk</li>
+  <li>Segal (2023) sustained attention &amp; reading comprehension; Kofler et al. (2019) working memory; SAGE scoping review (2021).</li>
+  <li>Mayer multimedia learning; Cromley &amp; Chen (2025) meta-analysis, ScienceDirect S1747938X25000673.</li>
+  <li>Sweller Cognitive Load Theory; worked-example, split-attention, redundancy effects (Chandler &amp; Sweller 1991/96).</li>
+  <li>Dunlosky et al. (2013) effective learning techniques; Roediger &amp; Karpicke (2006) testing effect; concreteness effect (Paivio).</li>
+  <li>Lorch &amp; Lorch (1993/96) topic-structure signaling; Naumann et al. (2007) signaling compensates for reading skill.</li>
+  <li>Hartley (1997&ndash;2003) structured abstracts; Wager review, PMC8958823.</li>
+  <li>Anthropic — Claude Code Best Practices. anthropic.com/engineering/claude-code-best-practices</li>
+  <li>Google eng-practices — CL descriptions &amp; small CLs. google.github.io/eng-practices/</li>
+  <li>Sharma et al. — sycophancy in RLHF models, arXiv 2310.13548; sycophancy &amp; trust, arXiv 2412.02802; evidence-guided prompting, arXiv 2607.10411.</li>
+  <li>Automation bias systematic review, PMC3240751; Parasuraman &amp; Manzey complacency literature.</li>
+  <li>Trust calibration: Lee &amp; See lineage; arXiv 2402.07632 (miscalibrated confidence); UXmatters &ldquo;Designing for Doubt&rdquo;; LoopRails HITL framework.</li>
+  <li>Google Jules docs (session states, plan-approval gate); Osmani — conductors to orchestrators; Codex best-practice guides.</li>
+  <li>SmartBear/Cisco code-review study lineage (200&ndash;400 LOC review units).</li>
+</ol>
+
+</body>
+</html>

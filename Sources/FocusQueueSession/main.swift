@@ -13,7 +13,7 @@ enum SessionRegistrationError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .usage:
-            "Usage: focus-queue-session intake-changed | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | route inspect --prompt <text> [--cwd <path>] [--provider codex|claude|kimi] | route start <ROUTE-UUID> (--task <TASK-ID> | --project <PROJECT-ID> --task-title <TITLE>) --title <TITLE> --description <TEXT> [--provider codex|claude|kimi] [--model <MODEL>] [--effort <EFFORT>] [--repository <PATH>] [--workspace existing|isolated-clean|isolated-snapshot] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reset | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
+            "Usage: focus-queue-session intake-changed | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | route inspect --prompt <text> [--cwd <path>] [--provider codex|claude|kimi] | route start <ROUTE-UUID> (--task <TASK-ID> | --project <PROJECT-ID> --task-title <TITLE>) --title <TITLE> --description <TEXT> [--provider codex|claude|kimi] [--model <MODEL>] [--effort <EFFORT>] [--repository <PATH>] [--workspace existing|isolated-clean|isolated-snapshot] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|reset | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
         case .missingSessionIdentity:
             "No Codex, Claude, or Kimi session ID was found in the environment or current WezTerm pane."
         case .missingManagedRuntime:
@@ -42,6 +42,7 @@ enum SessionRegistrationError: Error, LocalizedError {
             }
             else if arguments.first == "projects" { try projectsCommand(arguments: arguments) }
             else if arguments.first == "queue" { try await queueCommand(arguments: arguments) }
+            else if arguments.first == "task" { try await taskCommand(arguments: arguments) }
             else if arguments.first == "placement" { try await placementCommand(arguments: arguments) }
             else if arguments.first == "route" { try await routeCommand(arguments: arguments) }
             else if arguments.first == "agents" { try await agentsCommand(arguments: arguments) }
@@ -169,6 +170,9 @@ enum SessionRegistrationError: Error, LocalizedError {
             }
             try store.move(arguments[2].uppercased(), to: placement,
                 tickets: dashboard.tickets, fallbackIDs: fallback, visibleIDs: visible)
+        case "reorder" where arguments.count > 2:
+            try store.setOrder(arguments.dropFirst(2).map { $0.uppercased() },
+                tickets: dashboard.tickets, fallbackIDs: fallback)
         default: throw SessionRegistrationError.usage
         }
         let baseline = QueueOrderStore.orderedTickets(
@@ -181,6 +185,62 @@ enum SessionRegistrationError: Error, LocalizedError {
             baseline, lastPromptAtByTicketID: promptDates)
         try emit(["order": order.filter { visible?.contains($0.id) ?? true }.map(\.id)])
         notifyContextChanged()
+    }
+
+    private static func taskCommand(arguments: [String]) async throws {
+        let root = supportDirectory(environment: ProcessInfo.processInfo.environment)
+        let config = try loadConfiguration(from: root)
+        let state = try await JSONLocalStateStore(url: root.appendingPathComponent("state.json")).load()
+        let showsAllProjects = state.showsAllProjects ?? true
+        let dashboardURLs = showsAllProjects
+            ? ProjectCatalog.mergedDashboardURLs(in: config.projects)
+            : [URL(fileURLWithPath: config.dashboardPath)]
+        let repository = JSONDashboardRepository()
+        guard arguments.count >= 3 else { throw SessionRegistrationError.usage }
+        let action = arguments[1]
+        let ticketID = arguments[2]
+        switch action {
+        case "rename" where arguments.count > 3:
+            let title = arguments.dropFirst(3).joined(separator: " ")
+            let updated = try await mutateTicket(ticketID, in: dashboardURLs, repository: repository) { url, snapshot in
+                try await repository.renameTicket(id: ticketID, to: title, in: url, expectedRevision: snapshot.revision)
+            }
+            try emit(["updated": ticketID, "title": updated.document.tickets.first { $0.id.caseInsensitiveCompare(ticketID) == .orderedSame }?.title ?? title])
+        case "priority" where arguments.count == 4:
+            let priority = arguments[3].lowercased()
+            guard ["critical", "high", "medium", "low"].contains(priority) else {
+                throw SessionRegistrationError.usage
+            }
+            _ = try await mutateTicket(ticketID, in: dashboardURLs, repository: repository) { url, snapshot in
+                try await repository.setTicketPriority(id: ticketID, to: priority, in: url, expectedRevision: snapshot.revision)
+            }
+            try emit(["updated": ticketID, "priority": priority])
+        case "status" where arguments.count == 4:
+            let status = arguments[3].lowercased()
+            _ = try await mutateTicket(ticketID, in: dashboardURLs, repository: repository) { url, snapshot in
+                try await repository.setTicketStatus(id: ticketID, to: status, in: url, expectedRevision: snapshot.revision)
+            }
+            try emit(["updated": ticketID, "status": status])
+        default:
+            throw SessionRegistrationError.usage
+        }
+        notifyContextChanged()
+    }
+
+    private static func mutateTicket(
+        _ ticketID: String,
+        in dashboardURLs: [URL],
+        repository: JSONDashboardRepository,
+        _ mutation: (URL, DashboardSnapshot) async throws -> DashboardSnapshot
+    ) async throws -> DashboardSnapshot {
+        for url in dashboardURLs {
+            guard let snapshot = try? await repository.loadSnapshot(from: url),
+                  snapshot.document.tickets.contains(where: {
+                      $0.id.caseInsensitiveCompare(ticketID) == .orderedSame
+                  }) else { continue }
+            return try await mutation(url, snapshot)
+        }
+        throw DashboardMutationError.ticketNotFound(ticketID)
     }
 
     private static func placementCommand(arguments: [String]) async throws {

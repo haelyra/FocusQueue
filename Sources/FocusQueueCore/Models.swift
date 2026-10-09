@@ -82,6 +82,8 @@ public struct VerifierConfiguration: Codable, Equatable, Sendable {
   public var maxTurns: Int
   public var contextDirectory: String?
   public var supportDirectory: String?
+  /// Extra directories the chat sandbox may write (dashboards, config, state).
+  public var writableDirectories: [String]?
 
   public init(
     enabled: Bool,
@@ -90,7 +92,8 @@ public struct VerifierConfiguration: Codable, Equatable, Sendable {
     timeoutSeconds: Int = 120,
     maxTurns: Int = 24,
     contextDirectory: String? = nil,
-    supportDirectory: String? = nil
+    supportDirectory: String? = nil,
+    writableDirectories: [String]? = nil
   ) {
     self.enabled = enabled
     self.executable = executable
@@ -99,6 +102,7 @@ public struct VerifierConfiguration: Codable, Equatable, Sendable {
     self.maxTurns = maxTurns
     self.contextDirectory = contextDirectory
     self.supportDirectory = supportDirectory
+    self.writableDirectories = writableDirectories
   }
 }
 

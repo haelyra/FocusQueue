@@ -104,6 +104,28 @@ public struct QueueOrderStore: Sendable {
         try locked { try write([]) }
     }
 
+    /// Replaces the saved order with the given IDs. Open tasks the caller
+    /// omitted keep their relative order at the end, so a partial list never
+    /// drops tasks from the queue.
+    @discardableResult
+    public func setOrder(_ ids: [String], tickets: [DashboardTicket], fallbackIDs: [String]) throws -> [String] {
+        try locked {
+            let allIDs = Self.orderedTickets(tickets, savedIDs: try load() ?? fallbackIDs).map(\.id)
+            let known = Set(allIDs)
+            var seen = Set<String>()
+            var requested: [String] = []
+            for id in ids {
+                guard known.contains(id) else {
+                    throw TaskContextError.commandFailed("No open task named \(id) exists in this queue.")
+                }
+                if seen.insert(id).inserted { requested.append(id) }
+            }
+            let result = requested + allIDs.filter { !seen.contains($0) }
+            try write(result)
+            return result
+        }
+    }
+
     public func reset(tickets: [DashboardTicket], visibleIDs: Set<String>, fallbackIDs: [String]) throws -> [String] {
         try locked {
             let all = Self.orderedTickets(tickets, savedIDs: try load() ?? fallbackIDs).map(\.id)

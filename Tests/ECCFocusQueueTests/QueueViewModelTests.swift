@@ -762,6 +762,26 @@ struct QueueViewModelTests {
     #expect(model.openTickets.first { $0.id == ticket.id }?.title == "A clearer task title")
   }
 
+  @Test("Priority changes persist to disk and update the in-memory dashboard")
+  func setTaskPriority() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let ticket = try #require(model.openTickets.first)
+
+    #expect(await model.setTaskPriority(ticket, to: "CRITICAL"))
+    #expect(model.openTickets.first { $0.id == ticket.id }?.priority == "critical")
+    #expect(model.actionMessages[ticket.id] == "Priority updated.")
+    let saved = try JSONDecoder().decode(
+      DashboardDocument.self,
+      from: Data(contentsOf: URL(fileURLWithPath: model.config.dashboardPath)))
+    #expect(saved.tickets.first { $0.id == ticket.id }?.priority == "critical")
+
+    // Re-applying the current priority is a no-op that still succeeds.
+    #expect(await model.setTaskPriority(ticket, to: "critical"))
+    #expect(model.actionMessages[ticket.id] == "Priority updated.")
+  }
+
   @Test("A rename finishing after a project switch never repaints the prior project")
   func renameProjectSwitchRace() async throws {
     let fixture = try await Fixture()
@@ -3137,6 +3157,18 @@ private actor SuspendedRenameDashboardRepository: DashboardManaging {
       completedBy: completedBy, in: url, expectedRevision: expectedRevision)
   }
 
+  func setTicketPriority(
+    id: String, to priority: String, in url: URL, expectedRevision: DashboardRevision
+  ) async throws -> DashboardSnapshot {
+    try await base.setTicketPriority(id: id, to: priority, in: url, expectedRevision: expectedRevision)
+  }
+
+  func setTicketStatus(
+    id: String, to status: String, in url: URL, expectedRevision: DashboardRevision
+  ) async throws -> DashboardSnapshot {
+    try await base.setTicketStatus(id: id, to: status, in: url, expectedRevision: expectedRevision)
+  }
+
   func resumeRename() {
     renameContinuation?.resume()
     renameContinuation = nil
@@ -3262,6 +3294,16 @@ private final class CountingDashboardRepository: DashboardManaging, @unchecked S
   ) async throws -> DashboardSnapshot {
     try await base.resolveTicket(id: id, reason: reason, evidence: evidence,
       completedBy: completedBy, in: url, expectedRevision: expectedRevision)
+  }
+  func setTicketPriority(
+    id: String, to priority: String, in url: URL, expectedRevision: DashboardRevision
+  ) async throws -> DashboardSnapshot {
+    try await base.setTicketPriority(id: id, to: priority, in: url, expectedRevision: expectedRevision)
+  }
+  func setTicketStatus(
+    id: String, to status: String, in url: URL, expectedRevision: DashboardRevision
+  ) async throws -> DashboardSnapshot {
+    try await base.setTicketStatus(id: id, to: status, in: url, expectedRevision: expectedRevision)
   }
 }
 

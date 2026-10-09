@@ -1034,6 +1034,34 @@ final class QueueViewModel {
     }
   }
 
+  @discardableResult
+  func setTaskPriority(_ ticket: DashboardTicket, to priority: String) async -> Bool {
+    let priority = Self.allowedPriority(priority)
+    guard priority != ticket.priority.lowercased() else { return true }
+    guard let project = project(for: ticket) ?? selectedProject else {
+      actionMessages[ticket.id] = "Could not update priority: no owning project."
+      return false
+    }
+    do {
+      let url = URL(fileURLWithPath: project.dashboardPath)
+      let snapshot = try await dashboardRepository.loadSnapshot(from: url)
+      let updated = try await dashboardRepository.setTicketPriority(
+        id: ticket.id, to: priority, in: url, expectedRevision: snapshot.revision)
+      if showsAllProjects {
+        await reloadMergedDashboard()
+      } else if config.selectedProjectID == project.id {
+        dashboard = updated.document
+        await captureDurableDashboard(updated.document)
+      }
+      actionMessages[ticket.id] = "Priority updated."
+      loadError = nil
+      return true
+    } catch {
+      actionMessages[ticket.id] = "Could not update priority: \(error.localizedDescription)"
+      return false
+    }
+  }
+
   private static func nextTicketID(
     project: ProjectConfiguration,
     projectTickets: [DashboardTicket],
@@ -1268,6 +1296,17 @@ final class QueueViewModel {
     } ?? nil
     agentConfiguration.contextDirectory =
       paths.supportDirectory.appendingPathComponent("tasks").path
+    // The orchestrator edits tasks, projects, and settings through
+    // focus-queue-session, which writes config.json, state.json, queue order,
+    // task contexts, and project dashboards. The chat sandbox must allow those
+    // writes or every mutation the agent attempts is silently denied.
+    agentConfiguration.writableDirectories = Array(Set(
+      [paths.supportDirectory.path]
+        + config.projects.map {
+          URL(fileURLWithPath: $0.dashboardPath).deletingLastPathComponent().path
+        }
+        + [URL(fileURLWithPath: config.dashboardPath).deletingLastPathComponent().path]
+    )).sorted()
     let contextualMessage =
       canvasSelection?.orchestratorMessage(userRequest: message) ?? message
     if let ticketID, let context = taskContexts[ticketID] {

@@ -539,6 +539,7 @@ def run_codex(
     expose_queue_order: bool = False,
     disable_tools: bool = False,
     context_directory: Path | None = None,
+    writable_directories: list[Path] | None = None,
 ) -> tuple[str, str | None]:
     if context_directory is not None:
         if not context_directory.is_absolute() or not context_directory.is_dir():
@@ -611,6 +612,11 @@ def run_codex(
             command.extend(["--add-dir", str(queue_order_directory.resolve())])
         if context_directory is not None and allow_extra_writes:
             command.extend(["--add-dir", str(context_directory)])
+        if writable_directories and allow_extra_writes:
+            for directory in writable_directories:
+                resolved = Path(directory).expanduser()
+                if resolved.is_dir():
+                    command.extend(["--add-dir", str(resolved.resolve())])
         if model is not None and not disable_tools:
             command.extend(["--model", model])
         if effort is not None:
@@ -717,6 +723,7 @@ def chat(arguments: argparse.Namespace) -> int:
                 model=getattr(arguments, "model", None),
                 effort=getattr(arguments, "effort", None),
                 context_directory=getattr(arguments, "context_dir", None),
+                writable_directories=getattr(arguments, "writable_dirs", None),
             )
         except CodexHarnessError as error:
             detail = str(error).casefold()
@@ -741,6 +748,7 @@ def chat(arguments: argparse.Namespace) -> int:
                 model=getattr(arguments, "model", None),
                 effort=getattr(arguments, "effort", None),
                 context_directory=getattr(arguments, "context_dir", None),
+                writable_directories=getattr(arguments, "writable_dirs", None),
             )
         thread_id = observed_thread or prior_thread
         if not thread_id:
@@ -790,6 +798,14 @@ def main() -> int:
     chat_parser.add_argument("--session", required=True)
     chat_parser.add_argument("--workspace", type=Path, required=True)
     chat_parser.add_argument("--context-dir", type=Path)
+    chat_parser.add_argument(
+        "--writable-dir",
+        dest="writable_dirs",
+        type=Path,
+        action="append",
+        default=[],
+        help="Extra directory the chat sandbox may write (repeatable)",
+    )
     chat_parser.add_argument("--prompt-file", type=Path, required=True)
     chat_parser.add_argument("--timeout", type=int, default=120)
     chat_parser.add_argument("--model", help="Override the chat model slug")

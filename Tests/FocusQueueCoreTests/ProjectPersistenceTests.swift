@@ -409,6 +409,36 @@ func dashboardRenamePreservesUnknownFields() async throws {
   #expect(tickets.first?["summary"] as? String == "Keep me")
 }
 
+@Test("Dashboard priority and status updates persist with revision checks")
+func dashboardPriorityAndStatusUpdates() async throws {
+  let fixture = try DashboardMutationFixture(
+    #"{"tickets":[{"id":"ECC-101","title":"Task","status":"open","priority":"low"}]}"#
+  )
+  defer { fixture.remove() }
+  let repository = JSONDashboardRepository()
+  let snapshot = try await repository.loadSnapshot(from: fixture.url)
+
+  let prioritized = try await repository.setTicketPriority(
+    id: "ECC-101", to: "high", in: fixture.url, expectedRevision: snapshot.revision)
+  #expect(prioritized.document.tickets.first?.priority == "high")
+  let updated = try await repository.setTicketStatus(
+    id: "ECC-101", to: "in-progress", in: fixture.url, expectedRevision: prioritized.revision)
+  #expect(updated.document.tickets.first?.status == "in-progress")
+
+  let saved = try JSONDecoder().decode(DashboardDocument.self, from: Data(contentsOf: fixture.url))
+  #expect(saved.tickets.first?.priority == "high")
+  #expect(saved.tickets.first?.status == "in-progress")
+
+  await #expect(throws: DashboardMutationError.invalidFieldValue("priority")) {
+    try await repository.setTicketPriority(
+      id: "ECC-101", to: "   ", in: fixture.url, expectedRevision: updated.revision)
+  }
+  await #expect(throws: DashboardMutationError.ticketNotFound("ECC-999")) {
+    try await repository.setTicketStatus(
+      id: "ECC-999", to: "open", in: fixture.url, expectedRevision: updated.revision)
+  }
+}
+
 @Test("Dashboard creation is project-scoped and rejects globally duplicate ticket IDs")
 func dashboardCreateRejectsCrossProjectDuplicate() async throws {
   let target = try DashboardMutationFixture(#"{"project":"target","tickets":[]}"#)

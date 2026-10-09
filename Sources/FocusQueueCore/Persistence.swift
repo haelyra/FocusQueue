@@ -316,6 +316,7 @@ public enum DashboardMutationError: Error, LocalizedError, Equatable {
     case ticketNotFound(String)
     case invalidTicketID
     case invalidTitle
+    case invalidFieldValue(String)
     case invalidDocument
 
     public var errorDescription: String? {
@@ -330,6 +331,8 @@ public enum DashboardMutationError: Error, LocalizedError, Equatable {
             "A task identifier cannot be empty or contain surrounding whitespace."
         case .invalidTitle:
             "A task title cannot be empty."
+        case .invalidFieldValue(let field):
+            "The \(field) value cannot be empty."
         case .invalidDocument:
             "The dashboard must be a JSON object containing a tickets array."
         }
@@ -355,6 +358,18 @@ public protocol DashboardManaging: DashboardLoading {
         reason: String,
         evidence: [String],
         completedBy: String,
+        in url: URL,
+        expectedRevision: DashboardRevision
+    ) async throws -> DashboardSnapshot
+    func setTicketPriority(
+        id: String,
+        to priority: String,
+        in url: URL,
+        expectedRevision: DashboardRevision
+    ) async throws -> DashboardSnapshot
+    func setTicketStatus(
+        id: String,
+        to status: String,
         in url: URL,
         expectedRevision: DashboardRevision
     ) async throws -> DashboardSnapshot
@@ -515,6 +530,64 @@ public actor JSONDashboardRepository: DashboardManaging {
             object["tickets"] = tickets
             return try save(object, to: url, expectedRevision: expectedRevision)
         }
+    }
+
+    public func setTicketPriority(
+        id: String,
+        to priority: String,
+        in url: URL,
+        expectedRevision: DashboardRevision
+    ) throws -> DashboardSnapshot {
+        try locked(url: url) {
+            try updateTicketFieldLocked(
+                id: id,
+                field: "priority",
+                value: priority,
+                in: url,
+                expectedRevision: expectedRevision
+            )
+        }
+    }
+
+    public func setTicketStatus(
+        id: String,
+        to status: String,
+        in url: URL,
+        expectedRevision: DashboardRevision
+    ) throws -> DashboardSnapshot {
+        try locked(url: url) {
+            try updateTicketFieldLocked(
+                id: id,
+                field: "status",
+                value: status,
+                in: url,
+                expectedRevision: expectedRevision
+            )
+        }
+    }
+
+    private func updateTicketFieldLocked(
+        id: String,
+        field: String,
+        value: String,
+        in url: URL,
+        expectedRevision: DashboardRevision
+    ) throws -> DashboardSnapshot {
+        let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedValue.isEmpty else { throw DashboardMutationError.invalidFieldValue(field) }
+
+        let currentData = try currentData(at: url, expectedRevision: expectedRevision)
+        var object = try dashboardObject(from: currentData)
+        var tickets = try ticketObjects(in: object)
+        guard let index = tickets.firstIndex(where: {
+            ticketID(in: $0).caseInsensitiveCompare(id) == .orderedSame
+        }) else {
+            throw DashboardMutationError.ticketNotFound(id)
+        }
+        tickets[index][field] = normalizedValue
+        tickets[index]["updatedAt"] = ISO8601DateFormatter().string(from: Date())
+        object["tickets"] = tickets
+        return try save(object, to: url, expectedRevision: expectedRevision)
     }
 
     private func renameTicketLocked(

@@ -21,6 +21,10 @@
   "defaultPlacement": "upper-left",
   "refreshIntervalSeconds": 2,
   "agentUsageBarEnabled": true,
+  "agentOutputContract": {
+    "claude": false,
+    "codex": false
+  },
   "agentProviderFallbackOrder": ["codex", "claude"],
   "agentEscalationAutoLaunch": true,
   "agentModelChoices": [

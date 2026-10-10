@@ -25,6 +25,8 @@ IDENTIFIER = "com.haelyra.ecc-focus-queue"
 TREE_DIGEST_ALGORITHM = "sha256-tree-v1"
 PROMPT_START = "<!-- BEGIN ECC FOCUS QUEUE AGENT CONTRACT v1 -->"
 PROMPT_END = "<!-- END ECC FOCUS QUEUE AGENT CONTRACT v1 -->"
+OUTPUT_CONTRACT_START = "<!-- BEGIN ECC FOCUS QUEUE OUTPUT CONTRACT v1 -->"
+OUTPUT_CONTRACT_END = "<!-- END ECC FOCUS QUEUE OUTPUT CONTRACT v1 -->"
 PROVENANCE_SCHEMA_VERSION = 1
 MANIFEST_VERSION = 2
 DEFAULT_INTEGRATION_REF = "origin/main"
@@ -274,6 +276,44 @@ def merge_agent_prompt(original, payload, *, label):
             raise ValueError(f"The installed {label} instruction markers are reversed.")
         return original[:start] + payload.rstrip("\n") + original[end:]
     return original + ("\n\n" if original else "") + payload
+
+
+def filter_output_contract(payload, enabled, *, label):
+    """Keep or strip the nested output-contract block per the provider toggle."""
+    has_start = OUTPUT_CONTRACT_START in payload
+    has_end = OUTPUT_CONTRACT_END in payload
+    if has_start != has_end:
+        raise ValueError(f"The bundled {label} output-contract markers require review.")
+    if not has_start:
+        if enabled:
+            raise ValueError(f"The bundled {label} instructions lack an output-contract block.")
+        return payload
+    if payload.count(OUTPUT_CONTRACT_START) != 1 or payload.count(OUTPUT_CONTRACT_END) != 1:
+        raise ValueError(f"The bundled {label} output-contract markers require review.")
+    if enabled:
+        return payload
+    start = payload.index(OUTPUT_CONTRACT_START)
+    end = payload.index(OUTPUT_CONTRACT_END) + len(OUTPUT_CONTRACT_END)
+    filtered = (payload[:start].rstrip("\n") + "\n" + payload[end:].lstrip("\n")).rstrip("\n") + "\n"
+    return filtered
+
+
+def output_contract_preferences(support_dir):
+    """Read per-provider output-contract toggles from the app config.
+
+    Missing or unreadable config disables the block. A present but malformed
+    `agentOutputContract` value fails loudly so typos are not silently off.
+    """
+    config_path = support_dir / "config.json"
+    try:
+        config = json.loads(config_path.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    value = config.get("agentOutputContract", {})
+    if not isinstance(value, dict) or not all(
+            isinstance(k, str) and isinstance(v, bool) for k, v in value.items()):
+        raise ValueError("agentOutputContract must map provider names to booleans.")
+    return value
 AUTOMATION_FILES = (
     "Scripts/focus_queue_morning.py",
     "Scripts/focus_queue_codex.py",
@@ -445,6 +485,15 @@ class Installer:
         self.service = f"gui/{os.getuid()}/{IDENTIFIER}"
         self.legacy_shortcut_owned = False
         self.source_provenance = None
+        self._output_contract_prefs = None
+
+    def _filtered_prompt_text(self, text, provider, label):
+        if self._output_contract_prefs is None:
+            override = os.environ.get("FOCUS_QUEUE_SUPPORT_DIR")
+            support = Path(override) if override else self.support
+            self._output_contract_prefs = output_contract_preferences(support)
+        enabled = bool(self._output_contract_prefs.get(provider, False))
+        return filter_output_contract(text, enabled, label=label)
 
     def preflight(self):
         if os.uname().sysname != "Darwin":
@@ -471,12 +520,12 @@ class Installer:
         validate_bundle_member(self.bundle, payload)
         if not payload.is_file() or payload.is_symlink():
             raise ValueError("The built app is missing its shareable Codex instructions.")
-        merge_agent_prompt(self.codex_prompt.read_text() if self.codex_prompt.exists() else "", payload.read_text(), label="Codex")
+        merge_agent_prompt(self.codex_prompt.read_text() if self.codex_prompt.exists() else "", self._filtered_prompt_text(payload.read_text(), "codex", "Codex"), label="Codex")
         claude_payload = self.bundle / "Contents/Resources/CLAUDE_GLOBAL_INSTRUCTIONS.md"
         validate_bundle_member(self.bundle, claude_payload)
         if not claude_payload.is_file() or claude_payload.is_symlink():
             raise ValueError("The built app is missing its shareable Claude instructions.")
-        merge_agent_prompt(self.claude_prompt.read_text() if self.claude_prompt.exists() else "", claude_payload.read_text(), label="Claude")
+        merge_agent_prompt(self.claude_prompt.read_text() if self.claude_prompt.exists() else "", self._filtered_prompt_text(claude_payload.read_text(), "claude", "Claude"), label="Claude")
         safe_destination(self.codex_entry, self.home)
         safe_destination(self.codex_usage_wrapper, self.home)
         safe_destination(self.codex_usage_renderer, self.home)
@@ -726,13 +775,17 @@ class Installer:
             original_prompt = self.codex_prompt.read_bytes() if self.codex_prompt.exists() else b""
             staged_prompt = stage / "codex-instructions.md"
             staged_prompt.write_text(merge_agent_prompt(original_prompt.decode(),
-                (staged_app / "Contents/Resources/CODEX_GLOBAL_INSTRUCTIONS.md").read_text(), label="Codex"))
+                self._filtered_prompt_text(
+                    (staged_app / "Contents/Resources/CODEX_GLOBAL_INSTRUCTIONS.md").read_text(),
+                    "codex", "Codex"), label="Codex"))
             staged_prompt.chmod(self.codex_prompt.stat().st_mode & 0o777 if self.codex_prompt.exists() else 0o600)
             planned.append((staged_prompt, self.codex_prompt))
             original_claude_prompt = self.claude_prompt.read_bytes() if self.claude_prompt.exists() else b""
             staged_claude_prompt = stage / "claude-instructions.md"
             staged_claude_prompt.write_text(merge_agent_prompt(original_claude_prompt.decode(),
-                (staged_app / "Contents/Resources/CLAUDE_GLOBAL_INSTRUCTIONS.md").read_text(), label="Claude"))
+                self._filtered_prompt_text(
+                    (staged_app / "Contents/Resources/CLAUDE_GLOBAL_INSTRUCTIONS.md").read_text(),
+                    "claude", "Claude"), label="Claude"))
             staged_claude_prompt.chmod(self.claude_prompt.stat().st_mode & 0o777 if self.claude_prompt.exists() else 0o600)
             planned.append((staged_claude_prompt, self.claude_prompt))
             # Refresh an already configured entry without changing aliases, flags or hook trust.

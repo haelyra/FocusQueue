@@ -436,6 +436,43 @@ class InstallerTests(unittest.TestCase):
             self.installer.install()
         self.assertEqual(prompt.read_bytes(), before)
 
+    def test_output_contract_defaults_off(self):
+        self.installer.install()
+        codex_prompt = (self.home / ".codex/AGENTS.md").read_text()
+        claude_prompt = (self.home / ".claude/CLAUDE.md").read_text()
+        self.assertEqual(codex_prompt.count(MODULE.PROMPT_START), 1)
+        self.assertNotIn(MODULE.OUTPUT_CONTRACT_START, codex_prompt)
+        self.assertNotIn(MODULE.OUTPUT_CONTRACT_END, codex_prompt)
+        self.assertNotIn(MODULE.OUTPUT_CONTRACT_START, claude_prompt)
+        self.assertNotIn(MODULE.OUTPUT_CONTRACT_END, claude_prompt)
+
+    def test_output_contract_toggle_enables_per_provider_and_flips_back(self):
+        self.installer.support.mkdir(parents=True, exist_ok=True)
+        (self.installer.support / "config.json").write_text(
+            json.dumps({"agentOutputContract": {"claude": True}}))
+        MODULE.Installer(self.bundle, self.home, start=False).install()
+        codex_prompt = (self.home / ".codex/AGENTS.md").read_text()
+        claude_prompt = (self.home / ".claude/CLAUDE.md").read_text()
+        self.assertNotIn(MODULE.OUTPUT_CONTRACT_START, codex_prompt)
+        self.assertEqual(claude_prompt.count(MODULE.OUTPUT_CONTRACT_START), 1)
+        self.assertEqual(claude_prompt.count(MODULE.OUTPUT_CONTRACT_END), 1)
+        self.assertLess(claude_prompt.index(MODULE.OUTPUT_CONTRACT_START),
+                        claude_prompt.index(MODULE.PROMPT_END))
+        (self.installer.support / "config.json").write_text(
+            json.dumps({"agentOutputContract": {"codex": True}}))
+        MODULE.Installer(self.bundle, self.home, start=False).install()
+        codex_prompt = (self.home / ".codex/AGENTS.md").read_text()
+        claude_prompt = (self.home / ".claude/CLAUDE.md").read_text()
+        self.assertEqual(codex_prompt.count(MODULE.OUTPUT_CONTRACT_START), 1)
+        self.assertNotIn(MODULE.OUTPUT_CONTRACT_START, claude_prompt)
+
+    def test_malformed_output_contract_toggle_fails_loudly(self):
+        self.installer.support.mkdir(parents=True, exist_ok=True)
+        (self.installer.support / "config.json").write_text(
+            json.dumps({"agentOutputContract": {"claude": "yes"}}))
+        with self.assertRaisesRegex(ValueError, "agentOutputContract"):
+            MODULE.Installer(self.bundle, self.home, start=False).install()
+
     def test_existing_launcher_refresh_preserves_alias_and_uninstall_preserves_personal_prompt(self):
         self.make_app(self.installer.app, b"previous")
         entry = self.installer.codex_entry
@@ -773,6 +810,53 @@ class InstallerTests(unittest.TestCase):
 
         self.assertEqual(result["mode"], "uninstalled")
         self.assertFalse(self.installer.legacy_app.exists())
+
+
+class OutputContractFilterTests(unittest.TestCase):
+    payload = (
+        MODULE.PROMPT_START + "\nrules\n\n"
+        + MODULE.OUTPUT_CONTRACT_START + "\nreport rules\n"
+        + MODULE.OUTPUT_CONTRACT_END + "\n" + MODULE.PROMPT_END + "\n"
+    )
+
+    def test_strip_removes_only_the_nested_block(self):
+        filtered = MODULE.filter_output_contract(self.payload, False, label="T")
+        self.assertNotIn(MODULE.OUTPUT_CONTRACT_START, filtered)
+        self.assertNotIn("report rules", filtered)
+        self.assertIn("rules", filtered)
+        self.assertTrue(filtered.startswith(MODULE.PROMPT_START))
+        self.assertTrue(filtered.rstrip().endswith(MODULE.PROMPT_END))
+
+    def test_keep_returns_payload_unchanged(self):
+        self.assertEqual(MODULE.filter_output_contract(self.payload, True, label="T"),
+                         self.payload)
+
+    def test_mismatched_markers_raise(self):
+        with self.assertRaises(ValueError):
+            MODULE.filter_output_contract(
+                MODULE.PROMPT_START + "\n" + MODULE.OUTPUT_CONTRACT_START + "\n"
+                + MODULE.PROMPT_END, False, label="T")
+
+    def test_enabled_without_block_raises(self):
+        with self.assertRaises(ValueError):
+            MODULE.filter_output_contract(
+                MODULE.PROMPT_START + "\nrules\n" + MODULE.PROMPT_END, True, label="T")
+
+    def test_preferences_missing_config_defaults_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(MODULE.output_contract_preferences(Path(d)), {})
+
+    def test_preferences_unreadable_config_defaults_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "config.json").write_text("{not json")
+            self.assertEqual(MODULE.output_contract_preferences(Path(d)), {})
+
+    def test_preferences_round_trip(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "config.json").write_text(
+                json.dumps({"agentOutputContract": {"codex": True}}))
+            self.assertEqual(MODULE.output_contract_preferences(Path(d)),
+                             {"codex": True})
 
 
 if __name__ == "__main__":

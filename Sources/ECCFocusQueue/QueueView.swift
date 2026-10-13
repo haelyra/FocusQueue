@@ -1861,6 +1861,10 @@ private struct DailyReportView: View {
       Text(report.summary).font(.system(size: 14)).fixedSize(horizontal: false, vertical: true)
       HStack(spacing: 18) {
         reportMetric(
+          title: "Read",
+          value: report.platforms.reduce(0) { $0 + $1.collectedCount }.formatted()
+        )
+        reportMetric(
           title: "New",
           value: report.platforms.reduce(0) { $0 + $1.newCount }.formatted()
         )
@@ -1887,16 +1891,21 @@ private struct DailyReportView: View {
     DisclosureGroup {
       VStack(alignment: .leading, spacing: 9) {
         if platform.messages.isEmpty {
-          Text("No new messages required review.")
-            .font(.system(size: 12)).foregroundStyle(.secondary).padding(.vertical, 4)
+          Text(
+            platform.collectedCount == 0
+              ? "No messages were read from this source."
+              : "Nothing new needed review."
+          )
+          .font(.system(size: 12)).foregroundStyle(.secondary).padding(.vertical, 4)
         } else {
           ForEach(platform.messages) { message in
             messageDisclosure(message)
           }
         }
-        if platform.alreadyProcessedCount > 0 || platform.deferredCount > 0 {
+        let skipped = platform.triagedAwayCount ?? 0
+        if platform.alreadyProcessedCount > 0 || platform.deferredCount > 0 || skipped > 0 {
           Text(
-            "\(platform.alreadyProcessedCount) previously checked · \(platform.deferredCount) deferred"
+            "\(skipped) skipped as promotional · \(platform.alreadyProcessedCount) previously checked · \(platform.deferredCount) deferred"
           ).font(.system(size: 11)).foregroundStyle(.secondary)
         }
       }.padding(.top, 10)
@@ -1906,7 +1915,7 @@ private struct DailyReportView: View {
         Text(platform.status.uppercased()).font(.system(size: 9, weight: .bold))
           .foregroundStyle(.secondary)
         Spacer()
-        Text("\(platform.newCount) new · \(platform.checkedCount) checked")
+        Text("\(platform.collectedCount) read · \(platform.newCount) new · \(platform.checkedCount) checked")
           .font(.system(size: 11, weight: .semibold).monospacedDigit())
           .foregroundStyle(.secondary)
       }

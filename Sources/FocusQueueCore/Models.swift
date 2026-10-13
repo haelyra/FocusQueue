@@ -938,6 +938,9 @@ public struct DailyReportPlatformSection: Codable, Identifiable, Equatable, Send
   public let alreadyProcessedCount: Int
   public let checkedCount: Int
   public let deferredCount: Int
+  /// Messages the pre-filter skipped as promotional or automated. Reports
+  /// written before this field existed decode it as nil.
+  public let triagedAwayCount: Int?
   public let messages: [DailyReportMessage]
 
   public init(
@@ -948,6 +951,7 @@ public struct DailyReportPlatformSection: Codable, Identifiable, Equatable, Send
     alreadyProcessedCount: Int,
     checkedCount: Int,
     deferredCount: Int,
+    triagedAwayCount: Int? = nil,
     messages: [DailyReportMessage]
   ) {
     self.platform = platform
@@ -957,6 +961,7 @@ public struct DailyReportPlatformSection: Codable, Identifiable, Equatable, Send
     self.alreadyProcessedCount = alreadyProcessedCount
     self.checkedCount = checkedCount
     self.deferredCount = deferredCount
+    self.triagedAwayCount = triagedAwayCount
     self.messages = messages
   }
 }

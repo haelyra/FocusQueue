@@ -22,6 +22,74 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
 
 
+# Apple Mail's measured costs on a 3,210-message INBOX: a property read on the
+# whole mailbox is one Apple Event (about 20-70 ms); the same read through a
+# range specifier is evaluated per message (about 5 s per 1,000 messages);
+# a body read is one Apple Event per message. The mock records whole-mailbox
+# column reads and body reads, and rejects range and whose specifiers so a
+# test fails the moment the reader reintroduces them.
+READER_MAIL_MOCK = r"""
+const fs = require("fs");
+globalThis.ObjC = {import() {}};
+globalThis.$ = (value) => value;
+let source = fs.readFileSync(process.argv[1], "utf8");
+for (const [from, to] of JSON.parse(process.argv[2] || "[]")) source = source.replace(from, to);
+eval(source);
+globalThis.mailCalls = {columns: [], bodies: [], ranges: 0, whose: 0};
+function mockMailbox(name, values, options) {
+  const settings = options || {};
+  const recipientsOf = (item) => item.recipients || {to: ["reader@example.com"], cc: [], bcc: []};
+  const messages = {};
+  const column = (property, read) => () => {
+    mailCalls.columns.push(property);
+    if (settings.failColumn === property) throw settings.failure;
+    return values.map(read);
+  };
+  messages.id = () => {
+    mailCalls.columns.push("id");
+    return settings.ids ? settings.ids() : values.map((item) => item.id);
+  };
+  messages.messageId = column("messageId", (item) => item.messageId || `${item.id}@example.com`);
+  messages.dateReceived = column("dateReceived", (item) => item.date);
+  messages.sender = column("sender", () => "sender@example.com");
+  messages.subject = column("subject", (item) => item.subject || `subject ${item.id}`);
+  messages.readStatus = column("readStatus", () => false);
+  messages.flaggedStatus = column("flaggedStatus", () => false);
+  for (const [property, key] of [["toRecipients", "to"], ["ccRecipients", "cc"], ["bccRecipients", "bcc"]]) {
+    messages[property] = {address: column(property, (item) => recipientsOf(item)[key] || [])};
+  }
+  messages.byId = (id) => ({
+    content() {
+      mailCalls.bodies.push(String(id));
+      const item = values.find((candidate) => candidate.id === id);
+      if (item.body instanceof Error) throw item.body;
+      return item.body === undefined ? `body ${item.id}` : item.body;
+    }
+  });
+  messages.slice = () => {
+    mailCalls.ranges += 1;
+    throw new Error("range specifier read: Mail evaluates it message by message");
+  };
+  messages.whose = () => {
+    mailCalls.whose += 1;
+    throw new Error("whose specifier read");
+  };
+  return {name() { return name; }, messages};
+}
+function accountWith(...mailboxes) {
+  return {mailboxes() { return mailboxes; }};
+}
+const config = {emailAddress: "reader@example.com", emailMailboxes: ["INBOX", "Archive"]};
+const now = Date.now();
+function recent(count, prefix) {
+  return Array.from({length: count}, (_, index) => ({
+    id: `${prefix || ""}${count - index}`,
+    date: new Date(now - index * 1000)
+  }));
+}
+"""
+
+
 class FocusQueueMailTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -304,176 +372,66 @@ process.stdout.write(JSON.stringify({reads: capturedReads, writes: capturedWrite
         self.assertEqual(lock.parent, self.root / "commands")
         self.assertEqual(response.parent, self.root / "proofs")
 
-    def test_reader_search_honors_offset_across_pages(self):
+    def run_reader_harness(self, body, replacements=()):
         node = shutil.which("node")
         if node is None:
             self.skipTest("Node.js is required to exercise the JavaScript mail reader contract")
-        reader = SCRIPTS / "focus-queue-mail-reader.js"
-        harness = r"""
-const fs = require("fs");
-globalThis.ObjC = {import() {}};
-globalThis.$ = (value) => value;
-eval(fs.readFileSync(process.argv[1], "utf8"));
-const values = [
-  {id: "3", messageId: "three@example.com", date: new Date("2026-09-09T12:00:00Z")},
-  {id: "2", messageId: "two@example.com", date: new Date("2026-09-09T11:00:00Z")},
-  {id: "1", messageId: "one@example.com", date: new Date("2026-09-09T10:00:00Z")}
-];
-const messages = values.map((item) => ({
-  id() { return item.id; }, messageId() { return item.messageId; }, dateReceived() { return item.date; },
-  sender() { return "sender@example.com"; }, subject() { return `subject ${item.id}`; },
-  readStatus() { return false; }, flaggedStatus() { return false; },
-  content() { return `body ${item.id}`; }
-}));
-messages.id = () => values.map((item) => item.id);
-messages.messageId = () => values.map((item) => item.messageId);
-messages.dateReceived = () => values.map((item) => item.date);
-messages.sender = () => values.map(() => "sender@example.com");
-messages.subject = () => values.map((item) => `subject ${item.id}`);
-messages.readStatus = () => values.map(() => false);
-messages.flaggedStatus = () => values.map(() => false);
-messages.slice = (start, end) => {
-  const bounded = Array.prototype.slice.call(messages, start, end + 1);
-  for (const property of ["id", "messageId", "dateReceived", "sender", "subject", "readStatus", "flaggedStatus"]) {
-    bounded[property] = () => bounded.map((message) => message[property]());
-  }
-  bounded.content = () => bounded.map((message) => message.content());
-  return bounded;
-};
-const mailbox = {name() { return "INBOX"; }, messages};
-const account = {mailboxes() { return [mailbox]; }};
-const result = search(
-  {emailAddress: "haley@example.com", emailMailboxes: ["INBOX"]},
-  {query: "", days: 30, limit: 1, offset: 1},
-  account
-);
-process.stdout.write(JSON.stringify(result));
-"""
-
         completed = subprocess.run(
-            [node, "-e", harness, str(reader)],
+            [
+                node,
+                "-e",
+                READER_MAIL_MOCK + body,
+                str(SCRIPTS / "focus-queue-mail-reader.js"),
+                json.dumps(list(replacements)),
+            ],
             capture_output=True,
             text=True,
             check=True,
         )
-        result = json.loads(completed.stdout)
+        return json.loads(completed.stdout)
+
+    def test_reader_search_honors_offset_across_pages(self):
+        result = self.run_reader_harness(r"""
+const values = [
+  {id: "3", date: new Date("2026-09-09T12:00:00Z")},
+  {id: "2", date: new Date("2026-09-09T11:00:00Z")},
+  {id: "1", date: new Date("2026-09-09T10:00:00Z")}
+];
+const result = search(config, {query: "", days: 3650, limit: 1, offset: 1},
+  accountWith(mockMailbox("INBOX", values)));
+process.stdout.write(JSON.stringify(result));
+""")
 
         self.assertEqual(result["offset"], 1)
         self.assertEqual([item["id"] for item in result["results"]], ["mail:2"])
         self.assertTrue(result["truncated"])
 
     def test_reader_marks_a_page_ending_at_scan_cap_as_hard_truncated(self):
-        node = shutil.which("node")
-        if node is None:
-            self.skipTest("Node.js is required to exercise the JavaScript mail reader contract")
-        reader = SCRIPTS / "focus-queue-mail-reader.js"
-        harness = r"""
-const fs = require("fs");
-globalThis.ObjC = {import() {}};
-globalThis.$ = (value) => value;
-const source = fs.readFileSync(process.argv[1], "utf8")
-  .replace("const MAX_SEARCH_CANDIDATES = 5000;", "const MAX_SEARCH_CANDIDATES = 3;");
-eval(source);
-const values = [4, 3, 2, 1].map((id) => ({
-  id: String(id),
-  messageId: `${id}@example.com`,
-  date: new Date(`2026-09-09T0${id}:00:00Z`)
-}));
-const messages = values.map((item) => ({
-  id() { return item.id; }, messageId() { return item.messageId; }, dateReceived() { return item.date; },
-  sender() { return "sender@example.com"; }, subject() { return `subject ${item.id}`; },
-  readStatus() { return false; }, flaggedStatus() { return false; },
-  content() { return `body ${item.id}`; }
-}));
-messages.id = () => values.map((item) => item.id);
-messages.messageId = () => values.map((item) => item.messageId);
-messages.dateReceived = () => values.map((item) => item.date);
-messages.sender = () => values.map(() => "sender@example.com");
-messages.subject = () => values.map((item) => `subject ${item.id}`);
-messages.readStatus = () => values.map(() => false);
-messages.flaggedStatus = () => values.map(() => false);
-messages.slice = (start, end) => {
-  const bounded = Array.prototype.slice.call(messages, start, end + 1);
-  for (const property of ["id", "messageId", "dateReceived", "sender", "subject", "readStatus", "flaggedStatus"]) {
-    bounded[property] = () => bounded.map((message) => message[property]());
-  }
-  bounded.content = () => bounded.map((message) => message.content());
-  return bounded;
-};
-const mailbox = {name() { return "INBOX"; }, messages};
-const account = {mailboxes() { return [mailbox]; }};
-const result = search(
-  {emailAddress: "haley@example.com", emailMailboxes: ["INBOX"]},
-  {query: "", days: 30, limit: 1, offset: 2},
-  account
-);
+        result = self.run_reader_harness(
+            r"""
+const result = search(config, {query: "", days: 30, limit: 1, offset: 2},
+  accountWith(mockMailbox("INBOX", recent(4))));
 process.stdout.write(JSON.stringify(result));
-"""
-
-        completed = subprocess.run(
-            [node, "-e", harness, str(reader)],
-            capture_output=True,
-            text=True,
-            check=True,
+""",
+            [["const MAX_SEARCH_CANDIDATES = 5000;", "const MAX_SEARCH_CANDIDATES = 3;"]],
         )
-        result = json.loads(completed.stdout)
 
         self.assertEqual([item["id"] for item in result["results"]], ["mail:2"])
         self.assertFalse(result["truncated"])
         self.assertTrue(result["hardTruncated"])
 
     def test_reader_daily_report_scans_past_out_of_order_old_messages(self):
-        node = shutil.which("node")
-        if node is None:
-            self.skipTest("Node.js is required to exercise the JavaScript mail reader contract")
-        reader = SCRIPTS / "focus-queue-mail-reader.js"
-        harness = r"""
-const fs = require("fs");
-globalThis.ObjC = {import() {}};
-globalThis.$ = (value) => value;
-eval(fs.readFileSync(process.argv[1], "utf8"));
-const now = Date.now();
+        observed = self.run_reader_harness(r"""
 const values = [
-  {id: "new-2", messageId: "new-2@example.com", date: new Date(now - 60000)},
-  {id: "old", messageId: "old@example.com", date: new Date(now - 40 * 24 * 60 * 60 * 1000)},
-  {id: "new-1", messageId: "new-1@example.com", date: new Date(now - 120000)}
+  {id: "new-2", date: new Date(now - 60000)},
+  {id: "old", date: new Date(now - 40 * 24 * 60 * 60 * 1000)},
+  {id: "new-1", date: new Date(now - 120000)}
 ];
-const messages = values.map((item) => ({
-  id() { return item.id; }, messageId() { return item.messageId; }, dateReceived() { return item.date; },
-  sender() { return "sender@example.com"; }, subject() { return `subject ${item.id}`; },
-  readStatus() { return false; }, flaggedStatus() { return false; },
-  content() { return `body ${item.id}`; }
-}));
-messages.id = () => values.map((item) => item.id);
-messages.messageId = () => values.map((item) => item.messageId);
-messages.dateReceived = () => values.map((item) => item.date);
-messages.sender = () => values.map(() => "sender@example.com");
-messages.subject = () => values.map((item) => `subject ${item.id}`);
-messages.readStatus = () => values.map(() => false);
-messages.flaggedStatus = () => values.map(() => false);
-messages.slice = (start, end) => {
-  const bounded = Array.prototype.slice.call(messages, start, end + 1);
-  for (const property of ["id", "messageId", "dateReceived", "sender", "subject", "readStatus", "flaggedStatus"]) {
-    bounded[property] = () => bounded.map((message) => message[property]());
-  }
-  bounded.content = () => bounded.map((message) => message.content());
-  return bounded;
-};
-const mailbox = {name() { return "INBOX"; }, messages};
-const account = {mailboxes() { return [mailbox]; }};
-const config = {emailAddress: "haley@example.com", emailMailboxes: ["INBOX"]};
+const account = accountWith(mockMailbox("INBOX", values));
 const first = search(config, {query: "", days: 7, limit: 1, offset: 0, dailyReport: true}, account);
 const second = search(config, {query: "", days: 7, limit: 1, offset: 1, dailyReport: true}, account);
 process.stdout.write(JSON.stringify({first, second}));
-"""
-
-        completed = subprocess.run(
-            [node, "-e", harness, str(reader)],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        observed = json.loads(completed.stdout)
+""")
 
         self.assertEqual(
             [item["id"] for item in observed["first"]["results"]], ["mail:new-2"]
@@ -484,6 +442,223 @@ process.stdout.write(JSON.stringify({first, second}));
         )
         self.assertFalse(observed["second"]["truncated"])
         self.assertFalse(observed["second"]["hardTruncated"])
+
+    def test_reader_loads_bodies_only_for_output_page_after_metadata_search(self):
+        results = self.run_reader_harness(r"""
+const values = recent(20).map((item) => ({...item, subject: "topic"}));
+const account = accountWith(mockMailbox("INBOX", values));
+const results = [];
+for (const query of ["", "topic"]) {
+  mailCalls.bodies = [];
+  const page = search(config, {query, limit: 2, offset: 5}, account);
+  results.push({page, bodyReads: mailCalls.bodies});
+}
+process.stdout.write(JSON.stringify(results));
+""")
+
+        for result in results:
+            self.assertEqual(result["bodyReads"], ["15", "14"])
+            self.assertEqual(
+                [item["snippet"] for item in result["page"]["results"]],
+                ["body 15", "body 14"],
+            )
+            self.assertTrue(result["page"]["truncated"])
+            self.assertFalse(result["page"]["hardTruncated"])
+
+    def test_reader_reads_whole_mailbox_columns_never_ranges(self):
+        observed = self.run_reader_harness(r"""
+const inbox = mockMailbox("INBOX", recent(3063));
+const sent = {name() { return "Sent"; }, messages: {
+  id() { throw new Error("unconfigured mailbox was searched"); }
+}};
+const result = search(config, {query: "", days: 7, limit: 1, offset: 1, dailyReport: true},
+  accountWith(inbox, sent));
+const firstSearchColumns = mailCalls.columns.slice();
+const firstSearchBodies = mailCalls.bodies.slice();
+const cappedPage = search(config, {query: "", days: 7, limit: 200, offset: 0, dailyReport: true},
+  accountWith(inbox));
+mailCalls.bodies = [];
+const highOffset = search(config, {query: "", days: 7, limit: 10, offset: 150, dailyReport: true},
+  accountWith(inbox));
+const highOffsetBodies = mailCalls.bodies.slice();
+const multiMailbox = search(config, {query: "", days: 7, limit: 3, offset: 0},
+  accountWith(mockMailbox("INBOX", [
+    {id: "a3", date: new Date(now)},
+    {id: "a2", date: new Date(now - 2 * 60000)},
+    {id: "a1", date: new Date(now - 4 * 60000)}
+  ]), mockMailbox("Archive", [
+    {id: "b3", date: new Date(now - 60000)},
+    {id: "b2", date: new Date(now - 3 * 60000)},
+    {id: "b1", date: new Date(now - 5 * 60000)}
+  ])));
+const empty = search(config, {query: "", days: 7, limit: 5, offset: 0},
+  accountWith(mockMailbox("INBOX", [])));
+const withOldMessages = search(config, {query: "", days: 7, limit: 5, offset: 0},
+  accountWith(mockMailbox("INBOX", [
+    {id: "new", date: new Date(now)},
+    {id: "old-2", date: new Date(now - 40 * 24 * 60 * 60 * 1000)},
+    {id: "old-1", date: new Date(now - 60 * 24 * 60 * 60 * 1000)}
+  ])));
+process.stdout.write(JSON.stringify({
+  result, cappedPage, highOffset, multiMailbox, empty, withOldMessages,
+  firstSearchColumns, firstSearchBodies, highOffsetBodies,
+  ranges: mailCalls.ranges, whose: mailCalls.whose
+}));
+""")
+
+        self.assertEqual(observed["ranges"], 0)
+        self.assertEqual(observed["whose"], 0)
+        # One consistent snapshot: IDs, six metadata columns, three recipient
+        # columns, then IDs again to prove no message moved in between.
+        self.assertEqual(
+            observed["firstSearchColumns"],
+            ["id", "messageId", "dateReceived", "sender", "subject", "readStatus",
+             "flaggedStatus", "toRecipients", "ccRecipients", "bccRecipients", "id"],
+        )
+        self.assertEqual(observed["firstSearchBodies"], ["3062"])
+        self.assertEqual(observed["result"]["mailboxes"], ["INBOX"])
+        self.assertEqual(observed["result"]["candidateCount"], 3063)
+        self.assertEqual(observed["result"]["results"][0]["id"], "mail:3062")
+        self.assertEqual(
+            observed["result"]["results"][0]["sourceKey"], "email:<3062@example.com>"
+        )
+        self.assertTrue(observed["result"]["truncated"])
+        self.assertFalse(observed["result"]["hardTruncated"])
+        self.assertEqual(len(observed["cappedPage"]["results"]), 200)
+        self.assertEqual(observed["cappedPage"]["bodyResultCount"], 25)
+        self.assertTrue(observed["cappedPage"]["bodyTruncated"])
+        self.assertTrue(observed["cappedPage"]["hardTruncated"])
+        self.assertEqual(
+            sum(bool(item["snippet"]) for item in observed["cappedPage"]["results"]), 25
+        )
+        self.assertEqual(
+            observed["highOffsetBodies"], [str(3063 - offset) for offset in range(150, 160)]
+        )
+        self.assertFalse(observed["highOffset"]["bodyTruncated"])
+        self.assertEqual(
+            [item["id"] for item in observed["multiMailbox"]["results"]],
+            ["mail:a3", "mail:b3", "mail:a2"],
+        )
+        self.assertEqual(observed["empty"]["results"], [])
+        self.assertFalse(observed["empty"]["hardTruncated"])
+        self.assertEqual(
+            [item["id"] for item in observed["withOldMessages"]["results"]], ["mail:new"]
+        )
+        self.assertFalse(observed["withOldMessages"]["hardTruncated"])
+
+    def test_reader_reports_only_mail_addressed_to_configured_recipients(self):
+        observed = self.run_reader_harness(r"""
+const values = [
+  {id: "to", date: new Date(now), recipients: {to: ["Reader@Example.com"], cc: [], bcc: []}},
+  {id: "shared", date: new Date(now - 1000), recipients: {to: ["shared@example.com"], cc: [], bcc: []}},
+  {id: "cc", date: new Date(now - 2000), recipients: {to: ["team@example.com"], cc: ["alias@example.com"], bcc: []}},
+  {id: "bcc", date: new Date(now - 3000), recipients: {to: [], cc: [], bcc: ["reader@example.com"]}}
+];
+const configured = {...config, emailAddresses: ["reader@example.com", "alias@example.com"]};
+const result = search(configured, {query: "", days: 7, limit: 10, offset: 0, dailyReport: true},
+  accountWith(mockMailbox("INBOX", values)));
+process.stdout.write(JSON.stringify({result, bodies: mailCalls.bodies}));
+""")
+
+        self.assertEqual(
+            [item["id"] for item in observed["result"]["results"]],
+            ["mail:to", "mail:cc", "mail:bcc"],
+        )
+        self.assertEqual(observed["result"]["otherRecipientCount"], 1)
+        self.assertEqual(
+            observed["result"]["recipientAddresses"],
+            ["reader@example.com", "alias@example.com"],
+        )
+        self.assertNotIn("shared", observed["bodies"])
+
+    def test_reader_surfaces_recipient_read_failure_instead_of_filtering_everything(self):
+        observed = self.run_reader_harness(r"""
+let failure = null;
+try {
+  search(config, {query: "", days: 7, limit: 10, offset: 0, dailyReport: true},
+    accountWith(mockMailbox("INBOX", recent(3), {
+      failColumn: "toRecipients",
+      failure: new Error("Mail got an error: AppleEvent handler failed.")
+    })));
+} catch (error) {
+  failure = String(error);
+}
+process.stdout.write(JSON.stringify({failure}));
+""")
+
+        self.assertIn("AppleEvent handler failed", observed["failure"])
+
+    def test_reader_retries_a_snapshot_that_new_mail_shifted(self):
+        observed = self.run_reader_harness(r"""
+const values = recent(3);
+const shifted = ["new", ...values.map((item) => item.id)];
+let idReads = 0;
+const settling = mockMailbox("INBOX", values, {
+  ids() { idReads += 1; return idReads === 2 ? shifted : values.map((item) => item.id); }
+});
+const settled = search(config, {query: "", days: 7, limit: 10, offset: 0, dailyReport: true},
+  accountWith(settling));
+let failure = null;
+let flips = 0;
+try {
+  search(config, {query: "", days: 7, limit: 10, offset: 0, dailyReport: true},
+    accountWith(mockMailbox("INBOX", values, {
+      ids() { flips += 1; return flips % 2 ? values.map((item) => item.id) : shifted; }
+    })));
+} catch (error) {
+  failure = String(error);
+}
+process.stdout.write(JSON.stringify({settled, idReads, failure, flips}));
+""")
+
+        self.assertEqual(
+            [item["id"] for item in observed["settled"]["results"]],
+            ["mail:3", "mail:2", "mail:1"],
+        )
+        self.assertEqual(observed["idReads"], 4)
+        self.assertIn("kept changing", observed["failure"])
+        self.assertEqual(observed["flips"], 6)
+
+    def test_reader_body_failures_keep_message_but_surface_permission_loss(self):
+        observed = self.run_reader_harness(r"""
+const values = recent(2);
+values[0].body = new Error("Message is not downloaded");
+const kept = search(config, {query: "", days: 7, limit: 10, offset: 0, dailyReport: true},
+  accountWith(mockMailbox("INBOX", values)));
+const denied = recent(1);
+denied[0].body = Object.assign(new Error("Not authorized to send Apple events to Mail."), {number: -1743});
+let code = null;
+try {
+  search(config, {query: "", days: 7, limit: 10, offset: 0, dailyReport: true},
+    accountWith(mockMailbox("INBOX", denied)));
+} catch (error) {
+  code = errorCode(error);
+}
+process.stdout.write(JSON.stringify({kept, code}));
+""")
+
+        self.assertEqual(
+            [item["snippet"] for item in observed["kept"]["results"]], ["", "body 1"]
+        )
+        self.assertEqual(observed["kept"]["bodyResultCount"], 2)
+        self.assertEqual(observed["code"], "mail_permission_required")
+
+    def test_reader_skips_writing_a_response_for_a_superseded_request(self):
+        observed = self.run_reader_harness(r"""
+let requestNonce = "current";
+readJSON = function() { return {nonce: requestNonce}; };
+const paths = {request: "request.json", response: "response.json"};
+const current = requestIsCurrent(paths, "current");
+requestNonce = "newer";
+const superseded = requestIsCurrent(paths, "current");
+readJSON = function() { throw new Error("Could not read request.json"); };
+const unreadable = requestIsCurrent(paths, "current");
+process.stdout.write(JSON.stringify({current, superseded, unreadable}));
+""")
+
+        self.assertEqual(
+            observed, {"current": True, "superseded": False, "unreadable": True}
+        )
 
     def test_main_install_keeps_mail_reader_separate(self):
         install_script = (SCRIPTS / "install.sh").read_text()
@@ -741,364 +916,6 @@ process.stdout.write(JSON.stringify({
         self.assertIn("Retry after it finishes", str(captured.exception))
         self.assertEqual(json.loads(request_path.read_text()), active_request)
         run.assert_not_called()
-
-    def test_reader_loads_bodies_only_for_output_page_after_metadata_search(self):
-        node = shutil.which("node")
-        if node is None:
-            self.skipTest("Node.js is required for the JavaScript reader contract")
-        harness = r"""
-const fs = require("fs");
-globalThis.ObjC = {import() {}};
-eval(fs.readFileSync(process.argv[1], "utf8"));
-const values = Array.from({length: 20}, (_, id) => ({id: String(id + 1), date: new Date(Date.now() - id * 60000)}));
-let bodyReads = [];
-const messages = values.map((item) => ({
-  id() { return item.id; }, messageId() { return `${item.id}@example.com`; }, dateReceived() { return item.date; },
-  sender() { return "sender@example.com"; }, subject() { return "topic"; },
-  readStatus() { return false; }, flaggedStatus() { return false; },
-  content() { bodyReads.push(item.id); return `body ${item.id}`; }
-}));
-messages.id = () => values.map((item) => item.id);
-messages.messageId = () => values.map((item) => `${item.id}@example.com`);
-messages.dateReceived = () => values.map((item) => item.date);
-messages.sender = () => values.map(() => "sender@example.com");
-messages.subject = () => values.map(() => "topic");
-messages.readStatus = () => values.map(() => false);
-messages.flaggedStatus = () => values.map(() => false);
-messages.slice = (start, end) => {
-  const bounded = Array.prototype.slice.call(messages, start, end + 1);
-  for (const property of ["id", "messageId", "dateReceived", "sender", "subject", "readStatus", "flaggedStatus"]) {
-    bounded[property] = () => bounded.map((message) => message[property]());
-  }
-  bounded.content = () => bounded.map((message) => message.content());
-  return bounded;
-};
-const account = {mailboxes() { return [{name() { return "INBOX"; }, messages}]; }};
-const results = [];
-for (const query of ["", "topic"]) {
-  bodyReads = [];
-  const page = search({emailAddress: "haley@example.com", emailMailboxes: ["INBOX"]},
-    {query, limit: 2, offset: 5}, account);
-  results.push({page, bodyReads});
-}
-process.stdout.write(JSON.stringify(results));
-"""
-        completed = subprocess.run(
-            [node, "-e", harness, str(SCRIPTS / "focus-queue-mail-reader.js")],
-            capture_output=True, text=True, check=True,
-        )
-        expected = [
-            (["6", "7"], False),
-            (["6", "7"], False),
-        ]
-        for result, (expected_body_reads, expected_hard_truncation) in zip(
-            json.loads(completed.stdout), expected
-        ):
-            self.assertEqual(result["bodyReads"], expected_body_reads)
-            self.assertEqual([item["snippet"] for item in result["page"]["results"]], ["body 6", "body 7"])
-            self.assertTrue(result["page"]["truncated"])
-            self.assertEqual(result["page"]["hardTruncated"], expected_hard_truncation)
-
-    def test_reader_filters_large_mailbox_before_bulk_metadata_reads(self):
-        node = shutil.which("node")
-        if node is None:
-            self.skipTest("Node.js is required for the JavaScript reader contract")
-        harness = r"""
-const fs = require("fs");
-globalThis.ObjC = {import() {}};
-eval(fs.readFileSync(process.argv[1], "utf8"));
-
-const now = Date.now();
-const recent = Array.from({length: 3063}, (_, index) => {
-  const id = 3063 - index;
-  return {id: String(id), messageId: `${id}@example.com`, date: new Date(now - index * 1000)};
-});
-let unfilteredMetadataReads = 0;
-let individualMetadataReads = 0;
-let boundedBulkMetadataReads = 0;
-let fullIdWidths = [];
-let bulkWidths = [];
-let bulkContentWidths = [];
-let bulkContentRanges = [];
-let resolutionWidths = [];
-let rangeCalls = [];
-let bodyReads = [];
-
-function collection(values) {
-  const result = values.map((item) => ({
-    id() { individualMetadataReads += 1; return item.id; },
-    messageId() { individualMetadataReads += 1; return item.messageId; },
-    dateReceived() { individualMetadataReads += 1; return item.date; },
-    sender() { individualMetadataReads += 1; return "sender@example.com"; },
-    subject() { individualMetadataReads += 1; return `subject ${item.id}`; },
-    readStatus() { individualMetadataReads += 1; return false; },
-    flaggedStatus() { individualMetadataReads += 1; return false; },
-    content() { bodyReads.push(item.id); return `body ${item.id}`; }
-  }));
-  return result;
-}
-
-function boundedSpecifier(values, rangeStart = 0) {
-  const resolved = collection(values);
-  const read = (result) => {
-    boundedBulkMetadataReads += 1;
-    bulkWidths.push(values.length);
-    return result;
-  };
-  const specifier = () => { resolutionWidths.push(values.length); return resolved; };
-  specifier.id = () => read(values.map((item) => item.id));
-  specifier.messageId = () => read(values.map((item) => item.messageId));
-  specifier.dateReceived = () => read(values.map((item) => item.date));
-  specifier.sender = () => read(values.map(() => "sender@example.com"));
-  specifier.subject = () => read(values.map((item) => `subject ${item.id}`));
-  specifier.readStatus = () => read(values.map(() => false));
-  specifier.flaggedStatus = () => read(values.map(() => false));
-  specifier.content = () => {
-    bulkContentWidths.push(values.length);
-    bulkContentRanges.push([rangeStart, rangeStart + values.length - 1]);
-    return values.map((item) => `body ${item.id}`);
-  };
-  return specifier;
-}
-
-function rawSpecifier(values) {
-  const allMessages = collection(values);
-  allMessages.id = () => {
-    fullIdWidths.push(values.length);
-    return values.map((item) => item.id);
-  };
-  for (const property of ["messageId", "dateReceived", "sender", "subject", "readStatus", "flaggedStatus"]) {
-    allMessages[property] = () => {
-      unfilteredMetadataReads += 1;
-      throw new Error("unbounded expensive mailbox metadata was read");
-    };
-  }
-  allMessages.slice = (start, end) => {
-    rangeCalls.push([start, end]);
-    return boundedSpecifier(values.slice(start, end + 1), start);
-  };
-  allMessages.whose = () => {
-    unfilteredMetadataReads += 1;
-    throw new Error("unsafe whose/range composition was used");
-  };
-  return allMessages;
-}
-
-const inbox = {name() { return "INBOX"; }, messages: rawSpecifier(recent)};
-const sent = {name() { return "Sent"; }, messages: {
-  id() { throw new Error("unconfigured mailbox was searched"); }
-}};
-const result = search(
-  {emailAddress: "reader@example.com", emailMailboxes: ["INBOX"]},
-  {query: "", days: 7, limit: 1, offset: 1},
-  {mailboxes() { return [inbox, sent]; }}
-);
-const queried = search(
-  {emailAddress: "reader@example.com", emailMailboxes: ["INBOX"]},
-  {query: "subject", days: 7, limit: 1, offset: 1},
-  {mailboxes() { return [inbox, sent]; }}
-);
-const empty = search(
-  {emailAddress: "reader@example.com", emailMailboxes: ["INBOX"]},
-  {query: "", days: 7, limit: 5, offset: 0},
-  {mailboxes() { return [{name() { return "INBOX"; }, messages: rawSpecifier([])}]; }}
-);
-const underfilled = search(
-  {emailAddress: "reader@example.com", emailMailboxes: ["INBOX"]},
-  {query: "", days: 7, limit: 5, offset: 0},
-  {mailboxes() { return [{name() { return "INBOX"; }, messages: rawSpecifier(recent.slice(0, 2))}]; }}
-);
-const withOldMessages = search(
-  {emailAddress: "reader@example.com", emailMailboxes: ["INBOX"]},
-  {query: "", days: 7, limit: 5, offset: 0},
-  {mailboxes() { return [{name() { return "INBOX"; }, messages: rawSpecifier([
-    recent[0],
-    {id: "old-2", messageId: "old-2@example.com", date: new Date(now - 40 * 24 * 60 * 60 * 1000)},
-    {id: "old-1", messageId: "old-1@example.com", date: new Date(now - 60 * 24 * 60 * 60 * 1000)}
-  ])}]; }}
-);
-const mailboxA = [
-  {id: "a3", messageId: "a3@example.com", date: new Date(now)},
-  {id: "a2", messageId: "a2@example.com", date: new Date(now - 2 * 60000)},
-  {id: "a1", messageId: "a1@example.com", date: new Date(now - 4 * 60000)}
-];
-const mailboxB = [
-  {id: "b3", messageId: "b3@example.com", date: new Date(now - 60000)},
-  {id: "b2", messageId: "b2@example.com", date: new Date(now - 3 * 60000)},
-  {id: "b1", messageId: "b1@example.com", date: new Date(now - 5 * 60000)}
-];
-const multiMailbox = search(
-  {emailAddress: "reader@example.com", emailMailboxes: ["INBOX", "Archive"]},
-  {query: "", days: 7, limit: 3, offset: 0},
-  {mailboxes() { return [
-    {name() { return "INBOX"; }, messages: rawSpecifier(mailboxA)},
-    {name() { return "Archive"; }, messages: rawSpecifier(mailboxB)}
-  ]; }}
-);
-const cappedPage = search(
-  {emailAddress: "reader@example.com", emailMailboxes: ["INBOX"]},
-  {query: "", days: 7, limit: 200, offset: 0, dailyReport: true},
-  {mailboxes() { return [{name() { return "INBOX"; }, messages: rawSpecifier(recent)}]; }}
-);
-const largeMailboxA = Array.from({length: 20}, (_, index) => ({
-  id: `ca-${index}`,
-  messageId: `ca-${index}@example.com`,
-  date: new Date(now - index * 2000)
-}));
-const largeMailboxB = Array.from({length: 20}, (_, index) => ({
-  id: `cb-${index}`,
-  messageId: `cb-${index}@example.com`,
-  date: new Date(now - (index * 2000 + 1000))
-}));
-const cappedMultiMailbox = search(
-  {emailAddress: "reader@example.com", emailMailboxes: ["INBOX", "Archive"]},
-  {query: "", days: 7, limit: 20, offset: 0, dailyReport: true},
-  {mailboxes() { return [
-    {name() { return "INBOX"; }, messages: rawSpecifier(largeMailboxA)},
-    {name() { return "Archive"; }, messages: rawSpecifier(largeMailboxB)}
-  ]; }}
-);
-const highOffset = search(
-  {emailAddress: "reader@example.com", emailMailboxes: ["INBOX"]},
-  {query: "", days: 7, limit: 10, offset: 150, dailyReport: true},
-  {mailboxes() { return [{name() { return "INBOX"; }, messages: rawSpecifier(recent)}]; }}
-);
-process.stdout.write(JSON.stringify({
-  result, queried, empty, underfilled, withOldMessages, multiMailbox,
-  cappedPage, cappedMultiMailbox, highOffset,
-  unfilteredMetadataReads, individualMetadataReads, boundedBulkMetadataReads,
-  fullIdWidths, bulkWidths, bulkContentWidths, bulkContentRanges,
-  resolutionWidths, rangeCalls, bodyReads
-}));
-"""
-        completed = subprocess.run(
-            [node, "-e", harness, str(SCRIPTS / "focus-queue-mail-reader.js")],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        observed = json.loads(completed.stdout)
-
-        self.assertEqual(observed["unfilteredMetadataReads"], 0)
-        self.assertEqual(observed["individualMetadataReads"], 0)
-        self.assertEqual(
-            observed["fullIdWidths"],
-            [3063, 3063, 0, 2, 3, 3, 3, 3063, 20, 20, 3063],
-        )
-        self.assertEqual(observed["boundedBulkMetadataReads"], 60)
-        self.assertEqual(observed["bulkWidths"][:12], [3063] * 12)
-        self.assertEqual(observed["bulkWidths"][12:18], [2] * 6)
-        self.assertEqual(observed["bulkWidths"][18:36], [3] * 18)
-        self.assertEqual(observed["bulkWidths"][36:42], [3063] * 6)
-        self.assertEqual(observed["bulkWidths"][42:54], [20] * 12)
-        self.assertEqual(observed["bulkWidths"][54:], [3063] * 6)
-        self.assertEqual(observed["resolutionWidths"], [3063])
-        self.assertEqual(observed["bulkContentWidths"], [1, 2, 1, 2, 1, 10, 5, 5, 10])
-        self.assertEqual(observed["bulkContentRanges"][-1], [150, 159])
-        self.assertEqual(sum(observed["bulkContentWidths"][3:5]), 3)
-        self.assertEqual(sum(observed["bulkContentWidths"][-3:-1]), 10)
-        self.assertEqual(observed["result"]["mailboxes"], ["INBOX"])
-        self.assertEqual(observed["result"]["candidateCount"], 3063)
-        self.assertEqual(observed["result"]["results"][0]["id"], "mail:3062")
-        self.assertEqual(observed["result"]["results"][0]["sourceKey"], "email:<3062@example.com>")
-        self.assertEqual(observed["queried"]["candidateCount"], 3063)
-        self.assertEqual(observed["empty"]["results"], [])
-        self.assertEqual(len(observed["underfilled"]["results"]), 2)
-        self.assertEqual(
-            [item["id"] for item in observed["withOldMessages"]["results"]],
-            ["mail:3063"],
-        )
-        self.assertEqual(
-            [item["id"] for item in observed["multiMailbox"]["results"]],
-            ["mail:a3", "mail:b3", "mail:a2"],
-        )
-        self.assertEqual(len(observed["cappedPage"]["results"]), 200)
-        self.assertEqual(observed["cappedPage"]["bodyResultCount"], 10)
-        self.assertTrue(observed["cappedPage"]["bodyTruncated"])
-        self.assertTrue(observed["cappedPage"]["hardTruncated"])
-        self.assertEqual(
-            sum(bool(item["snippet"]) for item in observed["cappedPage"]["results"]),
-            10,
-        )
-        self.assertEqual(len(observed["cappedMultiMailbox"]["results"]), 20)
-        self.assertEqual(observed["cappedMultiMailbox"]["bodyResultCount"], 10)
-        self.assertTrue(observed["cappedMultiMailbox"]["bodyTruncated"])
-        self.assertEqual(
-            sum(bool(item["snippet"]) for item in observed["cappedMultiMailbox"]["results"]),
-            10,
-        )
-        self.assertEqual(len(observed["highOffset"]["results"]), 10)
-        self.assertEqual(observed["highOffset"]["bodyResultCount"], 10)
-        self.assertFalse(observed["highOffset"]["bodyTruncated"])
-        self.assertEqual(observed["bodyReads"], ["3062"])
-        self.assertTrue(observed["result"]["truncated"])
-        self.assertFalse(observed["result"]["hardTruncated"])
-        self.assertFalse(observed["empty"]["hardTruncated"])
-        self.assertFalse(observed["underfilled"]["hardTruncated"])
-        self.assertFalse(observed["withOldMessages"]["hardTruncated"])
-
-    def test_reader_rejects_failed_or_short_bulk_body_batches(self):
-        node = shutil.which("node")
-        if node is None:
-            self.skipTest("Node.js is required for the JavaScript reader contract")
-        harness = r"""
-const fs = require("fs");
-globalThis.ObjC = {import() {}};
-eval(fs.readFileSync(process.argv[1], "utf8"));
-
-const values = Array.from({length: 12}, (_, index) => ({
-  id: String(12 - index),
-  date: new Date(Date.now() - index * 1000)
-}));
-
-function mailbox(mode) {
-  const messages = [];
-  messages.id = () => values.map((item) => item.id);
-  messages.slice = (start, end) => {
-    const selected = values.slice(start, end + 1);
-    return {
-      messageId() { return selected.map((item) => `${item.id}@example.com`); },
-      dateReceived() { return selected.map((item) => item.date); },
-      sender() { return selected.map(() => "sender@example.com"); },
-      subject() { return selected.map((item) => `subject ${item.id}`); },
-      readStatus() { return selected.map(() => false); },
-      flaggedStatus() { return selected.map(() => false); },
-      content() {
-        if (mode === "throw") throw new Error("Mail content batch failed");
-        return selected.slice(0, Math.max(0, selected.length - 1)).map((item) => `body ${item.id}`);
-      }
-    };
-  };
-  return {name() { return "INBOX"; }, messages};
-}
-
-const errors = [];
-for (const mode of ["throw", "short"]) {
-  try {
-    search(
-      {emailAddress: "reader@example.com", emailMailboxes: ["INBOX"]},
-      {query: "", days: 7, limit: 10, offset: 0, dailyReport: true},
-      {mailboxes() { return [mailbox(mode)]; }}
-    );
-    errors.push(null);
-  } catch (error) {
-    errors.push(String(error));
-  }
-}
-process.stdout.write(JSON.stringify(errors));
-"""
-        completed = subprocess.run(
-            [node, "-e", harness, str(SCRIPTS / "focus-queue-mail-reader.js")],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        errors = json.loads(completed.stdout)
-
-        self.assertIn("Mail content batch failed", errors[0])
-        self.assertIn("body batch", errors[1].lower())
-        self.assertIn("expected 10", errors[1].lower())
-
 
 if __name__ == "__main__":
     unittest.main()

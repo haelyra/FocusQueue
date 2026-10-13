@@ -8,8 +8,14 @@ const CONNECTOR = "ecc-focus-mail-reader";
 const MAX_BODY_CHARACTERS = 100000;
 const MAX_SEARCH_CANDIDATES = 5000;
 const MAX_BODY_SEARCH_CANDIDATES = 250;
+// Bodies that Mail has not cached locally download from the server one by
+// one. Stop body matching well inside the client's 90-second timeout.
+const BODY_SEARCH_BUDGET_MS = 45000;
 const MAX_DAILY_REPORT_RESULTS = 500;
-const MAX_EMPTY_QUERY_BODY_SNIPPETS = 10;
+const MAX_EMPTY_QUERY_BODY_SNIPPETS = 25;
+const METADATA_PROPERTIES = ["messageId", "dateReceived", "sender", "subject", "readStatus", "flaggedStatus"];
+const RECIPIENT_PROPERTIES = ["toRecipients", "ccRecipients", "bccRecipients"];
+const SNAPSHOT_ATTEMPTS = 3;
 
 function safeValue(operation, fallback) {
   try {
@@ -110,22 +116,24 @@ function cleanText(value, limit) {
   return text.length > limit ? text.slice(0, limit) : text;
 }
 
-function recipientAddresses(message) {
-  const result = [];
-  for (const property of ["toRecipients", "ccRecipients", "bccRecipients"]) {
-    for (const recipient of safeValue(() => message[property](), [])) {
-      const address = safeValue(() => recipient.address(), "");
-      if (address) result.push(String(address).toLowerCase());
-    }
-  }
-  return result;
+function configuredRecipients(config) {
+  const configured = Array.isArray(config.emailAddresses) && config.emailAddresses.length
+    ? config.emailAddresses
+    : [config.emailAddress];
+  return new Set(
+    configured
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter(Boolean)
+  );
 }
 
-function belongsToAddress(message, targetAddress) {
-  if (recipientAddresses(message).includes(targetAddress)) return true;
-  return String(safeValue(() => message.allHeaders(), ""))
-    .toLowerCase()
-    .includes(targetAddress);
+function addressedTo(index, position, wanted) {
+  for (const property of RECIPIENT_PROPERTIES) {
+    for (const address of index.recipients[property][position] || []) {
+      if (wanted.has(String(address).toLowerCase())) return true;
+    }
+  }
+  return false;
 }
 
 function resolveAccount(Mail, targetAddress) {
@@ -154,79 +162,66 @@ function selectedMailboxes(account, config, requested) {
   return result;
 }
 
-function mailboxIndex(entry) {
-  const messages = entry.mailbox.messages;
-  return {
-    entry,
-    messages,
-    ids: safeValue(() => messages.id(), []),
-    messageIds: safeValue(() => messages.messageId(), []),
-    dates: safeValue(() => messages.dateReceived(), []),
-    senders: safeValue(() => messages.sender(), []),
-    subjects: safeValue(() => messages.subject(), []),
-    readStatuses: safeValue(() => messages.readStatus(), []),
-    flaggedStatuses: safeValue(() => messages.flaggedStatus(), [])
-  };
+function sameValues(left, right) {
+  if (left.length !== right.length) return false;
+  for (let position = 0; position < left.length; position += 1) {
+    if (String(left[position]) !== String(right[position])) return false;
+  }
+  return true;
 }
 
-function recentMailboxIndex(entry, cutoff, maximumMessages, resolveMessages) {
+function mailboxIndex(entry, options) {
+  const includeRecipients = Boolean(options && options.recipients);
   const allMessages = entry.mailbox.messages;
-  // JXA drops one qualifier when whose and slice specifiers are chained. Read
-  // only the lightweight IDs to discover a safe raw range, then apply the
-  // range directly to Mail's mailbox collection. Mail returns messages newest
-  // first, matching the cutoff behavior this reader used before pagination.
-  const allIds = Array.from(safeValue(() => allMessages.id(), []));
-  const selectedCount = Math.min(allIds.length, maximumMessages);
-  if (!selectedCount) {
-    return {
-      entry,
-      messages: [],
-      ids: [],
-      messageIds: [],
-      dates: [],
-      senders: [],
-      subjects: [],
-      readStatuses: [],
-      flaggedStatuses: [],
-      allMessages,
-      rangeTruncated: false
-    };
+  // Mail answers a property read on the whole mailbox collection with one
+  // Apple Event: about 20-70 ms for 3,000 messages. The same read through a
+  // range specifier (messages.slice) is evaluated message by message and costs
+  // about 5 s per 1,000 messages, which pushed every daily-report page past
+  // the 90-second reader timeout. Never read metadata through a range.
+  const column = (operation) => Array.from(safeValue(operation, []));
+  for (let attempt = 1; attempt <= SNAPSHOT_ATTEMPTS; attempt += 1) {
+    const ids = column(() => allMessages.id());
+    const metadata = {};
+    for (const property of METADATA_PROPERTIES) {
+      metadata[property] = column(() => allMessages[property]());
+    }
+    const recipients = {};
+    if (includeRecipients) {
+      // Recipients decide which messages are reported, so a failed read must
+      // surface as an error instead of filtering every message away.
+      for (const property of RECIPIENT_PROPERTIES) {
+        recipients[property] = Array.from(allMessages[property].address());
+      }
+    }
+    // Each column is a separate Apple Event. New mail shifts positions, so the
+    // columns only describe the same messages when the ID list is unchanged.
+    const settledIds = column(() => allMessages.id());
+    const aligned = (values) => values.length === ids.length || values.length === 0;
+    const recipientsAligned = Object.values(recipients).every(
+      (values) => values.length === ids.length
+    );
+    if (
+      sameValues(ids, settledIds) &&
+      Object.values(metadata).every(aligned) &&
+      recipientsAligned
+    ) {
+      return {
+        entry,
+        allMessages,
+        ids,
+        messageIds: metadata.messageId,
+        dates: metadata.dateReceived,
+        senders: metadata.sender,
+        subjects: metadata.subject,
+        readStatuses: metadata.readStatus,
+        flaggedStatuses: metadata.flaggedStatus,
+        recipients
+      };
+    }
   }
-  // JXA range endpoints are inclusive, unlike Array.prototype.slice. Count
-  // first so empty and underfilled mailboxes never produce Invalid index.
-  const specifier = allMessages.slice(0, selectedCount - 1);
-  const values = (property, fallback) => Array.from(safeValue(
-    () => specifier[property](),
-    fallback
-  ));
-  // Each property read is one Apple Event against the bounded range,
-  // independent of the number of matching messages.
-  const ids = allIds.slice(0, selectedCount);
-  const messageIds = values("messageId", []);
-  const dates = values("dateReceived", []);
-  const senders = values("sender", []);
-  const subjects = values("subject", []);
-  const readStatuses = values("readStatus", []);
-  const flaggedStatuses = values("flaggedStatus", []);
-  const resolved = resolveMessages
-    ? (typeof specifier === "function" ? specifier() : specifier)
-    : [];
-  const messages = Array.from(resolved || []);
-  const lastDate = dates[selectedCount - 1] || null;
-  const rangeTruncated = allIds.length > selectedCount && (!lastDate || lastDate >= cutoff);
-  return {
-    entry,
-    messages,
-    ids,
-    messageIds,
-    dates,
-    senders,
-    subjects,
-    readStatuses,
-    flaggedStatuses,
-    allMessages,
-    rangeTruncated
-  };
+  throw new Error(
+    `Mailbox ${entry.name} kept changing while its metadata was read; retry after Mail finishes synchronizing.`
+  );
 }
 
 function metadataAt(index, position) {
@@ -250,51 +245,19 @@ function metadataAt(index, position) {
 }
 
 function bodyAt(index, position) {
+  // Address the body by Mail's stable message ID. Positions shift when new
+  // mail arrives, and a range read would fetch every body between candidates.
   return cleanText(
-    safeValue(() => index.messages[position].content(), ""),
+    safeValue(() => index.allMessages.byId(index.ids[position]).content(), ""),
     MAX_BODY_CHARACTERS
   );
 }
 
-function bulkBodiesForCandidates(candidates) {
+function pageBodies(candidates) {
   const bodyCandidates = candidates.slice(0, MAX_EMPTY_QUERY_BODY_SNIPPETS);
-  const ranges = new Map();
-  for (const candidate of bodyCandidates) {
-    const current = ranges.get(candidate.index);
-    ranges.set(candidate.index, current
-      ? {
-          start: Math.min(current.start, candidate.position),
-          end: Math.max(current.end, candidate.position)
-        }
-      : {start: candidate.position, end: candidate.position});
-  }
-  const bodiesByIndex = new Map();
-  for (const [index, range] of ranges) {
-    // Fetch only the selected window. High-offset pages must not reread every
-    // body before their first result.
-    const specifier = index.allMessages.slice(range.start, range.end);
-    const bodies = Array.from(specifier.content());
-    const expectedCount = range.end - range.start + 1;
-    if (bodies.length !== expectedCount) {
-      throw new Error(
-        `Mail body batch returned ${bodies.length} result(s); expected ${expectedCount}`
-      );
-    }
-    bodiesByIndex.set(
-      index,
-      {
-        start: range.start,
-        bodies
-      }
-    );
-  }
   const bodies = candidates.map(() => "");
   bodyCandidates.forEach((candidate, position) => {
-    const selected = bodiesByIndex.get(candidate.index) || {start: 0, bodies: []};
-    bodies[position] = cleanText(
-      selected.bodies[candidate.position - selected.start] || "",
-      MAX_BODY_CHARACTERS
-    );
+    bodies[position] = candidate.body || bodyAt(candidate.index, candidate.position);
   });
   return {
     bodies,
@@ -338,24 +301,28 @@ function search(config, request, account) {
   const offset = Math.min(Math.max(Number(request.offset || 0), 0), MAX_SEARCH_CANDIDATES);
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const mailboxes = selectedMailboxes(account, config, request.mailboxes);
+  // Match the Envelope Index reader: only mail addressed to a configured
+  // address is in scope, whichever reader path the daily report takes.
+  const recipients = configuredRecipients(config);
   const candidates = [];
   let scanned = 0;
   let bodyScanned = 0;
+  let otherRecipientCount = 0;
   let scanTruncated = false;
+  let bodyBudgetExhausted = false;
+  const bodySearchDeadline = Date.now() + BODY_SEARCH_BUDGET_MS;
   for (const entry of mailboxes) {
-    const index = recentMailboxIndex(
-      entry,
-      cutoff,
-      MAX_SEARCH_CANDIDATES + 1,
-      Boolean(query)
-    );
-    scanTruncated = scanTruncated || index.rangeTruncated;
+    const index = mailboxIndex(entry, {recipients: recipients.size > 0});
     for (let position = 0; position < index.ids.length; position += 1) {
       const received = index.dates[position];
       // Mailbox order is not guaranteed. Query-less daily-report scans skip old
       // entries instead of stopping, so a full window is always covered.
       if (received && received < cutoff) {
         if (query) break;
+        continue;
+      }
+      if (recipients.size && !addressedTo(index, position, recipients)) {
+        otherRecipientCount += 1;
         continue;
       }
       if (scanned >= MAX_SEARCH_CANDIDATES) {
@@ -367,7 +334,10 @@ function search(config, request, account) {
       const metadataText = [item.sender, item.subject].join("\n").toLowerCase();
       let body = "";
       let matches = !terms.length || terms.every((term) => metadataText.includes(term));
-      if (!matches && bodyScanned < MAX_BODY_SEARCH_CANDIDATES) {
+      if (!matches && bodyScanned < MAX_BODY_SEARCH_CANDIDATES && Date.now() >= bodySearchDeadline) {
+        bodyBudgetExhausted = true;
+      }
+      if (!matches && bodyScanned < MAX_BODY_SEARCH_CANDIDATES && !bodyBudgetExhausted) {
         bodyScanned += 1;
         body = bodyAt(index, position);
         const combined = `${metadataText}\n${body.toLowerCase()}`;
@@ -384,7 +354,7 @@ function search(config, request, account) {
   const pageCandidates = candidates.slice(offset, pageEnd);
   const bodyCoverage = query
     ? {bodies: [], bodyResultCount: pageCandidates.length, bodyTruncated: false}
-    : bulkBodiesForCandidates(pageCandidates);
+    : pageBodies(pageCandidates);
   const results = pageCandidates.map((candidate, pagePosition) => {
     const body = query
       ? (candidate.body || bodyAt(candidate.index, candidate.position))
@@ -404,11 +374,14 @@ function search(config, request, account) {
     resultCount: Math.max(0, Math.min(candidates.length, pageEnd) - offset),
     offset,
     candidateCount: scanned,
+    recipientAddresses: Array.from(recipients),
+    otherRecipientCount,
     bodyCandidateCount: bodyScanned,
     bodyResultCount: bodyCoverage.bodyResultCount,
     bodyTruncated: bodyCoverage.bodyTruncated,
     truncated: candidates.length > pageEnd,
-    hardTruncated: scanTruncated || bodyScanned >= MAX_BODY_SEARCH_CANDIDATES || bodyCoverage.bodyTruncated,
+    hardTruncated: scanTruncated || bodyBudgetExhausted ||
+      bodyScanned >= MAX_BODY_SEARCH_CANDIDATES || bodyCoverage.bodyTruncated,
     results
   };
 }
@@ -451,6 +424,14 @@ function readMessage(config, request, account) {
     identifier,
     retrievedAt: isoNow()
   };
+}
+
+function requestIsCurrent(paths, nonce) {
+  try {
+    return String(readJSON(paths.request).nonce || "") === nonce;
+  } catch (error) {
+    return true;
+  }
 }
 
 function run() {
@@ -497,6 +478,12 @@ function run() {
     };
   }
   response.nonce = String(request.nonce || "");
+  // launchd can start a second copy for the same request (WatchPaths plus an
+  // explicit kickstart). A copy that finishes after a newer request arrived
+  // must not overwrite that request's response.
+  if (!requestIsCurrent(paths, response.nonce)) {
+    return JSON.stringify({status: "superseded", operation: response.operation});
+  }
   writePrivateJSON(paths.response, response);
   return JSON.stringify({status: response.status, operation: response.operation});
 }

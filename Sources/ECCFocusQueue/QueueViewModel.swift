@@ -4997,7 +4997,7 @@ final class QueueViewModel {
 
   private static func dailyReportChatSummary(_ report: DailyReportDocument) -> String {
     let platformSummary = report.platforms.map {
-      "\($0.platform.displayName): \($0.newCount) new, \($0.checkedCount) checked"
+      "\($0.platform.displayName): \($0.collectedCount) read, \($0.newCount) new, \($0.checkedCount) checked"
     }.joined(separator: "; ")
     let tokenCount = report.usage?.totalTokens.formatted() ?? "unavailable"
     var response = "\(report.summary)\n\n\(platformSummary). Exact token use: \(tokenCount)."

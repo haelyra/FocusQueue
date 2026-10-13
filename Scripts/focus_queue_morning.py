@@ -53,7 +53,8 @@ VALID_PRIORITIES = {"critical", "high", "medium", "low"}
 VALID_LINK_SCHEMES = {"http", "https", "message", "tg", "vscode"}
 MAX_COLLECTED_MESSAGES_PER_SOURCE = 5_000
 MAX_DAILY_REPORT_MESSAGES_PER_SOURCE = 500
-MAX_DAILY_REPORT_MAIL_PAGE_SIZE = 10
+# Must equal MAX_EMPTY_QUERY_BODY_SNIPPETS in focus-queue-mail-reader.js.
+MAX_DAILY_REPORT_MAIL_PAGE_SIZE = 25
 MAIL_READER_TIMEOUT_RETRY_DELAY_SECONDS = 3
 PROMPT_ENVELOPE_TOKEN_RESERVE = 1_024
 
@@ -660,6 +661,7 @@ def collect_mail_via_reader_app(config: dict[str, Any], local_error: Exception) 
     body_result_count = 0
     body_truncated = False
     uncovered_message_count = 0
+    other_recipient_count = 0
     while offset < collection_limit:
         request_limit = min(page_size, collection_limit - offset)
         result = run_command(
@@ -695,6 +697,12 @@ def collect_mail_via_reader_app(config: dict[str, Any], local_error: Exception) 
         page = payload.get("results")
         if not isinstance(page, list):
             raise ReconciliationError("Mail reader returned an invalid results page")
+        try:
+            other_recipient_count = max(
+                other_recipient_count, int(payload.get("otherRecipientCount") or 0)
+            )
+        except (TypeError, ValueError):
+            pass
         page_count = len(page)
         page_hard_truncated = bool(payload.get("hardTruncated"))
         if payload.get("truncated") and page_count == 0:
@@ -770,6 +778,7 @@ def collect_mail_via_reader_app(config: dict[str, Any], local_error: Exception) 
         "bodyResultCount": body_result_count,
         "bodyTruncated": body_truncated,
         "uncoveredMessageCount": uncovered_message_count,
+        "otherRecipientCount": other_recipient_count,
         "errors": [],
         "reader": "mail-reader-service",
     }
@@ -784,8 +793,8 @@ def mail_collection_failure(
     if "timed out" in helper_normalized or "timeout" in helper_normalized:
         return (
             "mail_reader_timeout",
-            "The protected Mail reader timed out. Reinstall Focus Queue to refresh the "
-            "helper, confirm Apple Mail is running, then retry.",
+            "The protected Mail reader timed out before Apple Mail returned this "
+            f"window's messages: {helper_detail[:240]}",
         )
     if "not installed" in helper_normalized:
         return (
@@ -918,6 +927,25 @@ def collect_mail(config: dict[str, Any]) -> dict[str, Any]:
                 MAX_COLLECTED_MESSAGES_PER_SOURCE + 1,
             ],
         ).fetchall()
+        other_recipient_count = int(
+            connection.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM messages AS m
+                WHERE m.mailbox IN ({placeholders})
+                  AND m.date_received >= ?
+                  AND m.deleted = 0
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM recipients
+                    JOIN addresses AS recipient ON recipient.ROWID = recipients.address
+                    WHERE recipients.message = m.ROWID
+                      AND lower(recipient.address) IN ({address_placeholders})
+                  )
+                """,
+                [*selected_mailboxes.keys(), cutoff, *recipient_addresses],
+            ).fetchone()[0]
+        )
         connection.close()
 
         selected_rows = rows[:MAX_COLLECTED_MESSAGES_PER_SOURCE]
@@ -976,6 +1004,7 @@ def collect_mail(config: dict[str, Any]) -> dict[str, Any]:
             "mailboxesScanned": len(selected_mailboxes),
             "messages": messages,
             "truncated": len(rows) > MAX_COLLECTED_MESSAGES_PER_SOURCE,
+            "otherRecipientCount": other_recipient_count,
             "errors": errors,
         }
     except (OSError, sqlite3.Error, ReconciliationError) as error:
@@ -1995,6 +2024,47 @@ def recover_applied_classification(
     return report, pending["allSourcesOK"] and not pending["hasDeferredMessages"]
 
 
+REPORT_PLATFORM_LABELS = {
+    "discord": "Discord",
+    "telegram": "Telegram",
+    "email": "email",
+    "github": "GitHub",
+}
+
+
+def source_coverage_sentences(
+    sections: list[dict[str, Any]],
+    bundle: dict[str, Any],
+) -> list[str]:
+    """Say what each source read, so an empty review never hides a read or a failure."""
+    sentences: list[str] = []
+    for section in sections:
+        platform = str(section["platform"])
+        label = REPORT_PLATFORM_LABELS.get(platform, platform)
+        read_count = int(section["collectedCount"])
+        if section["status"] not in {"ok", "partial", "skipped"} and read_count == 0:
+            sentences.append(f"Could not read {label}; the errors below say why.")
+            continue
+        details = []
+        for key, phrase in (
+            ("triagedAwayCount", "skipped as promotional or automated"),
+            ("alreadyProcessedCount", "already in an earlier report"),
+            ("deferredCount", "deferred by the token target"),
+        ):
+            if section.get(key):
+                details.append(f"{section[key]} {phrase}")
+        details.append(f"{section['checkedCount']} reviewed")
+        sentence = f"Read {read_count} {label} message(s): {', '.join(details)}."
+        other_recipients = int(bundle.get(platform, {}).get("otherRecipientCount") or 0)
+        if other_recipients:
+            sentence += (
+                f" {other_recipients} more were addressed to recipients outside "
+                "emailAddresses and were not read."
+            )
+        sentences.append(sentence)
+    return sentences
+
+
 def build_daily_report(
     *,
     bundle: dict[str, Any],
@@ -2106,10 +2176,11 @@ def build_daily_report(
     )
     if not summary:
         summary = (
-            "No new messages required classification."
+            "Nothing new needed review."
             if not checked_messages
             else f"Checked {len(checked_messages)} new message(s)."
         )
+    coverage = " ".join(source_coverage_sentences(sections, bundle))
     application_summary = (
         f"Created {len(result.get('created', []))} linked task(s) and updated "
         f"{len(result.get('updated', []))} existing task(s)."
@@ -2123,9 +2194,9 @@ def build_daily_report(
             + ("; …" if len(description_warnings) > 3 else "")
         )
     summary = bounded_sentences(
-        f"{summary} {application_summary}",
-        maximum_sentences=5,
-        maximum_characters=2_000,
+        f"{coverage} {summary} {application_summary}".strip(),
+        maximum_sentences=14,
+        maximum_characters=2_600,
     ) or application_summary
     return {
         "version": 1,
@@ -3195,7 +3266,7 @@ def _run_reconciliation(
         run_summary = (
             f"No new messages were classified because {len(deferred_messages)} exceeded the configured token budget."
             if deferred_messages
-            else "No new messages required classification."
+            else "Nothing new needed review."
         )
         proposals = {
             "version": 1,
@@ -3361,7 +3432,8 @@ def main() -> int:
             print(f"REPORT_DATE: {report['reportDate']}")
             print(report["summary"])
             print(
-                f"Report checked {sum(item['checkedCount'] for item in report['platforms'])} "
+                f"Report read {sum(item['collectedCount'] for item in report['platforms'])} "
+                f"message(s), checked {sum(item['checkedCount'] for item in report['platforms'])} "
                 f"message(s), created {sum(len(message['tasks']) for item in report['platforms'] for message in item['messages'])} linked task reference(s), "
                 f"and used {report.get('usage', {}).get('totalTokens', 0) if report.get('usage') else 0} token(s)."
             )

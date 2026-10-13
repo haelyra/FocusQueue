@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -297,7 +298,9 @@ except module.TerminationRequested:
 
         self.assertEqual(code, "mail_reader_timeout")
         self.assertIn("timed out", message.casefold())
-        self.assertIn("reinstall", message.casefold())
+        # The underlying detail is the diagnosis; reinstalling never fixed a slow read.
+        self.assertIn("after 90 seconds", message)
+        self.assertNotIn("reinstall", message.casefold())
         self.assertNotIn("permission is pending", message.casefold())
 
     def test_mail_automation_denial_has_specific_recovery_guidance(self):
@@ -508,7 +511,7 @@ except module.TerminationRequested:
         self.assertTrue(result["truncated"])
         self.assertEqual(run.call_count, 1)
 
-    def test_mail_reader_daily_report_uses_ten_message_body_pages(self):
+    def test_mail_reader_daily_report_uses_body_sized_pages(self):
         payload = {
             "status": "ok",
             "verified": True,
@@ -536,7 +539,7 @@ except module.TerminationRequested:
             )
 
         command = run.call_args.args[0]
-        self.assertEqual(command[command.index("--limit") + 1], "10")
+        self.assertEqual(command[command.index("--limit") + 1], "25")
         self.assertIn("--daily-report", command)
         self.assertEqual(run.call_count, 1)
         self.assertEqual([item["sourceKey"] for item in result["messages"]], ["email:one"])
@@ -562,14 +565,14 @@ except module.TerminationRequested:
 
         config = {
             "lookbackHours": 168,
-            "maxEmailMessages": 25,
+            "maxEmailMessages": 60,
             "_configPath": "/tmp/focus-queue-test-ingestion.json",
             "emailAddress": "reader@example.com",
         }
         with mock.patch.object(
             MODULE,
             "run_command",
-            side_effect=[page(0, 10, True), page(10, 10, True), page(20, 5, False)],
+            side_effect=[page(0, 25, True), page(25, 25, True), page(50, 10, False)],
         ) as run:
             result = MODULE.collect_mail_via_reader_app(
                 config,
@@ -577,12 +580,20 @@ except module.TerminationRequested:
             )
 
         commands = [call.args[0] for call in run.call_args_list]
-        self.assertEqual([command[command.index("--limit") + 1] for command in commands], ["10", "10", "5"])
-        self.assertEqual([command[command.index("--offset") + 1] for command in commands], ["0", "10", "20"])
-        self.assertEqual(len(result["messages"]), 25)
-        self.assertEqual(result["bodyResultCount"], 25)
+        self.assertEqual([command[command.index("--limit") + 1] for command in commands], ["25", "25", "10"])
+        self.assertEqual([command[command.index("--offset") + 1] for command in commands], ["0", "25", "50"])
+        self.assertEqual(len(result["messages"]), 60)
+        self.assertEqual(result["bodyResultCount"], 60)
         self.assertFalse(result["bodyTruncated"])
         self.assertFalse(result["truncated"])
+
+    def test_mail_page_size_matches_reader_body_coverage(self):
+        # Rows past a page's body-covered prefix are dropped, so a page larger
+        # than the reader's body batch would silently lose messages.
+        reader = (MODULE.SCRIPT_DIR / "focus-queue-mail-reader.js").read_text()
+        match = re.search(r"const MAX_EMPTY_QUERY_BODY_SNIPPETS = (\d+);", reader)
+        self.assertIsNotNone(match)
+        self.assertEqual(int(match.group(1)), MODULE.MAX_DAILY_REPORT_MAIL_PAGE_SIZE)
 
     def test_mail_reader_excludes_uncovered_rows_before_classification_and_ledger(self):
         payload = {
@@ -1233,6 +1244,46 @@ except module.TerminationRequested:
         self.assertEqual(report["status"], "partial")
         self.assertEqual(report["platforms"][0]["status"], "partial")
         self.assertTrue(any("limit" in error for error in report["errors"]))
+
+    def test_summary_states_what_each_source_read_even_when_nothing_needs_review(self):
+        mail = [
+            {"platform": "email", "sourceKey": f"email:{index}"} for index in range(5)
+        ]
+        bundle = {
+            "email": {"status": "ok", "messages": mail, "otherRecipientCount": 4},
+            "discord": {"status": "error", "error": "Missing Access", "messages": []},
+            "collectionErrors": [],
+        }
+        report = MODULE.build_daily_report(
+            bundle=bundle,
+            all_messages=mail,
+            unseen_messages=mail[1:],
+            already_processed=mail[:1],
+            checked_messages=[],
+            deferred_messages=[],
+            triaged_messages=mail[1:],
+            proposals={},
+            result={"taskReferencesBySourceKey": {}},
+            trigger="manual",
+            recheck=False,
+            token_budget=75_000,
+            usage=None,
+            started_at="2026-10-13T12:00:00Z",
+            finished_at="2026-10-13T12:01:00Z",
+            run_id="run-coverage",
+            platforms={"email", "discord"},
+            comprehensive=True,
+        )
+
+        self.assertTrue(report["summary"].startswith("Could not read Discord"))
+        self.assertIn(
+            "Read 5 email message(s): 4 skipped as promotional or automated, "
+            "1 already in an earlier report, 0 reviewed.",
+            report["summary"],
+        )
+        self.assertIn("4 more were addressed to recipients outside emailAddresses", report["summary"])
+        self.assertIn("Nothing new needed review.", report["summary"])
+        self.assertTrue(any("Missing Access" in error for error in report["errors"]))
 
     def test_selection_defers_messages_beyond_schema_summary_limit(self):
         messages = [

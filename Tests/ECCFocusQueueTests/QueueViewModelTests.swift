@@ -2215,6 +2215,14 @@ struct QueueViewModelTests {
     let model = await fixture.model(agent: ControlledQueueAgent())
     #expect(Set(model.agentUpdates.compactMap(\.subtaskID)) == ["result", "completed", "attention"])
     #expect(model.notificationAgentUpdates.map(\.subtaskID) == ["attention"])
+
+    // The feed is memoized. A later attention change must still reach it.
+    result.attention = .approval
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: result)
+    try await eventually(maxAttempts: 400) {
+      await model.refresh()
+      return Set(model.notificationAgentUpdates.compactMap(\.subtaskID)) == ["result", "attention"]
+    }
   }
 
   @Test("Changing type shows a pending response and the agent's result in the same task")

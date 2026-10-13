@@ -43,7 +43,12 @@ private struct ProjectionMemo<Key: Equatable, Value> {
   private var entry: (key: Key, value: Value)?
 
   mutating func value(for key: Key, _ make: () -> Value) -> Value {
-    if let entry, entry.key == key { return entry.value }
+    if let entry, entry.key == key {
+      // Equal inputs in new storage compare element by element. Adopting them
+      // keeps the next comparison an identity check.
+      self.entry = (key, entry.value)
+      return entry.value
+    }
     let value = make()
     entry = (key, value)
     return value
@@ -417,7 +422,7 @@ final class QueueViewModel {
   @ObservationIgnored private var openTicketsMemo = ProjectionMemo<OpenTicketsKey, [DashboardTicket]>()
   @ObservationIgnored private var completedTicketsMemo =
     ProjectionMemo<CompletedTicketsKey, CompletedTicketLists>()
-  @ObservationIgnored private var agentUpdatesMemo = ProjectionMemo<AgentUpdatesKey, [QueueAgentUpdate]>()
+  @ObservationIgnored private var agentUpdatesMemo = ProjectionMemo<AgentUpdatesKey, AgentUpdateLists>()
 
   private var allOpenTickets: [DashboardTicket] {
     let tickets = dashboard.tickets
@@ -1859,12 +1864,29 @@ final class QueueViewModel {
     var taskContexts: [String: TaskContext]
   }
 
-  var agentUpdates: [QueueAgentUpdate] {
+  private struct AgentUpdateLists {
+    var all: [QueueAgentUpdate]
+    var notifications: [QueueAgentUpdate]
+  }
+
+  /// The header reads the notification count several times per render, and
+  /// each filter pass copied a whole task context per update.
+  private var agentUpdateLists: AgentUpdateLists {
     let key = AgentUpdatesKey(tickets: projectTickets, closureMessages: closureMessages,
       completionRequests: localState.completionRequests,
       dismissedNotificationIDs: localState.dismissedNotificationIDs, taskContexts: taskContexts)
-    return agentUpdatesMemo.value(for: key) { computeAgentUpdates() }
+    return agentUpdatesMemo.value(for: key) {
+      let all = computeAgentUpdates()
+      return AgentUpdateLists(all: all, notifications: all.filter { update in
+        if update.review != nil || update.isCleanup { return true }
+        guard let subtaskID = update.subtaskID else { return false }
+        return key.taskContexts[update.ticketID]?.subtasks.first(where: { $0.id == subtaskID })?
+          .attention != nil
+      })
+    }
   }
+
+  var agentUpdates: [QueueAgentUpdate] { agentUpdateLists.all }
 
   private func computeAgentUpdates() -> [QueueAgentUpdate] {
     var updates: [QueueAgentUpdate] = []
@@ -1901,14 +1923,7 @@ final class QueueViewModel {
       .sorted { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
   }
 
-  var notificationAgentUpdates: [QueueAgentUpdate] {
-    agentUpdates.filter { update in
-      if update.review != nil || update.isCleanup { return true }
-      guard let subtaskID = update.subtaskID else { return false }
-      return taskContexts[update.ticketID]?.subtasks.first(where: { $0.id == subtaskID })?
-        .attention != nil
-    }
-  }
+  var notificationAgentUpdates: [QueueAgentUpdate] { agentUpdateLists.notifications }
 
   func openAgentUpdate(_ update: QueueAgentUpdate) {
     revealProject(for: update.ticketID)

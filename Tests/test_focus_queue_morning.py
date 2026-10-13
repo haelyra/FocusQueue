@@ -256,6 +256,61 @@ except module.TerminationRequested:
             self.assertIn("before", calls[1])
             self.assertFalse(result["truncated"])
 
+    def test_discord_channel_hidden_from_the_bot_is_reported_without_failing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            credential = Path(temporary) / "discord.json"
+            credential.write_text(json.dumps({"discordBotToken": "token"}))
+            cutoff = MODULE.dt.datetime(2026, 9, 3, tzinfo=MODULE.dt.timezone.utc)
+            after = int(MODULE.discord_after_snowflake(cutoff))
+
+            def http_error(code):
+                return MODULE.urllib.error.HTTPError("https://discord.test", code, "error", {}, None)
+
+            def discord_get(_token, endpoint, query=None):
+                if endpoint.endswith("/channels"):
+                    return [
+                        {"id": "2", "name": "general", "type": 0},
+                        {"id": "3", "name": "moderator-only", "type": 0},
+                        {"id": "4", "name": "flaky", "type": 0},
+                    ]
+                if endpoint.endswith("/threads/active"):
+                    return {"threads": []}
+                if "/channels/3/" in endpoint:
+                    raise http_error(403)
+                if "/channels/4/" in endpoint:
+                    raise http_error(502)
+                return [{"id": str(after + 1), "author": {"username": "a"}, "content": "hi",
+                         "attachments": [], "timestamp": "2026-09-03T01:00:00Z"}]
+
+            config = {
+                "discordCredentialPath": str(credential),
+                "discordGuildId": "1",
+                "maxDiscordMessagesPerChannel": 100,
+            }
+            with mock.patch.object(MODULE, "discord_get", side_effect=discord_get):
+                flaky = MODULE.collect_discord(config, cutoff)
+
+            def without_flaky(token, endpoint, query=None):
+                if endpoint.endswith("/channels"):
+                    return discord_get(token, endpoint, query)[:2]
+                return discord_get(token, endpoint, query)
+
+            with mock.patch.object(MODULE, "discord_get", side_effect=without_flaky):
+                hidden_only = MODULE.collect_discord(config, cutoff)
+
+        self.assertEqual(flaky["status"], "partial")
+        self.assertEqual(flaky["inaccessibleChannels"], ["flaky"])
+        self.assertEqual(hidden_only["status"], "ok")
+        self.assertEqual(hidden_only["hiddenChannels"], ["moderator-only"])
+        self.assertEqual(len(hidden_only["messages"]), 1)
+        sentences = MODULE.source_coverage_sentences(
+            [{"platform": "discord", "status": "ok", "collectedCount": 1,
+              "checkedCount": 1, "triagedAwayCount": 0, "alreadyProcessedCount": 0,
+              "deferredCount": 0}],
+            {"discord": hidden_only},
+        )
+        self.assertIn("cannot see #moderator-only", sentences[0])
+
     def test_github_collection_flattens_all_paginated_issue_pages(self):
         cutoff = MODULE.dt.datetime(2026, 9, 3, tzinfo=MODULE.dt.timezone.utc)
         issues_payload = [
@@ -2357,6 +2412,49 @@ except module.TerminationRequested:
         self.assertEqual(command[command.index("--model") + 1], "opus")
         self.assertEqual(command[command.index("--effort") + 1], "high")
         self.assertIn("--disable-tools", command)
+
+    def test_classify_lets_local_validators_ignore_links_that_are_rebound(self):
+        for provider, strict in (("codex", True), ("claude", False), ("kimi", False)):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temporary:
+                config = {
+                    "agentExecutable": "/x/bin/focus-queue-codex",
+                    "agentProvider": provider,
+                    "maxNewTasksPerRun": 5,
+                }
+                completed = subprocess.CompletedProcess([], 0, '{"version": 1}', "")
+                with mock.patch.object(MODULE, "run_command", return_value=completed) as run:
+                    MODULE.classify(config, {}, Path(temporary))
+                    command = run.call_args.args[0]
+                    schema_path = Path(command[command.index("--output-schema") + 1])
+                    schema = json.loads(schema_path.read_text())
+
+                if strict:
+                    self.assertEqual(schema_path, MODULE.PROPOSAL_SCHEMA)
+                for collection in ("newTasks", "updates"):
+                    item = schema["properties"][collection]["items"]
+                    self.assertEqual("sourceLinks" in item["required"], strict)
+                    self.assertIn("sourceKeys", item["required"])
+
+    def test_model_links_without_type_are_replaced_by_trusted_links(self):
+        proposals = {
+            "newTasks": [{
+                "sourceKeys": ["email:local:1:abc"],
+                "sourceLinks": [{"label": "made up", "url": "https://example.com"}],
+            }],
+            "updates": [],
+        }
+        MODULE.bind_trusted_source_links(proposals, [{
+            "sourceKey": "email:local:1:abc",
+            "platform": "email",
+            "title": "Customer report",
+            "url": "message://%3Cm1%40example.test%3E",
+        }])
+
+        self.assertEqual(proposals["newTasks"][0]["sourceLinks"], [{
+            "label": "Customer report",
+            "url": "message://%3Cm1%40example.test%3E",
+            "type": "email",
+        }])
 
     def test_classify_omits_model_and_effort_when_unconfigured(self):
         with tempfile.TemporaryDirectory() as temporary:

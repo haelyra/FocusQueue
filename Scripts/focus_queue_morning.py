@@ -502,6 +502,7 @@ def collect_discord(config: dict[str, Any], cutoff: dt.datetime) -> dict[str, An
     page_size = min(max(int(config["maxDiscordMessagesPerChannel"]), 1), 100)
     messages: list[dict[str, Any]] = []
     inaccessible: list[str] = []
+    hidden: list[str] = []
     truncated = False
     collected_raw_count = 0
     seen_channels: set[str] = set()
@@ -549,7 +550,14 @@ def collect_discord(config: dict[str, Any], cutoff: dt.datetime) -> dict[str, An
                     truncated = True
                     break
                 before = next_before
-        except (urllib.error.HTTPError, ReconciliationError):
+        except urllib.error.HTTPError as error:
+            # 403 means the server hides this channel from the bot. That is a
+            # standing permission choice, not a failed read: counting it as
+            # partial made every report unsuccessful, and the app retries an
+            # unsuccessful report every 15 minutes for the rest of the day.
+            (hidden if error.code == 403 else inaccessible).append(str(channel["name"]))
+            continue
+        except ReconciliationError:
             inaccessible.append(str(channel["name"]))
             continue
         for item in history:
@@ -579,6 +587,7 @@ def collect_discord(config: dict[str, Any], cutoff: dt.datetime) -> dict[str, An
         "channelsScanned": len(seen_channels),
         "inaccessibleChannelCount": len(inaccessible),
         "inaccessibleChannels": inaccessible,
+        "hiddenChannels": hidden,
         "truncated": truncated,
         "messages": messages,
     }
@@ -2072,11 +2081,18 @@ def source_coverage_sentences(
                 details.append(f"{section[key]} {phrase}")
         details.append(f"{section['checkedCount']} reviewed")
         sentence = f"Read {read_count} {label} message(s): {', '.join(details)}."
-        other_recipients = int(bundle.get(platform, {}).get("otherRecipientCount") or 0)
+        source = bundle.get(platform, {})
+        other_recipients = int(source.get("otherRecipientCount") or 0)
         if other_recipients:
             sentence += (
                 f" {other_recipients} more were addressed to recipients outside "
                 "emailAddresses and were not read."
+            )
+        hidden = [str(name) for name in source.get("hiddenChannels") or []]
+        if hidden:
+            sentence += (
+                f" The bot cannot see {', '.join('#' + name for name in hidden)}; grant it "
+                "View Channel and Read Message History there to include it."
             )
         sentences.append(sentence)
     return sentences
@@ -2335,6 +2351,28 @@ def extract_json(output: str) -> dict[str, Any]:
     raise ReconciliationError("Codex classification did not return a JSON object")
 
 
+def classification_schema_path(config: dict[str, Any], runtime: Path) -> Path:
+    """Return the output schema the provider's harness should enforce.
+
+    bind_trusted_source_links replaces every model-written sourceLinks list
+    with links built from trusted source keys. Codex enforces the schema as a
+    strict structured output, which needs every property required, so it
+    keeps the canonical file. Harnesses that validate locally (Claude, Kimi)
+    get a copy that no longer fails a whole report over a link it discards:
+    an Oct 9 run failed on a sourceLinks entry that omitted "type".
+    """
+    if agent_provider(config) == "codex":
+        return PROPOSAL_SCHEMA
+    schema = load_json(PROPOSAL_SCHEMA)
+    for collection in ("newTasks", "updates"):
+        item = schema["properties"][collection]["items"]
+        item["required"] = [key for key in item["required"] if key != "sourceLinks"]
+        item["properties"]["sourceLinks"] = {"type": "array"}
+    path = runtime / "classification-schema.json"
+    write_private_json(path, schema)
+    return path
+
+
 def classify(config: dict[str, Any], bundle: dict[str, Any], runtime: Path) -> dict[str, Any]:
     prompt = proposal_prompt(bundle, int(config["maxNewTasksPerRun"]))
     runtime.mkdir(parents=True, exist_ok=True)
@@ -2359,6 +2397,7 @@ def classify(config: dict[str, Any], bundle: dict[str, Any], runtime: Path) -> d
             prompt_path = Path(handle.name)
         prompt_path.chmod(0o600)
         classification_model = str(config.get("agentModel") or "").strip() or None
+        output_schema = classification_schema_path(config, runtime)
         result = run_command(
             [
                 agent_executable(config),
@@ -2373,7 +2412,7 @@ def classify(config: dict[str, Any], bundle: dict[str, Any], runtime: Path) -> d
                 "read-only",
                 "--disable-tools",
                 "--output-schema",
-                str(PROPOSAL_SCHEMA),
+                str(output_schema),
                 "--usage-file",
                 str(usage_path),
             ]

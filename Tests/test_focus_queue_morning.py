@@ -587,6 +587,43 @@ except module.TerminationRequested:
         self.assertFalse(result["bodyTruncated"])
         self.assertFalse(result["truncated"])
 
+    def test_mail_reader_results_use_the_envelope_index_source_key(self):
+        payload = {
+            "status": "ok",
+            "verified": True,
+            "mailboxes": ["INBOX"],
+            "truncated": False,
+            "hardTruncated": False,
+            "bodyResultCount": 2,
+            "bodyTruncated": False,
+            "results": [
+                {"id": "mail:3451", "sourceKey": "email:<a@example.com>", "messageId": "<a@example.com>"},
+                {"id": "mail:3450", "sourceKey": "email:<b@example.com>", "messageId": "<b@example.com>"},
+            ],
+        }
+        config = {
+            "lookbackHours": 168,
+            "maxEmailMessages": 25,
+            "_configPath": "/tmp/focus-queue-test-ingestion.json",
+            "emailAddress": "reader@example.com",
+        }
+        with mock.patch.object(
+            MODULE,
+            "run_command",
+            return_value=subprocess.CompletedProcess([], 0, json.dumps(payload), ""),
+        ):
+            result = MODULE.collect_mail_via_reader_app(
+                config, PermissionError("Operation not permitted")
+            )
+
+        self.assertEqual(
+            [item["sourceKey"] for item in result["messages"]],
+            [
+                MODULE.email_source_key(3451, "<a@example.com>"),
+                MODULE.email_source_key(3450, "<b@example.com>"),
+            ],
+        )
+
     def test_mail_page_size_matches_reader_body_coverage(self):
         # Rows past a page's body-covered prefix are dropped, so a page larger
         # than the reader's body batch would silently lose messages.
@@ -1849,6 +1886,8 @@ except module.TerminationRequested:
                     (102, 1, now - 50, 2, 5, 2),
                     (103, 1, now - 40, 3, 4, 3),
                     (104, 2, now - 30, 4, 5, 4),
+                    # A second delivery of m1 to the other configured alias.
+                    (105, 1, now - 20, 1, 4, 1),
                 ],
             )
             connection.executemany("INSERT INTO recipients VALUES(?, ?)", [
@@ -1856,6 +1895,7 @@ except module.TerminationRequested:
                 (102, 2),
                 (103, 3),
                 (104, 1),
+                (105, 2),
             ])
             connection.commit()
             connection.close()
@@ -1883,6 +1923,10 @@ except module.TerminationRequested:
 
             self.assertEqual(result["status"], "ok")
             self.assertEqual(result["mailboxesScanned"], 1)
+            self.assertEqual(
+                [item["subject"] for item in result["messages"]].count("Crash after update"), 1
+            )
+            self.assertEqual(result["otherRecipientCount"], 1)
             by_subject = {item["subject"]: item for item in result["messages"]}
             self.assertEqual(set(by_subject), {"Crash after update", "Weekly deal"})
             self.assertTrue(by_subject["Weekly deal"]["headers"]["listUnsubscribe"])

@@ -571,6 +571,24 @@ process.stdout.write(JSON.stringify({result, bodies: mailCalls.bodies}));
         )
         self.assertNotIn("shared", observed["bodies"])
 
+    def test_reader_reports_one_copy_of_mail_delivered_to_two_aliases(self):
+        observed = self.run_reader_harness(r"""
+const values = [
+  {id: "3", date: new Date(now), messageId: "<shared@example.com>"},
+  {id: "2", date: new Date(now - 1000), messageId: "<shared@example.com>"},
+  {id: "1", date: new Date(now - 2000)}
+];
+const result = search(config, {query: "", days: 7, limit: 10, offset: 0, dailyReport: true},
+  accountWith(mockMailbox("INBOX", values)));
+process.stdout.write(JSON.stringify(result));
+""")
+
+        self.assertEqual(
+            [item["id"] for item in observed["results"]], ["mail:3", "mail:1"]
+        )
+        self.assertEqual(observed["duplicateCount"], 1)
+        self.assertFalse(observed["truncated"])
+
     def test_reader_surfaces_recipient_read_failure_instead_of_filtering_everything(self):
         observed = self.run_reader_harness(r"""
 let failure = null;

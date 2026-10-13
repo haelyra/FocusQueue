@@ -308,6 +308,8 @@ function search(config, request, account) {
   let scanned = 0;
   let bodyScanned = 0;
   let otherRecipientCount = 0;
+  let duplicateCount = 0;
+  const seenMessageIds = new Set();
   let scanTruncated = false;
   let bodyBudgetExhausted = false;
   const bodySearchDeadline = Date.now() + BODY_SEARCH_BUDGET_MS;
@@ -329,8 +331,15 @@ function search(config, request, account) {
         scanTruncated = true;
         break;
       }
-      scanned += 1;
       const item = metadataAt(index, position);
+      // Mail keeps one copy per delivery, so mail sent to two configured
+      // aliases appears twice with one Message-ID. Report it once.
+      if (item.messageId && seenMessageIds.has(item.messageId)) {
+        duplicateCount += 1;
+        continue;
+      }
+      if (item.messageId) seenMessageIds.add(item.messageId);
+      scanned += 1;
       const metadataText = [item.sender, item.subject].join("\n").toLowerCase();
       let body = "";
       let matches = !terms.length || terms.every((term) => metadataText.includes(term));
@@ -376,6 +385,7 @@ function search(config, request, account) {
     candidateCount: scanned,
     recipientAddresses: Array.from(recipients),
     otherRecipientCount,
+    duplicateCount,
     bodyCandidateCount: bodyScanned,
     bodyResultCount: bodyCoverage.bodyResultCount,
     bodyTruncated: bodyCoverage.bodyTruncated,

@@ -647,6 +647,18 @@ def message_text_from_emlx(path: Path) -> str:
     return emlx_body_text(parsed_emlx(path))
 
 
+def reader_source_key(item: dict[str, Any]) -> str:
+    """Key helper results exactly like Envelope Index rows.
+
+    The helper's Mail message ID is the Envelope Index ROWID, so both readers
+    produce the same ledger key and switching paths never re-reports mail.
+    """
+    local_id = str(item.get("id") or "").removeprefix("mail:")
+    if local_id.isdigit():
+        return email_source_key(int(local_id), str(item.get("messageId") or ""))
+    return str(item.get("sourceKey") or "")
+
+
 def collect_mail_via_reader_app(config: dict[str, Any], local_error: Exception) -> dict[str, Any]:
     days = max(1, (int(config["lookbackHours"]) + 23) // 24)
     collection_limit = min(
@@ -708,7 +720,7 @@ def collect_mail_via_reader_app(config: dict[str, Any], local_error: Exception) 
         if payload.get("truncated") and page_count == 0:
             raise ReconciliationError("Mail reader reported truncation without a next page")
         page_source_keys = [
-            str(item.get("sourceKey") or "")
+            reader_source_key(item)
             for item in page
             if isinstance(item, dict)
         ]
@@ -745,7 +757,7 @@ def collect_mail_via_reader_app(config: dict[str, Any], local_error: Exception) 
         seen_source_keys.update(page_source_keys)
         messages.extend(
             {
-                "sourceKey": item.get("sourceKey", ""),
+                "sourceKey": source_key,
                 "messageId": item.get("messageId", ""),
                 "mailbox": item.get("mailbox", ""),
                 "sender": item.get("sender", ""),
@@ -756,7 +768,7 @@ def collect_mail_via_reader_app(config: dict[str, Any], local_error: Exception) 
                 "text": item.get("snippet", ""),
                 "url": item.get("url", ""),
             }
-            for item in covered_page
+            for item, source_key in zip(covered_page, page_source_keys)
         )
         offset += page_count
         if offset >= collection_limit:
@@ -965,11 +977,16 @@ def collect_mail(config: dict[str, Any]) -> dict[str, Any]:
                     emlx_paths[local_id] = path
 
         messages: list[dict[str, Any]] = []
+        seen_message_ids: set[str] = set()
         for row in selected_rows:
             local_id = int(row["local_id"])
             message_id = str(row["message_id_header"] or "").strip()
             if message_id and not message_id.startswith("<"):
                 message_id = f"<{message_id}>"
+            if message_id and message_id in seen_message_ids:
+                continue
+            if message_id:
+                seen_message_ids.add(message_id)
             try:
                 parsed = parsed_emlx(emlx_paths[local_id]) if local_id in emlx_paths else None
                 text = emlx_body_text(parsed) if parsed is not None else ""

@@ -184,4 +184,56 @@ struct DurableLibraryTests {
         #expect(library.documents.count == 12)
         #expect(library.changes.count == 12)
     }
+
+    @Test("A store that already read the manifest sees another instance's writes")
+    func cachedReaderFollowsOtherWriters() async throws {
+        let root = try libraryFixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let urls = try (0..<2).map { i in
+            let url = root.appendingPathComponent("guide-\(i).md")
+            try Data("# Guide \(i)".utf8).write(to: url)
+            return url
+        }
+        let reader = DurableLibraryStore(root: root)
+        _ = try await reader.reconcile(state: LocalState(), contexts: [])
+        let initial = try await reader.snapshot().documents.count
+
+        try await DurableLibraryStore(root: root).captureDocument(at: urls[0], kind: "guide")
+        #expect(try await reader.snapshot().documents.count == initial + 1)
+        // Building on a stale copy would drop the other instance's document.
+        try await reader.captureDocument(at: urls[1], kind: "guide")
+        #expect(try await DurableLibraryStore(root: root).snapshot().documents.count == initial + 2)
+    }
+
+    @Test("Unchanged captures reuse the decoded manifest instead of re-reading it")
+    func unchangedCapturesSkipDecoding() async throws {
+        let root = try libraryFixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = DurableLibraryStore(root: root)
+        let taskID = UUID()
+        var library = DurableLibrary(workspaceID: UUID(), name: "Large history")
+        library.tasks = [LibraryTask(id: taskID, ticketID: "ECC-950", title: "Large", summary: "",
+            successCriteria: "", subtasks: [])]
+        let sha = String(repeating: "a", count: 64)
+        // History this size made every capture spend most of its time decoding.
+        library.documents = [LibraryDocument(id: UUID(), taskID: taskID, kind: "task-context",
+            title: "context.json", sourcePath: root.appendingPathComponent("old/context.json").path,
+            sourceDeviceID: UUID(), revisions: (0..<30_000).map { _ in
+                LibraryDocumentRevision(id: UUID(), sha256: sha, blobPath: "blobs/\(sha).json",
+                    byteCount: 1, recordedAt: Date())
+            })]
+        try FileManager.default.createDirectory(at: store.directory, withIntermediateDirectories: true)
+        try JSONEncoder().encode(library).write(to: store.directory.appendingPathComponent("manifest.json"))
+        let guide = root.appendingPathComponent("guide.md")
+        try Data("# Guide".utf8).write(to: guide)
+        try await store.captureDocument(at: guide, kind: "guide")
+
+        let clock = ContinuousClock()
+        let repeated = try await clock.measure {
+            for _ in 0..<20 { try await store.captureDocument(at: guide, kind: "guide") }
+        }
+        let coldReads = try await clock.measure {
+            for _ in 0..<2 { _ = try await DurableLibraryStore(root: root).snapshot() }
+        }
+        #expect(repeated < coldReads, "20 unchanged captures took \(repeated); 2 cold reads took \(coldReads)")
+        #expect(try await store.snapshot().documents.count == 2)
+    }
 }

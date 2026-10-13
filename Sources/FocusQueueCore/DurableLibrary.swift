@@ -165,6 +165,22 @@ public actor DurableLibraryStore {
         var providerInstallations: [String: UUID]
     }
 
+    /// Identity of the manifest file a decoded copy came from. Writers replace
+    /// the file atomically, which changes the inode; an in-place rewrite still
+    /// changes the size or change time.
+    private struct ManifestStamp: Equatable {
+        var device: Int32
+        var inode: UInt64
+        var size: Int64
+        var modified: [Int]
+        var changed: [Int]
+    }
+
+    /// Decoding the manifest dominated every capture once history grew to tens
+    /// of megabytes, and most captures change nothing. Reads reuse the decoded
+    /// copy while the file on disk is the one it came from.
+    private var cachedManifest: (stamp: ManifestStamp, library: DurableLibrary)?
+
     public init(root: URL) { self.root = root.standardizedFileURL }
 
     public func summary() throws -> DurableLibrarySummary {
@@ -294,18 +310,41 @@ public actor DurableLibraryStore {
     private func readLibrary() throws -> DurableLibrary {
         let url = directory.appendingPathComponent("manifest.json")
         guard files.fileExists(atPath: url.path) else {
+            cachedManifest = nil
             return DurableLibrary(workspaceID: UUID(), name: "Personal workspace")
         }
-        return try Self.decode(safeData(url))
+        // Stat before reading. A replacement in between pairs an older stamp
+        // with newer data, which only costs one more decode on the next read.
+        let stamp = Self.manifestStamp(url)
+        if let stamp, let cachedManifest, cachedManifest.stamp == stamp { return cachedManifest.library }
+        let library = try Self.decode(safeData(url))
+        cachedManifest = stamp.map { ($0, library) }
+        return library
+    }
+
+    private static func manifestStamp(_ url: URL) -> ManifestStamp? {
+        var info = stat()
+        guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return nil }
+        return ManifestStamp(device: info.st_dev, inode: info.st_ino, size: info.st_size,
+            modified: [info.st_mtimespec.tv_sec, info.st_mtimespec.tv_nsec],
+            changed: [info.st_ctimespec.tv_sec, info.st_ctimespec.tv_nsec])
     }
 
     private static func decode(_ data: Data) throws -> DurableLibrary {
-        let header = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        guard let version = header?["schemaVersion"] as? Int else {
-            throw DurableLibraryError.invalidData("Missing schemaVersion")
+        // A single decode. Probing the version first parsed the whole manifest
+        // twice; the probe now runs only to explain a failure or another schema.
+        let library: DurableLibrary
+        do {
+            library = try JSONDecoder().decode(DurableLibrary.self, from: data)
+        } catch {
+            let header = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            guard let version = header?["schemaVersion"] as? Int else {
+                throw DurableLibraryError.invalidData("Missing schemaVersion")
+            }
+            guard version == 1 else { throw DurableLibraryError.unsupportedVersion(version) }
+            throw error
         }
-        guard version == 1 else { throw DurableLibraryError.unsupportedVersion(version) }
-        let library = try JSONDecoder().decode(DurableLibrary.self, from: data)
+        guard library.schemaVersion == 1 else { throw DurableLibraryError.unsupportedVersion(library.schemaVersion) }
         try validateRelationships(library)
         return library
     }
@@ -626,7 +665,13 @@ public actor DurableLibraryStore {
         guard library != original || !files.fileExists(atPath: manifest.path) else { return }
         library.revision += 1
         library.changes.append(LibraryChange(id: UUID(), revision: library.revision, deviceID: device.id, recordedAt: Date(), operation: operation))
+        cachedManifest = nil
         try writePrivate(Self.encode(library), to: manifest)
+        // Cache only what a fresh read would accept, so an invalid write still
+        // fails the next read exactly as before.
+        if (try? Self.validateRelationships(library)) != nil, let stamp = Self.manifestStamp(manifest) {
+            cachedManifest = (stamp, library)
+        }
     }
 
     private func appendWarning(_ warning: String, to library: inout DurableLibrary) {

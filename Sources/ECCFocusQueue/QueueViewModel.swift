@@ -37,6 +37,19 @@ private struct PendingRouterSubmission {
   let completion: (@MainActor (Bool) -> Void)?
 }
 
+/// Remembers one derived value for its inputs. Unchanged collections compare
+/// by storage identity, so a hit costs far less than the sort or scan it saves.
+private struct ProjectionMemo<Key: Equatable, Value> {
+  private var entry: (key: Key, value: Value)?
+
+  mutating func value(for key: Key, _ make: () -> Value) -> Value {
+    if let entry, entry.key == key { return entry.value }
+    let value = make()
+    entry = (key, value)
+    return value
+  }
+}
+
 private struct DashboardFileStamp: Equatable, Sendable {
   let modifiedAt: Date?
   let size: UInt64?
@@ -390,49 +403,86 @@ final class QueueViewModel {
     allOpenTickets.filter { includesInProject($0) }
   }
 
+  /// Every input of the open order. The minute bucket lets the recent-prompt
+  /// window expire without any other change.
+  private enum OpenTicketsKey: Equatable {
+    case saved(order: [String], tickets: [DashboardTicket], lastPromptAt: [String: Date], minute: Int)
+    case derived(tickets: [DashboardTicket], deferredIDs: [String], noBacklogIDs: Set<String>,
+      closureMessages: [String: String], lastPromptAt: [String: Date], minute: Int)
+  }
+
+  /// Ticket cards, tab labels, and headers each read these lists, so one render
+  /// used to sort the whole queue dozens of times. Inputs are still read on
+  /// every call, which keeps observation tracking unchanged.
+  @ObservationIgnored private var openTicketsMemo = ProjectionMemo<OpenTicketsKey, [DashboardTicket]>()
+  @ObservationIgnored private var completedTicketsMemo =
+    ProjectionMemo<CompletedTicketsKey, CompletedTicketLists>()
+  @ObservationIgnored private var agentUpdatesMemo = ProjectionMemo<AgentUpdatesKey, [QueueAgentUpdate]>()
+
   private var allOpenTickets: [DashboardTicket] {
-    let baseline: [DashboardTicket]
+    let tickets = dashboard.tickets
+    let lastPromptAt = taskContexts.compactMapValues(\.lastPromptAt)
+    let minute = Int(Date().timeIntervalSince1970 / 60)
+    let key: OpenTicketsKey
     if let savedQueueOrder {
-      baseline = QueueOrderStore.orderedTickets(dashboard.tickets, savedIDs: savedQueueOrder)
+      key = .saved(order: savedQueueOrder, tickets: tickets, lastPromptAt: lastPromptAt, minute: minute)
     } else {
-      let ordered = DashboardOrdering.openTickets(
-        in: dashboard.tickets,
-        deferredTicketIDs: localState.deferredTicketIDs
-      )
-      let noBacklogIDs = Set(
-        recurringPRProgressByTicketID.compactMap { ticketID, progress in
+      key = .derived(tickets: tickets, deferredIDs: localState.deferredTicketIDs,
+        noBacklogIDs: Set(recurringPRProgressByTicketID.compactMap { ticketID, progress in
           progress.openCount == 0 ? ticketID : nil
-        }
-      )
-      let closurePending = dashboard.tickets.filter { $0.isCompleted && closureMessages[$0.id] != nil }
-      baseline = closurePending + ordered.filter { !noBacklogIDs.contains($0.id) }
-        + ordered.filter { noBacklogIDs.contains($0.id) }
+        }),
+        closureMessages: closureMessages, lastPromptAt: lastPromptAt, minute: minute)
     }
-    return QueueOrderStore.prioritizingRecentPrompts(
-      baseline,
-      lastPromptAtByTicketID: taskContexts.compactMapValues(\.lastPromptAt))
-  }
-
-  var completedTickets: [DashboardTicket] {
-    projectTickets
-      .filter { $0.isCompleted && closureMessages[$0.id] == nil }
-      .sorted {
-        if $0.completionTimestamp != $1.completionTimestamp {
-          return ($0.completionTimestamp ?? "") > ($1.completionTimestamp ?? "")
-        }
-        return $0.id > $1.id
+    return openTicketsMemo.value(for: key) {
+      let baseline: [DashboardTicket]
+      switch key {
+      case .saved(let order, let tickets, _, _):
+        baseline = QueueOrderStore.orderedTickets(tickets, savedIDs: order)
+      case .derived(let tickets, let deferredIDs, let noBacklogIDs, let closureMessages, _, _):
+        let ordered = DashboardOrdering.openTickets(in: tickets, deferredTicketIDs: deferredIDs)
+        let closurePending = tickets.filter { $0.isCompleted && closureMessages[$0.id] != nil }
+        baseline = closurePending + ordered.filter { !noBacklogIDs.contains($0.id) }
+          + ordered.filter { noBacklogIDs.contains($0.id) }
       }
+      return QueueOrderStore.prioritizingRecentPrompts(baseline, lastPromptAtByTicketID: lastPromptAt)
+    }
   }
 
-  var completedTodayTickets: [DashboardTicket] {
-    let today = Self.dayFormatter.string(from: Date())
-    return completedTickets.filter { $0.completionDay == today }
+  private struct CompletedTicketsKey: Equatable {
+    var tickets: [DashboardTicket]
+    var closureMessages: [String: String]
+    var today: String
   }
 
-  var pastCompletedTickets: [DashboardTicket] {
-    let today = Self.dayFormatter.string(from: Date())
-    return completedTickets.filter { $0.completionDay != today }
+  private struct CompletedTicketLists {
+    var all: [DashboardTicket]
+    var today: [DashboardTicket]
+    var past: [DashboardTicket]
   }
+
+  private var completedTicketLists: CompletedTicketLists {
+    let key = CompletedTicketsKey(tickets: projectTickets, closureMessages: closureMessages,
+      today: Self.dayFormatter.string(from: Date()))
+    return completedTicketsMemo.value(for: key) {
+      let all = key.tickets
+        .filter { $0.isCompleted && key.closureMessages[$0.id] == nil }
+        .sorted {
+          if $0.completionTimestamp != $1.completionTimestamp {
+            return ($0.completionTimestamp ?? "") > ($1.completionTimestamp ?? "")
+          }
+          return $0.id > $1.id
+        }
+      return CompletedTicketLists(all: all,
+        today: all.filter { $0.completionDay == key.today },
+        past: all.filter { $0.completionDay != key.today })
+    }
+  }
+
+  var completedTickets: [DashboardTicket] { completedTicketLists.all }
+
+  var completedTodayTickets: [DashboardTicket] { completedTicketLists.today }
+
+  var pastCompletedTickets: [DashboardTicket] { completedTicketLists.past }
 
   var blockedTicketCount: Int {
     openTickets.filter { $0.status.lowercased() == "blocked" }.count
@@ -713,7 +763,9 @@ final class QueueViewModel {
         queueChatMessages = saved
       }
       isRecoveredDailyReportRunning = try await reportHistoryRepository.reconcileInactiveRuns()
-      await reloadDailyReport()
+      // The first refresh retains report history; capturing it here delayed
+      // that refresh and every queue update behind it.
+      await reloadDailyReport(capturingHistory: false)
       if config.dailyReport.enabled,
         let approval = try await dailyReportApprovalRepository.load(),
         approval.status == .pending,
@@ -726,13 +778,15 @@ final class QueueViewModel {
       recoverInterruptedReviews()
       try await stateStore.save(localState)
       await refresh(forceRecurringPRProgress: true)
-      await reconcileDurableLibrary()
       startRefreshLoop()
       resumePendingReviews()
       programLog.record(
         "Ready with project \(selectedProject?.name ?? "Unknown").",
         category: "Lifecycle"
       )
+      // The full history import rescans every task folder. Polling already
+      // captures each change, so the queue no longer waits for this sweep.
+      await reconcileDurableLibrary()
     } catch {
       loadError = error.localizedDescription
     }
@@ -1546,11 +1600,12 @@ final class QueueViewModel {
     return "Daily report has not run today"
   }
 
-  func reloadReportHistory() async {
+  func reloadReportHistory(capturingHistory: Bool = true) async {
     do {
       let updatedHistory = try await reportHistoryRepository.load()
       if reportHistory != updatedHistory { reportHistory = updatedHistory }
       if reportHistoryError != nil { reportHistoryError = nil }
+      guard capturingHistory else { return }
       for report in updatedHistory.reports where lastDurableReports[report.runID] != report {
         let scope = "report-\(report.runID)"
         guard durableRetryAfter[scope].map({ $0 <= Date() }) ?? true else { continue }
@@ -1796,7 +1851,22 @@ final class QueueViewModel {
     }
   }
 
+  private struct AgentUpdatesKey: Equatable {
+    var tickets: [DashboardTicket]
+    var closureMessages: [String: String]
+    var completionRequests: [CompletionRequest]
+    var dismissedNotificationIDs: Set<String>
+    var taskContexts: [String: TaskContext]
+  }
+
   var agentUpdates: [QueueAgentUpdate] {
+    let key = AgentUpdatesKey(tickets: projectTickets, closureMessages: closureMessages,
+      completionRequests: localState.completionRequests,
+      dismissedNotificationIDs: localState.dismissedNotificationIDs, taskContexts: taskContexts)
+    return agentUpdatesMemo.value(for: key) { computeAgentUpdates() }
+  }
+
+  private func computeAgentUpdates() -> [QueueAgentUpdate] {
     var updates: [QueueAgentUpdate] = []
     for ticket in projectTickets {
       if let message = closureMessages[ticket.id] {
@@ -3941,7 +4011,7 @@ final class QueueViewModel {
     setDailyReportPresented(!isDailyReportPresented)
   }
 
-  func reloadDailyReport(preservingSelection: Bool = false) async {
+  func reloadDailyReport(preservingSelection: Bool = false, capturingHistory: Bool = true) async {
     do {
       let report = try await dailyReportRepository.load()
       if let report, latestDailyReport != report {
@@ -3951,7 +4021,7 @@ final class QueueViewModel {
       }
       if (!preservingSelection || dailyReport == nil), dailyReport != report { dailyReport = report }
       if dailyReportLoadError != nil { dailyReportLoadError = nil }
-      await reloadReportHistory()
+      await reloadReportHistory(capturingHistory: capturingHistory)
       if isDailyReportPresented { markReportViewed() }
     } catch {
       let message = "Could not load daily report: \(error.localizedDescription)"
@@ -4664,6 +4734,19 @@ final class QueueViewModel {
     } catch { recordDurableError(error, scope: "state") }
   }
 
+  /// Meaningful changes reach history at once and heartbeats at the periodic
+  /// flush. A bare `updatedAt` bump never does: idle tasks re-saved every few
+  /// minutes added thousands of identical revisions to the manifest.
+  static func needsDurableCapture(_ context: TaskContext, recorded: TaskContext?,
+    flushVolatile: Bool) -> Bool {
+    guard let recorded else { return true }
+    guard recorded != context else { return false }
+    if recorded.withoutVolatileFields != context.withoutVolatileFields { return true }
+    var bumped = recorded
+    bumped.updatedAt = context.updatedAt
+    return flushVolatile && bumped != context
+  }
+
   private func captureDurableContexts(_ contexts: [TaskContext]) async {
     // Heartbeats and `updatedAt` move on nearly every poll. Recording each
     // move rewrote the whole history manifest and added a revision per task
@@ -4674,9 +4757,8 @@ final class QueueViewModel {
       now.timeIntervalSince($0) >= Self.durableVolatileFlushInterval
     } ?? true
     let changed = contexts.filter { context in
-      guard let recorded = lastDurableContexts[context.ticketID] else { return true }
-      guard recorded != context else { return false }
-      return flushVolatile || recorded.withoutVolatileFields != context.withoutVolatileFields
+      Self.needsDurableCapture(context, recorded: lastDurableContexts[context.ticketID],
+        flushVolatile: flushVolatile)
     }
     if changed.isEmpty, flushVolatile { lastDurableVolatileFlush = now }
     if !changed.isEmpty, durableRetryAfter["contexts"].map({ $0 <= Date() }) ?? true {

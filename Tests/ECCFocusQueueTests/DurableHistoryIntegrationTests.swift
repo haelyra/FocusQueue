@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import FocusQueueCore
+@testable import FocusQueueCore
 
 @testable import ECCFocusQueue
 
@@ -121,6 +121,28 @@ struct DurableHistoryIntegrationTests {
     try await Task.sleep(for: .milliseconds(2100))
     await model.refresh()
     #expect(try await store.summary().revision > captured.revision)
+  }
+
+  @Test("A bare updatedAt bump never reaches history, even at the periodic flush")
+  func updatedAtOnlyChangeIsNeverCaptured() {
+    var recorded = TaskContext(ticketID: "ECC-301", title: "Task", summary: "", successCriteria: "",
+      planPath: "/tmp/tasks/ECC-301/plan.md", updatedAt: Date(timeIntervalSince1970: 1_000))
+    recorded.subtasks = [TaskSubtask(id: "agent-one", title: "Agent", sessionID: "session-one",
+      status: .working, lastHeartbeatAt: Date(timeIntervalSince1970: 1_000))]
+    var resaved = recorded
+    resaved.updatedAt = Date(timeIntervalSince1970: 2_000)
+    var heartbeat = resaved
+    heartbeat.subtasks[0].lastHeartbeatAt = Date(timeIntervalSince1970: 2_000)
+    var blocked = resaved
+    blocked.subtasks[0].status = .blocked
+
+    #expect(QueueViewModel.needsDurableCapture(recorded, recorded: nil, flushVolatile: false))
+    #expect(!QueueViewModel.needsDurableCapture(recorded, recorded: recorded, flushVolatile: true))
+    #expect(!QueueViewModel.needsDurableCapture(resaved, recorded: recorded, flushVolatile: false))
+    #expect(!QueueViewModel.needsDurableCapture(resaved, recorded: recorded, flushVolatile: true))
+    #expect(!QueueViewModel.needsDurableCapture(heartbeat, recorded: recorded, flushVolatile: false))
+    #expect(QueueViewModel.needsDurableCapture(heartbeat, recorded: recorded, flushVolatile: true))
+    #expect(QueueViewModel.needsDurableCapture(blocked, recorded: recorded, flushVolatile: false))
   }
 
   @Test("Reports created after bootstrap enter history without a full migration")

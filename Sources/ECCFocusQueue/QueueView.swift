@@ -629,9 +629,13 @@ struct QueueView: View {
       .help("Add a task to \(model.selectedProject?.name ?? "the selected project")")
       .disabled(model.selectedProject == nil)
 
+      // AppKit re-measures segmented labels on every layout pass. Plain strings
+      // keep that measuring from re-reading and re-observing the model.
+      let focusLabel = "Focus \(model.openTickets.count)"
+      let completedLabel = "Completed \(model.completedTodayTickets.count)"
       Picker("Queue section", selection: $selectedTab) {
-        Text("Focus \(model.openTickets.count)").tag(QueueTab.focus)
-        Text("Completed \(model.completedTodayTickets.count)").tag(QueueTab.completed)
+        Text(focusLabel).tag(QueueTab.focus)
+        Text(completedLabel).tag(QueueTab.completed)
         Text("QChat").tag(QueueTab.agent)
       }
       .pickerStyle(.segmented)

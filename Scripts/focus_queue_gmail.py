@@ -737,11 +737,11 @@ def read(config: dict[str, Any], client: GmailClient, identifier: str) -> dict[s
     }
 
 
-def collect_for_daily_report(config: dict[str, Any]) -> dict[str, Any]:
+def collect_for_daily_report(config: dict[str, Any], *, query: str = "") -> dict[str, Any]:
     result = search(
         config,
         GmailClient(config),
-        "",
+        query,
         max(1, (int(config["lookbackHours"]) + 23) // 24),
         min(max(int(config["maxEmailMessages"]), 1), MAX_DAILY_RESULTS),
         limit_cap=MAX_DAILY_RESULTS,
@@ -837,6 +837,11 @@ def emit(payload: dict[str, Any]) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument(
+        "--report-account",
+        action="store_true",
+        help="Use gmailAddress, the daily report's Gmail source, instead of the mail provider.",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     authorize_parser = subparsers.add_parser("authorize")
     authorize_parser.add_argument("--open-browser", action="store_true")
@@ -853,7 +858,12 @@ def main() -> int:
     arguments = parser.parse_args()
     try:
         config = morning.load_config(arguments.config)
-        if str(config.get("emailProvider", "apple_mail")) != "gmail":
+        if arguments.report_account:
+            try:
+                config = morning.gmail_source_config(config)
+            except morning.ReconciliationError as error:
+                raise GmailAccessError(str(error), code="gmail_account_required") from error
+        elif str(config.get("emailProvider", "apple_mail")) != "gmail":
             raise GmailAccessError(
                 "Set emailProvider to gmail before using this connector",
                 code="gmail_provider_not_selected",

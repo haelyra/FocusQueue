@@ -2510,6 +2510,8 @@ private struct ConnectorDiagnosticRow: View {
     case .telegram: "paperplane"
     case .email: "envelope"
     case .github: "chevron.left.forwardslash.chevron.right"
+    case .gmail: "envelope.badge"
+    case .slack: "number"
     }
   }
 }

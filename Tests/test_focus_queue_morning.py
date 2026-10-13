@@ -311,6 +311,86 @@ except module.TerminationRequested:
         )
         self.assertIn("cannot see #moderator-only", sentences[0])
 
+    def test_gmail_and_slack_sources_flow_into_envelopes_and_report_sections(self):
+        bundle = {
+            "gmail": {"status": "ok", "messages": [{
+                "sourceKey": "email:gmail:abc", "subject": "Invoice question",
+                "sender": "Client <client@example.com>", "receivedAt": "2026-10-13T10:00:00Z",
+                "text": "Can you resend it?", "url": "https://mail.google.com/mail/u/0/#all/abc",
+                "headers": {"from": "client@example.com", "to": ["me@gmail.com"]},
+            }]},
+            "slack": {"status": "ok", "hiddenChannels": ["private-ops"], "messages": [
+                {"sourceKey": "slack:T1:C1:1.0", "channel": "general", "author": "Ada",
+                 "timestamp": "2026-10-13T09:00:00Z", "text": "Review please", "url": "https://x"},
+                {"sourceKey": "slack:T1:D1:2.0", "channel": "DM with Grace", "author": "Grace",
+                 "timestamp": "2026-10-13T08:00:00Z", "text": "ping", "url": "https://y"},
+            ]},
+            "collectionErrors": [],
+        }
+        envelopes = MODULE.message_envelopes(bundle, {"gmail", "slack"})
+        by_key = {item["sourceKey"]: item for item in envelopes}
+
+        self.assertEqual(by_key["email:gmail:abc"]["platform"], "gmail")
+        self.assertEqual(by_key["email:gmail:abc"]["headers"]["from"], "client@example.com")
+        self.assertEqual(by_key["slack:T1:C1:1.0"]["title"], "#general from Ada")
+        self.assertEqual(by_key["slack:T1:D1:2.0"]["title"], "DM with Grace from Grace")
+        report = MODULE.build_daily_report(
+            bundle=bundle, all_messages=envelopes, unseen_messages=envelopes,
+            already_processed=[], checked_messages=envelopes, deferred_messages=[],
+            proposals={"runSummary": "Two items."}, result={"taskReferencesBySourceKey": {}},
+            trigger="manual", recheck=False, token_budget=75_000, usage=None,
+            started_at="2026-10-13T12:00:00Z", finished_at="2026-10-13T12:01:00Z",
+            run_id="run-new-sources", platforms={"gmail", "slack"}, comprehensive=False,
+        )
+        self.assertEqual([section["platform"] for section in report["platforms"]], ["slack", "gmail"])
+        self.assertIn("Read 2 Slack message(s)", report["summary"])
+        self.assertIn("Read 1 Gmail message(s)", report["summary"])
+        self.assertIn("cannot read private-ops; invite the Slack app", report["summary"])
+
+    def test_gmail_source_needs_its_own_account_and_reports_setup(self):
+        result = MODULE.collect_gmail({"emailAddress": "haley@ecc.tools"})
+        self.assertEqual(result["status"], "unavailable")
+        self.assertIn("gmailAddress", result["error"])
+
+        source = MODULE.gmail_source_config(
+            {"emailAddress": "haley@ecc.tools", "emailAddresses": ["haley@ecc.tools"],
+             "gmailAddress": "me@gmail.com"}
+        )
+        self.assertEqual(source["emailAddress"], "me@gmail.com")
+        self.assertEqual(source["emailAddresses"], ["me@gmail.com"])
+
+    def test_gmail_collection_reads_the_inbox_of_the_report_account(self):
+        captured = {}
+
+        def collect_for_daily_report(config, *, query):
+            captured.update(account=config["emailAddress"], query=query)
+            return {"status": "ok", "messages": []}
+
+        with mock.patch(
+            "focus_queue_gmail.collect_for_daily_report",
+            side_effect=collect_for_daily_report,
+        ):
+            MODULE.collect_gmail({"emailAddress": "haley@ecc.tools", "gmailAddress": "me@gmail.com"})
+
+        self.assertEqual(captured, {"account": "me@gmail.com", "query": "in:inbox"})
+
+    def test_new_sources_are_opt_in_and_triage_knows_the_gmail_address(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "ingestion.json"
+            path.write_text(json.dumps({
+                "dashboardPath": "d", "dashboardDirectory": "d", "emailAddress": "a@example.com",
+                "discordGuildId": "1", "githubRepositories": ["o/r"], "telegramBotUsername": "b",
+                "agentExecutable": "x",
+            }))
+            config = MODULE.load_config(path)
+        self.assertEqual(config["dailyReport"]["enabledPlatforms"], ["discord", "telegram", "email", "github"])
+        results = TRIAGE.triage_messages(
+            [{"sourceKey": "k", "platform": "gmail", "subject": "Re: contract",
+              "headers": {"from": "client@example.com", "to": ["me@gmail.com"]}}],
+            {"emailAddress": "a@example.com", "gmailAddress": "me@gmail.com"},
+        )
+        self.assertEqual(results["k"]["category"], "direct")
+
     def test_github_collection_flattens_all_paginated_issue_pages(self):
         cutoff = MODULE.dt.datetime(2026, 9, 3, tzinfo=MODULE.dt.timezone.utc)
         issues_payload = [

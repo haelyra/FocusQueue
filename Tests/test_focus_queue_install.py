@@ -27,6 +27,7 @@ class InstallerTests(unittest.TestCase):
         "Scripts/focus_queue_mail.py",
         "Scripts/focus_queue_gmail.py",
         "Scripts/focus_queue_discord.py",
+        "Scripts/focus_queue_slack.py",
         "Scripts/focus_queue_connectors.py",
         "Scripts/focus_queue_triage.py",
         "Scripts/focus-queue-mail.js",

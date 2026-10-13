@@ -111,6 +111,12 @@ public enum DailyReportPlatform: String, Codable, CaseIterable, Identifiable, Se
   case telegram
   case email
   case github
+  case gmail
+  case slack
+
+  /// Sources a report reads when nothing is configured. Gmail and Slack need
+  /// credentials first; enabling them unconfigured makes every report partial.
+  public static let defaultEnabled: [DailyReportPlatform] = [.discord, .telegram, .email, .github]
 
   public var id: String { rawValue }
 
@@ -120,6 +126,8 @@ public enum DailyReportPlatform: String, Codable, CaseIterable, Identifiable, Se
     case .telegram: "Telegram"
     case .email: "Mail"
     case .github: "GitHub"
+    case .gmail: "Gmail"
+    case .slack: "Slack"
     }
   }
 }
@@ -140,7 +148,7 @@ public struct DailyReportConfiguration: Codable, Equatable, Sendable {
     scheduleHour: Int = 8,
     scheduleMinute: Int = 0,
     maximumTokens: Int = 75_000,
-    enabledPlatforms: [DailyReportPlatform] = DailyReportPlatform.allCases,
+    enabledPlatforms: [DailyReportPlatform] = DailyReportPlatform.defaultEnabled,
     agentProvider: AgentProvider? = nil,
     agentModel: String? = nil,
     agentEffort: String? = nil
@@ -168,7 +176,7 @@ public struct DailyReportConfiguration: Codable, Equatable, Sendable {
     maximumTokens = try container.decodeIfPresent(Int.self, forKey: .maximumTokens) ?? 75_000
     enabledPlatforms =
       try container.decodeIfPresent([DailyReportPlatform].self, forKey: .enabledPlatforms)
-      ?? DailyReportPlatform.allCases
+      ?? DailyReportPlatform.defaultEnabled
     agentProvider = try container.decodeIfPresent(String.self, forKey: .agentProvider)
       .flatMap { AgentProvider(rawValue: $0.lowercased()) }
     agentModel = try container.decodeIfPresent(String.self, forKey: .agentModel)
@@ -809,7 +817,7 @@ public enum DailyReportChatCommand {
       options: .regularExpression
     ) != nil
     let hasPlatformExclusion = command.range(
-      of: "\\b(?:except|excluding|exclude)\\b[^.!?]{0,80}\\b(?:discord|telegram|email|mail|github)\\b|\\b(?:without|not)\\s+(?:discord|telegram|email|mail|github)\\b|\\b(?:do\\s+not|don't|dont|with\\s+no|no)\\s+(?:(?:check|scan)\\s+)?(?:discord|telegram|email|mail|github)\\b",
+      of: "\\b(?:except|excluding|exclude)\\b[^.!?]{0,80}\\b(?:discord|telegram|email|mail|github|gmail|slack)\\b|\\b(?:without|not)\\s+(?:discord|telegram|email|mail|github|gmail|slack)\\b|\\b(?:do\\s+not|don't|dont|with\\s+no|no)\\s+(?:(?:check|scan)\\s+)?(?:discord|telegram|email|mail|github|gmail|slack)\\b",
       options: .regularExpression
     ) != nil
     guard !hasPlatformExclusion, !(rejectsAll && requested.isEmpty) else { return nil }
@@ -824,7 +832,7 @@ public enum DailyReportChatCommand {
         options: .regularExpression
       ) == nil
     let hasNamedUnsupportedPlatform = command.range(
-      of: "\\b(?:slack|microsoft\\s+teams|teams|whatsapp|signal|imessage|sms|outlook|gmail)\\b",
+      of: "\\b(?:microsoft\\s+teams|teams|whatsapp|signal|imessage|sms|outlook)\\b",
       options: .regularExpression
     ) != nil
     guard !hasUnsupportedTarget, !hasNamedUnsupportedPlatform else { return nil }

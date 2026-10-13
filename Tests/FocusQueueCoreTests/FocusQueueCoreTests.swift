@@ -130,7 +130,9 @@ func legacyDailyReportConfiguration() throws {
   #expect(config.dailyReport.scheduleHour == 8)
   #expect(config.dailyReport.scheduleMinute == 0)
   #expect(config.dailyReport.maximumTokens == 75_000)
-  #expect(Set(config.dailyReport.enabledPlatforms) == Set(DailyReportPlatform.allCases))
+  #expect(config.dailyReport.enabledPlatforms == DailyReportPlatform.defaultEnabled)
+  #expect(!config.dailyReport.enabledPlatforms.contains(.gmail))
+  #expect(!config.dailyReport.enabledPlatforms.contains(.slack))
   #expect(config.agentModelChoices == AppConfiguration.defaultAgentModelChoices)
 }
 
@@ -501,13 +503,25 @@ func dailyReportChatIntent() {
   #expect(DailyReportChatCommand.parse(
     "Run the daily report for Slack",
     enabledPlatforms: [.discord, .email]
-  ) == nil)
+  )?.platforms == [.slack])
   #expect(DailyReportChatCommand.parse(
     "Run the daily report on Slack",
     enabledPlatforms: [.discord, .email]
-  ) == nil)
+  )?.platforms == [.slack])
   #expect(DailyReportChatCommand.parse(
     "Run the daily report for Slack and email",
+    enabledPlatforms: [.discord, .email]
+  )?.platforms == [.email, .slack])
+  #expect(DailyReportChatCommand.parse(
+    "Run the daily report for Gmail",
+    enabledPlatforms: [.discord, .email]
+  )?.platforms == [.gmail])
+  #expect(DailyReportChatCommand.parse(
+    "Run the daily report except Slack",
+    enabledPlatforms: [.discord, .email]
+  ) == nil)
+  #expect(DailyReportChatCommand.parse(
+    "Run the daily report for Microsoft Teams",
     enabledPlatforms: [.discord, .email]
   ) == nil)
   #expect(DailyReportChatCommand.parse(

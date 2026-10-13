@@ -140,7 +140,10 @@ def triage_messages(
 ) -> dict[str, dict[str, Any]]:
     user_addresses = {
         str(value).strip().lower()
-        for value in (config.get("emailAddresses") or [config.get("emailAddress") or ""])
+        for value in [
+            *(config.get("emailAddresses") or [config.get("emailAddress") or ""]),
+            config.get("gmailAddress") or "",
+        ]
         if str(value).strip()
     }
     known_domains = {

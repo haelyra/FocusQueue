@@ -51,6 +51,10 @@ MAIL_COMMAND_DIRECTORY = Path.home() / "Library/Application Support/ECC Focus Qu
 MAIL_PROOF_DIRECTORY = Path.home() / "Library/Application Support/ECC Focus Queue/mail-proofs"
 VALID_PRIORITIES = {"critical", "high", "medium", "low"}
 VALID_LINK_SCHEMES = {"http", "https", "message", "tg", "vscode"}
+REPORT_PLATFORMS = ("discord", "telegram", "email", "github", "gmail", "slack")
+# Gmail and Slack need credentials, so they are opt-in. Enabling an
+# unconfigured source would make every report partial.
+DEFAULT_REPORT_PLATFORMS = ("discord", "telegram", "email", "github")
 MAX_COLLECTED_MESSAGES_PER_SOURCE = 5_000
 MAX_DAILY_REPORT_MESSAGES_PER_SOURCE = 500
 # Must equal MAX_EMPTY_QUERY_BODY_SNIPPETS in focus-queue-mail-reader.js.
@@ -347,7 +351,7 @@ def load_config(path: Path) -> dict[str, Any]:
         "scheduleHour": 8,
         "scheduleMinute": 0,
         "maximumTokens": 75_000,
-        "enabledPlatforms": ["discord", "telegram", "email", "github"],
+        "enabledPlatforms": list(DEFAULT_REPORT_PLATFORMS),
     }
     app_config_path = path.expanduser().parent / "config.json"
     if app_config_path.exists():
@@ -363,9 +367,9 @@ def load_config(path: Path) -> dict[str, Any]:
         except ReconciliationError:
             pass
     enabled = report_settings.get("enabledPlatforms")
-    allowed_platforms = {"discord", "telegram", "email", "github"}
+    allowed_platforms = set(REPORT_PLATFORMS)
     if not isinstance(enabled, list) or not enabled:
-        enabled = list(allowed_platforms)
+        enabled = list(DEFAULT_REPORT_PLATFORMS)
     enabled = list(dict.fromkeys(str(value) for value in enabled if str(value) in allowed_platforms))
     if not enabled:
         raise ReconciliationError("At least one daily report platform must be enabled")
@@ -1067,6 +1071,43 @@ def collect_mail(config: dict[str, Any]) -> dict[str, Any]:
         }
 
 
+def gmail_source_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Point the Gmail provider at the separate Gmail report account.
+
+    Apple Mail keeps emailAddress. The Gmail source uses gmailAddress, which
+    also names its own Keychain refresh token.
+    """
+    address = str(config.get("gmailAddress") or "").strip()
+    if not address:
+        raise ReconciliationError(
+            "Gmail is not configured: set gmailAddress and gmailOAuthClientPath in "
+            "ingestion settings, then run focus_queue_gmail.py --report-account authorize."
+        )
+    return {**config, "emailAddress": address, "emailAddresses": [address]}
+
+
+def collect_gmail(config: dict[str, Any]) -> dict[str, Any]:
+    import focus_queue_gmail
+
+    try:
+        account_config = gmail_source_config(config)
+    except ReconciliationError as error:
+        return {"status": "unavailable", "error": str(error), "messages": []}
+    return focus_queue_gmail.collect_for_daily_report(
+        account_config,
+        query=str(config.get("gmailQuery", "in:inbox")),
+    )
+
+
+def collect_slack(config: dict[str, Any], cutoff: dt.datetime) -> dict[str, Any]:
+    import focus_queue_slack
+
+    try:
+        return focus_queue_slack.collect(config, cutoff)
+    except focus_queue_slack.SlackAccessError as error:
+        return {"status": "error", "errorCode": error.code, "error": str(error), "messages": []}
+
+
 def telegram_archive_session_ids(path: Path, cutoff: float) -> tuple[list[str], bool]:
     """Inspect only routing metadata, including active sessions, without migrations."""
     deadline = time.monotonic() + 5
@@ -1327,7 +1368,7 @@ def collect_sources(
     effective_config = dict(config)
     effective_config["lookbackHours"] = effective_hours
     errors: list[dict[str, str]] = []
-    selected = platforms or {"discord", "telegram", "email", "github"}
+    selected = platforms or set(DEFAULT_REPORT_PLATFORMS)
 
     def guarded(name: str, operation: Any) -> dict[str, Any]:
         if name not in selected:
@@ -1353,6 +1394,8 @@ def collect_sources(
         "telegram": guarded("telegram", lambda: collect_telegram(effective_config)),
         "email": guarded("email", lambda: collect_mail(effective_config)),
         "github": guarded("github", lambda: collect_github(effective_config, cutoff)),
+        "gmail": guarded("gmail", lambda: collect_gmail(effective_config)),
+        "slack": guarded("slack", lambda: collect_slack(effective_config, cutoff)),
         "collectionErrors": errors,
     }
 
@@ -1361,7 +1404,7 @@ def message_envelopes(
     bundle: dict[str, Any],
     platforms: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    selected = platforms or {"discord", "telegram", "email", "github"}
+    selected = platforms or set(DEFAULT_REPORT_PLATFORMS)
     messages: list[dict[str, Any]] = []
 
     def append(
@@ -1390,13 +1433,23 @@ def message_envelopes(
             channel = str(item.get("channel") or "Discord")
             author = str(item.get("author") or "Unknown sender")
             append("discord", item, f"#{channel} from {author}", str(item.get("timestamp") or ""))
+    for item in bundle.get("slack", {}).get("messages", []):
+        if isinstance(item, dict):
+            channel = str(item.get("channel") or "Slack")
+            author = str(item.get("author") or "Unknown sender")
+            prefix = "" if channel.startswith("DM with") else "#"
+            append("slack", item, f"{prefix}{channel} from {author}", str(item.get("timestamp") or ""))
     for item in bundle.get("telegram", {}).get("messages", []):
         if isinstance(item, dict):
             append("telegram", item, "Telegram message", str(item.get("timestamp") or ""))
-    for item in bundle.get("email", {}).get("messages", []):
+    for platform, item in [
+        (platform, item)
+        for platform in ("email", "gmail")
+        for item in bundle.get(platform, {}).get("messages", [])
+    ]:
         if isinstance(item, dict):
             append(
-                "email",
+                platform,
                 item,
                 str(item.get("subject") or "Email message"),
                 str(item.get("receivedAt") or ""),
@@ -1558,9 +1611,7 @@ def bind_trusted_source_links(
                     continue
                 url = str(message.get("url") or "")
                 platform = str(message.get("platform") or "")
-                if not url or url in seen_urls or platform not in {
-                    "discord", "telegram", "email", "github"
-                }:
+                if not url or url in seen_urls or platform not in REPORT_PLATFORMS:
                     continue
                 parsed = urllib.parse.urlparse(url)
                 if parsed.scheme.lower() not in VALID_LINK_SCHEMES:
@@ -2055,6 +2106,8 @@ REPORT_PLATFORM_LABELS = {
     "telegram": "Telegram",
     "email": "email",
     "github": "GitHub",
+    "gmail": "Gmail",
+    "slack": "Slack",
 }
 
 
@@ -2089,10 +2142,15 @@ def source_coverage_sentences(
                 "emailAddresses and were not read."
             )
         hidden = [str(name) for name in source.get("hiddenChannels") or []]
-        if hidden:
+        if hidden and platform == "discord":
             sentence += (
                 f" The bot cannot see {', '.join('#' + name for name in hidden)}; grant it "
                 "View Channel and Read Message History there to include it."
+            )
+        elif hidden:
+            sentence += (
+                f" The token cannot read {', '.join(hidden)}; invite the Slack app there "
+                "to include it."
             )
         sentences.append(sentence)
     return sentences
@@ -2132,7 +2190,7 @@ def build_daily_report(
         if isinstance(item, dict)
     ]
     sections: list[dict[str, Any]] = []
-    platform_order = ["discord", "telegram", "email", "github"]
+    platform_order = ["discord", "slack", "telegram", "email", "gmail", "github"]
     for platform in platform_order:
         if platform not in platforms:
             continue
@@ -2617,6 +2675,21 @@ def fetch_full_customer_message_text(config: dict[str, Any], message: dict[str, 
     return str(payload.get("message", {}).get("body") or "")[:20_000]
 
 
+def fetch_full_gmail_message_text(config: dict[str, Any], message: dict[str, Any]) -> str:
+    import focus_queue_gmail
+
+    identifier = str(message.get("url") or message.get("sourceKey") or "")
+    identifier = identifier.removeprefix("email:gmail:")
+    try:
+        account_config = gmail_source_config(config)
+        payload = focus_queue_gmail.read(
+            account_config, focus_queue_gmail.GmailClient(account_config), identifier
+        )
+    except Exception:
+        return ""
+    return str(payload.get("message", {}).get("body") or "")[:20_000]
+
+
 def sanitize_deep_pass_findings(findings: dict[str, Any]) -> dict[str, Any]:
     raw_steps = findings.get("planSteps")
     steps = [
@@ -2704,6 +2777,8 @@ def apply_deep_passes(
             body = ""
             if message.get("platform") == "email":
                 body = fetch_full_customer_message_text(config, message)
+            elif message.get("platform") == "gmail":
+                body = fetch_full_gmail_message_text(config, message)
             bodies.append(body or str(message.get("text") or ""))
         try:
             findings = run_deep_pass(config, deep_pass_prompt(task, bodies), runtime, model=model)
@@ -3069,12 +3144,14 @@ def compact_summary(bundle: dict[str, Any], result: dict[str, Any] | None = None
     discord_count = len(bundle.get("discord", {}).get("messages", []))
     telegram_count = len(bundle.get("telegram", {}).get("messages", []))
     mail_count = len(bundle.get("email", {}).get("messages", []))
+    gmail_count = len(bundle.get("gmail", {}).get("messages", []))
+    slack_count = len(bundle.get("slack", {}).get("messages", []))
     issue_count = sum(
         len(repository.get("newOpenIssues", []))
         for repository in bundle.get("github", {}).get("repositories", [])
     )
     parts = [
-        f"Focus Queue morning sources: Discord {discord_count}, Telegram {telegram_count}, mail {mail_count}, new GitHub issues {issue_count}."
+        f"Focus Queue morning sources: Discord {discord_count}, Slack {slack_count}, Telegram {telegram_count}, mail {mail_count}, Gmail {gmail_count}, new GitHub issues {issue_count}."
     ]
     if result is not None:
         parts.append(
@@ -3084,8 +3161,8 @@ def compact_summary(bundle: dict[str, Any], result: dict[str, Any] | None = None
         parts.append(f"Collection errors: {len(bundle['collectionErrors'])}.")
     partial_sources = [
         name
-        for name in ["discord", "telegram", "email", "github"]
-        if bundle.get(name, {}).get("status") not in {"ok", "skipped"}
+        for name in REPORT_PLATFORMS
+        if bundle.get(name, {}).get("status", "skipped") not in {"ok", "skipped"}
     ]
     if partial_sources:
         parts.append(f"Incomplete sources: {', '.join(partial_sources)}.")
@@ -3209,7 +3286,7 @@ def _run_reconciliation(
     triaged_keys = {
         str(item.get("sourceKey") or "")
         for item in candidates
-        if item.get("platform") == "email"
+        if item.get("platform") in {"email", "gmail"}
         and triage_results.get(str(item.get("sourceKey") or ""), {}).get("category")
         in focus_queue_triage.EXCLUDED_CATEGORIES
     }
@@ -3417,7 +3494,7 @@ def main() -> int:
     parser.add_argument(
         "--platform",
         action="append",
-        choices=["discord", "telegram", "email", "github"],
+        choices=list(REPORT_PLATFORMS),
         dest="platforms",
     )
     parser.add_argument("--trigger", choices=["scheduled", "manual", "chat"], default="scheduled")

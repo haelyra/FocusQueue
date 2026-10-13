@@ -85,10 +85,36 @@ channel plus active threads, and returns nonce-backed evidence. It never posts,
 reacts, changes roles, or edits messages. Interactive commands are `status`,
 `channels`, `search`, and `read`.
 
-The `moderator-only` channel currently denies the bot access. Grant the Kairos
-bot **View Channel** and **Read Message History** in that channel if it should
-be included in whole-server ingestion. Message Content intent must remain
-enabled in the Discord Developer Portal.
+The `moderator-only` channel currently denies the bot access. A channel that
+returns 403 is a server permission choice, so the report lists it as hidden in
+its summary and still counts Discord as complete. Other Discord errors still
+mark the run incomplete. Grant the Kairos bot **View Channel** and **Read
+Message History** in that channel to include it. Message Content intent must
+remain enabled in the Discord Developer Portal.
+
+### Slack
+
+`Scripts/focus_queue_slack.py` reads the conversations the token's identity
+belongs to: channels the app was invited to with a bot token (`xoxb-`), or the
+user's channels and direct messages with a user token (`xoxp-`). It reads
+channel history inside the report window and the replies of threads started in
+that window. It never posts, reacts, or marks anything read.
+
+1. Create a Slack app and add the read scopes `channels:history`,
+   `groups:history`, `im:history`, `mpim:history`, `channels:read`,
+   `groups:read`, `im:read`, `mpim:read`, and `users:read`. Use user-token
+   scopes to include your direct messages, or bot-token scopes for invited
+   channels only.
+2. Install the app to the workspace and copy its token.
+3. Add `"slackToken": "xoxb-…"` or `"xoxp-…"` to the mode-`0600` credentials
+   file named by `discordCredentialPath`, or set `slackCredentialPath`.
+4. Optional: limit reading to named channels with `slackChannels` in
+   `ingestion.json`, for example `["general", "support"]`.
+5. Enable **Slack** in the daily report settings.
+
+A conversation that returns `not_in_channel` or `channel_not_found` is listed as
+hidden, like a hidden Discord channel. A rejected token or a missing scope fails
+the Slack source with the scope Slack reported as needed.
 
 ### Telegram
 
@@ -162,6 +188,23 @@ host-owned action gate, recipient/subject/body review, idempotency, and an audit
 receipt. The read connector never requests `gmail.modify`, `gmail.compose`, or
 `gmail.send`.
 
+#### Gmail as an additional report source
+
+Gmail can also run next to Apple Mail as its own report source. Keep
+`emailProvider` as `apple_mail`, then:
+
+1. Create the Desktop OAuth client as described above and set
+   `gmailOAuthClientPath`.
+2. Set `gmailAddress` to the Gmail account to read. It has its own Keychain
+   refresh token, separate from `emailAddress`.
+3. Authorize that account once:
+   `python3 "$HOME/Library/Application Support/ECC Focus Queue/automation/Scripts/focus_queue_gmail.py" --report-account authorize --open-browser`.
+4. Enable **Gmail** in the daily report settings.
+
+The source reads `in:inbox` by default; set `gmailQuery` to change it, for
+example `"in:inbox category:primary"`. Triage treats `gmailAddress` as one of
+your addresses.
+
 Google documents the installed-app OAuth flow and refresh-token lifecycle in
 [OAuth 2.0 for desktop apps](https://developers.google.com/identity/protocols/oauth2/native-app),
 and the message query/pagination contract in
@@ -207,7 +250,17 @@ Settings → Privacy & Security → Full Disk Access**, add and enable ECC Focus
 Mail Reader, then open the reader again. The morning job keeps other sources
 read-only, reports the run as incomplete, and refuses to advance its success
 checkpoint until email is available, so the next run will safely retry the same
-interval. An inaccessible Discord channel is handled the same way.
+interval. A Discord channel that fails with an error other than 403 is handled
+the same way.
+
+The reader must stay fast enough for its 90-second request timeout. Mail
+answers a property read on a whole mailbox (`messages.subject()`) with one Apple
+Event, about 20-70 ms for 3,000 messages. A read through a range specifier
+(`messages.slice(a, b).subject()`) is evaluated message by message, at about
+5 s per 1,000 messages. Reading range specifiers made every report time out
+from Sep 27 to Oct 13, 2026. The reader therefore reads metadata only from the
+whole mailbox and fetches bodies by message ID. The JavaScript mail tests
+reject range and `whose` specifiers.
 
 ### GitHub
 

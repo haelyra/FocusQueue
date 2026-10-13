@@ -43,6 +43,19 @@ def diagnose(config: dict[str, Any]) -> dict[str, Any]:
         email_next_step = (
             "Choose a synchronized Mail account and mailbox scope, then verify reader permissions."
         )
+    gmail_available = bool(config.get("gmailAddress")) and configured_file(
+        config.get("gmailOAuthClientPath")
+    )
+    credential_path = Path(
+        config.get("slackCredentialPath")
+        or config.get("discordCredentialPath")
+        or str(DEFAULT_CONFIG.parent / "credentials.json")
+    ).expanduser()
+    try:
+        credentials = json.loads(credential_path.read_text(encoding="utf-8"))
+        slack_available = isinstance(credentials, dict) and bool(credentials.get("slackToken"))
+    except (OSError, ValueError):
+        slack_available = False
     repositories = config.get("githubRepositories")
     github_available = (
         isinstance(repositories, list)
@@ -79,6 +92,26 @@ def diagnose(config: dict[str, Any]) -> dict[str, Any]:
                 "coverage": email_coverage,
                 "accountSwitchSupported": False,
                 "nextStep": email_next_step,
+            },
+            {
+                "id": "gmail",
+                "status": "configured_unverified" if gmail_available else "setup_required",
+                "coverage": "configured_gmail_inbox" if gmail_available else "unconfigured",
+                "accountSwitchSupported": False,
+                "nextStep": (
+                    "Set gmailAddress and gmailOAuthClientPath in ingestion settings, run "
+                    "focus_queue_gmail.py --report-account authorize --open-browser, then enable Gmail."
+                ),
+            },
+            {
+                "id": "slack",
+                "status": "configured_unverified" if slack_available else "setup_required",
+                "coverage": "token_member_conversations" if slack_available else "unconfigured",
+                "accountSwitchSupported": False,
+                "nextStep": (
+                    "Install a Slack app with read-only history and read scopes, add its token as "
+                    "slackToken in the credentials file, then enable Slack."
+                ),
             },
             {
                 "id": "github",

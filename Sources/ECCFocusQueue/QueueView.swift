@@ -2716,7 +2716,7 @@ struct RenamableTaskTitle: View {
       .accessibilityAction(named: "Rename task", beginRename)
       .help(openHint ?? (openAction == nil
         ? "Double-click to rename this task"
-        : "Click to open this task's agents. Double-click to rename the task."))
+        : "Click to open this task's terminal. Double-click to rename the task."))
       .alert("Rename task", isPresented: $isRenaming) {
         TextField("Task title", text: $draft)
         Button("Save") {
@@ -3429,6 +3429,20 @@ private struct TicketCard: View {
             ? "Queue an evidence-based Codex completion review"
             : "Mark complete by user override without review")
 
+        Button {
+          withAnimation(.easeInOut(duration: 0.18)) { isCollapsedToTitle.toggle() }
+        } label: {
+          Image(systemName: isCollapsedToTitle ? "chevron.right" : "chevron.down")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .minimumHitTarget()
+        .accessibilityLabel(isCollapsedToTitle ? "Expand task \(ticket.id)" : "Collapse task \(ticket.id)")
+        .accessibilityHint(isCollapsedToTitle
+          ? "Expands the task card to show its details."
+          : "Collapses the task card to its title and status.")
+        .help(isCollapsedToTitle ? "Expand task" : "Collapse task to title only")
       }
       .contextMenu {
         Button("Skip review and mark as complete", systemImage: "checkmark.circle") {
@@ -3442,12 +3456,8 @@ private struct TicketCard: View {
           RenamableTaskTitle(
             ticket: ticket, model: model, size: 16, weight: .semibold,
             maximumLines: 3,
-            openAction: {
-              withAnimation(.easeInOut(duration: 0.18)) { isCollapsedToTitle.toggle() }
-            },
-            openHint: isCollapsedToTitle
-              ? "Click to expand this task. Double-click to rename the task."
-              : "Click to collapse this task to its title and status. Double-click to rename the task.")
+            openAction: { model.openTaskAgents(for: ticket) },
+            openHint: "Click to open this task's terminal. Double-click to rename the task.")
           VStack(alignment: .trailing, spacing: 3) {
             Text(summaryProgressLabel).font(
               .system(size: 12, weight: .semibold).monospacedDigit()

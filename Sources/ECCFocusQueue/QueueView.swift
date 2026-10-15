@@ -49,12 +49,23 @@ struct QueueView: View {
   /// the body ran on each render and dominated queue redraws.
   @State private var staleAgentCandidateCount = 0
   @AppStorage("agentViewEnabled") private var agentViewEnabled = false
+  @State private var isTaskSearchActive = false
+  @State private var taskSearchQuery = ""
+  @State private var taskSearchCache = TaskSearchCache()
+  @FocusState private var taskSearchIsFocused: Bool
 
   private let completedPageSize = 12
+  /// Broad one-letter queries can match most of the queue; rendering every
+  /// card would stall typing, so results stop here until the query narrows.
+  private let taskSearchResultLimit = 30
 
   private var focusTickets: [DashboardTicket] { Array(model.openTickets.prefix(5)) }
 
   private var remainingTickets: [DashboardTicket] { Array(model.openTickets.dropFirst(5)) }
+
+  private var isFilteringTasks: Bool {
+    isTaskSearchActive && !taskSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
 
   private var visiblePastCompletedTickets: [DashboardTicket] {
     Array(model.pastCompletedTickets.prefix(visiblePastCompletedCount))
@@ -134,6 +145,7 @@ struct QueueView: View {
           visiblePastCompletedCount = max(visiblePastCompletedCount, completedPageSize)
         } else {
           selectedTab = .focus
+          if isTaskSearchActive { closeTaskSearch() }
           if model.openTickets.dropFirst(5).contains(where: { $0.id == taskID }) {
             showsMoreTasks = true
           }
@@ -348,13 +360,13 @@ struct QueueView: View {
           routerComposer
           todayFocusSection
 
-          if showsMoreTasks {
+          if showsMoreTasks, !isFilteringTasks {
             additionalQueue.transition(.opacity.combined(with: .move(edge: .bottom)))
           }
         }.padding(.horizontal, 2).padding(.vertical, 2)
       }.scrollIndicators(.automatic)
 
-      if !remainingTickets.isEmpty || !model.visibleRoutines.isEmpty { moreButton }
+      if !isFilteringTasks, !remainingTickets.isEmpty || !model.visibleRoutines.isEmpty { moreButton }
     }
   }
 
@@ -459,22 +471,13 @@ struct QueueView: View {
   }
 
   private var todayFocusSection: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    // Searches the whole project queue, not only the top five.
+    let search = isFilteringTasks
+      ? taskSearchCache.result(for: model.openTickets, query: taskSearchQuery) : nil
+    let shownTickets = search.map { Array($0.tickets.prefix(taskSearchResultLimit)) } ?? focusTickets
+    return VStack(alignment: .leading, spacing: 10) {
       HStack {
-        if agentViewEnabled {
-          SectionHeading(
-            title: "Today's focus",
-            detail: "\(agentViewEntries(for: focusTickets).count) agents"
-          )
-        } else {
-          SectionHeading(
-            title: focusDropIsTargeted ? "Drop to Today's focus" : "Today's focus",
-            detail: "Top \(focusTickets.count)"
-          )
-          .dropDestination(for: String.self) { ticketIDs, _ in
-            moveTicketsToToday(ticketIDs)
-          } isTargeted: { focusDropIsTargeted = $0 }
-        }
+        focusHeading(resultCount: search?.tickets.count)
         Menu {
           Button {
             agentViewEnabled.toggle()
@@ -492,21 +495,32 @@ struct QueueView: View {
           .menuStyle(.borderlessButton).fixedSize()
           .accessibilityLabel("Queue view and ordering")
       }
-      if !agentViewEnabled {
+      if let search {
+        if let caption = taskSearchCaption(search, shown: shownTickets.count) {
+          Text(caption).font(.caption).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      } else if !agentViewEnabled {
         Text("Drag tasks to set their order")
           .font(.caption).foregroundStyle(.secondary)
       }
 
-      if focusTickets.isEmpty {
+      if let search, search.tickets.isEmpty {
+        ContentUnavailableView.search(text: taskSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines))
+          .frame(maxWidth: .infinity).notificationSurface(radius: 18)
+      } else if shownTickets.isEmpty {
         ContentUnavailableView(
           "Queue is clear", systemImage: "checkmark.circle",
           description: Text("No open tasks are present in \(model.showsAllProjects ? "any project" : model.selectedProject?.name ?? "the selected project").")
         ).frame(maxWidth: .infinity).notificationSurface(radius: 18)
       } else if agentViewEnabled {
-        agentViewList(for: focusTickets)
+        agentViewList(for: shownTickets)
       } else {
-        ForEach(focusTickets) { ticket in TicketCard(ticket: ticket, model: model) }
+        ForEach(shownTickets) { ticket in TicketCard(ticket: ticket, model: model) }
       }
+    }
+    .onChange(of: taskSearchIsFocused) { _, focused in
+      if !focused, !isFilteringTasks { closeTaskSearch() }
     }
     .confirmationDialog(
       "Clean up stale agents?",
@@ -525,6 +539,61 @@ struct QueueView: View {
           : "These agents are interrupted or idle with no live process and no activity in 5 days. Archiving keeps them recallable under Archived agents with provider resume."
       )
     }
+  }
+
+  /// The heading doubles as the search entry point: clicking it swaps the
+  /// capsule for a search field scoped to the selected project.
+  @ViewBuilder
+  private func focusHeading(resultCount: Int?) -> some View {
+    if isTaskSearchActive {
+      TaskSearchField(
+        query: $taskSearchQuery, isFocused: $taskSearchIsFocused,
+        prompt: model.showsAllProjects ? "Search all tasks" : "Search \(model.projectScopeName) tasks",
+        resultCount: resultCount, close: closeTaskSearch)
+    } else if agentViewEnabled {
+      focusHeadingButton(title: "Today's focus", detail: "\(agentViewEntries(for: focusTickets).count) agents")
+    } else {
+      focusHeadingButton(
+        title: focusDropIsTargeted ? "Drop to Today's focus" : "Today's focus",
+        detail: "Top \(focusTickets.count)"
+      )
+      .dropDestination(for: String.self) { ticketIDs, _ in
+        moveTicketsToToday(ticketIDs)
+      } isTargeted: { focusDropIsTargeted = $0 }
+    }
+  }
+
+  private func focusHeadingButton(title: String, detail: String) -> some View {
+    Button(action: openTaskSearch) { FocusSearchHeading(title: title, detail: detail) }
+      .buttonStyle(.plain)
+      .accessibilityLabel("\(title), \(detail). Search tasks")
+      .help(model.showsAllProjects ? "Search all tasks" : "Search \(model.projectScopeName) tasks")
+  }
+
+  private func taskSearchCaption(_ search: TaskSearchResult, shown: Int) -> String? {
+    var parts: [String] = []
+    if case .approximate(let suggestion) = search.match {
+      parts.append(suggestion.map { "No exact matches · showing results for \u{201C}\($0)\u{201D}" }
+        ?? "No exact matches · showing similar tasks")
+    }
+    if shown < search.tickets.count {
+      parts.append("Showing \(shown) of \(search.tickets.count) · keep typing to narrow")
+    }
+    return parts.isEmpty ? nil : parts.joined(separator: "\n")
+  }
+
+  private func openTaskSearch() {
+    isTaskSearchActive = true
+    Task { @MainActor in
+      await Task.yield()
+      taskSearchIsFocused = true
+    }
+  }
+
+  private func closeTaskSearch() {
+    taskSearchQuery = ""
+    taskSearchIsFocused = false
+    isTaskSearchActive = false
   }
 
   private struct AgentViewEntry: Identifiable {
@@ -2409,18 +2478,103 @@ private struct QueueSettingsView: View {
 private struct SectionHeading: View {
   let title: String
   let detail: String
-  @Environment(\.colorScheme) private var colorScheme
 
   var body: some View {
     HStack {
       Text(title.uppercased()).font(.system(size: 11, weight: .bold)).tracking(0.7)
       Spacer()
       Text(detail).font(.system(size: 11, weight: .semibold).monospacedDigit())
-    }.foregroundStyle(.secondary).padding(.horizontal, 11).frame(height: 27).background(
+    }.foregroundStyle(.secondary).modifier(SectionCapsule())
+  }
+}
+
+private struct SectionCapsule: ViewModifier {
+  var isHighlighted = false
+  @Environment(\.colorScheme) private var colorScheme
+
+  func body(content: Content) -> some View {
+    content.padding(.horizontal, 11).frame(height: 27).background(
       QueuePalette.component(for: colorScheme), in: Capsule()
     ).overlay {
-      Capsule().stroke(QueuePalette.componentBorder(for: colorScheme), lineWidth: 0.6)
+      if isHighlighted {
+        Capsule().stroke(.tint, lineWidth: 1)
+      } else {
+        Capsule().stroke(QueuePalette.componentBorder(for: colorScheme), lineWidth: 0.6)
+      }
     }
+  }
+}
+
+/// Today's focus heading with its count beside the title and a search icon
+/// on the trailing edge, signalling that a click opens task search.
+private struct FocusSearchHeading: View {
+  let title: String
+  let detail: String
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Text(title.uppercased()).font(.system(size: 11, weight: .bold)).tracking(0.7)
+      Text(detail.uppercased()).font(.system(size: 10, weight: .semibold).monospacedDigit())
+        .tracking(0.5).foregroundStyle(.tertiary)
+      Spacer(minLength: 8)
+      Image(systemName: "magnifyingglass").font(.system(size: 11, weight: .semibold))
+    }
+    .foregroundStyle(.secondary).modifier(SectionCapsule()).contentShape(Capsule())
+  }
+}
+
+private struct TaskSearchField: View {
+  @Binding var query: String
+  var isFocused: FocusState<Bool>.Binding
+  let prompt: String
+  let resultCount: Int?
+  let close: () -> Void
+
+  var body: some View {
+    HStack(spacing: 7) {
+      Image(systemName: "magnifyingglass").font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(.secondary)
+      TextField(prompt, text: $query)
+        .textFieldStyle(.plain).font(.system(size: 12))
+        .focused(isFocused)
+        .onKeyPress(.escape) {
+          close()
+          return .handled
+        }
+        .accessibilityLabel("Search tasks")
+      if let resultCount {
+        Text("\(resultCount)").font(.system(size: 11, weight: .semibold).monospacedDigit())
+          .foregroundStyle(.secondary)
+          .accessibilityLabel("\(resultCount) matching \(resultCount == 1 ? "task" : "tasks")")
+      }
+      Button(action: close) { Image(systemName: "xmark.circle.fill") }
+        .buttonStyle(.plain).foregroundStyle(.tertiary)
+        .accessibilityLabel("Close search")
+        .help("Close search (Esc)")
+    }
+    .modifier(SectionCapsule(isHighlighted: isFocused.wrappedValue))
+  }
+}
+
+/// Reuses the word index until the task list changes and the last result
+/// until the query changes, so re-renders between keystrokes cost nothing.
+private final class TaskSearchCache {
+  private var tickets: [DashboardTicket] = []
+  private var index = TaskSearchIndex([])
+  private var query: String?
+  private var result = TaskSearchResult(tickets: [], match: .none)
+
+  func result(for tickets: [DashboardTicket], query: String) -> TaskSearchResult {
+    if tickets != self.tickets {
+      self.tickets = tickets
+      index = TaskSearchIndex(tickets)
+      self.query = nil
+    }
+    if query != self.query {
+      self.query = query
+      result = index.search(query)
+    }
+    return result
   }
 }
 

@@ -302,6 +302,9 @@ Drag a task onto the upper or lower half of another card to place it before or
 after that task. The card menu also offers Move up, Move down, Move to top, and
 Move to bottom. Moving a task preserves the relative order of all other tasks.
 Today's focus displays the first five tasks; Rest of queue displays the rest.
+Click the Today's focus heading to search every open task in the selected
+project. Results filter on each keystroke; when no task holds every keyword,
+the search retries with close spellings and synonyms. Esc closes the search.
 Saved positions survive refreshes and restarts, including priority/date changes.
 New tasks append in priority order. Use the Queue ordering menu to restore
 priority sorting (priority, then updatedAt, then task ID).

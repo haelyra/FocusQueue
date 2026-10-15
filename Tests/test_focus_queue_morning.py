@@ -2345,10 +2345,27 @@ except module.TerminationRequested:
             self.assertEqual(request["ticketId"], "ECC-001")
             self.assertEqual(request["provider"], "codex")
             self.assertEqual(request["effort"], "high")
-            self.assertTrue(request["model"])
+            # No model configured: the provider CLI picks its own default.
+            self.assertIsNone(request["model"])
             self.assertIn("ECC-001", request["prompt"])
             self.assertIn("The patch broke activation", request["prompt"])
             self.assertIn("message://one", request["prompt"])
+
+    def test_launch_requests_follow_the_report_provider_and_never_pin_a_stale_model(self):
+        task = [{"id": "ECC-009", "title": "Crash", "summary": "s", "links": []}]
+        cases = [
+            ({"agentProvider": "claude", "agentModel": "sonnet"}, "claude", "sonnet"),
+            ({"agentProvider": "claude", "agentModel": "sonnet", "escalationProvider": "codex"}, "codex", None),
+            ({"agentProvider": "codex", "escalationModel": "gpt-6.1-sol"}, "codex", "gpt-6.1-sol"),
+            ({"agentProvider": "codex", "deepPassModel": "gpt-5.5"}, "codex", None),
+        ]
+        for config, provider, model in cases:
+            with self.subTest(config=config), tempfile.TemporaryDirectory() as temporary:
+                runtime = Path(temporary)
+                MODULE.write_launch_requests(config, runtime, task)
+                request = json.loads((runtime / "launch-requests" / "ECC-009.json").read_text())
+                self.assertEqual(request["provider"], provider)
+                self.assertEqual(request["model"], model)
 
     def test_launch_requests_follow_the_escalation_auto_launch_setting(self):
         with tempfile.TemporaryDirectory() as temporary:

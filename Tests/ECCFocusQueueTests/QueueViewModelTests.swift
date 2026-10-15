@@ -3041,8 +3041,9 @@ struct QueueViewModelTests {
     try encoder.encode(AgentLaunchRequest(ticketId: "ECC-999", title: "Unknown ticket"))
       .write(to: requests.appendingPathComponent("ECC-999.json"))
     let runner = EscalationLaunchRunner()
+    let terminal = ManagedResumeRecorder()
     let model = await fixture.model(agent: ControlledQueueAgent(),
-      terminalController: ManagedResumeRecorder(),
+      terminalController: terminal,
       taskAgentLauncher: TaskAgentLauncher(runner: runner, tmuxServerName: "escalation-test"),
       providerExecutableAvailable: { _ in true })
 
@@ -3070,6 +3071,10 @@ struct QueueViewModelTests {
     try await Task.sleep(for: .milliseconds(50))
     #expect(model.subtasks(for: "ECC-101").count == 1)
     #expect(model.subtasks(for: "ECC-102").count == 1)
+    // Unattended escalations run in tmux without opening a terminal window,
+    // so a report that escalates several tasks never takes focus.
+    #expect(await terminal.opened.isEmpty)
+    #expect(model.subtasks(for: "ECC-101").first?.tmux != nil)
   }
 
   @Test("A launch request for a ticket with a live agent is consumed without relaunching")

@@ -2796,9 +2796,15 @@ def write_launch_requests(
 ) -> None:
     if not tasks:
         return
-    provider = str(config.get("escalationProvider") or "codex")
-    model = str(
-        config.get("escalationModel") or config.get("deepPassModel") or default_deep_pass_model()
+    # Launch with the provider the report itself ran on (the app's default
+    # agent) unless escalation settings name one. Never pin a model the user
+    # did not choose: the old gpt-5.5 fallback is rejected by Codex on ChatGPT
+    # accounts, and every escalated agent failed with HTTP 400. A null model
+    # lets the provider CLI use its own configured default.
+    report_provider = agent_provider(config)
+    provider = str(config.get("escalationProvider") or report_provider).strip().casefold()
+    model = str(config.get("escalationModel") or "").strip() or (
+        str(config.get("agentModel") or "").strip() if provider == report_provider else ""
     )
     effort = str(config.get("escalationEffort") or "high")
     requested_at = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -2825,7 +2831,7 @@ def write_launch_requests(
                 "ticketId": ticket_id,
                 "title": str(task.get("title") or "")[:180],
                 "provider": provider,
-                "model": model,
+                "model": model or None,
                 "effort": effort,
                 "prompt": prompt,
                 "requestedAt": requested_at,

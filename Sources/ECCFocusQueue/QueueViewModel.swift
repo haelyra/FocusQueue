@@ -2768,6 +2768,7 @@ final class QueueViewModel {
     parentSubtaskID: String? = nil, createAssignment: Bool = false,
     modelName: String? = nil, effort: String? = nil,
     workspacePolicy: AgentWorkspacePolicy? = nil,
+    opensTerminal: Bool = true,
     completion: (@MainActor (Bool) -> Void)? = nil
   ) {
     let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2778,6 +2779,12 @@ final class QueueViewModel {
       : suppliedDescription).prefix(2_000))
     guard useTmux || config.wezTerm.applicationName.caseInsensitiveCompare("Terminal") != .orderedSame else {
       actionMessages[ticket.id] = "macOS Terminal requires tmux for reliable agent launch and recall. Configure tmux or select WezTerm."
+      completion?(false)
+      return
+    }
+    // A background launch never opens a window, so it needs tmux to keep the
+    // agent running headless until the user opens it from the queue.
+    guard opensTerminal || useTmux else {
       completion?(false)
       return
     }
@@ -2886,10 +2893,12 @@ final class QueueViewModel {
               "tmuxName": tmux.name, "serverPID": String(tmux.serverPID),
               "pane": tmux.paneID, "panePID": String(tmux.panePID), "terminal": tmux.tty,
             ])
-          phase = "opening the WezTerm view"
-          _ = try await terminalController.openAgentRuntime(
-            subtask, taskID: ticket.id, taskTitle: ticket.title,
-            configuration: config.wezTerm)
+          if opensTerminal {
+            phase = "opening the WezTerm view"
+            _ = try await terminalController.openAgentRuntime(
+              subtask, taskID: ticket.id, taskTitle: ticket.title,
+              configuration: config.wezTerm)
+          }
         } else {
           phase = "starting the direct WezTerm process"
           actionMessages[ticket.id] =
@@ -2914,6 +2923,14 @@ final class QueueViewModel {
             paneID: receipt.paneID, socketPath: receipt.socketPath,
             taskID: ticket.id, provider: provider, taskTitle: ticket.title,
             configuration: config.wezTerm)
+        }
+        guard opensTerminal else {
+          await recordAgentLaunch(
+            subtask, ticketID: ticket.id, phase: "ready", outcome: "succeeded",
+            message: "The provider process is running in tmux without a terminal window.")
+          actionMessages[ticket.id] =
+            "Started \(provider.displayName) for \(title) in the background. Click the subtask to open its terminal."
+          return
         }
         await recordAgentLaunch(
           subtask, ticketID: ticket.id, phase: "ready", outcome: "succeeded",
@@ -2940,6 +2957,11 @@ final class QueueViewModel {
                 "tmuxName": saved.name, "pane": saved.paneID,
                 "panePID": String(saved.panePID), "terminal": saved.tty,
               ])
+            guard opensTerminal else {
+              actionMessages[ticket.id] =
+                "Started \(provider.displayName) for \(title) in the background. Click the subtask to open its terminal."
+              return
+            }
             do {
               let result = try await terminalController.openManagedAgentRuntime(
                 saved, taskID: ticket.id, subtaskID: subtask.id,
@@ -3182,7 +3204,10 @@ final class QueueViewModel {
         assignmentDescription: prompt ?? "",
         includePrompt: true, useTmux: true,
         initialPrompt: prompt?.isEmpty == false ? prompt : nil,
-        modelName: request.model, effort: request.effort
+        modelName: request.model, effort: request.effort,
+        // Report escalations start unattended, often several in a row. They
+        // run in tmux without a window so they never take focus or the cursor.
+        opensTerminal: false
       ) { [weak self] _ in
         self?.escalationAutoLaunchInFlight = false
       }

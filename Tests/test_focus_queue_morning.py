@@ -21,7 +21,7 @@ import focus_queue_triage as TRIAGE
 
 
 class FocusQueueMorningTests(unittest.TestCase):
-    def test_telegram_archive_is_explicitly_partial_and_rejects_anonymous_records(self):
+    def test_telegram_archive_states_its_scope_and_rejects_anonymous_records(self):
         lines = [json.dumps(item) for item in [
             {"session_id": "one", "message_id": 1, "text": "first"},
             {"session_id": "one", "message_id": 1, "text": "duplicate"},
@@ -30,12 +30,21 @@ class FocusQueueMorningTests(unittest.TestCase):
         ]] + ["bad json"]
         with mock.patch.object(MODULE, "run_jsonl_command_bounded", return_value=(lines, False)):
             result = MODULE.collect_telegram({"telegramArchiveExecutable": "/archive", "lookbackHours": 24})
-        self.assertEqual(result["status"], "partial")
+        # The archive-only scope is permanent, so it is a stated coverage limit,
+        # not a failed read that would keep every report from succeeding.
+        self.assertEqual(result["status"], "ok")
         self.assertEqual(result["coverage"], "agent_session_archive")
         self.assertFalse(result["activeSessionsIncluded"])
         self.assertEqual(result["invalidRecords"], 3)
         self.assertEqual([message["sourceKey"] for message in result["messages"]], ["telegram:one:1", "telegram:one:2"])
-        self.assertIn("personal inbox", result["error"])
+        self.assertIn("not your personal chats", result["coverageNote"])
+        self.assertIn("Active agent sessions may also be absent", result["coverageNote"])
+        sentences = MODULE.source_coverage_sentences(
+            [{"platform": "telegram", "status": "ok", "collectedCount": 2, "checkedCount": 2,
+              "triagedAwayCount": 0, "alreadyProcessedCount": 0, "deferredCount": 0}],
+            {"telegram": result},
+        )
+        self.assertIn("not your personal chats", sentences[0])
 
     def test_telegram_selects_active_recent_sessions_without_reading_other_sources(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -67,7 +76,8 @@ class FocusQueueMorningTests(unittest.TestCase):
         self.assertNotIn("--source", arguments)
         self.assertTrue(result["activeSessionsIncluded"])
         self.assertEqual([message["text"] for message in result["messages"]], ["recent"])
-        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("Active agent sessions may also be absent", result["coverageNote"])
 
     def test_telegram_archive_schema_failure_does_not_create_database(self):
         with tempfile.TemporaryDirectory() as temporary:

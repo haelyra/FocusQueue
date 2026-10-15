@@ -129,6 +129,10 @@ present and permitted. Adding broader group coverage requires adding the bot to
 those groups, disabling BotFather privacy when unmentioned group messages are
 needed, and allowlisting the intended chats.
 
+Because of that limit, every report summary states that Telegram covers agent
+and bot conversations only. The limit is permanent, so it does not make a run
+incomplete.
+
 ### Email
 
 The email collector selects one provider with `emailProvider`. The default,

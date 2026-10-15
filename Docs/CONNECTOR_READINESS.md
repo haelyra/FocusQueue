@@ -4,7 +4,7 @@ Telegram personal inbox coverage remains a release blocker. The implemented conn
 
 ## Immediate fixes and verification
 
-- Telegram archive results now report `status: partial`, `coverage: agent_session_archive`, and `errorCode: telegram_archive_only`. Existing daily report sections and completion checks consume this status, preventing an archive-only pass from claiming complete reconciliation.
+- Telegram archive results report `status: ok` with `coverage: agent_session_archive` and a `coverageNote`. Every report summary repeats that note, so an archive-only pass never reads as personal-chat coverage. (Until Oct 15, 2026 they reported `status: partial`. That meant no report with Telegram enabled could ever count as the day's report, and the app retried it every 15 minutes.)
 - Malformed JSON, non-object rows, and rows without stable session/message identities are counted and skipped. Duplicate identities are removed. Null message IDs fall back to the export's stable prompt index.
 - Optional `telegramArchiveDatabasePath` selects recent Telegram user-message session IDs from SQLite using read-only mode, `query_only`, schema checks, parameter binding, a five-second query budget, and a 50-session cap. Both active and ended sessions are eligible. Each selected session is then exported through the existing Hermes `--redact --only user-prompts` path. Only messages inside the lookback window are retained. This avoids exporting unrelated sources or bypassing the existing redactor.
 - The archive export has a shared 120-second budget, 16 MB output cap, and 5,001-record cap. Reaching a cap is surfaced as truncation. The JSONL subprocess reader now enforces its deadline even when a child writes a partial line and stalls.

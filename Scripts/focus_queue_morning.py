@@ -1244,17 +1244,16 @@ def collect_telegram(config: dict[str, Any]) -> dict[str, Any]:
             }
         )
     return {
-        # This transport reads agent sessions. It cannot establish coverage of
-        # the person's Telegram inbox, even when the export command succeeds.
-        "status": "partial",
+        # This transport reads agent sessions, never the person's Telegram
+        # inbox. That limit is permanent, so it is stated in every summary
+        # instead of marking each run partial: a partial run never counts as
+        # the day's report, and the app retried it every 15 minutes.
+        "status": "ok",
         "coverage": "agent_session_archive",
         "activeSessionsIncluded": active_sessions_included,
-        "errorCode": "telegram_archive_only",
-        "error": (
-            "Telegram collection covers archived agent/bot conversations only, "
-            "not your personal inbox. "
-            + ("" if active_sessions_included else "Active agent sessions may also be absent. ")
-            + "Connect a Telegram user-account reader to cover personal chats."
+        "coverageNote": (
+            "Telegram covers archived agent and bot conversations only, not your personal chats."
+            + ("" if active_sessions_included else " Active agent sessions may also be absent.")
         ),
         "invalidRecords": invalid_records,
         "messages": messages[:MAX_COLLECTED_MESSAGES_PER_SOURCE],
@@ -2141,6 +2140,8 @@ def source_coverage_sentences(
                 f" {other_recipients} more were addressed to recipients outside "
                 "emailAddresses and were not read."
             )
+        if source.get("coverageNote"):
+            sentence += f" {source['coverageNote']}"
         hidden = [str(name) for name in source.get("hiddenChannels") or []]
         if hidden and platform == "discord":
             sentence += (

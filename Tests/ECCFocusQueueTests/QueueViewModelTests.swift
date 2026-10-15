@@ -2131,6 +2131,50 @@ struct QueueViewModelTests {
     #expect(restarted.reportHistory.reports.first?.runID == older.runID)
   }
 
+  @Test("The header report button spins while a report runs and badges it until it is opened")
+  func dailyReportHeaderIndicator() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(model.dailyReportHeaderIndicator == .none)
+
+    model.setDailyReportRunState(isRunning: true, message: "Reading platforms")
+    #expect(model.dailyReportHeaderIndicator == .running)
+
+    let finished = fixture.report("finished-report", finishedAt: "2026-10-15T15:00:00Z")
+    try fixture.archive(finished)
+    model.setDailyReportRunState(isRunning: false, message: "Report finished", reportID: finished.runID)
+    await model.reloadDailyReport()
+    try await eventually { model.dailyReportHeaderIndicator == .ready }
+
+    model.openDailyReportFromHeader()
+    #expect(model.isDailyReportPresented)
+    #expect(model.dailyReport?.runID == finished.runID)
+    try await eventually { model.dailyReportHeaderIndicator == .none }
+    model.openDailyReportFromHeader()
+    #expect(!model.isDailyReportPresented)
+
+    var partial = fixture.report("partial-report", finishedAt: "2026-10-15T16:00:00Z")
+    partial = DailyReportDocument(runID: partial.runID, trigger: .manual, mode: .unseenOnly,
+      startedAt: partial.startedAt, finishedAt: partial.finishedAt, status: .partial,
+      summary: "Could not read Discord", tokenBudget: 1000, usage: nil, platforms: [],
+      errors: ["discord: Missing Access"])
+    try fixture.archive(partial)
+    await model.reloadDailyReport()
+    try await eventually { model.dailyReportHeaderIndicator == .needsAttention }
+    model.openDailyReportFromHeader()
+    try await eventually { model.dailyReportHeaderIndicator == .none }
+    model.openDailyReportFromHeader()
+
+    model.setDailyReportRunState(isRunning: true, message: "Reading platforms")
+    model.setDailyReportRunState(isRunning: false, message: "Worker failed", isError: true)
+    try await eventually { model.reportHistory.runs.first?.phase == .failed }
+    #expect(model.dailyReportHeaderIndicator == .needsAttention)
+    model.openDailyReportFromHeader()
+    #expect(model.isDailyReportPresented)
+    #expect(model.dailyReportHeaderIndicator == .none)
+  }
+
   @Test("An agent update opens its own inspector, preserves the verdict, and closes on collapse")
   func agentUpdateNavigation() async throws {
     let fixture = try await Fixture()

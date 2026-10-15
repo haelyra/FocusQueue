@@ -259,6 +259,50 @@ struct QueueView: View {
     )
   }
 
+  private var dailyReportHeaderIcon: some View {
+    let indicator = model.dailyReportHeaderIndicator
+    return ZStack(alignment: .topTrailing) {
+      if indicator == .running {
+        ProgressView().controlSize(.small).frame(width: 16, height: 16)
+          .transition(.opacity)
+      } else {
+        Image(systemName: model.isDailyReportPresented ? "doc.text.fill" : "doc.text")
+          .font(.system(size: 13, weight: .semibold))
+          .transition(.opacity)
+      }
+      if indicator == .ready || indicator == .needsAttention {
+        Image(systemName: indicator == .ready ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+          .font(.system(size: 9, weight: .bold))
+          .foregroundStyle(
+            QueueAccentPalette.color(indicator == .ready ? .success : .warning, style: model.accentStyle)
+          )
+          .background(Circle().fill(Color(nsColor: .windowBackgroundColor)).padding(-1))
+          .offset(x: 5, y: -4)
+          .transition(.scale.combined(with: .opacity))
+      }
+    }
+    .animation(.easeInOut(duration: 0.18), value: indicator)
+  }
+
+  private var dailyReportHeaderAccessibilityLabel: String {
+    if model.isDailyReportPresented { return "Close daily report" }
+    switch model.dailyReportHeaderIndicator {
+    case .running: return "Daily report is running. Open daily report"
+    case .ready: return "Daily report is ready. Open daily report"
+    case .needsAttention: return "Daily report needs attention. Open daily report"
+    case .none: return "Open daily report"
+    }
+  }
+
+  private var dailyReportHeaderHelp: String {
+    switch model.dailyReportHeaderIndicator {
+    case .running: return "Daily message report is running"
+    case .ready: return "Daily message report finished. Click to read it"
+    case .needsAttention: return "Daily message report finished with issues. Click to review"
+    case .none: return "Daily message report"
+    }
+  }
+
   private var reportStatusBanner: some View {
     SwipeToClearNotification(isEnabled: !model.reportIsRunning) {
       withAnimation(.easeInOut(duration: 0.18)) { model.dismissReportNotification() }
@@ -931,13 +975,12 @@ struct QueueView: View {
           if model.dailyReport == nil {
             Task { await model.reloadDailyReport() }
           }
-          model.toggleDailyReport()
+          model.openDailyReportFromHeader()
         } label: {
-          Image(systemName: model.isDailyReportPresented ? "doc.text.fill" : "doc.text")
-            .font(.system(size: 13, weight: .semibold))
+          dailyReportHeaderIcon
         }.buttonStyle(.plain).minimumHitTarget(width: 30, height: 34).accessibilityLabel(
-          model.isDailyReportPresented ? "Close daily report" : "Open daily report"
-        ).help("Daily message report")
+          dailyReportHeaderAccessibilityLabel
+        ).help(dailyReportHeaderHelp)
         Button {
           withAnimation(.easeInOut(duration: 0.18)) {
             notificationsExpanded.toggle()

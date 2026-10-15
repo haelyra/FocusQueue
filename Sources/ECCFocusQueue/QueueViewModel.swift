@@ -68,6 +68,13 @@ private struct DashboardFileStamp: Equatable, Sendable {
   }
 }
 
+enum DailyReportHeaderIndicator: Equatable {
+  case none
+  case running
+  case ready
+  case needsAttention
+}
+
 @MainActor
 @Observable
 final class QueueViewModel {
@@ -1580,6 +1587,33 @@ final class QueueViewModel {
   }
 
   var reportHasFailure: Bool { dailyReportRunFailed || relevantFailedReportRun != nil }
+
+  /// What the queue header's daily report button shows: a spinner while a
+  /// report runs, then a badge until the finished report or failure is seen.
+  var dailyReportHeaderIndicator: DailyReportHeaderIndicator {
+    if reportIsRunning { return .running }
+    if reportHasFailure {
+      return localState.dismissedNotificationIDs.contains(reportNotificationID) ? .none : .needsAttention
+    }
+    guard let report = reportAttentionDocument, reportHistory.isUnread(report) else { return .none }
+    return report.status == .success ? .ready : .needsAttention
+  }
+
+  /// The header button opens the newest report while it carries a badge, so
+  /// opening it is what marks that report (or failed run) as seen.
+  func openDailyReportFromHeader() {
+    guard !isDailyReportPresented else {
+      setDailyReportPresented(false)
+      return
+    }
+    switch dailyReportHeaderIndicator {
+    case .ready, .needsAttention:
+      if reportHasFailure { dismissReportNotification() }
+      showLatestDailyReport()
+    case .none, .running:
+      setDailyReportPresented(true)
+    }
+  }
 
   var reportAttentionMessage: String {
     if reportIsRunning {

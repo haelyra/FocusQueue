@@ -304,7 +304,8 @@ Move to bottom. Moving a task preserves the relative order of all other tasks.
 Today's focus displays the first five tasks; Rest of queue displays the rest.
 Click the Today's focus heading to search every open task in the selected
 project. Results filter on each keystroke; when no task holds every keyword,
-the search retries with close spellings and synonyms. Esc closes the search.
+the search retries with close spellings and synonyms. Esc or the clear button
+closes the search; clicking elsewhere drops the cursor and closes an empty one.
 Saved positions survive refreshes and restarts, including priority/date changes.
 New tasks append in priority order. Use the Queue ordering menu to restore
 priority sorting (priority, then updatedAt, then task ID).

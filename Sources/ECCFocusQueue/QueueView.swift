@@ -549,24 +549,21 @@ struct QueueView: View {
       TaskSearchField(
         query: $taskSearchQuery, isFocused: $taskSearchIsFocused,
         prompt: model.showsAllProjects ? "Search all tasks" : "Search \(model.projectScopeName) tasks",
-        resultCount: resultCount, close: closeTaskSearch)
+        resultCount: resultCount, endEditing: endTaskSearchEditing, close: closeTaskSearch)
     } else if agentViewEnabled {
       focusHeadingButton(title: "Today's focus", detail: "\(agentViewEntries(for: focusTickets).count) agents")
     } else {
-      focusHeadingButton(
-        title: focusDropIsTargeted ? "Drop to Today's focus" : "Today's focus",
-        detail: "Top \(focusTickets.count)"
-      )
+      focusHeadingButton(title: focusDropIsTargeted ? "Drop to Today's focus" : "Today's focus", detail: nil)
       .dropDestination(for: String.self) { ticketIDs, _ in
         moveTicketsToToday(ticketIDs)
       } isTargeted: { focusDropIsTargeted = $0 }
     }
   }
 
-  private func focusHeadingButton(title: String, detail: String) -> some View {
+  private func focusHeadingButton(title: String, detail: String?) -> some View {
     Button(action: openTaskSearch) { FocusSearchHeading(title: title, detail: detail) }
       .buttonStyle(.plain)
-      .accessibilityLabel("\(title), \(detail). Search tasks")
+      .accessibilityLabel([title, detail, "Search tasks"].compactMap { $0 }.joined(separator: ". "))
       .help(model.showsAllProjects ? "Search all tasks" : "Search \(model.projectScopeName) tasks")
   }
 
@@ -588,6 +585,12 @@ struct QueueView: View {
       await Task.yield()
       taskSearchIsFocused = true
     }
+  }
+
+  /// A click outside the field drops the cursor. An empty search also returns
+  /// to the heading; typed results stay so their cards remain clickable.
+  private func endTaskSearchEditing() {
+    if isFilteringTasks { taskSearchIsFocused = false } else { closeTaskSearch() }
   }
 
   private func closeTaskSearch() {
@@ -2505,17 +2508,19 @@ private struct SectionCapsule: ViewModifier {
   }
 }
 
-/// Today's focus heading with its count beside the title and a search icon
-/// on the trailing edge, signalling that a click opens task search.
+/// Today's focus heading with a search icon on the trailing edge, signalling
+/// that a click opens task search.
 private struct FocusSearchHeading: View {
   let title: String
-  let detail: String
+  let detail: String?
 
   var body: some View {
     HStack(spacing: 8) {
       Text(title.uppercased()).font(.system(size: 11, weight: .bold)).tracking(0.7)
-      Text(detail.uppercased()).font(.system(size: 10, weight: .semibold).monospacedDigit())
-        .tracking(0.5).foregroundStyle(.tertiary)
+      if let detail {
+        Text(detail.uppercased()).font(.system(size: 10, weight: .semibold).monospacedDigit())
+          .tracking(0.5).foregroundStyle(.tertiary)
+      }
       Spacer(minLength: 8)
       Image(systemName: "magnifyingglass").font(.system(size: 11, weight: .semibold))
     }
@@ -2528,6 +2533,7 @@ private struct TaskSearchField: View {
   var isFocused: FocusState<Bool>.Binding
   let prompt: String
   let resultCount: Int?
+  let endEditing: () -> Void
   let close: () -> Void
 
   var body: some View {
@@ -2553,6 +2559,70 @@ private struct TaskSearchField: View {
         .help("Close search (Esc)")
     }
     .modifier(SectionCapsule(isHighlighted: isFocused.wrappedValue))
+    .background(OutsideClickMonitor(isActive: isFocused.wrappedValue, onOutsideClick: endEditing))
+  }
+}
+
+/// While active, reports clicks that land outside this view and the window
+/// losing key status. AppKit keeps a text field's cursor through clicks on
+/// non-editable content, so the search field needs this to end editing.
+struct OutsideClickMonitor: NSViewRepresentable {
+  let isActive: Bool
+  let onOutsideClick: () -> Void
+
+  func makeNSView(context: Context) -> MonitorView { MonitorView() }
+
+  func updateNSView(_ view: MonitorView, context: Context) {
+    view.onOutsideClick = onOutsideClick
+    view.isActive = isActive
+  }
+
+  final class MonitorView: NSView {
+    var onOutsideClick: () -> Void = {}
+    var isActive = false {
+      didSet { if isActive != oldValue { refresh() } }
+    }
+    private var clickMonitor: Any?
+    private var resignObserver: NSObjectProtocol?
+    var isMonitoring: Bool { clickMonitor != nil }
+
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      refresh()
+    }
+
+    /// Observation only: clicks pass through to the field and its buttons.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    private func refresh() {
+      stop()
+      guard isActive, let window else { return }
+      clickMonitor = NSEvent.addLocalMonitorForEvents(
+        matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+      ) { [weak self] event in
+        MainActor.assumeIsolated { self?.handleClick(at: event.locationInWindow, in: event.window) }
+        return event
+      }
+      resignObserver = NotificationCenter.default.addObserver(
+        forName: NSWindow.didResignKeyNotification, object: window, queue: .main
+      ) { [weak self] _ in
+        MainActor.assumeIsolated { self?.onOutsideClick() }
+      }
+    }
+
+    func handleClick(at locationInWindow: NSPoint, in eventWindow: NSWindow?) {
+      guard let window, eventWindow === window,
+        !bounds.contains(convert(locationInWindow, from: nil)) else { return }
+      window.makeFirstResponder(nil)
+      onOutsideClick()
+    }
+
+    private func stop() {
+      if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
+      if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+      clickMonitor = nil
+      resignObserver = nil
+    }
   }
 }
 

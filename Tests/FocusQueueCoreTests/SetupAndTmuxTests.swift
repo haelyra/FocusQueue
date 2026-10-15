@@ -44,6 +44,67 @@ struct SetupAndTmuxTests {
     #expect(Int(history.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)) == 50_000)
   }
 
+  @Test("Focus Queue tmux sessions keep agent clipboard copies and pipe selections to the pasteboard",
+    .enabled(if: SetupEnvironment.executable("tmux") != nil))
+  func clipboardDefaults() async throws {
+    let executable = try #require(SetupEnvironment.executable("tmux"))
+    let server = "fq-clipboard-\(UUID().uuidString.lowercased())"
+    let runner = FoundationProcessRunner()
+    let controller = TmuxController(
+      runner: runner, serverName: server,
+      confirmationAttempts: 10, confirmationDelayMilliseconds: 10,
+      requiredStableObservations: 1)
+    // Codex and Claude copy with OSC 52. tmux's default drops it from panes.
+    _ = try await controller.start(
+      name: "fq-clipboard-test", directory: "/tmp",
+      command: ["/bin/sh", "-c", "printf '\\033]52;c;%s\\007' \"$(printf agent-copy | base64)\"; exec /bin/sleep 30"],
+      executable: executable)
+    defer {
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: executable)
+      process.arguments = ["-L", server, "kill-server"]
+      process.environment = ["PATH": "/usr/bin:/bin", "TMUX_TMPDIR": "/tmp"]
+      process.standardOutput = FileHandle.nullDevice
+      process.standardError = FileHandle.nullDevice
+      try? process.run()
+      process.waitUntilExit()
+    }
+    func value(_ arguments: [String]) async throws -> String {
+      try await runner.run(.init(executable: executable, arguments: ["-L", server] + arguments,
+        environment: ["TMUX_TMPDIR": "/tmp"])).standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    var buffer = ""
+    for _ in 0..<40 {
+      buffer = try await value(["show-buffer"])
+      if !buffer.isEmpty { break }
+      try await Task.sleep(for: .milliseconds(25))
+    }
+
+    #expect(buffer == "agent-copy")
+    #expect(try await value(["show-options", "-sv", "set-clipboard"]) == "on")
+    #expect(try await value(["show-options", "-sv", "copy-command"]) == "/usr/bin/pbcopy")
+    #expect(try await value(["show-options", "-gv", "allow-passthrough"]) == "on")
+  }
+
+  @Test("An attaching tmux client receives terminal resizes")
+  func attachSignalMask() async throws {
+    // Async tests run on Swift concurrency workers, which block SIGWINCH just
+    // like the CLI thread that replaces itself with tmux.
+    var original = sigset_t()
+    var winch = sigset_t()
+    sigemptyset(&winch)
+    sigaddset(&winch, SIGWINCH)
+    pthread_sigmask(SIG_BLOCK, &winch, &original)
+    defer { pthread_sigmask(SIG_SETMASK, &original, nil) }
+
+    TmuxController.unblockSignals()
+
+    var current = sigset_t()
+    pthread_sigmask(SIG_SETMASK, nil, &current)
+    #expect(sigismember(&current, SIGWINCH) == 0)
+    #expect(sigismember(&current, SIGCONT) == 0)
+  }
+
   @Test("tmux identity is readable across GUI C locale separator behavior", .enabled(if: SetupEnvironment.executable("tmux") != nil))
   func guiLocaleIdentity() async throws {
     let executable = try #require(SetupEnvironment.executable("tmux"))

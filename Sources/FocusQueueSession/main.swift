@@ -974,11 +974,7 @@ enum SessionRegistrationError: Error, LocalizedError {
             guard isatty(STDIN_FILENO) != 0, isatty(STDOUT_FILENO) != 0 else {
                 throw TmuxError.unavailable("Attach needs an interactive terminal. Use ssh -t when connecting remotely.")
             }
-            let command = try TmuxController.attachCommand(reference: saved)
-            let pointers = command.map { strdup($0) } + [nil]
-            defer { for pointer in pointers { free(pointer) } }
-            _ = pointers.withUnsafeBufferPointer { execv(command[0], $0.baseAddress!) }
-            throw TmuxError.unavailable("Could not execute tmux: \(String(cString: strerror(errno)))")
+            try TmuxController.exec(TmuxController.attachCommand(reference: saved))
         case "attach" where arguments.count == 3 || (arguments.count == 5 && arguments[3] == "--pane"):
             if arguments.count == 5 {
                 guard arguments[4].range(of: "^%[0-9]+$", options: .regularExpression) != nil,
@@ -989,11 +985,7 @@ enum SessionRegistrationError: Error, LocalizedError {
             guard isatty(STDIN_FILENO) != 0, isatty(STDOUT_FILENO) != 0 else {
                 throw TmuxError.unavailable("Attach needs an interactive terminal. Use ssh -t when connecting remotely.")
             }
-            let command = try TmuxController.attachCommand(name: arguments[2], executable: executable)
-            let pointers = command.map { strdup($0) } + [nil]
-            defer { for pointer in pointers { free(pointer) } }
-            _ = pointers.withUnsafeBufferPointer { execv(command[0], $0.baseAddress!) }
-            throw TmuxError.unavailable("Could not execute tmux: \(String(cString: strerror(errno)))")
+            try TmuxController.exec(TmuxController.attachCommand(name: arguments[2], executable: executable))
         case "start-agent" where arguments.count >= 6:
             let taskID = arguments[2]
             let agentID = arguments[3]

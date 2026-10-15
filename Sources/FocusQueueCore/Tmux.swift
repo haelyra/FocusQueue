@@ -311,6 +311,25 @@ public actor TmuxController {
       "attach-session", "-t", "=\(reference.name)"]
   }
 
+  /// Replaces this process with an interactive tmux client.
+  public static func exec(_ command: [String]) throws -> Never {
+    unblockSignals()
+    let pointers = command.map { strdup($0) } + [nil]
+    defer { for pointer in pointers { free(pointer) } }
+    _ = pointers.withUnsafeBufferPointer { execv(command[0], $0.baseAddress!) }
+    throw TmuxError.unavailable("Could not execute tmux: \(String(cString: strerror(errno)))")
+  }
+
+  /// Swift concurrency runs async code on worker threads that block SIGWINCH,
+  /// SIGINT, SIGTERM, SIGCONT and other asynchronous signals, and execv keeps
+  /// the calling thread's mask. A tmux client started with that mask never
+  /// sees a terminal resize and stays at the size it first attached with.
+  static func unblockSignals() {
+    var none = sigset_t()
+    sigemptyset(&none)
+    pthread_sigmask(SIG_SETMASK, &none, nil)
+  }
+
   /// The complete remote command is quoted as one SSH argument. Unknown/changed host keys fail closed.
   public static func sshCommand(host: String, name: String) throws -> String {
     try validateName(name)
@@ -334,15 +353,22 @@ public actor TmuxController {
   }
 
   /// Starts the dedicated server without a user configuration and establishes
-  /// scrolling defaults before any managed pane is created. Keeping the empty
-  /// server alive preserves those defaults between agent sessions.
+  /// scrolling and clipboard defaults before any managed pane is created.
+  /// Keeping the empty server alive preserves those defaults between agent sessions.
   func configureManagedScrollback(executable: String) async throws {
     let arguments = [
       "-f", configurationPath, "-L", serverName,
       "start-server", ";",
       "set-option", "-g", "exit-empty", "off", ";",
       "set-option", "-g", "mouse", "on", ";",
-      "set-option", "-g", "history-limit", String(Self.managedHistoryLimit),
+      "set-option", "-g", "history-limit", String(Self.managedHistoryLimit), ";",
+      // The user's ~/.tmux.conf never loads here. Without these, tmux drops the
+      // OSC 52 copies that Codex and Claude send, and mouse or copy-mode
+      // selections reach the pasteboard only through the outer terminal.
+      // -q keeps older tmux builds without an option from failing the launch.
+      "set-option", "-sq", "set-clipboard", "on", ";",
+      "set-option", "-sq", "copy-command", "/usr/bin/pbcopy", ";",
+      "set-option", "-gq", "allow-passthrough", "on",
     ]
     let result = try await runner.run(.init(
       executable: executable, arguments: arguments,

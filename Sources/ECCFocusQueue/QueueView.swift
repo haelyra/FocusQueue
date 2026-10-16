@@ -3560,6 +3560,7 @@ private struct TicketCard: View {
               .font(.system(size: 10, weight: .bold))
           }
           .menuStyle(.borderlessButton)
+          .menuIndicator(.hidden)
           .fixedSize()
           .frame(width: 22)
           .disabled(ticket.isCompleted || model.launchingTaskIDs.contains(ticket.id))

@@ -1826,6 +1826,7 @@ public struct LocalState: Codable, Equatable, Sendable {
   private enum CodingKeys: String, CodingKey {
     case routineDate
     case selectedProjectID
+    case showsAllProjects
     case completedRoutineIDs
     case completionRequests
     case deferredTicketIDs
@@ -1842,6 +1843,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     routineDate = try container.decodeIfPresent(String.self, forKey: .routineDate) ?? ""
     selectedProjectID = try container.decodeIfPresent(String.self, forKey: .selectedProjectID)
+    showsAllProjects = try container.decodeIfPresent(Bool.self, forKey: .showsAllProjects)
     completedRoutineIDs =
       try container.decodeIfPresent(Set<String>.self, forKey: .completedRoutineIDs) ?? []
     completionRequests =
@@ -1866,6 +1868,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     var container = encoder.container(keyedBy: CodingKeys.self)
     try container.encode(routineDate, forKey: .routineDate)
     try container.encodeIfPresent(selectedProjectID, forKey: .selectedProjectID)
+    try container.encodeIfPresent(showsAllProjects, forKey: .showsAllProjects)
     try container.encode(completedRoutineIDs, forKey: .completedRoutineIDs)
     try container.encode(completionRequests, forKey: .completionRequests)
     try container.encode(deferredTicketIDs, forKey: .deferredTicketIDs)

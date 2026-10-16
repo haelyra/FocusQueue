@@ -23,7 +23,8 @@ class QueueOrderCLITests(unittest.TestCase):
         config = json.loads((Path(__file__).parents[1] / "Config/config.example.json").read_text())
         config.update(dashboardPath=str(self.dashboard), workspacePath=str(self.root))
         (self.root / "config.json").write_text(json.dumps(config))
-        (self.root / "state.json").write_text(json.dumps({"deferredTicketIDs": ["ECC-029"]}))
+        (self.root / "state.json").write_text(json.dumps({
+            "deferredTicketIDs": ["ECC-029"], "showsAllProjects": False}))
 
     def command(self, *arguments, expected=0, project=""):
         result = subprocess.run([str(BINARY), "queue", *arguments], capture_output=True, text=True,

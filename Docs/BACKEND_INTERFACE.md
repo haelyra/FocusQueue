@@ -448,4 +448,22 @@ focus-queue-session reconcile <TASK>
 #  ✗ create tasks without summary/next/doneWhen
 ```
 
+## 9. `fq` dispatcher and heuristic placement (phase 1)
+
+**`fq <codex|claude> [provider args...]`** (`Scripts/focus_queue_fq.py`, installed as `~/.local/bin/fq` by both entry installers) classifies the launch, prints one line to stderr (`[fq] placed → <TASK-ID> (heuristic: <rationale>)` or `[fq] unplaced (<rationale>) — launching untracked-by-task`), then execs the provider's existing entry script with all provider arguments unchanged. A resolved task is forced through `FOCUS_QUEUE_TASK_ID` (the same channel managed launches use); unplaced launches pass through untouched. Plain `codex`/`claude` shell functions never go through `fq`. The dispatcher reads the installed `shell/<provider>.zsh` to reuse the configured usage wrapper and default flags.
+
+**`python3 Scripts/focus_queue_placement.py classify --prompt "..." --cwd "..." [--task ECC-123] [--json]`** (`Scripts/focus_queue_placement.py`). Heuristic only — no model calls in phase 1. Resolution order:
+
+1. Explicit `--task` → `task`, confidence 1.0, rationale `explicit`.
+2. `<taskPrefix>-<digits>` (case-insensitive, prefixes from the config's projects) in the prompt that exists in app state (any project's `dashboardPath` tickets or `tasks/<ID>/`) → `task`, confidence 0.95, rationale `prompt-ticket`.
+3. cwd inside a configured `repositoryPath` (or a git top-level matching one) → `project-inbox`, confidence 0.6, rationale `cwd-project` — project only, never a guessed task.
+4. cwd in any other git repo → `inbox`, confidence 0.2, rationale `unmapped-repo`.
+5. Otherwise → `inbox`, confidence 0.1, rationale `no-signal`.
+
+Output JSON: `{status, taskID?, projectID?, confidence, rationale, backend: "heuristic", latencyMs}`. `classify` always exits 0 on success; usage errors exit 2 on stderr. Config is read from `<support>/config.json` (`focusQueueProjects` or the repository-catalog `projects` shape), overridable with `FOCUS_QUEUE_PLACEMENT_CONFIG` and `FOCUS_QUEUE_SUPPORT_DIR`.
+
+**Placement ledger** — every `classify` appends one row to `<support>/placement-ledger.sqlite` (override: `FOCUS_QUEUE_PLACEMENT_LEDGER`), table `placements`: `id INTEGER PK`, `timestamp TEXT` (ISO8601 UTC), `backend`, `status`, `task_id`, `project_id`, `confidence REAL`, `rationale`, `prompt_excerpt` (first 200 chars), `cwd`, `latency_ms REAL`. Ledger failures warn on stderr and never block classification.
+
+**Config keys** (both `Config/ecc.config.json` and `Config/config.example.json`): `agentsPerWindow` (default 4; read by `TmuxPaneLayout.maximumPanes` for task-window pane capacity, clamped to 1–12), `placementModel` (`"claude-sonnet-light"` placeholder for the phase-2 model backend), `placementConfidenceThreshold` (0.6; phase-2 cutoff).
+
 *Generated 2026-10-09 from repository sources. Command grammar is authoritative at `Sources/FocusQueueSession/main.swift:16`; when this document and the usage string disagree, the usage string wins.*

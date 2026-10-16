@@ -158,15 +158,18 @@ def plan(home, usage_wrapper, flags, *, source_directory=None, install_hooks=Fal
     shell = directory / "codex.zsh"
     zshrc = home / ".zshrc"
     hook_file = home / ".codex/hooks.json"
+    fq_dispatcher = directory / "focus_queue_fq.py"
+    fq_placement = directory / "focus_queue_placement.py"
+    fq_shim = home / ".local/bin/fq"
     if not usage_wrapper.is_absolute() or not usage_wrapper.is_file():
         raise ValueError("Choose the existing usage wrapper with an absolute file path.")
     if "--dangerously-bypass-hook-trust" in flags:
         raise ValueError("This integration uses native /hooks review and cannot bypass hook trust.")
     require_task_session_helper(helper, home)
-    destinations = ((entry, managed_usage_wrapper, managed_usage_renderer,
-                     managed_usage_license, shell, zshrc, hook_file) if install_hooks
-                    else (entry, managed_usage_wrapper, managed_usage_renderer,
-                          managed_usage_license, shell, zshrc))
+    destinations = (entry, managed_usage_wrapper, managed_usage_renderer,
+                    managed_usage_license, shell, zshrc, fq_dispatcher, fq_placement, fq_shim)
+    if install_hooks:
+        destinations = destinations + (hook_file,)
     for path in destinations:
         safe_destination(path, home)
     command = ["/usr/bin/python3", str(entry), "--usage-wrapper", str(usage_wrapper)]
@@ -184,18 +187,25 @@ def plan(home, usage_wrapper, flags, *, source_directory=None, install_hooks=Fal
         managed_usage_license: (source_directory / "AgentUsageBar-LICENSE.txt").read_bytes(),
         shell: shell_source.encode(),
         zshrc: merge_shell(zshrc.read_text() if zshrc.exists() else "", shell).encode(),
+        fq_dispatcher: (source_directory / "focus_queue_fq.py").read_bytes(),
+        fq_placement: (source_directory / "focus_queue_placement.py").read_bytes(),
+        fq_shim: ("#!/bin/sh\nexec /usr/bin/python3 " + shlex.quote(str(fq_dispatcher))
+                  + ' "$@"\n').encode(),
     }
     if install_hooks:
         files[hook_file] = merge_hooks(hook_file.read_text() if hook_file.exists() else "", helper).encode()
-    return support, files
+    return support, files, {fq_shim}
 
 
 def install(home, usage_wrapper, flags, *, check=False, source_directory=None, install_hooks=False):
-    support, files = plan(home, usage_wrapper, flags, source_directory=source_directory, install_hooks=install_hooks)
+    support, files, executables = plan(home, usage_wrapper, flags, source_directory=source_directory, install_hooks=install_hooks)
     observed = {path: file_snapshot(path) for path in files}
     changed = {path: content for path, content in files.items()
                if observed[path] is None or observed[path][0] != content}
     expected = {path: observed[path] for path in changed}
+    for path in executables & set(changed):
+        if expected[path] is not None:
+            expected[path] = (expected[path][0], 0o755, *expected[path][2:])
     result = {"mode": "preview" if check else "installed", "paths": [str(path) for path in changed],
         "tracking": "process discovery and verified launch metadata",
         "nativeHooks": "requested" if install_hooks else "unchanged",
@@ -228,6 +238,8 @@ def install(home, usage_wrapper, flags, *, check=False, source_directory=None, i
             try:
                 with os.fdopen(descriptor, "wb") as stream:
                     stream.write(content)
+                if path in executables:
+                    os.chmod(staging, 0o755)
                 install_staging(staging, path, expected[path])
                 installed = file_snapshot(path)
                 if installed is None or installed[0] != content:

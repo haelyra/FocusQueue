@@ -109,7 +109,22 @@ public struct TmuxPaneSnapshot: Identifiable, Equatable, Sendable {
 
 /// Terminal cells account for the user's font, zoom and actual window size.
 public enum TmuxPaneLayout {
-  public static let maximumPanes = 4
+  public static let defaultMaximumPanes = 4
+
+  /// The configured `agentsPerWindow` capacity, defaulting to four whenever the
+  /// app configuration is missing, unreadable, or out of the supported range.
+  public static var maximumPanes: Int {
+    maximumPanes(supportDirectory: TmuxPersistence.defaultSupportDirectory())
+  }
+
+  public static func maximumPanes(supportDirectory: URL) -> Int {
+    struct Knobs: Decodable { var agentsPerWindow: Int? }
+    guard let data = try? Data(contentsOf: supportDirectory.appendingPathComponent("config.json")),
+      let knobs = try? JSONDecoder().decode(Knobs.self, from: data),
+      let configured = knobs.agentsPerWindow, (1...12).contains(configured)
+    else { return defaultMaximumPanes }
+    return configured
+  }
 
   public static func contentHeight(clientHeight: Int, status: String, controlMode: Bool) -> Int {
     // tmux control clients have no status display. Their dimensions already
@@ -642,8 +657,9 @@ extension TmuxController {
     }
     try await checked(executable, ["set-option", "-t", name, "status-left", ""])
     try await checked(executable, ["set-option", "-t", name, "status-right", ""])
-    // Keep at most four active agents in each native tmux window tab. Retained
-    // completion shells use their own tab so they never consume agent capacity.
+    // Keep at most `agentsPerWindow` active agents (default four) in each
+    // native tmux window tab. Retained completion shells use their own tab so
+    // they never consume agent capacity.
     for (group, label) in groups {
       guard let anchor = group.first else { continue }
       let current = try await panes(name: name, executable: executable)

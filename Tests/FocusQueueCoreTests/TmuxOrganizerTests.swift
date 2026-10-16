@@ -587,6 +587,39 @@ struct TmuxOrganizerTests {
     try await controller.checked(executable, ["resize-pane", "-t", first.paneID, "-R", "1"])
     #expect(try await controller.panes(name: name, executable: executable).allSatisfy { !$0.automatic })
   }
+
+  @Test("Pane capacity honors agentsPerWindow and defaults to four")
+  func paneCapacityAgentsPerWindow() throws {
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "fq-agents-per-window-test-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+    let config = base.appendingPathComponent("config.json")
+
+    #expect(TmuxPaneLayout.maximumPanes(supportDirectory: base) == 4,
+      "A missing configuration keeps the default of four")
+
+    try Data("{\"agentsPerWindow\": 7}\n".utf8).write(to: config)
+    #expect(TmuxPaneLayout.maximumPanes(supportDirectory: base) == 7)
+
+    try Data("{\"agentsPerWindow\": 0}\n".utf8).write(to: config)
+    #expect(TmuxPaneLayout.maximumPanes(supportDirectory: base) == 4,
+      "Out-of-range values fall back to the default")
+
+    try Data("not json".utf8).write(to: config)
+    #expect(TmuxPaneLayout.maximumPanes(supportDirectory: base) == 4,
+      "Unreadable configurations fall back to the default")
+
+    var appConfiguration = AppConfiguration.eccDefault()
+    appConfiguration.agentsPerWindow = 6
+    appConfiguration.placementModel = "claude-sonnet-light"
+    appConfiguration.placementConfidenceThreshold = 0.6
+    let decoded = try JSONDecoder().decode(
+      AppConfiguration.self, from: JSONEncoder().encode(appConfiguration))
+    #expect(decoded.agentsPerWindow == 6)
+    #expect(decoded.placementModel == "claude-sonnet-light")
+    #expect(decoded.placementConfidenceThreshold == 0.6)
+  }
 }
 
 private actor RejectOwnershipTagRunner: ProcessRunning {

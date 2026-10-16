@@ -307,6 +307,12 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var agentUsageBarEnabled: Bool
   public var agentProviderFallbackOrder: [AgentProvider]
   public var agentEscalationAutoLaunch: Bool
+  /// Maximum active agent panes per tmux window tab; nil keeps the default of 4.
+  public var agentsPerWindow: Int?
+  /// Placeholder model identifier for the phase-2 placement classifier.
+  public var placementModel: String?
+  /// Minimum classifier confidence for automatic task placement (phase 2).
+  public var placementConfidenceThreshold: Double?
 
   public static let defaultAgentProviderFallbackOrder: [AgentProvider] = [.codex, .claude]
   public var agentModelChoices: [AgentModelChoice]
@@ -404,6 +410,9 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.agentUsageBarEnabled = true
     self.agentProviderFallbackOrder = Self.defaultAgentProviderFallbackOrder
     self.agentEscalationAutoLaunch = true
+    self.agentsPerWindow = nil
+    self.placementModel = nil
+    self.placementConfidenceThreshold = nil
     self.agentModelChoices = Self.defaultAgentModelChoices
     self.autoArchiveStaleAgents = false
     self.defaultAgentProvider = nil
@@ -430,6 +439,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case agentUsageBarEnabled
     case agentProviderFallbackOrder
     case agentEscalationAutoLaunch
+    case agentsPerWindow, placementModel, placementConfidenceThreshold
     case agentModelChoices
     case autoArchiveStaleAgents
     case defaultAgentProvider, defaultAgentModels, defaultAgentEfforts
@@ -463,6 +473,10 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     agentProviderFallbackOrder = fallbackOrder.isEmpty ? Self.defaultAgentProviderFallbackOrder : fallbackOrder
     agentEscalationAutoLaunch =
       try container.decodeIfPresent(Bool.self, forKey: .agentEscalationAutoLaunch) ?? true
+    agentsPerWindow = try container.decodeIfPresent(Int.self, forKey: .agentsPerWindow)
+    placementModel = try container.decodeIfPresent(String.self, forKey: .placementModel)
+    placementConfidenceThreshold =
+      try container.decodeIfPresent(Double.self, forKey: .placementConfidenceThreshold)
     agentModelChoices = Self.mergedAgentModelChoices(
       (try container.decodeIfPresent([AgentModelChoice].self, forKey: .agentModelChoices)) ?? [])
     autoArchiveStaleAgents = try container.decodeIfPresent(Bool.self, forKey: .autoArchiveStaleAgents) ?? false
@@ -549,6 +563,9 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encode(agentUsageBarEnabled, forKey: .agentUsageBarEnabled)
     try container.encode(agentProviderFallbackOrder, forKey: .agentProviderFallbackOrder)
     try container.encode(agentEscalationAutoLaunch, forKey: .agentEscalationAutoLaunch)
+    try container.encodeIfPresent(agentsPerWindow, forKey: .agentsPerWindow)
+    try container.encodeIfPresent(placementModel, forKey: .placementModel)
+    try container.encodeIfPresent(placementConfidenceThreshold, forKey: .placementConfidenceThreshold)
     try container.encode(agentModelChoices, forKey: .agentModelChoices)
     try container.encode(autoArchiveStaleAgents, forKey: .autoArchiveStaleAgents)
     try container.encodeIfPresent(defaultAgentProvider, forKey: .defaultAgentProvider)

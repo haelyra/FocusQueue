@@ -821,7 +821,7 @@ else:
         home.mkdir()
         self.install_session_helper(home)
         preview = INSTALL.install(home, self.wrapper, ["--yolo"], check=True)
-        self.assertEqual(len(preview["paths"]), 6)
+        self.assertEqual(len(preview["paths"]), 9)
         self.assertFalse((home / ".codex").exists())
         INSTALL.install(home, self.wrapper, ["--yolo"])
         self.assertFalse((home / ".codex").exists())
@@ -831,6 +831,24 @@ else:
         original = hooks.read_bytes()
         self.assertEqual(INSTALL.install(home, self.wrapper, ["--yolo"])["paths"], [])
         self.assertEqual(hooks.read_bytes(), original)
+
+    def test_install_writes_executable_fq_shim_and_dispatcher(self):
+        home = self.root / "Fq User"
+        home.mkdir()
+        self.install_session_helper(home)
+        result = INSTALL.install(home, self.wrapper, ["--yolo"])
+        shim = home / ".local/bin/fq"
+        self.assertIn(str(shim), result["paths"])
+        self.assertTrue(shim.stat().st_mode & 0o111)
+        support = home / "Library/Application Support/ECC Focus Queue"
+        dispatcher = support / "shell/focus_queue_fq.py"
+        content = shim.read_text()
+        self.assertTrue(content.startswith("#!/bin/sh\nexec /usr/bin/python3 "))
+        self.assertIn("focus_queue_fq.py", content)
+        self.assertTrue(content.endswith('"$@"\n'))
+        self.assertTrue(dispatcher.is_file())
+        self.assertTrue((support / "shell/focus_queue_placement.py").is_file())
+        self.assertEqual(INSTALL.install(home, self.wrapper, ["--yolo"])["paths"], [])
 
     def test_hooks_require_explicit_opt_in_and_merge_idempotently(self):
         home = self.root / "Opt In User"

@@ -29,6 +29,7 @@ bundle_path="$staging_dir/$product_name.app"
   "$project_dir/Scripts/focus_queue_codex_bar.js" "$project_dir/Scripts/AgentUsageBar-LICENSE.txt" \
   "$project_dir/Scripts/install_codex_entry.py" \
   "$project_dir/Scripts/focus_queue_claude_entry.py" "$project_dir/Scripts/install_claude_entry.py" \
+  "$project_dir/Scripts/focus_queue_fq.py" "$project_dir/Scripts/focus_queue_placement.py" \
   "$bundle_path/Contents/Resources/shell/"
 automation_resources="$bundle_path/Contents/Resources/automation"
 /bin/mkdir -p "$automation_resources/Scripts" "$automation_resources/Config"

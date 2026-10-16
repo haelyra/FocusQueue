@@ -30,6 +30,9 @@
   "refreshIntervalSeconds": 2,
   "agentProviderFallbackOrder": ["codex", "claude"],
   "agentEscalationAutoLaunch": true,
+  "agentsPerWindow": 4,
+  "placementModel": "claude-sonnet-light",
+  "placementConfidenceThreshold": 0.6,
   "agentModelChoices": [
     {"provider": "codex", "label": "Default"},
     {"provider": "codex", "label": "gpt-6-astra", "model": "gpt-6-astra"},

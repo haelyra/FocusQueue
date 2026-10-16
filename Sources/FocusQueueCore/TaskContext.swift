@@ -1055,6 +1055,26 @@ public actor TaskContextStore {
         }
     }
 
+    /// A launch-keyed provisional row is resolved once the launch's placement
+    /// names a real agent row in the same task: the placeholder is retired
+    /// into that row (even after the row completed), and the launch identity
+    /// cannot recreate it. The merge alias keeps launch-keyed lookups working.
+    @discardableResult public func mergeTrackedLaunch(
+        ticketID: String, launchID: String, into subtaskID: String
+    ) throws -> TaskContext {
+        try mutate(ticketID: ticketID, archiveChanges: true) { context in
+            guard let target = context.subtasks.first(where: {
+                $0.id.caseInsensitiveCompare(subtaskID) == .orderedSame
+            }), let index = context.subtasks.firstIndex(where: { $0.id == launchID }),
+                context.subtasks[index].agentRemovedAt == nil else { return }
+            let key = TaskContext.launchRemovalKey(launchID)
+            context.removedAgentSessionKeys = Array(Set((context.removedAgentSessionKeys ?? []) + [key])).sorted()
+            context.subtasks[index].mergedIntoSubtaskID = target.id
+            context.subtasks[index].agentRemovedAt = Date()
+            context.subtasks[index].completionUnread = false
+        }
+    }
+
     @discardableResult public func restoreAgent(ticketID: String, subtaskID: String) throws -> TaskContext {
         try mutate(ticketID: ticketID, archiveChanges: true) { context in
             guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }

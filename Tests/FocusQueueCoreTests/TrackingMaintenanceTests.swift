@@ -119,6 +119,45 @@ struct TrackingMaintenanceTests {
         #expect(!incomplete.isReadyForDiscovery)
     }
 
+    @Test("A launch-keyed placeholder retires into the agent row its placement names")
+    func mergeTrackedLaunchRetiresPlaceholder() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("merge-tracked-launch-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = TaskContextStore(root: root)
+        _ = try await store.ensureContext(ticket: DashboardTicket(
+            id: "ECC-35", title: "Merge placeholder", status: "open", summary: ""))
+        let agentID = "63B453D1-F943-4ADE-A8BE-998AE089D2F2"
+        let launchID = UUID().uuidString.lowercased()
+        var real = TaskSubtask(id: agentID, title: "Integrate and install arrow fix",
+            assignmentDescription: "Real work", provider: .codex, status: .working)
+        real.tracksCompletion = true
+        real.lastHeartbeatAt = Date()
+        _ = try await store.upsertSubtask(ticketID: "ECC-35", subtask: real)
+        var placeholder = TaskSubtask(id: launchID, title: "Codex agent",
+            assignmentDescription: "Tracked launch", provider: .codex, status: .working)
+        placeholder.tracksCompletion = false
+        placeholder.lastHeartbeatAt = Date()
+        _ = try await store.upsertSubtask(ticketID: "ECC-35", subtask: placeholder)
+
+        let context = try await store.mergeTrackedLaunch(
+            ticketID: "ECC-35", launchID: launchID, into: agentID.lowercased())
+
+        let merged = try #require(context.subtasks.first { $0.id == launchID })
+        #expect(merged.mergedIntoSubtaskID == agentID)
+        #expect(merged.agentRemovedAt != nil)
+        #expect(!merged.completionUnread)
+        #expect(context.hasDismissedLaunch(launchID))
+        #expect(context.canonicalSubtaskID(launchID) == agentID)
+        let retained = try #require(context.subtasks.first { $0.id == agentID })
+        #expect(retained.agentRemovedAt == nil)
+        #expect(retained.status == .working)
+        // A completed target still retires the placeholder; the merge is idempotent.
+        let repeated = try await store.mergeTrackedLaunch(
+            ticketID: "ECC-35", launchID: launchID, into: agentID)
+        #expect(repeated.subtasks.first { $0.id == launchID }?.mergedIntoSubtaskID == agentID)
+    }
+
     @Test("Provider discovery enriches the provisional queue row with the exact Codex session ID")
     func intakeSessionIdentityEnrichment() async throws {
         let root = FileManager.default.temporaryDirectory

@@ -114,6 +114,14 @@ else:
         self.assertEqual(ENTRY.invocation(["-m", "model", "exec", "hello"], classify_agents=True)[0], "noninteractive")
         self.assertEqual(ENTRY.invocation(["-m", "model", "exec", "--help"], classify_agents=True)[0], "utility")
 
+    def test_usage_command_drops_default_flags_the_user_repeated(self):
+        command = ENTRY.usage_command(self.wrapper, ["--yolo"], ["--yolo", "hello"])
+        self.assertEqual(command.count("--yolo"), 1)
+        self.assertEqual(command[-2:], ["--yolo", "hello"])
+        command = ENTRY.usage_command(self.wrapper, ["--yolo"], ["hello"])
+        self.assertEqual(command.count("--yolo"), 1)
+        self.assertEqual(command[-2:], ["--yolo", "hello"])
+
     def test_repository_identity_accepts_macos_tmp_alias_only_for_same_inode(self):
         self.assertTrue(ENTRY.same_repository_identity(
             "/tmp/project/.git:123:456", "/private/tmp/project/.git:123:456"))

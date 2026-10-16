@@ -125,6 +125,15 @@ else:
         self.assertEqual(ENTRY.invocation(["--continue"]), ("continue", None))
         self.assertEqual(ENTRY.invocation(["-c", "keep going"]), ("continue", None))
         self.assertEqual(ENTRY.invocation(["fix the bug"]), ("new", None))
+
+    def test_usage_command_drops_default_flags_the_user_repeated(self):
+        flag = "--dangerously-skip-permissions"
+        command = ENTRY.usage_command(self.wrapper, [flag], [flag, "hello"])
+        self.assertEqual(command.count(flag), 1)
+        self.assertEqual(command[-2:], [flag, "hello"])
+        command = ENTRY.usage_command(self.wrapper, [flag], ["hello"])
+        self.assertEqual(command.count(flag), 1)
+        self.assertEqual(command[-2:], [flag, "hello"])
         self.assertEqual(ENTRY.invocation(["--", "--help"]), ("new", None))
         self.assertEqual(ENTRY.invocation(["--model", "sonnet", "hello"]), ("new", None))
         self.assertEqual(ENTRY.invocation(["-p", "hello"], classify_agents=True)[0], "noninteractive")

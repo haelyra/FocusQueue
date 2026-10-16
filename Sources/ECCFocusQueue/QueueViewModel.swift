@@ -3591,6 +3591,19 @@ final class QueueViewModel {
       }
       guard var context else { continue }
       guard !context.hasDismissedLaunch(receipt.launchID) else { continue }
+      // A launch-keyed placeholder is provisional. Once the launch's placement
+      // names a real agent row in this task, fold the placeholder into that row
+      // instead of double-counting the work item — even if the row has since
+      // completed, so it never lingers as a phantom "working" agent.
+      if let agentID = receipt.agentID,
+        agentID != receipt.launchID,
+        context.subtasks.contains(where: { $0.id.caseInsensitiveCompare(agentID) == .orderedSame }),
+        context.subtasks.contains(where: { $0.id == receipt.launchID && $0.agentRemovedAt == nil })
+      {
+        context = try await taskContextStore.mergeTrackedLaunch(
+          ticketID: taskID, launchID: receipt.launchID, into: agentID)
+        taskContexts[taskID] = context
+      }
       let effectiveSubtaskID = receipt.effectiveSubtaskID(in: context)
       if let sessionID = receipt.sessionID?.lowercased(), context.subtasks.contains(where: {
         $0.provider == .codex && $0.sessionID?.lowercased() == sessionID

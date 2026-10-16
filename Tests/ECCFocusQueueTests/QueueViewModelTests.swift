@@ -2826,6 +2826,95 @@ struct QueueViewModelTests {
     #expect(paneLabel.title == "Codex: Keep configured title")
   }
 
+  @Test("A launch-keyed placeholder folds into the agent row its placement names")
+  func placeholderMergesIntoCapsuleAgentRow() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    let agentID = "63B453D1-F943-4ADE-A8BE-998AE089D2F2"
+    let launchID = UUID().uuidString.lowercased()
+    var real = TaskSubtask(id: agentID, title: "Integrate and install arrow fix",
+      assignmentDescription: "Real work", provider: .codex, status: .working,
+      includeInitializationPrompt: false)
+    real.tracksCompletion = true
+    real.lastHeartbeatAt = Date()
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: real)
+    var placeholder = TaskSubtask(id: launchID, title: "Codex agent",
+      assignmentDescription: "Tracked launch", provider: .codex, status: .working,
+      includeInitializationPrompt: false)
+    placeholder.tracksCompletion = false
+    placeholder.lastHeartbeatAt = Date()
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: placeholder)
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(model.visibleAgents(for: "ECC-101").count == 2)
+    let intake = try JSONDecoder().decode(AgentIntakeReceipt.self,
+      from: JSONSerialization.data(withJSONObject: [
+        "launchID": launchID, "taskID": "ECC-101", "agentID": agentID,
+        "cwd": fixture.root.path, "phase": "ready", "title": "Codex agent",
+      ]))
+
+    try await model.importProvisionalAgentIntakes([intake])
+
+    let context = try #require(try await store.load(ticketID: "ECC-101"))
+    #expect(context.subtasks.count == 2)
+    let merged = try #require(context.subtasks.first { $0.id == launchID })
+    #expect(merged.mergedIntoSubtaskID == agentID)
+    #expect(merged.agentRemovedAt != nil)
+    #expect(context.hasDismissedLaunch(launchID))
+    #expect(model.visibleAgents(for: "ECC-101").map(\.id) == [agentID])
+    // A repeated import can neither revive the placeholder nor disturb the row.
+    try await model.importProvisionalAgentIntakes([intake])
+    let again = try #require(try await store.load(ticketID: "ECC-101"))
+    #expect(again.subtasks.count == 2)
+    #expect(again.subtasks.first { $0.id == launchID }?.agentRemovedAt != nil)
+    #expect(again.subtasks.first { $0.id == agentID }?.status == .working)
+  }
+
+  @Test("A placeholder created before its agent row merges when the row arrives")
+  func placeholderCreatedBeforeAgentRowMergesLater() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    let agentID = "B41E285C-F638-4484-BA07-91FD720185AD"
+    let launchID = UUID().uuidString.lowercased()
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let intake = try JSONDecoder().decode(AgentIntakeReceipt.self,
+      from: JSONSerialization.data(withJSONObject: [
+        "launchID": launchID, "taskID": "ECC-101", "agentID": agentID,
+        "cwd": fixture.root.path, "phase": "ready", "title": "Codex agent",
+      ]))
+
+    try await model.importProvisionalAgentIntakes([intake])
+    #expect(model.visibleAgents(for: "ECC-101").map(\.id) == [launchID])
+
+    // The launch's real agent row arrives after the placeholder was shown.
+    var real = TaskSubtask(id: agentID, title: "Remove duplicate agent arrow",
+      assignmentDescription: "Real work", provider: .codex, status: .working,
+      includeInitializationPrompt: false)
+    real.tracksCompletion = true
+    real.lastHeartbeatAt = Date()
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: real)
+    try await model.importProvisionalAgentIntakes([intake])
+
+    let context = try #require(try await store.load(ticketID: "ECC-101"))
+    #expect(context.subtasks.count == 2)
+    #expect(model.visibleAgents(for: "ECC-101").map(\.id) == [agentID])
+    let merged = try #require(context.subtasks.first { $0.id == launchID })
+    #expect(merged.mergedIntoSubtaskID == agentID)
+    #expect(merged.agentRemovedAt != nil)
+    // Completion of the real row leaves no phantom working placeholder behind.
+    _ = try await store.updateProgress(ticketID: "ECC-101", subtaskID: agentID,
+      status: .completed, summary: "done")
+    try await model.importProvisionalAgentIntakes([intake])
+    let finished = try #require(try await store.load(ticketID: "ECC-101"))
+    #expect(finished.subtasks.count == 2)
+    #expect(finished.subtasks.first { $0.id == launchID }?.agentRemovedAt != nil)
+    #expect(finished.subtasks.first { $0.id == agentID }?.status == .completed)
+    #expect(finished.subtasks.filter { $0.hasAgent && $0.isAgentVisible }.isEmpty)
+  }
+
   @Test("Pre-reference notifications do not discover, while one exact reference notification does")
   func intakeReferenceGatesForcedDiscovery() async throws {
     let fixture = try await Fixture()

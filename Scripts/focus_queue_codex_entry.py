@@ -942,9 +942,12 @@ def managed_current_reference(helper, task_id=None, agent_id=None):
 
 
 def usage_command(wrapper, flags, arguments):
+    # Installed default flags repeat flags the user typed explicitly (for
+    # example `--yolo`), and duplicate flags make the provider exit instantly.
+    unique_flags = [flag for flag in flags if flag not in arguments]
     command = (["/bin/bash", str(USAGE_ADAPTER), str(wrapper), "--"]
                if USAGE_ADAPTER.is_file() else ["/bin/bash", str(wrapper)])
-    return [*command, *flags, *arguments]
+    return [*command, *unique_flags, *arguments]
 
 
 def start(helper, name, command, *, prompt=None, support=None, task_id=None, agent_id=None):

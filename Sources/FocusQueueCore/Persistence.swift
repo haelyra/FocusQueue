@@ -373,6 +373,13 @@ public protocol DashboardManaging: DashboardLoading {
         in url: URL,
         expectedRevision: DashboardRevision
     ) async throws -> DashboardSnapshot
+    func setTicketDueDate(
+        id: String,
+        to dueDate: String?,
+        source: String?,
+        in url: URL,
+        expectedRevision: DashboardRevision
+    ) async throws -> DashboardSnapshot
 }
 
 public extension DashboardManaging {
@@ -563,6 +570,41 @@ public actor JSONDashboardRepository: DashboardManaging {
                 in: url,
                 expectedRevision: expectedRevision
             )
+        }
+    }
+
+    public func setTicketDueDate(
+        id: String,
+        to dueDate: String?,
+        source: String?,
+        in url: URL,
+        expectedRevision: DashboardRevision
+    ) throws -> DashboardSnapshot {
+        try locked(url: url) {
+            let currentData = try currentData(at: url, expectedRevision: expectedRevision)
+            var object = try dashboardObject(from: currentData)
+            var tickets = try ticketObjects(in: object)
+            guard let index = tickets.firstIndex(where: {
+                ticketID(in: $0).caseInsensitiveCompare(id) == .orderedSame
+            }) else {
+                throw DashboardMutationError.ticketNotFound(id)
+            }
+            if let dueDate {
+                let normalized = dueDate.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !normalized.isEmpty, TaskTriagePolicy.date(from: normalized) != nil else {
+                    throw DashboardMutationError.invalidFieldValue("dueDate")
+                }
+                let normalizedSource = source?.trimmingCharacters(in: .whitespacesAndNewlines)
+                tickets[index]["dueDate"] = normalized
+                tickets[index]["dueDateSource"] = normalizedSource?.isEmpty == false
+                    ? normalizedSource : "User specified"
+            } else {
+                tickets[index].removeValue(forKey: "dueDate")
+                tickets[index].removeValue(forKey: "dueDateSource")
+            }
+            tickets[index]["updatedAt"] = ISO8601DateFormatter().string(from: Date())
+            object["tickets"] = tickets
+            return try save(object, to: url, expectedRevision: expectedRevision)
         }
     }
 

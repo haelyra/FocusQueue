@@ -1006,6 +1006,67 @@ struct QueueViewModelTests {
     #expect(try external.load() == [])
   }
 
+  @Test("Viewed tasks and activity sort preference survive restart")
+  func viewedTasksAndSortPreference() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(!model.isNewTicket("ECC-101"))
+    #expect(model.isNewTicket("FOC-NEW"))
+
+    model.markTicketViewed("FOC-NEW")
+    model.setQueueActivitySortMode(.recentOutput)
+    #expect(!model.isNewTicket("FOC-NEW"))
+    #expect(model.queueActivitySortMode == .recentOutput)
+    try await eventually {
+      try await JSONLocalStateStore(url: fixture.paths.stateFile).load().queueActivitySortMode == .recentOutput
+    }
+
+    let restarted = await fixture.model(agent: ControlledQueueAgent())
+    #expect(!restarted.isNewTicket("FOC-NEW"))
+    #expect(restarted.queueActivitySortMode == .recentOutput)
+  }
+
+  @Test("Hard due dates update and clear through the view model")
+  func hardDeadlineActions() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let dueDate = try #require(TaskTriagePolicy.date(from: "2026-10-24"))
+
+    #expect(await model.setTaskHardDeadline(fixture.tickets[0], to: dueDate))
+    var ticket = try #require(model.dashboard.tickets.first { $0.id == "ECC-101" })
+    #expect(ticket.dueDate == "2026-10-24")
+    #expect(ticket.dueDateSource == "User specified")
+
+    #expect(await model.setTaskHardDeadline(ticket, to: nil))
+    ticket = try #require(model.dashboard.tickets.first { $0.id == "ECC-101" })
+    #expect(ticket.dueDate == nil)
+    #expect(ticket.dueDateSource == nil)
+
+    #expect(await model.createTask(
+      title: "Dated new task", summary: "Verify hard due dates.", doneWhen: "",
+      priority: "medium", dueDate: dueDate))
+    let created = try #require(model.dashboard.tickets.first { $0.title == "Dated new task" })
+    #expect(created.createdAt != nil)
+    #expect(created.dueDate == "2026-10-24")
+    #expect(created.dueDateSource == "User specified")
+    #expect(model.isNewTicket(created.id))
+  }
+
+  @Test("Task details popover lays out dates, agents, and deadline controls")
+  func taskDetailsPresentation() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let dueDate = try #require(TaskTriagePolicy.date(from: "2026-10-24"))
+    #expect(await model.setTaskHardDeadline(fixture.tickets[0], to: dueDate))
+    let ticket = try #require(model.dashboard.tickets.first { $0.id == "ECC-101" })
+    let host = NSHostingView(rootView: TaskDetailsView(ticket: ticket, model: model, onClose: {}))
+    host.layoutSubtreeIfNeeded()
+    #expect(host.fittingSize == CGSize(width: 400, height: 560))
+  }
+
   @Test("A chat reply shows the agent's saved order even while a refresh is still running")
   func chatReorderIsVisibleDuringSlowRefresh() async throws {
     let fixture = try await Fixture()
@@ -3366,6 +3427,12 @@ private actor SuspendedRenameDashboardRepository: DashboardManaging {
   ) async throws -> DashboardSnapshot {
     try await base.setTicketStatus(id: id, to: status, in: url, expectedRevision: expectedRevision)
   }
+  func setTicketDueDate(
+    id: String, to dueDate: String?, source: String?, in url: URL, expectedRevision: DashboardRevision
+  ) async throws -> DashboardSnapshot {
+    try await base.setTicketDueDate(
+      id: id, to: dueDate, source: source, in: url, expectedRevision: expectedRevision)
+  }
 
   func resumeRename() {
     renameContinuation?.resume()
@@ -3515,6 +3582,12 @@ private actor HeldDashboardRepository: DashboardManaging {
   ) async throws -> DashboardSnapshot {
     try await base.setTicketStatus(id: id, to: status, in: url, expectedRevision: expectedRevision)
   }
+  func setTicketDueDate(
+    id: String, to dueDate: String?, source: String?, in url: URL, expectedRevision: DashboardRevision
+  ) async throws -> DashboardSnapshot {
+    try await base.setTicketDueDate(
+      id: id, to: dueDate, source: source, in: url, expectedRevision: expectedRevision)
+  }
 }
 
 private final class CountingDashboardRepository: DashboardManaging, @unchecked Sendable {
@@ -3558,6 +3631,12 @@ private final class CountingDashboardRepository: DashboardManaging, @unchecked S
     id: String, to status: String, in url: URL, expectedRevision: DashboardRevision
   ) async throws -> DashboardSnapshot {
     try await base.setTicketStatus(id: id, to: status, in: url, expectedRevision: expectedRevision)
+  }
+  func setTicketDueDate(
+    id: String, to dueDate: String?, source: String?, in url: URL, expectedRevision: DashboardRevision
+  ) async throws -> DashboardSnapshot {
+    try await base.setTicketDueDate(
+      id: id, to: dueDate, source: source, in: url, expectedRevision: expectedRevision)
   }
 }
 

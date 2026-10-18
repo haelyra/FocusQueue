@@ -49,25 +49,38 @@ public struct QueueOrderStore: Sendable {
         return saved + canonical.filter { remaining.removeValue(forKey: $0.id) != nil }
     }
 
-    /// Prompt activity temporarily lifts a task above its saved queue position.
-    /// The untouched baseline resumes as soon as the three-day window expires.
-    public static func prioritizingRecentPrompts(
+    public static func prioritizingActivity(
         _ tickets: [DashboardTicket],
+        mode: QueueActivitySortMode,
         lastPromptAtByTicketID: [String: Date],
-        now: Date = Date(),
-        window: TimeInterval = 3 * 24 * 60 * 60
+        lastOutputAtByTicketID: [String: Date]
     ) -> [DashboardTicket] {
-        let cutoff = now.addingTimeInterval(-window)
-        let recent = tickets.enumerated().compactMap { index, ticket -> (Int, DashboardTicket, Date)? in
-            guard let promptAt = lastPromptAtByTicketID[ticket.id],
-                  promptAt >= cutoff, promptAt <= now else { return nil }
-            return (index, ticket, promptAt)
-        }.sorted {
-            if $0.2 != $1.2 { return $0.2 > $1.2 }
-            return $0.0 < $1.0
+        switch mode {
+        case .manual:
+            return tickets
+        case .triage:
+            return TaskTriagePolicy.deadlineOrdered(
+                tickets,
+                lastPromptAtByTicketID: lastPromptAtByTicketID,
+                lastOutputAtByTicketID: lastOutputAtByTicketID)
+        case .recentInteraction, .recentOutput:
+            let recent = tickets.enumerated().compactMap { index, ticket -> (Int, DashboardTicket, Date)? in
+                let activity = mode == .recentInteraction
+                    ? lastPromptAtByTicketID[ticket.id]
+                    : lastOutputAtByTicketID[ticket.id]
+                guard let activity else { return nil }
+                return (index, ticket, activity)
+            }.sorted {
+                if $0.2 != $1.2 { return $0.2 > $1.2 }
+                return $0.0 < $1.0
+            }
+            let recentIDs = Set(recent.map { $0.1.id })
+            let remaining = tickets.filter { !recentIDs.contains($0.id) }
+            return recent.map(\.1) + TaskTriagePolicy.deadlineOrdered(
+                remaining,
+                lastPromptAtByTicketID: lastPromptAtByTicketID,
+                lastOutputAtByTicketID: lastOutputAtByTicketID)
         }
-        let recentIDs = Set(recent.map { $0.1.id })
-        return recent.map(\.1) + tickets.filter { !recentIDs.contains($0.id) }
     }
 
     @discardableResult

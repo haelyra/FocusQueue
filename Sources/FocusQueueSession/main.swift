@@ -125,7 +125,8 @@ enum SessionRegistrationError: Error, LocalizedError {
     private static func queueCommand(arguments: [String]) async throws {
         let root = supportDirectory(environment: ProcessInfo.processInfo.environment)
         let config = try loadConfiguration(from: root)
-        let state = try await JSONLocalStateStore(url: root.appendingPathComponent("state.json")).load()
+        let stateStore = JSONLocalStateStore(url: root.appendingPathComponent("state.json"))
+        var state = try await stateStore.load()
         let showsAllProjects = state.showsAllProjects ?? true
         let repository = JSONDashboardRepository()
         let dashboard: DashboardDocument
@@ -159,6 +160,7 @@ enum SessionRegistrationError: Error, LocalizedError {
         case "reset" where arguments.count == 2:
             if let visible { _ = try store.reset(tickets: dashboard.tickets, visibleIDs: visible, fallbackIDs: fallback) }
             else { try store.reset() }
+            state.queueActivitySortMode = .triage
         case "move" where arguments.count == 4 || arguments.count == 5:
             let placement: QueuePlacement
             switch arguments[3] {
@@ -170,9 +172,11 @@ enum SessionRegistrationError: Error, LocalizedError {
             }
             try store.move(arguments[2].uppercased(), to: placement,
                 tickets: dashboard.tickets, fallbackIDs: fallback, visibleIDs: visible)
+            state.queueActivitySortMode = .manual
         case "reorder" where arguments.count > 2:
             try store.setOrder(arguments.dropFirst(2).map { $0.uppercased() },
                 tickets: dashboard.tickets, fallbackIDs: fallback)
+            state.queueActivitySortMode = .manual
         default: throw SessionRegistrationError.usage
         }
         let baseline = QueueOrderStore.orderedTickets(
@@ -181,10 +185,18 @@ enum SessionRegistrationError: Error, LocalizedError {
         let promptDates = Dictionary(uniqueKeysWithValues: contexts.compactMap { context in
             context.lastPromptAt.map { (context.ticketID, $0) }
         })
-        let order = QueueOrderStore.prioritizingRecentPrompts(
-            baseline, lastPromptAtByTicketID: promptDates)
+        let outputDates = Dictionary(uniqueKeysWithValues: contexts.compactMap { context in
+            context.subtasks.compactMap { $0.lastOutputAt ?? $0.resultAt }.max()
+                .map { (context.ticketID, $0) }
+        })
+        let order = QueueOrderStore.prioritizingActivity(
+            baseline,
+            mode: state.queueActivitySortMode ?? .recentInteraction,
+            lastPromptAtByTicketID: promptDates,
+            lastOutputAtByTicketID: outputDates)
         try emit(["order": order.filter { visible?.contains($0.id) ?? true }.map(\.id)])
         if arguments.dropFirst().first != "list" {
+            try await stateStore.save(state)
             DistributedNotificationCenter.default().postNotificationName(
                 Notification.Name(QueueOrderStore.changeNotificationName),
                 object: nil, userInfo: nil, deliverImmediately: true)

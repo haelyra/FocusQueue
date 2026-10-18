@@ -523,6 +523,16 @@ struct QueueView: View {
       HStack {
         focusHeading(resultCount: search?.tickets.count)
         Menu {
+          ForEach(QueueActivitySortMode.allCases) { mode in
+            Button { model.setQueueActivitySortMode(mode) } label: {
+              if model.queueActivitySortMode == mode {
+                Label(mode.displayName, systemImage: "checkmark")
+              } else {
+                Text(mode.displayName)
+              }
+            }
+          }
+          Divider()
           Button {
             agentViewEnabled.toggle()
           } label: {
@@ -534,7 +544,7 @@ struct QueueView: View {
             staleAgentCandidateCount = model.staleAgentCandidates().count
             showsStaleAgentCleanupConfirmation = true
           }
-          Button("Restore priority order") { model.resetQueueOrder() }
+          Button("Restore triage order") { model.resetQueueOrder() }
         } label: { Image(systemName: "arrow.up.arrow.down") }
           .menuStyle(.borderlessButton).fixedSize()
           .accessibilityLabel("Queue view and ordering")
@@ -545,7 +555,7 @@ struct QueueView: View {
             .fixedSize(horizontal: false, vertical: true)
         }
       } else if !agentViewEnabled {
-        Text("Drag tasks to set their order")
+        Text(model.queueActivitySortCaption)
           .font(.caption).foregroundStyle(.secondary)
       }
 
@@ -1275,6 +1285,8 @@ private struct NewTaskSheet: View {
   @State private var summary = ""
   @State private var doneWhen = ""
   @State private var priority = "medium"
+  @State private var includesDueDate = false
+  @State private var dueDate = Date()
   @State private var isSaving = false
 
   private var project: ProjectConfiguration? {
@@ -1309,6 +1321,12 @@ private struct NewTaskSheet: View {
           Text("High").tag("high")
           Text("Critical").tag("critical")
         }
+        Toggle("Set a hard due date", isOn: $includesDueDate)
+        if includesDueDate {
+          DatePicker("Hard due date", selection: $dueDate, displayedComponents: .date)
+        }
+        Text("Without a hard date, Focus Queue assigns a rough triage target under task details.")
+          .font(.caption).foregroundStyle(.secondary)
       }
       .formStyle(.grouped)
 
@@ -1324,7 +1342,7 @@ private struct NewTaskSheet: View {
           Task {
             let saved = await model.createTask(
               title: title, summary: summary, doneWhen: doneWhen,
-              priority: priority, projectID: projectID)
+              priority: priority, dueDate: includesDueDate ? dueDate : nil, projectID: projectID)
             isSaving = false
             if saved { dismiss() }
           }
@@ -1338,7 +1356,7 @@ private struct NewTaskSheet: View {
       }
     }
     .padding(22)
-    .frame(width: 500, height: 430)
+    .frame(width: 500, height: 510)
   }
 }
 
@@ -2699,6 +2717,7 @@ struct RenamableTaskTitle: View {
   let maximumLines: Int
   var openAction: (() -> Void)? = nil
   var openHint: String? = nil
+  var detailsAction: (() -> Void)? = nil
   @State private var isRenaming = false
   @State private var draft = ""
 
@@ -2711,6 +2730,10 @@ struct RenamableTaskTitle: View {
       .onTapGesture { openAction?() }
       .highPriorityGesture(TapGesture(count: 2).onEnded { beginRename() })
       .contextMenu {
+        if let detailsAction {
+          Button("View details", systemImage: "info.circle", action: detailsAction)
+          Divider()
+        }
         Button("Rename task", systemImage: "pencil") { beginRename() }
       }
       .accessibilityAction(named: "Rename task", beginRename)
@@ -3227,11 +3250,17 @@ private struct TicketCard: View {
   @State private var completingAgent: TaskSubtask?
   @State private var archivingAgent: TaskSubtask?
   @State private var isCollapsedToTitle = false
+  @State private var descriptionOverride: Bool?
+  @State private var showsTaskDetails = false
   @AppStorage("newAgentProvider") private var storedNewAgentProvider: AgentProvider?
   @Environment(\.queueAccentStyle) private var accentStyle
 
   private var newAgentProvider: AgentProvider {
     model.preferredNewAgentProvider(stored: storedNewAgentProvider)
+  }
+
+  private var isDescriptionExpanded: Bool {
+    descriptionOverride ?? model.isNewTicket(ticket.id)
   }
 
   private var review: CompletionRequest? { model.latestReview(for: ticket.id) }
@@ -3385,7 +3414,12 @@ private struct TicketCard: View {
           RoundedRectangle(cornerRadius: 18).stroke(.tint, lineWidth: 2).allowsHitTesting(false)
         }
       }
+      .popover(isPresented: $showsTaskDetails, arrowEdge: .trailing) {
+        TaskDetailsView(ticket: ticket, model: model) { showsTaskDetails = false }
+      }
       .contextMenu {
+        Button("View details", systemImage: "info.circle") { openTaskDetails() }
+        Divider()
         Button("Move to top") { model.moveTicket(ticket.id, to: .top) }
         Button("Move up") { moveOnePosition(up: true) }
           .disabled(model.openTickets.first?.id == ticket.id)
@@ -3393,6 +3427,7 @@ private struct TicketCard: View {
           .disabled(model.openTickets.last?.id == ticket.id)
         Button("Move to bottom") { model.moveTicket(ticket.id, to: .bottom) }
       }
+      .accessibilityAction(named: "View details", openTaskDetails)
       .accessibilityAction(named: "Move up") { moveOnePosition(up: true) }
       .accessibilityAction(named: "Move down") { moveOnePosition(up: false) }
       .accessibilityHint("Drag to reorder. Drop on the upper half of a task to place it before, or the lower half to place it after.")
@@ -3453,11 +3488,15 @@ private struct TicketCard: View {
 
       VStack(alignment: .leading, spacing: 7) {
         HStack(alignment: .top, spacing: 10) {
-          RenamableTaskTitle(
-            ticket: ticket, model: model, size: 16, weight: .semibold,
-            maximumLines: 3,
-            openAction: { model.openTaskAgents(for: ticket) },
-            openHint: "Click to open this task's terminal. Double-click to rename the task.")
+          HStack(alignment: .firstTextBaseline, spacing: 5) {
+            RenamableTaskTitle(
+              ticket: ticket, model: model, size: 16, weight: .semibold,
+              maximumLines: 3,
+              openAction: { model.openTaskAgents(for: ticket) },
+              openHint: "Click to open this task's terminal. Double-click to rename the task.",
+              detailsAction: openTaskDetails)
+            if model.isNewTicket(ticket.id) { NewTaskBadge() }
+          }
           VStack(alignment: .trailing, spacing: 3) {
             Text(summaryProgressLabel).font(
               .system(size: 12, weight: .semibold).monospacedDigit()
@@ -3498,17 +3537,39 @@ private struct TicketCard: View {
               color: QueueAccentPalette.color(.info, style: accentStyle)
             )
           }
+          if TaskTriagePolicy.hasHardDeadline(ticket) { TaskDeadlinePill(ticket: ticket) }
           if let review { ReviewPill(status: review.status) }
         }
       }.frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(ticket.title), \(summaryProgressLabel), \(ticket.id)")
+        .accessibilityLabel([
+          ticket.title,
+          model.isNewTicket(ticket.id) ? "New unviewed task" : nil,
+          summaryProgressLabel,
+          ticket.id,
+          TaskTriagePolicy.hasHardDeadline(ticket) ? "Hard due date \(ticket.dueDate ?? "")" : nil,
+        ].compactMap { $0 }.joined(separator: ", "))
     }.padding(.horizontal, 13).padding(.vertical, 11)
   }
 
   private func toggleCardDisclosure() {
     withAnimation(.easeInOut(duration: 0.18)) {
       model.setExpanded(!model.isExpanded(ticket.id), ticketID: ticket.id)
+    }
+  }
+
+  private func openTaskDetails() {
+    if descriptionOverride == nil, model.isNewTicket(ticket.id) {
+      descriptionOverride = true
+    }
+    model.markTicketViewed(ticket.id)
+    showsTaskDetails = true
+  }
+
+  private func toggleDescription() {
+    withAnimation(.easeInOut(duration: 0.18)) {
+      descriptionOverride = !isDescriptionExpanded
+      model.markTicketViewed(ticket.id)
     }
   }
 
@@ -3619,8 +3680,24 @@ private struct TicketCard: View {
 
   private var taskOverview: some View {
     VStack(alignment: .leading, spacing: 9) {
-      Text(ticket.briefSummary).font(.system(size: 13)).foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+      Button(action: toggleDescription) {
+        HStack {
+          Label("Description", systemImage: "doc.text")
+          Spacer()
+          Image(systemName: isDescriptionExpanded ? "chevron.up" : "chevron.down")
+        }
+        .font(.system(size: 12, weight: .semibold))
+        .frame(minHeight: 34)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("\(isDescriptionExpanded ? "Collapse" : "Expand") description for \(ticket.id)")
+      .accessibilityValue(isDescriptionExpanded ? "Expanded" : "Collapsed")
+      if isDescriptionExpanded {
+        Text(ticket.briefSummary).font(.system(size: 13)).foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+          .transition(.opacity.combined(with: .move(edge: .top)))
+      }
       Button { model.openPlan(for: ticket) } label: {
         HStack {
           Label("View Central Plan", systemImage: "doc.text")

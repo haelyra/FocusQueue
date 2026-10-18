@@ -1208,6 +1208,9 @@ public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
   public let next: String?
   public let doneWhen: String?
   public let updatedAt: String?
+  public let createdAt: String?
+  public let dueDate: String?
+  public let dueDateSource: String?
   public let completedAt: String?
   public let completion: DashboardCompletion?
   public let taskType: String?
@@ -1229,6 +1232,9 @@ public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
     next: String? = nil,
     doneWhen: String? = nil,
     updatedAt: String? = nil,
+    createdAt: String? = nil,
+    dueDate: String? = nil,
+    dueDateSource: String? = nil,
     completedAt: String? = nil,
     completion: DashboardCompletion? = nil,
     taskType: String? = nil,
@@ -1249,6 +1255,9 @@ public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
     self.next = next
     self.doneWhen = doneWhen
     self.updatedAt = updatedAt
+    self.createdAt = createdAt
+    self.dueDate = dueDate
+    self.dueDateSource = dueDateSource
     self.completedAt = completedAt
     self.completion = completion
     self.taskType = taskType
@@ -1263,7 +1272,7 @@ public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
   private enum CodingKeys: String, CodingKey {
     case id, title, category, priority, status, summary, next, doneWhen
     case projectID
-    case updatedAt, completedAt, completion, taskType, recurrence, worktree, resolutionPrs, prs, links, steps
+    case updatedAt, createdAt, dueDate, dueDateSource, completedAt, completion, taskType, recurrence, worktree, resolutionPrs, prs, links, steps
   }
 
   public init(from decoder: any Decoder) throws {
@@ -1278,6 +1287,9 @@ public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
     next = try container.decodeIfPresent(String.self, forKey: .next)
     doneWhen = try container.decodeIfPresent(String.self, forKey: .doneWhen)
     updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
+    createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
+    dueDate = try container.decodeIfPresent(String.self, forKey: .dueDate)
+    dueDateSource = try container.decodeIfPresent(String.self, forKey: .dueDateSource)
     completedAt = try container.decodeIfPresent(String.self, forKey: .completedAt)
     completion = try container.decodeIfPresent(DashboardCompletion.self, forKey: .completion)
     taskType = try container.decodeIfPresent(String.self, forKey: .taskType)
@@ -1739,6 +1751,24 @@ public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {
   }
 }
 
+public enum QueueActivitySortMode: String, Codable, CaseIterable, Identifiable, Sendable {
+  case recentInteraction
+  case recentOutput
+  case triage
+  case manual
+
+  public var id: String { rawValue }
+
+  public var displayName: String {
+    switch self {
+    case .recentInteraction: "Recent interaction"
+    case .recentOutput: "Recent output"
+    case .triage: "Triage deadlines"
+    case .manual: "Manual order"
+    }
+  }
+}
+
 public struct LocalState: Codable, Equatable, Sendable {
   public var selectedProjectID: String?
   /// Nil falls back to the all-projects scope, the default queue view.
@@ -1755,6 +1785,8 @@ public struct LocalState: Codable, Equatable, Sendable {
   public var programLogWindowVisible: Bool
   public var agentSessions: [TaskAgentSession]
   public var lastStaleAgentSweepAt: Date?
+  public var viewedTicketIDs: Set<String>?
+  public var queueActivitySortMode: QueueActivitySortMode?
 
   public init(
     routineDate: String = "",
@@ -1768,7 +1800,9 @@ public struct LocalState: Codable, Equatable, Sendable {
     minimizationPreference: QueueMinimizationPreference = .fq,
     programLogWindowVisible: Bool = false,
     agentSessions: [TaskAgentSession] = [],
-    lastStaleAgentSweepAt: Date? = nil
+    lastStaleAgentSweepAt: Date? = nil,
+    viewedTicketIDs: Set<String>? = nil,
+    queueActivitySortMode: QueueActivitySortMode? = nil
   ) {
     self.routineDate = routineDate
     self.completedRoutineIDs = completedRoutineIDs
@@ -1782,6 +1816,8 @@ public struct LocalState: Codable, Equatable, Sendable {
     self.programLogWindowVisible = programLogWindowVisible
     self.agentSessions = agentSessions
     self.lastStaleAgentSweepAt = lastStaleAgentSweepAt
+    self.viewedTicketIDs = viewedTicketIDs
+    self.queueActivitySortMode = queueActivitySortMode
   }
 
   public mutating func upsertAgentSession(_ session: TaskAgentSession) {
@@ -1837,6 +1873,8 @@ public struct LocalState: Codable, Equatable, Sendable {
     case minimizationPreference
     case programLogWindowVisible
     case agentSessions
+    case viewedTicketIDs
+    case queueActivitySortMode
   }
 
   public init(from decoder: any Decoder) throws {
@@ -1862,6 +1900,8 @@ public struct LocalState: Codable, Equatable, Sendable {
       try container.decodeIfPresent(Bool.self, forKey: .programLogWindowVisible) ?? false
     agentSessions =
       try container.decodeIfPresent([TaskAgentSession].self, forKey: .agentSessions) ?? []
+    viewedTicketIDs = try container.decodeIfPresent(Set<String>.self, forKey: .viewedTicketIDs)
+    queueActivitySortMode = try container.decodeIfPresent(QueueActivitySortMode.self, forKey: .queueActivitySortMode)
   }
 
   public func encode(to encoder: any Encoder) throws {
@@ -1879,6 +1919,8 @@ public struct LocalState: Codable, Equatable, Sendable {
     try container.encode(minimizationPreference, forKey: .minimizationPreference)
     try container.encode(programLogWindowVisible, forKey: .programLogWindowVisible)
     try container.encode(agentSessions, forKey: .agentSessions)
+    try container.encodeIfPresent(viewedTicketIDs, forKey: .viewedTicketIDs)
+    try container.encodeIfPresent(queueActivitySortMode, forKey: .queueActivitySortMode)
   }
 }
 

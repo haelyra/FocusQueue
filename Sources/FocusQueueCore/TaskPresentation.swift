@@ -59,6 +59,115 @@ public extension DashboardTicket {
   }
 }
 
+public enum TaskTriagePolicy {
+  public static func date(from value: String?) -> Date? {
+    guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+    let fractional = ISO8601DateFormatter()
+    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = fractional.date(from: value) { return date }
+    if let date = ISO8601DateFormatter().date(from: value) { return date }
+    let day = DateFormatter()
+    day.locale = Locale(identifier: "en_US_POSIX")
+    day.timeZone = TimeZone(secondsFromGMT: 0)
+    day.dateFormat = "yyyy-MM-dd"
+    return day.date(from: value)
+  }
+
+  public static func dateOnlyString(for date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    formatter.dateFormat = "yyyy-MM-dd"
+    return formatter.string(from: date)
+  }
+
+  public static func hasHardDeadline(_ ticket: DashboardTicket) -> Bool {
+    !(ticket.dueDate?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+  }
+
+  public static func hardDeadline(for ticket: DashboardTicket) -> Date? {
+    date(from: ticket.dueDate)
+  }
+
+  public static func latestActivity(
+    for ticket: DashboardTicket,
+    lastPromptAt: Date? = nil,
+    lastOutputAt: Date? = nil
+  ) -> Date? {
+    [date(from: ticket.updatedAt), date(from: ticket.createdAt), lastPromptAt, lastOutputAt]
+      .compactMap { $0 }.max()
+  }
+
+  public static func relativeDeadline(
+    for ticket: DashboardTicket,
+    lastPromptAt: Date? = nil,
+    lastOutputAt: Date? = nil,
+    calendar: Calendar = .current
+  ) -> Date? {
+    guard ticket.isOpen, !hasHardDeadline(ticket), ticket.queueTaskKind != .longRunning,
+      let anchor = latestActivity(for: ticket, lastPromptAt: lastPromptAt, lastOutputAt: lastOutputAt)
+    else { return nil }
+    let days = switch ticket.priority.lowercased() {
+    case "critical": 1
+    case "high": 2
+    case "low": 7
+    default: 4
+    }
+    return calendar.date(byAdding: .day, value: days, to: anchor)
+  }
+
+  public static func effectiveDeadline(
+    for ticket: DashboardTicket,
+    lastPromptAt: Date? = nil,
+    lastOutputAt: Date? = nil
+  ) -> Date? {
+    hardDeadline(for: ticket) ?? relativeDeadline(for: ticket, lastPromptAt: lastPromptAt, lastOutputAt: lastOutputAt)
+  }
+
+  public static func deadlineOrdered(
+    _ tickets: [DashboardTicket],
+    lastPromptAtByTicketID: [String: Date] = [:],
+    lastOutputAtByTicketID: [String: Date] = [:]
+  ) -> [DashboardTicket] {
+    tickets.enumerated().sorted { left, right in
+      let leftTicket = left.element
+      let rightTicket = right.element
+      let leftDeadline = effectiveDeadline(
+        for: leftTicket,
+        lastPromptAt: lastPromptAtByTicketID[leftTicket.id],
+        lastOutputAt: lastOutputAtByTicketID[leftTicket.id])
+      let rightDeadline = effectiveDeadline(
+        for: rightTicket,
+        lastPromptAt: lastPromptAtByTicketID[rightTicket.id],
+        lastOutputAt: lastOutputAtByTicketID[rightTicket.id])
+      if leftDeadline != rightDeadline {
+        return (leftDeadline ?? .distantFuture) < (rightDeadline ?? .distantFuture)
+      }
+      if leftTicket.priorityRank != rightTicket.priorityRank {
+        return leftTicket.priorityRank < rightTicket.priorityRank
+      }
+      let leftActivity = latestActivity(
+        for: leftTicket,
+        lastPromptAt: lastPromptAtByTicketID[leftTicket.id],
+        lastOutputAt: lastOutputAtByTicketID[leftTicket.id])
+      let rightActivity = latestActivity(
+        for: rightTicket,
+        lastPromptAt: lastPromptAtByTicketID[rightTicket.id],
+        lastOutputAt: lastOutputAtByTicketID[rightTicket.id])
+      if leftActivity != rightActivity {
+        return (leftActivity ?? .distantPast) > (rightActivity ?? .distantPast)
+      }
+      if leftTicket.id != rightTicket.id { return leftTicket.id < rightTicket.id }
+      return left.offset < right.offset
+    }.map(\.element)
+  }
+
+  public static func hardDeadlineIsOverdue(for ticket: DashboardTicket, now: Date = Date(), calendar: Calendar = .current) -> Bool {
+    guard let deadline = hardDeadline(for: ticket) else { return false }
+    return calendar.startOfDay(for: deadline) < calendar.startOfDay(for: now)
+  }
+}
+
 public enum EmbeddedDocumentPolicy {
   /// Only deliberate link activation may leave the static local document.
   public static func allowsLink(_ url: URL) -> Bool {

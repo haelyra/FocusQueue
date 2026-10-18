@@ -97,11 +97,13 @@ Agent updates open their own detail panel with the full recorded summary, comple
 verdict, verifier output, task conversation, and context links. The notification
 keeps the event visible while acknowledging only its own completed subtask.
 
-Click a task title to view its associated sessions. The task-details disclosure
-sits below the agents. **View Central Plan** is a bordered button, and **Context,
-evidence & links** appears near the task summary. Local Markdown links open
-reusable document tabs inside the plan viewer. The **Type** menu opens the agent's
-response so pending changes and failures remain visible.
+Click a task title to view its associated sessions. Descriptions start collapsed
+for existing tasks and expanded for new unviewed tasks. Right-click **View details**
+for dates, agent counts, activity, and usage metadata. The full task-details
+disclosure sits below the agents. **View Central Plan** is a bordered button, and
+**Context, evidence & links** appears near the task description. Local Markdown
+links open reusable document tabs inside the plan viewer. The **Type** menu opens
+the agent's response so pending changes and failures remain visible.
 
 **Browse terminals** lists open WezTerm windows and panes, supports filtering, and
 checks the selected pane before activating it. Bulk terminal closure remains a
@@ -298,17 +300,29 @@ rewrite of the scheduler or report engine.
 
 ## Queue ordering and chat
 
-Drag a task onto the upper or lower half of another card to place it before or
-after that task. The card menu also offers Move up, Move down, Move to top, and
-Move to bottom. Moving a task preserves the relative order of all other tasks.
+The queue offers four ordering modes. **Recent interaction** puts the last
+agent-prompted tasks first, **Recent output** uses the latest actual agent output,
+**Triage deadlines** orders by hard and relative deadlines, and **Manual order**
+uses your saved sequence. Activity modes use deadline triage for the remaining
+tasks. Drag a task onto the upper or lower half of another card, or use the card
+menu's Move actions, to switch to Manual order. Moving a task preserves the
+relative order of all other tasks. **Restore triage order** clears that override.
+
+Hard due dates stay visible on cards. Open non-recurring tasks without one receive
+a rough triage target from the latest activity plus 1 day for critical, 2 for high,
+4 for medium, or 7 for low priority. Relative targets appear only in task details
+and are not commitments. Right-click **View details** for start and due dates,
+agent counts, activity, and available usage data; token totals say **Not recorded**
+when no source-backed aggregate exists. New tasks arrive with a **NEW** badge and
+an expanded description. Existing descriptions start collapsed, and viewing or
+expanding a task clears the badge.
+
 Today's focus displays the first five tasks; Rest of queue displays the rest.
 Click the Today's focus heading to search every open task in the selected
 project. Results filter on each keystroke; when no task holds every keyword,
 the search retries with close spellings and synonyms. Esc or the clear button
 closes the search; clicking elsewhere drops the cursor and closes an empty one.
-Saved positions survive refreshes and restarts, including priority/date changes.
-New tasks append in priority order. Use the Queue ordering menu to restore
-priority sorting (priority, then updatedAt, then task ID).
+Saved positions and the selected ordering mode survive refreshes and restarts.
 
 The orchestrator can reorder tasks at your request using the same local order:
 
@@ -323,7 +337,7 @@ Order is stored separately under Application Support in `queue-order/order.json`
 The app reloads it automatically. Queue chat has write access to that directory.
 The helper uses a lock and atomic writes so app and agent changes share the latest
 order without overwriting other app state. Existing deferred ordering is retained
-until you move a task or restore priority sorting.
+until you move a task or restore triage sorting.
 
 Queue chat resumes a bounded, named Codex thread with the current visible order
 and local overrides in its prompt. Questions are read-only by default. Codex is
@@ -423,11 +437,14 @@ deleted after the report commits.
 
 The expected dashboard object has a top-level `tickets` array. Ticket fields
 consumed by the app are `id`, `title`, `category`, `priority`, `status`,
-`summary`, `next`, `doneWhen`, `updatedAt`, optional `completedAt`, optional
-`completion` facts (`outcome`, `reason`, `resolutionPrs`, `evidence`, and
-`completedBy`), `worktree`, `resolutionPrs`, `prs`, `links`, and optional
-`steps`. Completed cards keep the same expandable source-backed details as open
-cards; absent completion facts are not inferred or written by the app. Recurring tasks may also
+`summary`, `next`, `doneWhen`, `updatedAt`, optional `createdAt`, optional
+`dueDate` and `dueDateSource`, optional `completedAt`, optional `completion`
+facts (`outcome`, `reason`, `resolutionPrs`, `evidence`, and `completedBy`),
+`worktree`, `resolutionPrs`, `prs`, `links`, and optional `steps`. Hard due dates
+come from these canonical fields or an explicit user edit; relative triage
+targets are computed locally and never written back as hard deadlines. Completed
+cards keep the same expandable source-backed details as open cards; absent
+completion facts are not inferred or written by the app. Recurring tasks may also
 set `taskType` to `recurring` and provide `recurrence.kind`,
 `recurrence.cadence`, and `recurrence.repository`. Weekly PR-resolution titles
 remain compatible when this metadata has not been emitted yet.

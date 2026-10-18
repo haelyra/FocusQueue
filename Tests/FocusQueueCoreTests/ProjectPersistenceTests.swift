@@ -439,6 +439,43 @@ func dashboardPriorityAndStatusUpdates() async throws {
   }
 }
 
+@Test("Dashboard hard deadlines set and clear without overwriting other fields")
+func dashboardHardDeadlineUpdates() async throws {
+  let fixture = try DashboardMutationFixture(
+    #"{"opaque":{"keep":true},"tickets":[{"id":"ECC-101","title":"Task","status":"open","summary":"Keep me"}]}"#
+  )
+  defer { fixture.remove() }
+  let repository = JSONDashboardRepository()
+  let snapshot = try await repository.loadSnapshot(from: fixture.url)
+
+  let dated = try await repository.setTicketDueDate(
+    id: "ECC-101", to: "2026-10-24", source: "User specified",
+    in: fixture.url, expectedRevision: snapshot.revision)
+  #expect(dated.document.tickets.first?.dueDate == "2026-10-24")
+  #expect(dated.document.tickets.first?.dueDateSource == "User specified")
+  #expect(dated.document.tickets.first?.summary == "Keep me")
+
+  let cleared = try await repository.setTicketDueDate(
+    id: "ECC-101", to: nil, source: nil, in: fixture.url, expectedRevision: dated.revision)
+  #expect(cleared.document.tickets.first?.dueDate == nil)
+  #expect(cleared.document.tickets.first?.dueDateSource == nil)
+  let object = try #require(
+    JSONSerialization.jsonObject(with: Data(contentsOf: fixture.url)) as? [String: Any])
+  #expect((object["opaque"] as? [String: Any])?["keep"] as? Bool == true)
+
+  let beforeInvalid = try Data(contentsOf: fixture.url)
+  await #expect(throws: DashboardMutationError.invalidFieldValue("dueDate")) {
+    try await repository.setTicketDueDate(
+      id: "ECC-101", to: "not-a-date", source: nil, in: fixture.url, expectedRevision: cleared.revision)
+  }
+  #expect(try Data(contentsOf: fixture.url) == beforeInvalid)
+  await #expect(throws: DashboardMutationError.concurrentModification) {
+    try await repository.setTicketDueDate(
+      id: "ECC-101", to: "2026-10-25", source: nil, in: fixture.url, expectedRevision: snapshot.revision)
+  }
+  #expect(try Data(contentsOf: fixture.url) == beforeInvalid)
+}
+
 @Test("Dashboard creation is project-scoped and rejects globally duplicate ticket IDs")
 func dashboardCreateRejectsCrossProjectDuplicate() async throws {
   let target = try DashboardMutationFixture(#"{"project":"target","tickets":[]}"#)

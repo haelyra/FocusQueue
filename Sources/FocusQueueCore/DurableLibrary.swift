@@ -351,15 +351,19 @@ public actor DurableLibraryStore {
 
     private func readDevice() throws -> Device {
         let url = root.appendingPathComponent("library-device.json")
-        if files.fileExists(atPath: url.path) {
-            let device = try JSONDecoder().decode(Device.self, from: safeData(url))
-            guard device.providerInstallations["codex"] != nil, device.providerInstallations["claude"] != nil else {
-                throw DurableLibraryError.invalidData("Missing provider installation identities")
-            }
-            return device
+        let fileExists = files.fileExists(atPath: url.path)
+        var device: Device
+        if fileExists {
+            device = try JSONDecoder().decode(Device.self, from: safeData(url))
+        } else {
+            device = Device(id: UUID(), providerInstallations: [:])
         }
-        let device = Device(id: UUID(), providerInstallations: ["codex": UUID(), "claude": UUID()])
-        try writePrivate(try Self.encode(device), to: url)
+        var needsSave = !fileExists
+        for provider in AgentProvider.allCases where device.providerInstallations[provider.rawValue] == nil {
+            device.providerInstallations[provider.rawValue] = UUID()
+            needsSave = true
+        }
+        if needsSave { try writePrivate(try Self.encode(device), to: url) }
         return device
     }
 
@@ -379,8 +383,10 @@ public actor DurableLibraryStore {
         return task.id
     }
 
-    private func ensureSession(provider: String, nativeID: String, in library: inout DurableLibrary, device: Device) -> UUID {
-        let installation = device.providerInstallations[provider]!
+    private func ensureSession(provider: String, nativeID: String, in library: inout DurableLibrary, device: Device) throws -> UUID {
+        guard let installation = device.providerInstallations[provider] else {
+            throw DurableLibraryError.invalidData("Missing \(provider) provider installation identity")
+        }
         // These legacy adapters define UUID identities as case-insensitive. Future
         // adapters must retain opaque native IDs and define their own comparison.
         if let session = library.sessions.first(where: {
@@ -404,7 +410,7 @@ public actor DurableLibraryStore {
         for saved in state.agentSessions {
             try Self.requireTicketID(saved.ticketID)
             let taskID = ensureTask(saved.ticketID, in: &library)
-            let sessionID = ensureSession(provider: saved.provider.rawValue, nativeID: saved.sessionID, in: &library, device: device)
+            let sessionID = try ensureSession(provider: saved.provider.rawValue, nativeID: saved.sessionID, in: &library, device: device)
             let subtaskID = library.tasks.first(where: { $0.id == taskID })?.subtasks.first(where: { $0.legacyID == saved.subtaskID })?.id
             assign(taskID: taskID, sessionID: sessionID, subtaskID: subtaskID, source: "registration", into: &library)
             for assignment in library.assignments where assignment.taskID == taskID && assignment.sessionID == sessionID && assignment.subtaskID == subtaskID && assignment.source == "registration" && assignment.endedAt == nil { active.insert(assignment.id) }
@@ -447,7 +453,7 @@ public actor DurableLibraryStore {
         let links = SubtaskLinks(context.subtasks)
         for subtask in context.subtasks {
             if let nativeID = subtask.sessionID, !nativeID.isEmpty {
-                let sessionID = ensureSession(provider: subtask.provider.rawValue, nativeID: nativeID, in: &library, device: device)
+                let sessionID = try ensureSession(provider: subtask.provider.rawValue, nativeID: nativeID, in: &library, device: device)
                 let assignmentIDs = links.assignmentIDs(for: subtask)
                 let linked = Set(task.subtasks.filter { assignmentIDs.contains($0.legacyID) }.map(\.id))
                 if subtask.isAgentVisible {
@@ -489,7 +495,7 @@ public actor DurableLibraryStore {
         } else { appendWarning("\(context.ticketID): central plan is missing at \(context.planPath)", to: &library) }
     }
 
-    private func ingestHistorical(_ context: TaskContext, into library: inout DurableLibrary, device: Device) {
+    private func ingestHistorical(_ context: TaskContext, into library: inout DurableLibrary, device: Device) throws {
         let taskID = ensureTask(context.ticketID, in: &library)
         let index = library.tasks.firstIndex { $0.id == taskID }!
         for subtask in context.subtasks {
@@ -502,7 +508,7 @@ public actor DurableLibraryStore {
                 library.tasks[index].subtasks.append(entry!)
             }
             if let nativeID = subtask.sessionID, !nativeID.isEmpty {
-                let sessionID = ensureSession(provider: subtask.provider.rawValue, nativeID: nativeID, in: &library, device: device)
+                let sessionID = try ensureSession(provider: subtask.provider.rawValue, nativeID: nativeID, in: &library, device: device)
                 assign(taskID: taskID, sessionID: sessionID, subtaskID: entry?.id, source: "historical-context", into: &library)
                 if !library.executionLocators.contains(where: { $0.sessionID == sessionID && $0.deviceID == device.id }) {
                     updateLocator(sessionID: sessionID, directory: subtask.workspace?.path ?? context.worktreePath ?? context.repositoryPath,
@@ -583,7 +589,7 @@ public actor DurableLibraryStore {
                                 guard historical.ticketID.caseInsensitiveCompare(context.ticketID) == .orderedSame else {
                                     throw DurableLibraryError.invalidData("Archive ticket does not match its task")
                                 }
-                                ingestHistorical(historical, into: &library, device: device)
+                                try ingestHistorical(historical, into: &library, device: device)
                             }
                             try capture(data, source: url, kind: url.path.contains("/archive/") ? "task-snapshot" : (url.path.contains("/architecture/") ? "architecture" : "task-document"), taskID: taskID, into: &library, device: device)
                         }

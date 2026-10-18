@@ -47,6 +47,39 @@ struct DurableLibraryTests {
         #expect(library.documents.contains { $0.kind == "central-plan" })
     }
 
+    @Test("Kimi sessions migrate legacy provider identities without changing existing installations")
+    func providerInstallationMigration() async throws {
+        let root = try libraryFixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let codexInstallation = UUID()
+        let claudeInstallation = UUID()
+        let deviceURL = root.appendingPathComponent("library-device.json")
+        try JSONSerialization.data(withJSONObject: [
+            "id": UUID().uuidString,
+            "providerInstallations": [
+                "codex": codexInstallation.uuidString,
+                "claude": claudeInstallation.uuidString,
+            ],
+        ]).write(to: deviceURL)
+        let saved = TaskAgentSession(
+            ticketID: "FOC-024", provider: .kimi, sessionID: UUID().uuidString,
+            tabTitle: "Kimi", workingDirectory: root.path)
+        let store = DurableLibraryStore(root: root)
+
+        let first = try await store.reconcile(state: LocalState(agentSessions: [saved]), contexts: [])
+        let second = try await store.reconcile(state: LocalState(agentSessions: [saved]), contexts: [])
+
+        #expect(first == second)
+        let library = try await store.snapshot()
+        #expect(library.sessions.count == 1)
+        let session = try #require(library.sessions.first { $0.provider == "kimi" })
+        let device = try JSONSerialization.jsonObject(with: Data(contentsOf: deviceURL)) as? [String: Any]
+        let installations = try #require(device?["providerInstallations"] as? [String: String])
+        #expect(installations["codex"] == codexInstallation.uuidString)
+        #expect(installations["claude"] == claudeInstallation.uuidString)
+        #expect(Set(installations.keys) == Set(AgentProvider.allCases.map(\.rawValue)))
+        #expect(session.providerInstallationID.uuidString == installations["kimi"])
+    }
+
     @Test("Durable library retains output time independently from heartbeat")
     func outputTimestamp() async throws {
         let root = try libraryFixture(); defer { try? FileManager.default.removeItem(at: root) }

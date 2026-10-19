@@ -111,6 +111,23 @@ else:
         helper.chmod(0o700)
         return helper
 
+    def install_wezterm(self, *, fail=False):
+        binary = self.root / "bin"
+        binary.mkdir(exist_ok=True)
+        record = self.root / "wezterm-argv.jsonl"
+        wezterm = binary / "wezterm"
+        wezterm.write_text(f'''#!/usr/bin/python3
+import json, sys
+with open({str(record)!r}, "a") as stream: stream.write(json.dumps(sys.argv[1:]) + "\\n")
+{ "sys.exit(1)" if fail else "" }
+''')
+        wezterm.chmod(0o700)
+        return {"WEZTERM_PANE": "42", "PATH": str(binary) + os.pathsep + os.environ["PATH"]}
+
+    def wezterm_calls(self):
+        path = self.root / "wezterm-argv.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
     def test_cli_classification_and_help_never_launch(self):
         for arguments in (["mcp", "list"], ["doctor"], ["update"], ["--version"], ["-V"],
                           ["--help"], ["--resume", self.session_id, "--help"],
@@ -396,7 +413,7 @@ else:
             captured.append((path, args))
             raise ExecCaptured()
         clean = {**os.environ, "FOCUS_QUEUE_SUPPORT_DIR":str(self.support), "FOCUS_QUEUE_WORKSPACE_MODE":"existing"}
-        for key in ("TMUX", "FOCUS_QUEUE_RUNTIME_MODE", "FOCUS_QUEUE_CLAUDE_TMUX",
+        for key in ("TMUX", "WEZTERM_PANE", "FOCUS_QUEUE_RUNTIME_MODE", "FOCUS_QUEUE_CLAUDE_TMUX",
                     "FOCUS_QUEUE_TASK_ID", "FOCUS_QUEUE_SUBTASK_ID", "FOCUS_QUEUE_AGENT_ROLE",
                     "FOCUS_QUEUE_LAUNCH_ID", "FOCUS_QUEUE_AGENT_CONTEXT", "FOCUS_QUEUE_MANAGED_TMUX"):
             clean.pop(key, None)
@@ -422,6 +439,52 @@ else:
         self.assertIn("FOCUS_QUEUE_MANAGED_TMUX=1", start)
         self.assertEqual(start[3:5], ["--cwd", os.getcwd()])
         self.assertEqual(start[-1], prompt)
+
+    def test_successful_placement_labels_wezterm_tab_with_task_title(self):
+        (self.root / "placement.json").write_text(json.dumps({
+            "status":"placed", "projectID":"focus", "taskID":"FOC-001",
+        }))
+        self.invoke_main(["Implement placement"], self.install_wezterm())
+        self.assertEqual(self.wezterm_calls(),
+                         [["cli", "set-tab-title", "--pane-id", "42", "Implement placement"]])
+
+    def test_placement_title_is_preferred_over_the_prompt_intake_title(self):
+        (self.root / "placement.json").write_text(json.dumps({
+            "status":"placed", "projectID":"focus", "taskID":"FOC-001", "title":"Real task title",
+        }))
+        self.invoke_main(["Implement placement"], self.install_wezterm())
+        self.assertEqual(self.wezterm_calls(),
+                         [["cli", "set-tab-title", "--pane-id", "42", "Real task title"]])
+
+    def test_generic_agent_title_never_labels_the_tab(self):
+        (self.root / "placement.json").write_text(json.dumps({
+            "status":"placed", "projectID":"focus", "taskID":"FOC-002",
+        }))
+        self.invoke_main([], self.install_wezterm())
+        self.assertEqual(self.wezterm_calls(), [])
+
+    def test_tab_labeling_is_skipped_without_a_wezterm_pane_or_executable(self):
+        (self.root / "placement.json").write_text(json.dumps({
+            "status":"placed", "projectID":"focus", "taskID":"FOC-001",
+        }))
+        environment = self.install_wezterm()
+        empty = self.root / "empty-bin"
+        empty.mkdir()
+        for overrides in ({"WEZTERM_PANE":"42", "PATH":str(empty)},
+                          {"WEZTERM_PANE":"42", "TMUX":"/tmp/users-server,1,0"},
+                          {"PATH":environment["PATH"]}):
+            with self.subTest(overrides=overrides):
+                self.invoke_main(["Implement placement"], overrides)
+        self.assertEqual(self.wezterm_calls(), [])
+
+    def test_failing_wezterm_never_breaks_the_launch(self):
+        (self.root / "placement.json").write_text(json.dumps({
+            "status":"placed", "projectID":"focus", "taskID":"FOC-001",
+        }))
+        path, args = self.invoke_main(["Implement placement"], self.install_wezterm(fail=True))
+        self.assertEqual(path, str(self.helper))
+        self.assertEqual(self.wezterm_calls(),
+                         [["cli", "set-tab-title", "--pane-id", "42", "Implement placement"]])
 
     def test_task_launch_joins_stable_session_with_managed_usage_context(self):
         path, arguments = self.invoke_main(["hello"], {

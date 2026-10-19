@@ -390,7 +390,7 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(self.installer.app.exists())
 
     def test_global_prompt_install_is_idempotent_and_preserves_personal_text(self):
-        prompt = self.home / ".codex/AGENTS.md"
+        prompt = self.home / "Documents/AGENTS.md"
         prompt.parent.mkdir(parents=True)
         personal = "# Personal\n\nKeep my exact words.\n\n"
         prompt.write_text(personal)
@@ -405,7 +405,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(manifest["managedSettings"][0]["ownership"], "delimited-block-only")
 
     def test_claude_global_prompt_merges_beside_codex_and_stays_idempotent(self):
-        prompt = self.home / ".claude/CLAUDE.md"
+        prompt = self.home / "Documents/CLAUDE.md"
         prompt.parent.mkdir(parents=True)
         personal = "# Personal\n\nKeep my exact words.\n\n"
         prompt.write_text(personal)
@@ -414,15 +414,15 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue(once.startswith(personal))
         self.assertEqual(once.count(MODULE.PROMPT_START), 1)
         self.assertIn("--provider claude", once)
-        codex_prompt = (self.home / ".codex/AGENTS.md").read_text()
+        codex_prompt = (self.home / "Documents/AGENTS.md").read_text()
         self.assertIn("--provider codex", codex_prompt)
         self.assertEqual(codex_prompt.count(MODULE.PROMPT_START), 1)
         self.installer.install()
         self.assertEqual(prompt.read_text(), once)
-        self.assertEqual((self.home / ".codex/AGENTS.md").read_text(), codex_prompt)
+        self.assertEqual((self.home / "Documents/AGENTS.md").read_text(), codex_prompt)
 
     def test_malformed_claude_global_prompt_markers_fail_without_overwriting(self):
-        prompt = self.home / ".claude/CLAUDE.md"
+        prompt = self.home / "Documents/CLAUDE.md"
         prompt.parent.mkdir(parents=True)
         prompt.write_text("My notes\n" + MODULE.PROMPT_START)
         before = prompt.read_bytes()
@@ -431,7 +431,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(prompt.read_bytes(), before)
 
     def test_malformed_global_prompt_markers_fail_without_overwriting(self):
-        prompt = self.home / ".codex/AGENTS.md"
+        prompt = self.home / "Documents/AGENTS.md"
         prompt.parent.mkdir(parents=True)
         prompt.write_text("My notes\n" + MODULE.PROMPT_START)
         before = prompt.read_bytes()

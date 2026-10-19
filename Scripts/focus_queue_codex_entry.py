@@ -9,6 +9,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -473,6 +474,31 @@ def notify_intake_changed(helper):
                        timeout=5, check=False)
     except (OSError, subprocess.TimeoutExpired):
         pass
+
+
+GENERIC_AGENT_TITLES = {"claude agent", "codex agent"}
+
+
+def label_tab(title):
+    """Best-effort WezTerm tab label; a labeling failure never blocks a launch."""
+    pane = os.environ.get("WEZTERM_PANE")
+    if not pane or os.environ.get("TMUX") or shutil.which("wezterm") is None:
+        return
+    try:
+        subprocess.run(["wezterm", "cli", "set-tab-title", "--pane-id", pane, title],
+                       capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def label_placement_tab(placement, intake):
+    """Label the launching tab with the task title after a successful placement."""
+    title = placement.get("title")
+    if not isinstance(title, str) or not title.strip():
+        title = intake.get("title", "")
+    title = title.strip()
+    if title and title.casefold() not in GENERIC_AGENT_TITLES:
+        label_tab(title)
 
 
 def begin_tracking(arguments, mode, session_id, support, *, isolate=True, on_change=None):
@@ -1048,12 +1074,14 @@ def main(argv=None):
         support, isolate=interactive,
         on_change=lambda _: notify_intake_changed(options.helper))
     try:
-        apply_placement(options.helper, intake_path, intake, initial_prompt(arguments))
+        placement = apply_placement(options.helper, intake_path, intake, initial_prompt(arguments))
     except BaseException as error:
         intake.update(phase="blocked", note=str(error)[:500])
         write_private_json(intake_path, intake)
         notify_intake_changed(options.helper)
         raise
+    if placement.get("taskID"):
+        label_placement_tab(placement, intake)
     command = usage_command(options.usage_wrapper, options.default_flag, arguments)
     os.chdir(intake["cwd"])
     if not interactive:

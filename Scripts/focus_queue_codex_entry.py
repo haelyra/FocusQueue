@@ -20,6 +20,10 @@ import stat as stat_module
 
 
 USAGE_ADAPTER = Path(__file__).with_name("focus_queue_usage_wrapper.sh")
+# A launch typed inside another agent's shell inherits that agent's session.
+# Placement must record this launch under its own provider, with no session yet.
+INHERITED_SESSION_VARIABLES = ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID",
+                               "CODEX_THREAD_ID", "CODEX_SESSION_ID")
 
 
 UTILITY_COMMANDS = {
@@ -669,10 +673,10 @@ def begin_tracking(arguments, mode, session_id, support, *, isolate=True, on_cha
         raise
 
 
-def run_json(helper, arguments):
+def run_json(helper, arguments, environment=None):
     try:
         result = subprocess.run([str(helper), *arguments], capture_output=True, text=True,
-                                timeout=35, check=False)
+                                timeout=35, check=False, env=environment)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise EntryError(f"Focus Queue could not check the terminal: {error}") from error
     if result.returncode:
@@ -699,7 +703,10 @@ def apply_placement(helper, intake_path, intake, prompt):
         arguments.extend(["--prompt", prompt])
     else:
         arguments.append("--no-create")
-    placement = run_json(helper, arguments)
+    environment = {key: value for key, value in os.environ.items()
+                   if key not in INHERITED_SESSION_VARIABLES}
+    environment["FOCUS_QUEUE_PROVIDER"] = "codex"
+    placement = run_json(helper, arguments, environment)
     if not isinstance(placement, dict) or placement.get("launchID") != launch_id:
         raise EntryError("Focus Queue returned a placement for a different launch.")
     expected_path = str(Path(intake["placementPath"]).resolve())

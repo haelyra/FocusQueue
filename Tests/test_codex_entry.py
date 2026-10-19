@@ -38,6 +38,9 @@ with (root / "calls.jsonl").open("a") as stream: stream.write(json.dumps(args) +
 panes_file = root / "panes.json"
 panes = json.loads(panes_file.read_text()) if panes_file.exists() else []
 if args[:1] == ["placement"]:
+    (root / "placement-env.json").write_text(json.dumps({key: os.environ.get(key) for key in (
+        "FOCUS_QUEUE_PROVIDER", "CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID",
+        "CODEX_THREAD_ID", "CODEX_SESSION_ID")}))
     launch = args[args.index("--launch") + 1]
     support = Path(os.environ["FOCUS_QUEUE_SUPPORT_DIR"])
     custom_path = root / "placement.json"
@@ -440,6 +443,17 @@ with open({str(record)!r}, "a") as stream: stream.write(json.dumps(sys.argv[1:])
         self.assertEqual(receipt["projectID"], "focus")
         self.assertEqual(receipt["placementStatus"], "placed")
         self.assertEqual(arguments[4:], ["--task", "FOC-001", "--agent", receipt["launchID"]])
+
+    def test_placement_records_codex_without_a_parent_agent_session(self):
+        # Launched from another agent's shell: that agent's provider and session are inherited.
+        self.invoke_main(["Implement placement"], {
+            "FOCUS_QUEUE_PROVIDER": "claude", "CODEX_THREAD_ID": str(uuid.uuid4()),
+            "CLAUDE_CODE_SESSION_ID": str(uuid.uuid4()), "CLAUDE_SESSION_ID": str(uuid.uuid4()),
+        })
+        self.assertEqual(json.loads((self.root / "placement-env.json").read_text()), {
+            "FOCUS_QUEUE_PROVIDER": "codex", "CLAUDE_SESSION_ID": None,
+            "CLAUDE_CODE_SESSION_ID": None, "CODEX_THREAD_ID": None, "CODEX_SESSION_ID": None,
+        })
 
     def test_successful_placement_labels_wezterm_tab_with_task_title(self):
         (self.root / "placement.json").write_text(json.dumps({

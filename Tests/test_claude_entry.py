@@ -158,22 +158,6 @@ else:
         self.assertFalse(ENTRY.same_repository_identity(
             "/tmp/project/.git:16777232:456", "/tmp/project/.git:16777229:999"))
 
-    def test_automatic_routing_only_claims_fresh_unassigned_interactive_agents(self):
-        self.support.mkdir(parents=True)
-        (self.support / "config.json").write_text(json.dumps({"automaticAgentRouting":True}))
-        base = {"FOCUS_QUEUE_SUPPORT_DIR":str(self.support)}
-        self.assertTrue(ENTRY.should_route_automatically("new", True, base, self.support))
-        self.assertFalse(ENTRY.should_route_automatically("resume", True, base, self.support))
-        self.assertFalse(ENTRY.should_route_automatically("new", False, base, self.support))
-        self.assertFalse(ENTRY.should_route_automatically(
-            "new", True, {**base, "FOCUS_QUEUE_TASK_ID":"ECC-035"}, self.support))
-        self.assertFalse(ENTRY.should_route_automatically(
-            "new", True, {**base, "FOCUS_QUEUE_RUNTIME_MODE":"tmux"}, self.support))
-        self.assertFalse(ENTRY.should_route_automatically(
-            "new", True, {**base, "FOCUS_QUEUE_ROUTER":"1"}, self.support))
-        (self.support / "config.json").unlink()
-        self.assertFalse(ENTRY.should_route_automatically("new", True, base, self.support))
-
     def test_managed_agent_usage_bar_defaults_on_and_respects_opt_out(self):
         self.support.mkdir(parents=True, exist_ok=True)
         self.assertTrue(ENTRY.agent_usage_bar_enabled(self.support))
@@ -181,18 +165,6 @@ else:
         self.assertFalse(ENTRY.agent_usage_bar_enabled(self.support))
         (self.support / "config.json").write_text(json.dumps({"agentUsageBarEnabled": True}))
         self.assertTrue(ENTRY.agent_usage_bar_enabled(self.support))
-
-    def test_explicit_queue_composer_router_bypasses_intake_only_when_unassigned(self):
-        base = {"FOCUS_QUEUE_ROUTER":"1", "FOCUS_QUEUE_ROUTER_SOURCE":"queue-composer"}
-        self.assertTrue(ENTRY.should_run_explicit_router("new", True, base))
-        self.assertFalse(ENTRY.should_run_explicit_router("resume", True, base))
-        self.assertFalse(ENTRY.should_run_explicit_router("new", False, base))
-        self.assertFalse(ENTRY.should_run_explicit_router(
-            "new", True, {**base, "FOCUS_QUEUE_TASK_ID":"ECC-035"}))
-        self.assertFalse(ENTRY.should_run_explicit_router(
-            "new", True, {**base, "FOCUS_QUEUE_RUNTIME_MODE":"tmux"}))
-        self.assertFalse(ENTRY.should_run_explicit_router(
-            "new", True, {**base, "FOCUS_QUEUE_ROUTER_SOURCE":"unknown"}))
 
     def test_resume_uses_exact_saved_workspace_without_task_environment(self):
         saved = self.root / "assigned"

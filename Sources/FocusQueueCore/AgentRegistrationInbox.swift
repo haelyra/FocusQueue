@@ -67,23 +67,6 @@ public actor AgentRegistrationInbox {
             supportDirectory: supportDirectory.path, tmux: subtask.tmux))
     }
 
-    public func republishRegisteredRoute(
-        _ receipt: AgentStartupReceipt, supportDirectory: URL
-    ) async throws {
-        guard receipt.status == .registered,
-              let sessionID = receipt.providerSessionID,
-              let context = try await TaskContextStore(root: supportDirectory)
-                .load(ticketID: receipt.taskID)
-        else {
-            throw TaskContextError.commandFailed(
-                "The routed agent could not republish its registered session.")
-        }
-        try submitRegisteredSession(
-            context: context, subtaskID: receipt.subtaskID,
-            provider: receipt.provider, sessionID: sessionID,
-            supportDirectory: supportDirectory)
-    }
-
     public func pendingRecords() throws -> [PendingAgentRegistration] {
         guard files.fileExists(atPath: directory.path) else { return [] }
         try prepareDirectory()

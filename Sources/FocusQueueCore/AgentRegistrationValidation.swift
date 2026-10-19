@@ -88,62 +88,35 @@ public enum AgentRegistrationValidator {
     }
 }
 
-/// The launch data a router or app launch knew before the provider session
-/// existed: its fixed task and agent, the objective, and its expected runtime.
+/// The launch data an app or fq launch knew before the provider session
+/// existed: its fixed task and agent, the objective, and its expected tmux pane.
 /// Process discovery uses it to bind and name the agent at first appearance.
-public struct RoutedLaunchHint: Equatable, Sendable {
+public struct LaunchHint: Equatable, Sendable {
     public var taskID: String
     public var subtaskID: String
     public var provider: AgentProvider
     public var promptHint: String?
     public var providerSessionID: String?
-    public var tmux: TmuxSessionReference?
     public var tmuxName: String?
     public var tmuxPaneID: String?
 
     public init(taskID: String, subtaskID: String, provider: AgentProvider,
                 promptHint: String? = nil, providerSessionID: String? = nil,
-                tmux: TmuxSessionReference? = nil, tmuxName: String? = nil,
-                tmuxPaneID: String? = nil) {
+                tmuxName: String? = nil, tmuxPaneID: String? = nil) {
         self.taskID = taskID
         self.subtaskID = subtaskID
         self.provider = provider
         self.promptHint = promptHint
         self.providerSessionID = providerSessionID
-        self.tmux = tmux
         self.tmuxName = tmuxName
         self.tmuxPaneID = tmuxPaneID
     }
 }
 
-public enum RoutedLaunchHintStore {
-    /// Hints from live startup receipts and placement capsules. Failed receipts
-    /// and taskless capsules carry no binding authority.
-    public static func hints(root: URL) -> [RoutedLaunchHint] {
-        var hints: [RoutedLaunchHint] = []
-        let receiptStore = AgentStartupReceiptStore(root: root)
-        let startups = root.appendingPathComponent("logs/agent-startups", isDirectory: true)
-        let taskDirectories = (try? FileManager.default.contentsOfDirectory(
-            at: startups, includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles])) ?? []
-        for taskDirectory in taskDirectories
-        where (try? taskDirectory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
-            let files = (try? FileManager.default.contentsOfDirectory(
-                at: taskDirectory, includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles])) ?? []
-            for file in files where file.pathExtension == "json" {
-                let subtaskID = file.deletingPathExtension().lastPathComponent
-                guard let receipt = try? receiptStore.load(
-                    taskID: taskDirectory.lastPathComponent, subtaskID: subtaskID),
-                    receipt.status != .failed else { continue }
-                hints.append(RoutedLaunchHint(
-                    taskID: receipt.taskID, subtaskID: receipt.subtaskID,
-                    provider: receipt.provider, promptHint: receipt.promptHint,
-                    providerSessionID: receipt.providerSessionID
-                        ?? receipt.reservedProviderSessionID,
-                    tmux: receipt.runtime?.exactTmuxReference))
-            }
-        }
+public enum LaunchHintStore {
+    /// Hints from placement capsules. Taskless capsules carry no binding authority.
+    public static func hints(root: URL) -> [LaunchHint] {
+        var hints: [LaunchHint] = []
         let capsuleStore = AgentPlacementCapsuleStore(root: root)
         let placements = root.appendingPathComponent("tracking/placements", isDirectory: true)
         let capsuleFiles = (try? FileManager.default.contentsOfDirectory(
@@ -155,7 +128,7 @@ public enum RoutedLaunchHintStore {
                     launchID: file.deletingPathExtension().lastPathComponent),
                   let taskID = capsule.taskID, let subtaskID = capsule.assignmentID
             else { continue }
-            hints.append(RoutedLaunchHint(
+            hints.append(LaunchHint(
                 taskID: taskID, subtaskID: subtaskID, provider: capsule.provider,
                 promptHint: capsule.promptHint, providerSessionID: capsule.sessionID,
                 tmuxName: capsule.tmuxName, tmuxPaneID: capsule.tmuxPaneID))
@@ -167,8 +140,8 @@ public enum RoutedLaunchHintStore {
     /// pane reference. Ambiguous matches bind nothing.
     public static func match(
         sessionID: String, provider: AgentProvider,
-        tmux: TmuxSessionReference?, hints: [RoutedLaunchHint]
-    ) -> RoutedLaunchHint? {
+        tmux: TmuxSessionReference?, hints: [LaunchHint]
+    ) -> LaunchHint? {
         let sessionMatches = hints.filter {
             $0.provider == provider
                 && $0.providerSessionID?.caseInsensitiveCompare(sessionID) == .orderedSame
@@ -177,14 +150,13 @@ public enum RoutedLaunchHintStore {
         guard let tmux else { return nil }
         let tmuxMatches = hints.filter { hint in
             guard hint.provider == provider else { return false }
-            if hint.tmux == tmux { return true }
             return hint.tmuxName == tmux.name && hint.tmuxPaneID == tmux.paneID
                 && hint.tmuxName != nil
         }
         return unique(tmuxMatches)
     }
 
-    private static func unique(_ matches: [RoutedLaunchHint]) -> RoutedLaunchHint? {
+    private static func unique(_ matches: [LaunchHint]) -> LaunchHint? {
         let identities = Set(matches.map { $0.taskID.uppercased() + ":" + $0.subtaskID })
         guard identities.count == 1 else { return nil }
         return matches.max { ($0.providerSessionID == nil ? 0 : 1) < ($1.providerSessionID == nil ? 0 : 1) }

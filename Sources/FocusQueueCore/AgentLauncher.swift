@@ -145,9 +145,7 @@ public actor TaskAgentLauncher {
       providerArguments += promptArguments(for: subtask.provider, prompt: context.agentBootstrap(subtask: subtask))
     }
     var focusEnvironment = [
-            "/usr/bin/env", "-u", "FOCUS_QUEUE_ROUTER", "-u", "FOCUS_QUEUE_ROUTER_SOURCE",
-            "-u", "FOCUS_QUEUE_ROUTER_CAPABILITY",
-            "FOCUS_QUEUE_SUPPORT_DIR=\(supportDirectory.path)",
+            "/usr/bin/env", "FOCUS_QUEUE_SUPPORT_DIR=\(supportDirectory.path)",
             "FOCUS_QUEUE_USAGE_BAR=\(usageBarEnabled ? "on" : "off")",
             "FOCUS_QUEUE_PROVIDER=\(subtask.provider.rawValue)",
             "FOCUS_QUEUE_SUBTASK_ID=\(subtask.id)", "FOCUS_QUEUE_TASK_ID=\(context.ticketID)"]

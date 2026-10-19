@@ -129,19 +129,6 @@ def support_directory(environment):
                 str(Path.home() / "Library/Application Support/ECC Focus Queue")).absolute()
 
 
-def automatic_routing_enabled(support):
-    """Read only the opt-in flag. An unsafe or malformed file fails closed."""
-    path = Path(support) / "config.json"
-    try:
-        metadata = path.lstat()
-        if (path.is_symlink() or not stat_module.S_ISREG(metadata.st_mode)
-                or metadata.st_size > 1_048_576):
-            return False
-        return json.loads(path.read_text()).get("automaticAgentRouting") is True
-    except (OSError, ValueError, TypeError, AttributeError):
-        return False
-
-
 def agent_usage_bar_enabled(support):
     """The managed terminal usage bar is on unless a valid config opts out."""
     path = Path(support) / "config.json"
@@ -153,26 +140,6 @@ def agent_usage_bar_enabled(support):
         return json.loads(path.read_text()).get("agentUsageBarEnabled", True) is not False
     except (OSError, ValueError, TypeError, AttributeError):
         return True
-
-
-def should_route_automatically(mode, interactive, environment, support):
-    """Only a fresh, unassigned top-level agent can become an intake router."""
-    return (mode == "new" and interactive
-            and environment.get("FOCUS_QUEUE_ROUTER") != "1"
-            and environment.get("FOCUS_QUEUE_RUNTIME_MODE") not in {"tmux", "terminal"}
-            and not environment.get("FOCUS_QUEUE_TASK_ID")
-            and not environment.get("FOCUS_QUEUE_SUBTASK_ID")
-            and automatic_routing_enabled(support))
-
-
-def should_run_explicit_router(mode, interactive, environment):
-    """A queue-composer router is already explicit and must skip normal intake."""
-    return (mode == "new" and interactive
-            and environment.get("FOCUS_QUEUE_ROUTER") == "1"
-            and environment.get("FOCUS_QUEUE_ROUTER_SOURCE") == "queue-composer"
-            and environment.get("FOCUS_QUEUE_RUNTIME_MODE") not in {"tmux", "terminal"}
-            and not environment.get("FOCUS_QUEUE_TASK_ID")
-            and not environment.get("FOCUS_QUEUE_SUBTASK_ID"))
 
 
 def selected_directory(arguments):
@@ -1034,16 +1001,9 @@ def main(argv=None):
         interactive = False
     if not creates_agent:
         os.execv(command[0], command)
-    if should_run_explicit_router(mode, interactive, os.environ):
-        os.execv(command[0], command)
     support = support_directory(os.environ)
     os.environ.setdefault(
         "FOCUS_QUEUE_USAGE_BAR", "on" if agent_usage_bar_enabled(support) else "off")
-    if should_route_automatically(mode, interactive, os.environ, support):
-        # The router stays in the user's current terminal and performs no source
-        # writes. Its two Focus Queue commands create and verify the successor.
-        os.environ["FOCUS_QUEUE_ROUTER"] = "1"
-        os.execv(command[0], command)
     intake_path, intake, arguments = begin_tracking(arguments, mode, session_id,
         support, isolate=interactive,
         on_change=lambda _: notify_intake_changed(options.helper))

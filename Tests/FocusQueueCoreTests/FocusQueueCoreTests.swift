@@ -1396,47 +1396,6 @@ func routedAgentRegistrationPublishesToInbox() async throws {
   #expect(published.tabTitle == "Register routed agents")
 }
 
-@Test("A registered route replay republishes a missing pre-upgrade inbox record")
-func registeredRouteReplayRepublishesCanonicalSession() async throws {
-  let root = FileManager.default.temporaryDirectory.appendingPathComponent(
-    "focus-queue-routed-registration-replay-\(UUID())", isDirectory: true)
-  defer { try? FileManager.default.removeItem(at: root) }
-  let store = TaskContextStore(root: root)
-  var context = try await store.ensureContext(ticket: DashboardTicket(
-    id: "ECC-035", title: "Agent tracking", status: "open", summary: ""))
-  let sessionID = UUID().uuidString.lowercased()
-  var subtask = TaskSubtask(
-    id: UUID().uuidString.lowercased(), title: "Recover route publication",
-    assignmentDescription: "Republish the canonical route registration.",
-    provider: .codex, sessionID: sessionID)
-  subtask.workspace = AgentWorkspace(path: "/Users/test/worktree", repositoryPath: "/Users/test")
-  context = try await store.upsertSubtask(ticketID: context.ticketID, subtask: subtask)
-  let receipt = AgentStartupReceipt(
-    routeID: UUID().uuidString.lowercased(), status: .registered,
-    taskID: context.ticketID, subtaskID: subtask.id,
-    title: subtask.title, description: subtask.workDescription,
-    provider: .codex, providerSessionID: sessionID,
-    promptByteCount: 1, promptSHA256: AgentStartupReceipt.promptDigest("x"),
-    workspace: try #require(subtask.workspace),
-    context: .init(capsule: "/tmp/capsule", projectPlan: nil,
-      taskPlan: context.planPath, taskContext: context.contextDirectory
-        .appendingPathComponent("context.json").path,
-      taskLog: context.contextDirectory.appendingPathComponent("agent-log.md").path),
-    source: .init(cwd: "/Users/test/worktree"),
-    orchestrationPreparedAt: Date(), handoffCompletedAt: Date())
-  let inbox = AgentRegistrationInbox(
-    directory: root.appendingPathComponent("agent-registrations", isDirectory: true))
-  #expect(try await inbox.pending().isEmpty)
-
-  try await inbox.republishRegisteredRoute(receipt, supportDirectory: root)
-
-  let published = try #require(try await inbox.pending().first)
-  #expect(published.ticketID == context.ticketID)
-  #expect(published.subtaskID == subtask.id)
-  #expect(published.sessionID == sessionID)
-  #expect(published.tabTitle == subtask.title)
-}
-
 @Test("Agent terminal labels keep the task stable and distinguish the session")
 func agentTerminalLabels() {
   let session = TaskAgentSession(

@@ -358,7 +358,7 @@ struct ExternalAgentRegistrationTests {
             createdAt: 20, paneID: "%3", panePID: 30, tty: "/dev/ttys003",
             executable: "/mock/tmux")
         let sessionID = UUID().uuidString
-        // The hint supplies the fixed task, agent, and objective the router knew.
+        // The hint supplies the fixed task, agent, and objective the launch knew.
         let record = try await ExternalAgentRegistry(root: root).register(.init(
             sessionID: sessionID, cwd: root.path, hookEventName: "ProcessDiscovery",
             prompt: "Repair agent tracking and keep agents visible"), provider: .codex,

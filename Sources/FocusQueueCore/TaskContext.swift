@@ -60,8 +60,8 @@ public struct AgentLaunchConfiguration: Codable, Equatable, Sendable {
     public var model: String?
     public var effort: String?
     public var providerVersion: String?
-    /// Placement capsule identity for launches started inside the app; routed
-    /// launches use `routeID` for the same purpose and also own a startup receipt.
+    /// Placement capsule identity for launches started inside the app. Agents
+    /// started by the retired router keep `routeID`, which names their capsule.
     public var launchID: String?
     /// Installed plugins switched on or off for this agent only, by plugin ID.
     public var pluginOverrides: [String: Bool]?
@@ -377,12 +377,6 @@ public struct TaskContext: Codable, Equatable, Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let assignmentLine = assignmentDetails.isEmpty
             ? "" : "Assignment details: \(assignmentDetails)\n"
-        let startupReceiptLine: String
-        if subtask.launchConfiguration?.routeID != nil {
-            startupReceiptLine = "Startup and recovery receipt: \(support)/logs/agent-startups/\(ticketID.uppercased())/\(subtask.id.lowercased()).json\n"
-        } else {
-            startupReceiptLine = ""
-        }
         return """
         \(subtask.initialPrompt.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Prepare the task context, then wait for my instruction before implementing anything." : $0 } ?? subtask.title)
 
@@ -394,7 +388,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
         Briefly state your assignment, provider, workspace, branch, and intended outputs. Reuse this assigned worktree on resume. Create an isolated worktree before coding if no dedicated writer workspace is assigned; preserve the source checkout's local edits.
         Workspace: \(subtask.workspace?.path ?? worktreePath ?? repositoryPath ?? "not configured")
         Assigned branch: \(subtask.workspace?.branch ?? branch ?? "not configured")
-        \(startupReceiptLine)Success criteria: \(successCriteria)
+        Success criteria: \(successCriteria)
         Register this pane: FOCUS_QUEUE_PROVIDER=\(subtask.provider.rawValue) FOCUS_QUEUE_TASK_ID=\(ticketID) FOCUS_QUEUE_SUBTASK_ID=\(subtask.id) \(command) attach \(ticketID)
         Report concise progress and refresh activity at meaningful milestones (at least every 5 minutes while working): \(command) progress \(ticketID) \(subtask.id) working "short progress summary"
         \(scopeInstruction)

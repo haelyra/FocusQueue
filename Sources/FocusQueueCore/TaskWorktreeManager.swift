@@ -1,7 +1,7 @@
 import Foundation
 import Darwin
 
-/// Raw values match `route start --workspace` so saved launch choices read the same everywhere.
+/// Raw values are the persisted spelling of each choice, shared by saved launch presets and `fq`.
 public enum AgentWorkspacePolicy: String, Codable, CaseIterable, Sendable {
     case existingCheckout = "existing"
     case isolatedCleanCheckout = "isolated-clean"

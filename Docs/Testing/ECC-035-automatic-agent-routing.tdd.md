@@ -1,5 +1,7 @@
 # ECC-035 automatic agent routing TDD record
 
+> **Removed (FOC-026, 2026-10-19).** Automatic shell routing, `route inspect` / `route start`, startup receipts, and the `automaticAgentRouting` setting were deleted with their tests. `fq` and the + task creator place agents instead. This record is kept as history.
+
 ## Journeys
 
 1. A router reads the initial request, runs `route inspect`, receives repository-matched task choices and canonical context paths without creating task or agent records, then chooses explicit parameters.

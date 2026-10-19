@@ -11,11 +11,7 @@ may enrich Git metadata, but a different checkout requires a new agent assignmen
 This prevents a running writer from following another task into a newly created
 worktree.
 
-Automatic agent routing is an opt-in setup preference. When enabled, a fresh, unassigned interactive Codex starts as a short-lived router in the current terminal. `focus-queue-session route inspect` saves the complete initial prompt and returns a compact repository-matched packet with project, existing task choices, and canonical context paths. The router interprets that packet and calls `focus-queue-session route start` with an explicit existing task or new project task, subtask title and description, provider, model, effort, repository, and workspace policy. Assigned launches and resumes bypass routing, which prevents successor recursion.
-
-The queue's + task creator replaced the Router agent composer (deprecated 2026-10-19). It takes a required description plus optional title, card description, and priority; one small placement call (the `fq` classifier) fills blank fields and offers a matching open task before a duplicate is created. Unless the user opts out, it launches the first agent with the last-used provider, model, effort, workspace, and plugin choices (else the Settings default), and every app launch writes a placement capsule exported as `$FOCUS_QUEUE_AGENT_CONTEXT`. The CLI `route inspect`/`route start` path and automatic shell routing are unchanged.
-
-`route start` claims its route UUID before changing the dashboard or starting a provider, so replay cannot create a second process. It creates or associates the task, provisions the isolated worktree, writes the task and subtask records, creates the placement capsule, starts the provider in the task-owned tmux pane, opens a fresh WezTerm or macOS Terminal client, discovers the real provider conversation UUID, and writes one concise JSON startup receipt. A successful result authorizes router exit only after registration. macOS Terminal uses tmux because it has no direct pane API; closing the router's user-opened Terminal window remains a user action because Focus Queue does not automate Terminal UI.
+The queue's + task creator and `fq` replaced the Router agent, which was removed on 2026-10-19 with its in-app composer, `route inspect`/`route start` commands, startup receipts, and the automatic-routing setting. The creator takes a required description plus optional title, card description, and priority; one small placement call (the `fq` classifier) fills blank fields and offers a matching open task before a duplicate is created. Unless the user opts out, it launches the first agent with the last-used provider, model, effort, workspace, and plugin choices (else the Settings default), and every app launch writes a placement capsule exported as `$FOCUS_QUEUE_AGENT_CONTEXT`.
 
 Resume rechecks transient provider ownership up to four times while a process starts or exits. An unresolved final scan still prevents a duplicate process.
 
@@ -64,8 +60,6 @@ same-user process. Public release artifacts require protected CI, Developer ID
 signing, and notarization.
 
 The configured entry persists launch intent before starting Codex. Task/session/label metadata can remain provisional; unknown identities never authorize resume or cleanup. New interactive coding starts and forks in committed repositories get a separate worktree; read-only research/orchestration and explicit existing-workspace modes retain their checkout and record the policy. Noninteractive calls are tracked in their existing checkout. A native-executable bypass remains discoverable on a best-effort basis rather than an OS-wide launch gate.
-
-Automatic startup receipts live at `logs/agent-startups/<TASK-ID>/<agent-id>.json`. They record the prompt digest and byte count rather than duplicating prompt text, plus source-router identity, project/task/subtask metadata, provider/version/model/effort, workspace and Git identity, tmux executable/server/session/pane/TTY and attach command, terminal selection, placement capsule, project plan, task plan, task context, task log, and sanitized launch arguments. Registration adds the real provider conversation UUID and exact resume command. The full initial prompt remains in the route intent and subtask context.
 
 ## Stale agent cleanup
 

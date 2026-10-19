@@ -301,7 +301,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var persistentTerminals: Bool?
   public var tmuxExecutable: String?
   public var setupCompleted: Bool?
-  public var automaticAgentRouting: Bool
   public var completionReviewEnabled: Bool
   public var autoExitCompletedAgents: Bool
   public var agentUsageBarEnabled: Bool
@@ -431,7 +430,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.wezTerm = wezTerm
     self.verifier = verifier
     self.dailyReport = dailyReport
-    self.automaticAgentRouting = false
     self.completionReviewEnabled = true
     self.autoExitCompletedAgents = true
     self.agentUsageBarEnabled = true
@@ -464,7 +462,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   private enum CodingKeys: String, CodingKey {
     case appName, dashboardPath, workspacePath, defaultPlacement, refreshIntervalSeconds
     case dailyRoutines, wezTerm, verifier, dailyReport, persistentTerminals, tmuxExecutable, setupCompleted
-    case automaticAgentRouting
     case completionReviewEnabled
     case autoExitCompletedAgents
     case agentUsageBarEnabled
@@ -493,7 +490,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     persistentTerminals = try container.decodeIfPresent(Bool.self, forKey: .persistentTerminals)
     tmuxExecutable = try container.decodeIfPresent(String.self, forKey: .tmuxExecutable)
     setupCompleted = try container.decodeIfPresent(Bool.self, forKey: .setupCompleted)
-    automaticAgentRouting = try container.decodeIfPresent(Bool.self, forKey: .automaticAgentRouting) ?? false
     completionReviewEnabled =
       try container.decodeIfPresent(Bool.self, forKey: .completionReviewEnabled) ?? true
     autoExitCompletedAgents = try container.decodeIfPresent(Bool.self, forKey: .autoExitCompletedAgents) ?? true
@@ -589,7 +585,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encodeIfPresent(persistentTerminals, forKey: .persistentTerminals)
     try container.encodeIfPresent(tmuxExecutable, forKey: .tmuxExecutable)
     try container.encodeIfPresent(setupCompleted, forKey: .setupCompleted)
-    try container.encode(automaticAgentRouting, forKey: .automaticAgentRouting)
     try container.encode(completionReviewEnabled, forKey: .completionReviewEnabled)
     try container.encode(autoExitCompletedAgents, forKey: .autoExitCompletedAgents)
     try container.encode(agentUsageBarEnabled, forKey: .agentUsageBarEnabled)

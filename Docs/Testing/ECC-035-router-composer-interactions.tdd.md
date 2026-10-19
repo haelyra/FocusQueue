@@ -1,6 +1,6 @@
 # ECC-035 Router composer interactions TDD record
 
-> **Deprecated (FOC-026, 2026-10-19).** The in-app Router composer and these view-model tests were removed; the + task creator replaces it. The core `QueueObjectiveRouter` types and CLI composer branches remain unreachable from the UI until a later cleanup.
+> **Removed (FOC-026, 2026-10-19).** The in-app Router composer, its core `QueueObjectiveRouter` types, the CLI composer branches, and these tests were deleted; the + task creator replaces them. This record is kept as history.
 
 ## Journeys
 

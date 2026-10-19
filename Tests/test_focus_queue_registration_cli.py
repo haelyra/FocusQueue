@@ -5,7 +5,6 @@ import subprocess
 import tempfile
 import unittest
 import uuid
-from datetime import datetime, timezone
 
 
 BINARY = Path(__file__).parents[1] / ".build/debug/focus-queue-session"
@@ -116,84 +115,6 @@ class RegistrationCLITests(unittest.TestCase):
         self.assertEqual(len(self.context()["subtasks"]), 2)
         self.assertEqual(
             {path.name for path in (self.support / "tasks").iterdir()}, {"ECC-401"})
-
-    def test_registered_route_replay_republishes_missing_inbox_record(self):
-        config = json.loads((Path(__file__).parents[1] / "Config/config.example.json").read_text())
-        config.update(
-            dashboardPath=str(self.support / "dashboard.json"),
-            workspacePath=str(self.repository),
-            automaticAgentRouting=True,
-            selectedProjectID="focus",
-            projects=[{
-                "id":"focus", "name":"Focus", "taskPrefix":"ECC",
-                "repositoryPath":str(self.repository), "remoteAliases":[],
-            }],
-        )
-        self.support.mkdir(parents=True, exist_ok=True)
-        (self.support / "config.json").write_text(json.dumps(config))
-        session_id, route_id = str(uuid.uuid4()), str(uuid.uuid4())
-        registered = self.command(
-            "register-event", "--provider", "codex", "--task", "ECC-401",
-            payload=self.event(session_id, prompt="Replay registration"))
-        agent_id = registered["subtaskID"]
-        inbox = self.support / "agent-registrations"
-        for payload in inbox.glob("*.json"):
-            payload.unlink()
-
-        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        route_directory = self.support / "agent-routes"
-        route_directory.mkdir(parents=True)
-        route = {
-            "schemaVersion":1, "routeID":route_id,
-            "prompt":"Recover route publication", "provider":"codex",
-            "source":{"cwd":str(self.repository)}, "origin":"automatic-shell",
-            "inferredProjectID":"focus", "repositoryPath":str(self.repository),
-            "createdAt":now, "startedAt":now, "taskID":"ECC-401",
-            "subtaskID":agent_id,
-        }
-        route_path = route_directory / f"{route_id}.json"
-        route_path.write_text(json.dumps(route))
-        route_path.chmod(0o600)
-
-        context = self.context()
-        saved_agent = next(item for item in context["subtasks"] if item["id"] == agent_id)
-        receipt_directory = self.support / "logs/agent-startups/ECC-401"
-        receipt_directory.mkdir(parents=True)
-        receipt = {
-            "schemaVersion":1, "routeID":route_id, "status":"registered",
-            "projectID":"focus", "projectName":"Focus", "taskID":"ECC-401",
-            "taskTitle":"Registration test", "subtaskID":agent_id,
-            "title":"Replay registration",
-            "description":"Republish the canonical session before the router exits.",
-            "provider":"codex", "providerSessionID":session_id,
-            "providerLaunchCommand":[], "promptByteCount":1,
-            "promptSHA256":"0" * 64, "workspace":saved_agent["workspace"],
-            "context":{
-                "taskPlan":str(self.support / "tasks/ECC-401/plan.md"),
-                "taskContext":str(self.support / "tasks/ECC-401/context.json"),
-                "taskLog":str(self.support / "tasks/ECC-401/agent-log.md"),
-            },
-            "source":{"cwd":str(self.repository)},
-            "orchestrationPreparedAt":now, "handoffCompletedAt":now,
-            "createdAt":now, "updatedAt":now,
-        }
-        receipt_path = receipt_directory / f"{agent_id.lower()}.json"
-        receipt_path.write_text(json.dumps(receipt))
-        receipt_path.chmod(0o600)
-
-        replay = self.command(
-            "route", "start", route_id, "--task", "ECC-401",
-            "--title", "Replay registration", "--description",
-            "Republish the canonical session before the router exits.",
-            "--provider", "codex", "--workspace", "existing")
-
-        self.assertTrue(replay["replayed"])
-        self.assertEqual(replay["routerAction"], "exit")
-        published = [json.loads(path.read_text()) for path in inbox.glob("*.json")]
-        self.assertEqual(len(published), 1)
-        self.assertEqual(published[0]["ticketID"], "ECC-401")
-        self.assertEqual(published[0]["subtaskID"], agent_id)
-        self.assertEqual(published[0]["sessionID"], session_id)
 
     def test_prompt_derived_title_and_first_seen_timestamp_survive_updates(self):
         session_id = str(uuid.uuid4())

@@ -1,6 +1,6 @@
 # ECC Focus Queue — Backend Interface Guide for Agents
 
-**Audience:** AI agents (Codex, Claude, Kimi), the orchestrator, the router agent, and any external program that needs to interact with ECC Focus Queue without the UI.
+**Audience:** AI agents (Codex, Claude, Kimi), the orchestrator, and any external program that needs to interact with ECC Focus Queue without the UI.
 
 **Purpose:** This is the complete command-level contract for the app's backend interface: every CLI command, every data file, every environment variable, and — critically — the *correct* way to register tasks, agents, and sessions so the app stays consistent. It ends with a failure analysis and a list of missing commands and hardening proposals.
 
@@ -39,9 +39,9 @@ overridable with `FOCUS_QUEUE_SUPPORT_DIR` (used by tests to isolate state). Key
 | `external-agent-sessions/<sha256>.json` | Hook registration receipts |
 | `tracking/placements/<launch-uuid>.json` | Placement capsules |
 | `tracking/launches/`, `tracking/resolutions/` | Intake receipts, launch→session resolution |
-| `agent-routes/` | Route intents (router slots belonged to the removed in-app composer) |
+| `agent-routes/` | Retired: route intents from the removed Router agent (nothing reads them) |
 | `queue-order/order[-<b64 project>].json` | Queue ordering per project |
-| `logs/agent-startups/<TASK>/<subtask>.json` | Startup receipts |
+| `logs/agent-startups/<TASK>/<subtask>.json` | Retired: startup receipts from the removed Router agent |
 | `library/` | Durable cross-device history |
 | `ingestion/` | Daily-report state, reports, launch requests |
 | `<dashboardPath>` (outside support dir) | Per-project `dashboard.json` — the ticket list |
@@ -81,7 +81,6 @@ Agents receive and consume identity through environment variables. These are the
 | `FOCUS_QUEUE_TMUX_NAME` | managed tmux | Owning tmux session name |
 | `FOCUS_QUEUE_PROJECT_ID` | queue commands | Scope guard for `queue` mutations |
 | `FOCUS_QUEUE_PROVIDER` | entry wrapper | `codex` / `claude` / `kimi` |
-| `FOCUS_QUEUE_ROUTER` / `_SOURCE` / `_CAPABILITY` | router launch | One-use router capability auth; `_SOURCE`/`_CAPABILITY` only came from the removed in-app composer |
 | `CODEX_THREAD_ID` / `CODEX_SESSION_ID` | Codex runtime | Provider session UUID |
 | `CLAUDE_CODE_SESSION_ID` (or an explicit `CLAUDE_SESSION_ID`) | Claude Code runtime | Provider session UUID; managed panes strip both |
 | `WEZTERM_PANE`, `WEZTERM_UNIX_SOCKET` | WezTerm | Terminal pane identity |
@@ -134,17 +133,9 @@ Runs the deterministic placement resolver and writes a capsule to `tracking/plac
 
 **Rule: read your capsule (`$FOCUS_QUEUE_AGENT_CONTEXT`) before any source edit. Stop on `blocked-conflict`.**
 
-### 3.3 Routing (orchestrator/router path)
+### 3.3 Router agent (removed)
 
-**`focus-queue-session route inspect --prompt <text> [--cwd <path>] [--provider codex|claude|kimi]`**
-Read-only. Saves the full objective, returns a compact routing packet: the inferred project, **every selectable project** in `projects[]` (id, name, prefix, repository), open-task candidates with plan/context/log paths, and exact `route start` command templates. Project inference is prompt-aware: an objective that names a project (its ID, name, task prefix, or a ticket ID like `ECC-041`) wins over the launch directory; with no signal the inference falls back to the cwd's repository, then to `other`. Creates nothing.
-
-**`focus-queue-session route start <ROUTE-UUID> (--task <TASK-ID> | --project <PROJECT-ID> --task-title <T>) --title <T> --description <D> [--provider p] [--model m] [--effort low|medium|high|xhigh|max] [--repository PATH] [--workspace existing|isolated-clean|isolated-snapshot]`**
-The full managed-launch orchestrator: claims the route (idempotent — replay returns `replayed: true` instead of a second process), optionally creates the dashboard ticket, provisions the worktree, writes the subtask and a startup receipt (`logs/agent-startups/<TASK>/<subtask>.json`), launches the provider in the task tmux session, and waits ~10 s for the provider session UUID.
-
-Result: `status, routeID, taskID, subtaskID, providerSessionID, startupReceiptPath, routerAction (exit|wait-for-registration), replayed, startedAt`.
-
-Behavior notes: unknown `--flags` are rejected with an error (no silent drops). The workspace is validated against a real Git repository *before* any record is written; if provisioning or placement fails after ticket creation, the ticket, route destination, and fresh context directory are rolled back so the same route ID can be retried cleanly.
+The Router agent, its `route inspect` / `route start` commands, the in-app composer, and the `automaticAgentRouting` setting were removed on 2026-10-19 (FOC-026). Placement replaces them: `fq` and the + task creator classify the prompt with one small-model call, then join an open task or create a titled one (§9). Agents started by the router keep `launchConfiguration.routeID`, which still names their placement capsule.
 
 ### 3.4 Task mutations
 
@@ -280,7 +271,7 @@ Decode is lenient on missing fields but **strict on types**: `"prs": "x"` or `"s
 
 `TaskContext` (`schemaVersion: 2`): `ticketID, title, summary, successCriteria, planPath, worktreePath?, repositoryPath?, branch?, baseBranch?, managedWorktree, subtasks[], projectID?, projectName?, updatedAt`.
 
-Each `TaskSubtask`: `id (uuid), title, assignmentDescription, provider, sessionID?, status (queued|working|idle|blocked|completed), progressSummary, workspace?{path, repositoryPath, branch?, baseBranch?, baseCommit?, managed, ...}, tmux?, runtimeMode? (tmux|terminal), initialPrompt?, attention?, resultSummary?, launchConfiguration?{routeID?, model?, effort?}, ...`.
+Each `TaskSubtask`: `id (uuid), title, assignmentDescription, provider, sessionID?, status (queued|working|idle|blocked|completed), progressSummary, workspace?{path, repositoryPath, branch?, baseBranch?, baseCommit?, managed, ...}, tmux?, runtimeMode? (tmux|terminal), initialPrompt?, attention?, resultSummary?, launchConfiguration?{launchID?, routeID? (legacy), model?, effort?, pluginOverrides?}, ...`.
 
 **Closed vocabularies throw on unknown values:** a hand-edited `status: "done"` or `provider: "gpt"` in `context.json` makes the *whole context file fail to load*. Missing fields are repaired with defaults on read — which is exactly why hand-written tasks "sort of work" but lack crucial pieces.
 
@@ -298,7 +289,7 @@ Each `TaskSubtask`: `id (uuid), title, assignmentDescription, provider, sessionI
 
 ### 7.1 Creating a task the right way
 
-Today there are exactly two validated creation paths: **`route start --project <ID> --task-title <T>`** (managed launch) and **the ingestion pipeline** (schema-validated proposals). Everything else is a hand-edit of `dashboard.json`.
+The validated creation paths are **the + task creator** in the app, **`fq` / `focus-queue-session placement --prompt <text>`** (creates a task when no open task matches; see §9), and **the ingestion pipeline** (schema-validated proposals). Everything else is a hand-edit of `dashboard.json`.
 
 Every task description/summary must answer **what, why, and how** — 1–2 sentences each, no leading commit hashes, branch names, or internal jargon. A complete task also carries: `projectID`, `priority`, `category`, `summary`, `next`, `doneWhen`, and — once worked — `worktreePath`, `branch`, `plan.md`, and at least one well-formed subtask.
 
@@ -311,12 +302,6 @@ If you must write `dashboard.json` directly (you shouldn't — see §8): take `.
 3. Read `$FOCUS_QUEUE_AGENT_CONTEXT` (placement capsule) before editing source. Stop on `blocked-conflict`.
 4. The registration record must name: task, provider session UUID, tmux session (managed panes), and worktree + branch (isolated workspaces). The first recorded workspace is immutable; resuming reuses the exact workspace and provider UUID.
 5. Heartbeat with `progress`, log with `log`, finish with `complete <TASK> <SUBTASK> "<summary>"`.
-
-### 7.3 Router recipe
-
-1. `route inspect --prompt "<complete objective>" --cwd "$PWD" --provider <p>` → packet with candidates and command templates.
-2. Exactly one `route start <routeID> --task <ID> --title ... --description ...` (the objective is SHA-256-bound; a paraphrased prompt is rejected, the saved original is used).
-3. Exit only when the result says `registered` with `routerAction: exit`; otherwise report the recovery locator and stay available.
 
 ---
 
@@ -357,7 +342,6 @@ Recall verifies the full saved tmux identity (server PID, creation time, session
 ### 8.5 Validation inconsistencies in the CLI itself
 
 - `task status` accepts any string (priority is validated; status is not).
-- ~~`route start` silently drops unknown flags~~ — **fixed**: unknown options are now rejected, a non-Git workspace fails before ticket creation, and a failed start rolls back its ticket. (2026-10-09)
 - `agents clear --all` destroys all registration records with no confirmation and leaves processes running untracked.
 - Kimi cannot `attach` from env (no UUID env var) though the usage text implies it can.
 - The proposal schema's `ticketId` is hardcoded to `ECC-` while projects have their own prefixes.
@@ -385,12 +369,12 @@ Ordered by impact. Each is designed to close a failure mode from §8.
 
 5. **`sessions list [--task <ID>] [--provider p]`** — dump `agentSessions[]` + subtask correlation. Currently there is no read path for the registry.
 6. **`session resume <TASK-ID> <SUBTASK-ID> [--new-pane]`** — the recall command: verify provider UUID + workspace via `runtime locate`, rebind to a fresh tmux pane, update the session record, emit the resume command it used. Encodes the REMOTE_SESSION_RECALL rules in one place instead of relying on every agent to remember them.
-7. **`doctor [--task <ID>]`** — whole-system health: orphaned sessions (recorded but `runtime locate` = stopped), subtasks with sessions but no workspace, tasks with agents but no `worktreePath`, stale startup receipts, wedged router slots. Read-only; exit code = number of problem classes found.
+7. **`doctor [--task <ID>]`** — whole-system health: orphaned sessions (recorded but `runtime locate` = stopped), subtasks with sessions but no workspace, tasks with agents but no `worktreePath`. Read-only; exit code = number of problem classes found.
 8. **`attach` should verify the ticket exists** on some dashboard and warn (or refuse without `--force`) when it doesn't.
 
 **Tier 3 — robustness & guardrails**
 
-9. **Reject unknown flags** in `route start` (and audit every hand-rolled parser) — silent drops turn typos into misprovisioned agents.
+9. **Audit every hand-rolled parser** for unknown flags — silent drops turn typos into misprovisioned agents.
 10. **`agents clear --all` needs `--yes` + a pre-flight count**, and should optionally terminate or detach the running processes it untracks.
 11. **Kimi session identity**: add a `KIMI_SESSION_ID` env binding (or document hooks as the only path and fix the `attach` usage text).
 12. **Generalize the proposal schema `ticketId` pattern** to `^[A-Z][A-Z0-9]{1,4}-[0-9]{3,}$` (matching `ProjectCatalog`'s prefix rule).
@@ -405,12 +389,11 @@ Ordered by impact. Each is designed to close a failure mode from §8.
 
 1. **Schema-enforce at write, not just read.** Every mutation that can produce a task/subtask/session record should go through the same validated repository path the app uses. The current asymmetry (strict app writes, lenient hand writes, repair-on-read) guarantees drift.
 2. **Refuse hollow tasks.** `summary` (what/why/how), `next`, and `doneWhen` should be required at creation. A task without them is debt that the backfill audit proved cannot be repaid from data alone.
-3. **Receipts for everything.** `route start` already writes startup receipts and detects replay. Extend the same pattern to `task create`, `attach`, and `session resume`: idempotent, UUID-keyed, replayable. Idempotency is what makes orchestrator retries safe.
+3. **Receipts for everything.** Placement capsules already key each launch by UUID. Extend the same pattern to `task create`, `attach`, and `session resume`: idempotent, UUID-keyed, replayable. Idempotency is what makes orchestrator retries safe.
 4. **Correlation at creation, not reconstruction.** Every subtask record should be born with `sessionID`, `tmux` reference, and `workspace` (path+branch+baseCommit) filled by the launch path — the launch already knows all three. Registration completeness is already *checked* (`registrationIssue` on handoffs); it should be *blocking* for managed launches.
 5. **Typed authority for the orchestrator.** Implement the `ACTION_BOUNDARIES.md` proposal: read-only answers must not share the write path. Mutations should be proposed, validated, then applied — with the proposal itself schema-checked.
 6. **One lock discipline, enforced.** Provide a tiny `focus-queue-session exec-lock <path> -- cmd...` (or document the lock paths as part of the contract) so any external writer can't bypass `flock` accidentally.
-7. **Router hardening.** The router's one-use, prompt-hash-bound capability is good design. Remaining gaps: max-4 router slots can wedge on terminal-close failure (surfaced, but manual); the app never auto-retries an unresolved route — a `route retry <routeID>`/abandon command would let the orchestrator recover deliberately instead of waiting for the 30 s sweep. Also consider letting `route inspect` results expire, so stale packets can't be claimed against a changed queue.
-8. **Ship `doctor` in CI of the data**: run the audit + doctor on a schedule; a queue that knows it's degraded beats one that silently is.
+7. **Ship `doctor` in CI of the data**: run the audit + doctor on a schedule; a queue that knows it's degraded beats one that silently is.
 
 ---
 
@@ -427,9 +410,8 @@ focus-queue-session log       <TASK> <AGENT>   "entry"
 focus-queue-session attention <TASK> <AGENT>   question "summary"
 focus-queue-session complete  <TASK> <SUBTASK> "result summary"
 
-# Routing (router/orchestrator)
-focus-queue-session route inspect --prompt "<objective>" --cwd "$PWD" --provider codex
-focus-queue-session route start <ROUTE-UUID> --task <TASK-ID> --title T --description D
+# Placement (no ticket yet)
+focus-queue-session placement --prompt "<objective>" --cwd "$PWD"
 
 # Task fields (validated)
 focus-queue-session task rename   <TASK-ID> <title...>

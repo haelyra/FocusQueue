@@ -172,9 +172,6 @@ final class QueueViewModel {
   }
   private(set) var planEditDrafts: [String: PlanEditDraft] = [:]
   private(set) var launchingTaskIDs: Set<String> = []
-  /// Set when the launch-time startup-receipt sweep had to fail stuck routed
-  /// agents; QueueView presents it as a hard alert.
-  var startupRepairAlert: String?
   /// Set when a managed agent's registration stayed incomplete past its
   /// post-launch window; QueueView presents it as a hard alert.
   var registrationValidationAlert: String?
@@ -703,17 +700,6 @@ final class QueueViewModel {
 
   private func finishBootstrap() async {
     do {
-      // Unstick routed startup receipts from automatic routing and `route start`.
-      // A sweep failure must not block the rest of bootstrap.
-      if let repair = try? await AgentStartupRepair(root: paths.supportDirectory).run() {
-        if !repair.failedReceipts.isEmpty {
-          let summaries = repair.failedReceipts.map {
-            "\($0.taskID) (\($0.title.isEmpty ? $0.subtaskID : $0.title))"
-          }.joined(separator: ", ")
-          startupRepairAlert = "Routed agent startups that never finished were marked failed: \(summaries). Create the task again from the + task creator."
-        }
-        repair.registrationIssues.forEach(reportRegistrationIssue)
-      }
       let projects = ProjectCatalog.ensuringOther(
         in: config.projects, supportDirectory: paths.supportDirectory)
       if projects != config.projects {
@@ -2878,7 +2864,7 @@ final class QueueViewModel {
             launchConfiguration.pluginOverrides = launchConfiguration.pluginOverrides ?? saved.pluginOverrides
           }
         }
-        // Routed launches already own a capsule under their route ID.
+        // Agents started by the retired router already own a capsule under their route ID.
         if launchConfiguration.routeID == nil {
           launchConfiguration.launchID = UUID().uuidString.lowercased()
         }
@@ -3586,9 +3572,6 @@ final class QueueViewModel {
             registrationID: registration.sessionID, title: subtask.title,
             taskID: registration.ticketID, subtaskID: subtaskID, missingFields: missing))
         }
-        completeRouteHandoffIfObserved(
-          taskID: registration.ticketID, subtaskID: subtaskID,
-          sessionID: registration.sessionID)
         actionMessages[registration.ticketID] = subtask.runtimeMode == .tmux
           ? "\(registration.provider.displayName) is running and registered in tmux. Click \(subtask.title) to open its exact terminal session."
           : registration.paneID != nil
@@ -3607,17 +3590,6 @@ final class QueueViewModel {
     }
   }
 
-  /// A routed startup receipt whose successor registered through the inbox or
-  /// the external registry completes its handoff here, even when the router
-  /// that launched it exited before finalizing the receipt.
-  private func completeRouteHandoffIfObserved(
-    taskID: String, subtaskID: String?, sessionID: String?
-  ) {
-    guard let subtaskID, let sessionID else { return }
-    try? AgentStartupReceiptStore(root: paths.supportDirectory)
-      .completeObservedHandoff(taskID: taskID, subtaskID: subtaskID, sessionID: sessionID)
-  }
-
   /// Managed launches are held to the completeness bar only after their
   /// post-launch registration window. External sessions discovered without a
   /// launch identity stay placeable inbox entries instead of errors.
@@ -3625,7 +3597,7 @@ final class QueueViewModel {
 
   private func validateRegistrationCompleteness(records: [ExternalAgentRegistration]) {
     let now = Date()
-    var hints: [RoutedLaunchHint]?
+    var hints: [LaunchHint]?
     var flaggedKeys: Set<String> = []
     for record in records {
       guard now.timeIntervalSince(record.registeredAt) >= Self.registrationValidationWindow
@@ -3637,9 +3609,9 @@ final class QueueViewModel {
         $0.runtimeMode == .tmux || $0.runtimeMode == .terminal || $0.workspace?.managed == true
       } ?? false
       if !managed, let sessionID = record.sessionID {
-        let allHints = hints ?? RoutedLaunchHintStore.hints(root: paths.supportDirectory)
+        let allHints = hints ?? LaunchHintStore.hints(root: paths.supportDirectory)
         hints = allHints
-        managed = RoutedLaunchHintStore.match(
+        managed = LaunchHintStore.match(
           sessionID: sessionID, provider: record.provider,
           tmux: record.tmux, hints: allHints) != nil
       }
@@ -3775,7 +3747,7 @@ final class QueueViewModel {
           tmuxPanes = (try? await TmuxController().panes(executable: executable)) ?? []
         } else { tmuxPanes = [] }
         let terminals = discovered.isEmpty ? [] : ((try? await terminalController.listAttachablePanes(configuration: config.wezTerm)) ?? [])
-        let routedHints = discovered.isEmpty ? [] : RoutedLaunchHintStore.hints(root: paths.supportDirectory)
+        let launchHints = discovered.isEmpty ? [] : LaunchHintStore.hints(root: paths.supportDirectory)
         for process in discovered {
           let tmux = process.tty.flatMap { tty in tmuxPanes.first { $0.reference.tty == tty }?.reference }
           let terminal = tmux == nil ? process.tty.flatMap { tty in terminals.first { $0.ttyName == tty } } : nil
@@ -3789,13 +3761,13 @@ final class QueueViewModel {
               matching: tmux, supportDirectory: paths.supportDirectory)
             { prompt = metadata.initialPrompt }
           }
-          // A router or app launch fixes the task, agent, and objective before
-          // the provider session exists; bind discovery to that identity so
-          // routed agents register promptly with a prompt-derived title.
+          // An app or fq launch fixes the task, agent, and objective in its
+          // placement capsule before the provider session exists; bind discovery
+          // to that identity so the agent registers promptly with a prompt-derived title.
           let launchHint = intake == nil
-            ? RoutedLaunchHintStore.match(
+            ? LaunchHintStore.match(
               sessionID: process.sessionID, provider: process.provider,
-              tmux: tmux, hints: routedHints)
+              tmux: tmux, hints: launchHints)
             : nil
           if prompt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
             prompt = launchHint?.promptHint
@@ -3823,11 +3795,6 @@ final class QueueViewModel {
               configuration: config.wezTerm)
           }
           if let intake { try AgentIntakeStore.resolve(intake, sessionID: process.sessionID, root: paths.supportDirectory) }
-          if let taskID = registration.taskID {
-            completeRouteHandoffIfObserved(
-              taskID: taskID, subtaskID: registration.subtaskID,
-              sessionID: registration.sessionID)
-          }
         }
       }
       let records = try await registry.registrations()
@@ -4342,12 +4309,6 @@ final class QueueViewModel {
     guard (0...23).contains(hour), (0...59).contains(minute) else { return }
     config.dailyReport.scheduleHour = hour
     config.dailyReport.scheduleMinute = minute
-    persistConfiguration()
-  }
-
-  func setAutomaticAgentRouting(_ enabled: Bool) {
-    guard config.automaticAgentRouting != enabled else { return }
-    config.automaticAgentRouting = enabled
     persistConfiguration()
   }
 

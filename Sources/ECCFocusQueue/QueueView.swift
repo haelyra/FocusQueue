@@ -380,14 +380,6 @@ struct QueueView: View {
 
       if !isFilteringTasks, !remainingTickets.isEmpty || !model.visibleRoutines.isEmpty { moreButton }
     }
-    .alert("Agent startup repair", isPresented: Binding(
-      get: { model.startupRepairAlert != nil },
-      set: { if !$0 { model.startupRepairAlert = nil } }
-    )) {
-      Button("OK", role: .cancel) { model.startupRepairAlert = nil }
-    } message: {
-      Text(model.startupRepairAlert ?? "")
-    }
     .alert("Agent registration incomplete", isPresented: Binding(
       get: { model.registrationValidationAlert != nil },
       set: { if !$0 { model.registrationValidationAlert = nil } }
@@ -2005,18 +1997,6 @@ private struct QueueSettingsView: View {
               Text("Default launches the provider without a model or effort flag. Kimi has no launch-time effort flag and follows its own config.")
                 .font(.caption).foregroundStyle(.secondary)
             }
-          }
-          settingsSection(
-            title: "Agent routing",
-            detail: "Automatically place fresh agents into the matching project, task, isolated workspace, and managed tmux session."
-          ) {
-            Toggle(
-              "Automatically route new agents",
-              isOn: Binding(
-                get: { model.config.automaticAgentRouting },
-                set: { model.setAutomaticAgentRouting($0) }
-              )
-            )
           }
           settingsSection(
             title: "Task placement",

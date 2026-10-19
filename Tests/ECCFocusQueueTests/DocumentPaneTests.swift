@@ -20,7 +20,7 @@ private actor DocumentTestAgent: QueueAgentChatting {
 @Suite("Side document pane")
 @MainActor
 struct DocumentPaneTests {
-    @Test("Links reuse a second pane, create tabs, and restore the central chat on dismissal")
+    @Test("Document tabs persist and restore the central chat on dismissal")
     func navigation() {
         let pane = DocumentPaneState(), first = URL(fileURLWithPath: "/tmp/notes.md"), second = URL(fileURLWithPath: "/tmp/code.swift")
         pane.open(first); pane.open(second); pane.open(first)
@@ -33,6 +33,43 @@ struct DocumentPaneTests {
         #expect(pane.selected == first)
         pane.close(first)
         #expect(!pane.isPresented && !pane.centralChatCollapsed)
+    }
+
+    @Test("First file uses the central tab while later files use and can leave the split viewer")
+    func primaryAndSecondaryPlacement() {
+        let pane = DocumentPaneState()
+        let first = URL(fileURLWithPath: "/tmp/evidence.md")
+        let second = URL(fileURLWithPath: "/tmp/implementation.swift")
+
+        pane.open(first, in: .primary)
+        #expect(pane.primaryDocument == first)
+        #expect(pane.secondaryDocument == nil)
+        #expect(!pane.hasSecondaryViewer)
+
+        pane.open(second, in: .secondary)
+        #expect(pane.primaryDocument == first)
+        #expect(pane.secondaryDocument == second)
+        #expect(pane.selected == second && pane.hasSecondaryViewer)
+
+        pane.select(second)
+        #expect(pane.primaryDocument == second)
+        #expect(pane.secondaryDocument == nil)
+
+        pane.moveToSecondary(second)
+        #expect(pane.primaryDocument == nil)
+        #expect(pane.secondaryDocument == second)
+    }
+
+    @Test("Find state opens a shared find field and records direction")
+    func findState() {
+        let find = DocumentFindState()
+        find.activate()
+        #expect(find.isPresented && find.request == 1)
+        find.query = "sentinel"
+        find.find(backwards: true)
+        #expect(find.request == 2 && find.searchesBackwards)
+        find.dismiss()
+        #expect(!find.isPresented)
     }
 
     @Test("Code links and web fragments normalize without accepting executable URLs")

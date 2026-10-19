@@ -3038,8 +3038,8 @@ final class QueueViewModel {
   }
 
   /// Writes the placement capsule an app-launched agent reads from
-  /// `$FOCUS_QUEUE_AGENT_CONTEXT`, through the same resolver `fq` and
-  /// `route start` use. Returns false when placement refuses the workspace,
+  /// `$FOCUS_QUEUE_AGENT_CONTEXT`, through the same resolver `fq` and the
+  /// shell entries use. Returns false when placement refuses the workspace,
   /// so the agent never starts pointed at a blocked capsule.
   private func writePlacementCapsule(
     launchID: String, ticket: DashboardTicket, subtask: TaskSubtask

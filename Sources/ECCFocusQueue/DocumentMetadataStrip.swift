@@ -36,8 +36,14 @@ struct DocumentMetadataStrip: View {
                         .buttonStyle(.plain).font(.system(size: 10)).help("Reveal this document in Finder")
                 }
             }
-        }.foregroundStyle(.secondary).padding(.horizontal, 7).padding(.vertical, 4)
-            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 4))
+        }
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.96), in: RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.16), lineWidth: 1)
+                    .allowsHitTesting(false)
+            )
             .accessibilityLabel("Document location and metadata for \(taskID)")
             .task(id: url.absoluteString + String(revision)) {
                 let info = await Task.detached(priority: .utility) { DocumentMetadata.read(url) }.value

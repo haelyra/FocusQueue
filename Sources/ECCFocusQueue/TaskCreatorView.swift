@@ -1,7 +1,7 @@
 import FocusQueueCore
 import SwiftUI
 
-/// The + task creator. The description is the only required field; the
+/// The + task creator. The prompt is the only required field; the
 /// placement model titles, summarizes, and prioritizes whatever is left blank,
 /// and checks for an open task that already covers the work.
 struct TaskCreatorSheet: View {
@@ -45,13 +45,13 @@ struct TaskCreatorSheet: View {
         Section {
           ZStack(alignment: .topLeading) {
             if description.isEmpty {
-              Text("Enter task description").foregroundStyle(.tertiary)
+              Text("Enter prompt").foregroundStyle(.tertiary)
                 .padding(.top, 8).padding(.leading, 5).allowsHitTesting(false)
             }
             TextEditor(text: $description)
               .font(.body).frame(minHeight: 130)
               .scrollContentBackground(.hidden)
-              .accessibilityLabel("Task description")
+              .accessibilityLabel("Task prompt")
           }
           TextField("Title (optional)", text: $title,
                     prompt: Text("Leave blank for an agent-written title"))
@@ -157,7 +157,7 @@ struct TaskCreatorSheet: View {
     }
     Toggle("Open in tmux", isOn: Binding(
       get: { agent.useTmux ?? true }, set: { agent.useTmux = $0 }))
-    Toggle("Start the agent with this description", isOn: Binding(
+    Toggle("Start the agent with this prompt", isOn: Binding(
       get: { agent.includePrompt ?? true }, set: { agent.includePrompt = $0 }))
   }
 

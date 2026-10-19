@@ -3,7 +3,9 @@ import Foundation
 /// Observes structured events for an already registered conversation. Never guesses identity
 /// from a transcript, treats prose as approval, or marks the assignment complete from a reply.
 public struct AgentActivityEvent: Sendable, Equatable {
-    public enum Kind: Sendable, Equatable { case working, result, attention(AgentAttention) }
+    /// `prompt` is a person's message to the agent: working activity that also
+    /// counts as the task's latest interaction.
+    public enum Kind: Sendable, Equatable { case working, prompt, result, attention(AgentAttention) }
     public let id: String
     public let date: Date
     public let kind: Kind
@@ -39,7 +41,8 @@ public struct AgentActivityEvent: Sendable, Equatable {
                 let type = payload["type"] as? String
                 if record["type"] as? String == "event_msg" {
                     switch type {
-                    case "task_started", "turn_started", "user_message": kind = .working
+                    case "task_started", "turn_started": kind = .working
+                    case "user_message": kind = .prompt
                     case "task_complete", "task_completed", "turn_complete", "turn_completed":
                         kind = .result; summary = payload["last_agent_message"] as? String ?? "New agent response"
                     case "turn_aborted": kind = .attention(.interrupted); summary = "The agent turn was interrupted."
@@ -53,7 +56,9 @@ public struct AgentActivityEvent: Sendable, Equatable {
                     default: break
                     }
                 } else if record["type"] as? String == "response_item" {
-                    if type == "message", payload["role"] as? String == "assistant", payload["phase"] as? String == "final_answer" {
+                    if type == "message", payload["role"] as? String == "user", Self.isCodexPrompt(payload) {
+                        kind = .prompt
+                    } else if type == "message", payload["role"] as? String == "assistant", payload["phase"] as? String == "final_answer" {
                         kind = .result
                         summary = (payload["content"] as? [[String: Any]] ?? []).compactMap { $0["text"] as? String }.joined(separator: "\n")
                     } else if ["function_call", "custom_tool_call"].contains(type ?? ""),
@@ -73,7 +78,7 @@ public struct AgentActivityEvent: Sendable, Equatable {
                         ?? (message?["content"] as? [[String: Any]])?.first?["text"] as? String
                     if ["[Request interrupted by user]", "[Request interrupted by user for tool use]"].contains(text ?? "") {
                         kind = .attention(.interrupted); summary = "The agent turn was interrupted."
-                    } else { kind = .working }
+                    } else { kind = Self.isClaudePrompt(record) ? .prompt : .working }
                 }
                 if type == "assistant", let message = record["message"] as? [String: Any] {
                     let content = message["content"] as? [[String: Any]] ?? []
@@ -100,6 +105,32 @@ public struct AgentActivityEvent: Sendable, Equatable {
         return events.sorted {
             $0.event.date == $1.event.date ? $0.offset < $1.offset : $0.event.date < $1.event.date
         }.map(\.event)
+    }
+
+    /// Current Codex transcripts tag typed input `user.text`; injected AGENTS.md
+    /// and environment context arrive as user-role messages with other kinds.
+    private static func isCodexPrompt(_ payload: [String: Any]) -> Bool {
+        let metadata = payload["internal_chat_message_metadata_passthrough"] as? [String: Any]
+        let kinds = metadata?["content_item_kinds"] as? [String] ?? []
+        return kinds.contains { $0.hasPrefix("user.") }
+    }
+
+    /// Tool results, compaction summaries, background-task notices, and local
+    /// slash-command echoes are user-role records but not a person's prompt.
+    private static func isClaudePrompt(_ record: [String: Any]) -> Bool {
+        guard record["isMeta"] as? Bool != true, record["isCompactSummary"] as? Bool != true,
+              record["toolUseResult"] == nil else { return false }
+        if let origin = record["origin"] as? [String: Any] { return origin["kind"] as? String == "human" }
+        let message = record["message"] as? [String: Any]
+        let text: String?
+        if let content = message?["content"] as? [[String: Any]] {
+            guard !content.contains(where: { $0["type"] as? String == "tool_result" }) else { return false }
+            text = content.first { $0["type"] as? String == "text" }?["text"] as? String
+        } else {
+            text = message?["content"] as? String
+        }
+        guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return false }
+        return !["<command-", "<local-command", "<task-notification"].contains { text.hasPrefix($0) }
     }
 }
 
@@ -253,11 +284,16 @@ public actor AgentActivityObserver {
         }.map(\.element)
         var latestResultIndex: Int?
         var latestStateIndex: Int?
+        // Tool output usually follows a prompt within the same read, so the
+        // prompt is kept separately or its interaction time would be lost.
+        var latestPromptIndex: Int?
         for (index, event) in events.enumerated() {
             if case .result = event.kind { latestResultIndex = index }
             else { latestStateIndex = index }
+            if case .prompt = event.kind { latestPromptIndex = index }
         }
-        let relevant = [latestResultIndex, latestStateIndex].compactMap { $0 }.sorted().map { events[$0] }
+        let relevant = Set([latestResultIndex, latestStateIndex, latestPromptIndex].compactMap { $0 })
+            .sorted().map { events[$0] }
         return (relevant, pending)
     }
 

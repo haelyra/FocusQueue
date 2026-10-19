@@ -427,7 +427,7 @@ with open({str(record)!r}, "a") as stream: stream.write(json.dumps(sys.argv[1:])
         self.assertEqual(json.loads(args[3])["paneID"], "%0")
         start = next(call for call in self.calls() if call[:2] == ["tmux", "start"])
         self.assertEqual(start[3:5], ["--cwd", os.getcwd()])
-        self.assertEqual(start[-4:], ["--yolo", "--cd", str(source.resolve()), prompt])
+        self.assertEqual(start[-5:], ["--yolo", "--no-daemon", "--cd", str(source.resolve()), prompt])
 
     def test_resolved_prompt_launch_enters_its_task_tmux_and_updates_receipt(self):
         (self.root / "placement.json").write_text(json.dumps({
@@ -594,7 +594,7 @@ with open({str(record)!r}, "a") as stream: stream.write(json.dumps(sys.argv[1:])
             with self.subTest(environment=environment, interactive=interactive):
                 path, args = self.invoke_main(["hello"], environment, interactive)
                 self.assertEqual(args, ["/bin/bash", str(self.adapter), str(self.wrapper), "--", "--yolo",
-                                        "--cd", str(Path.cwd().resolve()), "hello"])
+                                        "--no-daemon", "--cd", str(Path.cwd().resolve()), "hello"])
         self.assertTrue(all(call == ["intake-changed"] or call[:1] == ["placement"] for call in self.calls()))
         self.assertEqual(len(list((self.support / "tracking/launches").glob("*.json"))), 3)
 
@@ -609,7 +609,7 @@ with open({str(record)!r}, "a") as stream: stream.write(json.dumps(sys.argv[1:])
         })
         self.assertEqual(path, "/bin/bash")
         self.assertEqual(args, ["/bin/bash", str(self.adapter), str(self.wrapper), "--", "--yolo",
-                                "--cd", str(Path.cwd().resolve()), "hello"])
+                                "--no-daemon", "--cd", str(Path.cwd().resolve()), "hello"])
         reference_call = next(call for call in self.calls() if call[:2] == ["tmux", "reference"])
         self.assertEqual(reference_call, ["tmux", "reference", "fq-task-ecc-035", "%7",
                                           "--task", "ECC-035", "--agent", "agent-123",
@@ -618,6 +618,36 @@ with open({str(record)!r}, "a") as stream: stream.write(json.dumps(sys.argv[1:])
         self.assertEqual(receipt["reference"]["name"], "fq-task-ecc-035")
         self.assertEqual(receipt["reference"]["paneID"], "%7")
         self.assertEqual(sum(call == ["intake-changed"] for call in self.calls()), 3)
+
+    def test_daemon_default_flags_skip_exec_and_the_explicit_opt_out(self):
+        self.assertEqual(ENTRY.daemon_default_flags(["--yolo"], "new", {}),
+                         ["--yolo", "--no-daemon"])
+        self.assertEqual(ENTRY.daemon_default_flags([], "resume", {}), ["--no-daemon"])
+        self.assertEqual(ENTRY.daemon_default_flags([], "fork", {}), ["--no-daemon"])
+        self.assertEqual(ENTRY.daemon_default_flags(["--yolo"], "noninteractive", {}), ["--yolo"])
+        self.assertEqual(ENTRY.daemon_default_flags([], "new", {"FOCUS_QUEUE_CODEX_DAEMON":"1"}), [])
+
+    def test_managed_launch_runs_codex_without_the_app_server_daemon(self):
+        self.invoke_main(["hello"])
+        start = next(call for call in self.calls() if call[:2] == ["tmux", "start"])
+        self.assertEqual(start.count("--no-daemon"), 1)
+        self.assertLess(start.index("--no-daemon"), start.index("hello"))
+
+    def test_user_supplied_no_daemon_is_never_duplicated(self):
+        self.invoke_main(["--no-daemon", "hello"])
+        start = next(call for call in self.calls() if call[:2] == ["tmux", "start"])
+        self.assertEqual(start.count("--no-daemon"), 1)
+
+    def test_daemon_opt_out_environment_keeps_the_shared_server(self):
+        self.invoke_main(["hello"], {"FOCUS_QUEUE_CODEX_DAEMON":"1"})
+        start = next(call for call in self.calls() if call[:2] == ["tmux", "start"])
+        self.assertNotIn("--no-daemon", start)
+
+    def test_noninteractive_exec_never_gets_the_tui_only_flag(self):
+        path, args = self.invoke_main(["exec", "hello"], {}, interactive=False)
+        self.assertEqual(path, "/bin/bash")
+        self.assertNotIn("--no-daemon", args)
+        self.assertEqual(args[-2:], ["exec", "hello"])
 
     def test_missing_tracking_storage_prevents_provider_launch(self):
         self.support.mkdir()

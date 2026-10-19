@@ -64,12 +64,45 @@ import Testing
         #expect(result.succeeded, "\(shell): \(result.standardError)")
         let captured = result.standardOutput.split(separator: "\0", omittingEmptySubsequences: false).dropLast().map(String.init)
         #expect(captured.first == (provider == .codex ? "alias" : "function"))
-        #expect(captured.dropFirst().prefix(2) == ["--add-dir", context.contextDirectory.path])
+        if provider == .codex {
+          #expect(captured.dropFirst().prefix(3) == ["--no-daemon", "--add-dir", context.contextDirectory.path])
+        } else {
+          #expect(captured.dropFirst().prefix(2) == ["--add-dir", context.contextDirectory.path])
+          #expect(!captured.contains("--no-daemon"))
+        }
         if includePrompt { #expect(captured.last?.contains(hostile) == true) }
-        else { #expect(captured.count == 3) }
+        else { #expect(captured.count == (provider == .codex ? 4 : 3)) }
         #expect(!FileManager.default.fileExists(atPath: sentinel.path))
       }
     }
+  }
+}
+
+@Test("Codex launches run without the app-server daemon; Claude and Kimi stay unchanged")
+func codexLaunchRunsWithoutDaemon() throws {
+  let context = TaskContext(ticketID: "ECC-1", title: "Daemon", summary: "",
+    successCriteria: "Checks pass", planPath: "/tmp/support/tasks/ECC-1/plan.md",
+    worktreePath: "/tmp/worktree", updatedAt: Date())
+  let codexLaunch = try TaskAgentLauncher.command(context: context,
+    subtask: TaskSubtask(title: "Codex agent", provider: .codex),
+    supportDirectory: URL(fileURLWithPath: "/tmp/support"))
+  let flag = try #require(codexLaunch.firstIndex(of: "--no-daemon"))
+  let addDir = try #require(codexLaunch.firstIndex(of: "--add-dir"))
+  #expect(flag < addDir)
+  #expect(codexLaunch.filter { $0 == "--no-daemon" }.count == 1)
+
+  var resumed = TaskSubtask(title: "Codex resume", provider: .codex,
+    sessionID: "11111111-2222-4333-8444-555555555555")
+  resumed.workspace = AgentWorkspace(path: "/tmp/worktree", repositoryPath: "/tmp/worktree")
+  let resumeLaunch = try TaskAgentLauncher.command(context: context, subtask: resumed,
+    supportDirectory: URL(fileURLWithPath: "/tmp/support"), includePrompt: false)
+  #expect(resumeLaunch.filter { $0 == "--no-daemon" }.count == 1)
+
+  for provider in [AgentProvider.claude, .kimi] {
+    let launch = try TaskAgentLauncher.command(context: context,
+      subtask: TaskSubtask(title: "Other agent", provider: provider),
+      supportDirectory: URL(fileURLWithPath: "/tmp/support"))
+    #expect(!launch.contains("--no-daemon"))
   }
 }
 
@@ -121,7 +154,7 @@ func exactCodexResumeRecipe() async throws {
   #expect(result.succeeded, "\(result.standardError)")
   let arguments = result.standardOutput.split(separator: "\0", omittingEmptySubsequences: false)
     .dropLast().map(String.init)
-  #expect(arguments == ["resume", sessionID, "--cd", root.path,
+  #expect(arguments == ["resume", sessionID, "--cd", root.path, "--no-daemon",
     "--model", "gpt-test", "-c", "model_reasoning_effort=high",
     "--add-dir", context.contextDirectory.path])
 }

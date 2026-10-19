@@ -28,28 +28,79 @@ enum DocumentPaneLocation {
     }
 }
 
+enum DocumentPanePlacement {
+    case primary
+    case secondary
+}
+
 @MainActor
 @Observable
 final class DocumentPaneState {
     private(set) var tabs: [URL] = []
-    private(set) var selected: URL?
-    var isPresented = false
+    private(set) var primaryDocument: URL?
+    private(set) var secondaryDocument: URL?
+    /// The document in the foreground. In a split viewer, the right-hand
+    /// document is the newest one and is treated as the selected document.
+    var selected: URL? { secondaryDocument ?? primaryDocument }
+    var isPresented: Bool { primaryDocument != nil || secondaryDocument != nil }
+    var hasSecondaryViewer: Bool { secondaryDocument != nil }
     var centralChatCollapsed = false
     var error: String?
 
     func open(_ url: URL) {
+        open(url, in: .primary)
+    }
+
+    func open(_ url: URL, in placement: DocumentPanePlacement) {
         guard let location = DocumentPaneLocation.normalized(url) else {
-            error = "This link cannot be displayed as a document."; return
+            error = "This link cannot be displayed as a document."
+            return
         }
         if !tabs.contains(location) { tabs.append(location) }
-        selected = location; isPresented = true; centralChatCollapsed = true; error = nil
+        switch placement {
+        case .primary:
+            primaryDocument = location
+            secondaryDocument = nil
+        case .secondary:
+            secondaryDocument = location
+        }
+        centralChatCollapsed = true
+        error = nil
     }
-    func select(_ url: URL) { guard tabs.contains(url) else { return }; selected = url }
+
+    /// Select a document as a tab in the central viewer. A dragged document
+    /// becomes a central tab without removing it from the document history.
+    func select(_ url: URL) {
+        guard tabs.contains(url) else { return }
+        primaryDocument = url
+        if secondaryDocument == url { secondaryDocument = nil }
+    }
+
+    func moveToSecondary(_ url: URL) {
+        guard tabs.contains(url) else { return }
+        secondaryDocument = url
+        if primaryDocument == url { primaryDocument = nil }
+        centralChatCollapsed = true
+    }
+
+    func showCentralContent() {
+        primaryDocument = nil
+    }
+
     func close(_ url: URL) {
         let index = tabs.firstIndex(of: url) ?? 0
         tabs.removeAll { $0 == url }
-        if selected == url { selected = tabs.isEmpty ? nil : tabs[min(index, tabs.count - 1)] }
+        if primaryDocument == url {
+            primaryDocument = secondaryDocument == nil && !tabs.isEmpty
+                ? tabs[min(index, tabs.count - 1)] : nil
+        }
+        if secondaryDocument == url { secondaryDocument = nil }
         if tabs.isEmpty { dismiss() }
     }
-    func dismiss() { isPresented = false; centralChatCollapsed = false }
+
+    func dismiss() {
+        primaryDocument = nil
+        secondaryDocument = nil
+        centralChatCollapsed = false
+    }
 }

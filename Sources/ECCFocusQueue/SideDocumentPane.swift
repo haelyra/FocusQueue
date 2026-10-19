@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 import SwiftUI
 import WebKit
 import FocusQueueCore
@@ -28,55 +29,185 @@ enum DocumentPreviewError: LocalizedError {
     var errorDescription: String? { switch self { case .message(let text): text } }
 }
 
+@MainActor
+@Observable
+final class DocumentFindState {
+    var isPresented = false
+    var query = ""
+    private(set) var request = 0
+    private(set) var searchesBackwards = false
+
+    func activate() {
+        isPresented = true
+        request += 1
+    }
+
+    func find(backwards: Bool = false) {
+        isPresented = true
+        searchesBackwards = backwards
+        request += 1
+    }
+
+    func dismiss() {
+        isPresented = false
+    }
+}
+
+struct DocumentFindBar: View {
+    @Bindable var state: DocumentFindState
+    @FocusState private var queryIsFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button("Find", systemImage: "magnifyingglass") { state.activate() }
+                .buttonStyle(.bordered)
+                .keyboardShortcut("f", modifiers: .command)
+                .help("Find in this document (Command-F or Control-F)")
+            // macOS uses Command-F by convention. Control-F is also registered
+            // for terminal-oriented workflows without adding a second visible control.
+            Button(action: { state.activate() }) { EmptyView() }
+                .keyboardShortcut("f", modifiers: .control)
+                .frame(width: 0, height: 0)
+                .opacity(0)
+                .accessibilityHidden(true)
+            if state.isPresented {
+                TextField("Find in document", text: $state.query)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($queryIsFocused)
+                    .onChange(of: state.query) { _, _ in state.find() }
+                    .onSubmit { state.find() }
+                Button { state.find(backwards: true) } label: { Image(systemName: "chevron.up") }
+                    .help("Find previous")
+                Button { state.find() } label: { Image(systemName: "chevron.down") }
+                    .help("Find next")
+                Button { state.dismiss() } label: { Image(systemName: "xmark") }
+                    .help("Close find")
+            }
+        }
+        .font(.caption.weight(.medium))
+        .onChange(of: state.request) { _, _ in
+            guard state.isPresented else { return }
+            DispatchQueue.main.async { queryIsFocused = true }
+        }
+    }
+}
+
+struct FindableTextDocument: NSViewRepresentable {
+    let text: String
+    let query: String
+    let request: Int
+    let searchesBackwards: Bool
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let textView = NSTextView()
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.usesFindBar = true
+        textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        textView.textContainerInset = NSSize(width: 12, height: 12)
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = false
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = .textBackgroundColor
+        scrollView.documentView = textView
+        context.coordinator.textView = textView
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = context.coordinator.textView else { return }
+        if textView.string != text { textView.string = text }
+        context.coordinator.find(
+            query: query, request: request, searchesBackwards: searchesBackwards,
+            in: textView)
+    }
+
+    @MainActor final class Coordinator {
+        weak var textView: NSTextView?
+        private var handledRequest = 0
+
+        func find(query: String, request: Int, searchesBackwards: Bool, in textView: NSTextView) {
+            guard request > handledRequest else { return }
+            handledRequest = request
+            guard !query.isEmpty else { return }
+            let source = textView.string as NSString
+            let fullRange = NSRange(location: 0, length: source.length)
+            let selected = textView.selectedRange()
+            let searchRange: NSRange
+            let options: NSString.CompareOptions
+            if searchesBackwards {
+                searchRange = selected.location == NSNotFound ? fullRange : NSRange(location: 0, length: selected.location)
+                options = [.caseInsensitive, .backwards]
+            } else {
+                let start = selected.location == NSNotFound ? 0 : min(NSMaxRange(selected), source.length)
+                searchRange = NSRange(location: start, length: source.length - start)
+                options = [.caseInsensitive]
+            }
+            var match = source.range(of: query, options: options, range: searchRange)
+            if match.location == NSNotFound { match = source.range(of: query, options: options, range: fullRange) }
+            guard match.location != NSNotFound else { return }
+            textView.setSelectedRange(match)
+            textView.scrollRangeToVisible(match)
+            textView.showFindIndicator(for: match)
+        }
+    }
+}
+
 struct SideDocumentPane: View {
     let queue: QueueViewModel
     let ticket: DashboardTicket
-    @Bindable var state: DocumentPaneState
+    let document: URL
+    let open: (URL) -> Void
+    let close: () -> Void
+    let receiveDocument: (String) -> Bool
     @State private var content: SideDocumentContent?
     @State private var conversation: DocumentConversation?
     @State private var error: String?
     @State private var revision = 0
+    @State private var find = DocumentFindState()
     private let loader = SideDocumentLoader()
 
     var body: some View {
         VStack(spacing: 8) {
             HStack {
-                Label("Document", systemImage: "rectangle.split.2x1").font(.system(size: 12, weight: .semibold))
+                Label(document.isFileURL ? document.lastPathComponent : (document.host ?? "Document"), systemImage: "doc.text")
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                    .draggable(document.absoluteString)
                 Spacer()
                 Button { revision += 1 } label: { Image(systemName: "arrow.clockwise") }.help("Reload document")
-                Button { state.dismiss() } label: { Image(systemName: "xmark") }.help("Hide document pane and restore central chat")
+                Button(action: close) { Image(systemName: "xmark") }
+                    .help("Close this document viewer")
             }
-            ScrollView(.horizontal) {
-                HStack(spacing: 5) {
-                    ForEach(state.tabs, id: \.self) { url in
-                        HStack(spacing: 5) {
-                            Button { state.select(url) } label: { Text(url.isFileURL ? url.lastPathComponent : (url.host ?? url.absoluteString)).lineLimit(1) }
-                            Button { state.close(url) } label: { Image(systemName: "xmark").font(.system(size: 9)) }
-                                .accessibilityLabel("Close \(url.lastPathComponent)")
-                        }.buttonStyle(.plain).font(.caption).padding(.horizontal, 8).padding(.vertical, 6)
-                            .background(Color.primary.opacity(state.selected == url ? 0.12 : 0.04), in: RoundedRectangle(cornerRadius: 6))
-                            .help(url.absoluteString)
-                    }
-                }
-            }
-            if let url = state.selected { DocumentMetadataStrip(url: url, taskID: ticket.id, revision: revision) }
+            DocumentMetadataStrip(url: document, taskID: ticket.id, revision: revision)
+            DocumentFindBar(state: find)
             GeometryReader { geometry in
                 VStack(spacing: 8) {
                     Group {
                         if let error { ContentUnavailableView("Preview unavailable", systemImage: "doc", description: Text(error)) }
-                        else if let url = state.selected, let content {
+                        else if let content {
                             switch content {
                             case .markdown(let text):
-                                EmbeddedPlanDocument(markdown: text, sourceURL: url, appearance: queue.appearance,
-                                    accentStyle: queue.accentStyle, canvasSelection: nil, open: { state.open($0) }, select: { action in
+                                EmbeddedPlanDocument(markdown: text, sourceURL: document, appearance: queue.appearance,
+                                    accentStyle: queue.accentStyle, canvasSelection: nil, open: open, select: { action in
                                         conversation?.draft += "\nSelected passage: \(action.selection.excerpt)\n\(action.initialText)"
-                                    })
+                                    }, findQuery: find.query, findRequest: find.request,
+                                    findSearchesBackwards: find.searchesBackwards)
                             case .text(let text):
-                                ScrollView([.horizontal, .vertical]) {
-                                    Text(text).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
-                                        .frame(maxWidth: .infinity, alignment: .topLeading).padding(12)
-                                }.background(Color(nsColor: .textBackgroundColor))
-                            case .rendered(let document): ReadOnlyResourceDocument(url: document, open: { state.open($0) })
+                                FindableTextDocument(
+                                    text: text, query: find.query, request: find.request,
+                                    searchesBackwards: find.searchesBackwards)
+                            case .rendered(let resource):
+                                ReadOnlyResourceDocument(
+                                    url: resource, open: open, findQuery: find.query,
+                                    findRequest: find.request, findSearchesBackwards: find.searchesBackwards)
                             }
                         } else { ProgressView("Loading document…") }
                     }.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -89,16 +220,19 @@ struct SideDocumentPane: View {
                 }
             }
         }
-        .task(id: "\(state.selected?.absoluteString ?? ""):\(revision)") {
-            guard let url = state.selected else { return }
+        .dropDestination(for: String.self) { identifiers, _ in
+            guard let identifier = identifiers.last else { return false }
+            return receiveDocument(identifier)
+        }
+        .task(id: "\(document.absoluteString):\(revision)") {
             content = nil; error = nil
-            conversation = queue.documentConversation(for: url, ticketID: ticket.id)
+            conversation = queue.documentConversation(for: document, ticketID: ticket.id)
             if let conversation { await conversation.load() }
             do {
-                let loaded = try await loader.load(url)
-                guard !Task.isCancelled, state.selected == url else { return }
+                let loaded = try await loader.load(document)
+                guard !Task.isCancelled else { return }
                 content = loaded
-            } catch { if !Task.isCancelled, state.selected == url { self.error = error.localizedDescription } }
+            } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
         }
     }
 }
@@ -145,6 +279,9 @@ struct DocumentConversationView: View {
 struct ReadOnlyResourceDocument: NSViewRepresentable {
     let url: URL
     let open: (URL) -> Void
+    var findQuery = ""
+    var findRequest = 0
+    var findSearchesBackwards = false
     func makeCoordinator() -> Coordinator { Coordinator(open: open) }
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
@@ -156,16 +293,49 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
     }
     func updateNSView(_ view: WKWebView, context: Context) {
         context.coordinator.open = open
-        guard context.coordinator.url != url else { return }
-        context.coordinator.url = url
-        if url.isFileURL { view.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent()) }
-        else { view.load(URLRequest(url: url)) }
+        if context.coordinator.url != url {
+            context.coordinator.url = url
+            context.coordinator.willLoadDocument()
+            if url.isFileURL { view.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent()) }
+            else { view.load(URLRequest(url: url)) }
+        }
+        context.coordinator.requestFind(
+            query: findQuery, request: findRequest, searchesBackwards: findSearchesBackwards, in: view)
     }
     static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) { view.stopLoading(); view.navigationDelegate = nil; view.uiDelegate = nil }
     @MainActor final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var url: URL?
         var open: (URL) -> Void
+        private var isDocumentLoaded = false
+        private var handledFindRequest = 0
+        private var pendingFind: (query: String, searchesBackwards: Bool)?
         init(open: @escaping (URL) -> Void) { self.open = open }
+
+        func willLoadDocument() { isDocumentLoaded = false }
+
+        func requestFind(
+            query: String, request: Int, searchesBackwards: Bool, in webView: WKWebView
+        ) {
+            guard request > handledFindRequest else { return }
+            handledFindRequest = request
+            pendingFind = query.isEmpty ? nil : (query, searchesBackwards)
+            performPendingFind(in: webView)
+        }
+
+        private func performPendingFind(in webView: WKWebView) {
+            guard isDocumentLoaded, let pendingFind else { return }
+            self.pendingFind = nil
+            let configuration = WKFindConfiguration()
+            configuration.backwards = pendingFind.searchesBackwards
+            configuration.caseSensitive = false
+            configuration.wraps = true
+            webView.find(pendingFind.query, configuration: configuration) { _ in }
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            isDocumentLoaded = true
+            performPendingFind(in: webView)
+        }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                      for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
             if let target = navigationAction.request.url { open(target) }

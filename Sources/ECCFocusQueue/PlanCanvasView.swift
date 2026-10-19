@@ -17,6 +17,7 @@ struct PlanCanvasView: View {
   @State private var showsWorkspaceMap = false
   @State private var workspaceMap = WorkspaceMapModel()
   @State private var showsTaskSessions = false
+  @State private var planFind = DocumentFindState()
 
   private var sourceURL: URL {
     model.presentedPlanURL ?? URL(fileURLWithPath: model.taskContexts[ticket.id]?.planPath ?? "/")
@@ -31,7 +32,10 @@ struct PlanCanvasView: View {
           .frame(width: 34, height: 34)
           .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
         VStack(alignment: .leading, spacing: 3) {
-          Text(showsWorkspaceMap ? "Workspace map" : (model.presentedPlanURL == nil ? "Central plan" : "Supporting document"))
+          Text(
+            showsWorkspaceMap ? "Workspace map"
+              : (sideDocuments.primaryDocument?.lastPathComponent ?? (model.presentedPlanURL == nil ? "Central plan" : "Supporting document"))
+          )
             .font(.system(size: 20, weight: .bold, design: .rounded))
           HStack(spacing: 4) {
             Text("\(ticket.id) ·")
@@ -53,7 +57,11 @@ struct PlanCanvasView: View {
         .padding(.horizontal, 9).padding(.vertical, 6)
         .background(Color.secondary.opacity(0.09), in: Capsule())
         Menu {
-          Button("Central plan") { showsWorkspaceMap = false; model.openPlan(for: ticket) }
+          Button("Central plan") {
+            sideDocuments.showCentralContent()
+            showsWorkspaceMap = false
+            model.openPlan(for: ticket)
+          }
           ForEach(ticket.planLinks) { link in
             Button(link.label) {
               if let url = ResourceLocator.url(for: link.url) { openDocument(url) }
@@ -64,7 +72,7 @@ struct PlanCanvasView: View {
         }
         .menuStyle(.borderlessButton).fixedSize().disabled(isEditing)
         .help("Choose the central plan or a supporting document").accessibilityLabel("Choose plan")
-        if model.presentedPlanURL == nil {
+        if model.presentedPlanURL == nil, sideDocuments.primaryDocument == nil {
           Button {
             showsWorkspaceMap = false
             editDraft = model.planEditDrafts[ticket.id]?.markdown ?? model.presentedPlanMarkdown
@@ -108,7 +116,10 @@ struct PlanCanvasView: View {
         HStack {
           Button(sideDocuments.centralChatCollapsed ? "Show central chat" : "Hide central chat") {
             sideDocuments.centralChatCollapsed.toggle()
-          }.font(.caption)
+          }
+          .font(.caption.weight(.semibold))
+          .buttonStyle(.borderedProminent)
+          .tint(.accentColor)
           if model.isQueueAgentResponding && model.respondingTicketID == ticket.id {
             ProgressView().controlSize(.mini)
             Text("Central conversation is still working").font(.caption).foregroundStyle(.secondary)
@@ -118,17 +129,26 @@ struct PlanCanvasView: View {
       }
       GeometryReader { geometry in
         ScrollView(.horizontal) {
-          if sideDocuments.isPresented {
+          if let secondaryDocument = sideDocuments.secondaryDocument {
             PlanPaneSplit(initialFraction: 0.5, minimumPrimary: 500, minimumSecondary: 460) {
               VStack(spacing: 8) {
-                document
+                primaryViewer
                 if !sideDocuments.centralChatCollapsed { conversation.frame(height: 230) }
               }
             } secondary: {
-              SideDocumentPane(queue: model, ticket: ticket, state: sideDocuments)
+              SideDocumentPane(
+                queue: model, ticket: ticket, document: secondaryDocument,
+                open: openDocument, close: { sideDocuments.close(secondaryDocument) },
+                receiveDocument: moveDocumentToSecondary)
                 .padding(.horizontal, 4)
             }
             .frame(width: max(geometry.size.width, QueueInspectorLayout.documentPairMinimumWidth), height: geometry.size.height)
+          } else if sideDocuments.primaryDocument != nil {
+            VStack(spacing: 8) {
+              primaryViewer
+              if !sideDocuments.centralChatCollapsed { conversation.frame(height: 230) }
+            }
+            .frame(width: max(geometry.size.width, QueueInspectorLayout.documentMinimumWidth), height: geometry.size.height)
           } else {
             PlanPaneSplit(initialFraction: 0.74, minimumPrimary: QueueInspectorLayout.documentMinimumWidth,
                           minimumSecondary: QueueInspectorLayout.chatMinimumWidth) {
@@ -149,11 +169,28 @@ struct PlanCanvasView: View {
       }
   }
 
+  @ViewBuilder private var primaryViewer: some View {
+    if let primaryDocument = sideDocuments.primaryDocument {
+      VStack(spacing: 8) {
+        documentTabBar
+        SideDocumentPane(
+          queue: model, ticket: ticket, document: primaryDocument,
+          open: openDocument, close: { sideDocuments.close(primaryDocument) },
+          receiveDocument: moveDocumentToSecondary)
+      }
+    } else {
+      document
+    }
+  }
+
   private var document: some View {
     VStack(spacing: 8) {
       documentTabBar
       if !showsWorkspaceMap, let context = model.taskContexts[ticket.id] {
         DocumentMetadataStrip(url: URL(fileURLWithPath: context.planPath), taskID: ticket.id)
+      }
+      if !showsWorkspaceMap, !isEditing {
+        DocumentFindBar(state: planFind)
       }
       if showsWorkspaceMap {
         WorkspaceMapView(queue: model, ticket: ticket, model: workspaceMap,
@@ -239,7 +276,10 @@ struct PlanCanvasView: View {
             canvasSelection = action.selection
             if !action.initialText.isEmpty { chatDraft += action.initialText }
             composerFocusRequest &+= 1
-          }
+          },
+          findQuery: planFind.query,
+          findRequest: planFind.request,
+          findSearchesBackwards: planFind.searchesBackwards
         )
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
@@ -257,18 +297,58 @@ struct PlanCanvasView: View {
   private var documentTabBar: some View {
     ScrollView(.horizontal) {
       HStack(spacing: 6) {
-        Button("Central plan") { showsWorkspaceMap = false; model.openPlan(for: ticket) }
+        Button("Central plan") {
+          sideDocuments.showCentralContent()
+          showsWorkspaceMap = false
+          model.openPlan(for: ticket)
+        }
           .buttonStyle(.bordered)
           .tint(model.presentedPlanURL == nil && !showsWorkspaceMap ? .accentColor : .secondary)
-        Button("Map") { showsWorkspaceMap = true; canvasSelection = nil }
-          .buttonStyle(.bordered).tint(showsWorkspaceMap ? .accentColor : .secondary)
-          .help("See this task’s workspaces, agents, and files")
-        if !sideDocuments.tabs.isEmpty {
-          Button("Documents (\(sideDocuments.tabs.count))") {
-            if let selected = sideDocuments.selected { sideDocuments.open(selected) }
-          }.buttonStyle(.bordered).tint(.secondary)
+          .background(Color(nsColor: .controlBackgroundColor).opacity(0.96), in: Capsule())
+          .overlay(Capsule().stroke(Color.primary.opacity(0.16), lineWidth: 1).allowsHitTesting(false))
+        Button("Map") {
+          sideDocuments.showCentralContent()
+          showsWorkspaceMap = true
+          canvasSelection = nil
         }
-      }.padding(.vertical, 2)
+          .buttonStyle(.bordered).tint(showsWorkspaceMap ? .accentColor : .secondary)
+          .background(Color(nsColor: .controlBackgroundColor).opacity(0.96), in: Capsule())
+          .overlay(Capsule().stroke(Color.primary.opacity(0.16), lineWidth: 1).allowsHitTesting(false))
+          .help("See this task’s workspaces, agents, and files")
+        ForEach(sideDocuments.tabs, id: \.self) { url in
+          HStack(spacing: 4) {
+            Button(url.isFileURL ? url.lastPathComponent : (url.host ?? url.absoluteString)) {
+              showsWorkspaceMap = false
+              sideDocuments.select(url)
+            }
+            .lineLimit(1)
+            Button { sideDocuments.close(url) } label: {
+              Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+            }
+            .accessibilityLabel("Close \(url.lastPathComponent)")
+          }
+          .font(.caption.weight(.medium))
+          .foregroundStyle(sideDocuments.primaryDocument == url ? Color.accentColor : Color.primary)
+          .padding(.horizontal, 8).padding(.vertical, 6)
+          .background(
+            Color(nsColor: .controlBackgroundColor).opacity(sideDocuments.primaryDocument == url ? 0.98 : 0.94),
+            in: RoundedRectangle(cornerRadius: 7))
+          .overlay(
+            RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.18), lineWidth: 1)
+              .allowsHitTesting(false)
+          )
+          .draggable(url.absoluteString)
+          .help(url.absoluteString)
+        }
+      }
+      .padding(.vertical, 2)
+      .dropDestination(for: String.self) { identifiers, _ in
+        guard let identifier = identifiers.last,
+              let url = sideDocuments.tabs.first(where: { $0.absoluteString == identifier }) else { return false }
+        showsWorkspaceMap = false
+        sideDocuments.select(url)
+        return true
+      }
     }.disabled(isEditing || isSaving)
       .accessibilityLabel("Open documents")
   }
@@ -281,7 +361,17 @@ struct PlanCanvasView: View {
   }
 
   private func openDocument(_ url: URL) {
-    sideDocuments.open(url)
+    let placement: DocumentPanePlacement = showsWorkspaceMap
+      || sideDocuments.primaryDocument != nil
+      || sideDocuments.secondaryDocument != nil
+      ? .secondary : .primary
+    sideDocuments.open(url, in: placement)
+  }
+
+  private func moveDocumentToSecondary(_ identifier: String) -> Bool {
+    guard let url = sideDocuments.tabs.first(where: { $0.absoluteString == identifier }) else { return false }
+    sideDocuments.moveToSecondary(url)
+    return true
   }
 
   private var conversation: some View {
@@ -306,6 +396,9 @@ struct EmbeddedPlanDocument: NSViewRepresentable {
   let canvasSelection: PlanCanvasSelection?
   let open: (URL) -> Void
   let select: (PlanCanvasSelectionAction) -> Void
+  var findQuery = ""
+  var findRequest = 0
+  var findSearchesBackwards = false
 
   func makeCoordinator() -> Coordinator { Coordinator(open: open, select: select) }
 
@@ -339,14 +432,17 @@ struct EmbeddedPlanDocument: NSViewRepresentable {
     context.coordinator.select = select
     context.coordinator.sourceURL = sourceURL
     context.coordinator.updateCanvasSelection(canvasSelection, in: view)
-    guard
-      let html = context.coordinator.htmlIfChanged(
-        markdown: markdown, sourceURL: sourceURL,
-        appearance: appearance, accentStyle: accentStyle)
-    else { return }
-    view.appearance = NSAppearance(named: appearance == .dark ? .darkAqua : .aqua)
-    context.coordinator.pendingInitialLoad = true
-    view.loadHTMLString(html, baseURL: sourceURL.deletingLastPathComponent())
+    if let html = context.coordinator.htmlIfChanged(
+      markdown: markdown, sourceURL: sourceURL,
+      appearance: appearance, accentStyle: accentStyle)
+    {
+      view.appearance = NSAppearance(named: appearance == .dark ? .darkAqua : .aqua)
+      context.coordinator.willLoadDocument()
+      context.coordinator.pendingInitialLoad = true
+      view.loadHTMLString(html, baseURL: sourceURL.deletingLastPathComponent())
+    }
+    context.coordinator.requestFind(
+      query: findQuery, request: findRequest, searchesBackwards: findSearchesBackwards, in: view)
   }
 
   static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
@@ -366,6 +462,9 @@ struct EmbeddedPlanDocument: NSViewRepresentable {
     }
     private var lastInput: RenderInput?
     private var renderedCanvasSelection: PlanCanvasSelection?
+    private var isDocumentLoaded = false
+    private var handledFindRequest = 0
+    private var pendingFind: (query: String, searchesBackwards: Bool)?
     var pendingInitialLoad = true
     var sourceURL = URL(fileURLWithPath: "/")
     var open: (URL) -> Void
@@ -413,6 +512,29 @@ struct EmbeddedPlanDocument: NSViewRepresentable {
         completionHandler: nil)
     }
 
+    func willLoadDocument() {
+      isDocumentLoaded = false
+    }
+
+    func requestFind(
+      query: String, request: Int, searchesBackwards: Bool, in webView: WKWebView
+    ) {
+      guard request > handledFindRequest else { return }
+      handledFindRequest = request
+      pendingFind = query.isEmpty ? nil : (query, searchesBackwards)
+      performPendingFind(in: webView)
+    }
+
+    private func performPendingFind(in webView: WKWebView) {
+      guard isDocumentLoaded, let pendingFind else { return }
+      self.pendingFind = nil
+      let configuration = WKFindConfiguration()
+      configuration.backwards = pendingFind.searchesBackwards
+      configuration.caseSensitive = false
+      configuration.wraps = true
+      webView.find(pendingFind.query, configuration: configuration) { _ in }
+    }
+
     func userContentController(
       _ userContentController: WKUserContentController, didReceive message: WKScriptMessage
     ) {
@@ -450,6 +572,11 @@ struct EmbeddedPlanDocument: NSViewRepresentable {
       } else {
         decisionHandler(.cancel)
       }
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+      isDocumentLoaded = true
+      performPendingFind(in: webView)
     }
   }
 }

@@ -496,9 +496,10 @@ struct QueueView: View {
   }
 
   private var todayFocusSection: some View {
-    // Searches the whole project queue, not only the top five.
+    // Searches the whole project queue, not only the top five. Completed tasks
+    // follow open ones so a code or a closed status still finds its task.
     let search = isFilteringTasks
-      ? taskSearchCache.result(for: model.openTickets, query: taskSearchQuery) : nil
+      ? taskSearchCache.result(for: model.openTickets + model.completedTickets, query: taskSearchQuery) : nil
     let shownTickets = search.map { Array($0.tickets.prefix(taskSearchResultLimit)) } ?? focusTickets
     return VStack(alignment: .leading, spacing: 10) {
       HStack {
@@ -550,6 +551,15 @@ struct QueueView: View {
         ).frame(maxWidth: .infinity).notificationSurface(radius: 18)
       } else if agentViewEnabled {
         agentViewList(for: shownTickets)
+      } else if search != nil {
+        let completedIDs = Set(model.completedTickets.map(\.id))
+        ForEach(shownTickets) { ticket in
+          if completedIDs.contains(ticket.id) {
+            CompletedTicketCard(ticket: ticket, model: model)
+          } else {
+            TicketCard(ticket: ticket, model: model)
+          }
+        }
       } else {
         ForEach(shownTickets) { ticket in TicketCard(ticket: ticket, model: model) }
       }
@@ -583,7 +593,8 @@ struct QueueView: View {
     if isTaskSearchActive {
       TaskSearchField(
         query: $taskSearchQuery, isFocused: $taskSearchIsFocused,
-        prompt: model.showsAllProjects ? "Search all tasks" : "Search \(model.projectScopeName) tasks",
+        prompt: (model.showsAllProjects ? "Search all tasks" : "Search \(model.projectScopeName) tasks")
+          + " · code, status, priority",
         resultCount: resultCount, endEditing: endTaskSearchEditing, close: closeTaskSearch)
     } else if agentViewEnabled {
       focusHeadingButton(title: "Today's focus", detail: "\(agentViewEntries(for: focusTickets).count) agents")
@@ -604,6 +615,13 @@ struct QueueView: View {
 
   private func taskSearchCaption(_ search: TaskSearchResult, shown: Int) -> String? {
     var parts: [String] = []
+    if !search.filters.isEmpty {
+      let fields = [TaskSearchFilter.Field.priority, .status].compactMap { field -> String? in
+        let values = search.filters.filter { $0.field == field }.map(\.label)
+        return values.isEmpty ? nil : "\(field.rawValue.capitalized) \(values.joined(separator: " or "))"
+      }
+      parts.append("Filtered by " + fields.joined(separator: " · "))
+    }
     if case .approximate(let suggestion) = search.match {
       parts.append(suggestion.map { "No exact matches · showing results for \u{201C}\($0)\u{201D}" }
         ?? "No exact matches · showing similar tasks")
@@ -2590,6 +2608,7 @@ private struct TaskSearchField: View {
           return .handled
         }
         .accessibilityLabel("Search tasks")
+        .help("Type words, a code such as FOC-018 or 18, a status such as backlog, or a priority such as high. status: and priority: accept part of a value.")
       if let resultCount {
         Text("\(resultCount)").font(.system(size: 11, weight: .semibold).monospacedDigit())
           .foregroundStyle(.secondary)

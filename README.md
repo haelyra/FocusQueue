@@ -325,10 +325,16 @@ an expanded description. Existing descriptions start collapsed, and viewing or
 expanding a task clears the badge.
 
 Today's focus displays the first five tasks; Rest of queue displays the rest.
-Click the Today's focus heading to search every open task in the selected
-project. Results filter on each keystroke; when no task holds every keyword,
-the search retries with close spellings and synonyms. Esc or the clear button
-closes the search; clicking elsewhere drops the cursor and closes an empty one.
+Click the Today's focus heading to search every task in the selected project;
+completed tasks follow open ones. Results filter on each keystroke; when no task
+holds every keyword, the search retries with close spellings and synonyms. A
+code matches with or without its prefix, dash, or leading zeros: `FOC-018`,
+`foc 18`, and `18` all find FOC-018. A word that is exactly a status or priority,
+such as `blocked`, `in-progress`, or `high`, filters by that field; two values
+of one field are alternatives. `status:` (or `is:`) and `priority:` (or `p:`)
+accept part of a value, and `status:open` or `status:done` select open or
+completed tasks. Esc or the clear button closes the search; clicking elsewhere
+drops the cursor and closes an empty one.
 Saved positions and the selected ordering mode survive refreshes and restarts.
 
 The orchestrator can reorder tasks at your request using the same local order:

@@ -9,8 +9,6 @@ enum QueueChromeMetrics {
   static let notificationBadgeForeground = NSColor.black
 
   static let notificationPanelMinWidth: CGFloat = 300
-  static let notificationPanelIdealWidth: CGFloat = 380
-  static let notificationPanelMaxWidth: CGFloat = 480
 }
 
 enum RouterComposerKeyboardAction: Equatable {
@@ -42,7 +40,6 @@ struct QueueView: View {
   @State private var showsNewTask = false
   @State private var newTaskProjectID: String?
   @State private var updateDrafts: [String: String] = [:]
-  @State private var notificationsExpanded = false
   @State private var settingsTarget: QueueSettingsTarget?
   @State private var showsStaleAgentCleanupConfirmation = false
   /// Counted when the cleanup is requested. Scanning every task's agents in
@@ -80,7 +77,7 @@ struct QueueView: View {
     .preferredColorScheme(model.appearance == .dark ? .dark : .light)
     .environment(\.queueAccentStyle, model.accentStyle)
     .onChange(of: notificationCount) { _, count in
-      if count == 0 { notificationsExpanded = false }
+      if count == 0 { model.setNotificationsInspectorPresented(false) }
     }
     .sheet(isPresented: $showsTerminals) { TerminalBrowserView(model: model) }
     .sheet(isPresented: $showsNewTask) {
@@ -103,28 +100,14 @@ struct QueueView: View {
     }
   }
 
-  private var showsNotificationPanel: Bool { notificationsExpanded && notificationCount > 0 }
-
   private var expandedPanel: some View {
     HStack(spacing: 12) {
       if model.isInspectorPresented, model.windowPlacement == .upperRight {
         inspector
         Divider()
       }
-      if showsNotificationPanel, model.windowPlacement == .upperRight {
-        notificationsPanel
-        Divider()
-      }
       queuePane
-        .frame(
-          minWidth: 380,
-          idealWidth: 440,
-          maxWidth: (model.isInspectorPresented || showsNotificationPanel) ? 440 : .infinity
-        )
-      if showsNotificationPanel, model.windowPlacement != .upperRight {
-        Divider()
-        notificationsPanel
-      }
+        .frame(minWidth: 380, idealWidth: 440, maxWidth: model.isInspectorPresented ? 440 : .infinity)
       if model.isInspectorPresented, model.windowPlacement != .upperRight {
         Divider()
         inspector
@@ -172,6 +155,8 @@ struct QueueView: View {
         QueueAgentChatView(model: model, draft: $queueAgentDraft)
       }
       .frame(minWidth: 320, idealWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
+    } else if model.isNotificationsInspectorPresented {
+      notificationsPanel
     } else if let update = model.presentedAgentUpdate {
       AgentUpdateView(model: model, update: update, draft: Binding(
         get: { updateDrafts[update.id] ?? "" }, set: { updateDrafts[update.id] = $0 }
@@ -222,9 +207,7 @@ struct QueueView: View {
     }
   }
 
-  private var notificationCount: Int {
-    (model.showsReportNotification ? 1 : 0) + model.notificationAgentUpdates.count
-  }
+  private var notificationCount: Int { model.notificationCount }
 
   private var notificationsPanel: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -232,7 +215,7 @@ struct QueueView: View {
         Label("Notifications", systemImage: "bell.fill").font(.headline)
         Spacer()
         Button {
-          withAnimation(.easeInOut(duration: 0.18)) { notificationsExpanded = false }
+          withAnimation(.easeInOut(duration: 0.18)) { model.setNotificationsInspectorPresented(false) }
         } label: {
           Image(systemName: "xmark")
         }
@@ -252,10 +235,8 @@ struct QueueView: View {
     }
     .padding(12)
     .frame(
-      minWidth: QueueChromeMetrics.notificationPanelMinWidth,
-      idealWidth: QueueChromeMetrics.notificationPanelIdealWidth,
-      maxWidth: QueueChromeMetrics.notificationPanelMaxWidth,
-      maxHeight: .infinity
+      minWidth: QueueChromeMetrics.notificationPanelMinWidth, idealWidth: 500,
+      maxWidth: .infinity, maxHeight: .infinity
     )
   }
 
@@ -993,11 +974,11 @@ struct QueueView: View {
         ).help(dailyReportHeaderHelp)
         Button {
           withAnimation(.easeInOut(duration: 0.18)) {
-            notificationsExpanded.toggle()
+            model.toggleNotificationsInspector()
           }
         } label: {
           HStack(spacing: 3) {
-            Image(systemName: notificationsExpanded ? "bell.fill" : "bell")
+            Image(systemName: model.isNotificationsInspectorPresented ? "bell.fill" : "bell")
               .font(.system(size: 13, weight: .semibold))
             if notificationCount > 0 {
               Text(String(notificationCount))
@@ -1016,11 +997,11 @@ struct QueueView: View {
         .minimumHitTarget(width: 30, height: 34)
         .disabled(notificationCount == 0)
         .accessibilityLabel(
-          notificationsExpanded
+          model.isNotificationsInspectorPresented
             ? "Close \(notificationCount) notifications"
             : "Open \(notificationCount) notifications"
         )
-        .help(notificationsExpanded ? "Close notifications" : "Show notifications")
+        .help(model.isNotificationsInspectorPresented ? "Close notifications" : "Show notifications")
         Button {
           settingsTarget = nil
           withAnimation(.easeInOut(duration: 0.18)) { screen = .settings }

@@ -1139,6 +1139,7 @@ import UserNotifications
   private var inspectorLayout: QueueInspectorLayout {
     if model.presentedPlanTicketID != nil { return .plan }
     if model.isQueueChatInspectorPresented { return .chat }
+    if model.isNotificationsInspectorPresented { return .notifications }
     return model.isDailyReportPresented || model.presentedAgentUpdate != nil ? .report : .closed
   }
 

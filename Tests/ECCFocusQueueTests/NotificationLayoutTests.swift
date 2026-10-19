@@ -13,8 +13,15 @@ struct NotificationLayoutTests {
     #expect(QueueChromeMetrics.notificationBadgeFill == NSColor.systemYellow)
     #expect(QueueChromeMetrics.notificationBadgeForeground == NSColor.black)
     #expect(QueueChromeMetrics.notificationPanelMinWidth == 300)
-    #expect(QueueChromeMetrics.notificationPanelIdealWidth == 380)
-    #expect(QueueChromeMetrics.notificationPanelMaxWidth == 480)
+  }
+
+  @Test("Notifications widen the panel like a side report instead of squeezing the queue")
+  func notificationsInspectorWidth() {
+    let layout = QueueInspectorLayout.notifications
+    #expect(layout.preferredWidth(compactWidth: 440) == 1_020)
+    // Queue column, divider, and padding still leave the list its minimum width.
+    #expect(layout.minimumWidth - 440 - 49 >= QueueChromeMetrics.notificationPanelMinWidth)
+    #expect(layout.minimumWidth > QueueInspectorLayout.closed.maximumWidth)
   }
 
   @Test("Swipe affordance does not stretch a notification into the available panel height",

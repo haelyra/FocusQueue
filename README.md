@@ -95,10 +95,15 @@ subtask cards show when progress was last reported.
 
 Agent updates open their own detail panel with the full recorded summary, completion
 verdict, verifier output, task conversation, and context links. The notification
-keeps the event visible while acknowledging only its own completed subtask.
+keeps the event visible while acknowledging only its own completed subtask. The
+bell opens notifications in the same side panel as a central plan, widening the
+window toward the screen center; closing an update opened from the list returns
+to the list.
 
 Click a task title to view its associated sessions. Descriptions start collapsed
-for existing tasks and expanded for new unviewed tasks. Right-click **View details**
+for existing tasks and expanded for new unviewed tasks. A **NEW** badge beside the
+title marks a task created after Focus Queue first loaded its project dashboard
+and clears once you open, expand, or inspect the task. Right-click **View details**
 for dates, agent counts, activity, and usage metadata. The full task-details
 disclosure sits below the agents. **View Central Plan** is a bordered button, and
 **Context, evidence & links** appears near the task description. Local Markdown
@@ -300,8 +305,10 @@ rewrite of the scheduler or report engine.
 
 ## Queue ordering and chat
 
-The queue offers four ordering modes. **Recent interaction** puts the last
-agent-prompted tasks first, **Recent output** uses the latest actual agent output,
+The queue offers four ordering modes. **Recent interaction** puts the tasks whose
+agents you prompted most recently first, using provider hooks or, when hooks are
+off, prompts read from the Codex and Claude transcripts. **Recent output** uses the
+latest actual agent output,
 **Triage deadlines** orders by hard and relative deadlines, and **Manual order**
 uses your saved sequence. Activity modes use deadline triage for the remaining
 tasks. Drag a task onto the upper or lower half of another card, or use the card

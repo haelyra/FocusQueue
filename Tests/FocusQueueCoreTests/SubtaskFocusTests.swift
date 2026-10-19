@@ -276,6 +276,76 @@ struct SubtaskFocusTests {
         #expect(event?.summary == "Regrown result")
     }
 
+    @Test("Transcript prompts are told apart from tool output and injected context")
+    func transcriptPromptClassification() throws {
+        let session = UUID().uuidString
+        let claude = [
+            #"{"timestamp":"2026-10-19T17:00:00Z","type":"user","sessionId":"\#(session)","uuid":"a","origin":{"kind":"human"},"message":{"role":"user","content":"Fix the panel"}}"#,
+            #"{"timestamp":"2026-10-19T17:00:01Z","type":"user","sessionId":"\#(session)","uuid":"b","toolUseResult":{},"message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}"#,
+            #"{"timestamp":"2026-10-19T17:00:02Z","type":"user","sessionId":"\#(session)","uuid":"c","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>done</task-notification>"}}"#,
+            #"{"timestamp":"2026-10-19T17:00:03Z","type":"user","sessionId":"\#(session)","uuid":"d","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued"}}"#,
+            #"{"timestamp":"2026-10-19T17:00:04Z","type":"user","sessionId":"\#(session)","uuid":"e","message":{"role":"user","content":"<command-name>/model</command-name>"}}"#,
+            #"{"timestamp":"2026-10-19T17:00:05Z","type":"user","sessionId":"\#(session)","uuid":"f","isMeta":true,"message":{"role":"user","content":"Caveat"}}"#,
+            #"{"timestamp":"2026-10-19T17:00:06Z","type":"user","sessionId":"\#(session)","uuid":"g","message":{"role":"user","content":[{"type":"image"},{"type":"text","text":"Legacy prompt"}]}}"#,
+        ].joined(separator: "\n")
+        let claudeKinds = AgentActivityEvent.events(in: Data(claude.utf8), provider: .claude, sessionID: session).map(\.kind)
+        #expect(claudeKinds == [.prompt, .working, .working, .working, .working, .working, .prompt])
+
+        let codex = [
+            #"{"timestamp":"2026-10-19T17:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"AGENTS.md instructions"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["agents_md.instructions","environments.environment_context"]}}}"#,
+            #"{"timestamp":"2026-10-19T17:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Ship it"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text"]}}}"#,
+            #"{"timestamp":"2026-10-19T17:00:02Z","type":"event_msg","payload":{"type":"user_message","message":"Older format prompt"}}"#,
+            #"{"timestamp":"2026-10-19T17:00:03Z","type":"event_msg","payload":{"type":"task_started"}}"#,
+        ].joined(separator: "\n")
+        let codexKinds = AgentActivityEvent.events(in: Data(codex.utf8), provider: .codex, sessionID: session).map(\.kind)
+        #expect(codexKinds == [.prompt, .prompt, .working])
+    }
+
+    @Test("Transcript polling keeps a prompt that later tool output follows in the same read")
+    func activityPollingKeepsPrompt() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("activity-prompt-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent("claude/projects/-tmp-work")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let session = UUID().uuidString
+        let lines = [
+            #"{"timestamp":"2026-10-19T17:00:00Z","type":"user","sessionId":"\#(session)","uuid":"p","origin":{"kind":"human"},"message":{"role":"user","content":"Reorder tasks"}}"#,
+            #"{"timestamp":"2026-10-19T17:00:05Z","type":"user","sessionId":"\#(session)","uuid":"t","toolUseResult":{},"message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}"#,
+        ]
+        try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: project.appendingPathComponent("\(session).jsonl"))
+        let observer = AgentActivityObserver(codexRoot: root.appendingPathComponent("codex"),
+            claudeRoot: root.appendingPathComponent("claude"))
+        let events = try await observer.events(for: TaskSubtask(id: "worker", title: "Worker",
+            provider: .claude, sessionID: session))
+        let prompt = try #require(events.first { $0.kind == .prompt })
+        #expect(prompt.date == ISO8601DateFormatter().date(from: "2026-10-19T17:00:00Z"))
+        #expect(events.last?.kind == .working)
+    }
+
+    @Test("An observed prompt dates the task's last interaction without regressing it")
+    func observedPromptRecordsInteraction() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = TaskContextStore(root: root)
+        _ = try await store.ensureContext(ticket: DashboardTicket(
+            id: "ECC-700", title: "Task", status: "open", summary: ""))
+        let agent = TaskSubtask(id: "worker", title: "Worker", sessionID: UUID().uuidString, status: .idle)
+        _ = try await store.upsertSubtask(ticketID: "ECC-700", subtask: agent)
+        let promptAt = Date(timeIntervalSinceReferenceDate: 1_000)
+
+        let prompted = try await store.observeActivity(ticketID: "ECC-700", subtaskID: agent.id,
+            event: .init(id: "prompt", date: promptAt, kind: .prompt, summary: ""))
+        #expect(prompted.lastPromptAt == promptAt)
+        #expect(prompted.subtasks.first?.status == .working)
+
+        let older = try await store.observeActivity(ticketID: "ECC-700", subtaskID: agent.id,
+            event: .init(id: "older", date: promptAt.addingTimeInterval(-60), kind: .prompt, summary: ""))
+        #expect(older.lastPromptAt == promptAt)
+        let toolOutput = try await store.observeActivity(ticketID: "ECC-700", subtaskID: agent.id,
+            event: .init(id: "tool", date: promptAt.addingTimeInterval(30), kind: .working, summary: ""))
+        #expect(toolOutput.lastPromptAt == promptAt)
+    }
+
     @Test("An older transcript result survives a newer registration heartbeat")
     func olderResultDoesNotRegressCurrentStatus() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

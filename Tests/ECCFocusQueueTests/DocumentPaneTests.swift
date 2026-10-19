@@ -76,6 +76,20 @@ struct DocumentPaneTests {
         #expect(pane.hasSecondaryViewer)
     }
 
+    @Test("External evidence links share the split routing used by canvas links")
+    func externalEvidenceLinksUseSplitRouting() {
+        let pane = DocumentPaneState()
+        let first = URL(fileURLWithPath: "/tmp/evidence.md")
+        let second = URL(fileURLWithPath: "/tmp/implementation.swift")
+
+        pane.openLinkedDocument(first)
+        #expect(pane.primaryDocument == first && pane.secondaryDocument == nil)
+
+        pane.openLinkedDocument(second)
+        #expect(pane.primaryDocument == first)
+        #expect(pane.secondaryDocument == second)
+    }
+
     @Test("Find state opens a shared find field and records direction")
     func findState() {
         let find = DocumentFindState()

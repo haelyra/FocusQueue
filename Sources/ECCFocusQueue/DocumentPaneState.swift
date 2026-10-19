@@ -51,6 +51,13 @@ final class DocumentPaneState {
         open(url, in: .primary)
     }
 
+    /// Links from either the canvas or an external evidence view share the
+    /// same placement rule. The first document replaces central content;
+    /// every later document opens beside the visible document.
+    func openLinkedDocument(_ url: URL, besideCentralContent: Bool = false) {
+        open(url, in: besideCentralContent || isPresented ? .secondary : .primary)
+    }
+
     func open(_ url: URL, in placement: DocumentPanePlacement) {
         guard let location = DocumentPaneLocation.normalized(url) else {
             error = "This link cannot be displayed as a document."

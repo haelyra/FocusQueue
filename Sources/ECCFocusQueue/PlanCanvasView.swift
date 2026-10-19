@@ -360,14 +360,13 @@ struct PlanCanvasView: View {
 
   private func rememberPresentedDocument() {
     if let url = model.presentedPlanURL {
-      sideDocuments.open(url)
+      openDocument(url)
       model.openPlan(for: ticket)
     }
   }
 
   private func openDocument(_ url: URL) {
-    let placement: DocumentPanePlacement = showsWorkspaceMap || sideDocuments.isPresented ? .secondary : .primary
-    sideDocuments.open(url, in: placement)
+    sideDocuments.openLinkedDocument(url, besideCentralContent: showsWorkspaceMap)
   }
 
   private func discussDocument(_ action: PlanCanvasSelectionAction, for document: URL) {

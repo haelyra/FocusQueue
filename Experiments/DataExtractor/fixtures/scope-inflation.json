@@ -1,0 +1,16 @@
+{
+  "catalog": {
+    "projects": [{"id": "focus-queue", "name": "Focus Queue", "description": "macOS app that manages coding agents per task.", "context_policy": "App-wide engineering practices and durable product constraints belong here."}],
+    "tasks": [
+      {"id": "FOC-028", "title": "UI polish: notifications, order, new badge", "summary": "Polish queue UI presentation details."},
+      {"id": "FOC-008", "title": "Improve Focus Queue agent row presentation", "summary": "Agent row layout and readability."}
+    ]
+  },
+  "event": {
+    "task_id": "FOC-028",
+    "prompt": "Fix the settings panel padding, it is cramped. And I never want to see that washed-out beige tint in this app's UI again, it looks terrible - stick to the neutral grays we already use."
+  },
+  "expected": {"placements": [
+    {"text": "Never use the beige tint in this app's UI; stick to neutral grays", "destination": "project", "target_id": "focus-queue"}
+  ]}
+}

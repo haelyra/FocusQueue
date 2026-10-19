@@ -1,0 +1,16 @@
+{
+  "catalog": {
+    "projects": [{"id": "focus-queue", "name": "Focus Queue", "description": "macOS app that manages coding agents per task.", "context_policy": "App-wide engineering practices belong here."}],
+    "tasks": [
+      {"id": "FOC-010", "title": "Proactive data caching for agent memory", "summary": "Small-model extractor that routes durable facts from prompts to scoped context."},
+      {"id": "FOC-026", "title": "Small-model agent placement router", "summary": "Route new agent launches to the right task with a small model."}
+    ]
+  },
+  "event": {
+    "task_id": "FOC-010",
+    "prompt": "The eval grader counts inbox items wrong, fix that. And for all of my projects, keep commit messages under 72 characters, I hate scrolling through long subjects."
+  },
+  "expected": {"placements": [
+    {"text": "Keep commit messages under 72 characters", "destination": "user", "target_id": "user"}
+  ]}
+}

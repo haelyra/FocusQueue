@@ -1,0 +1,219 @@
+{
+  "generatedAt": "2026-10-19T19:12:39.060636+00:00",
+  "summary": {
+    "model": "codex/gpt-6-luna",
+    "runs": 6,
+    "errors": 0,
+    "mean_recall": 0.833,
+    "mean_precision": 0.945,
+    "total_gold": 9,
+    "total_matched": 7,
+    "avg_input_tokens": null,
+    "avg_output_tokens": null,
+    "avg_latency_ms": 4038
+  },
+  "runs": [
+    {
+      "fixture": "coding-preference.json",
+      "sample": 0,
+      "model": "codex/gpt-6-luna",
+      "usage": {
+        "input": null,
+        "output": null,
+        "total": 18690
+      },
+      "latencyMs": 4017.015,
+      "error": null,
+      "grade": {
+        "gold": 2,
+        "produced": 0,
+        "inboxed": 0,
+        "matched": 0,
+        "recall": 0.0,
+        "precision": 1.0,
+        "extra": [],
+        "missed": [
+          "Never swallow exceptions silently; log to stderr before falling back",
+          "Add a retry queue for failed model calls"
+        ]
+      },
+      "atoms": []
+    },
+    {
+      "fixture": "deferred-and-speculation.json",
+      "sample": 0,
+      "model": "codex/gpt-6-luna",
+      "usage": {
+        "input": null,
+        "output": null,
+        "total": 19260
+      },
+      "latencyMs": 3479.593,
+      "error": null,
+      "grade": {
+        "gold": 1,
+        "produced": 1,
+        "inboxed": 0,
+        "matched": 1,
+        "recall": 1.0,
+        "precision": 1.0,
+        "extra": [],
+        "missed": []
+      },
+      "atoms": [
+        {
+          "text": "Use incremental rebuilds instead of full reindexes for the embedding index.",
+          "destination": "task",
+          "target_id": "FOC-013",
+          "confidence": 0.97
+        }
+      ]
+    },
+    {
+      "fixture": "explicit-user-scope.json",
+      "sample": 0,
+      "model": "codex/gpt-6-luna",
+      "usage": {
+        "input": null,
+        "output": null,
+        "total": 18429
+      },
+      "latencyMs": 3306.179,
+      "error": null,
+      "grade": {
+        "gold": 1,
+        "produced": 1,
+        "inboxed": 0,
+        "matched": 1,
+        "recall": 1.0,
+        "precision": 1.0,
+        "extra": [],
+        "missed": []
+      },
+      "atoms": [
+        {
+          "text": "Keep commit message subjects under 72 characters across all projects.",
+          "destination": "user",
+          "target_id": "user",
+          "confidence": 1.0
+        }
+      ]
+    },
+    {
+      "fixture": "landing-page.json",
+      "sample": 0,
+      "model": "codex/gpt-6-luna",
+      "usage": {
+        "input": null,
+        "output": null,
+        "total": 8541
+      },
+      "latencyMs": 7029.314,
+      "error": null,
+      "grade": {
+        "gold": 4,
+        "produced": 6,
+        "inboxed": 0,
+        "matched": 4,
+        "recall": 1.0,
+        "precision": 0.667,
+        "extra": [
+          "Decide whether team information belongs on a separate page or the landing page.",
+          "Decide whether to create a contacts page after gathering more information."
+        ],
+        "missed": []
+      },
+      "atoms": [
+        {
+          "text": "Use an all-gray visual theme for the website, optionally with blue highlights; do not use beige.",
+          "destination": "project",
+          "target_id": "space-site",
+          "confidence": 0.99
+        },
+        {
+          "text": "Create or ensure a demo video version under 10 seconds.",
+          "destination": "task",
+          "target_id": "WEB-002",
+          "confidence": 0.96
+        },
+        {
+          "text": "Add a link from the landing page to a contacts page.",
+          "destination": "new_task",
+          "target_id": "space-site",
+          "confidence": 0.91
+        },
+        {
+          "text": "Decide whether to create a professional Instagram account for the company.",
+          "destination": "new_task",
+          "target_id": "space-site",
+          "confidence": 0.91
+        },
+        {
+          "text": "Decide whether team information belongs on a separate page or the landing page.",
+          "destination": "new_task",
+          "target_id": "space-site",
+          "confidence": 0.89
+        },
+        {
+          "text": "Decide whether to create a contacts page after gathering more information.",
+          "destination": "new_task",
+          "target_id": "space-site",
+          "confidence": 0.94
+        }
+      ]
+    },
+    {
+      "fixture": "nothing-to-extract.json",
+      "sample": 0,
+      "model": "codex/gpt-6-luna",
+      "usage": {
+        "input": null,
+        "output": null,
+        "total": 19109
+      },
+      "latencyMs": 2837.641,
+      "error": null,
+      "grade": {
+        "gold": 0,
+        "produced": 0,
+        "inboxed": 0,
+        "matched": 0,
+        "recall": 1.0,
+        "precision": 1.0,
+        "extra": [],
+        "missed": []
+      },
+      "atoms": []
+    },
+    {
+      "fixture": "scope-inflation.json",
+      "sample": 0,
+      "model": "codex/gpt-6-luna",
+      "usage": {
+        "input": null,
+        "output": null,
+        "total": 19243
+      },
+      "latencyMs": 3560.524,
+      "error": null,
+      "grade": {
+        "gold": 1,
+        "produced": 1,
+        "inboxed": 0,
+        "matched": 1,
+        "recall": 1.0,
+        "precision": 1.0,
+        "extra": [],
+        "missed": []
+      },
+      "atoms": [
+        {
+          "text": "Use the app\u2019s existing neutral grays; avoid washed-out beige tints throughout the UI.",
+          "destination": "project",
+          "target_id": "focus-queue",
+          "confidence": 0.99
+        }
+      ]
+    }
+  ]
+}

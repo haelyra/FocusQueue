@@ -335,7 +335,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
 
         Focus Queue task: \(ticketID). Agent: \(subtask.id) (\(subtask.provider.rawValue)).
         Assigned workspace: \(subtask.workspace?.path ?? worktreePath ?? "not configured").
-        Read \(planPath) before acting; if missing, create a brief goal, scope, implementation outline, and next step. Keep this shared plan concise and re-read before editing.
+        Read \(planPath) before acting; if missing, create a brief central plan following the Agent Output Contract (BLUF, What/Why/How, Decision log, Big-picture fit, QA instructions, Next steps). Keep this shared plan concise and re-read before editing.
         Task state: \(contextDirectory.appendingPathComponent("context.json").path). Decisions, detailed progress, configuration, and evidence belong in \(agentLogURL.path), not the central plan. Append with focus-queue-session log \(ticketID) \(subtask.id) "entry". Read only relevant log entries when needed.
         Register with focus-queue-session attach \(ticketID), briefly state your assignment and configuration, and report milestones with focus-queue-session progress \(ticketID) \(subtask.id) working "summary". Preserve user scope and queue order.
         """
@@ -380,7 +380,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
         Work on \(ticketID): \(title). Your subtask is \(subtask.title) (\(subtask.id)).
         Project: \(projectName ?? projectID ?? "Other"). Primary repository: \(projectRepositoryPath ?? "not configured").
         Read project guidance at \(projectPlanPath ?? "the projectPlanPath in $FOCUS_QUEUE_AGENT_CONTEXT") and the placement capsule at $FOCUS_QUEUE_AGENT_CONTEXT before acting.
-        \(assignmentLine)Read the central plan at \(planPath) and context at \(contextDirectory.appendingPathComponent("context.json").path) before acting. If the plan is missing, create a brief goal, scope, implementation outline, success criteria, and next step. Keep it concise; re-read before edits and preserve concurrent changes. Link supporting canvases from it.
+        \(assignmentLine)Read the central plan at \(planPath) and context at \(contextDirectory.appendingPathComponent("context.json").path) before acting. If the plan is missing, create a brief central plan following the Agent Output Contract (BLUF, What/Why/How, Decision log, Big-picture fit, QA instructions, Next steps). Keep it concise; re-read before edits and preserve concurrent changes. Link supporting canvases from it.
         Keep decisions, detailed progress, configuration, research, and verification evidence in \(agentLogURL.path). Append with \(command) log \(ticketID) \(subtask.id) "entry". Read only relevant entries when needed; do not inject the whole log or put decision history in the central plan.
         Briefly state your assignment, provider, workspace, branch, and intended outputs. Reuse this assigned worktree on resume. Create an isolated worktree before coding if no dedicated writer workspace is assigned; preserve the source checkout's local edits.
         Workspace: \(subtask.workspace?.path ?? worktreePath ?? repositoryPath ?? "not configured")
@@ -672,27 +672,36 @@ public actor TaskContextStore {
             let markdown = """
             # \(ticket.id): \(ticket.title)
 
-            ## Purpose
+            ## BLUF
 
-            \(ticket.summary)
+            \(ticket.id) — \(ticket.title). Current focus: \(ticket.next ?? "Confirm scope and choose the first implementation step.")
 
-            ## Scope
+            ## What / Why / How
 
-            Stay within this task and the assigned subtask. Ask before materially expanding scope.
+            - **What:** \(ticket.summary)
+            - **Why:** This task advances the recorded project goal.
+            - **How we know:** \(context.successCriteria)
 
-            ## Success criteria
+            ## Decision log
 
-            \(context.successCriteria)
+            1. **Scope boundary.** Stay within this task and the assigned subtask. Ask before materially expanding scope.
+            2. **Evidence belongs in the agent log.** Decisions, detailed progress, configuration, checks, and handoffs go in `agent-log.md`, not this plan.
 
-            ## Implementation plan
+            ## Big-picture fit
+
+            N/A — task-level plan. Read the project plan and applicable AGENTS.md for architecture and interaction rules.
+
+            ## QA instructions
+
+            1. Re-read this plan before editing.
+            2. Record verification results and decisions in `agent-log.md`.
+            3. Preserve concurrent edits from other agents.
+
+            ## Next steps
 
             \(steps.isEmpty ? "- [ ] Confirm scope and record the implementation approach." : steps)
 
-            ## Current focus and next step
-
-            \(ticket.next ?? "Confirm scope, choose the next implementation step, and record any blocker briefly.")
-
-            ## Supporting plans and references
+            ## Supporting links
 
             - [Agent log](agent-log.md): decisions, configuration, detailed progress, research, and verification evidence. Read relevant entries on demand.
             \(links)

@@ -3464,6 +3464,10 @@ private struct TicketCard: View {
             ? "Queue an evidence-based Codex completion review"
             : "Mark complete by user override without review")
 
+        if !isCollapsedToTitle, !ticket.briefSummary.isEmpty {
+          descriptionToggle
+        }
+
         Button {
           withAnimation(.easeInOut(duration: 0.18)) { isCollapsedToTitle.toggle() }
         } label: {
@@ -3540,6 +3544,11 @@ private struct TicketCard: View {
           if TaskTriagePolicy.hasHardDeadline(ticket) { TaskDeadlinePill(ticket: ticket) }
           if let review { ReviewPill(status: review.status) }
         }
+        if !isCollapsedToTitle, isDescriptionExpanded, !ticket.briefSummary.isEmpty {
+          Text(ticket.briefSummary).font(.system(size: 13)).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            .transition(.opacity.combined(with: .move(edge: .top)))
+        }
       }.frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
         .accessibilityLabel([
@@ -3571,6 +3580,19 @@ private struct TicketCard: View {
       descriptionOverride = !isDescriptionExpanded
       model.markTicketViewed(ticket.id)
     }
+  }
+
+  private var descriptionToggle: some View {
+    Button(action: toggleDescription) {
+      Image(systemName: isDescriptionExpanded ? "chevron.down" : "chevron.right")
+        .font(.system(size: 12, weight: .semibold))
+        .foregroundStyle(.secondary)
+    }
+    .buttonStyle(.plain)
+    .minimumHitTarget()
+    .accessibilityLabel("\(isDescriptionExpanded ? "Collapse" : "Expand") description for \(ticket.id)")
+    .accessibilityValue(isDescriptionExpanded ? "Expanded" : "Collapsed")
+    .help(isDescriptionExpanded ? "Hide description" : "Show description")
   }
 
   private var agentControls: some View {
@@ -3680,24 +3702,6 @@ private struct TicketCard: View {
 
   private var taskOverview: some View {
     VStack(alignment: .leading, spacing: 9) {
-      Button(action: toggleDescription) {
-        HStack {
-          Label("Description", systemImage: "doc.text")
-          Spacer()
-          Image(systemName: isDescriptionExpanded ? "chevron.up" : "chevron.down")
-        }
-        .font(.system(size: 12, weight: .semibold))
-        .frame(minHeight: 34)
-        .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel("\(isDescriptionExpanded ? "Collapse" : "Expand") description for \(ticket.id)")
-      .accessibilityValue(isDescriptionExpanded ? "Expanded" : "Collapsed")
-      if isDescriptionExpanded {
-        Text(ticket.briefSummary).font(.system(size: 13)).foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-          .transition(.opacity.combined(with: .move(edge: .top)))
-      }
       Button { model.openPlan(for: ticket) } label: {
         HStack {
           Label("View Central Plan", systemImage: "doc.text")

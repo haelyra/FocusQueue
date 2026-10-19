@@ -1143,6 +1143,55 @@ final class QueueViewModel {
   }
 
   @discardableResult
+  func markTaskIncomplete(_ ticket: DashboardTicket) async -> Bool {
+    guard ticket.isCompleted else { return true }
+    do {
+      let url = URL(fileURLWithPath: dashboardPath(for: ticket))
+      let snapshot = try await dashboardRepository.loadSnapshot(from: url)
+      let updated = try await dashboardRepository.reopenTicket(
+        id: ticket.id, in: url, expectedRevision: snapshot.revision)
+      if showsAllProjects {
+        await reloadMergedDashboard()
+      } else {
+        dashboard = updated.document
+        await captureDurableDashboard(updated.document)
+      }
+      closureMessages[ticket.id] = nil
+      cleanupSignatures[ticket.id] = nil
+      actionMessages[ticket.id] = "Task marked incomplete and returned to Focus."
+      loadError = nil
+      return true
+    } catch {
+      actionMessages[ticket.id] = "Could not mark task incomplete: \(error.localizedDescription)"
+      return false
+    }
+  }
+
+  @discardableResult
+  func archiveWithoutCompletion(_ ticket: DashboardTicket) async -> Bool {
+    guard ticket.isOpen else { return true }
+    do {
+      let url = URL(fileURLWithPath: dashboardPath(for: ticket))
+      let snapshot = try await dashboardRepository.loadSnapshot(from: url)
+      let updated = try await dashboardRepository.setTicketStatus(
+        id: ticket.id, to: "cancelled", in: url, expectedRevision: snapshot.revision)
+      if showsAllProjects {
+        await reloadMergedDashboard()
+      } else {
+        dashboard = updated.document
+        await captureDurableDashboard(updated.document)
+      }
+      closureMessages[ticket.id] = nil
+      actionMessages[ticket.id] = "Task archived without completion review."
+      loadError = nil
+      return true
+    } catch {
+      actionMessages[ticket.id] = "Could not archive task: \(error.localizedDescription)"
+      return false
+    }
+  }
+
+  @discardableResult
   func setTaskHardDeadline(_ ticket: DashboardTicket, to dueDate: Date?) async -> Bool {
     guard let project = project(for: ticket) ?? selectedProject else {
       actionMessages[ticket.id] = "Could not update hard due date: no owning project."
@@ -3402,7 +3451,7 @@ final class QueueViewModel {
   func ticketIsChecked(_ ticket: DashboardTicket) -> Bool {
     guard ticket.isOpen else { return true }
     guard let review = latestReview(for: ticket.id) else { return false }
-    return [.pending, .running, .accepted].contains(review.status)
+    return [.pending, .running].contains(review.status)
   }
 
   func requestCompletion(for ticket: DashboardTicket) {

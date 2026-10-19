@@ -439,6 +439,41 @@ func dashboardPriorityAndStatusUpdates() async throws {
   }
 }
 
+@Test("Reopening a completed task preserves its completion event and clears active completion fields")
+func dashboardReopenPreservesCompletionHistory() async throws {
+  let fixture = try DashboardMutationFixture(
+    #"{"sourceMetadata":{"owner":"external"},"tickets":[{"id":"ECC-101","title":"Task","status":"resolved","completedAt":"2026-10-18T14:00:00Z","completion":{"outcome":"completed","reason":"Verified","evidence":["test.log"],"completedBy":"reviewer"},"completionHistory":[{"status":"cancelled","completedAt":"2026-09-01T12:00:00Z"}],"externalState":{"keep":true}}]}"#
+  )
+  defer { fixture.remove() }
+  let repository = JSONDashboardRepository()
+  let snapshot = try await repository.loadSnapshot(from: fixture.url)
+
+  let reopened = try await repository.reopenTicket(
+    id: "ECC-101", in: fixture.url, expectedRevision: snapshot.revision)
+
+  #expect(reopened.document.tickets.first?.status == "open")
+  #expect(reopened.document.tickets.first?.completedAt == nil)
+  #expect(reopened.document.tickets.first?.completion == nil)
+  let object = try #require(
+    JSONSerialization.jsonObject(with: Data(contentsOf: fixture.url)) as? [String: Any]
+  )
+  let metadata = try #require(object["sourceMetadata"] as? [String: Any])
+  let ticket = try #require((object["tickets"] as? [[String: Any]])?.first)
+  let history = try #require(ticket["completionHistory"] as? [[String: Any]])
+  let prior = try #require(history.last)
+  let completion = try #require(prior["completion"] as? [String: Any])
+  let externalState = try #require(ticket["externalState"] as? [String: Any])
+  #expect(history.count == 2)
+  #expect(prior["status"] as? String == "resolved")
+  #expect(prior["completedAt"] as? String == "2026-10-18T14:00:00Z")
+  #expect(prior["reopenedAt"] as? String != nil)
+  #expect(completion["reason"] as? String == "Verified")
+  #expect(ticket["completedAt"] == nil)
+  #expect(ticket["completion"] == nil)
+  #expect(metadata["owner"] as? String == "external")
+  #expect(externalState["keep"] as? Bool == true)
+}
+
 @Test("Dashboard hard deadlines set and clear without overwriting other fields")
 func dashboardHardDeadlineUpdates() async throws {
   let fixture = try DashboardMutationFixture(

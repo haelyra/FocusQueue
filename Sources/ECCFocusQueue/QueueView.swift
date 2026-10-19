@@ -11,17 +11,6 @@ enum QueueChromeMetrics {
   static let notificationPanelMinWidth: CGFloat = 300
 }
 
-enum RouterComposerKeyboardAction: Equatable {
-  case submit
-  case insertNewline
-}
-
-enum RouterComposerKeyboard {
-  static func action(shiftPressed: Bool) -> RouterComposerKeyboardAction {
-    shiftPressed ? .insertNewline : .submit
-  }
-}
-
 struct QueueView: View {
   let model: QueueViewModel
   @State private var showsMoreTasks = false
@@ -34,7 +23,6 @@ struct QueueView: View {
   @State private var restButtonDropIsTargeted = false
   @State private var restSectionDropIsTargeted = false
   @State private var queueAgentDraft = ""
-  @State private var routerObjectiveDraft = ""
   @State private var taskAgentDrafts: [String: String] = [:]
   @State private var showsTerminals = false
   @State private var showsNewTask = false
@@ -81,7 +69,7 @@ struct QueueView: View {
     }
     .sheet(isPresented: $showsTerminals) { TerminalBrowserView(model: model) }
     .sheet(isPresented: $showsNewTask) {
-      NewTaskSheet(model: model, projectID: newTaskProjectID)
+      TaskCreatorSheet(model: model, projectID: newTaskProjectID)
     }
     .sheet(item: Binding(get: { model.launchDiagnostics }, set: { model.launchDiagnostics = $0 })) { log in
       VStack(alignment: .leading, spacing: 12) {
@@ -382,7 +370,6 @@ struct QueueView: View {
     VStack(spacing: 10) {
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 10) {
-          routerComposer
           todayFocusSection
 
           if showsMoreTasks, !isFilteringTasks {
@@ -393,84 +380,7 @@ struct QueueView: View {
 
       if !isFilteringTasks, !remainingTickets.isEmpty || !model.visibleRoutines.isEmpty { moreButton }
     }
-  }
-
-  private var routerComposer: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(spacing: 7) {
-        Image(systemName: "arrow.triangle.branch")
-          .foregroundStyle(Color.accentColor)
-        Text("Router agent").font(.system(size: 13, weight: .semibold))
-        Spacer(minLength: 0)
-        if model.isRoutingObjective { ProgressView().controlSize(.small) }
-      }
-      Text("Describe the outcome. Focus Queue will assign the right task and workspace, then open the agent.")
-        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-      HStack(alignment: .bottom, spacing: 8) {
-        TextField("What do you want to accomplish?", text: $routerObjectiveDraft, axis: .vertical)
-          .textFieldStyle(.roundedBorder)
-          .lineLimit(2...5)
-          .onKeyPress(.return, phases: .down) { keyPress in
-            switch RouterComposerKeyboard.action(
-              shiftPressed: keyPress.modifiers.contains(.shift)) {
-            case .insertNewline:
-              return .ignored
-            case .submit:
-              submitRouterObjective()
-              return .handled
-            }
-          }
-          .accessibilityLabel("Objective for the router agent")
-          .help("Press Return to route. Press Shift-Return for a new line.")
-        if model.canCancelRouterObjective {
-          Button("Cancel", role: .cancel) {
-            if let restored = model.cancelRouterObjective() {
-              routerObjectiveDraft = restored
-            }
-          }
-          .buttonStyle(.bordered)
-          .minimumHitTarget()
-          .keyboardShortcut(.cancelAction)
-          .help("Undo this submission before the three-second routing window closes")
-        }
-        Button("Route", systemImage: "arrow.up.circle.fill") { submitRouterObjective() }
-          .buttonStyle(.borderedProminent)
-          .minimumHitTarget()
-          .disabled(
-            model.routerCapacityRemaining == 0
-              || routerObjectiveDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-          .help("Assign this objective and open its agent")
-      }
-      if model.routerCapacityRemaining < QueueRouterRuntimeStore.maximumActiveRouters {
-        Text(model.routerCapacityRemaining == 0
-          ? "All \(QueueRouterRuntimeStore.maximumActiveRouters) router slots are in use."
-          : "\(model.routerCapacityRemaining) of \(QueueRouterRuntimeStore.maximumActiveRouters) router slots free.")
-          .font(.caption).foregroundStyle(.secondary)
-          .accessibilityLabel("Router capacity: \(model.routerCapacityRemaining) of \(QueueRouterRuntimeStore.maximumActiveRouters) slots free")
-      }
-      if let status = model.routerStatus {
-        Text(status)
-          .font(.caption).foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-          .accessibilityLabel("Router status: \(status)")
-          .accessibilityAddTraits(.updatesFrequently)
-      }
-      if let recoveryPath = model.routerRecoveryPath {
-        Text(recoveryPath)
-          .font(.system(size: 10, design: .monospaced))
-          .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-          .textSelection(.enabled).help(recoveryPath)
-          .accessibilityLabel("Router recovery locator")
-      }
-      if model.canOpenRouterRecovery {
-        Button("Open router", systemImage: "terminal") { model.openRouterRecovery() }
-          .buttonStyle(.bordered).minimumHitTarget()
-          .help("Open the exact existing router session")
-      }
-    }
-    .padding(12)
-    .notificationSurface(radius: 14)
-    .alert("Router startup repair", isPresented: Binding(
+    .alert("Agent startup repair", isPresented: Binding(
       get: { model.startupRepairAlert != nil },
       set: { if !$0 { model.startupRepairAlert = nil } }
     )) {
@@ -485,13 +395,6 @@ struct QueueView: View {
       Button("OK", role: .cancel) { model.registrationValidationAlert = nil }
     } message: {
       Text(model.registrationValidationAlert ?? "")
-    }
-  }
-
-  private func submitRouterObjective() {
-    let submitted = routerObjectiveDraft
-    model.routeObjective(submitted) { succeeded in
-      if succeeded, routerObjectiveDraft == submitted { routerObjectiveDraft = "" }
     }
   }
 
@@ -1274,89 +1177,6 @@ private enum QueueTab: Hashable {
   case focus
   case completed
   case agent
-}
-
-private struct NewTaskSheet: View {
-  let model: QueueViewModel
-  let projectID: String?
-  @Environment(\.dismiss) private var dismiss
-  @State private var title = ""
-  @State private var summary = ""
-  @State private var doneWhen = ""
-  @State private var priority = "medium"
-  @State private var includesDueDate = false
-  @State private var dueDate = Date()
-  @State private var isSaving = false
-
-  private var project: ProjectConfiguration? {
-    model.projects.first { $0.id == projectID }
-  }
-
-  private var descriptionIssues: [String] { TaskDescriptionFormat.issues(for: summary) }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      VStack(alignment: .leading, spacing: 3) {
-        Text("New task").font(.title2.bold())
-        Text("Add to \(project?.name ?? "the selected project")")
-          .font(.callout).foregroundStyle(.secondary)
-      }
-
-      Form {
-        TextField("Task title", text: $title)
-        TextField("Description", text: $summary, axis: .vertical).lineLimit(2...5)
-        if descriptionIssues.isEmpty {
-          Text("Answer what, why, and how in 1-2 direct sentences each, so the purpose is clear at a glance.")
-            .font(.caption).foregroundStyle(.secondary)
-        } else {
-          ForEach(descriptionIssues, id: \.self) { issue in
-            Text(issue).font(.caption).foregroundStyle(.orange)
-          }
-        }
-        TextField("Done when", text: $doneWhen, axis: .vertical).lineLimit(2...5)
-        Picker("Priority", selection: $priority) {
-          Text("Low").tag("low")
-          Text("Medium").tag("medium")
-          Text("High").tag("high")
-          Text("Critical").tag("critical")
-        }
-        Toggle("Set a hard due date", isOn: $includesDueDate)
-        if includesDueDate {
-          DatePicker("Hard due date", selection: $dueDate, displayedComponents: .date)
-        }
-        Text("Without a hard date, Focus Queue assigns a rough triage target under task details.")
-          .font(.caption).foregroundStyle(.secondary)
-      }
-      .formStyle(.grouped)
-
-      if let error = model.loadError, !error.isEmpty {
-        Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
-      }
-
-      HStack {
-        Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-        Spacer()
-        Button(isSaving ? "Adding…" : "Add task") {
-          isSaving = true
-          Task {
-            let saved = await model.createTask(
-              title: title, summary: summary, doneWhen: doneWhen,
-              priority: priority, dueDate: includesDueDate ? dueDate : nil, projectID: projectID)
-            isSaving = false
-            if saved { dismiss() }
-          }
-        }
-        .buttonStyle(.borderedProminent)
-        .keyboardShortcut(.defaultAction)
-        .disabled(
-          isSaving || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || !descriptionIssues.isEmpty
-            || project == nil)
-      }
-    }
-    .padding(22)
-    .frame(width: 500, height: 510)
-  }
 }
 
 struct QueueAgentChatView: View {
@@ -2154,7 +1974,7 @@ private struct QueueSettingsView: View {
           }
           settingsSection(
             title: "Default agent provider",
-            detail: "New agents, router objectives, and quick launches start with this provider and its default model unless you pick another one."
+            detail: "New agents and quick launches start with this provider and its default model unless you pick another one. The + task creator uses it when no agent has been launched yet."
           ) {
             VStack(alignment: .leading, spacing: 10) {
               Picker("Provider", selection: Binding(

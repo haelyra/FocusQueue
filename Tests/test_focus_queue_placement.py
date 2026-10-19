@@ -336,6 +336,19 @@ class ModelPlacementTests(unittest.TestCase):
         self.assertFalse(any(key.startswith("FOCUS_QUEUE_") for key in call["environment"]))
         self.assertEqual(call["timeout"], PLACEMENT.DEFAULT_TIMEOUT_SECONDS)
 
+    def test_reply_suggests_a_card_summary_and_priority(self):
+        def reply(priority):
+            return json.dumps({"structured_output": {
+                "taskID": None, "confidence": 0, "title": "Add release notes", "reason": "r",
+                "summary": "  Draft release notes\nfor 2.3.  ", "priority": priority}})
+        result = self.classify("draft release notes", stdout=reply("high"))
+        self.assertEqual(result["summary"], "Draft release notes for 2.3.")
+        self.assertEqual(result["priority"], "high")
+        self.assertIn('"priority"', self.calls[0]["command"][self.calls[0]["command"].index("--json-schema") + 1])
+        dropped = self.classify("draft release notes", stdout=reply("urgent!!"))
+        self.assertEqual(dropped["status"], "new-task", "A bad suggestion never fails placement")
+        self.assertNotIn("priority", dropped)
+
     def test_candidates_are_the_launch_project_then_repositoryless_projects(self):
         self.classify("anything", stdout=claude_reply(None, 0))
         lines = [line for line in self.calls[0]["stdin"].splitlines()

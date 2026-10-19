@@ -31,12 +31,6 @@ enum QueuePanelMode: Equatable {
   case collapsed
 }
 
-private struct PendingRouterSubmission {
-  let id: UUID
-  let draft: String
-  let completion: (@MainActor (Bool) -> Void)?
-}
-
 /// Remembers one derived value for its inputs. Unchanged collections compare
 /// by storage identity, so a hit costs far less than the sort or scan it saves.
 private struct ProjectionMemo<Key: Equatable, Value> {
@@ -178,19 +172,6 @@ final class QueueViewModel {
   }
   private(set) var planEditDrafts: [String: PlanEditDraft] = [:]
   private(set) var launchingTaskIDs: Set<String> = []
-  var isRoutingObjective: Bool {
-    !pendingRouterSubmissions.isEmpty || !launchingRouterSubmissionIDs.isEmpty
-  }
-  var canCancelRouterObjective: Bool { !pendingRouterSubmissions.isEmpty }
-  private(set) var routerStatus: String?
-  private(set) var routerRecoveryPath: String?
-  /// Every tracked one-shot router, oldest first; several objectives can be
-  /// routed in parallel up to `QueueRouterRuntimeStore.maximumActiveRouters`.
-  private(set) var routerRuntimes: [QueueRouterRuntime] = []
-  /// The oldest tracked router, which the recovery UI opens.
-  var routerRuntime: QueueRouterRuntime? { routerRuntimes.first }
-  private(set) var routerRecoveryBlocked = false
-  private(set) var routerCapacityRemaining = QueueRouterRuntimeStore.maximumActiveRouters
   /// Set when the launch-time startup-receipt sweep had to fail stuck routed
   /// agents; QueueView presents it as a hard alert.
   var startupRepairAlert: String?
@@ -247,9 +228,7 @@ final class QueueViewModel {
   @ObservationIgnored private let taskContextStore: TaskContextStore
   @ObservationIgnored private let taskWorktreeManager = TaskWorktreeManager()
   @ObservationIgnored private let taskAgentLauncher: TaskAgentLauncher
-  @ObservationIgnored private let objectiveRouter: any QueueObjectiveRouting
-  @ObservationIgnored private let routerMonitorIntervalSeconds: Double
-  @ObservationIgnored private let routerUndoWindowSeconds: Double
+  @ObservationIgnored private let taskPlacementSuggester: any TaskPlacementSuggesting
   @ObservationIgnored private let agentLaunchLogger: AgentLaunchLogger
   @ObservationIgnored private let reportHistoryRepository: JSONDailyReportHistoryRepository
   @ObservationIgnored private let conversationStore: QueueConversationStore
@@ -273,11 +252,6 @@ final class QueueViewModel {
   @ObservationIgnored private var cleanupSignatures: [String: Date] = [:]
   @ObservationIgnored private var lastReportRefresh: Date?
   @ObservationIgnored private var refreshTask: Task<Void, Never>?
-  @ObservationIgnored private var routerMonitorTasks: [String: Task<Void, Never>] = [:]
-  @ObservationIgnored private var routerLaunchTasks: [UUID: Task<Void, Never>] = [:]
-  @ObservationIgnored private var pendingRouterSubmissions: [UUID: PendingRouterSubmission] = [:]
-  @ObservationIgnored private var pendingRouterSubmissionOrder: [UUID] = []
-  @ObservationIgnored private var launchingRouterSubmissionIDs: Set<UUID> = []
   @ObservationIgnored private var reviewTasks: [UUID: Task<Void, Never>] = [:]
   @ObservationIgnored private var windowSaveTask: Task<Void, Never>?
   @ObservationIgnored private var localStateSaveTask: Task<Void, Never>?
@@ -295,7 +269,6 @@ final class QueueViewModel {
   @ObservationIgnored private var quotaFallbackedSubtaskKeys: Set<String> = []
   @ObservationIgnored private var quotaFallbackAtByTicketID: [String: Date] = [:]
   @ObservationIgnored private var escalationAutoLaunchInFlight = false
-  @ObservationIgnored private var routerProviders: [String: AgentProvider] = [:]
   @ObservationIgnored private var lastIdentityRefresh: Date?
   @ObservationIgnored private var lastManagedPresentationRefresh: Date?
   @ObservationIgnored private var panelVisible = true
@@ -346,9 +319,7 @@ final class QueueViewModel {
     queueAgentFactory: (@Sendable (AgentProvider) -> any QueueAgentChatting)? = nil,
     pullRequestQueueLoader: any PullRequestQueueLoading = GitHubPullRequestQueueLoader(),
     taskAgentLauncher: TaskAgentLauncher = TaskAgentLauncher(),
-    objectiveRouter: any QueueObjectiveRouting = QueueObjectiveRouter(),
-    routerMonitorIntervalSeconds: Double = 2,
-    routerUndoWindowSeconds: Double = 3,
+    taskPlacementSuggester: (any TaskPlacementSuggesting)? = nil,
     agentLaunchLogger: AgentLaunchLogger? = nil,
     connectorDiagnosticsRunner: any ProcessRunning = FoundationProcessRunner(),
     agentActivityObserver: AgentActivityObserver = AgentActivityObserver(),
@@ -406,9 +377,8 @@ final class QueueViewModel {
     }
     self.pullRequestQueueLoader = pullRequestQueueLoader
     self.taskAgentLauncher = taskAgentLauncher
-    self.objectiveRouter = objectiveRouter
-    self.routerMonitorIntervalSeconds = max(0.01, routerMonitorIntervalSeconds)
-    self.routerUndoWindowSeconds = max(0, routerUndoWindowSeconds)
+    self.taskPlacementSuggester = taskPlacementSuggester
+      ?? ScriptTaskPlacementSuggester(supportDirectory: paths.supportDirectory)
     self.agentLaunchLogger = agentLaunchLogger
       ?? AgentLaunchLogger(supportDirectory: paths.supportDirectory)
     self.connectorDiagnosticsRunner = connectorDiagnosticsRunner
@@ -615,10 +585,6 @@ final class QueueViewModel {
   var minimizationPreference: QueueMinimizationPreference {
     localState.minimizationPreference
   }
-  var hasRouterRecovery: Bool {
-    (!routerRuntimes.isEmpty || routerRecoveryBlocked) && !isRoutingObjective
-  }
-  var canOpenRouterRecovery: Bool { !routerRuntimes.isEmpty && !isRoutingObjective }
 
   var terminalCount: Int {
     var identities = Set(localState.agentSessions.map {
@@ -737,44 +703,17 @@ final class QueueViewModel {
 
   private func finishBootstrap() async {
     do {
-      // Unstick routed startup receipts before recovering routers so their
-      // outcomes resolve immediately instead of wedging router slots. A sweep
-      // failure must not block the rest of bootstrap.
+      // Unstick routed startup receipts from automatic routing and `route start`.
+      // A sweep failure must not block the rest of bootstrap.
       if let repair = try? await AgentStartupRepair(root: paths.supportDirectory).run() {
         if !repair.failedReceipts.isEmpty {
           let summaries = repair.failedReceipts.map {
             "\($0.taskID) (\($0.title.isEmpty ? $0.subtaskID : $0.title))"
           }.joined(separator: ", ")
-          startupRepairAlert = "Routed agent startups that never finished were marked failed: \(summaries). Route the work again from the Router agent."
+          startupRepairAlert = "Routed agent startups that never finished were marked failed: \(summaries). Create the task again from the + task creator."
         }
         repair.registrationIssues.forEach(reportRegistrationIssue)
       }
-      do {
-        let routerStore = QueueRouterRuntimeStore(root: paths.supportDirectory)
-        let recoveredRouters = try routerStore.activeRouters()
-        for recoveredRouter in recoveredRouters {
-          guard routerExecutableMatchesConfiguration(recoveredRouter) else {
-            throw TaskContextError.commandFailed(
-              "A saved router does not match the configured tmux executable.")
-          }
-          trackRouterRuntime(recoveredRouter, provider: nil)
-          routerRecoveryPath = (try? routerStore.url(routerID: recoveredRouter.tmuxName).path)
-            ?? routerStore.url.path
-          routerStatus = recoveredRouters.count == 1
-            ? "Recovered an unfinished router. Focus Queue will not start a duplicate."
-            : "Recovered \(recoveredRouters.count) unfinished routers. Focus Queue will not start duplicates."
-          let outcome = try await objectiveRouter.waitForOutcome(
-            recoveredRouter, supportDirectory: paths.supportDirectory, timeoutSeconds: 0)
-          if !applyRouterOutcome(outcome, for: recoveredRouter), case .waiting = outcome {
-            startRouterMonitor(recoveredRouter)
-          }
-        }
-      } catch {
-        routerRecoveryBlocked = true
-        routerRecoveryPath = QueueRouterRuntimeStore(root: paths.supportDirectory).url.path
-        routerStatus = "Router recovery needs attention; new routing is blocked. \(error.localizedDescription)"
-      }
-      updateRouterCapacity()
       let projects = ProjectCatalog.ensuringOther(
         in: config.projects, supportDirectory: paths.supportDirectory)
       if projects != config.projects {
@@ -1005,15 +944,25 @@ final class QueueViewModel {
     title: String, summary: String, doneWhen: String, priority: String,
     dueDate: Date? = nil, projectID: String? = nil
   ) async -> Bool {
+    await createTicket(title: title, summary: summary, doneWhen: doneWhen, priority: priority,
+      dueDate: dueDate, projectID: projectID) != nil
+  }
+
+  /// Creates the ticket and returns it, so a caller can launch an agent on it.
+  /// `next` defaults to a clarification step when nothing more specific is known.
+  func createTicket(
+    title: String, summary: String, doneWhen: String, priority: String,
+    dueDate: Date? = nil, projectID: String? = nil, next: String? = nil
+  ) async -> DashboardTicket? {
     let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !title.isEmpty else {
       loadError = "Give the task a readable title."
-      return false
+      return nil
     }
     let targetID = projectID ?? config.selectedProjectID
     guard let project = config.projects.first(where: { $0.id == targetID }) else {
       loadError = "The selected project is no longer configured."
-      return false
+      return nil
     }
     do {
       let url = URL(fileURLWithPath: project.dashboardPath)
@@ -1037,7 +986,7 @@ final class QueueViewModel {
         priority: Self.allowedPriority(priority),
         status: "backlog",
         summary: String((trimmedSummary.isEmpty ? title : trimmedSummary).prefix(1_200)),
-        next: "Clarify the next implementation step.",
+        next: next.map { String($0.prefix(1_200)) } ?? "Clarify the next implementation step.",
         doneWhen: String(
           (trimmedDoneWhen.isEmpty
             ? "Confirm the requested behavior and record verification results."
@@ -1059,11 +1008,108 @@ final class QueueViewModel {
       actionMessages[ticket.id] = "Task added to \(project.name)."
       programLog.record("Created task \(ticket.id): \(ticket.title)", category: "Tasks")
       loadError = nil
-      return true
+      return ticket
     } catch {
       loadError = "Could not create task: \(error.localizedDescription)"
-      return false
+      return nil
     }
+  }
+
+  /// Defaults for the + task creator: the last agent the user launched, else
+  /// the Settings default provider with its model and effort.
+  var taskCreatorLaunchDefaults: AgentLaunchPreset {
+    if let last = localState.lastAgentLaunch { return last }
+    let provider = defaultAgentProvider
+    return AgentLaunchPreset(
+      provider: provider, model: defaultAgentModel(for: provider),
+      effort: defaultAgentEffort(for: provider), workspacePolicy: .isolatedCommittedSnapshot,
+      useTmux: true, includePrompt: true)
+  }
+
+  /// Only launches the user starts update the creator's defaults; automatic
+  /// relaunches such as quota fallback never do.
+  func rememberAgentLaunch(_ preset: AgentLaunchPreset) {
+    guard localState.lastAgentLaunch != preset else { return }
+    localState.lastAgentLaunch = preset
+    persistLocalState()
+  }
+
+  /// Creates a task from the + creator and, unless the draft opts out,
+  /// launches its first agent with full placement. The placement model fills
+  /// blank fields and offers a matching open task before a duplicate is made.
+  func submitTaskDraft(
+    _ draft: TaskDraft, choice: TaskDraftChoice = .checkForMatch,
+    suggestion cached: TaskPlacementSuggestion? = nil
+  ) async -> TaskDraftResult {
+    let description = draft.description.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !description.isEmpty else { return .failed("Describe the task first.") }
+    if case .join(let ticketID) = choice {
+      guard let ticket = await findTicket(id: ticketID) else {
+        return .failed("\(ticketID) is no longer in any dashboard.")
+      }
+      if draft.launchesAgent { launchDraftAgent(draft, on: ticket, description: description) }
+      return .joined(ticketID: ticket.id, launchedAgent: draft.launchesAgent)
+    }
+    guard let project = config.projects.first(where: { $0.id == (draft.projectID ?? config.selectedProjectID) })
+    else { return .failed("The selected project is no longer configured.") }
+    let title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
+    let displayDescription = draft.displayDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+    var suggestion = cached
+    if suggestion == nil,
+       choice == .checkForMatch || title.isEmpty || displayDescription.isEmpty || draft.priority == nil {
+      suggestion = placementModelEnabled
+        ? await taskPlacementSuggester.suggest(TaskPlacementQuery(
+            description: description, provider: draft.agent.provider,
+            cwd: project.repositoryPath.isEmpty ? project.workspacePath : project.repositoryPath,
+            timeoutSeconds: placementTimeoutSeconds))
+        : .unavailable("Task placement is off in Settings.")
+    }
+    if choice == .checkForMatch, let matchID = suggestion?.matchedTaskID,
+       let match = await findTicket(id: matchID), let suggestion {
+      return .matched(match, suggestion)
+    }
+    // No silent default: the user or the placement model sets the priority.
+    guard let priority = draft.priority ?? suggestion?.priority else {
+      return .needsPriority(
+        "Choose a priority. \(suggestion?.modelError ?? "The placement model did not suggest one.")",
+        suggestion)
+    }
+    let ticketTitle = title.isEmpty
+      ? (suggestion?.title ?? TaskSubtask.agentName(prompt: description, provider: draft.agent.provider))
+      : title
+    let summary = displayDescription.isEmpty ? (suggestion?.summary ?? description) : displayDescription
+    // A short card summary must not lose the full description, even without an agent.
+    guard let ticket = await createTicket(
+      title: ticketTitle, summary: summary, doneWhen: draft.doneWhen, priority: priority,
+      dueDate: draft.dueDate, projectID: project.id, next: summary == description ? nil : description)
+    else { return .failed(loadError ?? "Could not create the task.") }
+    if draft.launchesAgent { launchDraftAgent(draft, on: ticket, description: description) }
+    return .created(ticketID: ticket.id, launchedAgent: draft.launchesAgent)
+  }
+
+  private func launchDraftAgent(_ draft: TaskDraft, on ticket: DashboardTicket, description: String) {
+    let agent = draft.agent
+    launchAgent(
+      for: ticket, title: ticket.title, provider: agent.provider,
+      repositoryPath: defaultRepository(for: ticket), assignmentDescription: description,
+      includePrompt: agent.includePrompt ?? true, useTmux: agent.useTmux ?? true,
+      initialPrompt: description, modelName: agent.model, effort: agent.effort,
+      workspacePolicy: agent.workspacePolicy ?? .isolatedCommittedSnapshot,
+      pluginOverrides: agent.pluginOverrides ?? [:])
+    rememberAgentLaunch(agent)
+  }
+
+  /// A placement match can name a task in any configured project.
+  private func findTicket(id: String) async -> DashboardTicket? {
+    let matches: (DashboardTicket) -> Bool = { $0.id.caseInsensitiveCompare(id) == .orderedSame }
+    if let ticket = dashboard.tickets.first(where: matches) { return ticket }
+    for project in config.projects {
+      let url = URL(fileURLWithPath: project.dashboardPath)
+      if let ticket = try? await dashboardRepository.load(from: url).tickets.first(where: matches) {
+        return ticket
+      }
+    }
+    return nil
   }
 
   @discardableResult
@@ -2735,281 +2781,6 @@ final class QueueViewModel {
     }
   }
 
-  func routeObjective(
-    _ rawObjective: String,
-    completion: (@MainActor (Bool) -> Void)? = nil
-  ) {
-    let objective = rawObjective.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !objective.isEmpty else {
-      routerStatus = "Describe the work you want routed."
-      completion?(false)
-      return
-    }
-    // Several one-shot routers can run in parallel; only the concurrency cap
-    // (and an unreadable reservation store) rejects a new objective.
-    let routerStore = QueueRouterRuntimeStore(root: paths.supportDirectory)
-    let activeRouterCount: Int
-    do {
-      activeRouterCount = try routerStore.activeRouters().count
-      routerRecoveryBlocked = false
-    } catch {
-      routerRecoveryBlocked = true
-      routerRecoveryPath = routerStore.url.path
-      routerStatus = "Router recovery needs attention; new routing is blocked. \(error.localizedDescription)"
-      completion?(false)
-      return
-    }
-    let reservedCount = activeRouterCount + pendingRouterSubmissions.count
-      + launchingRouterSubmissionIDs.count
-    guard reservedCount < QueueRouterRuntimeStore.maximumActiveRouters else {
-      routerStatus = "Focus Queue already runs \(QueueRouterRuntimeStore.maximumActiveRouters) routers. Wait for one to finish before routing another objective."
-      completion?(false)
-      return
-    }
-    guard let project = selectedProject else {
-      routerStatus = "Select a project before routing work."
-      completion?(false)
-      return
-    }
-    let repository = project.repositoryPath.trimmingCharacters(in: .whitespacesAndNewlines)
-    var isDirectory: ObjCBool = false
-    guard repository.hasPrefix("/"),
-          FileManager.default.fileExists(atPath: repository, isDirectory: &isDirectory),
-          isDirectory.boolValue else {
-      routerStatus = "The selected project needs an available repository before routing work."
-      completion?(false)
-      return
-    }
-    guard let tmuxExecutable = config.tmuxExecutable ?? SetupEnvironment.executable("tmux"),
-          FileManager.default.isExecutableFile(atPath: tmuxExecutable) else {
-      routerStatus = "The router needs tmux. Configure an executable in Settings."
-      completion?(false)
-      return
-    }
-    let submissionID = UUID()
-    pendingRouterSubmissions[submissionID] = PendingRouterSubmission(
-      id: submissionID, draft: rawObjective, completion: completion)
-    pendingRouterSubmissionOrder.append(submissionID)
-    routerStatus = "Ready to route for \(project.name). Cancel within 3 seconds to undo."
-    updateRouterCapacity()
-    routerLaunchTasks[submissionID] = Task { [weak self] in
-      guard let self else { return }
-      do {
-        try await Task.sleep(for: .seconds(self.routerUndoWindowSeconds))
-      } catch {
-        return
-      }
-      guard let pending = self.pendingRouterSubmissions.removeValue(forKey: submissionID)
-      else { return }
-      self.pendingRouterSubmissionOrder.removeAll { $0 == submissionID }
-      self.routerLaunchTasks[submissionID] = nil
-      self.launchingRouterSubmissionIDs.insert(submissionID)
-      self.routerStatus = "Starting a router for \(project.name)…"
-      self.updateRouterCapacity()
-      await self.launchRouterObjective(
-        objective, repository: repository, tmuxExecutable: tmuxExecutable,
-        submissionID: submissionID, completion: pending.completion)
-    }
-  }
-
-  @discardableResult
-  func cancelRouterObjective() -> String? {
-    guard let submissionID = pendingRouterSubmissionOrder.last,
-          let pending = pendingRouterSubmissions.removeValue(forKey: submissionID)
-    else { return nil }
-    pendingRouterSubmissionOrder.removeLast()
-    routerLaunchTasks[submissionID]?.cancel()
-    routerLaunchTasks[submissionID] = nil
-    routerStatus = "Routing cancelled. Your objective is ready to edit."
-    updateRouterCapacity()
-    pending.completion?(false)
-    return pending.draft
-  }
-
-  private func launchRouterObjective(
-    _ objective: String, repository: String, tmuxExecutable: String,
-    submissionID: UUID, completion: (@MainActor (Bool) -> Void)?
-  ) async {
-    defer {
-      launchingRouterSubmissionIDs.remove(submissionID)
-      updateRouterCapacity()
-    }
-    do {
-      let provider = defaultAgentProvider
-      let runtime = try await objectiveRouter.launch(
-        objective: objective, repositoryPath: repository,
-        supportDirectory: paths.supportDirectory,
-        tmuxExecutable: tmuxExecutable, shellPath: nil, provider: provider,
-        model: defaultAgentModel(for: provider))
-      trackRouterRuntime(runtime, provider: provider)
-      routerStatus = "Router started. Waiting for the assigned agent…"
-      let outcome = try await objectiveRouter.waitForOutcome(
-        runtime, supportDirectory: paths.supportDirectory, timeoutSeconds: 120)
-      let succeeded = applyRouterOutcome(outcome, for: runtime)
-      if succeeded {
-        completion?(true)
-        await refresh(userInitiated: true)
-      } else if case .waiting = outcome {
-        startRouterMonitor(runtime, completion: completion)
-      } else {
-        completion?(false)
-      }
-    } catch let error as QueueRouterLaunchUnconfirmedError {
-      if routerExecutableMatchesConfiguration(error.runtime) {
-        trackRouterRuntime(error.runtime, provider: nil)
-        routerRecoveryPath = routerRecoveryPath(for: error.runtime)
-        routerStatus = error.localizedDescription
-        startRouterMonitor(error.runtime, completion: completion)
-      } else {
-        routerRecoveryBlocked = true
-        routerRecoveryPath = routerRecoveryPath(for: error.runtime)
-        routerStatus = error.localizedDescription
-        completion?(false)
-      }
-    } catch {
-      routerStatus = error.localizedDescription
-      completion?(false)
-    }
-  }
-
-  private func routerRecoveryPath(for runtime: QueueRouterRuntime) -> String {
-    let store = QueueRouterRuntimeStore(root: paths.supportDirectory)
-    return (try? store.url(routerID: runtime.tmuxName).path) ?? store.url.path
-  }
-
-  private func trackRouterRuntime(_ runtime: QueueRouterRuntime, provider: AgentProvider?) {
-    routerRuntimes.removeAll { $0.capability == runtime.capability }
-    routerRuntimes.append(runtime)
-    if let provider { routerProviders[runtime.capability] = provider }
-    updateRouterCapacity()
-  }
-
-  private func untrackRouterRuntime(_ runtime: QueueRouterRuntime) {
-    routerMonitorTasks[runtime.capability]?.cancel()
-    routerMonitorTasks[runtime.capability] = nil
-    routerRuntimes.removeAll { $0.capability == runtime.capability }
-    routerProviders[runtime.capability] = nil
-    if routerRuntimes.isEmpty {
-      routerRecoveryBlocked = false
-      routerRecoveryPath = nil
-    }
-    updateRouterCapacity()
-  }
-
-  private func isTrackingRouter(_ runtime: QueueRouterRuntime) -> Bool {
-    routerRuntimes.contains { $0.capability == runtime.capability }
-  }
-
-  private func updateRouterCapacity() {
-    let store = QueueRouterRuntimeStore(root: paths.supportDirectory)
-    guard let activeCount = try? store.activeRouters().count else {
-      routerCapacityRemaining = 0
-      return
-    }
-    routerCapacityRemaining = max(
-      0, QueueRouterRuntimeStore.maximumActiveRouters - activeCount
-        - pendingRouterSubmissions.count - launchingRouterSubmissionIDs.count)
-  }
-
-  private func startRouterMonitor(
-    _ runtime: QueueRouterRuntime,
-    completion: (@MainActor (Bool) -> Void)? = nil
-  ) {
-    routerMonitorTasks[runtime.capability]?.cancel()
-    routerMonitorTasks[runtime.capability] = Task { [weak self] in
-      while !Task.isCancelled {
-        guard let self else { return }
-        try? await Task.sleep(for: .seconds(self.routerMonitorIntervalSeconds))
-        guard !Task.isCancelled, self.isTrackingRouter(runtime) else { return }
-        do {
-          let outcome = try await self.objectiveRouter.waitForOutcome(
-            runtime, supportDirectory: self.paths.supportDirectory,
-            timeoutSeconds: 0)
-          guard !Task.isCancelled, self.isTrackingRouter(runtime) else { return }
-          if self.applyRouterOutcome(outcome, for: runtime) {
-            completion?(true)
-            await self.refresh(userInitiated: true)
-            return
-          }
-          if case .failed = outcome {
-            completion?(false)
-            return
-          }
-        } catch {
-          guard !Task.isCancelled, self.isTrackingRouter(runtime) else { return }
-          self.routerStatus = "Router monitoring will retry. \(error.localizedDescription)"
-        }
-      }
-    }
-  }
-
-  func openRouterRecovery() {
-    guard let runtime = routerRuntimes.first else { return }
-    guard routerExecutableMatchesConfiguration(runtime) else {
-      routerRecoveryBlocked = true
-      routerStatus = "Router recovery is blocked because its tmux executable no longer matches Settings."
-      return
-    }
-    routerStatus = "Opening the existing router session…"
-    Task {
-      do {
-        let reference = try await objectiveRouter.recoveryReference(
-          runtime, supportDirectory: paths.supportDirectory)
-        guard isTrackingRouter(runtime) else { return }
-        let result = try await terminalController.openManagedRuntime(
-          reference, taskID: "ROUTER",
-          provider: routerProviders[runtime.capability] ?? defaultAgentProvider, taskTitle: "",
-          configuration: config.wezTerm)
-        guard isTrackingRouter(runtime) else { return }
-        routerStatus = result.message
-      } catch TmuxError.stopped {
-        guard isTrackingRouter(runtime) else { return }
-        let outcome = try? await objectiveRouter.waitForOutcome(
-          runtime, supportDirectory: paths.supportDirectory, timeoutSeconds: 0)
-        guard isTrackingRouter(runtime) else { return }
-        if let outcome, applyRouterOutcome(outcome, for: runtime) { await refresh(userInitiated: true) }
-        else if case .waiting(nil, nil) = outcome {
-          untrackRouterRuntime(runtime)
-          routerStatus = "The router stopped before creating a route. It is safe to submit again."
-        } else {
-          routerStatus = "The router terminal stopped, but its route is still unresolved. Use the recovery locator; Focus Queue will not start a duplicate."
-        }
-      } catch {
-        guard isTrackingRouter(runtime) else { return }
-        routerStatus = error.localizedDescription
-      }
-    }
-  }
-
-  @discardableResult
-  private func applyRouterOutcome(
-    _ outcome: QueueRouterOutcome, for runtime: QueueRouterRuntime
-  ) -> Bool {
-    switch outcome {
-    case .registered(_, let taskID, _):
-      untrackRouterRuntime(runtime)
-      routerStatus = "Assigned to \(taskID). The agent terminal is opening."
-      return true
-    case .waiting(let routeID, let recoveryPath):
-      if let recoveryPath { routerRecoveryPath = recoveryPath }
-      let locator = routeID.map { " Route \($0)." } ?? ""
-      routerStatus = "The router is still working; no duplicate was started.\(locator)"
-      return false
-    case .failed(let routeID, let recoveryPath, let message):
-      if let recoveryPath { routerRecoveryPath = recoveryPath }
-      routerStatus = "\(message) Route \(routeID)."
-      return false
-    }
-  }
-
-  private func routerExecutableMatchesConfiguration(_ runtime: QueueRouterRuntime) -> Bool {
-    guard let configured = config.tmuxExecutable ?? SetupEnvironment.executable("tmux") else {
-      return false
-    }
-    return URL(fileURLWithPath: configured).standardizedFileURL.path
-      == URL(fileURLWithPath: runtime.tmuxExecutable).standardizedFileURL.path
-  }
-
   func launchAgent(
     for ticket: DashboardTicket, title: String, provider: AgentProvider,
     repositoryPath: String, assignmentDescription: String = "",
@@ -3019,6 +2790,7 @@ final class QueueViewModel {
     parentSubtaskID: String? = nil, createAssignment: Bool = false,
     modelName: String? = nil, effort: String? = nil,
     workspacePolicy: AgentWorkspacePolicy? = nil,
+    pluginOverrides: [String: Bool] = [:],
     opensTerminal: Bool = true,
     completion: (@MainActor (Bool) -> Void)? = nil
   ) {
@@ -3079,11 +2851,10 @@ final class QueueViewModel {
         subtask.tracksCompletion = tracksCompletion
         let selectedModel = modelName?.trimmingCharacters(in: .whitespacesAndNewlines)
         let selectedEffort = effort?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if selectedModel?.isEmpty == false || selectedEffort?.isEmpty == false {
-          subtask.launchConfiguration = AgentLaunchConfiguration(
-            model: selectedModel?.isEmpty == false ? selectedModel : nil,
-            effort: selectedEffort?.isEmpty == false ? selectedEffort : nil)
-        }
+        var launchConfiguration = AgentLaunchConfiguration(
+          model: selectedModel?.isEmpty == false ? selectedModel : nil,
+          effort: selectedEffort?.isEmpty == false ? selectedEffort : nil,
+          pluginOverrides: pluginOverrides.isEmpty ? nil : pluginOverrides)
         if let parentSubtaskID {
           guard let parent = context.subtasks.first(where: { $0.id == parentSubtaskID }), parent.status != .completed else {
             throw TaskContextError.commandFailed("This subtask is already completed or no longer exists.")
@@ -3098,16 +2869,32 @@ final class QueueViewModel {
         if let previous {
           subtask.parentSubtaskID = previous.parentSubtaskID
           subtask.tracksCompletion = previous.tracksCompletion
-          if subtask.launchConfiguration == nil {
-            subtask.launchConfiguration = previous.launchConfiguration
+          // A retried placeholder keeps its saved choices unless this launch names new ones.
+          if let saved = previous.launchConfiguration {
+            launchConfiguration.routeID = saved.routeID
+            launchConfiguration.providerVersion = saved.providerVersion
+            launchConfiguration.model = launchConfiguration.model ?? saved.model
+            launchConfiguration.effort = launchConfiguration.effort ?? saved.effort
+            launchConfiguration.pluginOverrides = launchConfiguration.pluginOverrides ?? saved.pluginOverrides
           }
         }
+        // Routed launches already own a capsule under their route ID.
+        if launchConfiguration.routeID == nil {
+          launchConfiguration.launchID = UUID().uuidString.lowercased()
+        }
+        subtask.launchConfiguration = launchConfiguration
         _ = createAssignment // Retained for source compatibility; new launches are one task item.
         assignment = subtask
         agentSessionErrors[
           Self.subtaskKey(ticketID: ticket.id, subtaskID: subtask.id)
         ] = nil
         taskContexts[ticket.id] = try await taskContextStore.upsertSubtask(ticketID: ticket.id, subtask: subtask)
+        if let launchID = subtask.launchConfiguration?.launchID,
+           await !writePlacementCapsule(launchID: launchID, ticket: ticket, subtask: subtask) {
+          subtask.launchConfiguration?.launchID = nil
+          assignment = subtask
+          taskContexts[ticket.id] = try await taskContextStore.upsertSubtask(ticketID: ticket.id, subtask: subtask)
+        }
         await recordAgentLaunch(
           subtask, ticketID: ticket.id, phase: "request", outcome: "accepted",
           message: "Focus Queue saved the named subtask and selected runtime mode.",
@@ -3264,6 +3051,35 @@ final class QueueViewModel {
     }
   }
 
+  /// Writes the placement capsule an app-launched agent reads from
+  /// `$FOCUS_QUEUE_AGENT_CONTEXT`, through the same resolver `fq` and
+  /// `route start` use. Returns false when placement refuses the workspace,
+  /// so the agent never starts pointed at a blocked capsule.
+  private func writePlacementCapsule(
+    launchID: String, ticket: DashboardTicket, subtask: TaskSubtask
+  ) async -> Bool {
+    guard let workspace = subtask.workspace?.path else { return false }
+    do {
+      let capsule = try await AgentPlacementResolver(root: paths.supportDirectory).resolve(
+        AgentPlacementRequest(
+          launchID: launchID, cwd: workspace,
+          prompt: subtask.initialPrompt ?? subtask.assignmentDescription,
+          explicitTaskID: ticket.id, assignmentID: subtask.id, provider: subtask.provider,
+          createTaskIfNeeded: false),
+        configuration: config)
+      await recordAgentLaunch(
+        subtask, ticketID: ticket.id, phase: "placement", outcome: capsule.status.rawValue,
+        message: capsule.reason ?? "Focus Queue wrote the agent's placement capsule.",
+        details: ["capsule": capsule.capsulePath])
+      return capsule.status == .placed
+    } catch {
+      await recordAgentLaunch(
+        subtask, ticketID: ticket.id, phase: "placement", outcome: "skipped",
+        message: "The placement capsule was not written: \(error.localizedDescription)")
+      return false
+    }
+  }
+
   func launchDefaultAgent(
     for ticket: DashboardTicket, provider: AgentProvider? = nil,
     model: String? = nil, effort: String? = nil,
@@ -3273,6 +3089,9 @@ final class QueueViewModel {
     let provider = provider ?? defaultAgentProvider
     let model = model ?? defaultAgentModel(for: provider)
     let effort = effort ?? defaultAgentEffort(for: provider)
+    rememberAgentLaunch(AgentLaunchPreset(
+      provider: provider, model: model, effort: effort,
+      workspacePolicy: .isolatedCommittedSnapshot, useTmux: true))
     let existingTitles = Set(
       taskItems(for: ticket.id).map {
         $0.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()

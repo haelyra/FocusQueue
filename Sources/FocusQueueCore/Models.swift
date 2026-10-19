@@ -1657,6 +1657,32 @@ public enum AgentProvider: String, Codable, CaseIterable, Equatable, Sendable {
     case .kimi: []
     }
   }
+
+  /// Turns installed plugins on or off for one launch without editing the
+  /// provider's saved settings. Kimi has no plugin system; Codex drops IDs its
+  /// dotted `-c` path cannot address.
+  public func pluginArguments(overrides: [String: Bool]) -> [String] {
+    let ids = overrides.keys.sorted()
+    guard !ids.isEmpty else { return [] }
+    switch self {
+    case .claude:
+      let enabled = ids.map { "\(Self.jsonString($0)):\(overrides[$0]! ? "true" : "false")" }
+      return ["--settings", "{\"enabledPlugins\":{\(enabled.joined(separator: ","))}}"]
+    case .codex:
+      return ids.filter { id in
+        !id.isEmpty && id.unicodeScalars.allSatisfy {
+          CharacterSet.alphanumerics.contains($0) || "@_-".unicodeScalars.contains($0)
+        }
+      }.flatMap { ["-c", "plugins.\($0).enabled=\(overrides[$0]! ? "true" : "false")"] }
+    case .kimi:
+      return []
+    }
+  }
+
+  private static func jsonString(_ value: String) -> String {
+    let data = (try? JSONEncoder().encode(value)) ?? Data("\"\"".utf8)
+    return String(decoding: data, as: UTF8.self)
+  }
 }
 
 public enum AgentTerminalLabels {
@@ -1814,6 +1840,30 @@ public enum QueueActivitySortMode: String, Codable, CaseIterable, Identifiable, 
   }
 }
 
+/// The choices behind the last agent the user launched, offered as the next
+/// launch's defaults. Automatic relaunches never update it.
+public struct AgentLaunchPreset: Codable, Equatable, Sendable {
+  public var provider: AgentProvider
+  public var model: String?
+  public var effort: String?
+  public var workspacePolicy: AgentWorkspacePolicy?
+  public var useTmux: Bool?
+  public var includePrompt: Bool?
+  public var pluginOverrides: [String: Bool]?
+
+  public init(provider: AgentProvider, model: String? = nil, effort: String? = nil,
+              workspacePolicy: AgentWorkspacePolicy? = nil, useTmux: Bool? = nil,
+              includePrompt: Bool? = nil, pluginOverrides: [String: Bool]? = nil) {
+    self.provider = provider
+    self.model = model
+    self.effort = effort
+    self.workspacePolicy = workspacePolicy
+    self.useTmux = useTmux
+    self.includePrompt = includePrompt
+    self.pluginOverrides = pluginOverrides
+  }
+}
+
 public struct LocalState: Codable, Equatable, Sendable {
   public var selectedProjectID: String?
   /// Nil falls back to the all-projects scope, the default queue view.
@@ -1835,6 +1885,7 @@ public struct LocalState: Codable, Equatable, Sendable {
   /// seeded once, so NEW marks only tasks created after Focus Queue saw it.
   public var viewedTicketSources: Set<String>?
   public var queueActivitySortMode: QueueActivitySortMode?
+  public var lastAgentLaunch: AgentLaunchPreset?
 
   public init(
     routineDate: String = "",
@@ -1851,7 +1902,8 @@ public struct LocalState: Codable, Equatable, Sendable {
     lastStaleAgentSweepAt: Date? = nil,
     viewedTicketIDs: Set<String>? = nil,
     viewedTicketSources: Set<String>? = nil,
-    queueActivitySortMode: QueueActivitySortMode? = nil
+    queueActivitySortMode: QueueActivitySortMode? = nil,
+    lastAgentLaunch: AgentLaunchPreset? = nil
   ) {
     self.routineDate = routineDate
     self.completedRoutineIDs = completedRoutineIDs
@@ -1868,6 +1920,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     self.viewedTicketIDs = viewedTicketIDs
     self.viewedTicketSources = viewedTicketSources
     self.queueActivitySortMode = queueActivitySortMode
+    self.lastAgentLaunch = lastAgentLaunch
   }
 
   public mutating func upsertAgentSession(_ session: TaskAgentSession) {
@@ -1926,6 +1979,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     case viewedTicketIDs
     case viewedTicketSources
     case queueActivitySortMode
+    case lastAgentLaunch
   }
 
   public init(from decoder: any Decoder) throws {
@@ -1954,6 +2008,8 @@ public struct LocalState: Codable, Equatable, Sendable {
     viewedTicketIDs = try container.decodeIfPresent(Set<String>.self, forKey: .viewedTicketIDs)
     viewedTicketSources = try container.decodeIfPresent(Set<String>.self, forKey: .viewedTicketSources)
     queueActivitySortMode = try container.decodeIfPresent(QueueActivitySortMode.self, forKey: .queueActivitySortMode)
+    // A preset from a newer build must never block loading the rest of local state.
+    lastAgentLaunch = (try? container.decodeIfPresent(AgentLaunchPreset.self, forKey: .lastAgentLaunch)) ?? nil
   }
 
   public func encode(to encoder: any Encoder) throws {
@@ -1974,6 +2030,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     try container.encodeIfPresent(viewedTicketIDs, forKey: .viewedTicketIDs)
     try container.encodeIfPresent(viewedTicketSources, forKey: .viewedTicketSources)
     try container.encodeIfPresent(queueActivitySortMode, forKey: .queueActivitySortMode)
+    try container.encodeIfPresent(lastAgentLaunch, forKey: .lastAgentLaunch)
   }
 }
 

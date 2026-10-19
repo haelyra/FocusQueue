@@ -631,6 +631,10 @@ struct NewTaskAgentView: View {
               if started { dismiss() }
               else { launchError = model.actionMessages[ticket.id] ?? "Agent could not start. Check the workspace and try again." }
             }
+          model.rememberAgentLaunch(AgentLaunchPreset(
+            provider: provider, model: modelName, effort: effort,
+            workspacePolicy: .isolatedCommittedSnapshot,
+            useTmux: tmuxAvailable && (requiresTmux || useTmux), includePrompt: includePrompt))
         }.buttonStyle(.borderedProminent)
           .disabled(isStarting || name.isEmpty
             || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

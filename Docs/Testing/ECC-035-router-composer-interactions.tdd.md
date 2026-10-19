@@ -1,5 +1,7 @@
 # ECC-035 Router composer interactions TDD record
 
+> **Deprecated (FOC-026, 2026-10-19).** The in-app Router composer and these view-model tests were removed; the + task creator replaces it. The core `QueueObjectiveRouter` types and CLI composer branches remain unreachable from the UI until a later cleanup.
+
 ## Journeys
 
 1. A user writes a multiline objective. Shift+Return inserts a newline and Return submits it.

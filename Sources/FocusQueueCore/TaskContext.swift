@@ -60,13 +60,21 @@ public struct AgentLaunchConfiguration: Codable, Equatable, Sendable {
     public var model: String?
     public var effort: String?
     public var providerVersion: String?
+    /// Placement capsule identity for launches started inside the app; routed
+    /// launches use `routeID` for the same purpose and also own a startup receipt.
+    public var launchID: String?
+    /// Installed plugins switched on or off for this agent only, by plugin ID.
+    public var pluginOverrides: [String: Bool]?
 
     public init(routeID: String? = nil, model: String? = nil, effort: String? = nil,
-                providerVersion: String? = nil) {
+                providerVersion: String? = nil, launchID: String? = nil,
+                pluginOverrides: [String: Bool]? = nil) {
         self.routeID = routeID
         self.model = model
         self.effort = effort
         self.providerVersion = providerVersion
+        self.launchID = launchID
+        self.pluginOverrides = pluginOverrides
     }
 }
 

@@ -129,6 +129,8 @@ public actor TaskAgentLauncher {
        !effort.isEmpty {
       providerArguments += subtask.provider.effortArguments(effort: effort)
     }
+    providerArguments += subtask.provider.pluginArguments(
+      overrides: subtask.launchConfiguration?.pluginOverrides ?? [:])
     providerArguments += ["--add-dir", context.contextDirectory.path]
     if let sessionID = subtask.sessionID {
       guard subtask.provider.isValidSessionID(sessionID) else {
@@ -150,11 +152,11 @@ public actor TaskAgentLauncher {
             "FOCUS_QUEUE_PROVIDER=\(subtask.provider.rawValue)",
             "FOCUS_QUEUE_SUBTASK_ID=\(subtask.id)", "FOCUS_QUEUE_TASK_ID=\(context.ticketID)"]
     focusEnvironment.append("FOCUS_QUEUE_RUNTIME_MODE=\(subtask.runtimeMode?.rawValue ?? "legacy")")
-    if let routeID = subtask.launchConfiguration?.routeID,
-       UUID(uuidString: routeID) != nil {
+    if let launchID = subtask.launchConfiguration?.routeID ?? subtask.launchConfiguration?.launchID,
+       UUID(uuidString: launchID) != nil {
       let capsule = supportDirectory.appendingPathComponent("tracking/placements")
-        .appendingPathComponent(routeID.lowercased() + ".json")
-      focusEnvironment += ["FOCUS_QUEUE_LAUNCH_ID=\(routeID.lowercased())",
+        .appendingPathComponent(launchID.lowercased() + ".json")
+      focusEnvironment += ["FOCUS_QUEUE_LAUNCH_ID=\(launchID.lowercased())",
                            "FOCUS_QUEUE_AGENT_CONTEXT=\(capsule.path)"]
     }
     return focusEnvironment + InteractiveAgentShell.command(provider: subtask.provider, arguments: providerArguments,

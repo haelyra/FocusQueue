@@ -1,11 +1,12 @@
 import Foundation
 import Darwin
 
-public enum AgentWorkspacePolicy: Sendable {
-    case existingCheckout
-    case isolatedCleanCheckout
+/// Raw values match `route start --workspace` so saved launch choices read the same everywhere.
+public enum AgentWorkspacePolicy: String, Codable, CaseIterable, Sendable {
+    case existingCheckout = "existing"
+    case isolatedCleanCheckout = "isolated-clean"
     /// Fork the selected HEAD without copying, stashing, or changing local edits.
-    case isolatedCommittedSnapshot
+    case isolatedCommittedSnapshot = "isolated-snapshot"
 
     public var createsWorktree: Bool { self != .existingCheckout }
 }

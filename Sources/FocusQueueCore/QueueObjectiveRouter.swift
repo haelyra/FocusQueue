@@ -454,6 +454,9 @@ public extension QueueObjectiveRouting {
   }
 }
 
+/// Deprecated: the in-app composer that used this was removed in favor of the
+/// + task creator; only CLI composer branches still reference these types.
+///
 /// Starts a short-lived, unassigned router in a detached tmux session. The
 /// router's existing global contract owns inspection and the single successor
 /// launch; this type never creates a task or agent record itself.

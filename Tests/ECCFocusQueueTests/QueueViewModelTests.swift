@@ -11,250 +11,6 @@ import Darwin
 @Suite("Queue app state integration")
 @MainActor
 struct QueueViewModelTests {
-  @Test("Shift Return inserts a newline while unmodified Return submits the router objective")
-  func routerComposerKeyboardSemantics() {
-    #expect(RouterComposerKeyboard.action(shiftPressed: true) == .insertNewline)
-    #expect(RouterComposerKeyboard.action(shiftPressed: false) == .submit)
-  }
-
-  @Test("Cancelling within the undo window restores the exact draft and never launches a router")
-  func cancelRouterObjectiveWithinUndoWindow() async throws {
-    let fixture = try await Fixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    var configuration = try JSONDecoder().decode(
-      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
-    configuration.projects[0].repositoryPath = fixture.root.path
-    configuration.tmuxExecutable = "/usr/bin/true"
-    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
-    let router = ControlledObjectiveRouter(outcome: .registered(
-      routeID: "must-not-launch", taskID: "ECC-101", subtaskID: "agent-one"))
-    let model = await fixture.model(
-      agent: ControlledQueueAgent(), objectiveRouter: router,
-      routerUndoWindowSeconds: 0.2)
-    let draft = "First line\nSecond line with exact spacing  "
-
-    model.routeObjective(draft)
-    #expect(model.canCancelRouterObjective)
-    #expect(model.cancelRouterObjective() == draft)
-    try await Task.sleep(for: .milliseconds(250))
-
-    #expect(await router.launchCount == 0)
-    #expect(!model.isRoutingObjective)
-    #expect(!model.canCancelRouterObjective)
-    #expect(model.routerStatus?.contains("cancelled") == true)
-  }
-
-  @Test("The Router starts after the undo window and can no longer be cancelled")
-  func routerObjectiveStartsAfterUndoWindow() async throws {
-    let fixture = try await Fixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    var configuration = try JSONDecoder().decode(
-      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
-    configuration.projects[0].repositoryPath = fixture.root.path
-    configuration.tmuxExecutable = "/usr/bin/true"
-    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
-    let router = ControlledObjectiveRouter(outcome: .registered(
-      routeID: "route-after-undo", taskID: "ECC-101", subtaskID: "agent-one"))
-    let model = await fixture.model(
-      agent: ControlledQueueAgent(), objectiveRouter: router,
-      routerUndoWindowSeconds: 0.01)
-
-    model.routeObjective("Route after the undo window")
-    try await eventually { await router.launchCount == 1 && !model.canCancelRouterObjective }
-
-    #expect(model.cancelRouterObjective() == nil)
-    try await eventually { !model.isRoutingObjective }
-    #expect(model.routerStatus?.contains("ECC-101") == true)
-  }
-
-  @Test("Parallel queue objectives each start a headless router and clear after registration")
-  func queueObjectiveRouterRegistration() async throws {
-    let fixture = try await Fixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    var configuration = try JSONDecoder().decode(
-      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
-    configuration.projects[0].repositoryPath = fixture.root.path
-    configuration.tmuxExecutable = "/usr/bin/true"
-    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
-    let router = ControlledObjectiveRouter(outcome: .registered(
-      routeID: "route-one", taskID: "ECC-101", subtaskID: "agent-one"))
-    let model = await fixture.model(agent: ControlledQueueAgent(), objectiveRouter: router)
-    var completion: Bool?
-    var secondCompletion: Bool?
-
-    model.routeObjective("Fix exact agent recall") { completion = $0 }
-    model.routeObjective("Route a parallel objective") { secondCompletion = $0 }
-
-    try await eventually {
-      !model.isRoutingObjective && completion == true && secondCompletion == true
-    }
-    #expect(await router.launchCount == 2)
-    // Both submissions wake from the same undo window, so launch order is not
-    // guaranteed; what matters is that every objective started a router.
-    #expect(await Set(router.objectives) == ["Fix exact agent recall", "Route a parallel objective"])
-    #expect(model.routerStatus?.contains("ECC-101") == true)
-    #expect(!model.hasRouterRecovery)
-  }
-
-  @Test("Objectives route in parallel up to the router capacity, then the next is refused")
-  func routeObjectiveParallelCapacity() async throws {
-    let fixture = try await Fixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    var configuration = try JSONDecoder().decode(
-      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
-    configuration.projects[0].repositoryPath = fixture.root.path
-    configuration.tmuxExecutable = "/usr/bin/true"
-    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
-    let router = ControlledObjectiveRouter(outcome: .waiting(
-      routeID: "route-cap", recoveryPath: "/tmp/route-cap.json"))
-    let model = await fixture.model(agent: ControlledQueueAgent(), objectiveRouter: router)
-
-    for index in 1...QueueRouterRuntimeStore.maximumActiveRouters {
-      model.routeObjective("Objective \(index)") { _ in }
-    }
-    var refused: Bool?
-    model.routeObjective("One objective too many") { refused = $0 }
-
-    #expect(refused == false)
-    #expect(model.routerCapacityRemaining == 0)
-    #expect(model.routerStatus?.contains("\(QueueRouterRuntimeStore.maximumActiveRouters) routers") == true)
-    try await eventually { await router.launchCount == QueueRouterRuntimeStore.maximumActiveRouters }
-  }
-
-  @Test("A pending router keeps its recovery locator and an empty objective never launches")
-  func queueObjectiveRouterRecovery() async throws {
-    let fixture = try await Fixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    var configuration = try JSONDecoder().decode(
-      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
-    configuration.projects[0].repositoryPath = fixture.root.path
-    configuration.tmuxExecutable = "/usr/bin/true"
-    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
-    let router = ControlledObjectiveRouter(outcome: .waiting(
-      routeID: "route-two", recoveryPath: "/tmp/route-two.json"))
-    let model = await fixture.model(agent: ControlledQueueAgent(), objectiveRouter: router)
-    var emptyCompletion: Bool?
-
-    model.routeObjective("   ") { emptyCompletion = $0 }
-    #expect(emptyCompletion == false)
-    #expect(await router.launchCount == 0)
-    model.routeObjective("Route unfinished work") { _ in }
-
-    try await eventually { !model.isRoutingObjective }
-    #expect(model.routerRecoveryPath == "/tmp/route-two.json")
-    #expect(model.routerStatus?.contains("still working") == true)
-    // A pending router no longer blocks a parallel objective below the cap.
-    model.routeObjective("Route a parallel objective") { _ in }
-    try await eventually { await router.launchCount == 2 }
-    try await eventually { !model.isRoutingObjective }
-    #expect(model.hasRouterRecovery)
-  }
-
-  @Test("A pending router keeps monitoring until delayed registration completes")
-  func queueObjectiveRouterDelayedRegistration() async throws {
-    let fixture = try await Fixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    var configuration = try JSONDecoder().decode(
-      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
-    configuration.projects[0].repositoryPath = fixture.root.path
-    configuration.tmuxExecutable = "/usr/bin/true"
-    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
-    let router = ControlledObjectiveRouter(outcomes: [
-      .waiting(routeID: "route-delayed", recoveryPath: "/tmp/route-delayed.json"),
-      .registered(routeID: "route-delayed", taskID: "ECC-102", subtaskID: "agent-delayed"),
-    ])
-    let model = await fixture.model(
-      agent: ControlledQueueAgent(), objectiveRouter: router,
-      routerMonitorIntervalSeconds: 0.01)
-    var completion: Bool?
-
-    model.routeObjective("Route delayed work") { completion = $0 }
-
-    try await eventually {
-      completion == true && model.routerRuntime == nil
-        && model.routerStatus?.contains("ECC-102") == true
-    }
-    #expect(await router.waitCount >= 2)
-    #expect(!model.hasRouterRecovery)
-  }
-
-  @Test("A stale router monitor cannot overwrite a newer router after suspension")
-  func staleRouterMonitorIsIdentityFenced() async throws {
-    let fixture = try await Fixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    var configuration = try JSONDecoder().decode(
-      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
-    configuration.projects[0].repositoryPath = fixture.root.path
-    configuration.tmuxExecutable = "/usr/bin/true"
-    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
-    let router = SuspendedRouterReplacementFixture()
-    let model = await fixture.model(
-      agent: ControlledQueueAgent(), objectiveRouter: router,
-      routerMonitorIntervalSeconds: 0.01)
-
-    model.routeObjective("First routed objective") { _ in }
-    try await eventually { await router.hasSuspendedFirstMonitor }
-    model.openRouterRecovery()
-    try await eventually { model.routerRuntime == nil }
-
-    model.routeObjective("Second routed objective") { _ in }
-    try await eventually {
-      !model.isRoutingObjective && model.routerRuntime?.tmuxName == "fq-router-second"
-    }
-    let secondCapability = try #require(model.routerRuntime?.capability)
-    await router.resumeFirstMonitor()
-    try await Task.sleep(for: .milliseconds(50))
-
-    #expect(model.routerRuntime?.capability == secondCapability)
-    #expect(model.routerRuntime?.tmuxName == "fq-router-second")
-    #expect(model.hasRouterRecovery)
-  }
-
-  @Test("A persisted router recovery survives restart and routing continues while capacity remains")
-  func queueObjectiveRouterRecoverySurvivesRestart() async throws {
-    let fixture = try await Fixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    var configuration = try JSONDecoder().decode(
-      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
-    configuration.projects[0].repositoryPath = fixture.root.path
-    configuration.tmuxExecutable = "/usr/bin/true"
-    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
-    let runtime = try QueueRouterRuntime(
-      tmuxName: "fq-router-restarted", tmuxExecutable: "/usr/bin/true", startedAt: Date(),
-      objectiveSHA256: AgentStartupReceipt.promptDigest("Persisted restart objective"))
-    try QueueRouterRuntimeStore(root: fixture.paths.supportDirectory).save(runtime)
-    let router = ControlledObjectiveRouter(outcome: .waiting(
-      routeID: nil, recoveryPath: QueueRouterRuntimeStore(root: fixture.paths.supportDirectory).url.path))
-
-    let model = await fixture.model(agent: ControlledQueueAgent(), objectiveRouter: router)
-    // The recovered router occupies one slot; a fresh objective still routes.
-    model.routeObjective("Route a fresh objective after restart") { _ in }
-
-    try await eventually { await router.launchCount == 1 }
-    try await eventually { !model.isRoutingObjective }
-    #expect(model.hasRouterRecovery)
-    #expect(model.routerStatus?.contains("still working") == true)
-  }
-
-  @Test("A malformed router recovery blocks routing without blocking queue bootstrap")
-  func malformedRouterRecoveryDoesNotBlockBootstrap() async throws {
-    let fixture = try await Fixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let store = QueueRouterRuntimeStore(root: fixture.paths.supportDirectory)
-    try FileManager.default.createDirectory(
-      at: store.url.deletingLastPathComponent(), withIntermediateDirectories: true)
-    try Data("{\"tmuxName\":\"unsafe\"}".utf8).write(to: store.url, options: .atomic)
-    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: store.url.path)
-
-    let model = await fixture.model(agent: ControlledQueueAgent())
-
-    #expect(model.loadError == nil)
-    #expect(!model.openTickets.isEmpty)
-    #expect(model.hasRouterRecovery)
-    #expect(!model.canOpenRouterRecovery)
-    #expect(model.routerStatus?.contains("new routing is blocked") == true)
-  }
-
   @Test("Bootstrap primes saved agents from disk before background reconciliation")
   func bootstrapPrimesAgentsBeforeReconciliation() async throws {
     let fixture = try await Fixture()
@@ -1462,6 +1218,12 @@ struct QueueViewModelTests {
     #expect(launchCommands.contains("sonnet"))
     #expect(launchCommands.contains("--effort"))
     #expect(launchCommands.contains("low"))
+    let launchID = try #require(agent.launchConfiguration?.launchID, "App launches get a placement capsule")
+    #expect(launchCommands.contains { $0.hasSuffix("tracking/placements/\(launchID).json") })
+    #expect(model.taskCreatorLaunchDefaults == AgentLaunchPreset(
+      provider: .claude, model: "sonnet", effort: "low",
+      workspacePolicy: .isolatedCommittedSnapshot, useTmux: true),
+      "A quick launch becomes the task creator's default")
   }
 
   @Test("A failed New Agent launch returns its error and retries its saved workspace and assignment")
@@ -3230,19 +2992,14 @@ struct QueueViewModelTests {
     configuration.tmuxExecutable = "/usr/bin/true"
     configuration.agentProviderFallbackOrder = [.claude, .codex]
     try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
-    let router = ControlledObjectiveRouter(outcome: .registered(
-      routeID: "route-claude", taskID: "ECC-101", subtaskID: "agent-one"))
-    let model = await fixture.model(
-      agent: ControlledQueueAgent(), objectiveRouter: router, routerUndoWindowSeconds: 0.01)
+    let model = await fixture.model(agent: ControlledQueueAgent())
 
     #expect(model.defaultAgentProvider == .claude)
-    model.routeObjective("Route with the configured provider")
-    try await eventually { !model.isRoutingObjective && model.routerStatus?.contains("ECC-101") == true }
-
-    #expect(await router.providers == [.claude])
+    #expect(model.taskCreatorLaunchDefaults.provider == .claude,
+      "With no launch yet, the task creator follows the Settings default")
   }
 
-  @Test("The configured default provider and model drive quick actions and the router")
+  @Test("The configured default provider and model drive quick actions and the task creator")
   func configuredDefaultProviderAndModel() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -3253,10 +3010,7 @@ struct QueueViewModelTests {
     configuration.defaultAgentProvider = .kimi
     configuration.defaultAgentModels = [.kimi: "kimi-code/k3"]
     try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
-    let router = ControlledObjectiveRouter(outcome: .registered(
-      routeID: "route-kimi", taskID: "ECC-101", subtaskID: "agent-one"))
-    let model = await fixture.model(
-      agent: ControlledQueueAgent(), objectiveRouter: router, routerUndoWindowSeconds: 0.01)
+    let model = await fixture.model(agent: ControlledQueueAgent())
 
     #expect(model.defaultAgentProvider == .kimi)
     #expect(model.defaultAgentModel(for: .kimi) == "kimi-code/k3")
@@ -3265,10 +3019,9 @@ struct QueueViewModelTests {
     #expect(model.preferredNewAgentProvider(stored: .claude) == .claude)
     #expect(model.agentModelChoices(for: .kimi).map(\.label).first == "Default")
 
-    model.routeObjective("Route with the configured default provider")
-    try await eventually { !model.isRoutingObjective && model.routerStatus?.contains("ECC-101") == true }
-    #expect(await router.providers == [.kimi])
-    #expect(await router.models == ["kimi-code/k3"])
+    #expect(model.taskCreatorLaunchDefaults == AgentLaunchPreset(
+      provider: .kimi, model: "kimi-code/k3", effort: nil,
+      workspacePolicy: .isolatedCommittedSnapshot, useTmux: true, includePrompt: true))
 
     model.setDefaultAgentProvider(.claude)
     #expect(model.defaultAgentProvider == .claude)
@@ -3318,6 +3071,143 @@ struct QueueViewModelTests {
         && saved.placementEfforts == [.codex: "medium"]
         && saved.placementConfidenceThreshold == 0.95 && saved.placementTimeoutSeconds == 5
     }
+  }
+
+  @Test("The task creator fills blanks from placement, keeps the description, and launches one placed agent")
+  func taskCreatorCreatesAndLaunches() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let repository = try await creatorRepository(for: fixture)
+    defer { try? FileManager.default.removeItem(at: repository) }
+    let suggester = RecordingPlacementSuggester(TaskPlacementSuggestion(
+      status: "new-task", title: "Export reports to Obsidian",
+      summary: "Send the daily report to Obsidian each evening.", priority: "high",
+      confidence: 0, model: "claude/haiku"))
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(),
+      terminalController: DirectViewRecorder(root: fixture.root, failReveal: false),
+      taskAgentLauncher: TaskAgentLauncher(runner: DirectCreationRunner(), candidateSockets: []),
+      taskPlacementSuggester: suggester)
+    let description = "Every evening, export the daily report as markdown into my Obsidian vault."
+    let preset = AgentLaunchPreset(
+      provider: .claude, model: "haiku", effort: "low", workspacePolicy: .existingCheckout,
+      useTmux: false, includePrompt: true, pluginOverrides: ["ecc@ecc": true])
+
+    let result = await model.submitTaskDraft(TaskDraft(description: description, agent: preset))
+    guard case .created(let ticketID, true) = result else {
+      Issue.record("Unexpected result \(result)")
+      return
+    }
+    let ticket = try #require(model.projectTickets.first { $0.id == ticketID })
+    #expect(ticket.title == "Export reports to Obsidian")
+    #expect(ticket.summary == "Send the daily report to Obsidian each evening.")
+    #expect(ticket.priority == "high")
+    #expect(ticket.next == description, "The full description survives a shorter card summary")
+    let queries = await suggester.queries
+    #expect(queries == [TaskPlacementQuery(
+      description: description, provider: .claude, cwd: repository.path,
+      timeoutSeconds: AppConfiguration.defaultPlacementTimeoutSeconds)])
+
+    try await eventually { model.launchingTaskIDs.isEmpty }
+    let agent = try #require(model.subtasks(for: ticketID).first)
+    #expect(agent.provider == .claude)
+    #expect(agent.initialPrompt == description)
+    #expect(agent.launchConfiguration?.model == "haiku")
+    #expect(agent.launchConfiguration?.effort == "low")
+    #expect(agent.launchConfiguration?.pluginOverrides == ["ecc@ecc": true])
+    let launchID = try #require(agent.launchConfiguration?.launchID)
+    let capsule = try #require(try AgentPlacementCapsuleStore(root: fixture.paths.supportDirectory)
+      .load(launchID: launchID))
+    #expect(capsule.status == .placed)
+    #expect(capsule.taskID == ticketID)
+    #expect(capsule.assignmentID == agent.id)
+    #expect(model.taskCreatorLaunchDefaults == preset, "The creator remembers its own launch")
+  }
+
+  @Test("A placement match is offered before a duplicate; joining launches there and creating anyway reuses the suggestion")
+  func taskCreatorOffersMatch() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let repository = try await creatorRepository(for: fixture)
+    defer { try? FileManager.default.removeItem(at: repository) }
+    let suggester = RecordingPlacementSuggester(TaskPlacementSuggestion(
+      status: "task", taskID: "ECC-101", title: "Implement ECC-101 follow-up",
+      summary: "Follow up.", priority: "low", confidence: 0.93, model: "claude/haiku"))
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(),
+      terminalController: DirectViewRecorder(root: fixture.root, failReveal: false),
+      taskAgentLauncher: TaskAgentLauncher(runner: DirectCreationRunner(), candidateSockets: []),
+      taskPlacementSuggester: suggester)
+    var draft = TaskDraft(
+      description: "Keep going on ECC-101 and verify the edge cases.", priority: "medium",
+      agent: AgentLaunchPreset(provider: .codex, workspacePolicy: .existingCheckout, useTmux: false))
+    let ticketCount = model.projectTickets.count
+
+    let offered = await model.submitTaskDraft(draft)
+    guard case .matched(let match, let suggestion) = offered else {
+      Issue.record("Unexpected result \(offered)")
+      return
+    }
+    #expect(match.id == "ECC-101")
+    #expect(model.projectTickets.count == ticketCount, "Nothing is created while the match is pending")
+
+    let joined = await model.submitTaskDraft(draft, choice: .join("ECC-101"), suggestion: suggestion)
+    #expect(joined == .joined(ticketID: "ECC-101", launchedAgent: true))
+    try await eventually { model.launchingTaskIDs.isEmpty }
+    #expect(model.subtasks(for: "ECC-101").contains { $0.initialPrompt == draft.description })
+    #expect(model.projectTickets.count == ticketCount)
+
+    draft.launchesAgent = false
+    let created = await model.submitTaskDraft(draft, choice: .createNew, suggestion: suggestion)
+    guard case .created(let newID, false) = created else {
+      Issue.record("Unexpected result \(created)")
+      return
+    }
+    #expect(newID != "ECC-101")
+    #expect(model.projectTickets.first { $0.id == newID }?.priority == "medium", "The user's priority wins")
+    #expect(model.subtasks(for: newID).isEmpty)
+    #expect(await suggester.queries.count == 1, "Creating anyway reuses the first suggestion")
+  }
+
+  @Test("Without a model suggestion the creator asks for a priority instead of defaulting one")
+  func taskCreatorRequiresPriorityWithoutModel() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let suggester = RecordingPlacementSuggester(.unavailable("the claude CLI is not on PATH"))
+    let model = await fixture.model(agent: ControlledQueueAgent(), taskPlacementSuggester: suggester)
+    let description = "Add a keyboard shortcut that jumps to the next blocked agent."
+    var draft = TaskDraft(description: description, launchesAgent: false,
+      agent: AgentLaunchPreset(provider: .claude))
+
+    let first = await model.submitTaskDraft(draft)
+    guard case .needsPriority(let message, let suggestion) = first else {
+      Issue.record("Unexpected result \(first)")
+      return
+    }
+    #expect(message.contains("not on PATH"))
+    #expect(model.projectTickets.allSatisfy { $0.summary != description })
+
+    draft.priority = "high"
+    let created = await model.submitTaskDraft(draft, suggestion: suggestion)
+    guard case .created(let ticketID, false) = created else {
+      Issue.record("Unexpected result \(created)")
+      return
+    }
+    let ticket = try #require(model.projectTickets.first { $0.id == ticketID })
+    #expect(ticket.title == TaskSubtask.agentName(prompt: description, provider: .claude))
+    #expect(ticket.summary == description)
+    #expect(ticket.priority == "high")
+    #expect(await suggester.queries.count == 1)
+
+    model.setPlacementModelEnabled(false)
+    let offline = await model.submitTaskDraft(TaskDraft(
+      description: "Write the release notes for 2.3.", priority: "low", launchesAgent: false,
+      agent: AgentLaunchPreset(provider: .claude)))
+    guard case .created = offline else {
+      Issue.record("Unexpected result \(offline)")
+      return
+    }
+    #expect(await suggester.queries.count == 1, "Placement off in Settings never calls the model")
   }
 
   @Test("Quota fallback claims the next installed provider once per subtask inside a per-ticket cooldown")
@@ -3634,6 +3524,39 @@ private final class ObservationCounter: @unchecked Sendable {
   func record() { lock.withLock { value += 1 } }
 }
 
+/// A committed Git repository configured as the fixture project's checkout.
+@MainActor
+private func creatorRepository(for fixture: Fixture) async throws -> URL {
+  let repository = externalWorkspace(for: fixture.root, suffix: "creator-repo")
+  try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+  let git = FoundationProcessRunner()
+  for arguments in [["init", "-q"], ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Fixture", "--allow-empty"]] {
+    #expect(try await git.run(.init(executable: "/usr/bin/git", arguments: arguments,
+      workingDirectory: repository.path)).succeeded)
+  }
+  var configuration = try JSONDecoder().decode(
+    AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+  configuration.workspacePath = repository.path
+  configuration.projects[0].workspacePath = repository.path
+  configuration.projects[0].repositoryPath = repository.path
+  try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
+  return repository
+}
+
+/// Returns one fixed suggestion and records every query.
+private actor RecordingPlacementSuggester: TaskPlacementSuggesting {
+  private let suggestion: TaskPlacementSuggestion
+  private(set) var queries: [TaskPlacementQuery] = []
+
+  init(_ suggestion: TaskPlacementSuggestion) { self.suggestion = suggestion }
+
+  func suggest(_ query: TaskPlacementQuery) async -> TaskPlacementSuggestion {
+    queries.append(query)
+    return suggestion
+  }
+}
+
 private func externalWorkspace(for supportRoot: URL, suffix: String = "repo") -> URL {
   supportRoot.deletingLastPathComponent().appendingPathComponent(
     "\(supportRoot.lastPathComponent)-\(suffix)")
@@ -3667,9 +3590,7 @@ private struct Fixture {
              terminalController: (any WezTermControlling)? = nil,
              dashboardRepository: any DashboardManaging = JSONDashboardRepository(),
              taskAgentLauncher: TaskAgentLauncher = TaskAgentLauncher(),
-             objectiveRouter: any QueueObjectiveRouting = QueueObjectiveRouter(),
-             routerMonitorIntervalSeconds: Double = 2,
-             routerUndoWindowSeconds: Double = 0,
+             taskPlacementSuggester: (any TaskPlacementSuggesting)? = nil,
              connectorDiagnosticsRunner: any ProcessRunning = FoundationProcessRunner(),
              agentActivityObserver: AgentActivityObserver = AgentActivityObserver(),
              discoverExternalAgents: @escaping @Sendable () async throws -> [KnownProviderProcess] = { [] },
@@ -3685,9 +3606,7 @@ private struct Fixture {
       verifier: verifier ?? boundary, queueAgent: agent, queueAgentFactory: queueAgentFactory,
       pullRequestQueueLoader: boundary,
       taskAgentLauncher: taskAgentLauncher,
-      objectiveRouter: objectiveRouter,
-      routerMonitorIntervalSeconds: routerMonitorIntervalSeconds,
-      routerUndoWindowSeconds: routerUndoWindowSeconds,
+      taskPlacementSuggester: taskPlacementSuggester,
       connectorDiagnosticsRunner: connectorDiagnosticsRunner,
       agentActivityObserver: agentActivityObserver,
       discoverExternalAgents: discoverExternalAgents,
@@ -3836,100 +3755,6 @@ private final class CountingDashboardRepository: DashboardManaging, @unchecked S
   ) async throws -> DashboardSnapshot {
     try await base.setTicketDueDate(
       id: id, to: dueDate, source: source, in: url, expectedRevision: expectedRevision)
-  }
-}
-
-private actor ControlledObjectiveRouter: QueueObjectiveRouting {
-  private(set) var launchCount = 0
-  private(set) var waitCount = 0
-  private(set) var objectives: [String] = []
-  private(set) var providers: [AgentProvider] = []
-  private(set) var models: [String?] = []
-  private var outcomes: [QueueRouterOutcome]
-
-  init(outcome: QueueRouterOutcome) { outcomes = [outcome] }
-  init(outcomes: [QueueRouterOutcome]) { self.outcomes = outcomes }
-
-  func launch(
-    objective: String, repositoryPath: String, supportDirectory: URL,
-    tmuxExecutable: String, shellPath: String?
-  ) async throws -> QueueRouterRuntime {
-    try await launch(
-      objective: objective, repositoryPath: repositoryPath, supportDirectory: supportDirectory,
-      tmuxExecutable: tmuxExecutable, shellPath: shellPath, provider: .codex, model: nil)
-  }
-
-  func launch(
-    objective: String, repositoryPath: String, supportDirectory: URL,
-    tmuxExecutable: String, shellPath: String?, provider: AgentProvider, model: String?
-  ) async throws -> QueueRouterRuntime {
-    launchCount += 1
-    objectives.append(objective)
-    providers.append(provider)
-    models.append(model)
-    try await Task.sleep(for: .milliseconds(30))
-    let reference = try TmuxController.decode(
-      "fq-router-test|1|1|%1|2|/dev/ttys001|0\n", executable: tmuxExecutable)[0]
-    return QueueRouterRuntime(tmux: reference, startedAt: Date())
-  }
-
-  func waitForOutcome(
-    _ runtime: QueueRouterRuntime, supportDirectory: URL, timeoutSeconds: Double
-  ) async throws -> QueueRouterOutcome {
-    waitCount += 1
-    if outcomes.count > 1 { return outcomes.removeFirst() }
-    return outcomes[0]
-  }
-}
-
-private actor SuspendedRouterReplacementFixture: QueueObjectiveRouting {
-  private var launchCount = 0
-  private var firstWaitCount = 0
-  private var firstMonitor: CheckedContinuation<QueueRouterOutcome, any Error>?
-
-  var hasSuspendedFirstMonitor: Bool { firstMonitor != nil }
-
-  func launch(
-    objective: String, repositoryPath: String, supportDirectory: URL,
-    tmuxExecutable: String, shellPath: String?
-  ) async throws -> QueueRouterRuntime {
-    launchCount += 1
-    let isFirst = launchCount == 1
-    let name = isFirst ? "fq-router-first" : "fq-router-second"
-    let reference = try TmuxController.decode(
-      "\(name)|\(100 + launchCount)|\(launchCount)|%\(launchCount)|\(200 + launchCount)|/dev/ttys00\(launchCount)|0\n",
-      executable: tmuxExecutable)[0]
-    return QueueRouterRuntime(tmux: reference, startedAt: Date())
-  }
-
-  func waitForOutcome(
-    _ runtime: QueueRouterRuntime, supportDirectory: URL, timeoutSeconds: Double
-  ) async throws -> QueueRouterOutcome {
-    if runtime.tmuxName == "fq-router-first" {
-      firstWaitCount += 1
-      if firstWaitCount == 1 {
-        return .waiting(routeID: "route-first", recoveryPath: "/tmp/route-first.json")
-      }
-      if firstWaitCount == 2 {
-        return try await withCheckedThrowingContinuation { firstMonitor = $0 }
-      }
-      return .registered(
-        routeID: "route-first", taskID: "ECC-101", subtaskID: "agent-first")
-    }
-    return .waiting(routeID: "route-second", recoveryPath: "/tmp/route-second.json")
-  }
-
-  func recoveryReference(
-    _ runtime: QueueRouterRuntime, supportDirectory: URL
-  ) async throws -> TmuxSessionReference {
-    if runtime.tmuxName == "fq-router-first" { throw TmuxError.stopped }
-    return try #require(runtime.confirmedReference)
-  }
-
-  func resumeFirstMonitor() {
-    firstMonitor?.resume(returning: .registered(
-      routeID: "route-first", taskID: "ECC-101", subtaskID: "agent-first"))
-    firstMonitor = nil
   }
 }
 

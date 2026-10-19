@@ -39,7 +39,7 @@ overridable with `FOCUS_QUEUE_SUPPORT_DIR` (used by tests to isolate state). Key
 | `external-agent-sessions/<sha256>.json` | Hook registration receipts |
 | `tracking/placements/<launch-uuid>.json` | Placement capsules |
 | `tracking/launches/`, `tracking/resolutions/` | Intake receipts, launch→session resolution |
-| `agent-routes/` | Router route intents and router slots |
+| `agent-routes/` | Route intents (router slots belonged to the removed in-app composer) |
 | `queue-order/order[-<b64 project>].json` | Queue ordering per project |
 | `logs/agent-startups/<TASK>/<subtask>.json` | Startup receipts |
 | `library/` | Durable cross-device history |
@@ -81,7 +81,7 @@ Agents receive and consume identity through environment variables. These are the
 | `FOCUS_QUEUE_TMUX_NAME` | managed tmux | Owning tmux session name |
 | `FOCUS_QUEUE_PROJECT_ID` | queue commands | Scope guard for `queue` mutations |
 | `FOCUS_QUEUE_PROVIDER` | entry wrapper | `codex` / `claude` / `kimi` |
-| `FOCUS_QUEUE_ROUTER` / `_SOURCE` / `_CAPABILITY` | router launch | One-use router capability auth |
+| `FOCUS_QUEUE_ROUTER` / `_SOURCE` / `_CAPABILITY` | router launch | One-use router capability auth; `_SOURCE`/`_CAPABILITY` only came from the removed in-app composer |
 | `CODEX_THREAD_ID` / `CODEX_SESSION_ID` | Codex runtime | Provider session UUID |
 | `CLAUDE_CODE_SESSION_ID` (or an explicit `CLAUDE_SESSION_ID`) | Claude Code runtime | Provider session UUID; managed panes strip both |
 | `WEZTERM_PANE`, `WEZTERM_UNIX_SOCKET` | WezTerm | Terminal pane identity |
@@ -485,6 +485,8 @@ Measured on this machine (2026-10-19), 51 labeled launches (31 from real history
 | Codex `gpt-6-luna`, effort low | 33/51 | 0 wrong-task; 16 false matches | 3.6 s / 47 s (often over the 20 s budget) |
 
 Kimi highspeed placed a single live follow-up correctly in 6.2 s; it was not run on the full set because every `kimi -p` call leaves a session record. Raising the threshold from 0.6 to 0.85 cut false matches from 13 to 2–6 per run at the cost of 2–3 follow-ups scored 0.80–0.82 becoming new tasks.
+
+**+ task creator** — the app runs the same `classify --provider <p> --json` from its bundle (`Contents/Resources/shell/focus_queue_placement.py`, falling back to the installed `shell/` copy) with `FOCUS_QUEUE_SUPPORT_DIR` and each provider's resolved executable, because a GUI app inherits launchd's short `PATH`. The model reply also carries `summary` (card description) and `priority` (`critical|high|medium|low`); an invalid value is dropped, never fatal. A `status: task` reply is offered as "add an agent to the matching task" before any ticket is written. With no user priority and no model priority, the creator asks for one instead of defaulting.
 
 **Placement ledger** — every `classify` appends one row to `<support>/placement-ledger.sqlite` (override: `FOCUS_QUEUE_PLACEMENT_LEDGER`), table `placements`: `id INTEGER PK`, `timestamp TEXT` (ISO8601 UTC), `backend`, `status`, `task_id`, `project_id`, `confidence REAL`, `rationale`, `prompt_excerpt` (first 200 chars), `cwd`, `latency_ms REAL`, `model` (`provider/model`), `title`, `error` (the model error, if any). Phase-1 ledgers gain the last three columns in place. Ledger failures warn on stderr and never block classification.
 

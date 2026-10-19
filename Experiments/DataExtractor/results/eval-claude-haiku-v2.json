@@ -1,0 +1,204 @@
+{
+  "generatedAt": "2026-10-19T19:11:57.824655+00:00",
+  "summary": {
+    "model": "claude/haiku",
+    "runs": 6,
+    "errors": 0,
+    "mean_recall": 0.958,
+    "mean_precision": 1.0,
+    "total_gold": 9,
+    "total_matched": 8,
+    "avg_input_tokens": 2586,
+    "avg_output_tokens": 571,
+    "avg_latency_ms": 4518
+  },
+  "runs": [
+    {
+      "fixture": "coding-preference.json",
+      "sample": 0,
+      "model": "claude/haiku",
+      "usage": {
+        "input": 2229,
+        "output": 603
+      },
+      "latencyMs": 3705.838,
+      "error": null,
+      "grade": {
+        "gold": 2,
+        "produced": 2,
+        "inboxed": 0,
+        "matched": 2,
+        "recall": 1.0,
+        "precision": 1.0,
+        "extra": [],
+        "missed": []
+      },
+      "atoms": [
+        {
+          "text": "Never swallow exceptions silently; always log to stderr before falling back.",
+          "destination": "project",
+          "target_id": "focus-queue",
+          "confidence": 0.9
+        },
+        {
+          "text": "Add a retry queue for failed model calls, deferred to a later change.",
+          "destination": "new_task",
+          "target_id": "focus-queue",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "fixture": "deferred-and-speculation.json",
+      "sample": 0,
+      "model": "claude/haiku",
+      "usage": {
+        "input": 2184,
+        "output": 434
+      },
+      "latencyMs": 4245.534,
+      "error": null,
+      "grade": {
+        "gold": 1,
+        "produced": 1,
+        "inboxed": 0,
+        "matched": 1,
+        "recall": 1.0,
+        "precision": 1.0,
+        "extra": [],
+        "missed": []
+      },
+      "atoms": [
+        {
+          "text": "Embedding index should use incremental rebuilds instead of full reindexes.",
+          "destination": "task",
+          "target_id": "FOC-013",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "fixture": "explicit-user-scope.json",
+      "sample": 0,
+      "model": "claude/haiku",
+      "usage": {
+        "input": 2133,
+        "output": 430
+      },
+      "latencyMs": 3444.044,
+      "error": null,
+      "grade": {
+        "gold": 1,
+        "produced": 1,
+        "inboxed": 0,
+        "matched": 1,
+        "recall": 1.0,
+        "precision": 1.0,
+        "extra": [],
+        "missed": []
+      },
+      "atoms": [
+        {
+          "text": "Keep commit messages under 72 characters.",
+          "destination": "user",
+          "target_id": "user",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "fixture": "landing-page.json",
+      "sample": 0,
+      "model": "claude/haiku",
+      "usage": {
+        "input": 2519,
+        "output": 1418
+      },
+      "latencyMs": 8130.114,
+      "error": null,
+      "grade": {
+        "gold": 4,
+        "produced": 3,
+        "inboxed": 0,
+        "matched": 3,
+        "recall": 0.75,
+        "precision": 1.0,
+        "extra": [],
+        "missed": [
+          "Decide whether to create a contacts page"
+        ]
+      },
+      "atoms": [
+        {
+          "text": "Never add beige to the website; use the all-gray theme with blue highlights only.",
+          "destination": "project",
+          "target_id": "space-site",
+          "confidence": 0.9
+        },
+        {
+          "text": "Contacts page is undecided and not to be built yet; the user needs more information before deciding whether to create it.",
+          "destination": "new_task",
+          "target_id": "space-site",
+          "confidence": 0.9
+        },
+        {
+          "text": "Demo video must be under 10 seconds, or a under-10-second version must be produced.",
+          "destination": "task",
+          "target_id": "WEB-002",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "fixture": "nothing-to-extract.json",
+      "sample": 0,
+      "model": "claude/haiku",
+      "usage": {
+        "input": 4312,
+        "output": 136
+      },
+      "latencyMs": 4569.661,
+      "error": null,
+      "grade": {
+        "gold": 0,
+        "produced": 0,
+        "inboxed": 0,
+        "matched": 0,
+        "recall": 1.0,
+        "precision": 1.0,
+        "extra": [],
+        "missed": []
+      },
+      "atoms": []
+    },
+    {
+      "fixture": "scope-inflation.json",
+      "sample": 0,
+      "model": "claude/haiku",
+      "usage": {
+        "input": 2137,
+        "output": 406
+      },
+      "latencyMs": 3010.683,
+      "error": null,
+      "grade": {
+        "gold": 1,
+        "produced": 1,
+        "inboxed": 0,
+        "matched": 1,
+        "recall": 1.0,
+        "precision": 1.0,
+        "extra": [],
+        "missed": []
+      },
+      "atoms": [
+        {
+          "text": "Never use the washed-out beige tint in the app's UI; use the neutral grays already in the app.",
+          "destination": "project",
+          "target_id": "focus-queue",
+          "confidence": 0.9
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,148 @@
+{
+  "generatedAt": "2026-10-19T19:13:49.799095+00:00",
+  "summary": {
+    "model": "claude/haiku",
+    "runs": 3,
+    "errors": 0,
+    "mean_recall": 0.583,
+    "mean_precision": 1.0,
+    "total_gold": 12,
+    "total_matched": 7,
+    "avg_input_tokens": 10860,
+    "avg_output_tokens": 2169,
+    "avg_latency_ms": 10961
+  },
+  "runs": [
+    {
+      "fixture": "landing-page.json",
+      "sample": 0,
+      "model": "claude/haiku",
+      "usage": {
+        "input": 15287,
+        "output": 2565
+      },
+      "latencyMs": 13251.178,
+      "error": null,
+      "grade": {
+        "gold": 4,
+        "produced": 2,
+        "inboxed": 1,
+        "matched": 2,
+        "recall": 0.5,
+        "precision": 1.0,
+        "extra": [],
+        "missed": [
+          "Create a professional company Instagram account",
+          "Decide whether to create a contacts page"
+        ]
+      },
+      "atoms": [
+        {
+          "text": "Never use beige on the website. Use the all-gray theme, and blue highlights are allowed.",
+          "destination": "project",
+          "target_id": "space-site",
+          "confidence": 0.9
+        },
+        {
+          "text": "The demo video must be under 10 seconds, or a separate version under 10 seconds must exist.",
+          "destination": "task",
+          "target_id": "WEB-002",
+          "confidence": 0.85
+        },
+        {
+          "text": "A contacts page may be needed later, pending more information about whether it is wanted. Do not build it now.",
+          "destination": "inbox",
+          "target_id": "space-site",
+          "confidence": 0.6
+        }
+      ]
+    },
+    {
+      "fixture": "landing-page.json",
+      "sample": 1,
+      "model": "claude/haiku",
+      "usage": {
+        "input": 6211,
+        "output": 1636
+      },
+      "latencyMs": 8777.414,
+      "error": null,
+      "grade": {
+        "gold": 4,
+        "produced": 2,
+        "inboxed": 1,
+        "matched": 2,
+        "recall": 0.5,
+        "precision": 1.0,
+        "extra": [],
+        "missed": [
+          "All-gray website theme with optional blue accents; never beige",
+          "Decide whether to create a contacts page"
+        ]
+      },
+      "atoms": [
+        {
+          "text": "Decide whether a contacts page is needed; build it only after more information is gathered.",
+          "destination": "new_task",
+          "target_id": "space-site",
+          "confidence": 0.9
+        },
+        {
+          "text": "The demo video must be under 10 seconds, or a under-10-second version must be produced.",
+          "destination": "task",
+          "target_id": "WEB-002",
+          "confidence": 0.9
+        },
+        {
+          "text": "Do not use beige anywhere on the website; use an all-gray theme with blue highlights only.",
+          "destination": "inbox",
+          "target_id": "space-site",
+          "confidence": 0.8
+        }
+      ]
+    },
+    {
+      "fixture": "landing-page.json",
+      "sample": 2,
+      "model": "claude/haiku",
+      "usage": {
+        "input": 11081,
+        "output": 2307
+      },
+      "latencyMs": 10853.865,
+      "error": null,
+      "grade": {
+        "gold": 4,
+        "produced": 3,
+        "inboxed": 0,
+        "matched": 3,
+        "recall": 0.75,
+        "precision": 1.0,
+        "extra": [],
+        "missed": [
+          "Decide whether to create a contacts page"
+        ]
+      },
+      "atoms": [
+        {
+          "text": "Never use beige on the website; keep the design to an all-gray space theme with only blue highlights.",
+          "destination": "project",
+          "target_id": "space-site",
+          "confidence": 0.95
+        },
+        {
+          "text": "The demo video must be under 10 seconds, or a separate version under 10 seconds must be produced.",
+          "destination": "task",
+          "target_id": "WEB-002",
+          "confidence": 0.9
+        },
+        {
+          "text": "Possibly build a contacts page later, pending the user's decision on whether it is wanted.",
+          "destination": "new_task",
+          "target_id": "space-site",
+          "confidence": 0.9
+        }
+      ]
+    }
+  ]
+}

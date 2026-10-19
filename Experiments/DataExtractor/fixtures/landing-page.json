@@ -1,0 +1,19 @@
+{
+  "catalog": {
+    "projects": [{"id": "space-site", "name": "Space Website", "description": "Company website, landing page, branding, contacts, marketing assets and social presence.", "context_policy": "Website-wide visual and content requirements belong here. Personal preferences require explicit cross-project scope."}],
+    "tasks": [
+      {"id": "WEB-001", "title": "Landing Page", "summary": "Build the company landing page and waitlist experience."},
+      {"id": "WEB-002", "title": "Demo Video", "summary": "Produce the product demonstration video and its shorter versions."}
+    ]
+  },
+  "event": {
+    "task_id": "WEB-001",
+    "prompt": "Create the landing page. In the future, I don't know why you keep using this ugly beige color when we have clearly an all-gray theme. Please do not add beige. You can add some blue highlights, but I'm just looking at the page right now, and never again should you add any beige. Oh, I just thought of in the landing page we should have a link to the contacts page. And in the contacts page, I need to make a new Instagram account for this to be more professional. Anyways, in the landing page, I want a big picture of the earth from afar, and I want it to move, animation, and then we have our gray space theme. We should put a demo video in the left-hand side of the landing page, and then we could also have a meet the team page, or we could put that on the landing page, what do you think is better? Wait, we probably need to ensure that the demo video is less than 10 seconds or has a less than 10 second version. Let's handle that later. Just focus on the page right now. Okay, anyways on the landing page We need like a waitlist button so they can just directly enter their email and then hit join the waitlist. Like that should be right on the page. As for other information, you can go through the \"company inforamtion\" folder within my documents folder and pull some relevant information, fill in the rest of the landing page. Also, we only might need to make a contacts page, but I'm not going to do that right now. I need to get more information and if we even want a contacts page."
+  },
+  "expected": {"placements": [
+    {"text": "All-gray website theme with optional blue accents; never beige", "destination": "project", "target_id": "space-site"},
+    {"text": "Create a professional company Instagram account", "destination": "new_task", "target_id": "space-site"},
+    {"text": "Decide whether to create a contacts page", "destination": "new_task", "target_id": "space-site"},
+    {"text": "Demo video must have a version shorter than 10 seconds", "destination": "task", "target_id": "WEB-002"}
+  ]}
+}

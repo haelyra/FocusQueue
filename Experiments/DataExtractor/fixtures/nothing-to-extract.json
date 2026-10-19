@@ -1,0 +1,13 @@
+{
+  "catalog": {
+    "projects": [{"id": "focus-queue", "name": "Focus Queue", "description": "macOS app that manages coding agents per task.", "context_policy": "App-wide engineering practices belong here."}],
+    "tasks": [
+      {"id": "FOC-016", "title": "Analyze and fix heavy startup", "summary": "Profile and reduce app startup cost."}
+    ]
+  },
+  "event": {
+    "task_id": "FOC-016",
+    "prompt": "The app hangs for two seconds on launch when the mail library manifest is large. Profile the startup path, find the blocking read, and make it lazy. Run the existing startup benchmark before and after."
+  },
+  "expected": {"placements": []}
+}

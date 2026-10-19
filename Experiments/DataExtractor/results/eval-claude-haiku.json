@@ -1,0 +1,213 @@
+{
+  "generatedAt": "2026-10-19T19:10:45.179615+00:00",
+  "summary": {
+    "model": "claude/haiku",
+    "runs": 6,
+    "errors": 0,
+    "mean_recall": 0.833,
+    "mean_precision": 1.0,
+    "total_gold": 9,
+    "total_matched": 6,
+    "avg_input_tokens": 2966,
+    "avg_output_tokens": 646,
+    "avg_latency_ms": 4232
+  },
+  "runs": [
+    {
+      "fixture": "coding-preference.json",
+      "sample": 0,
+      "model": "claude/haiku",
+      "usage": {
+        "input": 2181,
+        "output": 582
+      },
+      "latencyMs": 3650.224,
+      "error": null,
+      "grade": {
+        "gold": 2,
+        "produced": 1,
+        "inboxed": 1,
+        "matched": 1,
+        "recall": 0.5,
+        "precision": 1.0,
+        "extra": [],
+        "missed": [
+          "Add a retry queue for failed model calls"
+        ]
+      },
+      "atoms": [
+        {
+          "text": "Never swallow exceptions silently; always log to stderr before falling back.",
+          "destination": "project",
+          "target_id": "focus-queue",
+          "confidence": 0.9
+        },
+        {
+          "text": "Add a retry queue for failed model calls.",
+          "destination": "inbox",
+          "target_id": "focus-queue",
+          "confidence": 0.7
+        }
+      ]
+    },
+    {
+      "fixture": "deferred-and-speculation.json",
+      "sample": 0,
+      "model": "claude/haiku",
+      "usage": {
+        "input": 2132,
+        "output": 444
+      },
+      "latencyMs": 3335.787,
+      "error": null,
+      "grade": {
+        "gold": 1,
+        "produced": 1,
+        "inboxed": 0,
+        "matched": 1,
+        "recall": 1.0,
+        "precision": 1.0,
+        "extra": [],
+        "missed": []
+      },
+      "atoms": [
+        {
+          "text": "Embedding index needs incremental rebuilds instead of full reindexes.",
+          "destination": "task",
+          "target_id": "FOC-013",
+          "confidence": 0.85
+        }
+      ]
+    },
+    {
+      "fixture": "explicit-user-scope.json",
+      "sample": 0,
+      "model": "claude/haiku",
+      "usage": {
+        "input": 2083,
+        "output": 399
+      },
+      "latencyMs": 3068.277,
+      "error": null,
+      "grade": {
+        "gold": 1,
+        "produced": 1,
+        "inboxed": 0,
+        "matched": 1,
+        "recall": 1.0,
+        "precision": 1.0,
+        "extra": [],
+        "missed": []
+      },
+      "atoms": [
+        {
+          "text": "Keep commit messages under 72 characters, especially the subject line.",
+          "destination": "user",
+          "target_id": "user",
+          "confidence": 0.95
+        }
+      ]
+    },
+    {
+      "fixture": "landing-page.json",
+      "sample": 0,
+      "model": "claude/haiku",
+      "usage": {
+        "input": 2467,
+        "output": 1610
+      },
+      "latencyMs": 7371.687,
+      "error": null,
+      "grade": {
+        "gold": 4,
+        "produced": 2,
+        "inboxed": 2,
+        "matched": 2,
+        "recall": 0.5,
+        "precision": 1.0,
+        "extra": [],
+        "missed": [
+          "Create a professional company Instagram account",
+          "Decide whether to create a contacts page"
+        ]
+      },
+      "atoms": [
+        {
+          "text": "Do not use beige anywhere on the website; keep the all-gray theme, with blue only as an accent highlight.",
+          "destination": "project",
+          "target_id": "space-site",
+          "confidence": 0.85
+        },
+        {
+          "text": "The demo video must be under 10 seconds or have a under-10-second version.",
+          "destination": "task",
+          "target_id": "WEB-002",
+          "confidence": 0.9
+        },
+        {
+          "text": "Decide whether a contacts page is needed; it is not to be built now.",
+          "destination": "inbox",
+          "target_id": "space-site",
+          "confidence": 0.6
+        },
+        {
+          "text": "Create a new, more professional Instagram account for the company's social presence, tied to the contacts page.",
+          "destination": "inbox",
+          "target_id": "space-site",
+          "confidence": 0.5
+        }
+      ]
+    },
+    {
+      "fixture": "nothing-to-extract.json",
+      "sample": 0,
+      "model": "claude/haiku",
+      "usage": {
+        "input": 4209,
+        "output": 129
+      },
+      "latencyMs": 3797.604,
+      "error": null,
+      "grade": {
+        "gold": 0,
+        "produced": 0,
+        "inboxed": 0,
+        "matched": 0,
+        "recall": 1.0,
+        "precision": 1.0,
+        "extra": [],
+        "missed": []
+      },
+      "atoms": []
+    },
+    {
+      "fixture": "scope-inflation.json",
+      "sample": 0,
+      "model": "claude/haiku",
+      "usage": {
+        "input": 4721,
+        "output": 712
+      },
+      "latencyMs": 4169.158,
+      "error": null,
+      "grade": {
+        "gold": 1,
+        "produced": 1,
+        "inboxed": 0,
+        "matched": 1,
+        "recall": 1.0,
+        "precision": 1.0,
+        "extra": [],
+        "missed": []
+      },
+      "atoms": [
+        {
+          "text": "Never use a washed-out beige tint in the app's UI; use the neutral grays already in the app.",
+          "destination": "project",
+          "target_id": "focus-queue",
+          "confidence": 0.85
+        }
+      ]
+    }
+  ]
+}

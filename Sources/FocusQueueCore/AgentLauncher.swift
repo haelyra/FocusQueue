@@ -120,7 +120,9 @@ public actor TaskAgentLauncher {
     guard let directory = (subtask.workspace?.path ?? context.worktreePath), directory.hasPrefix("/") else {
       throw TaskContextError.unsafeWorktree("Choose a task worktree before launching an agent.")
     }
-    var providerArguments: [String] = []
+    // Managed Codex sessions run without the shared app-server daemon so the
+    // pane keeps its own rollout writer lock, session identity, and environment.
+    var providerArguments: [String] = subtask.provider == .codex ? ["--no-daemon"] : []
     if let model = subtask.launchConfiguration?.model?.trimmingCharacters(in: .whitespacesAndNewlines),
        !model.isEmpty {
       providerArguments += ["--model", model]

@@ -943,6 +943,16 @@ def usage_command(wrapper, flags, arguments):
     return [*command, *unique_flags, *arguments]
 
 
+def daemon_default_flags(flags, mode, environment):
+    """Managed Codex TUI sessions run without the shared app-server daemon so
+    the pane keeps its own rollout writer lock, session identity, and
+    environment. `codex exec` has no such flag; FOCUS_QUEUE_CODEX_DAEMON=1
+    opts back in, and usage_command drops the flag when the user passed it."""
+    if mode == "noninteractive" or environment.get("FOCUS_QUEUE_CODEX_DAEMON") == "1":
+        return list(flags)
+    return [*flags, "--no-daemon"]
+
+
 def start(helper, name, command, *, prompt=None, support=None, task_id=None, agent_id=None):
     if task_id is not None or agent_id is not None:
         if not (isinstance(task_id, str) and isinstance(agent_id, str)
@@ -1042,7 +1052,8 @@ def main(argv=None):
         raise
     if placement.get("taskID"):
         label_placement_tab(placement, intake)
-    command = usage_command(options.usage_wrapper, options.default_flag, arguments)
+    command = usage_command(options.usage_wrapper,
+                            daemon_default_flags(options.default_flag, mode, os.environ), arguments)
     os.chdir(intake["cwd"])
     if not interactive:
         os.execv(command[0], command)

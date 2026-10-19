@@ -2866,20 +2866,35 @@ private struct CompletedTicketCard: View {
 
   private var summary: some View {
     HStack(alignment: .top, spacing: 11) {
-      Image(systemName: statusIcon)
-        .font(.system(size: 18, weight: .semibold))
-        .foregroundStyle(statusColor)
-        .frame(width: 28, height: 30)
-        .minimumHitTarget()
-        .contentShape(Rectangle())
-        .contextMenu {
+      VStack(spacing: 1) {
+        Image(systemName: statusIcon)
+          .font(.system(size: 18, weight: .semibold))
+          .foregroundStyle(statusColor)
+          .frame(width: 28, height: 30)
+          .minimumHitTarget()
+          .contentShape(Rectangle())
+          .contextMenu {
+            Button("Mark as incomplete", systemImage: "arrow.uturn.backward.circle") {
+              markIncomplete()
+            }
+          }
+          .accessibilityLabel("Completed task checkbox for \(ticket.id)")
+          .accessibilityHint("Right-click to mark this task incomplete and return it to Focus.")
+          .accessibilityAction(named: "Mark as incomplete", markIncomplete)
+
+        Menu {
           Button("Mark as incomplete", systemImage: "arrow.uturn.backward.circle") {
             markIncomplete()
           }
+        } label: {
+          VerticalOverflowIcon()
         }
-        .accessibilityLabel("Completed task checkbox for \(ticket.id)")
-        .accessibilityHint("Right-click to mark this task incomplete and return it to Focus.")
-        .accessibilityAction(named: "Mark as incomplete", markIncomplete)
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .minimumHitTarget()
+        .accessibilityLabel("More options for completed task \(ticket.id)")
+      }
 
       VStack(alignment: .leading, spacing: 6) {
         HStack(alignment: .top, spacing: 8) {
@@ -2888,23 +2903,8 @@ private struct CompletedTicketCard: View {
             maximumLines: 3, openAction: toggleExpansion,
             openHint: model.isExpanded(ticket.id)
               ? "Hide completed task details" : "Show completed task details")
-          VStack(alignment: .trailing, spacing: 1) {
-            Menu {
-              Button("Mark as incomplete", systemImage: "arrow.uturn.backward.circle") {
-                markIncomplete()
-              }
-            } label: {
-              VerticalOverflowIcon()
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .minimumHitTarget()
-            .accessibilityLabel("More options for completed task \(ticket.id)")
-
-            Text(ticket.id).font(.system(size: 11, weight: .bold, design: .monospaced))
-              .foregroundStyle(.secondary).fixedSize()
-          }
+          Text(ticket.id).font(.system(size: 11, weight: .bold, design: .monospaced))
+            .foregroundStyle(.secondary).fixedSize()
         }
         if !ticket.summary.isEmpty {
           Button(action: toggleExpansion) {

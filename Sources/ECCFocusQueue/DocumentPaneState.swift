@@ -62,7 +62,19 @@ final class DocumentPaneState {
             primaryDocument = location
             secondaryDocument = nil
         case .secondary:
-            secondaryDocument = location
+            // A document can be left in the secondary viewer after a drag. Keep
+            // that visible document when the next link opens by promoting it to
+            // the central viewer, then put the new document on the right.
+            if primaryDocument == nil, secondaryDocument != location {
+                primaryDocument = secondaryDocument
+            }
+            // Reopening the central document selects it instead of rendering the
+            // same document in both panes.
+            if primaryDocument == location {
+                secondaryDocument = nil
+            } else {
+                secondaryDocument = location
+            }
         }
         centralChatCollapsed = true
         error = nil

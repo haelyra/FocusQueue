@@ -167,8 +167,8 @@ struct SideDocumentPane: View {
     let open: (URL) -> Void
     let close: () -> Void
     let receiveDocument: (String) -> Bool
+    let discuss: (PlanCanvasSelectionAction) -> Void
     @State private var content: SideDocumentContent?
-    @State private var conversation: DocumentConversation?
     @State private var error: String?
     @State private var revision = 0
     @State private var find = DocumentFindState()
@@ -188,37 +188,28 @@ struct SideDocumentPane: View {
             }
             DocumentMetadataStrip(url: document, taskID: ticket.id, revision: revision)
             DocumentFindBar(state: find)
-            GeometryReader { geometry in
-                VStack(spacing: 8) {
-                    Group {
-                        if let error { ContentUnavailableView("Preview unavailable", systemImage: "doc", description: Text(error)) }
-                        else if let content {
-                            switch content {
-                            case .markdown(let text):
-                                EmbeddedPlanDocument(markdown: text, sourceURL: document, appearance: queue.appearance,
-                                    accentStyle: queue.accentStyle, canvasSelection: nil, open: open, select: { action in
-                                        conversation?.draft += "\nSelected passage: \(action.selection.excerpt)\n\(action.initialText)"
-                                    }, findQuery: find.query, findRequest: find.request,
-                                    findSearchesBackwards: find.searchesBackwards)
-                            case .text(let text):
-                                FindableTextDocument(
-                                    text: text, query: find.query, request: find.request,
-                                    searchesBackwards: find.searchesBackwards)
-                            case .rendered(let resource):
-                                ReadOnlyResourceDocument(
-                                    url: resource, open: open, findQuery: find.query,
-                                    findRequest: find.request, findSearchesBackwards: find.searchesBackwards)
-                            }
-                        } else { ProgressView("Loading document…") }
-                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .clipShape(RoundedRectangle(cornerRadius: 9))
-                    Divider()
-                    if let conversation {
-                        DocumentConversationView(model: conversation)
-                            .frame(height: min(260, max(170, geometry.size.height * 0.3)))
-                    } else { Text("Document chat will be available when the task context loads.").font(.caption).foregroundStyle(.secondary) }
-                }
+            Group {
+                if let error { ContentUnavailableView("Preview unavailable", systemImage: "doc", description: Text(error)) }
+                else if let content {
+                    switch content {
+                    case .markdown(let text):
+                        EmbeddedPlanDocument(markdown: text, sourceURL: document, appearance: queue.appearance,
+                            accentStyle: queue.accentStyle, canvasSelection: nil, open: open, select: discuss,
+                            findQuery: find.query, findRequest: find.request,
+                            findSearchesBackwards: find.searchesBackwards)
+                    case .text(let text):
+                        FindableTextDocument(
+                            text: text, query: find.query, request: find.request,
+                            searchesBackwards: find.searchesBackwards)
+                    case .rendered(let resource):
+                        ReadOnlyResourceDocument(
+                            url: resource, open: open, findQuery: find.query,
+                            findRequest: find.request, findSearchesBackwards: find.searchesBackwards)
+                    }
+                } else { ProgressView("Loading document…") }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipShape(RoundedRectangle(cornerRadius: 9))
         }
         .dropDestination(for: String.self) { identifiers, _ in
             guard let identifier = identifiers.last else { return false }
@@ -226,13 +217,38 @@ struct SideDocumentPane: View {
         }
         .task(id: "\(document.absoluteString):\(revision)") {
             content = nil; error = nil
-            conversation = queue.documentConversation(for: document, ticketID: ticket.id)
-            if let conversation { await conversation.load() }
             do {
                 let loaded = try await loader.load(document)
                 guard !Task.isCancelled else { return }
                 content = loaded
             } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+        }
+    }
+}
+
+struct DocumentConversationPane: View {
+    let queue: QueueViewModel
+    let ticket: DashboardTicket
+    let document: URL
+    @State private var conversation: DocumentConversation?
+
+    var body: some View {
+        Group {
+            if let conversation {
+                DocumentConversationView(model: conversation)
+            } else {
+                ContentUnavailableView(
+                    "Document chat unavailable", systemImage: "text.bubble",
+                    description: Text("Document chat will be available when the task context loads."))
+            }
+        }
+        .padding(.horizontal, 4)
+        .frame(
+            minWidth: QueueInspectorLayout.chatMinimumWidth, idealWidth: 270,
+            maxWidth: .infinity, minHeight: 200, maxHeight: .infinity)
+        .task(id: document) {
+            conversation = queue.documentConversation(for: document, ticketID: ticket.id)
+            if let conversation { await conversation.load() }
         }
     }
 }

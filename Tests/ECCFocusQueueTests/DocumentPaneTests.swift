@@ -60,6 +60,22 @@ struct DocumentPaneTests {
         #expect(pane.secondaryDocument == second)
     }
 
+    @Test("A new link restores a split after the only open document was moved right")
+    func restoresSplitFromSecondaryDocument() {
+        let pane = DocumentPaneState()
+        let first = URL(fileURLWithPath: "/tmp/evidence.md")
+        let second = URL(fileURLWithPath: "/tmp/implementation.swift")
+
+        pane.open(first, in: .primary)
+        pane.moveToSecondary(first)
+        #expect(pane.primaryDocument == nil && pane.secondaryDocument == first)
+
+        pane.open(second, in: .secondary)
+        #expect(pane.primaryDocument == first)
+        #expect(pane.secondaryDocument == second)
+        #expect(pane.hasSecondaryViewer)
+    }
+
     @Test("Find state opens a shared find field and records direction")
     func findState() {
         let find = DocumentFindState()

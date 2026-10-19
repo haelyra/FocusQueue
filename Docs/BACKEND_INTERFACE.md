@@ -83,7 +83,7 @@ Agents receive and consume identity through environment variables. These are the
 | `FOCUS_QUEUE_PROVIDER` | entry wrapper | `codex` / `claude` / `kimi` |
 | `FOCUS_QUEUE_ROUTER` / `_SOURCE` / `_CAPABILITY` | router launch | One-use router capability auth |
 | `CODEX_THREAD_ID` / `CODEX_SESSION_ID` | Codex runtime | Provider session UUID |
-| `CLAUDE_SESSION_ID` | Claude runtime | Provider session UUID |
+| `CLAUDE_CODE_SESSION_ID` (or an explicit `CLAUDE_SESSION_ID`) | Claude Code runtime | Provider session UUID; managed panes strip both |
 | `WEZTERM_PANE`, `WEZTERM_UNIX_SOCKET` | WezTerm | Terminal pane identity |
 | `TMUX`, `TMUX_PANE` | tmux | tmux identity |
 
@@ -98,7 +98,7 @@ Canonical usage string lives at `Sources/FocusQueueSession/main.swift:16`. Every
 ### 3.1 Session registration (use these, in this order)
 
 **`focus-queue-session attach <TASK-ID>`**
-The mandatory first command for any agent that knows its ticket. Reads the provider session UUID from env (`CODEX_THREAD_ID`/`CODEX_SESSION_ID`/`CLAUDE_SESSION_ID`), registers the current WezTerm/tmux pane into `state.json.agentSessions`, sets the terminal label (`<Task name>` or `<Task name> · tmux`), and posts the registration notification.
+The mandatory first command for any agent that knows its ticket. Reads the provider session UUID from env (`CODEX_THREAD_ID`/`CODEX_SESSION_ID`, or `CLAUDE_SESSION_ID`/`CLAUDE_CODE_SESSION_ID`; when both providers' IDs are inherited, `FOCUS_QUEUE_PROVIDER` decides), registers the current WezTerm/tmux pane into `state.json.agentSessions`, sets the terminal label (`<Task name>` or `<Task name> · tmux`), and posts the registration notification.
 
 Output keys: `status, registrationID, provider, sessionID, taskID, subtaskID, agentID, parentSessionID, placementPath`.
 
@@ -448,22 +448,58 @@ focus-queue-session reconcile <TASK>
 #  ✗ create tasks without summary/next/doneWhen
 ```
 
-## 9. `fq` dispatcher and heuristic placement (phase 1)
+## 9. `fq` dispatcher and task placement
 
-**`fq <codex|claude> [provider args...]`** (`Scripts/focus_queue_fq.py`, installed as `~/.local/bin/fq` by both entry installers) classifies the launch, prints one line to stderr (`[fq] placed → <TASK-ID> (heuristic: <rationale>)` or `[fq] unplaced (<rationale>) — launching untracked-by-task`), then execs the provider's existing entry script with all provider arguments unchanged. A resolved task is forced through `FOCUS_QUEUE_TASK_ID` (the same channel managed launches use); unplaced launches pass through untouched. Plain `codex`/`claude` shell functions never go through `fq`. The dispatcher reads the installed `shell/<provider>.zsh` to reuse the configured usage wrapper and default flags.
+**`fq <codex|claude> [provider args...]`** (`Scripts/focus_queue_fq.py`, installed as `~/.local/bin/fq` by both entry installers) places the launch in a task, then execs the provider's existing entry script with all provider arguments unchanged. A resolved or created task is forced through `FOCUS_QUEUE_TASK_ID` (the same channel managed launches use). Plain `codex`/`claude` shell functions never go through `fq`. The dispatcher reads the installed `shell/<provider>.zsh` to reuse the configured usage wrapper and default flags. It prints one stderr line per decision:
 
-**`python3 Scripts/focus_queue_placement.py classify --prompt "..." --cwd "..." [--task ECC-123] [--json]`** (`Scripts/focus_queue_placement.py`). Heuristic only — no model calls in phase 1. Resolution order:
+- `[fq] placing with claude/haiku against 73 open tasks…` before a model call (about 2–4 s).
+- `[fq] placed → <TASK-ID> (<backend>: <rationale>[, confidence 0.90])` for a ticket in the prompt or a confident model match.
+- `[fq] created → <TASK-ID> “<title>” (claude/haiku: model-new, …)` for new work. `fq` creates the task through `focus-queue-session placement --launch <new UUID> --cwd <cwd> --prompt <prompt>` (with this launch's and any parent agent's identity variables removed), then applies the model's title with `task rename`. A rename failure keeps the task under its prompt-derived title.
+- `[fq] unplaced (<rationale>) — launching untracked-by-task` when nothing resolved; the entry script's own intake then decides, as in phase 1.
 
-1. Explicit `--task` → `task`, confidence 1.0, rationale `explicit`.
-2. `<taskPrefix>-<digits>` (case-insensitive, prefixes from the config's projects) in the prompt that exists in app state (any project's `dashboardPath` tickets or `tasks/<ID>/`) → `task`, confidence 0.95, rationale `prompt-ticket`.
-3. cwd inside a configured `repositoryPath` (or a git top-level matching one) → `project-inbox`, confidence 0.6, rationale `cwd-project` — project only, never a guessed task.
-4. cwd in any other git repo → `inbox`, confidence 0.2, rationale `unmapped-repo`.
-5. Otherwise → `inbox`, confidence 0.1, rationale `no-signal`.
+**`python3 Scripts/focus_queue_placement.py classify --prompt "..." --cwd "..." [--task ECC-123] [--provider claude|codex|kimi] [--json]`**. Without `--provider` it is heuristic only. Resolution order:
 
-Output JSON: `{status, taskID?, projectID?, confidence, rationale, backend: "heuristic", latencyMs}`. `classify` always exits 0 on success; usage errors exit 2 on stderr. Config is read from `<support>/config.json` (`focusQueueProjects` or the repository-catalog `projects` shape), overridable with `FOCUS_QUEUE_PLACEMENT_CONFIG` and `FOCUS_QUEUE_SUPPORT_DIR`.
+1. Explicit `--task` → `task`, confidence 1.0, rationale `explicit`. No model call.
+2. `<taskPrefix>-<digits>` (case-insensitive, prefixes from the config's projects) in the prompt that exists in app state (any project's `dashboardPath` tickets or `tasks/<ID>/`) → `task`, confidence 0.95, rationale `prompt-ticket`. No model call.
+3. With a provider, a prompt, and the model backend enabled: one model call. The candidates are the open tasks (status not `resolved`/`cancelled`/`done`/`completed`/`archived`) that `placement` would accept for this directory: the launch project's tasks first, then projects without a repository, newest first, at most 120. The model returns `{taskID|null, confidence, title, reason}`. A listed task at or above `placementConfidenceThreshold` → `task`, rationale `model-match`. Otherwise → `new-task` with the model's `title`, the launch project (or `other`), rationale `model-new`, and `nearestTaskID` when a weak match existed. An unlisted task, a missing title, malformed output, a non-zero exit, or a timeout is a model error: classification continues with step 4 and reports `modelError`.
+4. cwd inside a configured `repositoryPath` (or a git top-level matching one) → `project-inbox`, confidence 0.6, rationale `cwd-project`.
+5. cwd in any other git repo → `inbox`, confidence 0.2, rationale `unmapped-repo`.
+6. Otherwise → `inbox`, confidence 0.1, rationale `no-signal`.
 
-**Placement ledger** — every `classify` appends one row to `<support>/placement-ledger.sqlite` (override: `FOCUS_QUEUE_PLACEMENT_LEDGER`), table `placements`: `id INTEGER PK`, `timestamp TEXT` (ISO8601 UTC), `backend`, `status`, `task_id`, `project_id`, `confidence REAL`, `rationale`, `prompt_excerpt` (first 200 chars), `cwd`, `latency_ms REAL`. Ledger failures warn on stderr and never block classification.
+Output JSON: `{status, taskID?, projectID?, confidence, rationale, backend: "heuristic"|"model", latencyMs, model?, title?, reason?, nearestTaskID?, modelError?}`. `classify` always exits 0 on success; usage errors exit 2 on stderr. Config is read from `<support>/config.json` (`focusQueueProjects` or the repository-catalog `projects` shape), overridable with `FOCUS_QUEUE_PLACEMENT_CONFIG` and `FOCUS_QUEUE_SUPPORT_DIR`.
 
-**Config keys** (both `Config/ecc.config.json` and `Config/config.example.json`): `agentsPerWindow` (default 4; read by `TmuxPaneLayout.maximumPanes` for task-window pane capacity, clamped to 1–12), `placementModel` (`"claude-sonnet-light"` placeholder for the phase-2 model backend), `placementConfidenceThreshold` (0.6; phase-2 cutoff).
+**Model calls use subscription CLIs, never API keys.** The provider binary comes from the launch's `PATH` (override: `FOCUS_QUEUE_PLACEMENT_<PROVIDER>_EXECUTABLE`) and runs in a private temporary directory, in its own process group, with `FOCUS_QUEUE_*` and provider session variables removed so it cannot register as an agent:
+
+| Provider | Invocation | Isolation |
+|---|---|---|
+| Claude | `claude -p --model <m> --effort <e> --tools "" --strict-mcp-config --setting-sources "" --no-session-persistence --output-format json --json-schema <schema>`; prompt on stdin | No tools, MCP, settings, hooks, or transcript |
+| Codex | `codex exec -m <m> -c model_reasoning_effort=<e> --sandbox read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check --output-schema <file> -o <file> -`; prompt on stdin | No plugins, hooks, rules, or session file |
+| Kimi | `kimi -m <m> -p <prompt>`; the last JSON object in the reply is used | No effort flag; Kimi keeps a session record |
+
+Measured on this machine (2026-10-19), 51 labeled launches (31 from real history, 20 synthetic) against about 72 open tasks:
+
+| Backend | Correct | Joined an unrelated task | Latency p50 / p95 |
+|---|---|---|---|
+| Heuristic (phase 1) | 34/51 — never matches an open task without a ticket ID | 0 | 2 ms / 15 ms |
+| Claude `haiku`, effort low, threshold 0.85 | 41/51 | 0 (all 6 counted false matches joined a duplicate of the same work already in the queue) | 3.2 s / 5.4 s |
+| Codex `gpt-6-luna`, effort low | 33/51 | 0 wrong-task; 16 false matches | 3.6 s / 47 s (often over the 20 s budget) |
+
+Kimi highspeed placed a single live follow-up correctly in 6.2 s; it was not run on the full set because every `kimi -p` call leaves a session record. Raising the threshold from 0.6 to 0.85 cut false matches from 13 to 2–6 per run at the cost of 2–3 follow-ups scored 0.80–0.82 becoming new tasks.
+
+**Placement ledger** — every `classify` appends one row to `<support>/placement-ledger.sqlite` (override: `FOCUS_QUEUE_PLACEMENT_LEDGER`), table `placements`: `id INTEGER PK`, `timestamp TEXT` (ISO8601 UTC), `backend`, `status`, `task_id`, `project_id`, `confidence REAL`, `rationale`, `prompt_excerpt` (first 200 chars), `cwd`, `latency_ms REAL`, `model` (`provider/model`), `title`, `error` (the model error, if any). Phase-1 ledgers gain the last three columns in place. Ledger failures warn on stderr and never block classification.
+
+**Config keys** (`AppConfiguration` round-trips all of them; both `Config/ecc.config.json` and `Config/config.example.json` list the defaults):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `placementModelEnabled` | `true` | `false` restores phase-1 heuristics for `fq` |
+| `placementProvider` | launched provider | Run every placement call on `claude`, `codex`, or `kimi` |
+| `placementModels` | `{"claude": "haiku", "codex": "gpt-6-luna", "kimi": "kimi-code/kimi-for-coding-highspeed"}` | Per-provider model; a missing provider uses its default |
+| `placementEfforts` | `{"claude": "low", "codex": "low"}` | Per-provider effort (`low`…`max`); Kimi ignores it |
+| `placementConfidenceThreshold` | `0.85` | Minimum confidence to join an existing task; lower confidence creates a new task |
+| `placementTimeoutSeconds` | `20` | Model call budget (1–120) before falling back |
+| `agentsPerWindow` | `4` | Task-window pane capacity (`TmuxPaneLayout.maximumPanes`, clamped to 1–12) |
+
+**Evaluation** — `python3 Scripts/focus_queue_placement_eval.py build --support <support dir> --out cases.jsonl` labels real launch prompts by the task they ended in (a task's first prompt is a new-work case with that task hidden; later prompts are existing-task cases). `run --provider <p> --cases cases.jsonl [--cases more.jsonl]` replays them against the real dashboards and prints accuracy by case kind, error types (`false-match`, `missed-match`, `wrong-task`, `fallback`), and latency next to the heuristic baseline. Cases contain real prompts; keep them out of the repository.
 
 *Generated 2026-10-09 from repository sources. Command grammar is authoritative at `Sources/FocusQueueSession/main.swift:16`; when this document and the usage string disagree, the usage string wins.*

@@ -31,8 +31,11 @@
   "agentProviderFallbackOrder": ["codex", "claude"],
   "agentEscalationAutoLaunch": true,
   "agentsPerWindow": 4,
-  "placementModel": "claude-sonnet-light",
-  "placementConfidenceThreshold": 0.6,
+  "placementModelEnabled": true,
+  "placementModels": {"claude": "haiku", "codex": "gpt-6-luna", "kimi": "kimi-code/kimi-for-coding-highspeed"},
+  "placementEfforts": {"claude": "low", "codex": "low"},
+  "placementConfidenceThreshold": 0.85,
+  "placementTimeoutSeconds": 20,
   "agentModelChoices": [
     {"provider": "codex", "label": "Default"},
     {"provider": "codex", "label": "gpt-6-astra", "model": "gpt-6-astra"},

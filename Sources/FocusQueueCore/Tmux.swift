@@ -244,6 +244,7 @@ public actor TmuxController {
     return ["new-session", "-d", "-P", "-F", format, "-s", name, "-c", directory.replacingOccurrences(of: "#", with: "##"),
       "--", "/usr/bin/env", "-u", "WEZTERM_PANE", "-u", "WEZTERM_UNIX_SOCKET",
       "-u", "CODEX_SESSION_ID", "-u", "CODEX_THREAD_ID", "-u", "CLAUDE_SESSION_ID",
+      "-u", "CLAUDE_CODE_SESSION_ID",
       "FOCUS_QUEUE_TMUX_NAME=\(name)"] + command
   }
 

@@ -660,7 +660,7 @@ else:
         home.mkdir()
         self.install_session_helper(home)
         preview = INSTALL.install(home, self.wrapper, [], check=True)
-        self.assertEqual(len(preview["paths"]), 9)
+        self.assertEqual(len(preview["paths"]), 10)  # includes the other provider's fq entry
         self.assertFalse((home / ".claude").exists())
         INSTALL.install(home, self.wrapper, [])
         self.assertFalse((home / ".claude").exists())
@@ -687,6 +687,8 @@ else:
         self.assertTrue(content.endswith('"$@"\n'))
         self.assertTrue(dispatcher.is_file())
         self.assertTrue((support / "shell/focus_queue_placement.py").is_file())
+        self.assertTrue((support / "shell/focus_queue_codex_entry.py").is_file(),
+                        "fq dispatches codex without its shell function installed")
         self.assertEqual(INSTALL.install(home, self.wrapper, [])["paths"], [])
 
     def test_hooks_require_explicit_opt_in_and_merge_idempotently(self):

@@ -52,6 +52,39 @@ struct AgentRoutingTests {
         #expect(decoded.defaultAgentEfforts[.codex] == nil)
     }
 
+    @Test("Placement models and efforts default per provider and survive a round-trip")
+    func placementSettingsRoundTrip() throws {
+        var configuration = AppConfiguration.eccDefault()
+        #expect(configuration.placementModel(for: .claude) == "haiku")
+        #expect(configuration.placementModel(for: .codex) == "gpt-6-luna")
+        #expect(configuration.placementModel(for: .kimi) == "kimi-code/kimi-for-coding-highspeed")
+        #expect(configuration.placementEffort(for: .claude) == "low")
+        #expect(configuration.placementEffort(for: .codex) == "low")
+
+        configuration.placementModelEnabled = false
+        configuration.placementProvider = .kimi
+        configuration.placementModels[.codex] = "gpt-5.6-luna"
+        configuration.placementEfforts[.claude] = "medium"
+        configuration.placementEfforts[.kimi] = "high"
+        configuration.placementTimeoutSeconds = 12
+        let decoded = try JSONDecoder().decode(
+            AppConfiguration.self, from: JSONEncoder().encode(configuration))
+        #expect(decoded.placementModelEnabled == false)
+        #expect(decoded.placementProvider == .kimi)
+        #expect(decoded.placementModel(for: .codex) == "gpt-5.6-luna")
+        #expect(decoded.placementModel(for: .claude) == "haiku")
+        #expect(decoded.placementEffort(for: .claude) == "medium")
+        #expect(decoded.placementEffort(for: .kimi) == nil, "Kimi has no effort flag")
+        #expect(decoded.placementTimeoutSeconds == 12)
+
+        let blank = try JSONDecoder().decode(AppConfiguration.self, from: JSONSerialization.data(
+            withJSONObject: try #require(JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(AppConfiguration.eccDefault())) as? [String: Any])
+                .merging(["placementModels": ["claude": "  ", "future": "x"]]) { $1 }))
+        #expect(blank.placementModels.isEmpty)
+        #expect(blank.placementModel(for: .claude) == "haiku")
+    }
+
     @Test("Inspection is read-only and returns enough information for one start command")
     func inspectRoute() async throws {
         let fixture = try await RoutingFixture()

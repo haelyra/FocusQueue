@@ -186,6 +186,7 @@ struct SetupAndTmuxTests {
     #expect(Array(args.suffix(2)) == command)
     #expect(args.contains("/tmp/with spaces"))
     #expect(args.contains("WEZTERM_PANE"))
+    #expect(args.contains("CLAUDE_CODE_SESSION_ID"))
     let reference = TmuxSessionReference(name: "fq-test", serverPID: 1, createdAt: 2,
       paneID: "%3", panePID: 4, tty: "/dev/ttys001", executable: "/opt/tmux")
     let attach = try TmuxController.attachCommand(reference: reference)

@@ -309,10 +309,18 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var agentEscalationAutoLaunch: Bool
   /// Maximum active agent panes per tmux window tab; nil keeps the default of 4.
   public var agentsPerWindow: Int?
-  /// Placeholder model identifier for the phase-2 placement classifier.
-  public var placementModel: String?
-  /// Minimum classifier confidence for automatic task placement (phase 2).
+  /// Runs the small-model placement call for `fq` launches; nil keeps it on.
+  public var placementModelEnabled: Bool?
+  /// Provider that runs the placement call; nil uses the launched provider.
+  public var placementProvider: AgentProvider?
+  /// Per-provider placement models; a missing value uses `defaultPlacementModels`.
+  public var placementModels: [AgentProvider: String]
+  /// Per-provider placement efforts; a missing value uses `defaultPlacementEfforts`.
+  public var placementEfforts: [AgentProvider: String]
+  /// Minimum model confidence to join an existing task; below it a new task is created.
   public var placementConfidenceThreshold: Double?
+  /// Seconds the placement call may take before `fq` falls back to heuristics.
+  public var placementTimeoutSeconds: Int?
 
   public static let defaultAgentProviderFallbackOrder: [AgentProvider] = [.codex, .claude]
   public var agentModelChoices: [AgentModelChoice]
@@ -371,6 +379,25 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   /// Claude `--effort`). Kimi has no launch-time effort flag and ignores these.
   public static let agentEffortLevels = ["low", "medium", "high", "xhigh", "max"]
 
+  /// The fastest subscription model per provider. Keep in sync with
+  /// `DEFAULT_MODELS` in Scripts/focus_queue_placement.py.
+  public static let defaultPlacementModels: [AgentProvider: String] = [
+    .claude: "haiku", .codex: "gpt-6-luna", .kimi: "kimi-code/kimi-for-coding-highspeed",
+  ]
+  public static let defaultPlacementEfforts: [AgentProvider: String] = [.claude: "low", .codex: "low"]
+  public static let defaultPlacementConfidenceThreshold = 0.85
+  public static let defaultPlacementTimeoutSeconds = 20
+
+  public func placementModel(for provider: AgentProvider) -> String? {
+    placementModels[provider] ?? Self.defaultPlacementModels[provider]
+  }
+
+  /// Kimi has no effort flag, so it never reports one.
+  public func placementEffort(for provider: AgentProvider) -> String? {
+    guard provider != .kimi else { return nil }
+    return placementEfforts[provider] ?? Self.defaultPlacementEfforts[provider]
+  }
+
   /// The chat harness for a provider. Codex reuses the verifier harness;
   /// Claude and Kimi fall back to their managed `~/.local/bin` launchers.
   public func chatExecutable(for provider: AgentProvider) -> String {
@@ -411,8 +438,12 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.agentProviderFallbackOrder = Self.defaultAgentProviderFallbackOrder
     self.agentEscalationAutoLaunch = true
     self.agentsPerWindow = nil
-    self.placementModel = nil
+    self.placementModelEnabled = nil
+    self.placementProvider = nil
+    self.placementModels = [:]
+    self.placementEfforts = [:]
     self.placementConfidenceThreshold = nil
+    self.placementTimeoutSeconds = nil
     self.agentModelChoices = Self.defaultAgentModelChoices
     self.autoArchiveStaleAgents = false
     self.defaultAgentProvider = nil
@@ -439,7 +470,9 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case agentUsageBarEnabled
     case agentProviderFallbackOrder
     case agentEscalationAutoLaunch
-    case agentsPerWindow, placementModel, placementConfidenceThreshold
+    case agentsPerWindow
+    case placementModelEnabled, placementProvider, placementModels, placementEfforts
+    case placementConfidenceThreshold, placementTimeoutSeconds
     case agentModelChoices
     case autoArchiveStaleAgents
     case defaultAgentProvider, defaultAgentModels, defaultAgentEfforts
@@ -474,26 +507,25 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     agentEscalationAutoLaunch =
       try container.decodeIfPresent(Bool.self, forKey: .agentEscalationAutoLaunch) ?? true
     agentsPerWindow = try container.decodeIfPresent(Int.self, forKey: .agentsPerWindow)
-    placementModel = try container.decodeIfPresent(String.self, forKey: .placementModel)
+    placementModelEnabled = try container.decodeIfPresent(Bool.self, forKey: .placementModelEnabled)
+    placementProvider = try container.decodeIfPresent(String.self, forKey: .placementProvider)
+      .flatMap { AgentProvider(rawValue: $0.lowercased()) }
+    placementModels = Self.providerValues(
+      try container.decodeIfPresent([String: String].self, forKey: .placementModels))
+    placementEfforts = Self.providerValues(
+      try container.decodeIfPresent([String: String].self, forKey: .placementEfforts))
     placementConfidenceThreshold =
       try container.decodeIfPresent(Double.self, forKey: .placementConfidenceThreshold)
+    placementTimeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .placementTimeoutSeconds)
     agentModelChoices = Self.mergedAgentModelChoices(
       (try container.decodeIfPresent([AgentModelChoice].self, forKey: .agentModelChoices)) ?? [])
     autoArchiveStaleAgents = try container.decodeIfPresent(Bool.self, forKey: .autoArchiveStaleAgents) ?? false
     defaultAgentProvider = try container.decodeIfPresent(String.self, forKey: .defaultAgentProvider)
       .flatMap { AgentProvider(rawValue: $0.lowercased()) }
-    defaultAgentModels = ((try container.decodeIfPresent([String: String].self, forKey: .defaultAgentModels)) ?? [:])
-      .reduce(into: [:]) { models, pair in
-        guard let provider = AgentProvider(rawValue: pair.key.lowercased()) else { return }
-        let model = pair.value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !model.isEmpty { models[provider] = model }
-      }
-    defaultAgentEfforts = ((try container.decodeIfPresent([String: String].self, forKey: .defaultAgentEfforts)) ?? [:])
-      .reduce(into: [:]) { efforts, pair in
-        guard let provider = AgentProvider(rawValue: pair.key.lowercased()) else { return }
-        let effort = pair.value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !effort.isEmpty { efforts[provider] = effort }
-      }
+    defaultAgentModels = Self.providerValues(
+      try container.decodeIfPresent([String: String].self, forKey: .defaultAgentModels))
+    defaultAgentEfforts = Self.providerValues(
+      try container.decodeIfPresent([String: String].self, forKey: .defaultAgentEfforts))
     claudeChatExecutable = try container.decodeIfPresent(String.self, forKey: .claudeChatExecutable)
     kimiChatExecutable = try container.decodeIfPresent(String.self, forKey: .kimiChatExecutable)
     dailyReport =
@@ -564,19 +596,32 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encode(agentProviderFallbackOrder, forKey: .agentProviderFallbackOrder)
     try container.encode(agentEscalationAutoLaunch, forKey: .agentEscalationAutoLaunch)
     try container.encodeIfPresent(agentsPerWindow, forKey: .agentsPerWindow)
-    try container.encodeIfPresent(placementModel, forKey: .placementModel)
+    try container.encodeIfPresent(placementModelEnabled, forKey: .placementModelEnabled)
+    try container.encodeIfPresent(placementProvider, forKey: .placementProvider)
+    try container.encode(Self.rawProviderValues(placementModels), forKey: .placementModels)
+    try container.encode(Self.rawProviderValues(placementEfforts), forKey: .placementEfforts)
     try container.encodeIfPresent(placementConfidenceThreshold, forKey: .placementConfidenceThreshold)
+    try container.encodeIfPresent(placementTimeoutSeconds, forKey: .placementTimeoutSeconds)
     try container.encode(agentModelChoices, forKey: .agentModelChoices)
     try container.encode(autoArchiveStaleAgents, forKey: .autoArchiveStaleAgents)
     try container.encodeIfPresent(defaultAgentProvider, forKey: .defaultAgentProvider)
-    try container.encode(
-      Dictionary(uniqueKeysWithValues: defaultAgentModels.map { ($0.key.rawValue, $0.value) }),
-      forKey: .defaultAgentModels)
-    try container.encode(
-      Dictionary(uniqueKeysWithValues: defaultAgentEfforts.map { ($0.key.rawValue, $0.value) }),
-      forKey: .defaultAgentEfforts)
+    try container.encode(Self.rawProviderValues(defaultAgentModels), forKey: .defaultAgentModels)
+    try container.encode(Self.rawProviderValues(defaultAgentEfforts), forKey: .defaultAgentEfforts)
     try container.encodeIfPresent(claudeChatExecutable, forKey: .claudeChatExecutable)
     try container.encodeIfPresent(kimiChatExecutable, forKey: .kimiChatExecutable)
+  }
+
+  /// Unknown providers (for example from a newer build) and blank values are skipped.
+  private static func providerValues(_ raw: [String: String]?) -> [AgentProvider: String] {
+    (raw ?? [:]).reduce(into: [:]) { values, pair in
+      guard let provider = AgentProvider(rawValue: pair.key.lowercased()) else { return }
+      let value = pair.value.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !value.isEmpty { values[provider] = value }
+    }
+  }
+
+  private static func rawProviderValues(_ values: [AgentProvider: String]) -> [String: String] {
+    Dictionary(uniqueKeysWithValues: values.map { ($0.key.rawValue, $0.value) })
   }
 
   public var selectedProject: ProjectConfiguration? {

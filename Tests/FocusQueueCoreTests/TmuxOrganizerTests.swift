@@ -612,12 +612,10 @@ struct TmuxOrganizerTests {
 
     var appConfiguration = AppConfiguration.eccDefault()
     appConfiguration.agentsPerWindow = 6
-    appConfiguration.placementModel = "claude-sonnet-light"
     appConfiguration.placementConfidenceThreshold = 0.6
     let decoded = try JSONDecoder().decode(
       AppConfiguration.self, from: JSONEncoder().encode(appConfiguration))
     #expect(decoded.agentsPerWindow == 6)
-    #expect(decoded.placementModel == "claude-sonnet-light")
     #expect(decoded.placementConfidenceThreshold == 0.6)
   }
 }

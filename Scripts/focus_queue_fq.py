@@ -1,29 +1,42 @@
 #!/usr/bin/env python3
-"""Dispatch `fq <codex|claude> [args...]` through heuristic placement.
+"""Dispatch `fq <codex|claude> [args...]` through task placement.
 
 `fq` classifies the launch with `focus_queue_placement.py` and then hands off
 to the provider's existing Focus Queue entry script with every provider
-argument unchanged. A resolved task is forced through FOCUS_QUEUE_TASK_ID, the
-same channel the app uses for managed launches; anything unplaced passes
-through untouched so the entry script's own intake behavior decides. Plain
-`codex`/`claude` shell functions never go through this script.
+argument unchanged. A ticket ID in the prompt places the agent directly;
+otherwise one small model call either matches an open task or titles a new
+one, which `fq` creates through `focus-queue-session placement` before launch.
+A resolved task is forced through FOCUS_QUEUE_TASK_ID, the same channel the
+app uses for managed launches; anything unplaced passes through untouched so
+the entry script's own intake behavior decides. Plain `codex`/`claude` shell
+functions never go through this script.
 """
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shlex
 import shutil
+import subprocess
 import sys
+import uuid
 
 
 PROVIDERS = ("codex", "claude")
 HERE = Path(__file__).resolve().parent
+HELPER = Path.home() / ".local/bin/focus-queue-session"
+# The creation call must not bind this launch's or a parent agent's identity.
+CREATION_SCRUBBED = (
+    "FOCUS_QUEUE_TASK_ID", "FOCUS_QUEUE_SUBTASK_ID", "FOCUS_QUEUE_LAUNCH_ID",
+    "FOCUS_QUEUE_AGENT_CONTEXT", "FOCUS_QUEUE_TMUX_NAME", "TMUX_PANE", "CLAUDE_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "CODEX_SESSION_ID")
 USAGE = """Usage: fq <codex|claude> [provider args...]
 
-Classify the launch heuristically (prompt ticket, configured project, else
-inbox), then launch the provider through its Focus Queue entry script.
+Place the launch in a task (prompt ticket, else a small-model match against
+open tasks, else a new titled task), then launch the provider through its
+Focus Queue entry script.
 """
 
 
@@ -92,7 +105,8 @@ def entry_command(provider, support, environment):
 
 
 def classify_launch(provider, provider_args, environment):
-    """Return the placement result, or None when classification is impossible."""
+    """Return (placement result or None, prompt, cwd)."""
+    prompt, cwd = None, os.getcwd()
     try:
         entry_module = load_sibling(f"focus_queue_{provider}_entry.py")
         placement = load_sibling("focus_queue_placement.py")
@@ -104,20 +118,80 @@ def classify_launch(provider, provider_args, environment):
             cwd = entry_module.selected_directory(provider_args)
         except Exception:
             cwd = os.getcwd()
-        return placement.classify(prompt=prompt, cwd=cwd, environment=environment)
+        result = placement.classify(
+            prompt=prompt, cwd=cwd, environment=environment, provider=provider,
+            announce=lambda text: print(f"[fq] {text}", file=sys.stderr, flush=True))
     except Exception as error:
         print(f"[fq] classification unavailable ({error}); launching without placement",
               file=sys.stderr)
-        return None
+        return None, prompt, cwd
+    if result.get("modelError"):
+        print(f"[fq] model placement unavailable ({result['modelError']}); used heuristics",
+              file=sys.stderr)
+    return result, prompt, cwd
+
+
+def describe(result):
+    if result.get("backend") == "model":
+        return f"{result['model']}: {result['rationale']}, confidence {result['confidence']:.2f}"
+    return f"heuristic: {result['rationale']}"
+
+
+def helper_json(helper, arguments, environment):
+    try:
+        completed = subprocess.run([helper, *arguments], capture_output=True, text=True,
+                                   timeout=35, env=environment, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise FqError(f"focus-queue-session {arguments[0]} failed: {error}") from error
+    if completed.returncode:
+        detail = " ".join((completed.stderr or completed.stdout).split())[:300]
+        raise FqError(f"focus-queue-session {arguments[0]} failed: {detail}")
+    try:
+        return json.loads(completed.stdout)
+    except ValueError as error:
+        raise FqError(f"focus-queue-session {arguments[0]} returned malformed JSON") from error
+
+
+def create_task(provider, result, prompt, cwd, environment):
+    """Create the task through the validated placement path, then apply the model title.
+
+    A rename failure keeps the created task: the agent still lands in it, only
+    under the prompt-derived title.
+    """
+    helper = environment.get("FOCUS_QUEUE_SESSION_HELPER") or str(HELPER)
+    child = {key: value for key, value in environment.items() if key not in CREATION_SCRUBBED}
+    child["FOCUS_QUEUE_PROVIDER"] = provider
+    capsule = helper_json(helper, ["placement", "--launch", str(uuid.uuid4()), "--cwd", cwd,
+                                   "--prompt", prompt], child)
+    if not isinstance(capsule, dict):
+        raise FqError("placement returned no capsule")
+    task_id = capsule.get("taskID")
+    if capsule.get("status") != "placed" or not isinstance(task_id, str) or not task_id:
+        raise FqError(f"placement did not create a task ({capsule.get('reason') or capsule.get('status')})")
+    try:
+        helper_json(helper, ["task", "rename", task_id, result["title"]], child)
+    except FqError as error:
+        print(f"[fq] kept the prompt-derived title for {task_id} ({error})", file=sys.stderr)
+    return task_id.upper()
 
 
 def dispatch(provider, provider_args, environment):
-    """Build the entry-script command and apply a resolved task, if any."""
-    result = classify_launch(provider, provider_args, environment)
-    if result and result.get("status") == "task" and isinstance(result.get("taskID"), str):
+    """Build the entry-script command and apply a resolved or created task, if any."""
+    result, prompt, cwd = classify_launch(provider, provider_args, environment)
+    status = result.get("status") if result else None
+    if status == "task" and isinstance(result.get("taskID"), str):
         environment["FOCUS_QUEUE_TASK_ID"] = result["taskID"]
-        print(f"[fq] placed → {result['taskID']} (heuristic: {result['rationale']})",
-              file=sys.stderr)
+        print(f"[fq] placed → {result['taskID']} ({describe(result)})", file=sys.stderr)
+    elif status == "new-task" and prompt:
+        try:
+            task_id = create_task(provider, result, prompt, cwd, environment)
+        except FqError as error:
+            print(f"[fq] could not create a task ({error}) — launching untracked-by-task",
+                  file=sys.stderr)
+        else:
+            environment["FOCUS_QUEUE_TASK_ID"] = task_id
+            print(f"[fq] created → {task_id} “{result['title']}” ({describe(result)})",
+                  file=sys.stderr)
     else:
         rationale = result.get("rationale", "classifier-unavailable") if result else "classifier-unavailable"
         print(f"[fq] unplaced ({rationale}) — launching untracked-by-task", file=sys.stderr)

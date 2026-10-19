@@ -31,6 +31,16 @@ func taskContextSessionBinding() {
         "FOCUS_QUEUE_PROVIDER": "codex",
     ]
     #expect(TaskSessionBinding.providerSession(environment: codexChild)?.1 == "child-thread")
+    // Claude Code exports only CLAUDE_CODE_SESSION_ID; an explicit CLAUDE_SESSION_ID still wins.
+    let claudeCode = ["CLAUDE_CODE_SESSION_ID": "058b670e-47d1-45ff-8c02-788059d047cf"]
+    #expect(TaskSessionBinding.providerSession(environment: claudeCode)?.0 == .claude)
+    #expect(TaskSessionBinding.providerSession(environment: claudeCode)?.1 == "058b670e-47d1-45ff-8c02-788059d047cf")
+    #expect(TaskSessionBinding.providerSession(
+        environment: claudeCode.merging(["CLAUDE_SESSION_ID": "explicit-id"]) { $1 })?.1 == "explicit-id")
+    #expect(TaskSessionBinding.providerSession(
+        environment: claudeCode.merging(["CODEX_THREAD_ID": "codex-id"]) { $1 }) == nil)
+    #expect(TaskSessionBinding.providerSession(
+        environment: claudeCode.merging(["CODEX_THREAD_ID": "codex-id", "FOCUS_QUEUE_PROVIDER": "codex"]) { $1 })?.1 == "codex-id")
 }
 
 @Test("Task context preserves edited plans, detects save conflicts, and snapshots previous content")

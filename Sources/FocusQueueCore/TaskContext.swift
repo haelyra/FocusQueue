@@ -13,7 +13,8 @@ public enum AgentRuntimeMode: String, Codable, CaseIterable, Sendable {
 public enum TaskSessionBinding {
     public static func providerSession(environment: [String: String]) -> (AgentProvider, String)? {
         let codex = (environment["CODEX_THREAD_ID"] ?? environment["CODEX_SESSION_ID"]).flatMap { $0.isEmpty ? nil : $0 }
-        let claude = environment["CLAUDE_SESSION_ID"].flatMap { $0.isEmpty ? nil : $0 }
+        // Claude Code exports CLAUDE_CODE_SESSION_ID; CLAUDE_SESSION_ID stays as an explicit override.
+        let claude = (environment["CLAUDE_SESSION_ID"] ?? environment["CLAUDE_CODE_SESSION_ID"]).flatMap { $0.isEmpty ? nil : $0 }
         if let hint = environment["FOCUS_QUEUE_PROVIDER"].flatMap(AgentProvider.init(rawValue:)) {
             return (hint == .codex ? codex : claude).map { (hint, $0) }
         }

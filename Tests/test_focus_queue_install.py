@@ -71,6 +71,8 @@ class InstallerTests(unittest.TestCase):
         (shell / "focus_queue_usage_wrapper.sh").write_bytes(b"wrapper:" + content)
         (shell / "focus_queue_codex_bar.js").write_bytes(b"renderer:" + content)
         (shell / "AgentUsageBar-LICENSE.txt").write_bytes(b"license:" + content)
+        (shell / "focus_queue_fq.py").write_bytes(b"fq:" + content)
+        (shell / "focus_queue_placement.py").write_bytes(b"placement:" + content)
         automation = path / "Contents/Resources/automation"
         for relative in self.automation_files:
             destination = automation / relative
@@ -459,6 +461,38 @@ class InstallerTests(unittest.TestCase):
         MODULE.uninstall(self.home, stop=False)
         self.assertEqual(prompt.read_bytes(), installed_prompt)
         self.assertTrue(entry.exists())
+
+    def test_installed_fq_refreshes_with_the_claude_entry_it_dispatches(self):
+        self.make_app(self.installer.app, b"previous")
+        dispatcher, placement, claude_entry = self.installer.fq_files
+        dispatcher.parent.mkdir(parents=True)
+        dispatcher.write_bytes(b"fq:previous")
+        placement.write_bytes(b"placement:previous")
+        self.installer.install()
+        self.assertEqual(dispatcher.read_bytes(), b"fq:new executable")
+        self.assertEqual(placement.read_bytes(), b"placement:new executable")
+        self.assertEqual(claude_entry.read_bytes(), b"claude-entry:new executable")
+        manifest = json.loads(self.installer.manifest.read_text())
+        self.assertNotIn(str(dispatcher), [artifact["path"] for artifact in manifest["artifacts"]],
+                         "Uninstall must leave fq to the shell-entry installers")
+        self.assertIn({"path": str(dispatcher), "ownership": "configured-entry-support"},
+                      manifest["managedSettings"])
+
+    def test_app_install_never_creates_fq(self):
+        self.installer.install()
+        for path in self.installer.fq_files:
+            self.assertFalse(path.exists(), path.name)
+
+    def test_locally_changed_fq_stops_install_without_clobbering(self):
+        self.make_app(self.installer.app, b"previous")
+        dispatcher, placement, _ = self.installer.fq_files
+        dispatcher.parent.mkdir(parents=True)
+        dispatcher.write_bytes(b"fq:previous")
+        placement.write_bytes(b"my local placement tweak")
+        with self.assertRaisesRegex(ValueError, "focus_queue_placement.py has local changes"):
+            self.installer.install()
+        self.assertEqual(placement.read_bytes(), b"my local placement tweak")
+        self.assertEqual(dispatcher.read_bytes(), b"fq:previous")
 
     def test_changed_launcher_stops_install_without_clobbering(self):
         entry = self.installer.codex_entry

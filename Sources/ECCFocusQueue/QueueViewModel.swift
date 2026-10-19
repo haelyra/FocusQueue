@@ -3216,6 +3216,74 @@ final class QueueViewModel {
     persistConfiguration()
   }
 
+  /// `fq` placement runs unless the configuration explicitly turns it off.
+  var placementModelEnabled: Bool { config.placementModelEnabled ?? true }
+
+  var placementConfidenceThreshold: Double {
+    config.placementConfidenceThreshold ?? AppConfiguration.defaultPlacementConfidenceThreshold
+  }
+
+  var placementTimeoutSeconds: Int {
+    config.placementTimeoutSeconds ?? AppConfiguration.defaultPlacementTimeoutSeconds
+  }
+
+  /// Named models for one provider's placement picker; a configured model the
+  /// menu does not list keeps its own entry so the picker can show it.
+  func placementModelChoices(for provider: AgentProvider) -> [AgentModelChoice] {
+    var choices = agentModelChoices(for: provider).filter { $0.model?.isEmpty == false }
+    for model in [AppConfiguration.defaultPlacementModels[provider], config.placementModels[provider]] {
+      if let model, !choices.contains(where: { $0.model == model }) {
+        choices.append(AgentModelChoice(provider: provider, label: model, model: model))
+      }
+    }
+    return choices
+  }
+
+  func setPlacementModelEnabled(_ enabled: Bool) {
+    guard config.placementModelEnabled != enabled else { return }
+    config.placementModelEnabled = enabled
+    persistConfiguration()
+  }
+
+  /// nil runs placement on whichever provider `fq` launches.
+  func setPlacementProvider(_ provider: AgentProvider?) {
+    guard config.placementProvider != provider else { return }
+    config.placementProvider = provider
+    persistConfiguration()
+  }
+
+  /// A nil or blank model restores the provider's built-in placement model.
+  func setPlacementModel(_ model: String?, for provider: AgentProvider) {
+    let trimmed = model?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let normalized = trimmed.flatMap { $0.isEmpty ? nil : $0 }
+    guard config.placementModels[provider] != normalized else { return }
+    config.placementModels[provider] = normalized
+    persistConfiguration()
+  }
+
+  /// A nil or blank effort restores the provider's built-in placement effort.
+  func setPlacementEffort(_ effort: String?, for provider: AgentProvider) {
+    let trimmed = effort?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let normalized = trimmed.flatMap { $0.isEmpty ? nil : $0 }
+    guard config.placementEfforts[provider] != normalized else { return }
+    config.placementEfforts[provider] = normalized
+    persistConfiguration()
+  }
+
+  func setPlacementConfidenceThreshold(_ threshold: Double) {
+    let clamped = (min(max(threshold, 0.5), 0.95) * 100).rounded() / 100
+    guard config.placementConfidenceThreshold != clamped else { return }
+    config.placementConfidenceThreshold = clamped
+    persistConfiguration()
+  }
+
+  func setPlacementTimeoutSeconds(_ seconds: Int) {
+    let clamped = min(max(seconds, 5), 60)
+    guard config.placementTimeoutSeconds != clamped else { return }
+    config.placementTimeoutSeconds = clamped
+    persistConfiguration()
+  }
+
   /// New Agent quick actions follow the configured default until the user
   /// explicitly picks a provider (only then is the AppStorage key written).
   func preferredNewAgentProvider(stored: AgentProvider?) -> AgentProvider {

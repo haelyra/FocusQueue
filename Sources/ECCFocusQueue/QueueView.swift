@@ -2200,6 +2200,12 @@ private struct QueueSettingsView: View {
             )
           }
           settingsSection(
+            title: "Task placement",
+            detail: "fq places each new agent with one small model call through your own subscription CLI: it joins a matching open task or creates a titled one. A ticket ID in the prompt skips the call."
+          ) {
+            PlacementSettingsView(model: model)
+          }
+          settingsSection(
             title: "Completion review",
             detail: "When enabled, a read-only Codex reviewer gathers task evidence before the app closes a task. When disabled, the completion control records an explicit user override instead."
           ) {

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Route interactive Claude starts through Focus Queue's persistent tmux server.
 
-Claude Code does not export CLAUDE_SESSION_ID to the shell, so the shell
-environment is never a reliable session-identity source. The canonical
-registration path is the Claude Code hooks payload: the optional installer
+Claude Code exports its session UUID as CLAUDE_CODE_SESSION_ID, which
+`focus-queue-session attach` reads, but a nested process can inherit a parent
+session's value. The canonical registration path is the Claude Code hooks
+payload: the optional installer
 merges hooks into ~/.claude/settings.json that pipe each event's stdin JSON
 (which carries session_id) to `focus-queue-session register-event --provider
 claude`. Without hooks, process discovery matches transcripts under

@@ -274,6 +274,10 @@ def merge_agent_prompt(original, payload, *, label):
             raise ValueError(f"The installed {label} instruction markers are reversed.")
         return original[:start] + payload.rstrip("\n") + original[end:]
     return original + ("\n\n" if original else "") + payload
+# fq and its placement classifier come from the shell-entry installers. Once fq
+# is installed, every app install refreshes them, plus the Claude entry fq
+# dispatches, under the same local-change rules as the configured Codex entry.
+FQ_SHELL_FILES = ("focus_queue_fq.py", "focus_queue_placement.py", "focus_queue_claude_entry.py")
 AUTOMATION_FILES = (
     "Scripts/focus_queue_morning.py",
     "Scripts/focus_queue_codex.py",
@@ -442,6 +446,7 @@ class Installer:
         self.codex_usage_wrapper = self.support / "shell/focus_queue_usage_wrapper.sh"
         self.codex_usage_renderer = self.support / "shell/focus_queue_codex_bar.js"
         self.codex_usage_license = self.support / "shell/AgentUsageBar-LICENSE.txt"
+        self.fq_files = [self.support / "shell" / name for name in FQ_SHELL_FILES]
         self.login, self.shortcut, self.start = login, desktop, start
         self.service = f"gui/{os.getuid()}/{IDENTIFIER}"
         self.legacy_shortcut_owned = False
@@ -482,12 +487,16 @@ class Installer:
         safe_destination(self.codex_usage_wrapper, self.home)
         safe_destination(self.codex_usage_renderer, self.home)
         safe_destination(self.codex_usage_license, self.home)
+        for path in self.fq_files:
+            safe_destination(path, self.home)
         for relative in (
             "Contents/Resources/shell/focus_queue_codex_entry.py",
             "Contents/Resources/shell/focus_queue_claude_entry.py",
             "Contents/Resources/shell/focus_queue_usage_wrapper.sh",
             "Contents/Resources/shell/focus_queue_codex_bar.js",
             "Contents/Resources/shell/AgentUsageBar-LICENSE.txt",
+            "Contents/Resources/shell/focus_queue_fq.py",
+            "Contents/Resources/shell/focus_queue_placement.py",
         ):
             validate_bundle_member(self.bundle, self.bundle / relative)
         if self.codex_entry.exists():
@@ -515,6 +524,15 @@ class Installer:
                     for candidate in candidates
                 ):
                     raise ValueError(f"The installed Codex {label} has local changes; retained for review.")
+        for installed in self.fq_files:
+            if installed.exists():
+                candidates = [app / "Contents/Resources/shell" / installed.name
+                              for app in (self.app, self.legacy_app, self.bundle)]
+                if not installed.is_file() or not any(
+                    candidate.is_file() and digest(candidate) == digest(installed)
+                    for candidate in candidates
+                ):
+                    raise ValueError(f"The installed fq file {installed.name} has local changes; retained for review.")
         validate_automation_tree(bundled_automation)
         subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(self.bundle)], check=True, capture_output=True)
         self.source_provenance = read_source_provenance(
@@ -707,6 +725,8 @@ class Installer:
                 "Contents/Resources/shell/focus_queue_usage_wrapper.sh",
                 "Contents/Resources/shell/focus_queue_codex_bar.js",
                 "Contents/Resources/shell/AgentUsageBar-LICENSE.txt",
+                "Contents/Resources/shell/focus_queue_fq.py",
+                "Contents/Resources/shell/focus_queue_placement.py",
                 "Contents/Resources/automation",
             ):
                 validate_bundle_member(staged_app, staged_app / relative)
@@ -771,6 +791,13 @@ class Installer:
                     self.codex_usage_license.stat().st_mode & 0o777
                     if self.codex_usage_license.exists() else 0o600)
                 planned.append((staged_usage_license, self.codex_usage_license))
+            original_fq = {path: path.read_bytes() if path.exists() else None for path in self.fq_files}
+            if original_fq[self.fq_files[0]] is not None:
+                for path in self.fq_files:
+                    staged_fq = stage / f"fq-{path.name}"
+                    shutil.copy2(staged_app / "Contents/Resources/shell" / path.name, staged_fq)
+                    staged_fq.chmod(path.stat().st_mode & 0o777 if path.exists() else 0o600)
+                    planned.append((staged_fq, path))
             if self.login:
                 staged_agent = stage / self.agent.name
                 staged_agent.write_bytes(plistlib.dumps({"Label": IDENTIFIER,
@@ -796,13 +823,15 @@ class Installer:
                               for source, target in planned if target not in {
                                   self.codex_prompt, self.claude_prompt, self.codex_entry,
                                   self.codex_usage_wrapper,
-                                  self.codex_usage_renderer, self.codex_usage_license}],
+                                  self.codex_usage_renderer, self.codex_usage_license, *self.fq_files}],
                 "managedSettings": [{"path": str(self.codex_prompt), "ownership": "delimited-block-only"},
                     {"path": str(self.claude_prompt), "ownership": "delimited-block-only"},
                     {"path": str(self.codex_entry), "ownership": "configured-entry-only"},
                     {"path": str(self.codex_usage_wrapper), "ownership": "configured-entry-support"},
                     {"path": str(self.codex_usage_renderer), "ownership": "configured-entry-support"},
-                    {"path": str(self.codex_usage_license), "ownership": "configured-entry-support"}],
+                    {"path": str(self.codex_usage_license), "ownership": "configured-entry-support"},
+                    *({"path": str(path), "ownership": "configured-entry-support"}
+                      for path in self.fq_files if original_fq[self.fq_files[0]] is not None)],
                 "launchAtLogin": self.login, "desktopShortcut": self.shortcut}
             staged_manifest = stage / "manifest.json"
             staged_manifest.write_text(json.dumps(manifest, indent=2) + "\n")
@@ -842,6 +871,10 @@ class Installer:
                     target.read_bytes() if target.exists() else None
                 ) != original_usage_license:
                     raise ValueError("Codex usage license changed during installation; retry to preserve the newer edit.")
+                if target in original_fq and (
+                    target.read_bytes() if target.exists() else None
+                ) != original_fq[target]:
+                    raise ValueError(f"{target.name} changed during installation; retry to preserve the newer edit.")
                 if source is not None:
                     target.parent.mkdir(parents=True, exist_ok=True)
                 previous = backup / str(index)

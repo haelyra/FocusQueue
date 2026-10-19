@@ -3139,6 +3139,42 @@ struct QueueViewModelTests {
     }
   }
 
+  @Test("Placement settings default per provider, persist edits, and clamp their ranges")
+  func placementSettings() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+
+    #expect(model.placementModelEnabled)
+    #expect(model.placementConfidenceThreshold == 0.85)
+    #expect(model.placementTimeoutSeconds == 20)
+    #expect(model.placementModelChoices(for: .codex).contains { $0.model == "gpt-6-luna" })
+    #expect(model.placementModelChoices(for: .claude).allSatisfy { $0.model?.isEmpty == false },
+      "The provider-default entry is the picker's own Default row")
+
+    model.setPlacementModelEnabled(false)
+    model.setPlacementProvider(.claude)
+    model.setPlacementModel("claude-haiku-4-5", for: .claude)
+    model.setPlacementModel("custom-luna", for: .codex)
+    model.setPlacementEffort("medium", for: .codex)
+    model.setPlacementConfidenceThreshold(0.99)
+    model.setPlacementTimeoutSeconds(2)
+    #expect(model.placementModelChoices(for: .codex).contains { $0.label == "custom-luna" })
+    #expect(model.placementConfidenceThreshold == 0.95)
+    #expect(model.placementTimeoutSeconds == 5)
+    model.setPlacementModel(" ", for: .claude)
+    #expect(model.config.placementModels[.claude] == nil)
+
+    try await eventually {
+      let saved = try JSONDecoder().decode(
+        AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+      return saved.placementModelEnabled == false && saved.placementProvider == .claude
+        && saved.placementModels == [.codex: "custom-luna"]
+        && saved.placementEfforts == [.codex: "medium"]
+        && saved.placementConfidenceThreshold == 0.95 && saved.placementTimeoutSeconds == 5
+    }
+  }
+
   @Test("Quota fallback claims the next installed provider once per subtask inside a per-ticket cooldown")
   func quotaFallbackDecision() async throws {
     let fixture = try await Fixture()

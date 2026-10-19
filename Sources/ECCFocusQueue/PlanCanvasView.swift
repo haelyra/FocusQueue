@@ -112,9 +112,9 @@ struct PlanCanvasView: View {
         }
       }
 
-      if sideDocuments.isPresented {
+      if sideDocuments.primaryDocument != nil && sideDocuments.secondaryDocument == nil {
         HStack {
-          Button(sideDocuments.centralChatCollapsed ? "Show central chat" : "Hide central chat") {
+          Button(sideDocuments.centralChatCollapsed ? "Show central chat" : "Show document chat") {
             sideDocuments.centralChatCollapsed.toggle()
           }
           .font(.caption.weight(.semibold))
@@ -131,24 +131,28 @@ struct PlanCanvasView: View {
         ScrollView(.horizontal) {
           if let secondaryDocument = sideDocuments.secondaryDocument {
             PlanPaneSplit(initialFraction: 0.5, minimumPrimary: 500, minimumSecondary: 460) {
-              VStack(spacing: 8) {
-                primaryViewer
-                if !sideDocuments.centralChatCollapsed { conversation.frame(height: 230) }
-              }
+              primaryViewer
             } secondary: {
               SideDocumentPane(
                 queue: model, ticket: ticket, document: secondaryDocument,
                 open: openDocument, close: { sideDocuments.close(secondaryDocument) },
-                receiveDocument: moveDocumentToSecondary)
+                receiveDocument: moveDocumentToSecondary,
+                discuss: { discussDocument($0, for: secondaryDocument) })
                 .padding(.horizontal, 4)
             }
             .frame(width: max(geometry.size.width, QueueInspectorLayout.documentPairMinimumWidth), height: geometry.size.height)
-          } else if sideDocuments.primaryDocument != nil {
-            VStack(spacing: 8) {
+          } else if let primaryDocument = sideDocuments.primaryDocument {
+            PlanPaneSplit(initialFraction: 0.74, minimumPrimary: QueueInspectorLayout.documentMinimumWidth,
+                          minimumSecondary: QueueInspectorLayout.chatMinimumWidth) {
               primaryViewer
-              if !sideDocuments.centralChatCollapsed { conversation.frame(height: 230) }
+            } secondary: {
+              if sideDocuments.centralChatCollapsed {
+                DocumentConversationPane(queue: model, ticket: ticket, document: primaryDocument)
+              } else {
+                conversation
+              }
             }
-            .frame(width: max(geometry.size.width, QueueInspectorLayout.documentMinimumWidth), height: geometry.size.height)
+            .frame(width: max(geometry.size.width, QueueInspectorLayout.inspectorMinimumWidth), height: geometry.size.height)
           } else {
             PlanPaneSplit(initialFraction: 0.74, minimumPrimary: QueueInspectorLayout.documentMinimumWidth,
                           minimumSecondary: QueueInspectorLayout.chatMinimumWidth) {
@@ -176,7 +180,8 @@ struct PlanCanvasView: View {
         SideDocumentPane(
           queue: model, ticket: ticket, document: primaryDocument,
           open: openDocument, close: { sideDocuments.close(primaryDocument) },
-          receiveDocument: moveDocumentToSecondary)
+          receiveDocument: moveDocumentToSecondary,
+          discuss: { discussDocument($0, for: primaryDocument) })
       }
     } else {
       document
@@ -361,11 +366,14 @@ struct PlanCanvasView: View {
   }
 
   private func openDocument(_ url: URL) {
-    let placement: DocumentPanePlacement = showsWorkspaceMap
-      || sideDocuments.primaryDocument != nil
-      || sideDocuments.secondaryDocument != nil
-      ? .secondary : .primary
+    let placement: DocumentPanePlacement = showsWorkspaceMap || sideDocuments.isPresented ? .secondary : .primary
     sideDocuments.open(url, in: placement)
+  }
+
+  private func discussDocument(_ action: PlanCanvasSelectionAction, for document: URL) {
+    guard let documentConversation = model.documentConversation(for: document, ticketID: ticket.id) else { return }
+    if !documentConversation.draft.isEmpty { documentConversation.draft += "\n\n" }
+    documentConversation.draft += "Selected passage: \(action.selection.excerpt)\n\(action.initialText)"
   }
 
   private func moveDocumentToSecondary(_ identifier: String) -> Bool {

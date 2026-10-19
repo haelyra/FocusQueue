@@ -3250,17 +3250,12 @@ private struct TicketCard: View {
   @State private var completingAgent: TaskSubtask?
   @State private var archivingAgent: TaskSubtask?
   @State private var isCollapsedToTitle = false
-  @State private var descriptionOverride: Bool?
   @State private var showsTaskDetails = false
   @AppStorage("newAgentProvider") private var storedNewAgentProvider: AgentProvider?
   @Environment(\.queueAccentStyle) private var accentStyle
 
   private var newAgentProvider: AgentProvider {
     model.preferredNewAgentProvider(stored: storedNewAgentProvider)
-  }
-
-  private var isDescriptionExpanded: Bool {
-    descriptionOverride ?? model.isNewTicket(ticket.id)
   }
 
   private var review: CompletionRequest? { model.latestReview(for: ticket.id) }
@@ -3464,10 +3459,6 @@ private struct TicketCard: View {
             ? "Queue an evidence-based Codex completion review"
             : "Mark complete by user override without review")
 
-        if !isCollapsedToTitle, !ticket.briefSummary.isEmpty {
-          descriptionToggle
-        }
-
         Button {
           withAnimation(.easeInOut(duration: 0.18)) { isCollapsedToTitle.toggle() }
         } label: {
@@ -3544,7 +3535,7 @@ private struct TicketCard: View {
           if TaskTriagePolicy.hasHardDeadline(ticket) { TaskDeadlinePill(ticket: ticket) }
           if let review { ReviewPill(status: review.status) }
         }
-        if !isCollapsedToTitle, isDescriptionExpanded, !ticket.briefSummary.isEmpty {
+        if !isCollapsedToTitle, !ticket.briefSummary.isEmpty {
           Text(ticket.briefSummary).font(.system(size: 13)).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
             .transition(.opacity.combined(with: .move(edge: .top)))
@@ -3568,31 +3559,8 @@ private struct TicketCard: View {
   }
 
   private func openTaskDetails() {
-    if descriptionOverride == nil, model.isNewTicket(ticket.id) {
-      descriptionOverride = true
-    }
     model.markTicketViewed(ticket.id)
     showsTaskDetails = true
-  }
-
-  private func toggleDescription() {
-    withAnimation(.easeInOut(duration: 0.18)) {
-      descriptionOverride = !isDescriptionExpanded
-      model.markTicketViewed(ticket.id)
-    }
-  }
-
-  private var descriptionToggle: some View {
-    Button(action: toggleDescription) {
-      Image(systemName: isDescriptionExpanded ? "chevron.down" : "chevron.right")
-        .font(.system(size: 12, weight: .semibold))
-        .foregroundStyle(.secondary)
-    }
-    .buttonStyle(.plain)
-    .minimumHitTarget()
-    .accessibilityLabel("\(isDescriptionExpanded ? "Collapse" : "Expand") description for \(ticket.id)")
-    .accessibilityValue(isDescriptionExpanded ? "Expanded" : "Collapsed")
-    .help(isDescriptionExpanded ? "Hide description" : "Show description")
   }
 
   private var agentControls: some View {

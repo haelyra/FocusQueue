@@ -9,8 +9,6 @@ enum QueueChromeMetrics {
   static let notificationBadgeForeground = NSColor.black
 
   static let notificationPanelMinWidth: CGFloat = 300
-  static let notificationPanelIdealWidth: CGFloat = 380
-  static let notificationPanelMaxWidth: CGFloat = 480
 }
 
 enum RouterComposerKeyboardAction: Equatable {
@@ -42,7 +40,6 @@ struct QueueView: View {
   @State private var showsNewTask = false
   @State private var newTaskProjectID: String?
   @State private var updateDrafts: [String: String] = [:]
-  @State private var notificationsExpanded = false
   @State private var settingsTarget: QueueSettingsTarget?
   @State private var showsStaleAgentCleanupConfirmation = false
   /// Counted when the cleanup is requested. Scanning every task's agents in
@@ -80,7 +77,7 @@ struct QueueView: View {
     .preferredColorScheme(model.appearance == .dark ? .dark : .light)
     .environment(\.queueAccentStyle, model.accentStyle)
     .onChange(of: notificationCount) { _, count in
-      if count == 0 { notificationsExpanded = false }
+      if count == 0 { model.setNotificationsInspectorPresented(false) }
     }
     .sheet(isPresented: $showsTerminals) { TerminalBrowserView(model: model) }
     .sheet(isPresented: $showsNewTask) {
@@ -103,28 +100,14 @@ struct QueueView: View {
     }
   }
 
-  private var showsNotificationPanel: Bool { notificationsExpanded && notificationCount > 0 }
-
   private var expandedPanel: some View {
     HStack(spacing: 12) {
       if model.isInspectorPresented, model.windowPlacement == .upperRight {
         inspector
         Divider()
       }
-      if showsNotificationPanel, model.windowPlacement == .upperRight {
-        notificationsPanel
-        Divider()
-      }
       queuePane
-        .frame(
-          minWidth: 380,
-          idealWidth: 440,
-          maxWidth: (model.isInspectorPresented || showsNotificationPanel) ? 440 : .infinity
-        )
-      if showsNotificationPanel, model.windowPlacement != .upperRight {
-        Divider()
-        notificationsPanel
-      }
+        .frame(minWidth: 380, idealWidth: 440, maxWidth: model.isInspectorPresented ? 440 : .infinity)
       if model.isInspectorPresented, model.windowPlacement != .upperRight {
         Divider()
         inspector
@@ -172,6 +155,8 @@ struct QueueView: View {
         QueueAgentChatView(model: model, draft: $queueAgentDraft)
       }
       .frame(minWidth: 320, idealWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
+    } else if model.isNotificationsInspectorPresented {
+      notificationsPanel
     } else if let update = model.presentedAgentUpdate {
       AgentUpdateView(model: model, update: update, draft: Binding(
         get: { updateDrafts[update.id] ?? "" }, set: { updateDrafts[update.id] = $0 }
@@ -222,9 +207,7 @@ struct QueueView: View {
     }
   }
 
-  private var notificationCount: Int {
-    (model.showsReportNotification ? 1 : 0) + model.notificationAgentUpdates.count
-  }
+  private var notificationCount: Int { model.notificationCount }
 
   private var notificationsPanel: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -232,7 +215,7 @@ struct QueueView: View {
         Label("Notifications", systemImage: "bell.fill").font(.headline)
         Spacer()
         Button {
-          withAnimation(.easeInOut(duration: 0.18)) { notificationsExpanded = false }
+          withAnimation(.easeInOut(duration: 0.18)) { model.setNotificationsInspectorPresented(false) }
         } label: {
           Image(systemName: "xmark")
         }
@@ -252,10 +235,8 @@ struct QueueView: View {
     }
     .padding(12)
     .frame(
-      minWidth: QueueChromeMetrics.notificationPanelMinWidth,
-      idealWidth: QueueChromeMetrics.notificationPanelIdealWidth,
-      maxWidth: QueueChromeMetrics.notificationPanelMaxWidth,
-      maxHeight: .infinity
+      minWidth: QueueChromeMetrics.notificationPanelMinWidth, idealWidth: 500,
+      maxWidth: .infinity, maxHeight: .infinity
     )
   }
 
@@ -515,9 +496,10 @@ struct QueueView: View {
   }
 
   private var todayFocusSection: some View {
-    // Searches the whole project queue, not only the top five.
+    // Searches the whole project queue, not only the top five. Completed tasks
+    // follow open ones so a code or a closed status still finds its task.
     let search = isFilteringTasks
-      ? taskSearchCache.result(for: model.openTickets, query: taskSearchQuery) : nil
+      ? taskSearchCache.result(for: model.openTickets + model.completedTickets, query: taskSearchQuery) : nil
     let shownTickets = search.map { Array($0.tickets.prefix(taskSearchResultLimit)) } ?? focusTickets
     return VStack(alignment: .leading, spacing: 10) {
       HStack {
@@ -569,6 +551,15 @@ struct QueueView: View {
         ).frame(maxWidth: .infinity).notificationSurface(radius: 18)
       } else if agentViewEnabled {
         agentViewList(for: shownTickets)
+      } else if search != nil {
+        let completedIDs = Set(model.completedTickets.map(\.id))
+        ForEach(shownTickets) { ticket in
+          if completedIDs.contains(ticket.id) {
+            CompletedTicketCard(ticket: ticket, model: model)
+          } else {
+            TicketCard(ticket: ticket, model: model)
+          }
+        }
       } else {
         ForEach(shownTickets) { ticket in TicketCard(ticket: ticket, model: model) }
       }
@@ -602,7 +593,8 @@ struct QueueView: View {
     if isTaskSearchActive {
       TaskSearchField(
         query: $taskSearchQuery, isFocused: $taskSearchIsFocused,
-        prompt: model.showsAllProjects ? "Search all tasks" : "Search \(model.projectScopeName) tasks",
+        prompt: (model.showsAllProjects ? "Search all tasks" : "Search \(model.projectScopeName) tasks")
+          + " · code, status, priority",
         resultCount: resultCount, endEditing: endTaskSearchEditing, close: closeTaskSearch)
     } else if agentViewEnabled {
       focusHeadingButton(title: "Today's focus", detail: "\(agentViewEntries(for: focusTickets).count) agents")
@@ -623,6 +615,13 @@ struct QueueView: View {
 
   private func taskSearchCaption(_ search: TaskSearchResult, shown: Int) -> String? {
     var parts: [String] = []
+    if !search.filters.isEmpty {
+      let fields = [TaskSearchFilter.Field.priority, .status].compactMap { field -> String? in
+        let values = search.filters.filter { $0.field == field }.map(\.label)
+        return values.isEmpty ? nil : "\(field.rawValue.capitalized) \(values.joined(separator: " or "))"
+      }
+      parts.append("Filtered by " + fields.joined(separator: " · "))
+    }
     if case .approximate(let suggestion) = search.match {
       parts.append(suggestion.map { "No exact matches · showing results for \u{201C}\($0)\u{201D}" }
         ?? "No exact matches · showing similar tasks")
@@ -993,11 +992,11 @@ struct QueueView: View {
         ).help(dailyReportHeaderHelp)
         Button {
           withAnimation(.easeInOut(duration: 0.18)) {
-            notificationsExpanded.toggle()
+            model.toggleNotificationsInspector()
           }
         } label: {
           HStack(spacing: 3) {
-            Image(systemName: notificationsExpanded ? "bell.fill" : "bell")
+            Image(systemName: model.isNotificationsInspectorPresented ? "bell.fill" : "bell")
               .font(.system(size: 13, weight: .semibold))
             if notificationCount > 0 {
               Text(String(notificationCount))
@@ -1016,11 +1015,11 @@ struct QueueView: View {
         .minimumHitTarget(width: 30, height: 34)
         .disabled(notificationCount == 0)
         .accessibilityLabel(
-          notificationsExpanded
+          model.isNotificationsInspectorPresented
             ? "Close \(notificationCount) notifications"
             : "Open \(notificationCount) notifications"
         )
-        .help(notificationsExpanded ? "Close notifications" : "Show notifications")
+        .help(model.isNotificationsInspectorPresented ? "Close notifications" : "Show notifications")
         Button {
           settingsTarget = nil
           withAnimation(.easeInOut(duration: 0.18)) { screen = .settings }
@@ -2615,6 +2614,7 @@ private struct TaskSearchField: View {
           return .handled
         }
         .accessibilityLabel("Search tasks")
+        .help("Type words, a code such as FOC-018 or 18, a status such as backlog, or a priority such as high. status: and priority: accept part of a value.")
       if let resultCount {
         Text("\(resultCount)").font(.system(size: 11, weight: .semibold).monospacedDigit())
           .foregroundStyle(.secondary)
@@ -2872,23 +2872,53 @@ private struct CompletedTicketCard: View {
 
   private var summary: some View {
     HStack(alignment: .top, spacing: 11) {
-      Image(systemName: statusIcon)
-        .font(.system(size: 18, weight: .semibold))
-        .foregroundStyle(statusColor)
-        .frame(width: 28, height: 30)
-
-      Button(action: toggleExpansion) {
-        VStack(alignment: .leading, spacing: 6) {
-          HStack(alignment: .top, spacing: 8) {
-            RenamableTaskTitle(
-              ticket: ticket, model: model, size: 15, weight: .semibold,
-              maximumLines: 3)
-            Text(ticket.id).font(.system(size: 11, weight: .bold, design: .monospaced))
-              .foregroundStyle(.secondary).fixedSize()
+      VStack(spacing: 1) {
+        Image(systemName: statusIcon)
+          .font(.system(size: 18, weight: .semibold))
+          .foregroundStyle(statusColor)
+          .frame(width: 28, height: 30)
+          .minimumHitTarget()
+          .contentShape(Rectangle())
+          .contextMenu {
+            Button("Mark as incomplete", systemImage: "arrow.uturn.backward.circle") {
+              markIncomplete()
+            }
           }
-          if !ticket.summary.isEmpty {
+          .accessibilityLabel("Completed task checkbox for \(ticket.id)")
+          .accessibilityHint("Right-click to mark this task incomplete and return it to Focus.")
+          .accessibilityAction(named: "Mark as incomplete", markIncomplete)
+
+        Menu {
+          Button("Mark as incomplete", systemImage: "arrow.uturn.backward.circle") {
+            markIncomplete()
+          }
+        } label: {
+          VerticalOverflowIcon()
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .minimumHitTarget()
+        .accessibilityLabel("More options for completed task \(ticket.id)")
+      }
+
+      VStack(alignment: .leading, spacing: 6) {
+        HStack(alignment: .top, spacing: 8) {
+          RenamableTaskTitle(
+            ticket: ticket, model: model, size: 15, weight: .semibold,
+            maximumLines: 3, openAction: toggleExpansion,
+            openHint: model.isExpanded(ticket.id)
+              ? "Hide completed task details" : "Show completed task details")
+          Text(ticket.id).font(.system(size: 11, weight: .bold, design: .monospaced))
+            .foregroundStyle(.secondary).fixedSize()
+        }
+        if !ticket.summary.isEmpty {
+          Button(action: toggleExpansion) {
             Text(ticket.summary).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(2)
           }
+          .buttonStyle(.plain)
+        }
+        Button(action: toggleExpansion) {
           HStack(spacing: 7) {
             StatusPill(text: ticket.status, color: statusColor)
             if ticket.progressLabel.lowercased() != ticket.status.lowercased() {
@@ -2903,14 +2933,10 @@ private struct CompletedTicketCard: View {
               .font(.system(size: 12, weight: .bold)).foregroundStyle(.secondary)
           }
         }
-        .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
       }
-      .buttonStyle(.plain)
-      .accessibilityLabel("\(ticket.title), \(ticket.id)")
-      .accessibilityHint(
-        model.isExpanded(ticket.id) ? "Hides completed task details." : "Shows completed task details."
-      )
-      .help(model.isExpanded(ticket.id) ? "Hide completed task details" : "Show completed task details")
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
     .padding(.horizontal, 13).padding(.vertical, 11)
   }
@@ -3024,6 +3050,10 @@ private struct CompletedTicketCard: View {
     withAnimation(.easeInOut(duration: 0.18)) {
       model.setExpanded(!model.isExpanded(ticket.id), ticketID: ticket.id)
     }
+  }
+
+  private func markIncomplete() {
+    Task { _ = await model.markTaskIncomplete(ticket) }
   }
 
   private var statusColor: Color {
@@ -3483,6 +3513,10 @@ private struct TicketCard: View {
       .contextMenu {
         Button("Skip review and mark as complete", systemImage: "checkmark.circle") {
           model.skipReviewAndComplete(ticket)
+        }
+        .disabled(!ticket.isOpen)
+        Button("Archive without completion (skip review)", systemImage: "archivebox") {
+          Task { _ = await model.archiveWithoutCompletion(ticket) }
         }
         .disabled(!ticket.isOpen)
       }

@@ -11,6 +11,7 @@ struct QueueInspectorLayout: Equatable {
   static let closed = Self(minimumWidth: 400, maximumWidth: 620, expansionWidth: 0)
   static let chat = Self(minimumWidth: 790, maximumWidth: 1_200, expansionWidth: 580)
   static let report = Self(minimumWidth: 790, maximumWidth: 1_200, expansionWidth: 580)
+  static let notifications = Self(minimumWidth: 790, maximumWidth: 1_200, expansionWidth: 580)
   static let plan = Self(minimumWidth: 1_260, maximumWidth: 2_200, expansionWidth: 1_360)
   static let documentMinimumWidth: CGFloat = 500
   static let chatMinimumWidth: CGFloat = 240

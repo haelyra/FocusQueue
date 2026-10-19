@@ -1831,6 +1831,9 @@ public struct LocalState: Codable, Equatable, Sendable {
   public var agentSessions: [TaskAgentSession]
   public var lastStaleAgentSweepAt: Date?
   public var viewedTicketIDs: Set<String>?
+  /// Dashboards whose existing tasks were already marked viewed. Each one is
+  /// seeded once, so NEW marks only tasks created after Focus Queue saw it.
+  public var viewedTicketSources: Set<String>?
   public var queueActivitySortMode: QueueActivitySortMode?
 
   public init(
@@ -1847,6 +1850,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     agentSessions: [TaskAgentSession] = [],
     lastStaleAgentSweepAt: Date? = nil,
     viewedTicketIDs: Set<String>? = nil,
+    viewedTicketSources: Set<String>? = nil,
     queueActivitySortMode: QueueActivitySortMode? = nil
   ) {
     self.routineDate = routineDate
@@ -1862,6 +1866,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     self.agentSessions = agentSessions
     self.lastStaleAgentSweepAt = lastStaleAgentSweepAt
     self.viewedTicketIDs = viewedTicketIDs
+    self.viewedTicketSources = viewedTicketSources
     self.queueActivitySortMode = queueActivitySortMode
   }
 
@@ -1919,6 +1924,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     case programLogWindowVisible
     case agentSessions
     case viewedTicketIDs
+    case viewedTicketSources
     case queueActivitySortMode
   }
 
@@ -1946,6 +1952,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     agentSessions =
       try container.decodeIfPresent([TaskAgentSession].self, forKey: .agentSessions) ?? []
     viewedTicketIDs = try container.decodeIfPresent(Set<String>.self, forKey: .viewedTicketIDs)
+    viewedTicketSources = try container.decodeIfPresent(Set<String>.self, forKey: .viewedTicketSources)
     queueActivitySortMode = try container.decodeIfPresent(QueueActivitySortMode.self, forKey: .queueActivitySortMode)
   }
 
@@ -1965,6 +1972,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     try container.encode(programLogWindowVisible, forKey: .programLogWindowVisible)
     try container.encode(agentSessions, forKey: .agentSessions)
     try container.encodeIfPresent(viewedTicketIDs, forKey: .viewedTicketIDs)
+    try container.encodeIfPresent(viewedTicketSources, forKey: .viewedTicketSources)
     try container.encodeIfPresent(queueActivitySortMode, forKey: .queueActivitySortMode)
   }
 }

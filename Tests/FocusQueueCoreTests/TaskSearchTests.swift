@@ -48,6 +48,65 @@ struct TaskSearchTests {
     #expect(ids("021") == ["FOC-021"])
   }
 
+  @Test("A task code matches without its prefix, dash, or leading zeros")
+  func ticketCodesMatchLoosely() {
+    let codes = [
+      DashboardTicket(id: "FOC-018", title: "Clipboard sync", status: "backlog", summary: ""),
+      DashboardTicket(id: "FOC-180", title: "Window layout", status: "backlog", summary: ""),
+      DashboardTicket(id: "FOC-118", title: "Agent 18 retry", status: "backlog", summary: ""),
+    ]
+    func codeIDs(_ query: String) -> [String] { TaskSearch.search(codes, query: query).tickets.map(\.id) }
+    for query in ["18", "018", "FOC-18", "foc 18", "foc18", "FOC-018", "#18"] {
+      #expect(codeIDs(query).first == "FOC-018", "\(query) must lead with FOC-018")
+    }
+    // The exact code leads, then a title holding "18", then other code starts.
+    #expect(codeIDs("18") == ["FOC-018", "FOC-118", "FOC-180"])
+    #expect(codeIDs("foc-180") == ["FOC-180"])
+    let focusTicket = DashboardTicket(id: "ECC-018", title: "Focus window", status: "resolved", summary: "")
+    #expect(TaskSearch.search(codes + [focusTicket], query: "FOC-018").tickets.map(\.id) == ["FOC-018"],
+      "a full code excludes tasks that only contain its parts")
+    #expect(codeIDs("FOC-01").first == "FOC-018", "a partly typed padded code keeps searching")
+    #expect(TaskSearch.search(codes + [focusTicket], query: "18").tickets.map(\.id).prefix(2)
+      == ["FOC-018", "ECC-018"])
+  }
+
+  @Test("An exact status or priority word filters by that field instead of text")
+  func fieldWordsFilter() {
+    let fielded = tickets + [
+      DashboardTicket(id: "FOC-023", title: "Slow follow-up workflow", priority: "low", status: "in-progress",
+                      summary: "Highlight the blocked state."),
+    ]
+    func fieldIDs(_ query: String) -> [String] { TaskSearch.search(fielded, query: query).tickets.map(\.id) }
+    #expect(fieldIDs("low") == ["FOC-023"], "\"low\" must not match inside \"slow\" or \"workflow\"")
+    #expect(fieldIDs("high") == ["FOC-020"])
+    #expect(fieldIDs("blocked") == ["FOC-021"], "\"blocked\" filters by status, not summary text")
+    #expect(fieldIDs("in-progress") == ["FOC-023"])
+    #expect(fieldIDs("high low") == ["FOC-020", "FOC-023"], "values of one field are alternatives")
+    #expect(fieldIDs("open crash") == ["FOC-020"], "fields and keywords combine")
+    #expect(fieldIDs("high blocked").isEmpty)
+    let result = TaskSearch.search(fielded, query: "In-Progress")
+    #expect(result.filters == [TaskSearchFilter(field: .status, value: "inprogress", label: "in-progress")])
+    #expect(result.match == .exact)
+    #expect(TaskSearch.search(fielded, query: "critical").match == .none)
+  }
+
+  @Test("Qualifiers accept partial values and open or done groups")
+  func qualifiersFilter() {
+    let mixed = tickets + [
+      DashboardTicket(id: "FOC-024", title: "Old export", status: "resolved", summary: "Shipped."),
+    ]
+    func mixedIDs(_ query: String) -> [String] { TaskSearch.search(mixed, query: query).tickets.map(\.id) }
+    #expect(mixedIDs("status:blo") == ["FOC-021"])
+    #expect(mixedIDs("p:hi") == ["FOC-020"])
+    #expect(mixedIDs("priority:med export") == ["FOC-022", "FOC-024"])
+    #expect(mixedIDs("is:done") == ["FOC-024"])
+    #expect(mixedIDs("status:open export") == ["FOC-022"])
+    #expect(mixedIDs("resolved") == ["FOC-024"])
+    #expect(mixedIDs("status:").count == mixed.count, "a qualifier without a value is ignored while typing")
+    #expect(mixedIDs("status:blo serach") == [], "a misspelling falls back only inside the filtered tasks")
+    #expect(mixedIDs("status:open serach") == ["FOC-019", "FOC-022"])
+  }
+
   @Test("Title matches lead summary matches; queue order breaks ties")
   func titleMatchesLead() {
     #expect(ids("search") == ["FOC-019", "FOC-022"])

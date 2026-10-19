@@ -1171,6 +1171,11 @@ public actor TaskContextStore {
     @discardableResult public func observeActivity(ticketID: String, subtaskID: String, event: AgentActivityEvent) throws -> TaskContext {
         try mutate(ticketID: ticketID) { context in
             guard let i = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
+            // Hooks are optional, so transcript prompts also date the task's last
+            // interaction, even when the agent's own status is already final.
+            if case .prompt = event.kind, event.date > (context.lastPromptAt ?? .distantPast) {
+                context.lastPromptAt = event.date
+            }
             guard context.subtasks[i].isAgentVisible, context.subtasks[i].status != .completed,
                   context.subtasks[i].observedEventID != event.id else { return }
             let isNewestObservedEvent = event.date >= (context.subtasks[i].observedEventAt ?? .distantPast)
@@ -1188,7 +1193,7 @@ public actor TaskContextStore {
                 context.subtasks[i].observedEventAt = event.date
             }
             switch event.kind {
-            case .working:
+            case .working, .prompt:
                 guard isCurrentActivity else { return }
                 context.subtasks[i].lastHeartbeatAt = event.date
                 if !event.summary.isEmpty { context.subtasks[i].progressSummary = event.summary }

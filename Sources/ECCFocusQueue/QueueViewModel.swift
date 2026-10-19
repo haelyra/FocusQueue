@@ -164,6 +164,10 @@ final class QueueViewModel {
   @ObservationIgnored private let maintenanceEnabled: Bool
   private(set) var subtaskActivityRevision = 0
   private(set) var isQueueChatInspectorPresented = false
+  private(set) var isNotificationsInspectorPresented = false
+  /// Set while an update or report opened from the notifications list is shown,
+  /// so closing it returns to the list instead of collapsing the side panel.
+  @ObservationIgnored private var returnsToNotifications = false
   private(set) var presentedAgentUpdate: QueueAgentUpdate?
   private(set) var presentedPlanTicketID: String?
   private(set) var presentedPlanURL: URL?
@@ -676,17 +680,27 @@ final class QueueViewModel {
   /// Merges every project dashboard into one presentation document. A damaged
   /// or missing project dashboard is skipped rather than failing the scope.
   private func loadAllProjectsDashboard() async throws -> DashboardDocument {
+    try await loadAllProjectsDashboardSources().document
+  }
+
+  /// Also reports each loaded dashboard's ticket IDs by path, which seeds the
+  /// viewed-task baseline per project rather than for the merged scope.
+  private func loadAllProjectsDashboardSources() async throws
+    -> (document: DashboardDocument, sources: [String: [String]])
+  {
     var tickets: [DashboardTicket] = []
     var seenIDs = Set<String>()
     var updatedAt: String?
+    var sources: [String: [String]] = [:]
     for url in scopedDashboardURLs {
       guard let document = try? await dashboardRepository.load(from: url) else { continue }
       if let stamp = document.updatedAt, stamp > (updatedAt ?? "") { updatedAt = stamp }
+      sources[url.standardizedFileURL.path] = document.tickets.map(\.id)
       for ticket in document.tickets where seenIDs.insert(ticket.id).inserted {
         tickets.append(ticket)
       }
     }
-    return DashboardDocument(updatedAt: updatedAt, tickets: tickets)
+    return (DashboardDocument(updatedAt: updatedAt, tickets: tickets), sources)
   }
 
   /// Replaces the merged dashboard after a per-project write in the
@@ -825,6 +839,7 @@ final class QueueViewModel {
         let snapshot = showsAllProjects ? nil : try await dashboardRepository.loadSnapshot(
           from: URL(fileURLWithPath: reloaded.dashboardPath))
         config = reloaded
+        setNotificationsInspectorPresented(false)
         closeAgentUpdate()
         closePlan()
         setQueueChatInspectorPresented(false)
@@ -907,6 +922,7 @@ final class QueueViewModel {
     guard !showsAllProjects else { return }
     localState.showsAllProjects = true
     persistLocalState()
+    setNotificationsInspectorPresented(false)
     closeAgentUpdate()
     closePlan()
     setQueueChatInspectorPresented(false)
@@ -949,6 +965,7 @@ final class QueueViewModel {
       persistLocalState()
       programLog.record("Selected project \(project.name).", category: "Projects")
 
+      setNotificationsInspectorPresented(false)
       closeAgentUpdate()
       closePlan()
       setQueueChatInspectorPresented(false)
@@ -1143,6 +1160,55 @@ final class QueueViewModel {
   }
 
   @discardableResult
+  func markTaskIncomplete(_ ticket: DashboardTicket) async -> Bool {
+    guard ticket.isCompleted else { return true }
+    do {
+      let url = URL(fileURLWithPath: dashboardPath(for: ticket))
+      let snapshot = try await dashboardRepository.loadSnapshot(from: url)
+      let updated = try await dashboardRepository.reopenTicket(
+        id: ticket.id, in: url, expectedRevision: snapshot.revision)
+      if showsAllProjects {
+        await reloadMergedDashboard()
+      } else {
+        dashboard = updated.document
+        await captureDurableDashboard(updated.document)
+      }
+      closureMessages[ticket.id] = nil
+      cleanupSignatures[ticket.id] = nil
+      actionMessages[ticket.id] = "Task marked incomplete and returned to Focus."
+      loadError = nil
+      return true
+    } catch {
+      actionMessages[ticket.id] = "Could not mark task incomplete: \(error.localizedDescription)"
+      return false
+    }
+  }
+
+  @discardableResult
+  func archiveWithoutCompletion(_ ticket: DashboardTicket) async -> Bool {
+    guard ticket.isOpen else { return true }
+    do {
+      let url = URL(fileURLWithPath: dashboardPath(for: ticket))
+      let snapshot = try await dashboardRepository.loadSnapshot(from: url)
+      let updated = try await dashboardRepository.setTicketStatus(
+        id: ticket.id, to: "cancelled", in: url, expectedRevision: snapshot.revision)
+      if showsAllProjects {
+        await reloadMergedDashboard()
+      } else {
+        dashboard = updated.document
+        await captureDurableDashboard(updated.document)
+      }
+      closureMessages[ticket.id] = nil
+      actionMessages[ticket.id] = "Task archived without completion review."
+      loadError = nil
+      return true
+    } catch {
+      actionMessages[ticket.id] = "Could not archive task: \(error.localizedDescription)"
+      return false
+    }
+  }
+
+  @discardableResult
   func setTaskHardDeadline(_ ticket: DashboardTicket, to dueDate: Date?) async -> Bool {
     guard let project = project(for: ticket) ?? selectedProject else {
       actionMessages[ticket.id] = "Could not update hard due date: no owning project."
@@ -1234,14 +1300,18 @@ final class QueueViewModel {
         || lastDashboardRead.map { now.timeIntervalSince($0) >= 60 } ?? true
       if needsDashboardRead {
         if showingAll {
-          let merged = try await loadAllProjectsDashboard()
+          let (merged, sources) = try await loadAllProjectsDashboardSources()
           guard showsAllProjects else { return }
+          reconcileViewedTasks(sources: sources)
           if dashboard != merged { dashboard = merged }
           if lastDurableDashboard != merged { await captureDurableDashboard(merged) }
         } else {
           let dashboardURL = URL(fileURLWithPath: config.dashboardPath)
           let updatedDashboard = try await dashboardRepository.load(from: dashboardURL)
           guard projectID == config.selectedProjectID else { return }
+          reconcileViewedTasks(sources: [
+            dashboardURL.standardizedFileURL.path: updatedDashboard.tickets.map(\.id),
+          ])
           if dashboard != updatedDashboard { dashboard = updatedDashboard }
           if lastDurableDashboard != updatedDashboard { await captureDurableDashboard(updatedDashboard) }
         }
@@ -1249,7 +1319,6 @@ final class QueueViewModel {
         lastDashboardRead = now
       }
       guard projectID == config.selectedProjectID else { return }
-      reconcileViewedTasks()
       let updatedOrder = try queueOrderStore.load()
       if savedQueueOrder != updatedOrder { savedQueueOrder = updatedOrder }
       pruneDeferredTickets()
@@ -1348,22 +1417,38 @@ final class QueueViewModel {
   }
 
   func isNewTicket(_ ticketID: String) -> Bool {
-    guard let viewedTicketIDs = localState.viewedTicketIDs else { return false }
+    guard let viewedTicketIDs = localState.viewedTicketIDs,
+          localState.viewedTicketSources?.isEmpty == false else { return false }
     return !viewedTicketIDs.contains(ticketID)
   }
 
   func markTicketViewed(_ ticketID: String) {
-    if localState.viewedTicketIDs == nil {
-      localState.viewedTicketIDs = Set(dashboard.tickets.map(\.id))
+    guard localState.viewedTicketIDs?.contains(ticketID) != true else { return }
+    // A view before any dashboard loads starts fresh tracking, not a migration.
+    if localState.viewedTicketIDs == nil, localState.viewedTicketSources == nil {
+      localState.viewedTicketSources = []
     }
-    guard localState.viewedTicketIDs?.contains(ticketID) == false else { return }
-    localState.viewedTicketIDs?.insert(ticketID)
+    localState.viewedTicketIDs = (localState.viewedTicketIDs ?? []).union([ticketID])
     persistLocalState()
   }
 
-  private func reconcileViewedTasks() {
-    guard localState.viewedTicketIDs == nil else { return }
-    localState.viewedTicketIDs = Set(dashboard.tickets.map(\.id))
+  /// A dashboard's existing tasks count as viewed the first time it loads, so
+  /// NEW marks only tasks created after Focus Queue began showing it.
+  private func reconcileViewedTasks(sources loaded: [String: [String]]) {
+    let previouslyViewed = localState.viewedTicketIDs ?? []
+    // Earlier builds seeded only the scope open at the time. A dashboard with
+    // a viewed task was seeded then; the others are seeded now.
+    let migrating = localState.viewedTicketSources == nil && localState.viewedTicketIDs != nil
+    var viewed = previouslyViewed
+    var sources = localState.viewedTicketSources ?? []
+    for (source, ticketIDs) in loaded where !sources.contains(source) {
+      sources.insert(source)
+      if migrating, ticketIDs.contains(where: previouslyViewed.contains) { continue }
+      viewed.formUnion(ticketIDs)
+    }
+    guard viewed != localState.viewedTicketIDs || sources != localState.viewedTicketSources else { return }
+    localState.viewedTicketIDs = viewed
+    localState.viewedTicketSources = sources
     persistLocalState()
   }
 
@@ -1624,7 +1709,7 @@ final class QueueViewModel {
 
   var isInspectorPresented: Bool {
     isQueueChatInspectorPresented || isDailyReportPresented || presentedPlanTicketID != nil
-      || presentedAgentUpdate != nil
+      || presentedAgentUpdate != nil || isNotificationsInspectorPresented
   }
 
   var presentedPlanTicket: DashboardTicket? {
@@ -1946,6 +2031,8 @@ final class QueueViewModel {
   func openPlan(for ticket: DashboardTicket, sourceURL: URL? = nil) {
     revealProject(for: ticket.id)
     markTicketViewed(ticket.id)
+    isNotificationsInspectorPresented = false
+    returnsToNotifications = false
     isQueueChatInspectorPresented = false
     presentedAgentUpdate = nil
     isDailyReportPresented = false
@@ -2053,8 +2140,40 @@ final class QueueViewModel {
 
   var notificationAgentUpdates: [QueueAgentUpdate] { agentUpdateLists.notifications }
 
+  var notificationCount: Int {
+    (showsReportNotification ? 1 : 0) + notificationAgentUpdates.count
+  }
+
+  /// Notifications share the inspector slot so the panel widens toward the
+  /// screen center like a plan instead of squeezing beside the queue.
+  func setNotificationsInspectorPresented(_ presented: Bool) {
+    returnsToNotifications = false
+    guard presented || isNotificationsInspectorPresented else { return }
+    if presented {
+      isQueueChatInspectorPresented = false
+      presentedAgentUpdate = nil
+      presentedPlanTicketID = nil
+      presentedPlanURL = nil
+      isDailyReportPresented = false
+    }
+    isNotificationsInspectorPresented = presented
+    reportVisibilityHandler?(isInspectorPresented)
+  }
+
+  func toggleNotificationsInspector() {
+    setNotificationsInspectorPresented(!isNotificationsInspectorPresented)
+  }
+
+  private func reopenNotificationsIfReturning() {
+    guard returnsToNotifications else { return }
+    returnsToNotifications = false
+    isNotificationsInspectorPresented = notificationCount > 0
+  }
+
   func openAgentUpdate(_ update: QueueAgentUpdate) {
     revealProject(for: update.ticketID)
+    if isNotificationsInspectorPresented { returnsToNotifications = true }
+    isNotificationsInspectorPresented = false
     isQueueChatInspectorPresented = false
     presentedPlanTicketID = nil
     presentedPlanURL = nil
@@ -2075,6 +2194,7 @@ final class QueueViewModel {
   func closeAgentUpdate() {
     guard presentedAgentUpdate != nil else { return }
     presentedAgentUpdate = nil
+    reopenNotificationsIfReturning()
     reportVisibilityHandler?(isInspectorPresented)
   }
 
@@ -2115,6 +2235,8 @@ final class QueueViewModel {
 
   func setQueueChatInspectorPresented(_ presented: Bool) {
     if presented {
+      isNotificationsInspectorPresented = false
+      returnsToNotifications = false
       presentedAgentUpdate = nil
       presentedPlanTicketID = nil
       presentedPlanURL = nil
@@ -3470,7 +3592,7 @@ final class QueueViewModel {
   func ticketIsChecked(_ ticket: DashboardTicket) -> Bool {
     guard ticket.isOpen else { return true }
     guard let review = latestReview(for: ticket.id) else { return false }
-    return [.pending, .running, .accepted].contains(review.status)
+    return [.pending, .running].contains(review.status)
   }
 
   func requestCompletion(for ticket: DashboardTicket) {
@@ -4247,10 +4369,14 @@ final class QueueViewModel {
 
   func setDailyReportPresented(_ presented: Bool) {
     if presented {
+      if isNotificationsInspectorPresented { returnsToNotifications = true }
+      isNotificationsInspectorPresented = false
       isQueueChatInspectorPresented = false
       presentedAgentUpdate = nil
       presentedPlanTicketID = nil
       presentedPlanURL = nil
+    } else if isDailyReportPresented {
+      reopenNotificationsIfReturning()
     }
     isDailyReportPresented = presented
     reportVisibilityHandler?(isInspectorPresented)
@@ -4580,6 +4706,8 @@ final class QueueViewModel {
   func setPanelMode(_ mode: QueuePanelMode) {
     guard panelMode != mode else { return }
     if mode != .expanded {
+      // First, so a detail opened from the list does not reopen it while closing.
+      setNotificationsInspectorPresented(false)
       closeAgentUpdate()
       closePlan()
       setQueueChatInspectorPresented(false)

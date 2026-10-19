@@ -1027,6 +1027,97 @@ struct QueueViewModelTests {
     #expect(restarted.queueActivitySortMode == .recentOutput)
   }
 
+  @Test("NEW seeds each dashboard once and migrates a baseline from one earlier scope")
+  func viewedTasksSeedPerDashboard() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    // Earlier builds seeded only the scope open at the time, so this dashboard
+    // has no viewed task and must not show its existing tasks as NEW.
+    try await JSONLocalStateStore(url: fixture.paths.stateFile).save(
+      LocalState(viewedTicketIDs: ["FOC-001"]))
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(!model.isNewTicket("ECC-101"))
+    #expect(!model.isNewTicket("ECC-102"))
+    let dashboardPath = URL(fileURLWithPath: model.config.dashboardPath).standardizedFileURL.path
+    try await eventually {
+      try await JSONLocalStateStore(url: fixture.paths.stateFile).load()
+        .viewedTicketSources?.contains(dashboardPath) == true
+    }
+
+    let added = DashboardTicket(id: "ECC-103", title: "Added later", status: "open", summary: "New work")
+    try JSONEncoder().encode(DashboardDocument(tickets: fixture.tickets + [added]))
+      .write(to: URL(fileURLWithPath: model.config.dashboardPath), options: .atomic)
+    await model.refresh(userInitiated: true)
+    #expect(model.dashboard.tickets.contains { $0.id == "ECC-103" })
+    #expect(model.isNewTicket("ECC-103"))
+    #expect(!model.isNewTicket("ECC-101"))
+
+    let restarted = await fixture.model(agent: ControlledQueueAgent())
+    #expect(restarted.isNewTicket("ECC-103"))
+    #expect(!restarted.isNewTicket("ECC-102"))
+  }
+
+  @Test("A migrated dashboard that already had viewed tasks keeps later tasks NEW")
+  func viewedTasksMigrationPreservesUnviewed() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    try await JSONLocalStateStore(url: fixture.paths.stateFile).save(
+      LocalState(viewedTicketIDs: ["ECC-101"]))
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(!model.isNewTicket("ECC-101"))
+    #expect(model.isNewTicket("ECC-102"))
+    model.markTicketViewed("ECC-102")
+    #expect(!model.isNewTicket("ECC-102"))
+  }
+
+  @Test("Notifications open in the widened inspector and return after an opened detail closes")
+  func notificationsInspector() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    var visibility: [Bool] = []
+    model.reportVisibilityHandler = { visibility.append($0) }
+    #expect(model.notificationCount > 0)
+
+    model.toggleNotificationsInspector()
+    #expect(model.isNotificationsInspectorPresented)
+    #expect(model.isInspectorPresented)
+    #expect(visibility.last == true)
+
+    let update = QueueAgentUpdate(id: "update", ticketID: "ECC-101", title: "Agent finished", summary: "Ready")
+    model.openAgentUpdate(update)
+    #expect(!model.isNotificationsInspectorPresented)
+    #expect(model.presentedAgentUpdate == update)
+    model.closeAgentUpdate()
+    #expect(model.isNotificationsInspectorPresented)
+    #expect(visibility.last == true)
+
+    model.showLatestDailyReport()
+    #expect(model.isDailyReportPresented)
+    #expect(!model.isNotificationsInspectorPresented)
+    model.setDailyReportPresented(false)
+    #expect(model.isNotificationsInspectorPresented)
+
+    model.openPlan(for: fixture.tickets[0])
+    #expect(!model.isNotificationsInspectorPresented)
+    model.closePlan()
+    #expect(!model.isInspectorPresented)
+
+    model.setNotificationsInspectorPresented(true)
+    model.setQueueChatInspectorPresented(true)
+    #expect(!model.isNotificationsInspectorPresented)
+    model.setNotificationsInspectorPresented(true)
+    #expect(!model.isQueueChatInspectorPresented)
+    model.toggleNotificationsInspector()
+    #expect(!model.isInspectorPresented)
+    #expect(visibility.last == false)
+
+    model.setNotificationsInspectorPresented(true)
+    model.setPanelCollapsed(true)
+    #expect(!model.isNotificationsInspectorPresented)
+    #expect(!model.isInspectorPresented)
+  }
+
   @Test("Hard due dates update and clear through the view model")
   func hardDeadlineActions() async throws {
     let fixture = try await Fixture()
@@ -2048,6 +2139,60 @@ struct QueueViewModelTests {
     #expect(persisted.dashboardPath == fixture.root.appendingPathComponent("dashboard.json").path)
     #expect(persisted.workspacePath == fixture.root.path)
     #expect(persisted.taskTitle == "Task ECC-101")
+  }
+
+  @Test("Marking a completed task incomplete returns it to Focus and resets its checkbox")
+  func markCompletedTaskIncomplete() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let completed = DashboardTicket(
+      id: "ECC-101", title: "Task ECC-101", status: "resolved",
+      summary: "Implement and verify ECC-101", updatedAt: "2026-10-18T14:00:00Z",
+      completedAt: "2026-10-18T14:00:00Z",
+      completion: DashboardCompletion(
+        outcome: "completed", reason: "Verified", evidence: ["test.log"],
+        completedBy: "completion-review"))
+    try JSONEncoder().encode(DashboardDocument(tickets: [completed, fixture.tickets[1]]))
+      .write(to: fixture.root.appendingPathComponent("dashboard.json"))
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let displayed = try #require(model.completedTickets.first { $0.id == completed.id })
+
+    let reopened = await model.markTaskIncomplete(displayed)
+
+    #expect(reopened)
+    let focused = try #require(model.openTickets.first { $0.id == completed.id })
+    #expect(focused.status == "open")
+    #expect(focused.completedAt == nil)
+    #expect(focused.completion == nil)
+    #expect(!model.completedTickets.contains { $0.id == completed.id })
+    #expect(!model.ticketIsChecked(focused))
+    let object = try #require(
+      JSONSerialization.jsonObject(
+        with: Data(contentsOf: fixture.root.appendingPathComponent("dashboard.json")))
+        as? [String: Any])
+    let saved = try #require((object["tickets"] as? [[String: Any]])?.first {
+      $0["id"] as? String == completed.id
+    })
+    let history = try #require(saved["completionHistory"] as? [[String: Any]])
+    #expect(history.count == 1)
+  }
+
+  @Test("Archiving an open task skips review and does not record successful completion")
+  func archiveTaskWithoutCompletion() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+
+    let archived = await model.archiveWithoutCompletion(fixture.tickets[0])
+
+    #expect(archived)
+    let ticket = try #require(model.dashboard.tickets.first { $0.id == "ECC-101" })
+    #expect(ticket.status == "cancelled")
+    #expect(ticket.completion == nil)
+    #expect(ticket.completedAt == nil)
+    #expect(!model.openTickets.contains { $0.id == ticket.id })
+    #expect(model.completedTickets.contains { $0.id == ticket.id })
+    #expect(model.localState.completionRequests.isEmpty)
   }
 
   @Test("Disabling completion review makes the completion control an explicit user override")
@@ -3452,6 +3597,12 @@ private actor SuspendedRenameDashboardRepository: DashboardManaging {
       completedBy: completedBy, in: url, expectedRevision: expectedRevision)
   }
 
+  func reopenTicket(
+    id: String, in url: URL, expectedRevision: DashboardRevision
+  ) async throws -> DashboardSnapshot {
+    try await base.reopenTicket(id: id, in: url, expectedRevision: expectedRevision)
+  }
+
   func setTicketPriority(
     id: String, to priority: String, in url: URL, expectedRevision: DashboardRevision
   ) async throws -> DashboardSnapshot {
@@ -3608,6 +3759,12 @@ private actor HeldDashboardRepository: DashboardManaging {
     try await base.resolveTicket(id: id, reason: reason, evidence: evidence,
       completedBy: completedBy, in: url, expectedRevision: expectedRevision)
   }
+
+  func reopenTicket(
+    id: String, in url: URL, expectedRevision: DashboardRevision
+  ) async throws -> DashboardSnapshot {
+    try await base.reopenTicket(id: id, in: url, expectedRevision: expectedRevision)
+  }
   func setTicketPriority(
     id: String, to priority: String, in url: URL, expectedRevision: DashboardRevision
   ) async throws -> DashboardSnapshot {
@@ -3657,6 +3814,12 @@ private final class CountingDashboardRepository: DashboardManaging, @unchecked S
   ) async throws -> DashboardSnapshot {
     try await base.resolveTicket(id: id, reason: reason, evidence: evidence,
       completedBy: completedBy, in: url, expectedRevision: expectedRevision)
+  }
+
+  func reopenTicket(
+    id: String, in url: URL, expectedRevision: DashboardRevision
+  ) async throws -> DashboardSnapshot {
+    try await base.reopenTicket(id: id, in: url, expectedRevision: expectedRevision)
   }
   func setTicketPriority(
     id: String, to priority: String, in url: URL, expectedRevision: DashboardRevision

@@ -361,6 +361,11 @@ public protocol DashboardManaging: DashboardLoading {
         in url: URL,
         expectedRevision: DashboardRevision
     ) async throws -> DashboardSnapshot
+    func reopenTicket(
+        id: String,
+        in url: URL,
+        expectedRevision: DashboardRevision
+    ) async throws -> DashboardSnapshot
     func setTicketPriority(
         id: String,
         to priority: String,
@@ -395,6 +400,7 @@ public extension DashboardManaging {
             checking: []
         )
     }
+
 }
 
 enum DashboardFileLock {
@@ -534,6 +540,45 @@ public actor JSONDashboardRepository: DashboardManaging {
             tickets[index]["completedAt"] = timestamp
             tickets[index]["updatedAt"] = timestamp
             tickets[index]["completion"] = completion
+            object["tickets"] = tickets
+            return try save(object, to: url, expectedRevision: expectedRevision)
+        }
+    }
+
+    public func reopenTicket(
+        id: String,
+        in url: URL,
+        expectedRevision: DashboardRevision
+    ) throws -> DashboardSnapshot {
+        try locked(url: url) {
+            let currentData = try currentData(at: url, expectedRevision: expectedRevision)
+            var object = try dashboardObject(from: currentData)
+            var tickets = try ticketObjects(in: object)
+            guard let index = tickets.firstIndex(where: {
+                ticketID(in: $0).caseInsensitiveCompare(id) == .orderedSame
+            }) else {
+                throw DashboardMutationError.ticketNotFound(id)
+            }
+
+            let timestamp = ISO8601DateFormatter().string(from: Date())
+            var history = tickets[index]["completionHistory"] as? [[String: Any]] ?? []
+            var priorCompletion: [String: Any] = [
+                "status": tickets[index]["status"] as? String ?? "resolved",
+                "reopenedAt": timestamp,
+            ]
+            if let completedAt = tickets[index]["completedAt"] {
+                priorCompletion["completedAt"] = completedAt
+            }
+            if let completion = tickets[index]["completion"] {
+                priorCompletion["completion"] = completion
+            }
+            history.append(priorCompletion)
+
+            tickets[index]["status"] = "open"
+            tickets[index]["updatedAt"] = timestamp
+            tickets[index]["completionHistory"] = history
+            tickets[index].removeValue(forKey: "completedAt")
+            tickets[index].removeValue(forKey: "completion")
             object["tickets"] = tickets
             return try save(object, to: url, expectedRevision: expectedRevision)
         }

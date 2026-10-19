@@ -95,10 +95,15 @@ subtask cards show when progress was last reported.
 
 Agent updates open their own detail panel with the full recorded summary, completion
 verdict, verifier output, task conversation, and context links. The notification
-keeps the event visible while acknowledging only its own completed subtask.
+keeps the event visible while acknowledging only its own completed subtask. The
+bell opens notifications in the same side panel as a central plan, widening the
+window toward the screen center; closing an update opened from the list returns
+to the list.
 
 Click a task title to view its associated sessions. Descriptions start collapsed
-for existing tasks and expanded for new unviewed tasks. Right-click **View details**
+for existing tasks and expanded for new unviewed tasks. A **NEW** badge beside the
+title marks a task created after Focus Queue first loaded its project dashboard
+and clears once you open, expand, or inspect the task. Right-click **View details**
 for dates, agent counts, activity, and usage metadata. The full task-details
 disclosure sits below the agents. **View Central Plan** is a bordered button, and
 **Context, evidence & links** appears near the task description. Local Markdown
@@ -300,8 +305,10 @@ rewrite of the scheduler or report engine.
 
 ## Queue ordering and chat
 
-The queue offers four ordering modes. **Recent interaction** puts the last
-agent-prompted tasks first, **Recent output** uses the latest actual agent output,
+The queue offers four ordering modes. **Recent interaction** puts the tasks whose
+agents you prompted most recently first, using provider hooks or, when hooks are
+off, prompts read from the Codex and Claude transcripts. **Recent output** uses the
+latest actual agent output,
 **Triage deadlines** orders by hard and relative deadlines, and **Manual order**
 uses your saved sequence. Activity modes use deadline triage for the remaining
 tasks. Drag a task onto the upper or lower half of another card, or use the card
@@ -318,10 +325,16 @@ an expanded description. Existing descriptions start collapsed, and viewing or
 expanding a task clears the badge.
 
 Today's focus displays the first five tasks; Rest of queue displays the rest.
-Click the Today's focus heading to search every open task in the selected
-project. Results filter on each keystroke; when no task holds every keyword,
-the search retries with close spellings and synonyms. Esc or the clear button
-closes the search; clicking elsewhere drops the cursor and closes an empty one.
+Click the Today's focus heading to search every task in the selected project;
+completed tasks follow open ones. Results filter on each keystroke; when no task
+holds every keyword, the search retries with close spellings and synonyms. A
+code matches with or without its prefix, dash, or leading zeros: `FOC-018`,
+`foc 18`, and `18` all find FOC-018. A word that is exactly a status or priority,
+such as `blocked`, `in-progress`, or `high`, filters by that field; two values
+of one field are alternatives. `status:` (or `is:`) and `priority:` (or `p:`)
+accept part of a value, and `status:open` or `status:done` select open or
+completed tasks. Esc or the clear button closes the search; clicking elsewhere
+drops the cursor and closes an empty one.
 Saved positions and the selected ordering mode survive refreshes and restarts.
 
 The orchestrator can reorder tasks at your request using the same local order:

@@ -975,7 +975,7 @@ final class QueueViewModel {
         next: next.map { String($0.prefix(1_200)) } ?? "Clarify the next implementation step.",
         doneWhen: String(
           (trimmedDoneWhen.isEmpty
-            ? "Confirm the requested behavior and record verification results."
+            ? TaskContext.genericSuccessCriteria
             : trimmedDoneWhen).prefix(900)),
         updatedAt: Self.dayFormatter.string(from: Date()),
         createdAt: Self.dayFormatter.string(from: Date()),

@@ -95,6 +95,8 @@ Agents receive and consume identity through environment variables. These are the
 
 Canonical usage string lives at `Sources/FocusQueueSession/main.swift:16`. Every command below emits JSON.
 
+Inside a managed pane, `attach`, `context`, and `plan` may omit `<TASK>`; `progress`, `complete`, `attention`, `result`, `log`, `identify`, `review-push`, and `workspace` may omit `<TASK> <SUBTASK>`. Omitted IDs default to `$FOCUS_QUEUE_TASK_ID` and `$FOCUS_QUEUE_SUBTASK_ID`. `focus-queue-session rules` prints the agent rules that launch briefs no longer repeat (plain text, not JSON).
+
 ### 3.1 Session registration (use these, in this order)
 
 **`focus-queue-session attach <TASK-ID>`**
@@ -405,7 +407,7 @@ Ordered by impact. Each is designed to close a failure mode from §8.
 focus-queue-session attach <TASK-ID>
 focus-queue-session identify <TASK> <SUBTASK> "<title>" "<what/why/how>"
 
-# Lifecycle
+# Lifecycle (inside a managed pane the IDs may be omitted: progress working "summary")
 focus-queue-session progress  <TASK> <SUBTASK> working "summary"
 focus-queue-session log       <TASK> <AGENT>   "entry"
 focus-queue-session attention <TASK> <AGENT>   question "summary"

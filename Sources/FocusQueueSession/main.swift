@@ -31,11 +31,15 @@ enum SessionRegistrationError: Error, LocalizedError {
 @main enum FocusQueueSessionCLI {
     static func main() async {
         do {
-            let arguments = Array(CommandLine.arguments.dropFirst())
+            let arguments = withEnvironmentIdentity(Array(CommandLine.arguments.dropFirst()),
+                environment: ProcessInfo.processInfo.environment)
             if arguments.first == "tmux" { try await tmuxCommand(arguments: arguments) }
             else if arguments.first == "--help" || arguments.first == "help" {
                 print(SessionRegistrationError.usage.localizedDescription)
                 print("Agent log: log <TASK-ID> <AGENT-ID> <entry> (append-only, task-locked)")
+                print("Inside a managed pane, omit <TASK-ID> <SUBTASK-ID> from attach, context, plan, log, progress, attention, result, complete, identify, review-push, and workspace; they default to $FOCUS_QUEUE_TASK_ID and $FOCUS_QUEUE_SUBTASK_ID.")
+                print("Agent rules: rules (lifecycle, plan, workspace, and map-scope rules for managed agents)")
+                print("Launch brief preview: brief <TASK-ID> <SUBTASK-ID> (the exact prompt a fresh launch of that agent receives)")
                 print("Maintenance: reconcile <TASK-ID> [--no-cleanup] (repair documents and save a receipt; optional workspace cleanup)")
                 print("Persistent terminals: tmux list | tmux start <name> [--cwd <directory>] [-- <command> ...] | tmux start-agent <TASK-ID> <AGENT-ID> [--cwd <directory>] -- <command> ... | tmux attach <name> | tmux ssh-command <user@host> <name>")
                 print("Task layouts: tmux panes <name> | tmux arrange <name> | tmux manual <name> | tmux save | tmux restore | tmux persistence")
@@ -54,7 +58,8 @@ enum SessionRegistrationError: Error, LocalizedError {
                 notifyContextChanged()
                 try emit(["status": "notified"])
             }
-            else if arguments.first == "attach" { try await register() }
+            else if arguments == ["rules"] { print(TaskContext.agentRules(), terminator: "") }
+            else if arguments.first == "attach" { try await register(arguments: arguments) }
             else if arguments.first == "reconcile", (2...3).contains(arguments.count) {
                 guard arguments.count == 2 || arguments[2] == "--no-cleanup" else { throw SessionRegistrationError.usage }
                 let root = supportDirectory(environment: ProcessInfo.processInfo.environment)
@@ -633,8 +638,25 @@ enum SessionRegistrationError: Error, LocalizedError {
         FileHandle.standardOutput.write(Data("\n".utf8))
     }
 
-    private static func register() async throws {
-        let arguments = Array(CommandLine.arguments.dropFirst())
+    /// Managed panes export their task and agent IDs, so agents may omit them. Each command has a
+    /// fixed arity, so a short argument list is unambiguous.
+    static func withEnvironmentIdentity(_ arguments: [String], environment: [String: String]) -> [String] {
+        guard let command = arguments.first,
+              let task = environment["FOCUS_QUEUE_TASK_ID"].flatMap({ $0.isEmpty ? nil : $0 }) else { return arguments }
+        let taskAndAgent = ["progress": 5, "complete": 4, "attention": 5, "result": 4, "log": 4,
+                            "identify": 5, "review-push": 3, "workspace": 4, "brief": 3]
+        let taskOnly = ["attach": 2, "context": 2, "plan": 2]
+        if let arity = taskAndAgent[command], arguments.count == arity - 2,
+           let agent = environment["FOCUS_QUEUE_SUBTASK_ID"], !agent.isEmpty {
+            return [command, task, agent] + arguments.dropFirst()
+        }
+        if let arity = taskOnly[command], arguments.count == arity - 1 {
+            return [command, task] + arguments.dropFirst()
+        }
+        return arguments
+    }
+
+    private static func register(arguments: [String]) async throws {
         guard arguments.count == 2 else { throw SessionRegistrationError.usage }
         let environment = ProcessInfo.processInfo.environment
         guard let (provider, sessionID) = TaskSessionBinding.providerSession(environment: environment),
@@ -831,6 +853,15 @@ enum SessionRegistrationError: Error, LocalizedError {
                     throw TaskContextError.commandFailed("Push review rejected. Correct the reported additions, commit the correction, and run review-push again before pushing.")
                 }
             }
+            return
+        }
+        if command == "brief", arguments.count == 3 {
+            guard let context = try await store.load(ticketID: arguments[1]),
+                  let subtask = context.subtasks.first(where: { $0.id == arguments[2] }) else {
+                throw TaskContextError.missingSubtask(arguments[2])
+            }
+            print(subtask.includeInitializationPrompt
+                ? context.agentPrompt(subtask: subtask) : context.agentBootstrap(subtask: subtask))
             return
         }
         if command == "plan", arguments.count == 2 {

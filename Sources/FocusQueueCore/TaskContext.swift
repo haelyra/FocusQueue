@@ -748,9 +748,12 @@ public actor TaskContextStore {
         guard (try? context.dataURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else {
             throw TaskContextError.commandFailed("The task data file must be a regular task-owned file, not a symbolic link.")
         }
-        if !files.fileExists(atPath: context.dataURL.path) {
-            try Data("# \(context.ticketID) task data\n\nCached facts, inputs, and test data for this task. Agents read this before acting and add durable task facts here.\n".utf8)
-                .write(to: context.dataURL, options: .atomic)
+        // Starts empty so only recorded facts appear. A file still holding the
+        // first release's generated header is cleared; authored text is kept.
+        let legacyHeader = "# \(context.ticketID) task data\n\nCached facts, inputs, and test data for this task. Agents read this before acting and add durable task facts here.\n"
+        if !files.fileExists(atPath: context.dataURL.path)
+            || (try? String(contentsOf: context.dataURL, encoding: .utf8)) == legacyHeader {
+            try Data().write(to: context.dataURL, options: .atomic)
         }
     }
 

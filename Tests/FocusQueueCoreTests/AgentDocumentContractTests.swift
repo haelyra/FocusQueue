@@ -35,7 +35,7 @@ struct AgentDocumentContractTests {
                                      links: [DashboardLink(label: "Spec", url: "https://example.com/spec")])
         let context = try await store.ensureContext(ticket: ticket)
         #expect(context.dataURL.lastPathComponent == "data.md")
-        #expect(try String(contentsOf: context.dataURL, encoding: .utf8).hasPrefix("# DOC-2 task data"))
+        #expect(try Data(contentsOf: context.dataURL).isEmpty)
         #expect(try await store.readPlan(ticketID: ticket.id).contains("[Task data](data.md)"))
         #expect(context.agentPrompt(subtask: .init(id: "agent", title: "Facts")).contains(context.dataURL.path))
         #expect(context.agentBootstrap(subtask: .init(id: "agent", title: "Facts")).contains(context.dataURL.path))
@@ -46,6 +46,11 @@ struct AgentDocumentContractTests {
         try FileManager.default.removeItem(at: context.dataURL)
         _ = try await store.ensureContext(ticket: ticket)
         #expect(FileManager.default.fileExists(atPath: context.dataURL.path))
+
+        try Data("# DOC-2 task data\n\nCached facts, inputs, and test data for this task. Agents read this before acting and add durable task facts here.\n".utf8)
+            .write(to: context.dataURL)
+        _ = try await store.ensureContext(ticket: ticket)
+        #expect(try Data(contentsOf: context.dataURL).isEmpty)
 
         let links = context.evidenceLinks(ticket.links + [DashboardLink(label: "Data", url: context.dataURL.path)])
         #expect(links.map(\.url) == [context.dataURL.path, "https://example.com/spec"])

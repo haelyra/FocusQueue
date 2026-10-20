@@ -34,7 +34,7 @@ overridable with `FOCUS_QUEUE_SUPPORT_DIR` (used by tests to isolate state). Key
 | `tasks/<TICKET>/context.json` | `TaskContext` — subtasks, workspaces, tmux refs, per-task state |
 | `tasks/<TICKET>/plan.md` | Task plan (Markdown) |
 | `tasks/<TICKET>/agent-log.md` | Append-only agent log |
-| `tasks/<TICKET>/data.md` | Cached task facts and test data; created at task initialization and shown in the task's Evidence and links, map Context slots, capsule, and agent prompts |
+| `tasks/<TICKET>/data.md` | Cached task facts and test data; created blank at task initialization and shown in the task's Evidence and links, map Context slots, capsule, and agent prompts |
 | `tasks/<TICKET>/archive/snapshot-*` | Context snapshots (max 100) |
 | `agent-registrations/<sha256>.json` | Session registration inbox |
 | `external-agent-sessions/<sha256>.json` | Hook registration receipts |
@@ -143,6 +143,8 @@ The Router agent, its `route inspect` / `route start` commands, the in-app compo
 **`task rename <TASK-ID> <title...>`** — revision-checked rename.
 **`task priority <TASK-ID> critical|high|medium|low`** — validated enum.
 **`task status <TASK-ID> <status>`** — ⚠ **accepts any string.** No enum validation. A typo (`complted`) writes successfully and the ticket just stays "open" forever. See §8.
+
+**`task link <TASK-ID> <url> <label> [type]`** — appends an evidence link to the ticket under the dashboard lock with a revision check. A link whose URL is already present is left unchanged. Use this instead of hand-editing `links`.
 
 All three go through `JSONDashboardRepository` with optimistic-concurrency revision checks, duplicate-ID rejection, and type-safe re-encoding — this is what hand-editing `dashboard.json` bypasses.
 

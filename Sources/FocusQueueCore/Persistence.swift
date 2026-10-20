@@ -653,6 +653,44 @@ public actor JSONDashboardRepository: DashboardManaging {
         }
     }
 
+    /// Appends an evidence link; an existing link to the same URL is left unchanged.
+    public func addTicketLink(
+        id: String,
+        label: String,
+        url link: String,
+        type: String?,
+        in url: URL,
+        expectedRevision: DashboardRevision
+    ) throws -> DashboardSnapshot {
+        let label = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let link = link.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty else { throw DashboardMutationError.invalidFieldValue("label") }
+        guard ResourceLocator.url(for: link) != nil else { throw DashboardMutationError.invalidFieldValue("url") }
+        return try locked(url: url) {
+            let currentData = try currentData(at: url, expectedRevision: expectedRevision)
+            var object = try dashboardObject(from: currentData)
+            var tickets = try ticketObjects(in: object)
+            guard let index = tickets.firstIndex(where: {
+                ticketID(in: $0).caseInsensitiveCompare(id) == .orderedSame
+            }) else {
+                throw DashboardMutationError.ticketNotFound(id)
+            }
+            var links = tickets[index]["links"] as? [[String: Any]] ?? []
+            if links.contains(where: { ($0["url"] as? String) == link }) {
+                return DashboardSnapshot(
+                    document: try JSONDecoder().decode(DashboardDocument.self, from: currentData),
+                    revision: DashboardRevision(contents: currentData))
+            }
+            var entry: [String: Any] = ["label": label, "url": link]
+            if let type = type?.trimmingCharacters(in: .whitespacesAndNewlines), !type.isEmpty { entry["type"] = type }
+            links.append(entry)
+            tickets[index]["links"] = links
+            tickets[index]["updatedAt"] = ISO8601DateFormatter().string(from: Date())
+            object["tickets"] = tickets
+            return try save(object, to: url, expectedRevision: expectedRevision)
+        }
+    }
+
     private func updateTicketFieldLocked(
         id: String,
         field: String,

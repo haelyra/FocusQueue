@@ -180,6 +180,7 @@ struct TaskContextLinksView: View {
     VStack(alignment: .leading, spacing: 9) {
       Button("View Central Plan", systemImage: "doc.text") { model.openPlan(for: ticket) }
       if let context = model.taskContexts[ticket.id] {
+        Button("View task data (data.md)", systemImage: "tablecells") { open(context.dataURL.path) }
         Button("Open context folder", systemImage: "folder") { model.open(context.contextDirectory.path) }
       }
       ForEach(ticket.links) { link in

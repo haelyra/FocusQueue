@@ -671,3 +671,26 @@ private func legacyQueueProjectConfigurationData(
   object["selectedProjectID"] = selectedProjectID
   return try JSONSerialization.data(withJSONObject: object)
 }
+
+@Test("Dashboard evidence links append once and keep existing links and fields")
+func dashboardLinkAppend() async throws {
+  let fixture = try DashboardMutationFixture(
+    #"{"tickets":[{"id":"ECC-101","title":"Task","status":"open","summary":"Keep me","links":[{"label":"Spec","url":"https://example.com/spec"}]}]}"#
+  )
+  defer { fixture.remove() }
+  let repository = JSONDashboardRepository()
+  let snapshot = try await repository.loadSnapshot(from: fixture.url)
+  let added = try await repository.addTicketLink(
+    id: "ECC-101", label: "Why", url: "/tmp/why.md", type: "plan", in: fixture.url, expectedRevision: snapshot.revision)
+  #expect(added.document.tickets.first?.links.map(\.url) == ["https://example.com/spec", "/tmp/why.md"])
+  let repeated = try await repository.addTicketLink(
+    id: "ECC-101", label: "Again", url: "/tmp/why.md", type: nil, in: fixture.url, expectedRevision: added.revision)
+  #expect(repeated.document.tickets.first?.links.count == 2)
+  let tickets = try #require(
+    (JSONSerialization.jsonObject(with: Data(contentsOf: fixture.url)) as? [String: Any])?["tickets"] as? [[String: Any]])
+  #expect(tickets.first?["summary"] as? String == "Keep me")
+  await #expect(throws: DashboardMutationError.concurrentModification) {
+    try await repository.addTicketLink(
+      id: "ECC-101", label: "Stale", url: "/tmp/other.md", type: nil, in: fixture.url, expectedRevision: snapshot.revision)
+  }
+}

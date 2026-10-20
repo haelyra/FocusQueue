@@ -326,7 +326,7 @@ func kimiProviderIdentity() throws {
   #expect(provider.executableName == "kimi")
   #expect(Set(AgentProvider.allCases.map(\.symbolName)).count == AgentProvider.allCases.count)
   #expect(provider.resumeArguments(sessionID: "session_x") == ["--session", "session_x"])
-  // Kimi has no reasoning-effort flag; an effort choice is dropped.
+  // Kimi has no reasoning-effort flag; effort travels through its environment.
   #expect(provider.effortArguments(effort: "high").isEmpty)
   #expect(AgentProvider.codex.effortArguments(effort: "high") == ["-c", "model_reasoning_effort=high"])
   #expect(AgentProvider.claude.effortArguments(effort: "high") == ["--effort", "high"])

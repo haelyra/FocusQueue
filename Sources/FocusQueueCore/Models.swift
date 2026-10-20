@@ -375,8 +375,14 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   }
 
   /// Effort levels accepted by agent launches (Codex `model_reasoning_effort`,
-  /// Claude `--effort`). Kimi has no launch-time effort flag and ignores these.
+  /// Claude `--effort`).
   public static let agentEffortLevels = ["low", "medium", "high", "xhigh", "max"]
+  /// Kimi Code models list only these in `support_efforts`.
+  public static let kimiEffortLevels = ["low", "high", "max"]
+
+  public static func agentEffortLevels(for provider: AgentProvider) -> [String] {
+    provider == .kimi ? kimiEffortLevels : agentEffortLevels
+  }
 
   /// The fastest subscription model per provider. Keep in sync with
   /// `DEFAULT_MODELS` in Scripts/focus_queue_placement.py.
@@ -1644,13 +1650,21 @@ public enum AgentProvider: String, Codable, CaseIterable, Equatable, Sendable {
     }
   }
 
-  /// Kimi has no reasoning-effort flag, so an effort choice is dropped there.
+  /// Kimi has no reasoning-effort flag; see `effortEnvironment(effort:)`.
   public func effortArguments(effort: String) -> [String] {
     switch self {
     case .codex: ["-c", "model_reasoning_effort=\(effort)"]
     case .claude: ["--effort", effort]
     case .kimi: []
     }
+  }
+
+  /// Kimi Code forces every request's thinking effort from this variable.
+  /// An effort its models do not support is dropped instead of sent.
+  public func effortEnvironment(effort: String) -> [String] {
+    let normalized = effort.lowercased()
+    guard self == .kimi, AppConfiguration.kimiEffortLevels.contains(normalized) else { return [] }
+    return ["KIMI_MODEL_THINKING_EFFORT=\(normalized)"]
   }
 
   /// Turns installed plugins on or off for one launch without editing the
@@ -1881,6 +1895,9 @@ public struct LocalState: Codable, Equatable, Sendable {
   public var viewedTicketSources: Set<String>?
   public var queueActivitySortMode: QueueActivitySortMode?
   public var lastAgentLaunch: AgentLaunchPreset?
+  /// The most recent user launch for each provider, so switching providers in
+  /// the task creator restores that provider's last model and effort.
+  public var lastAgentLaunches: [AgentLaunchPreset]?
 
   public init(
     routineDate: String = "",
@@ -1898,7 +1915,8 @@ public struct LocalState: Codable, Equatable, Sendable {
     viewedTicketIDs: Set<String>? = nil,
     viewedTicketSources: Set<String>? = nil,
     queueActivitySortMode: QueueActivitySortMode? = nil,
-    lastAgentLaunch: AgentLaunchPreset? = nil
+    lastAgentLaunch: AgentLaunchPreset? = nil,
+    lastAgentLaunches: [AgentLaunchPreset]? = nil
   ) {
     self.routineDate = routineDate
     self.completedRoutineIDs = completedRoutineIDs
@@ -1916,6 +1934,23 @@ public struct LocalState: Codable, Equatable, Sendable {
     self.viewedTicketSources = viewedTicketSources
     self.queueActivitySortMode = queueActivitySortMode
     self.lastAgentLaunch = lastAgentLaunch
+    self.lastAgentLaunches = lastAgentLaunches
+  }
+
+  /// Records a user launch as the overall default and as its provider's last.
+  public mutating func rememberAgentLaunch(_ preset: AgentLaunchPreset) {
+    lastAgentLaunch = preset
+    var launches = (lastAgentLaunches ?? []).filter { $0.provider != preset.provider }
+    launches.append(preset)
+    lastAgentLaunches = AgentProvider.allCases.compactMap { provider in
+      launches.first { $0.provider == provider }
+    }
+  }
+
+  /// A state saved before per-provider memory still remembers its one launch.
+  public func lastAgentLaunch(for provider: AgentProvider) -> AgentLaunchPreset? {
+    lastAgentLaunches?.first { $0.provider == provider }
+      ?? (lastAgentLaunch?.provider == provider ? lastAgentLaunch : nil)
   }
 
   public mutating func upsertAgentSession(_ session: TaskAgentSession) {
@@ -1975,6 +2010,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     case viewedTicketSources
     case queueActivitySortMode
     case lastAgentLaunch
+    case lastAgentLaunches
   }
 
   public init(from decoder: any Decoder) throws {
@@ -2005,6 +2041,9 @@ public struct LocalState: Codable, Equatable, Sendable {
     queueActivitySortMode = try container.decodeIfPresent(QueueActivitySortMode.self, forKey: .queueActivitySortMode)
     // A preset from a newer build must never block loading the rest of local state.
     lastAgentLaunch = (try? container.decodeIfPresent(AgentLaunchPreset.self, forKey: .lastAgentLaunch)) ?? nil
+    // Decode entries one by one so an unknown provider drops only its own entry.
+    lastAgentLaunches = (try? container.decodeIfPresent([TolerantLaunchPreset].self, forKey: .lastAgentLaunches))?
+      .compactMap(\.preset)
   }
 
   public func encode(to encoder: any Encoder) throws {
@@ -2026,6 +2065,12 @@ public struct LocalState: Codable, Equatable, Sendable {
     try container.encodeIfPresent(viewedTicketSources, forKey: .viewedTicketSources)
     try container.encodeIfPresent(queueActivitySortMode, forKey: .queueActivitySortMode)
     try container.encodeIfPresent(lastAgentLaunch, forKey: .lastAgentLaunch)
+    try container.encodeIfPresent(lastAgentLaunches, forKey: .lastAgentLaunches)
+  }
+
+  private struct TolerantLaunchPreset: Decodable {
+    let preset: AgentLaunchPreset?
+    init(from decoder: any Decoder) throws { preset = try? AgentLaunchPreset(from: decoder) }
   }
 }
 

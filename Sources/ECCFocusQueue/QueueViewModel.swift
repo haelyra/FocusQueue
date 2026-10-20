@@ -1004,9 +1004,12 @@ final class QueueViewModel {
   /// Defaults for the + task creator: the last agent the user launched, else
   /// the Settings default provider with its model and effort.
   var taskCreatorLaunchDefaults: AgentLaunchPreset {
-    if let last = localState.lastAgentLaunch { return last }
-    let provider = defaultAgentProvider
-    return AgentLaunchPreset(
+    localState.lastAgentLaunch ?? lastAgentLaunch(for: defaultAgentProvider)
+  }
+
+  /// The provider's last user launch, else its Settings model and effort.
+  func lastAgentLaunch(for provider: AgentProvider) -> AgentLaunchPreset {
+    localState.lastAgentLaunch(for: provider) ?? AgentLaunchPreset(
       provider: provider, model: defaultAgentModel(for: provider),
       effort: defaultAgentEffort(for: provider), workspacePolicy: .isolatedCommittedSnapshot,
       useTmux: true, includePrompt: true)
@@ -1015,8 +1018,10 @@ final class QueueViewModel {
   /// Only launches the user starts update the creator's defaults; automatic
   /// relaunches such as quota fallback never do.
   func rememberAgentLaunch(_ preset: AgentLaunchPreset) {
-    guard localState.lastAgentLaunch != preset else { return }
-    localState.lastAgentLaunch = preset
+    var updated = localState
+    updated.rememberAgentLaunch(preset)
+    guard updated != localState else { return }
+    localState = updated
     persistLocalState()
   }
 

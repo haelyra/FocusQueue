@@ -236,6 +236,31 @@ public actor TmuxController {
     return URL(fileURLWithPath: path).standardizedFileURL.path
   }
 
+  /// Types a prompt into a provider TUI that takes none at launch. Waits for
+  /// `ready` to match the pane's screen, then uses a bracketed paste so line
+  /// breaks stay inside one message before submitting it.
+  public func submitPrompt(
+    _ prompt: String, to reference: TmuxSessionReference,
+    ready: @Sendable (String) -> Bool, timeout: Duration = .seconds(45)
+  ) async throws -> Bool {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+    while true {
+      _ = try await verify(reference)
+      let screen = try await run(reference.executable, ["capture-pane", "-p", "-t", reference.paneID])
+      if screen.succeeded, ready(screen.standardOutput) { break }
+      guard clock.now < deadline else { return false }
+      try await Task.sleep(for: .milliseconds(300))
+    }
+    let buffer = "focus-queue-prompt-\(reference.paneID.dropFirst())"
+    try await checked(reference.executable, ["set-buffer", "-b", buffer, "--", prompt])
+    try await checked(reference.executable, ["paste-buffer", "-p", "-d", "-b", buffer, "-t", reference.paneID])
+    // Let the TUI finish reading the paste before Enter submits it.
+    try await Task.sleep(for: .milliseconds(400))
+    try await checked(reference.executable, ["send-keys", "-t", reference.paneID, "Enter"])
+    return true
+  }
+
   public static func startArguments(name: String, directory: String, command: [String]) throws -> [String] {
     try validateName(name)
     guard directory.hasPrefix("/"), !command.isEmpty else { throw TmuxError.unavailable("An absolute directory and a command are required.") }

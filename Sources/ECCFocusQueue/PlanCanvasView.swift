@@ -679,7 +679,7 @@ struct NewTaskAgentView: View {
             }.accessibilityLabel("Agent model")
             Picker("Effort", selection: $effort) {
               Text("Default").tag("")
-              ForEach(AppConfiguration.agentEffortLevels, id: \.self) { level in
+              ForEach(AppConfiguration.agentEffortLevels(for: provider), id: \.self) { level in
                 Text(level).tag(level)
               }
             }.accessibilityLabel("Agent reasoning effort")
@@ -688,6 +688,7 @@ struct NewTaskAgentView: View {
             if !model.agentModelChoices(for: provider).contains(where: { ($0.model ?? "") == modelName }) {
               modelName = ""
             }
+            if !AppConfiguration.agentEffortLevels(for: provider).contains(effort) { effort = "" }
           }
           Text("Explicit model and effort choices are saved with the agent and reused for exact conversation recall. Leave them on Default to use your alias or provider defaults.")
             .font(.caption).foregroundStyle(.secondary)

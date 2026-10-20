@@ -114,9 +114,12 @@ public actor TaskAgentLauncher {
     self.processController = WezTermController(runner: runner, candidateSockets: candidateSockets)
   }
 
+  /// With `pastesPrompt`, the initial prompt stays out of argv because the
+  /// caller types it into the running TUI; see `submitPrompt(_:to:)`.
   public static func command(context: TaskContext, subtask: TaskSubtask, supportDirectory: URL,
                              includePrompt: Bool = true, shellPath: String? = nil,
-                             usageBarEnabled: Bool = true, codexRoot: URL? = nil) throws -> [String] {
+                             usageBarEnabled: Bool = true, codexRoot: URL? = nil,
+                             pastesPrompt: Bool = false) throws -> [String] {
     guard let directory = (subtask.workspace?.path ?? context.worktreePath), directory.hasPrefix("/") else {
       throw TaskContextError.unsafeWorktree("Choose a task worktree before launching an agent.")
     }
@@ -141,10 +144,8 @@ public actor TaskAgentLauncher {
       providerArguments = subtask.provider == .codex
         ? ["resume", CodexSessionLineage.root(of: sessionID, codexRoot: codexRoot), "--cd", directory] + providerArguments
         : subtask.provider.resumeArguments(sessionID: sessionID) + providerArguments
-    } else if includePrompt && subtask.includeInitializationPrompt {
-      providerArguments += promptArguments(for: subtask.provider, prompt: context.agentPrompt(subtask: subtask))
-    } else if includePrompt {
-      providerArguments += promptArguments(for: subtask.provider, prompt: context.agentBootstrap(subtask: subtask))
+    } else if !pastesPrompt, let prompt = initialPrompt(context: context, subtask: subtask, includePrompt: includePrompt) {
+      providerArguments += promptArguments(for: subtask.provider, prompt: prompt)
     }
     var focusEnvironment = [
             "/usr/bin/env", "FOCUS_QUEUE_SUPPORT_DIR=\(supportDirectory.path)",
@@ -152,6 +153,14 @@ public actor TaskAgentLauncher {
             "FOCUS_QUEUE_PROVIDER=\(subtask.provider.rawValue)",
             "FOCUS_QUEUE_SUBTASK_ID=\(subtask.id)", "FOCUS_QUEUE_TASK_ID=\(context.ticketID)"]
     focusEnvironment.append("FOCUS_QUEUE_RUNTIME_MODE=\(subtask.runtimeMode?.rawValue ?? "legacy")")
+    if subtask.provider == .kimi {
+      // Each managed worktree is a new folder to Kimi; its trust dialog would
+      // otherwise block the agent before the prompt arrives.
+      focusEnvironment.append("KIMI_CODE_TRUST_WORKSPACE=1")
+      if let effort = subtask.launchConfiguration?.effort?.trimmingCharacters(in: .whitespacesAndNewlines) {
+        focusEnvironment += subtask.provider.effortEnvironment(effort: effort)
+      }
+    }
     if let launchID = subtask.launchConfiguration?.routeID ?? subtask.launchConfiguration?.launchID,
        UUID(uuidString: launchID) != nil {
       let capsule = supportDirectory.appendingPathComponent("tracking/placements")
@@ -163,8 +172,24 @@ public actor TaskAgentLauncher {
           shellPath: shellPath, workingDirectory: directory)
   }
 
+  /// The text a fresh launch starts with; a resumed conversation gets none.
+  static func initialPrompt(context: TaskContext, subtask: TaskSubtask, includePrompt: Bool) -> String? {
+    guard subtask.sessionID == nil, includePrompt else { return nil }
+    return subtask.includeInitializationPrompt
+      ? context.agentPrompt(subtask: subtask) : context.agentBootstrap(subtask: subtask)
+  }
+
+  /// Kimi's prompt-mode screen is plain text: the input box is the sign that
+  /// its interactive TUI is ready for typed input.
+  static func kimiInputIsReady(_ screen: String) -> Bool {
+    screen.split(separator: "\n").contains {
+      $0.trimmingCharacters(in: .whitespaces).hasPrefix("│ >")
+    }
+  }
+
   /// Codex takes a positional prompt, Claude one after `--`; Kimi only accepts
-  /// prompts through `--prompt` (non-interactive mode, exits when done).
+  /// prompts through `--prompt` (non-interactive mode, exits when done), so
+  /// managed tmux launches paste Kimi's prompt into its TUI instead.
   private static func promptArguments(for provider: AgentProvider, prompt: String) -> [String] {
     switch provider {
     case .codex: [prompt]
@@ -454,9 +479,14 @@ public actor TaskAgentLauncher {
     if subtask.tmux != nil, subtask.sessionID == nil {
       throw TaskContextError.commandFailed("This stopped agent has no saved conversation to resume. Start New Agent with a fresh assignment.")
     }
+    // Kimi's `--prompt` runs a one-shot print mode with no TUI, so a managed
+    // Kimi pane starts interactive and receives its prompt by paste.
+    let pastedPrompt = subtask.provider == .kimi
+      ? Self.initialPrompt(context: context, subtask: subtask, includePrompt: includePrompt) : nil
     let command = try Self.command(
       context: context, subtask: subtask, supportDirectory: supportDirectory,
-      includePrompt: includePrompt, usageBarEnabled: usageBarEnabled)
+      includePrompt: includePrompt, usageBarEnabled: usageBarEnabled,
+      pastesPrompt: pastedPrompt != nil)
     let persistence = FileManager.default.isExecutableFile(atPath: tmuxExecutable)
       ? try TmuxPersistence.prepare(executable: tmuxExecutable, serverName: tmuxServerName,
           supportDirectory: supportDirectory) : nil
@@ -467,6 +497,15 @@ public actor TaskAgentLauncher {
       agentTitle: "\(subtask.provider.displayName): \(subtask.title)",
       directory: (subtask.workspace?.path ?? context.worktreePath)!, command: command,
       executable: tmuxExecutable)
+    if let pastedPrompt {
+      // Callers persist the reference as soon as this returns; the TUI's
+      // startup must not hold that up.
+      Task {
+        let submitted = (try? await runtime.submitPrompt(
+          pastedPrompt, to: reference, ready: Self.kimiInputIsReady)) ?? false
+        if !submitted { NSLog("Focus Queue could not deliver the Kimi prompt to %@", reference.paneID) }
+      }
+    }
     // Give process discovery the same prompt source the shell entry points
     // record, so naming works even when provider hooks are not installed.
     let trimmedInitialPrompt = subtask.initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

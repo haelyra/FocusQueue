@@ -1419,7 +1419,7 @@ struct QueueAgentChatView: View {
           Text("Default")
         }
       }
-      ForEach(AppConfiguration.agentEffortLevels, id: \.self) { effort in
+      ForEach(AppConfiguration.agentEffortLevels(for: provider), id: \.self) { effort in
         Button {
           model.setDefaultAgentEffort(effort, for: provider)
         } label: {
@@ -1990,11 +1990,11 @@ private struct QueueSettingsView: View {
                 set: { model.setDefaultAgentEffort($0, for: model.defaultAgentProvider) }
               )) {
                 Text("Default").tag("")
-                ForEach(AppConfiguration.agentEffortLevels, id: \.self) { effort in
+                ForEach(AppConfiguration.agentEffortLevels(for: model.defaultAgentProvider), id: \.self) { effort in
                   Text(effort).tag(effort)
                 }
               }
-              Text("Default launches the provider without a model or effort flag. Kimi has no launch-time effort flag and follows its own config.")
+              Text("Default launches the provider without a model or effort setting, so it follows the provider's own config.")
                 .font(.caption).foregroundStyle(.secondary)
             }
           }

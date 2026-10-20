@@ -176,6 +176,48 @@ struct ProviderProcessDiscoveryTests {
         #expect(scan.unresolved.isEmpty)
     }
 
+    @Test("A Claude process without an open transcript keeps its pane identity for session recall")
+    func claudeDiskFallbackIdentifiesPaneSession() async throws {
+        let claudeRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "focus-queue-claude-recall-\(UUID())", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: claudeRoot) }
+        let project = claudeRoot.appendingPathComponent("projects/-tmp-repository", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try Data("{}\n".utf8).write(to: project.appendingPathComponent("\(parent).jsonl"))
+
+        // The first lsof answers the pane listing; the second, including the
+        // working directory, answers the disk fallback the recall identity
+        // check shares with the resume guard.
+        let runner = ProviderDiscoveryRunner([
+            "40 ttys040 /opt/claude\n",
+            "p40\nn/tmp/cc-socks/40.sock\n",
+            "p40\nfcwd\nn/tmp/repository\nf8\nn/tmp/cc-socks/40.sock\n",
+        ])
+        let sessions = try await WezTermController(runner: runner, claudeRoot: claudeRoot)
+            .agents(onTTY: "/dev/ttys040")
+        #expect(sessions.map(\.sessionID) == [parent])
+        #expect(sessions.first?.provider == .claude)
+    }
+
+    @Test("Two Claude processes in one project keep the pane identity ambiguous")
+    func claudeDiskFallbackKeepsPaneIdentityAmbiguous() async throws {
+        let claudeRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "focus-queue-claude-recall-ambiguous-\(UUID())", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: claudeRoot) }
+        let project = claudeRoot.appendingPathComponent("projects/-tmp-repository", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try Data("{}\n".utf8).write(to: project.appendingPathComponent("\(parent).jsonl"))
+
+        let runner = ProviderDiscoveryRunner([
+            "40 ttys040 /opt/claude\n41 ttys041 /opt/claude\n",
+            "p40\nn/tmp/cc-socks/40.sock\n",
+            "p40\nfcwd\nn/tmp/repository\np41\nfcwd\nn/tmp/repository\n",
+        ])
+        let sessions = try await WezTermController(runner: runner, claudeRoot: claudeRoot)
+            .agents(onTTY: "/dev/ttys040")
+        #expect(sessions.isEmpty)
+    }
+
     @Test("Two unresolved Claude processes in one project keep duplicate-resume protection")
     func ambiguousClaudeProjectStillFailsClosed() async throws {
         let claudeRoot = FileManager.default.temporaryDirectory.appendingPathComponent(

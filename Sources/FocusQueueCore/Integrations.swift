@@ -1571,6 +1571,31 @@ public actor WezTermController: WezTermControlling {
             }
         }
 
+        // Claude 2.1+ does not hold its transcript open, so lsof yields no
+        // session candidate for it. Recover the disk identity the resume
+        // guard uses, restricted to processes in this pane listing; the
+        // shared scan keeps multi-process projects ambiguous.
+        let unidentifiedClaude = paneProcesses.filter {
+            $0.provider == .claude && (sessionsByPID[$0.pid] ?? []).isEmpty
+        }
+        if !unidentifiedClaude.isEmpty,
+           let scan = try? await knownProviderProcesses(provider: .claude) {
+            let diskIdentityByPID = Dictionary(
+                uniqueKeysWithValues: scan.resolved.map { ($0.processID, $0.sessionID) })
+            for process in unidentifiedClaude {
+                guard let pane = panesByTTY[process.tty],
+                      let sessionID = diskIdentityByPID[process.pid],
+                      seenSessions.insert("claude:\(sessionID)").inserted else { continue }
+                discovered.append(RunningAgentSession(
+                    provider: .claude,
+                    sessionID: sessionID,
+                    workingDirectory: Self.pathFromWezTermCWD(pane.cwd),
+                    tabTitle: Self.displayTitle(for: pane),
+                    pane: pane
+                ))
+            }
+        }
+
         return discovered.sorted {
             ($0.pane.windowID, $0.pane.tabID ?? $0.pane.paneID, $0.pane.paneID)
                 < ($1.pane.windowID, $1.pane.tabID ?? $1.pane.paneID, $1.pane.paneID)

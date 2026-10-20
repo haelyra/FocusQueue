@@ -562,7 +562,7 @@ private struct WalkthroughSignInContent: View {
       ForEach(AgentProvider.allCases, id: \.self) { provider in
         let state = model.providerAccounts[provider]
         HStack(spacing: 10) {
-          Image(systemName: provider.symbolName).font(.system(size: 16, weight: .semibold))
+          provider.iconImage(size: 16)
             .frame(width: 28, height: 28).foregroundStyle(.tint)
           VStack(alignment: .leading, spacing: 2) {
             Text(provider.displayName).font(.system(size: 13, weight: .semibold))

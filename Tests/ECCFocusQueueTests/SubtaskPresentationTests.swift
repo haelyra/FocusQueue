@@ -49,6 +49,41 @@ struct SubtaskPresentationTests {
     }
   }
 
+  @Test("Provider marks are centered, theme-tinted templates")
+  @MainActor
+  func providerLogos() throws {
+    for provider in AgentProvider.allCases {
+      let image = ProviderLogo.image(for: provider, size: 12)
+      #expect(image.size.height == 12)
+      #expect(image.size.width >= 12 && image.size.width <= 12 * ProviderLogo.maxWidthRatio + 1)
+      #expect(image.isTemplate)
+      let bitmap = try #require(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+      var columns: [Int] = [], rows: [Int] = []
+      for y in 0..<bitmap.pixelsHigh {
+        for x in 0..<bitmap.pixelsWide where (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.5 {
+          columns.append(x); rows.append(y)
+        }
+      }
+      let width = bitmap.pixelsWide, height = bitmap.pixelsHigh
+      let minX = try #require(columns.min()), maxX = try #require(columns.max())
+      let minY = try #require(rows.min()), maxY = try #require(rows.max())
+      // The ink fills the box on at least one axis and sits centered on both.
+      #expect(maxX - minX + 1 >= width - 2 || maxY - minY + 1 >= height - 2)
+      #expect(abs((minX + maxX + 1) - width) <= 2)
+      #expect(abs((minY + maxY + 1) - height) <= 2)
+    }
+    // The Claude mascot keeps its eye holes (even-odd fill).
+    let claude = try #require(ProviderLogo.image(for: .claude, size: 48).tiffRepresentation
+      .flatMap(NSBitmapImageRep.init(data:)))
+    let scale = CGFloat(claude.pixelsHigh) / 48
+    func alpha(_ x: CGFloat, _ y: CGFloat) -> CGFloat {
+      claude.colorAt(x: Int(x * scale), y: Int(y * scale))?.alphaComponent ?? 0
+    }
+    // 24x15 mascot at 60x37.5pt (2.5x): viewBox (6.7, 9.5) is the left eye.
+    #expect(alpha(6.7 * 2.5, (9.5 - 5) * 2.5 + 5.25) < 0.1)
+    #expect(alpha(12 * 2.5, (9.5 - 5) * 2.5 + 5.25) > 0.9)
+  }
+
   @Test("Expanded subtask titles reveal more lines than collapsed titles")
   func expandedTitleHeight() {
     let title = "Verify that every long subtask title remains readable when its details are expanded"

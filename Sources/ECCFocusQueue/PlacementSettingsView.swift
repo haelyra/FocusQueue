@@ -20,14 +20,14 @@ struct PlacementSettingsView: View {
         )) {
           Text("Launched provider").tag(AgentProvider?.none)
           ForEach(AgentProvider.allCases, id: \.self) { provider in
-            Label(provider.displayName, systemImage: provider.symbolName)
+            provider.label()
               .tag(AgentProvider?.some(provider))
           }
         }
 
         ForEach(AgentProvider.allCases, id: \.self) { provider in
           VStack(alignment: .leading, spacing: 4) {
-            Label(provider.displayName, systemImage: provider.symbolName)
+            provider.label()
               .font(.system(size: 12, weight: .semibold))
             HStack(spacing: 8) {
               modelPicker(for: provider)

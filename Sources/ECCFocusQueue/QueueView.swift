@@ -1645,7 +1645,7 @@ struct QueueSettingsView: View {
                 set: { model.setDefaultAgentProvider($0) }
               )) {
                 ForEach(AgentProvider.allCases, id: \.self) { provider in
-                  Label(provider.displayName, systemImage: provider.symbolName).tag(provider)
+                  provider.label().tag(provider)
                 }
               }.pickerStyle(.segmented).labelsHidden()
               Picker("Default model", selection: Binding(
@@ -1847,7 +1847,7 @@ struct QueueSettingsView: View {
               )) {
                 Text("Follow default provider").tag(AgentProvider?.none)
                 ForEach(AgentProvider.allCases, id: \.self) { provider in
-                  Label(provider.displayName, systemImage: provider.symbolName)
+                  provider.label()
                     .tag(AgentProvider?.some(provider))
                 }
               }
@@ -3657,8 +3657,7 @@ private struct AgentRowLabel: View {
       if isOpening {
         ProgressView().controlSize(.mini).frame(width: 20, height: 20)
       } else {
-        Image(systemName: agent.provider.symbolName)
-          .font(.system(size: 13, weight: .semibold))
+        agent.provider.iconImage(size: 13)
           .frame(width: 24, height: 24)
           .foregroundStyle(.primary)
           .background(Color.primary.opacity(0.08), in: Circle())

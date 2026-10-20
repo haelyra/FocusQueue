@@ -44,7 +44,7 @@ private struct RecallableSessionsView: View {
         LazyVStack(alignment: .leading, spacing: 10) {
           ForEach(sessions, id: \.agent.id) { entry in
             HStack(alignment: .top) {
-              Image(systemName: entry.agent.provider.symbolName).foregroundStyle(.secondary).frame(width: 18)
+              entry.agent.provider.iconImage(size: 14).foregroundStyle(.secondary).frame(width: 18)
               VStack(alignment: .leading, spacing: 3) {
                 Text(entry.agent.title).font(.headline).lineLimit(2)
                 Text("\(entry.ticket.id) · \(entry.ticket.title)").font(.caption).foregroundStyle(.secondary).lineLimit(1)

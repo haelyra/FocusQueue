@@ -300,7 +300,7 @@ struct AgentLaunchOptions: View {
       }
     )) {
       ForEach(AgentProvider.allCases, id: \.self) { provider in
-        Label(provider.displayName, systemImage: provider.symbolName).tag(provider)
+        provider.label().tag(provider)
       }
     }.pickerStyle(.segmented)
     Picker("Model", selection: Binding(

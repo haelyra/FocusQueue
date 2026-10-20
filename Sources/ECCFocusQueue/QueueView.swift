@@ -3345,7 +3345,7 @@ private struct TicketCard: View {
             StatusPill(text: "No open PRs", color: .secondary)
           } else {
             Menu {
-              ForEach(["critical", "high", "medium", "low"], id: \.self) { priority in
+              ForEach(TaskFieldChoices.priorities, id: \.self) { priority in
                 Button {
                   Task { await model.setTaskPriority(ticket, to: priority) }
                 } label: {
@@ -3365,7 +3365,30 @@ private struct TicketCard: View {
             .accessibilityLabel("Priority: \(ticket.priority)")
             .help("Change task priority")
           }
-          StatusPill(text: ticket.status, color: statusColor)
+          if ticket.isOpen {
+            Menu {
+              ForEach(TaskFieldChoices.statusOptions(current: ticket.status), id: \.self) { status in
+                Button {
+                  Task { await model.setTaskStatus(ticket, to: status) }
+                } label: {
+                  if TaskFieldChoices.normalizedStatus(ticket.status) == status {
+                    Label(TaskFieldChoices.statusLabel(status), systemImage: "checkmark")
+                  } else {
+                    Text(TaskFieldChoices.statusLabel(status))
+                  }
+                }
+              }
+            } label: {
+              StatusPill(text: ticket.status, color: statusColor)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel("Status: \(TaskFieldChoices.statusLabel(ticket.status))")
+            .help("Change task status")
+          } else {
+            StatusPill(text: ticket.status, color: statusColor)
+          }
           if ticket.isRecurringPullRequestTask {
             StatusPill(
               text: "Recurring daily",
@@ -3850,6 +3873,7 @@ private struct TicketCard: View {
     switch ticket.status.lowercased() {
     case "blocked": QueueAccentPalette.color(.danger, style: accentStyle)
     case "in-progress": QueueAccentPalette.color(.info, style: accentStyle)
+    case "testing", "review", "qa", "draft-pr": QueueAccentPalette.color(.warning, style: accentStyle)
     case "backlog": .secondary
     default: QueueAccentPalette.color(.success, style: accentStyle)
     }

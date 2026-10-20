@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Focus Queue Context Redesign</title>
+<style>
+  @page { size: Letter; margin: 0.6in 0.6in 0.65in; }
+  :root { --ink:#1f252b; --muted:#5b6670; --rule:#d5dbe1; --accent:#245c85; --soft:#eef3f7;
+          --keep:#2f7d4f; --move:#9a6a00; --cut:#b03a2e; }
+  * { box-sizing: border-box; }
+  body { font: 10pt/1.45 -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif; color: var(--ink); background:#fff; margin:0; }
+  h1 { font-size: 21pt; margin: 0 0 4pt; color: var(--accent); letter-spacing: -0.2pt; }
+  h2 { font-size: 13.5pt; margin: 20pt 0 6pt; padding-bottom: 3pt; border-bottom: 1.5pt solid var(--accent); color: var(--accent); break-after: avoid; }
+  h3 { font-size: 11pt; margin: 12pt 0 4pt; break-after: avoid; }
+  p { margin: 0 0 6pt; }
+  ul, ol { margin: 0 0 6pt; padding-left: 16pt; }
+  li { margin: 0 0 2.5pt; }
+  .sub { color: var(--muted); font-size: 10pt; margin-bottom: 12pt; }
+  .bluf { background: var(--soft); border-left: 3pt solid var(--accent); padding: 8pt 10pt; margin: 8pt 0 10pt; }
+  .bluf p:last-child { margin: 0; }
+  table { width: 100%; border-collapse: collapse; margin: 4pt 0 10pt; font-size: 8.8pt; break-inside: auto; }
+  th, td { border: 0.6pt solid var(--rule); padding: 3.5pt 5pt; text-align: left; vertical-align: top; }
+  th { background: var(--soft); font-weight: 600; }
+  tr { break-inside: avoid; }
+  td.n, th.n { text-align: right; white-space: nowrap; }
+  code { font: 8.6pt/1.35 Menlo, Consolas, monospace; background: #f4f6f8; padding: 0 2pt; border-radius: 2pt; }
+  pre { font: 8.2pt/1.4 Menlo, Consolas, monospace; background: #f6f8fa; border: 0.6pt solid var(--rule); padding: 7pt 9pt; white-space: pre-wrap; margin: 4pt 0 10pt; break-inside: avoid; }
+  .tag { display: inline-block; font-size: 7.6pt; font-weight: 700; padding: 0 4pt; border-radius: 2pt; color: #fff; letter-spacing: .2pt; }
+  .keep { background: var(--keep); } .move { background: var(--move); } .cut { background: var(--cut); } .add { background: var(--accent); }
+  .bar { display:flex; height: 14pt; margin: 2pt 0 2pt; font-size: 7.6pt; color:#fff; border-radius:2pt; overflow:hidden; }
+  .bar span { display:flex; align-items:center; padding-left:3pt; white-space:nowrap; overflow:hidden; }
+  .legend { font-size: 8.4pt; color: var(--muted); margin-bottom: 8pt; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10pt; }
+  .card { border: 0.6pt solid var(--rule); padding: 7pt 9pt; border-radius: 3pt; break-inside: avoid; }
+  .card h3 { margin-top: 0; }
+  .small { font-size: 8.6pt; color: var(--muted); }
+  .pb { break-before: page; }
+  .check td:nth-child(n+2) { text-align:center; }
+</style>
+</head>
+<body>
+
+<h1>Focus Queue context redesign</h1>
+<div class="sub">FOC-036 · Analysis of task, project, and agent context · 20 October 2026 · Measured against <code>main</code> at <code>a762ed0</code> and 106 live task contexts</div>
+
+<div class="bluf">
+<p><b>Bottom line.</b> A freshly launched Focus Queue agent reads about <b>26.6 KB (≈6.7K tokens) of fixed context before it does anything</b>. FOC-036 reached 44.8 KB. The user's actual request can be as little as <b>1%</b> of that. For FOC-035 the request was 286 bytes. The launch prompt repeated it twice inside a 4.9 KB procedural template. A 12.9 KB global <code>CLAUDE.md</code> and five must-read files surrounded it.</p>
+<p>The fix is structural, not editorial. Give every fact <b>exactly one owner layer</b>. Let the host (launcher, CLI, hooks) do what the prompt currently asks the agent to do. Load procedure on demand instead of on every launch. A realistic target is <b>≈9 KB total and a ≈0.7 KB launch brief</b>, about a two-thirds reduction. Fix this base layer before the learned <code>data.md</code> layer grows, because learned facts on top of a bloated base compound the problem.</p>
+</div>
+
+<h2>1. Where the bytes go today</h2>
+<p>These are the layers an agent receives when Focus Queue launches it with a prompt. Sizes are measured from files on disk. The launch template was rendered from <code>Sources/FocusQueueCore/TaskContext.swift:353-400</code> with real FOC-036 values.</p>
+
+<table>
+<tr><th>Layer</th><th>Source</th><th>How it arrives</th><th class="n">FOC-035</th><th class="n">FOC-036</th></tr>
+<tr><td>Global instructions</td><td><code>~/Documents/CLAUDE.md</code> (Bias 1.1 KB + Focus Queue contract 6.3 KB + Output Contract 5.6 KB)</td><td>Auto-loaded, every session under <code>~/Documents</code></td><td class="n">12.9 KB</td><td class="n">12.9 KB</td></tr>
+<tr><td>Launch prompt: template</td><td><code>TaskContext.agentPrompt</code></td><td>First user message</td><td class="n">4.9 KB</td><td class="n">4.9 KB</td></tr>
+<tr><td>Launch prompt: user text</td><td><code>initialPrompt</code></td><td>First user message</td><td class="n">0.3 KB</td><td class="n">6.7 KB</td></tr>
+<tr><td>Launch prompt: “Assignment details”</td><td><code>assignmentDescription</code> (a copy of the prompt, capped at 2,000 chars)</td><td>First user message</td><td class="n">0.3 KB</td><td class="n">2.0 KB</td></tr>
+<tr><td>Placement capsule</td><td><code>tracking/placements/&lt;launch&gt;.json</code></td><td>Must-read</td><td class="n">1.3 KB</td><td class="n">1.3 KB</td></tr>
+<tr><td>Project plan</td><td><code>projects/focus-queue/plan.md</code></td><td>Must-read</td><td class="n">1.3 KB</td><td class="n">1.3 KB</td></tr>
+<tr><td>Task plan</td><td><code>tasks/&lt;ID&gt;/plan.md</code></td><td>Must-read</td><td class="n">1.6 KB</td><td class="n">2.4 KB</td></tr>
+<tr><td>Task state</td><td><code>tasks/&lt;ID&gt;/context.json</code></td><td>Must-read (“before acting”)</td><td class="n">3.4 KB</td><td class="n">12.7 KB</td></tr>
+<tr><td>Auto-memory index</td><td><code>MEMORY.md</code></td><td>Auto-loaded</td><td class="n">0.6 KB</td><td class="n">0.6 KB</td></tr>
+<tr><th colspan="3">Total before the first useful action</th><th class="n">≈26.6 KB</th><th class="n">≈44.8 KB</th></tr>
+</table>
+
+<p class="small">FOC-036 is inflated by a 4.8 KB pasted example in the user's own prompt; FOC-035 is the representative case. The repository's <code>AGENTS.md</code> (3.1 KB) is not counted: Claude Code loads <code>CLAUDE.md</code>, and the repository has none. Codex loads <code>AGENTS.md</code>, so Codex agents carry it in addition.</p>
+
+<h3>Share of the FOC-035 launch that is the user's request</h3>
+<div class="bar">
+  <span style="width:48.5%;background:#6b7c8c">Global CLAUDE.md 12.9 KB</span>
+  <span style="width:18.4%;background:#b03a2e">Launch template 4.9 KB</span>
+  <span style="width:1.1%;background:#2f7d4f"></span>
+  <span style="width:1.1%;background:#d07a2e"></span>
+  <span style="width:30.8%;background:#9aa8b5">Must-read files 8.2 KB</span>
+</div>
+<div class="legend">Green: the user's 286-byte request (1.1%). Orange: the same request repeated as “Assignment details”. Everything else is procedure, identity, or machine state.</div>
+
+<h3>Corpus findings across 106 task contexts</h3>
+<ul>
+  <li><b>45 subtasks</b> store <code>assignmentDescription</code> equal to (or a prefix of) <code>initialPrompt</code>, so the launch prompt shows the request twice.</li>
+  <li>Long prompts appear <b>2–6 times</b> inside one <code>context.json</code>: <code>initialPrompt</code>, <code>assignmentDescription</code>, <code>summary</code>, and archive snapshots. The largest <code>context.json</code> is 305 KB.</li>
+  <li><b>48/106</b> tasks carry the generic success criterion <i>“Confirm the requested behavior and record verification results.”</i> It costs bytes in every prompt and tells the agent nothing.</li>
+  <li><b>9/106</b> plans carry the filler <i>“Why: This task advances the recorded project goal.”</i>. Generated BLUFs paste the raw prompt as “Current focus”: FOC-035's BLUF contains the 286-byte request with its typos.</li>
+  <li>The rendered template repeats the support-directory path <b>14 times</b>, the agent UUID <b>11 times</b>, and the ticket ID <b>15 times</b>. The launcher already exports all three as environment variables.</li>
+</ul>
+
+<h2>2. Anatomy of the current launch prompt</h2>
+<p>Each sentence of <code>agentPrompt</code> classified by what it does and whether a prompt is the right carrier for it. <span class="tag keep">KEEP</span> stays in the brief. <span class="tag move">MOVE</span> becomes host behavior or on-demand text. <span class="tag cut">CUT</span> duplicates another owner.</p>
+
+<table>
+<tr><th style="width:4%">#</th><th style="width:34%">Current text (abridged)</th><th style="width:9%">Verdict</th><th>Reason and new home</th></tr>
+<tr><td>1</td><td>The user's prompt</td><td><span class="tag keep">KEEP</span></td><td>The only irreplaceable content. Send it once, verbatim, and first.</td></tr>
+<tr><td>2</td><td>“Work on FOC-035: &lt;title&gt;. Your subtask is &lt;subtask title&gt; (&lt;UUID&gt;).”</td><td><span class="tag keep">KEEP</span>, shorter</td><td>Task ID and title orient the agent. The subtask title usually equals the task title; print it only when it differs.</td></tr>
+<tr><td>3</td><td>“Project: … Primary repository: …”</td><td><span class="tag keep">KEEP</span></td><td>One short line.</td></tr>
+<tr><td>4</td><td>“Read project guidance at &lt;path&gt; and the placement capsule at $FOCUS_QUEUE_AGENT_CONTEXT before acting.”</td><td><span class="tag move">MOVE</span></td><td>The capsule already lists every path. Use one “Read first” line, or inject the documents with a hook.</td></tr>
+<tr><td>5</td><td>“Assignment details: &lt;prompt again&gt;”</td><td><span class="tag cut">CUT</span></td><td>It duplicates line 1 for 45 subtasks. Emit it only when an orchestrator assigned text that differs from the prompt.</td></tr>
+<tr><td>6</td><td>“Read the central plan … and context.json before acting. If the plan is missing, create … (BLUF, What/Why/How, …). Keep it concise; re-read … Link supporting canvases.”</td><td><span class="tag cut">CUT</span></td><td>The host always creates the plan, so “if missing” never fires. The section list repeats the Output Contract. <code>context.json</code> is machine state; use <code>focus-queue-session context</code> for a digest.</td></tr>
+<tr><td>7</td><td>“Keep decisions, detailed progress … in &lt;agent-log path&gt;. Append with &lt;full command&gt; … do not inject the whole log …”</td><td><span class="tag move">MOVE</span></td><td>The plan-versus-log rule already lives in the global contract, the plan template, and <code>practices.md</code>. The brief needs only the <code>log</code> verb.</td></tr>
+<tr><td>8</td><td>“Briefly state your assignment, provider, workspace, branch, and intended outputs. Reuse this worktree on resume. Create an isolated worktree if none is assigned …”</td><td><span class="tag cut">CUT</span></td><td>The launcher already created the worktree; the conditional is dead text. The status recital costs a turn and restates what the brief just said.</td></tr>
+<tr><td>9</td><td>“Workspace: … Assigned branch: …”</td><td><span class="tag keep">KEEP</span></td><td>Identity. One line.</td></tr>
+<tr><td>10</td><td>“Success criteria: …”</td><td><span class="tag keep">KEEP</span> if specific</td><td>Omit when it equals the generic default (48/106 tasks).</td></tr>
+<tr><td>11</td><td>“Register this pane: FOCUS_QUEUE_PROVIDER=… FOCUS_QUEUE_TASK_ID=… FOCUS_QUEUE_SUBTASK_ID=… FOCUS_QUEUE_SUPPORT_DIR=… attach …”</td><td><span class="tag move">MOVE</span></td><td>The host can register the pane. Claude Code accepts <code>--session-id &lt;uuid&gt;</code>, so the launcher can choose the UUID and record it before launch. A SessionStart hook covers the other cases.</td></tr>
+<tr><td>12–15</td><td>progress / attention / result / complete / idle / blocked, each with the full env-prefixed command and both IDs</td><td><span class="tag keep">KEEP</span>, compressed</td><td>Keep the verbs and drop the arguments. The CLI should default the task and agent IDs from <code>FOCUS_QUEUE_TASK_ID</code> and <code>FOCUS_QUEUE_SUBTASK_ID</code>, which are already exported. That turns ~1.8 KB into ~250 bytes.</td></tr>
+<tr><td>16</td><td>Map-scope instructions (<code>focus-queue-map scope …</code>), 2 sentences</td><td><span class="tag move">MOVE</span></td><td>Rarely relevant at launch. Move them to <code>focus-queue-session rules</code> or infer scope from tool events in a hook.</td></tr>
+<tr><td>17</td><td>review-push paragraph explaining what the orchestrator scans</td><td><span class="tag keep">KEEP</span> 1 line</td><td>Keep “Before any push: <code>review-push</code>; push only when authorized.” The scanner's internals belong in its own output.</td></tr>
+<tr><td>18</td><td>“Update the plan within scope … Ask before changing scope … workspace is immutable … use <code>workspace</code> only to …”</td><td><span class="tag cut">CUT</span></td><td>This duplicates the global contract, <code>AGENTS.md</code>, and the project plan. The <code>workspace</code> command is for the host and orchestrator, not a feature agent.</td></tr>
+<tr><td>19</td><td>“Complete only your assigned subtask. Preserve other agents' changes. Never force-remove …”</td><td><span class="tag cut">CUT</span></td><td>This appears in 4 other places (see §3).</td></tr>
+</table>
+
+<p class="small">The FOC-035 example in the request has one line printed twice (“Complete only your assigned subtask … Never force-remove a”) and a truncated review-push sentence. The template emits that text once (<code>TaskContext.swift:399</code>), so those defects look like terminal-wrap copy artifacts, not generator bugs. Not verified against the raw tmux buffer.</p>
+
+<h2>3. The same rule, many owners</h2>
+<p>Each row is one rule. Each column is a file an agent receives or must read. Every extra ● costs bytes on every launch, and each copy can drift. The stale WezTerm wording in <code>AGENTS.md</code> already shows that drift.</p>
+
+<table class="check">
+<tr><th>Rule</th><th>Global CLAUDE.md</th><th>Launch prompt</th><th>Repo AGENTS.md</th><th>Project plan.md</th><th>practices.md</th><th>Task plan.md</th><th>Queue-chat prompt*</th></tr>
+<tr><td>Register / attach before work</td><td>●●</td><td>●</td><td>●</td><td></td><td></td><td></td><td></td></tr>
+<tr><td>Workspace is immutable</td><td>●</td><td>●●</td><td>●</td><td>●●</td><td>●</td><td></td><td></td></tr>
+<tr><td>Install only from canonical checkout</td><td>●</td><td></td><td>●</td><td>●●</td><td>●</td><td></td><td></td></tr>
+<tr><td>Integration: ff-only, no force-push</td><td>●</td><td></td><td>●</td><td></td><td>●</td><td></td><td></td></tr>
+<tr><td>Plan vs. agent-log split</td><td>●</td><td>●●</td><td></td><td>●</td><td>●</td><td>●●</td><td>●</td></tr>
+<tr><td>Output-contract section list</td><td>●</td><td>●</td><td></td><td></td><td></td><td>●</td><td>●</td></tr>
+<tr><td>Sanity-test before commit</td><td>●●</td><td></td><td>●</td><td></td><td>●</td><td></td><td></td></tr>
+<tr><td>Push only when authorized</td><td>●</td><td>●</td><td>●</td><td></td><td></td><td></td><td></td></tr>
+<tr><td>Preserve other agents' work</td><td>●</td><td>●●</td><td></td><td>●</td><td>●</td><td></td><td></td></tr>
+<tr><td>Labels / tmux presentation</td><td>●</td><td></td><td>●</td><td></td><td></td><td></td><td></td></tr>
+<tr><td>Never hand-edit state JSON</td><td>●</td><td></td><td></td><td></td><td></td><td></td><td>●</td></tr>
+</table>
+<p class="small">* The orchestrator/queue-chat instructions at <code>Sources/FocusQueueCore/Integrations.swift:2540</code> restate the plan/log/output-contract rules in a further 1.6 KB paragraph. ●● means the rule appears twice in the same file.</p>
+
+<h3>Prior work that already points in this direction</h3>
+<ul>
+  <li><b>Single-sourced contract</b> (<code>kimi/agent-contract-refresh</code>, commit <code>ce627e2</code>): generates the global payloads from <code>Config/agent_contract/</code> and trims them to ~3.5–4 KB. Unmerged and 56 commits behind <code>main</code>. Revive its generator; this proposal shrinks the payload further.</li>
+  <li><b>Proactive context routing lab</b> (FOC-014, <code>experiment/proactive-context-routing</code>): defines destination rules (prompt / user / project / task / deferred) and a ledger. Unmerged and 56 commits behind. Reuse its admission rules for the learned layer (§6).</li>
+  <li><b>Task <code>data.md</code></b> (FOC-010, commit <code>6fe8068</code>): creates <code>tasks/&lt;ID&gt;/data.md</code> and adds it to the capsule and prompts. It is 1 commit ahead of <code>main</code>. It currently adds a sentence to <i>both</i> prompt templates, the pattern this proposal wants to stop.</li>
+</ul>
+
+<h2>4. File-by-file: what exists, what should be there, what to clean</h2>
+
+<table>
+<tr><th style="width:17%">File (owner layer)</th><th style="width:28%">Currently contains</th><th style="width:27%">Should contain</th><th>Clean up</th></tr>
+<tr><td><code>~/Documents/CLAUDE.md</code><br>(user, global)</td><td>Bias for action; the full 6.3 KB Focus Queue backend contract; the 5.6 KB Agent Output Contract with a worked example.</td><td>Only cross-project user preferences: bias for action, the output contract, and a ≤3-line Focus Queue trigger.</td><td><span class="tag move">MOVE</span> the Focus Queue contract out. It loads in every session under <code>~/Documents</code>, including non-Focus-Queue work, and half of it (shell entry, placement, orchestrator) is host behavior. Optional: compress the worked example (~1.5 KB).</td></tr>
+<tr><td><code>AGENTS.md</code> (repo)</td><td>UI-automation opt-in; WezTerm label rules; delivery and integration rules; hard-coded <code>/Users/hira/.local/bin</code> path.</td><td>Repository-wide rules for <i>any</i> agent, Focus Queue or not: UI-automation opt-in, how to build and test, and delivery rules for this repo.</td><td><span class="tag cut">CUT</span> the attach and WezTerm sections (now tmux-managed and host-owned). <span class="tag add">ADD</span> a repo <code>CLAUDE.md</code> containing <code>@AGENTS.md</code>, so Claude agents load one shared owner.</td></tr>
+<tr><td><code>projects/&lt;p&gt;/plan.md</code> + <code>practices.md</code> (project)</td><td>Two heavily overlapping lists of workspace, install, and ID rules. “Project commands” lists only the repository path.</td><td>One <code>project.md</code> of ≤1.5 KB: purpose (1 line), <b>build/test/install commands</b>, project-specific practices, and avoid-list. Learned facts go in project <code>data.md</code>.</td><td><span class="tag cut">CUT</span> rules already owned by <code>AGENTS.md</code> or the global layer. <span class="tag add">ADD</span> the missing commands: <code>swift build</code>, <code>swift test</code>, the Python tests, and the install script.</td></tr>
+<tr><td><code>prd.md</code>, <code>architecture.md</code>, <code>evidence.md</code> (project)</td><td>Reasonable reference documents.</td><td>Unchanged, but read on demand only and never listed as must-read.</td><td>None. Link them from <code>project.md</code>.</td></tr>
+<tr><td><code>tasks/&lt;ID&gt;/plan.md</code> (task)</td><td>BLUF with the raw prompt as “Current focus”; a boilerplate Why; two generic decision-log entries; generic QA; generic next step.</td><td>≤800 bytes: Goal as what/why/how in 1–2 sentences each, specific success criteria, current focus and next step, and links. Other sections appear only once they have real content.</td><td><span class="tag cut">CUT</span> the template filler. <span class="tag move">MOVE</span> summary generation to a one-shot model rewrite (<code>claude -p</code>), as FOC-035's “What” line already shows.</td></tr>
+<tr><td><code>tasks/&lt;ID&gt;/context.json</code> (host state)</td><td>Prompt copies (×2–6), tmux PIDs, heartbeats, workspace metadata, and archive pointers.</td><td>Machine state only. Store the prompt once, keep <code>assignmentDescription</code> only when it differs, and derive <code>summary</code> rather than truncating the prompt.</td><td><span class="tag cut">CUT</span> it from every “read before acting” instruction. Agents use <code>focus-queue-session context</code>, which can print a 10-line digest.</td></tr>
+<tr><td><code>agent-log.md</code> (task)</td><td>Append-only history (median 139 B, max 159 KB).</td><td>Unchanged: write-mostly, read-on-demand.</td><td>Add rotation or summarization above ~20 KB so “read relevant entries” stays cheap.</td></tr>
+<tr><td><code>data.md</code> (task; FOC-010)</td><td>A one-line header.</td><td>Learned, durable task facts: inputs, test data, gotchas. Bounded at ~2 KB with dated entries.</td><td>Reference it through the capsule only, not through new prompt sentences.</td></tr>
+<tr><td>Placement capsule (agent)</td><td>IDs, paths, and tmux identity (1.3 KB). Already well designed.</td><td>The canonical pointer map for the agent.</td><td>Add <code>taskDataPath</code> and <code>projectDataPath</code>, and make it the only path source the brief references.</td></tr>
+</table>
+
+<h2>5. Target design: one owner per fact</h2>
+
+<table>
+<tr><th style="width:15%">Layer</th><th style="width:30%">Owns</th><th style="width:22%">Carrier</th><th class="n" style="width:10%">Budget</th><th>Learned slot</th></tr>
+<tr><td><b>User</b> (global)</td><td>How the user wants agents to behave and report: bias for action, the output contract, and personal preferences.</td><td><code>~/Documents/CLAUDE.md</code>, <code>~/.codex/AGENTS.md</code> (generated from one source)</td><td class="n">≤5 KB</td><td>User <code>data.md</code> (or Claude memory) for cross-project preferences</td></tr>
+<tr><td><b>Focus Queue runtime</b></td><td>The lifecycle verbs, push gating, and workspace immutability: rules that apply only inside a managed pane.</td><td><code>--append-system-prompt</code> or a SessionStart hook; <code>focus-queue-session rules</code> for detail</td><td class="n">≤1 KB</td><td>None (product behavior, versioned in the repo)</td></tr>
+<tr><td><b>Repository</b></td><td>Build, test, UI-automation, and delivery rules for this codebase.</td><td><code>AGENTS.md</code> + <code>CLAUDE.md → @AGENTS.md</code></td><td class="n">≤3 KB</td><td>None (edited by commits)</td></tr>
+<tr><td><b>Project</b></td><td>Purpose, commands, project-specific practices; links to PRD, architecture, evidence.</td><td><code>project.md</code> (merged plan + practices)</td><td class="n">≤1.5 KB</td><td>Project <code>data.md</code>: UI style, conventions, recurring gotchas</td></tr>
+<tr><td><b>Task</b></td><td>Goal, success criteria, current focus, next step.</td><td><code>plan.md</code></td><td class="n">≤0.8 KB</td><td>Task <code>data.md</code>; history goes in <code>agent-log.md</code></td></tr>
+<tr><td><b>Agent</b></td><td>Identity (IDs, workspace, branch) and the user's request.</td><td>Launch brief + capsule</td><td class="n">≤0.7 KB + prompt</td><td>None (ephemeral)</td></tr>
+</table>
+
+<h3>Admission test: where does a sentence belong?</h3>
+<ol>
+  <li><b>Can the host do it instead?</b> Then it is code, not context: registration, worktree creation, default IDs, plan creation, label management.</li>
+  <li><b>Is it true for every session the user runs?</b> Then it belongs in the user layer.</li>
+  <li><b>Is it true only inside a Focus Queue pane?</b> Then it belongs in the runtime layer, loaded only when <code>FOCUS_QUEUE_TASK_ID</code> is set.</li>
+  <li><b>Is it about this codebase for any agent?</b> Then <code>AGENTS.md</code>. If it is about this project's goals and conventions, <code>project.md</code>. If it is about this objective, the task plan.</li>
+  <li><b>Was it learned rather than designed?</b> Then the matching <code>data.md</code>, never a template.</li>
+  <li><b>Is it already said by a higher layer?</b> Then delete it.</li>
+</ol>
+
+<h3>Proposed launch brief (FOC-035, ≈0.7 KB of procedure)</h3>
+<pre>The Qchat currently does not properly render markdown. Please ensure it can proerply render md. also, for some reason, i cannot select and copy several lines within the chat, due to some kind of formatting issue. pls resolve these and ensure changes are properly committed and installed
+
+[Focus Queue] FOC-035 “Fix Qchat markdown rendering and selection” · project Focus Queue
+Agent DD6DF4D3 (claude) · workspace .worktrees/foc-035/agents/dd6df4d3-… · branch focus-queue/foc-035-dd6df4d3-…
+Read first: task plan and task data (paths in $FOCUS_QUEUE_AGENT_CONTEXT).
+Report with focus-queue-session &lt;verb&gt; (IDs come from the environment):
+  progress working|idle|blocked "…" · attention approval|question "…" · result "…" · complete "…" · log "…"
+Before any push run focus-queue-session review-push; push only when the user authorizes it.
+Full rules on demand: focus-queue-session rules</pre>
+<p>Compare the current ~5.5 KB. The user's text stays first and unmodified, so titles, summaries, and transcript recall derived from the first message stop absorbing boilerplate. With Claude, the bracketed block can move into <code>--append-system-prompt</code> so it is not a user turn at all. Codex and Kimi keep it in the prompt.</p>
+
+<h2>6. Mechanisms that make the shrink safe</h2>
+<p>Deleting text is only safe if the behavior it asked for still happens. Each mechanism below replaces prompt text with something deterministic.</p>
+<table>
+<tr><th style="width:27%">Mechanism</th><th style="width:42%">Replaces</th><th>Implementation notes</th></tr>
+<tr><td><b>Env-defaulted CLI arguments</b></td><td>14 support-dir prefixes, 11 UUIDs, and 15 ticket IDs in the template (~2 KB).</td><td><code>progress</code>, <code>attention</code>, <code>result</code>, <code>complete</code>, <code>log</code>, and <code>review-push</code> fall back to <code>FOCUS_QUEUE_TASK_ID</code>/<code>FOCUS_QUEUE_SUBTASK_ID</code> when arguments are omitted. The helper already defaults the support directory (<code>Integrations.swift:2540</code>), and the launcher exports it (<code>AgentLauncher.swift:150</code>).</td></tr>
+<tr><td><b>Host-side registration</b></td><td>The “Register this pane …” line and two global-contract bullets about session IDs.</td><td>For Claude, pass <code>--session-id &lt;uuid&gt;</code> at launch and record it with the tmux pane before the process starts. Keep <code>attach</code> as the fallback for Codex and Kimi, and for manual shells.</td></tr>
+<tr><td><b><code>focus-queue-session rules</code></b> (new)</td><td>Map scope, workspace refresh, the review-push explanation, the integration and cleanup rules, and the Focus Queue half of the global contract.</td><td>Generated from the same single source as the contract payloads (revive <code>Config/agent_contract/generate.py</code>). Agents read it when a rule becomes relevant.</td></tr>
+<tr><td><b>Runtime-layer delivery</b></td><td>The 6.3 KB Focus Queue contract in global <code>CLAUDE.md</code>.</td><td>Global keeps: “If <code>$FOCUS_QUEUE_TASK_ID</code> is set, you are a managed Focus Queue agent; follow the launch brief and <code>focus-queue-session rules</code>.” The brief carries the rest.</td></tr>
+<tr><td><b>Host-written plans</b></td><td>“If the plan is missing, create … BLUF, What/Why/How …”.</td><td>The host already creates <code>plan.md</code>. Generate its Goal with one <code>claude -p</code> rewrite of the prompt (subscription CLI, not API keys), as the user's model-call preference requires.</td></tr>
+<tr><td><b>Byte-budget tests</b></td><td>Future drift.</td><td>A Swift test asserts that <code>agentPrompt</code> minus the user text is ≤900 bytes and contains no path more than once. A Python test asserts the generated global payload is ≤5 KB.</td></tr>
+</table>
+
+<h2>7. Learned-data layer, after the base is clean</h2>
+<ul>
+  <li><b>Three scopes, one shape.</b> <code>user/data.md</code>, <code>projects/&lt;p&gt;/data.md</code>, and <code>tasks/&lt;ID&gt;/data.md</code>. Each holds dated, sourced bullets under a byte cap (user 2 KB, project 3 KB, task 2 KB).</li>
+  <li><b>Write path.</b> A <code>focus-queue-session remember "&lt;fact&gt;" [--scope task|project|user]</code> verb, as FOC-010's summary already proposes. Without <code>--scope</code>, a small model applies FOC-014's admission rules. Deterministic checks enforce identity and the cap.</li>
+  <li><b>Read path.</b> The capsule lists the paths. The brief says “Read first: task plan and task data”, and project <code>data.md</code> is read with <code>project.md</code>. User data lives in the global layer, so it is already loaded.</li>
+  <li><b>Hygiene.</b> When a scope exceeds its cap, a compaction pass merges duplicates and retires superseded facts into <code>agent-log.md</code>. Learned facts never get copied into templates.</li>
+</ul>
+
+<h2>8. Migration plan</h2>
+<table>
+<tr><th style="width:9%">Phase</th><th style="width:38%">Change</th><th style="width:28%">Verification</th><th class="n">Saves per launch</th></tr>
+<tr><td><b>1</b></td><td>Rewrite <code>agentPrompt</code>/<code>agentBootstrap</code> as the brief in §5. Drop the duplicate assignment, the generic success criteria, and the <code>context.json</code> must-read. Add env defaults to the CLI.</td><td>Update <code>AgentLauncherTests.swift:29</code>, <code>SubtaskFocusTests.swift:447</code>, and <code>TaskContextTests</code>. Add the byte-budget test. Launch one real agent on a scratch task and confirm attach, progress, and complete land in the queue.</td><td class="n">≈4.5 KB + context.json</td></tr>
+<tr><td><b>2</b></td><td>Move the Focus Queue contract out of global <code>CLAUDE.md</code> into <code>rules</code> and the runtime layer. Revive the single-source generator. Add repo <code>CLAUDE.md → @AGENTS.md</code> and drop the stale WezTerm and attach text from <code>AGENTS.md</code>.</td><td>Generator drift test. A non-Focus-Queue Claude session no longer contains the contract. A managed agent still registers and reports.</td><td class="n">≈6 KB (every session)</td></tr>
+<tr><td><b>3</b></td><td>Host-side registration via <code>--session-id</code> for Claude. Merge <code>plan.md</code> + <code>practices.md</code> into <code>project.md</code> with commands. Slim the task-plan template and add model-written goals.</td><td>Registration rate on 5 real launches. Project hydration preserves authored bytes (existing invariant).</td><td class="n">≈2 KB</td></tr>
+<tr><td><b>4</b></td><td>Learned layer: three-scope <code>data.md</code>, the <code>remember</code> verb, caps, and compaction. Build it on FOC-010 and FOC-014.</td><td>Replay FOC-014 fixtures. Spot-check placements on live prompts in shadow mode.</td><td class="n">Bounded growth</td></tr>
+</table>
+
+<h3>Risks</h3>
+<ul>
+  <li><b>Agents skip lifecycle calls once instructions get shorter.</b> Mitigate with host-side registration, a Stop hook that reports <code>idle</code>, and a dashboard measure of the attach/complete rate before and after Phase 1.</li>
+  <li><b>Provider differences.</b> Kimi takes the prompt non-interactively via <code>--prompt</code>, and Codex has no <code>--append-system-prompt</code>. The brief must work as plain prompt text for both.</li>
+  <li><b>Old branches.</b> The contract-refresh and routing branches are 56 commits behind. Port the ideas; do not merge them blindly.</li>
+</ul>
+
+<h2>9. Decisions for you</h2>
+<ol>
+  <li><b>Approve Phase 1 as the next task?</b> It is self-contained, inside <code>FocusQueueCore</code>, test-covered, and removes most of the visible repetition.</li>
+  <li><b>Where should the Focus Queue runtime rules live for Claude:</b> <code>--append-system-prompt</code> (invisible, deterministic) or the visible brief (portable across providers)? Recommendation: the visible brief for all providers first, then the system prompt for Claude.</li>
+  <li><b>Keep the Output Contract's worked example in global <code>CLAUDE.md</code>?</b> It is the largest optional block (~1.5 KB), but it is your style guide, so this is your call.</li>
+  <li><b>Merge <code>plan.md</code> and <code>practices.md</code> into one <code>project.md</code>?</b> This changes the project-document set that hydration creates.</li>
+</ol>
+
+<p class="small" style="margin-top:14pt">Method: sizes from <code>wc -c</code> on live files. The launch template was rendered with a script that substitutes FOC-036 values into <code>TaskContext.swift</code>. Corpus statistics come from a scan of every <code>tasks/*/context.json</code> and <code>plan.md</code> under the support directory. Token estimates use 4 bytes ≈ 1 token. Session-start overhead from Claude Code itself (system prompt, tool schemas) is excluded because Focus Queue does not control it.</p>
+
+</body>
+</html>

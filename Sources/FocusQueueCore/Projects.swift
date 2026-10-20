@@ -257,21 +257,13 @@ public struct ProjectContextStore: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700])
         if !FileManager.default.fileExists(atPath: url.path) {
-            let repository = project.repositoryPath.isEmpty ? "Not configured" : project.repositoryPath
+            let repository = project.repositoryPath.isEmpty ? "not configured" : project.repositoryPath
+            // A project plan is a one-to-three-line description inlined into every agent brief.
+            // Durable practices and architecture live in separate on-demand documents.
             let markdown = """
             # \(project.name)
 
-            Objective: Keep work for \(project.name) correctly scoped and recoverable.
-
-            ## Required practices
-            - Work only in the assigned repository and agent workspace.
-            - Use task IDs with the `\(project.taskPrefix)-###` prefix.
-
-            ## Project commands
-            - Repository: \(repository)
-
-            ## Avoid
-            - Add only durable, project-specific prevention rules here. Put incidents and evidence in the task agent log.
+            Tasks use `\(project.taskPrefix)-###` IDs. Repository: \(repository).
             """
             try Data((markdown + "\n").utf8).write(to: url, options: .withoutOverwriting)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)

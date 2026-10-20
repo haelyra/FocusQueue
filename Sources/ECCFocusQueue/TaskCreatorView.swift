@@ -72,7 +72,7 @@ struct TaskCreatorSheet: View {
           if launchesAgent { agentOptions }
         } footer: {
           Text(launchesAgent
-            ? "Defaults follow the last agent you launched. The agent gets its own placement capsule, worktree, and tmux pane."
+            ? "Each provider remembers the model and effort you last launched it with. The agent gets its own placement capsule, worktree, and tmux pane."
             : "The task is created without an agent. Start one later from its card.")
             .font(.caption).foregroundStyle(.secondary)
         }
@@ -115,11 +115,13 @@ struct TaskCreatorSheet: View {
       get: { agent.provider },
       set: { provider in
         guard provider != agent.provider else { return }
-        // Models, efforts, and plugin IDs belong to one provider.
+        // Models, efforts, and plugin IDs belong to one provider; restore the
+        // ones it last launched with.
+        let last = model.lastAgentLaunch(for: provider)
         agent.provider = provider
-        agent.model = model.defaultAgentModel(for: provider)
-        agent.effort = provider == .kimi ? nil : model.defaultAgentEffort(for: provider)
-        agent.pluginOverrides = nil
+        agent.model = last.model
+        agent.effort = last.effort
+        agent.pluginOverrides = last.pluginOverrides
       }
     )) {
       ForEach(AgentProvider.allCases, id: \.self) { provider in
@@ -138,13 +140,15 @@ struct TaskCreatorSheet: View {
         Text(current).tag(current)
       }
     }
-    if agent.provider != .kimi {
-      Picker("Effort", selection: Binding(
-        get: { agent.effort ?? "" },
-        set: { agent.effort = $0.isEmpty ? nil : $0 }
-      )) {
-        Text("Default").tag("")
-        ForEach(AppConfiguration.agentEffortLevels, id: \.self) { Text($0).tag($0) }
+    Picker("Effort", selection: Binding(
+      get: { agent.effort ?? "" },
+      set: { agent.effort = $0.isEmpty ? nil : $0 }
+    )) {
+      Text("Default").tag("")
+      ForEach(AppConfiguration.agentEffortLevels(for: agent.provider), id: \.self) { Text($0).tag($0) }
+      if let current = agent.effort,
+         !AppConfiguration.agentEffortLevels(for: agent.provider).contains(current) {
+        Text(current).tag(current)
       }
     }
     Picker("Workspace", selection: Binding(

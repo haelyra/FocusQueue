@@ -3123,6 +3123,12 @@ struct QueueViewModelTests {
     #expect(capsule.taskID == ticketID)
     #expect(capsule.assignmentID == agent.id)
     #expect(model.taskCreatorLaunchDefaults == preset, "The creator remembers its own launch")
+    #expect(model.lastAgentLaunch(for: .claude) == preset)
+    #expect(model.lastAgentLaunch(for: .kimi).model == model.defaultAgentModel(for: .kimi),
+      "A provider never launched falls back to its Settings defaults")
+    model.rememberAgentLaunch(AgentLaunchPreset(provider: .kimi, model: "kimi-code/k3", effort: "high"))
+    #expect(model.lastAgentLaunch(for: .claude) == preset, "Another provider's launch keeps this one")
+    #expect(model.lastAgentLaunch(for: .kimi).effort == "high")
   }
 
   @Test("A placement match is offered before a duplicate; joining launches there and creating anyway reuses the suggestion")

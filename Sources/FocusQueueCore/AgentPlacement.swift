@@ -54,6 +54,7 @@ public struct AgentPlacementCapsule: Codable, Equatable, Sendable {
     public var projectPlanPath: String
     public var taskPlanPath: String?
     public var taskLogPath: String?
+    public var taskDataPath: String? = nil
     public var capsulePath: String
     public var reason: String?
     /// The launch objective, retained so app-side discovery can name and bind
@@ -221,7 +222,7 @@ public actor AgentPlacementResolver {
             repositoryRemote: project.remote, workspacePath: request.cwd, branch: workspace?.branch,
             tmuxName: request.tmuxName, tmuxPaneID: request.tmuxPaneID,
             projectPlanPath: projectPlan.path, taskPlanPath: context?.planPath,
-            taskLogPath: context?.agentLogURL.path, capsulePath: capsuleURL.path,
+            taskLogPath: context?.agentLogURL.path, taskDataPath: context?.dataURL.path, capsulePath: capsuleURL.path,
             reason: ambiguousPath
                 ? "The working directory matches more than one project. Choose a task or project before writing."
                 : conflictingPath

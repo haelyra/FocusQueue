@@ -249,6 +249,8 @@ public actor WorkspaceCollector {
         if let index = nodes.firstIndex(where: { $0.id == contextID }) { nodes[index].kind = .context }
         let contextFile = includeFile(context.contextDirectory.appendingPathComponent("context.json").path)
         if let index = nodes.firstIndex(where: { $0.id == contextFile }) { nodes[index].label = "Task context and evidence links" }
+        let dataFile = includeFile(context.dataURL.path)
+        if let index = nodes.firstIndex(where: { $0.id == dataFile }) { nodes[index].label = "Task data" }
         let mapFile = includeFile(context.contextDirectory.appendingPathComponent("workspace-map/snapshot.json").path)
         if let index = nodes.firstIndex(where: { $0.id == mapFile }) {
             nodes[index].label = "Task map"; nodes[index].parentID = contextID
@@ -268,6 +270,7 @@ public actor WorkspaceCollector {
                 }
             }
             if context.planPath.hasPrefix("/") { inputs.insert(context.planPath) }
+            if FileManager.default.fileExists(atPath: context.dataURL.path) { inputs.insert(context.dataURL.path) }
             for path in relevantPaths {
                 if instructions[path] == nil { instructions[path] = MapInstructionFiles.ancestors(of: path) }
                 inputs.formUnion(instructions[path] ?? [])

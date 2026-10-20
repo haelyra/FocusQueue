@@ -73,7 +73,7 @@ func leanDetailedBrief() async throws {
     let projectBody = TaskContext.inlineDocument(atPath: context.projectPlanPath, limit: 1_500)!
     let procedure = prompt.replacingOccurrences(of: agent.initialPrompt!, with: "")
         .replacingOccurrences(of: plan, with: "").replacingOccurrences(of: projectBody, with: "")
-        .replacingOccurrences(of: context.planPath, with: "")
+        .replacingOccurrences(of: context.planPath, with: "").replacingOccurrences(of: context.dataURL.path, with: "")
     #expect(procedure.utf8.count < 1_000, "Procedure is \(procedure.utf8.count) bytes")
 }
 
@@ -121,4 +121,16 @@ func leanProjectPlan() throws {
         for: ProjectDefinition(id: "chat", name: "Chat App", taskPrefix: "CHA", repositoryPath: "/tmp/chat-repo"))
     let plan = try String(contentsOf: url, encoding: .utf8)
     #expect(plan == "# Chat App\n\nTasks use `CHA-###` IDs. Repository: /tmp/chat-repo.\n")
+}
+
+@Test("Task data is pointed to while empty and inlined once an agent records facts")
+func leanTaskDataInlining() async throws {
+    let root = try leanFixture(); defer { try? FileManager.default.removeItem(at: root) }
+    let context = try await TaskContextStore(root: root).ensureContext(ticket: leanTicket)
+    let agent = TaskSubtask(title: "Fix chat markdown")
+    #expect(context.agentPrompt(subtask: agent).contains("Task data: \(context.dataURL.path) (record durable task facts"))
+    #expect(!context.agentPrompt(subtask: agent).contains(TaskContext.dataTemplateBody))
+    try Data("# ECC-950 task data\n\n- Chat view lives in ChatMarkdownView.swift.\n".utf8).write(to: context.dataURL)
+    let prompt = context.agentPrompt(subtask: agent)
+    #expect(prompt.contains("Task data (\(context.dataURL.path)):\n- Chat view lives in ChatMarkdownView.swift."))
 }

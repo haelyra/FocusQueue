@@ -2793,10 +2793,10 @@ private struct CompletedTicketCard: View {
         }
       }
 
-      if !ticket.links.isEmpty {
+      if !evidenceLinks.isEmpty {
         VStack(alignment: .leading, spacing: 5) {
           DetailLabel(text: "Evidence and links")
-          ForEach(ticket.links) { link in
+          ForEach(evidenceLinks) { link in
             Button { model.open(link.url) } label: {
               Label(link.label, systemImage: linkIcon(link.type)).font(.system(size: 13)).lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -2882,6 +2882,10 @@ private struct CompletedTicketCard: View {
     case "blocked": QueueAccentPalette.color(.danger, style: accentStyle)
     default: .secondary
     }
+  }
+
+  private var evidenceLinks: [DashboardLink] {
+    model.taskContexts[ticket.id]?.evidenceLinks(ticket.links) ?? ticket.links
   }
 
   private func linkIcon(_ type: String?) -> String {
@@ -3820,10 +3824,10 @@ private struct TicketCard: View {
         }
       }
 
-      if !ticket.links.isEmpty {
+      if !evidenceLinks.isEmpty {
         VStack(alignment: .leading, spacing: 5) {
           DetailLabel(text: "Evidence and links")
-          ForEach(ticket.links) { link in
+          ForEach(evidenceLinks) { link in
             Button {
               model.open(link.url)
             } label: {
@@ -3895,6 +3899,10 @@ private struct TicketCard: View {
     case "blocked": QueueAccentPalette.color(.danger, style: accentStyle)
     default: .secondary
     }
+  }
+
+  private var evidenceLinks: [DashboardLink] {
+    model.taskContexts[ticket.id]?.evidenceLinks(ticket.links) ?? ticket.links
   }
 
   private func linkIcon(_ type: String?) -> String {

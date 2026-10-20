@@ -937,8 +937,13 @@ enum SessionRegistrationError: Error, LocalizedError {
         }
         if command == "context", arguments.count == 2 {
             guard let context = try await store.load(ticketID: arguments[1]) else { throw TaskContextError.missingContext(arguments[1]) }
-            let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-            FileHandle.standardOutput.write(try encoder.encode(context))
+            // Document paths are derived, not stored, so add them for readers of the task state.
+            guard var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(context)) as? [String: Any] else {
+                throw TaskContextError.commandFailed("Task context did not encode as an object.")
+            }
+            object["agentLogPath"] = context.agentLogURL.path
+            object["dataPath"] = context.dataURL.path
+            FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]))
             FileHandle.standardOutput.write(Data("\n".utf8))
             return
         }

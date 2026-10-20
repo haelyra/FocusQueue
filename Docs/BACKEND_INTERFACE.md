@@ -34,6 +34,7 @@ overridable with `FOCUS_QUEUE_SUPPORT_DIR` (used by tests to isolate state). Key
 | `tasks/<TICKET>/context.json` | `TaskContext` — subtasks, workspaces, tmux refs, per-task state |
 | `tasks/<TICKET>/plan.md` | Task plan (Markdown) |
 | `tasks/<TICKET>/agent-log.md` | Append-only agent log |
+| `tasks/<TICKET>/data.md` | Cached task facts and test data; created at task initialization and shown in the task's Evidence and links, map Context slots, capsule, and agent prompts |
 | `tasks/<TICKET>/archive/snapshot-*` | Context snapshots (max 100) |
 | `agent-registrations/<sha256>.json` | Session registration inbox |
 | `external-agent-sessions/<sha256>.json` | Hook registration receipts |
@@ -131,7 +132,7 @@ Sets/replaces the agent's display title and assignment description. Hook-indepen
 ### 3.2 Placement
 
 **`focus-queue-session placement [--prompt <text>] [--task <ID>] [--launch <UUID>] [--cwd <path>] [--no-create]`**
-Runs the deterministic placement resolver and writes a capsule to `tracking/placements/<launch-uuid>.json`. The capsule (`AgentPlacementCapsule`) is the agent's source of truth: `projectID, taskPrefix, taskID?, agentID?, provider, workspacePath, branch?, tmuxName?, tmuxPaneID?, projectPlanPath, taskPlanPath?, taskLogPath?, status (placed|project-inbox|blocked-conflict)`.
+Runs the deterministic placement resolver and writes a capsule to `tracking/placements/<launch-uuid>.json`. The capsule (`AgentPlacementCapsule`) is the agent's source of truth: `projectID, taskPrefix, taskID?, agentID?, provider, workspacePath, branch?, tmuxName?, tmuxPaneID?, projectPlanPath, taskPlanPath?, taskLogPath?, taskDataPath?, status (placed|project-inbox|blocked-conflict)`.
 
 **Rule: read your capsule (`$FOCUS_QUEUE_AGENT_CONTEXT`) before any source edit. Stop on `blocked-conflict`.**
 
@@ -170,7 +171,7 @@ These manage the per-agent slots inside `tasks/<TICKET>/context.json`:
 | `archive-agent <TASK> <SUBTASK>` | Archive a finished agent slot |
 | `associate <TASK> <AGENT> <SUBTASK>` | Link a registered session to a subtask |
 | `log <TASK> <AGENT> <entry>` | Append-only entry to `agent-log.md` (task-locked, concurrency-safe) |
-| `context <TASK>` | Dump the full `TaskContext` JSON |
+| `context <TASK>` | Dump the full `TaskContext` JSON plus derived `agentLogPath` and `dataPath` |
 | `plan <TASK>` | Print `plan.md` |
 | `workspace <TASK> <SUBTASK> <abs-path>` | Record the agent's workspace (immutable once set — first write wins) |
 | `review-push <TASK> <SUBTASK>` | Gated push review; exit 1 if rejected |

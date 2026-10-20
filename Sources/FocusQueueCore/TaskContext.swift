@@ -324,6 +324,19 @@ public struct TaskContext: Codable, Equatable, Sendable {
 
     public var agentLogURL: URL { contextDirectory.appendingPathComponent("agent-log.md") }
 
+    /// Cached task facts and test data, kept beside the plan so every task view and agent can find it.
+    public var dataURL: URL { contextDirectory.appendingPathComponent("data.md") }
+
+    /// The task data file leads the evidence list even when the dashboard records no links.
+    public func evidenceLinks(_ ticketLinks: [DashboardLink]) -> [DashboardLink] {
+        let data = dataURL.standardizedFileURL
+        let others = ticketLinks.filter { link in
+            guard let url = ResourceLocator.url(for: link.url), url.isFileURL else { return true }
+            return url.standardizedFileURL != data
+        }
+        return [DashboardLink(label: "Task data (data.md)", url: data.path, type: "plan")] + others
+    }
+
     public static func launchRemovalKey(_ launchID: String) -> String {
         "launch:" + launchID.lowercased()
     }
@@ -342,12 +355,15 @@ public struct TaskContext: Codable, Equatable, Sendable {
         return criteria.isEmpty || criteria == Self.genericSuccessCriteria ? nil : criteria
     }
 
+    /// The generated data.md body before any agent records a fact; briefs point to it instead of inlining it.
+    static let dataTemplateBody = "Cached facts, inputs, and test data for this task. Agents read this before acting and add durable task facts here."
+
     /// Compact mode: identity and document pointers only. Document contents stay on disk.
     public func agentBootstrap(subtask: TaskSubtask) -> String {
         let prompt = subtask.initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return ([prompt.isEmpty ? "Prepare the task context, then wait for my instruction before implementing anything." : prompt, ""]
             + briefHeader(subtask: subtask, prompt: prompt)
-            + ["Task plan: \(planPath) (read before acting). Agent log: \(agentLogURL.path).",
+            + ["Task plan: \(planPath) (read before acting). Task data: \(dataURL.path). Agent log: \(agentLogURL.path).",
                "Register with `focus-queue-session attach`, then report with `focus-queue-session progress|complete`. Rules: `focus-queue-session rules`."])
             .joined(separator: "\n")
     }
@@ -373,6 +389,12 @@ public struct TaskContext: Codable, Equatable, Sendable {
             lines += ["Task plan (\(planPath)):", plan]
         } else {
             lines.append("Task plan: \(planPath)")
+        }
+        if let data = Self.inlineDocument(atPath: dataURL.path, limit: 2_000),
+           data != Self.dataTemplateBody {
+            lines += ["Task data (\(dataURL.path)):", data]
+        } else {
+            lines.append("Task data: \(dataURL.path) (record durable task facts and test data here).")
         }
         lines += [
             "Before anything else run `focus-queue-session attach`.",
@@ -763,6 +785,7 @@ public actor TaskContextStore {
             ## Context
 
             - [Agent log](agent-log.md): decisions, research, and verification evidence.
+            - [Task data](data.md): durable task facts and test data.
             \(links)
 
             """
@@ -782,6 +805,17 @@ public actor TaskContextStore {
             }
         }
         try ensureAgentLog(context)
+        try ensureDataFile(context)
+    }
+
+    private func ensureDataFile(_ context: TaskContext) throws {
+        guard (try? context.dataURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else {
+            throw TaskContextError.commandFailed("The task data file must be a regular task-owned file, not a symbolic link.")
+        }
+        if !files.fileExists(atPath: context.dataURL.path) {
+            try Data("# \(context.ticketID) task data\n\n\(TaskContext.dataTemplateBody)\n".utf8)
+                .write(to: context.dataURL, options: .atomic)
+        }
     }
 
     private func ensureAgentLog(_ context: TaskContext) throws {

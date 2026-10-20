@@ -26,6 +26,32 @@ struct AgentDocumentContractTests {
         #expect(try String(contentsOf: context.agentLogURL, encoding: .utf8).contains("Keep my decision."))
     }
 
+    @Test("Task data is created at initialization, linked from the plan, and preserved once authored")
+    func taskData() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("task-data-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = TaskContextStore(root: root)
+        let ticket = DashboardTicket(id: "DOC-2", title: "Cached facts", status: "open", summary: "Remember facts",
+                                     links: [DashboardLink(label: "Spec", url: "https://example.com/spec")])
+        let context = try await store.ensureContext(ticket: ticket)
+        #expect(context.dataURL.lastPathComponent == "data.md")
+        #expect(try String(contentsOf: context.dataURL, encoding: .utf8).hasPrefix("# DOC-2 task data"))
+        #expect(try await store.readPlan(ticketID: ticket.id).contains("[Task data](data.md)"))
+        #expect(context.agentPrompt(subtask: .init(id: "agent", title: "Facts")).contains(context.dataURL.path))
+        #expect(context.agentBootstrap(subtask: .init(id: "agent", title: "Facts")).contains(context.dataURL.path))
+
+        try Data("# Facts\nPort 8080.\n".utf8).write(to: context.dataURL)
+        _ = try await store.ensureContext(ticket: ticket)
+        #expect(try String(contentsOf: context.dataURL, encoding: .utf8) == "# Facts\nPort 8080.\n")
+        try FileManager.default.removeItem(at: context.dataURL)
+        _ = try await store.ensureContext(ticket: ticket)
+        #expect(FileManager.default.fileExists(atPath: context.dataURL.path))
+
+        let links = context.evidenceLinks(ticket.links + [DashboardLink(label: "Data", url: context.dataURL.path)])
+        #expect(links.map(\.url) == [context.dataURL.path, "https://example.com/spec"])
+        #expect(context.evidenceLinks([]).map(\.label) == ["Task data (data.md)"])
+    }
+
     @Test("Independent stores append without lost entries or changes to plan and task state")
     func concurrentLogs() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("agent-log-\(UUID().uuidString)")

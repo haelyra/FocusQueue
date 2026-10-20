@@ -538,6 +538,26 @@ struct QueueViewModelTests {
     #expect(model.actionMessages[ticket.id] == "Priority updated.")
   }
 
+  @Test("Status changes persist to disk and refuse closed statuses")
+  func setTaskStatus() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let ticket = try #require(model.openTickets.first)
+
+    #expect(await model.setTaskStatus(ticket, to: " QA "))
+    #expect(model.openTickets.first { $0.id == ticket.id }?.status == "qa")
+    #expect(model.actionMessages[ticket.id] == "Status updated.")
+    let saved = try JSONDecoder().decode(
+      DashboardDocument.self,
+      from: Data(contentsOf: URL(fileURLWithPath: model.config.dashboardPath)))
+    #expect(saved.tickets.first { $0.id == ticket.id }?.status == "qa")
+
+    // Closing goes through completion review or archive, never the status menu.
+    #expect(!(await model.setTaskStatus(ticket, to: "resolved")))
+    #expect(model.openTickets.first { $0.id == ticket.id }?.status == "qa")
+  }
+
   @Test("A rename finishing after a project switch never repaints the prior project")
   func renameProjectSwitchRace() async throws {
     let fixture = try await Fixture()

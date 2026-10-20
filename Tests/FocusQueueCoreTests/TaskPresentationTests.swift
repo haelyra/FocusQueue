@@ -132,3 +132,14 @@ import Testing
     "question", "unread", "working", "interrupted", "idle-new", "idle-old", "queued",
   ])
 }
+
+@Test func statusMenuOffersOpenWorkflowStatusesAndKeepsACustomCurrentValue() {
+  #expect(TaskFieldChoices.statusOptions(current: "In-Progress") == TaskFieldChoices.openStatuses)
+  #expect(TaskFieldChoices.statusOptions(current: "draft-pr").last == "draft-pr")
+  #expect(!TaskFieldChoices.statusOptions(current: "resolved").contains("resolved"))
+  #expect(TaskFieldChoices.openStatuses.allSatisfy {
+    DashboardTicket(id: "ECC-1", title: "T", status: $0, summary: "").isOpen
+  })
+  #expect(TaskFieldChoices.statusLabel("in-progress") == "In progress")
+  #expect(TaskFieldChoices.statusLabel("qa") == "QA")
+}

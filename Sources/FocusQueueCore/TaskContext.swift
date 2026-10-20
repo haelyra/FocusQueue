@@ -332,72 +332,141 @@ public struct TaskContext: Codable, Equatable, Sendable {
         (removedAgentSessionKeys ?? []).contains(Self.launchRemovalKey(launchID))
     }
 
-    /// Identity and document pointers survive the optional detailed-prompt switch.
-    /// Document contents and history are deliberately excluded from launch arguments.
-    public func agentBootstrap(subtask: TaskSubtask) -> String {
-        let prompt = subtask.initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return """
-        \(prompt.isEmpty ? "Prepare the task context, then wait for my instruction before implementing anything." : prompt)
+    /// The placeholder recorded when a task has no measurable completion test. It carries no
+    /// information, so plans and launch briefs omit it.
+    public static let genericSuccessCriteria = "Confirm the requested behavior and record verification results."
 
-        Project: \(projectName ?? projectID ?? "Other"). Primary repository: \(projectRepositoryPath ?? "not configured"). Keep assigned agent workspaces unchanged.
-        Read project guidance at \(projectPlanPath ?? "the projectPlanPath in $FOCUS_QUEUE_AGENT_CONTEXT") and the placement capsule at $FOCUS_QUEUE_AGENT_CONTEXT before acting.
-
-        Focus Queue task: \(ticketID). Agent: \(subtask.id) (\(subtask.provider.rawValue)).
-        Assigned workspace: \(subtask.workspace?.path ?? worktreePath ?? "not configured").
-        Read \(planPath) before acting; if missing, create a brief central plan following the Agent Output Contract (BLUF, What/Why/How, Decision log, Big-picture fit, QA instructions, Next steps). Keep this shared plan concise and re-read before editing.
-        Task state: \(contextDirectory.appendingPathComponent("context.json").path). Decisions, detailed progress, configuration, and evidence belong in \(agentLogURL.path), not the central plan. Append with focus-queue-session log \(ticketID) \(subtask.id) "entry". Read only relevant log entries when needed.
-        Register with focus-queue-session attach \(ticketID), briefly state your assignment and configuration, and report milestones with focus-queue-session progress \(ticketID) \(subtask.id) working "summary". Preserve user scope and queue order.
-        """
+    /// Success criteria worth repeating to an agent, or nil when only the generic placeholder exists.
+    public var specificSuccessCriteria: String? {
+        let criteria = successCriteria.trimmingCharacters(in: .whitespacesAndNewlines)
+        return criteria.isEmpty || criteria == Self.genericSuccessCriteria ? nil : criteria
     }
 
+    /// Compact mode: identity and document pointers only. Document contents stay on disk.
+    public func agentBootstrap(subtask: TaskSubtask) -> String {
+        let prompt = subtask.initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return ([prompt.isEmpty ? "Prepare the task context, then wait for my instruction before implementing anything." : prompt, ""]
+            + briefHeader(subtask: subtask, prompt: prompt)
+            + ["Task plan: \(planPath) (read before acting). Agent log: \(agentLogURL.path).",
+               "Register with `focus-queue-session attach`, then report with `focus-queue-session progress|complete`. Rules: `focus-queue-session rules`."])
+            .joined(separator: "\n")
+    }
+
+    /// Detailed mode: the project description and task plan are inlined so the agent starts grounded
+    /// without spending turns reading files. Procedure beyond the lifecycle verbs lives in `rules`.
     public func agentPrompt(subtask: TaskSubtask) -> String {
-        let support = contextDirectory.deletingLastPathComponent().deletingLastPathComponent().path
-        let quotedSupport = "'" + support.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
-        let command = "FOCUS_QUEUE_SUPPORT_DIR=\(quotedSupport) focus-queue-session"
-        let mapHelper = Self.installedMapHelper()
-        let scopeInstruction: String
-        if let mapHelper {
-            let quotedMapHelper = "'" + mapHelper.path.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
-            scopeInstruction = """
-            Keep your map scope current after registration and when your files change: FOCUS_QUEUE_SUPPORT_DIR=\(quotedSupport) \(quotedMapHelper) scope \(ticketID) \(subtask.id) --input <context-file> --output <output-file>
-            Repeat --input/--output for multiple files; each call replaces your previous scope. Declare only your actual context and intended outputs. Git changes alone do not establish ownership.
-            """
-        } else {
-            scopeInstruction = ""
-        }
+        let trimmed = subtask.initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prompt = trimmed.map { $0.isEmpty ? "Prepare the task context, then wait for my instruction before implementing anything." : $0 } ?? subtask.title
         if subtask.status == .completed {
             return """
             Resume \(ticketID): \(title). Your subtask \(subtask.title) (\(subtask.id)) is already completed.
-            Read its central plan at \(planPath) and the recorded handoff in \(contextDirectory.appendingPathComponent("context.json").path).
+            Task plan: \(planPath)
             Review the completed handoff and await new user instructions. Keep the subtask completed; do not restart implementation or report working merely because the terminal was reopened.
-            Register this pane: FOCUS_QUEUE_PROVIDER=\(subtask.provider.rawValue) FOCUS_QUEUE_TASK_ID=\(ticketID) FOCUS_QUEUE_SUBTASK_ID=\(subtask.id) \(command) attach \(ticketID)
+            Register this pane with `focus-queue-session attach`.
             """
         }
-        let assignmentDetails = subtask.assignmentDescription
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let assignmentLine = assignmentDetails.isEmpty
-            ? "" : "Assignment details: \(assignmentDetails)\n"
-        return """
-        \(subtask.initialPrompt.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Prepare the task context, then wait for my instruction before implementing anything." : $0 } ?? subtask.title)
+        var lines = [prompt, ""] + briefHeader(subtask: subtask, prompt: trimmed ?? "")
+        if let project = Self.inlineDocument(atPath: projectPlanPath, limit: 1_500) {
+            lines.append("About the project: \(project)")
+        }
+        if let plan = Self.inlineDocument(atPath: planPath, limit: 4_000, prompt: trimmed ?? "") {
+            lines += ["Task plan (\(planPath)):", plan]
+        } else {
+            lines.append("Task plan: \(planPath)")
+        }
+        lines += [
+            "Before anything else run `focus-queue-session attach`.",
+            "Report with `focus-queue-session <verb>`; task and agent IDs come from the environment: progress working|idle|blocked \"summary\" · attention approval|question \"summary\" · result \"summary\" · complete \"what changed and how it was verified\".",
+            "Before reporting result or complete, update the task plan: fill empty What/Why/How lines and tick or add Progress items. Log decisions and evidence with `focus-queue-session log \"entry\"`.",
+            "More rules: `focus-queue-session rules`.",
+        ]
+        return lines.joined(separator: "\n")
+    }
 
-        Work on \(ticketID): \(title). Your subtask is \(subtask.title) (\(subtask.id)).
-        Project: \(projectName ?? projectID ?? "Other"). Primary repository: \(projectRepositoryPath ?? "not configured").
-        Read project guidance at \(projectPlanPath ?? "the projectPlanPath in $FOCUS_QUEUE_AGENT_CONTEXT") and the placement capsule at $FOCUS_QUEUE_AGENT_CONTEXT before acting.
-        \(assignmentLine)Read the central plan at \(planPath) and context at \(contextDirectory.appendingPathComponent("context.json").path) before acting. If the plan is missing, create a brief central plan following the Agent Output Contract (BLUF, What/Why/How, Decision log, Big-picture fit, QA instructions, Next steps). Keep it concise; re-read before edits and preserve concurrent changes. Link supporting canvases from it.
-        Keep decisions, detailed progress, configuration, research, and verification evidence in \(agentLogURL.path). Append with \(command) log \(ticketID) \(subtask.id) "entry". Read only relevant entries when needed; do not inject the whole log or put decision history in the central plan.
-        Briefly state your assignment, provider, workspace, branch, and intended outputs. Reuse this assigned worktree on resume. Create an isolated worktree before coding if no dedicated writer workspace is assigned; preserve the source checkout's local edits.
-        Workspace: \(subtask.workspace?.path ?? worktreePath ?? repositoryPath ?? "not configured")
-        Assigned branch: \(subtask.workspace?.branch ?? branch ?? "not configured")
-        Success criteria: \(successCriteria)
-        Register this pane: FOCUS_QUEUE_PROVIDER=\(subtask.provider.rawValue) FOCUS_QUEUE_TASK_ID=\(ticketID) FOCUS_QUEUE_SUBTASK_ID=\(subtask.id) \(command) attach \(ticketID)
-        Report concise progress and refresh activity at meaningful milestones (at least every 5 minutes while working): \(command) progress \(ticketID) \(subtask.id) working "short progress summary"
-        \(scopeInstruction)
-        Report approval requests with \(command) attention \(ticketID) \(subtask.id) approval "what needs approval", and questions with \(command) attention \(ticketID) \(subtask.id) question "what needs an answer". Report working when resuming. Report a finished response that leaves the assignment open with \(command) result \(ticketID) \(subtask.id) "short result".
-        Use idle or blocked when waiting. On completion: \(command) complete \(ticketID) \(subtask.id) "what changed and verification result"
-        Before any push, run \(command) review-push \(ticketID) \(subtask.id). The orchestrator scans the committed diff for accidental files, unrelated additions, generated output, and missing checks. If rejected, correct only your changes and run review-push again. Push only after acceptance and only when the user authorized remote delivery. Never push directly to main unless explicitly requested.
-        Update the plan within the agreed scope without an extra approval loop. Ask before materially changing scope, ownership, branch strategy, or external delivery. Your assigned workspace path is immutable; a different checkout requires a new agent assignment. Use \(command) workspace \(ticketID) \(subtask.id) <absolute-path> only to record the first assignment or refresh metadata for the same path.
-        Complete only your assigned subtask. Preserve other agents' changes. Never force-remove a worktree or merge a branch without the task's approval terms. Task closure requires verification and safe cleanup.
+    /// Identity lines shared by both prompt modes. Assignment text is repeated only when it says
+    /// something the user's prompt does not.
+    private func briefHeader(subtask: TaskSubtask, prompt: String) -> [String] {
+        var lines = ["[Focus Queue] \(ticketID): \(title) · Project: \(projectName ?? projectID ?? "Other")"]
+        if subtask.title != title { lines.append("Subtask: \(subtask.title)") }
+        lines.append("Agent \(subtask.id) (\(subtask.provider.rawValue)) · Workspace: \(subtask.workspace?.path ?? worktreePath ?? repositoryPath ?? "not configured") · Branch: \(subtask.workspace?.branch ?? branch ?? "not configured")")
+        let assignment = subtask.assignmentDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !assignment.isEmpty, !Self.restates(assignment, prompt) {
+            lines.append("Assignment details: \(assignment)")
+        }
+        if let criteria = specificSuccessCriteria { lines.append("Success criteria: \(criteria)") }
+        return lines
+    }
+
+    /// Assignment text is often the prompt itself, or the prompt truncated to the 2,000-character field limit.
+    static func restates(_ assignment: String, _ prompt: String) -> Bool {
+        guard !prompt.isEmpty else { return false }
+        return prompt == assignment || prompt.hasPrefix(assignment) || assignment.hasPrefix(prompt)
+    }
+
+    static func singleLine(_ text: String) -> String {
+        text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    /// Markdown body without its title heading, without empty `- **Label:**` placeholders, and capped.
+    /// A label whose value merely restates the user's prompt points back to it instead of repeating it.
+    static func inlineDocument(atPath path: String?, limit: Int, prompt: String = "") -> String? {
+        guard let path, let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+        var lines = text.components(separatedBy: .newlines)
+        if let first = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }),
+           lines[first].hasPrefix("# ") {
+            lines.removeSubrange(...first)
+        }
+        lines.removeAll { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            return trimmed.hasPrefix("- **") && trimmed.hasSuffix(":**")
+        }
+        lines = lines.map { line in
+            guard line.hasPrefix("- **"), let end = line.range(of: ":** ") else { return line }
+            let value = line[end.upperBound...].trimmingCharacters(in: .whitespaces)
+            let flatPrompt = singleLine(prompt)
+            guard value.count >= 40, restates(value, flatPrompt) || flatPrompt.contains(value) else { return line }
+            return String(line[..<end.upperBound]) + "see the request above."
+        }
+        var body = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        while body.contains("\n\n\n") { body = body.replacingOccurrences(of: "\n\n\n", with: "\n\n") }
+        guard !body.isEmpty else { return nil }
+        guard body.count > limit else { return body }
+        return String(body.prefix(limit)) + "\n… (truncated; read \(path) for the rest)"
+    }
+
+    /// On-demand procedure for managed agents. Printed by `focus-queue-session rules` so launch
+    /// prompts stay short.
+    public static func agentRules(mapHelper: String? = installedMapHelper()?.path) -> String {
+        var rules = """
+        Focus Queue agent rules. Commands are `focus-queue-session <verb>`; omit <TASK-ID> <AGENT-ID> to use $FOCUS_QUEUE_TASK_ID and $FOCUS_QUEUE_SUBTASK_ID.
+
+        Lifecycle
+        - attach: register this pane before any other work.
+        - progress queued|working|idle|blocked "summary": at meaningful milestones, at least every 5 minutes while working. Use idle or blocked when waiting; report working when resuming.
+        - attention approval|question|interrupted|incomplete|failed "summary": anything that needs the user.
+        - result "summary": a finished response that leaves the assignment open.
+        - complete "what changed and how it was verified": only after verification.
+        - log "entry": decisions, configuration, research, and verification evidence, appended to the task's agent-log.md. Read only relevant entries; never paste the whole log into the plan.
+
+        Task plan (tasks/<TASK-ID>/plan.md)
+        - Keep it bare: What/Why/How (one sentence each), success criteria, a Progress checklist, and links to crucial context or evidence.
+        - Tick Progress items as they finish and add the next ones. Re-read before editing and preserve other agents' concurrent edits.
+
+        Workspace and scope
+        - Your assigned workspace is immutable; a different checkout requires a new agent assignment. `workspace <TASK-ID> <AGENT-ID> <absolute-path>` only records the first assignment or refreshes metadata for the same path.
+        - Complete only your assigned subtask and preserve other agents' changes. Update the plan within the agreed scope without an extra approval loop; ask before materially changing scope, ownership, branch strategy, or external delivery.
+        - Push only when the user authorizes remote delivery, never directly to main unless explicitly requested. Never force-remove a worktree or merge a branch without the task's approval terms. Task closure requires verification and safe cleanup.
         """
+        if let mapHelper {
+            rules += """
+
+
+            Map scope
+            - '\(mapHelper)' scope <TASK-ID> <AGENT-ID> --input <context-file> --output <output-file>
+            - Repeat --input/--output for multiple files; each call replaces your previous scope. Declare only your actual context and intended outputs; git changes alone do not establish ownership.
+            """
+        }
+        return rules + "\n"
     }
 
     static func installedMapHelperCandidates(homeDirectory: URL) -> [URL] {
@@ -407,7 +476,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
         ].map { homeDirectory.appendingPathComponent($0) }
     }
 
-    private static func installedMapHelper(
+    public static func installedMapHelper(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> URL? {
         installedMapHelperCandidates(homeDirectory: homeDirectory).first {
@@ -633,7 +702,7 @@ public actor TaskContextStore {
                                       projectRepositoryPath: project?.repositoryPath,
                                       projectPlanPath: projectPlanPath,
                                       ticketID: ticket.id.uppercased(), title: ticket.title,
-                                      summary: ticket.summary, successCriteria: ticket.doneWhen ?? "Confirm the requested behavior and record verification results.",
+                                      summary: ticket.summary, successCriteria: ticket.doneWhen ?? TaskContext.genericSuccessCriteria,
                                       planPath: planURL.path, worktreePath: worktreePath ?? ticket.worktree, updatedAt: Date())
             try ensureDocuments(context: context, ticket: ticket)
             try write(context)
@@ -672,41 +741,28 @@ public actor TaskContextStore {
         if !files.fileExists(atPath: planURL.path) || (try? files.attributesOfItem(atPath: planURL.path)[.size] as? NSNumber)?.intValue == 0 {
             let links = ticket.links.map { "- [\($0.label)](\($0.url))" }.joined(separator: "\n")
             let steps = ticket.steps.map { "- [\($0.isDone ? "x" : " ")] \($0.label)" }.joined(separator: "\n")
+            let next = ticket.next?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let progress = !steps.isEmpty ? steps : "- [ ] \(next.isEmpty ? "Confirm scope and choose the first step." : next)"
+            // Bare-bones grounding for every agent on the task. Empty Why/How lines are
+            // filled by agents as they learn them and are omitted from launch briefs.
             let markdown = """
             # \(ticket.id): \(ticket.title)
 
-            ## BLUF
+            - **What:**\(ticket.summary.isEmpty ? "" : " " + TaskContext.singleLine(ticket.summary))
+            - **Why:**
+            - **How:**
 
-            \(ticket.id) — \(ticket.title). Current focus: \(ticket.next ?? "Confirm scope and choose the first implementation step.")
+            ## Success criteria
 
-            ## What / Why / How
+            \(context.specificSuccessCriteria.map { "- \($0)" } ?? "- Not recorded yet.")
 
-            - **What:** \(ticket.summary)
-            - **Why:** This task advances the recorded project goal.
-            - **How we know:** \(context.successCriteria)
+            ## Progress
 
-            ## Decision log
+            \(progress)
 
-            1. **Scope boundary.** Stay within this task and the assigned subtask. Ask before materially expanding scope.
-            2. **Evidence belongs in the agent log.** Decisions, detailed progress, configuration, checks, and handoffs go in `agent-log.md`, not this plan.
+            ## Context
 
-            ## Big-picture fit
-
-            N/A — task-level plan. Read the project plan and applicable AGENTS.md for architecture and interaction rules.
-
-            ## QA instructions
-
-            1. Re-read this plan before editing.
-            2. Record verification results and decisions in `agent-log.md`.
-            3. Preserve concurrent edits from other agents.
-
-            ## Next steps
-
-            \(steps.isEmpty ? "- [ ] Confirm scope and record the implementation approach." : steps)
-
-            ## Supporting links
-
-            - [Agent log](agent-log.md): decisions, configuration, detailed progress, research, and verification evidence. Read relevant entries on demand.
+            - [Agent log](agent-log.md): decisions, research, and verification evidence.
             \(links)
 
             """

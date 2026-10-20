@@ -1939,8 +1939,13 @@ public struct LocalState: Codable, Equatable, Sendable {
 
   /// Records a user launch as the overall default and as its provider's last.
   public mutating func rememberAgentLaunch(_ preset: AgentLaunchPreset) {
+    var launches = lastAgentLaunches ?? []
+    // State saved before per-provider memory holds its only launch here.
+    if let previous = lastAgentLaunch, !launches.contains(where: { $0.provider == previous.provider }) {
+      launches.append(previous)
+    }
     lastAgentLaunch = preset
-    var launches = (lastAgentLaunches ?? []).filter { $0.provider != preset.provider }
+    launches.removeAll { $0.provider == preset.provider }
     launches.append(preset)
     lastAgentLaunches = AgentProvider.allCases.compactMap { provider in
       launches.first { $0.provider == provider }

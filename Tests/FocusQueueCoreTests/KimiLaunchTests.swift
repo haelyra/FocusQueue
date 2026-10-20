@@ -79,10 +79,16 @@ struct KimiLaunchTests {
     let decoded = try JSONDecoder().decode(LocalState.self, from: JSONEncoder().encode(state))
     #expect(decoded == state)
 
-    // State saved before per-provider memory still answers for its one provider.
-    let legacy = LocalState(routineDate: "2026-10-20", lastAgentLaunch: kimi)
+    // State saved before per-provider memory still answers for its one provider,
+    // and keeps it when another provider launches first after the upgrade.
+    var legacy = LocalState(routineDate: "2026-10-20", lastAgentLaunch: kimi)
     #expect(legacy.lastAgentLaunch(for: .kimi) == kimi)
     #expect(legacy.lastAgentLaunch(for: .claude) == nil)
+    legacy.rememberAgentLaunch(claude)
+    let upgraded = try JSONDecoder().decode(LocalState.self, from: JSONEncoder().encode(legacy))
+    #expect(upgraded.lastAgentLaunch == claude)
+    #expect(upgraded.lastAgentLaunch(for: .kimi) == kimi)
+    #expect(upgraded.lastAgentLaunch(for: .claude) == claude)
 
     // An entry from a newer build drops alone instead of erasing the others.
     var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(state)) as? [String: Any])

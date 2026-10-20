@@ -1192,6 +1192,38 @@ final class QueueViewModel {
   }
 
   @discardableResult
+  func setTaskStatus(_ ticket: DashboardTicket, to status: String) async -> Bool {
+    let status = TaskFieldChoices.normalizedStatus(status)
+    guard !status.isEmpty, !TaskFieldChoices.closedStatuses.contains(status) else {
+      actionMessages[ticket.id] = "Could not update status: use completion review or archive to close a task."
+      return false
+    }
+    guard status != TaskFieldChoices.normalizedStatus(ticket.status) else { return true }
+    guard let project = project(for: ticket) ?? selectedProject else {
+      actionMessages[ticket.id] = "Could not update status: no owning project."
+      return false
+    }
+    do {
+      let url = URL(fileURLWithPath: project.dashboardPath)
+      let snapshot = try await dashboardRepository.loadSnapshot(from: url)
+      let updated = try await dashboardRepository.setTicketStatus(
+        id: ticket.id, to: status, in: url, expectedRevision: snapshot.revision)
+      if showsAllProjects {
+        await reloadMergedDashboard()
+      } else if config.selectedProjectID == project.id {
+        dashboard = updated.document
+        await captureDurableDashboard(updated.document)
+      }
+      actionMessages[ticket.id] = "Status updated."
+      loadError = nil
+      return true
+    } catch {
+      actionMessages[ticket.id] = "Could not update status: \(error.localizedDescription)"
+      return false
+    }
+  }
+
+  @discardableResult
   func markTaskIncomplete(_ ticket: DashboardTicket) async -> Bool {
     guard ticket.isCompleted else { return true }
     do {
@@ -1292,7 +1324,7 @@ final class QueueViewModel {
 
   private static func allowedPriority(_ rawValue: String) -> String {
     let value = rawValue.lowercased()
-    return ["low", "medium", "high", "critical"].contains(value) ? value : "medium"
+    return TaskFieldChoices.priorities.contains(value) ? value : "medium"
   }
 
   func refresh(forceRecurringPRProgress: Bool = false, userInitiated: Bool = false) async {

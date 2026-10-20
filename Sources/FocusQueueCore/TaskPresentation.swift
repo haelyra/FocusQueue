@@ -59,6 +59,38 @@ public extension DashboardTicket {
   }
 }
 
+/// The status and priority choices the task row offers. Closed statuses
+/// (`resolved`, `cancelled`) stay out of the menu: completion review and
+/// archive own those transitions.
+public enum TaskFieldChoices {
+  public static let priorities = ["critical", "high", "medium", "low"]
+  public static let openStatuses = ["backlog", "in-progress", "testing", "review", "qa", "blocked"]
+  public static let closedStatuses = ["resolved", "cancelled"]
+
+  /// Menu entries for a ticket, keeping a nonstandard current status (for
+  /// example `draft-pr`) selectable so the menu always shows a checkmark.
+  public static func statusOptions(current: String) -> [String] {
+    let current = normalizedStatus(current)
+    guard !current.isEmpty, !openStatuses.contains(current), !closedStatuses.contains(current) else {
+      return openStatuses
+    }
+    return openStatuses + [current]
+  }
+
+  public static func normalizedStatus(_ rawValue: String) -> String {
+    rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  }
+
+  public static func statusLabel(_ status: String) -> String {
+    switch normalizedStatus(status) {
+    case "in-progress": "In progress"
+    case "qa": "QA"
+    case "draft-pr": "Draft PR"
+    case let other: other.replacingOccurrences(of: "-", with: " ").capitalized
+    }
+  }
+}
+
 public enum TaskTriagePolicy {
   public static func date(from value: String?) -> Date? {
     guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }

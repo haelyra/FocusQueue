@@ -46,9 +46,9 @@ public enum WorkspaceMapProjection {
         var context = snapshot.nodes.first { $0.kind == .context }
             ?? MapNode(id: "context-workspace", parentID: "queue", kind: .context, label: "Context workspace", evidence: "Task")
         context.label = snapshot.taskID + " Context workspace"
-        let slots = snapshot.nodes.filter { ["Central plan", "Task context and evidence links", "Task map"].contains($0.label) }
+        let slots = snapshot.nodes.filter { ["Central plan", "Task data", "Task context and evidence links", "Task map"].contains($0.label) }
             .sorted { a, b in
-                let labels = ["Central plan", "Task context and evidence links", "Task map"]
+                let labels = ["Central plan", "Task data", "Task context and evidence links", "Task map"]
                 return labels.firstIndex(of: a.label)! < labels.firstIndex(of: b.label)!
             }
         var root = MapTree(context, role: "Task workspace"); root.previews = slots

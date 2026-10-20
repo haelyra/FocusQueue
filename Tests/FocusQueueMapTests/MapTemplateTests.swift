@@ -9,6 +9,7 @@ struct MapTemplateTests {
             MapNode(id: "queue", parentID: nil, kind: .queue, label: "Focus Queue", evidence: "Task"),
             MapNode(id: "context", parentID: "queue", kind: .context, label: "Context", evidence: "Task"),
             MapNode(id: "plan", parentID: "context", kind: .document, label: "Central plan", path: "/task/plan.md", evidence: "Task"),
+            MapNode(id: "data", parentID: "context", kind: .document, label: "Task data", path: "/task/data.md", evidence: "Task"),
             MapNode(id: "evidence", parentID: "context", kind: .document, label: "Task context and evidence links", evidence: "Task"),
             MapNode(id: "map", parentID: "context", kind: .document, label: "Task map", evidence: "Task"),
             MapNode(id: "work", parentID: "queue", kind: .workspace, label: "Repo", path: "/repo", evidence: "Git"),
@@ -56,6 +57,8 @@ struct MapTemplateTests {
         #expect(!diagram.items.contains { $0.node.id == "brief" })
         #expect(diagram.items.first { $0.node.id == "work" }?.previews?.map(\.label) == ["README.md"])
         #expect(diagram.items.first { $0.node.id == "work" }?.detailID == nil)
+        #expect(diagram.items.first { $0.node.kind == .context }?.previews?.map(\.label)
+            == ["Central plan", "Task data", "Task context and evidence links", "Task map"])
         #expect(!diagram.items.contains { $0.node.label == "More repo context" })
         #expect(diagram.containers.map(\.label) == ["Worktree: Repo"])
         let contexts = Set(diagram.items.filter { ["plan", "readme", "brief"].contains($0.node.id) }.map(\.id))

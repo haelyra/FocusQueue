@@ -114,6 +114,10 @@ struct WorkspaceMapTests {
         #expect(!snapshot.warnings.isEmpty)
         #expect(snapshot.nodes.filter { $0.kind == .agent }.first?.state(at: mapNow) == "queued")
         #expect(snapshot.nodes.contains { $0.kind == .queue })
+        let contextID = MapNode.identity("context-folder", context.contextDirectory.path)
+        let data = try #require(snapshot.nodes.first { $0.label == "Task data" })
+        #expect(data.path == context.dataURL.path && data.parentID == contextID)
+        #expect(FileManager.default.fileExists(atPath: context.dataURL.path))
     }
 
     @Test("Schema rejects missing parents, duplicate IDs, cycles, and incompatible versions")

@@ -188,6 +188,7 @@ struct WorkspaceMapView: View {
     private func previewLabel(_ node: MapNode) -> String {
         switch node.label {
         case "Central plan": "Plan"
+        case "Task data": "Data"
         case "Task context and evidence links": "Context"
         case "Task map": "Map"
         default: node.label

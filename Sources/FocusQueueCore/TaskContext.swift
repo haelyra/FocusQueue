@@ -324,6 +324,19 @@ public struct TaskContext: Codable, Equatable, Sendable {
 
     public var agentLogURL: URL { contextDirectory.appendingPathComponent("agent-log.md") }
 
+    /// Cached task facts and test data, kept beside the plan so every task view and agent can find it.
+    public var dataURL: URL { contextDirectory.appendingPathComponent("data.md") }
+
+    /// The task data file leads the evidence list even when the dashboard records no links.
+    public func evidenceLinks(_ ticketLinks: [DashboardLink]) -> [DashboardLink] {
+        let data = dataURL.standardizedFileURL
+        let others = ticketLinks.filter { link in
+            guard let url = ResourceLocator.url(for: link.url), url.isFileURL else { return true }
+            return url.standardizedFileURL != data
+        }
+        return [DashboardLink(label: "Task data (data.md)", url: data.path, type: "plan")] + others
+    }
+
     public static func launchRemovalKey(_ launchID: String) -> String {
         "launch:" + launchID.lowercased()
     }
@@ -345,7 +358,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
         Focus Queue task: \(ticketID). Agent: \(subtask.id) (\(subtask.provider.rawValue)).
         Assigned workspace: \(subtask.workspace?.path ?? worktreePath ?? "not configured").
         Read \(planPath) before acting; if missing, create a brief central plan following the Agent Output Contract (BLUF, What/Why/How, Decision log, Big-picture fit, QA instructions, Next steps). Keep this shared plan concise and re-read before editing.
-        Task state: \(contextDirectory.appendingPathComponent("context.json").path). Decisions, detailed progress, configuration, and evidence belong in \(agentLogURL.path), not the central plan. Append with focus-queue-session log \(ticketID) \(subtask.id) "entry". Read only relevant log entries when needed.
+        Task state: \(contextDirectory.appendingPathComponent("context.json").path). Task data: \(dataURL.path); read it before acting and record durable task facts and test data there. Decisions, detailed progress, configuration, and evidence belong in \(agentLogURL.path), not the central plan. Append with focus-queue-session log \(ticketID) \(subtask.id) "entry". Read only relevant log entries when needed.
         Register with focus-queue-session attach \(ticketID), briefly state your assignment and configuration, and report milestones with focus-queue-session progress \(ticketID) \(subtask.id) working "summary". Preserve user scope and queue order.
         """
     }
@@ -384,6 +397,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
         Project: \(projectName ?? projectID ?? "Other"). Primary repository: \(projectRepositoryPath ?? "not configured").
         Read project guidance at \(projectPlanPath ?? "the projectPlanPath in $FOCUS_QUEUE_AGENT_CONTEXT") and the placement capsule at $FOCUS_QUEUE_AGENT_CONTEXT before acting.
         \(assignmentLine)Read the central plan at \(planPath) and context at \(contextDirectory.appendingPathComponent("context.json").path) before acting. If the plan is missing, create a brief central plan following the Agent Output Contract (BLUF, What/Why/How, Decision log, Big-picture fit, QA instructions, Next steps). Keep it concise; re-read before edits and preserve concurrent changes. Link supporting canvases from it.
+        Read cached task data at \(dataURL.path) before acting and record durable task facts and test data there.
         Keep decisions, detailed progress, configuration, research, and verification evidence in \(agentLogURL.path). Append with \(command) log \(ticketID) \(subtask.id) "entry". Read only relevant entries when needed; do not inject the whole log or put decision history in the central plan.
         Briefly state your assignment, provider, workspace, branch, and intended outputs. Reuse this assigned worktree on resume. Create an isolated worktree before coding if no dedicated writer workspace is assigned; preserve the source checkout's local edits.
         Workspace: \(subtask.workspace?.path ?? worktreePath ?? repositoryPath ?? "not configured")
@@ -707,6 +721,7 @@ public actor TaskContextStore {
             ## Supporting links
 
             - [Agent log](agent-log.md): decisions, configuration, detailed progress, research, and verification evidence. Read relevant entries on demand.
+            - [Task data](data.md): cached task facts and test data. Read before acting.
             \(links)
 
             """
@@ -726,6 +741,17 @@ public actor TaskContextStore {
             }
         }
         try ensureAgentLog(context)
+        try ensureDataFile(context)
+    }
+
+    private func ensureDataFile(_ context: TaskContext) throws {
+        guard (try? context.dataURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else {
+            throw TaskContextError.commandFailed("The task data file must be a regular task-owned file, not a symbolic link.")
+        }
+        if !files.fileExists(atPath: context.dataURL.path) {
+            try Data("# \(context.ticketID) task data\n\nCached facts, inputs, and test data for this task. Agents read this before acting and add durable task facts here.\n".utf8)
+                .write(to: context.dataURL, options: .atomic)
+        }
     }
 
     private func ensureAgentLog(_ context: TaskContext) throws {

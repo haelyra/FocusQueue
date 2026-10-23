@@ -2047,7 +2047,11 @@ public struct LocalState: Codable, Equatable, Sendable {
       try container.decodeIfPresent([TaskAgentSession].self, forKey: .agentSessions) ?? []
     viewedTicketIDs = try container.decodeIfPresent(Set<String>.self, forKey: .viewedTicketIDs)
     viewedTicketSources = try container.decodeIfPresent(Set<String>.self, forKey: .viewedTicketSources)
-    queueActivitySortMode = try container.decodeIfPresent(QueueActivitySortMode.self, forKey: .queueActivitySortMode)
+    let decodedQueueMode = try container.decodeIfPresent(
+      QueueActivitySortMode.self, forKey: .queueActivitySortMode)
+    // Manual ordering is now a temporary per-snapshot override. Normalize the
+    // retired persisted mode once without converting old arrays into pins.
+    queueActivitySortMode = decodedQueueMode == .manual ? .recentActivity : decodedQueueMode
     // A preset from a newer build must never block loading the rest of local state.
     lastAgentLaunch = (try? container.decodeIfPresent(AgentLaunchPreset.self, forKey: .lastAgentLaunch)) ?? nil
     // Decode entries one by one so an unknown provider drops only its own entry.

@@ -623,6 +623,26 @@ func taskSubtaskLegacyOutputTimestampDecoding() throws {
     #expect(roundTrip.lastOutputAt == current.lastOutputAt)
 }
 
+@Test("Task pins persist through locked mutation and clear when the dashboard closes the task")
+func taskPinLifecycle() async throws {
+    let root = try contextFixture(); defer { try? FileManager.default.removeItem(at: root) }
+    let store = TaskContextStore(root: root)
+    let ticket = contextTicket()
+    _ = try await store.ensureContext(ticket: ticket)
+    let pinnedAt = Date(timeIntervalSinceReferenceDate: 123)
+
+    let pinned = try await store.setPinned(ticketID: ticket.id, at: pinnedAt)
+    #expect(pinned.pinnedAt == pinnedAt)
+    #expect(try await store.load(ticketID: ticket.id)?.pinnedAt == pinnedAt)
+
+    let resolved = DashboardTicket(
+        id: ticket.id, title: ticket.title, status: "resolved", summary: ticket.summary)
+    let cleared = try await store.ensureContext(ticket: resolved)
+    #expect(cleared.pinnedAt == nil)
+    let reopened = try await store.ensureContext(ticket: ticket)
+    #expect(reopened.pinnedAt == nil)
+}
+
 @Test("Progress and prompt heartbeats do not count as agent output")
 func taskSubtaskOutputTimestampLifecycle() async throws {
     let root = try contextFixture(); defer { try? FileManager.default.removeItem(at: root) }

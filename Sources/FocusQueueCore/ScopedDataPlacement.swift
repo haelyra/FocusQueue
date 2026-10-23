@@ -7,8 +7,42 @@ public struct ScopedDataPlacementReceipt: Codable, Equatable, Sendable {
     public let added: Bool
 }
 
+public struct ScopedDataEnsureReceipt: Codable, Equatable, Sendable {
+    public let created: [String]
+    public let existing: [String]
+}
+
 /// The only write boundary for durable user, project, and task facts.
 public enum ScopedDataPlacement {
+    /// Creates empty data files for the user and every active project without changing existing facts.
+    public static func ensure(root: URL, configuration: AppConfiguration) throws -> ScopedDataEnsureReceipt {
+        let projects = ProjectCatalog.ensuringOther(in: configuration.projects, supportDirectory: root)
+        try ProjectCatalog.validate(projects)
+        let paths = [root.appendingPathComponent("user/data.md")]
+            + projects.filter { $0.archivedAt == nil }.sorted { $0.id < $1.id }.map {
+                root.appendingPathComponent("projects/\($0.id)/data.md")
+            }
+        for path in paths { try validateDestination(path, root: root) }
+        return try FocusQueueFileLock.withLocks(for: paths) {
+            var created: [String] = []
+            var existing: [String] = []
+            for path in paths {
+                try validateDestination(path, root: root)
+                if FileManager.default.fileExists(atPath: path.path) {
+                    guard (try path.resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true else {
+                        throw TaskContextError.commandFailed("Data destination is not a regular file.")
+                    }
+                    existing.append(path.path)
+                } else {
+                    try Data().write(to: path, options: .atomic)
+                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+                    created.append(path.path)
+                }
+            }
+            return ScopedDataEnsureReceipt(created: created, existing: existing)
+        }
+    }
+
     public static func place(scope: String, targetID: String, text: String,
                              root: URL, configuration: AppConfiguration) async throws -> ScopedDataPlacementReceipt {
         let fact = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -54,18 +88,7 @@ public enum ScopedDataPlacement {
             throw TaskContextError.commandFailed("Data scope must be user, project, or task.")
         }
 
-        var candidates = [path]
-        var ancestor = path.deletingLastPathComponent()
-        while ancestor.path.hasPrefix(root.path), ancestor.path != root.path {
-            candidates.append(ancestor)
-            ancestor.deleteLastPathComponent()
-        }
-        candidates.append(root)
-        for candidate in candidates where FileManager.default.fileExists(atPath: candidate.path) {
-            guard (try? candidate.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else {
-                throw TaskContextError.commandFailed("Data destination is a symbolic link.")
-            }
-        }
+        try validateDestination(path, root: root)
         let line = "- \(fact)"
         let added = try FocusQueueFileLock.withLocks(for: [path]) {
             guard (try? path.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else {
@@ -85,6 +108,17 @@ public enum ScopedDataPlacement {
         }
         return ScopedDataPlacementReceipt(scope: scope, targetID: targetID,
                                           path: path.path, added: added)
+    }
+
+    private static func validateDestination(_ path: URL, root: URL) throws {
+        var candidate = path
+        while candidate.path.hasPrefix(root.path) {
+            if (try? candidate.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
+                throw TaskContextError.commandFailed("Data destination is a symbolic link.")
+            }
+            if candidate.path == root.path { break }
+            candidate.deleteLastPathComponent()
+        }
     }
 
     private static func sentenceCount(_ text: String) -> Int {

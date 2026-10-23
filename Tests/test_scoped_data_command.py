@@ -59,6 +59,41 @@ class ScopedDataCommandTests(unittest.TestCase):
         self.assertFalse((self.root / "tasks/WEB-001/data.md").exists())
         self.assertFalse((self.root / "projects/focus-queue/data.md").exists())
 
+    def test_ensure_creates_empty_files_and_preserves_existing_facts(self):
+        existing = self.root / "projects/space-site/data.md"
+        existing.parent.mkdir(parents=True)
+        existing.write_text("- Use gray with blue accents.\n")
+        first = self.run_command("data", "ensure")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        receipt = json.loads(first.stdout)
+        self.assertEqual(receipt["created"], [
+            str(self.root / "user/data.md"),
+            str(self.root / "projects/focus-queue/data.md"),
+            str(self.root / "projects/other/data.md"),
+        ])
+        self.assertEqual(receipt["existing"], [str(existing)])
+        for relative in ("user/data.md", "projects/focus-queue/data.md",
+                         "projects/other/data.md"):
+            self.assertEqual((self.root / relative).read_bytes(), b"")
+            self.assertEqual((self.root / relative).stat().st_mode & 0o777, 0o600)
+        self.assertEqual(existing.read_text(), "- Use gray with blue accents.\n")
+        second = self.run_command("data", "ensure")
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(json.loads(second.stdout)["created"], [])
+        append = self.run_command("data", "place", "project", "focus-queue",
+                                  "Keep scoped data concise.")
+        self.assertEqual(append.returncode, 0, append.stderr)
+        self.assertEqual((self.root / "projects/focus-queue/data.md").read_text(),
+                         "- Keep scoped data concise.\n")
+
+    def test_ensure_rejects_symlinked_project_directory(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        (self.root / "projects").symlink_to(outside, target_is_directory=True)
+        result = self.run_command("data", "ensure")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((outside / "focus-queue/data.md").exists())
+
     def test_unknown_targets_and_verbose_data_are_rejected(self):
         for scope, target, fact in [
             ("project", "missing", "Use gray."),

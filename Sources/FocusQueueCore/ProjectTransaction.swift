@@ -344,21 +344,55 @@ public struct ProjectCreationTransaction: Sendable {
     let destinationCandidate = try encodeJSONObject(["tickets": movedTickets])
 
     let decodedSource = try JSONDecoder().decode(DashboardDocument.self, from: sourceData)
-    let fallback = DashboardOrdering.openTickets(in: decodedSource.tickets).map(\.id)
-    let saved = try QueueOrderStore(
-      root: supportDirectory, projectID: source.id).load() ?? fallback
+    let projectionState = readQueueProjectionState()
+    let sourceContexts = readTaskContexts(
+      ticketIDs: Set(decodedSource.tickets.map { $0.id.uppercased() }))
+    let sourceAutomatic = QueueOrderStore.automaticTickets(
+      decodedSource.tickets,
+      deferredTicketIDs: projectionState.deferredTicketIDs,
+      mode: projectionState.mode,
+      contexts: sourceContexts)
+    let sourceAutomaticIDs = sourceAutomatic.map(\.id)
+    let sourceOverride = try QueueOrderStore(
+      root: supportDirectory, projectID: source.id).applicableOrder(
+        automaticIDs: sourceAutomaticIDs, sortMode: projectionState.mode)
+    let sourceDisplayed: [DashboardTicket]
+    if let sourceOverride {
+      let manuallyOrdered = QueueOrderStore.orderedTickets(
+        sourceAutomatic, savedIDs: sourceOverride)
+      let pinnedDates = Dictionary(sourceContexts.compactMap { context in
+        context.pinnedAt.map { (context.ticketID, $0) }
+      }, uniquingKeysWith: max)
+      sourceDisplayed = QueueOrderStore.prioritizingPins(
+        manuallyOrdered, pinnedAtByTicketID: pinnedDates)
+    } else {
+      sourceDisplayed = sourceAutomatic
+    }
     let canonicalIDs = Dictionary(
       movedTickets.compactMap { ticket -> (String, String)? in
         guard let id = ticket["id"] as? String else { return nil }
         return (id.uppercased(), id)
       },
       uniquingKeysWith: { first, _ in first })
-    var orderedMovedIDs = saved.compactMap { canonicalIDs[$0.uppercased()] }
+    var orderedMovedIDs = sourceDisplayed.compactMap {
+      canonicalIDs[$0.id.uppercased()]
+    }
     for ticket in movedTickets {
       guard let id = ticket["id"] as? String, !orderedMovedIDs.contains(id) else { continue }
       orderedMovedIDs.append(id)
     }
-    let orderCandidate = try prettyEncoder.encode(orderedMovedIDs)
+    let movedDocument = try JSONDecoder().decode(DashboardDocument.self, from: destinationCandidate)
+    let movedIDs = Set(movedDocument.tickets.map { $0.id.uppercased() })
+    let movedContexts = sourceContexts.filter { movedIDs.contains($0.ticketID.uppercased()) }
+    let automaticMovedIDs = QueueOrderStore.automaticTickets(
+      movedDocument.tickets,
+      deferredTicketIDs: projectionState.deferredTicketIDs,
+      mode: projectionState.mode,
+      contexts: movedContexts).map(\.id)
+    let orderCandidate = try prettyEncoder.encode(QueueOrderDocument(
+      orderedIDs: orderedMovedIDs,
+      automaticBaselineIDs: automaticMovedIDs,
+      sortMode: projectionState.mode))
 
     let project = ProjectConfiguration(
       id: request.id,
@@ -429,6 +463,45 @@ public struct ProjectCreationTransaction: Sendable {
     let manifestURL = transactionDirectory.appendingPathComponent("manifest.json")
     try writeManifest(manifest, to: manifestURL)
     return PreparedTransaction(manifest: manifest, manifestURL: manifestURL)
+  }
+
+  /// Reads only the queue fields this transaction needs. Unknown fields and a
+  /// future sort-mode value fall back safely without blocking project creation.
+  private func readQueueProjectionState() -> (
+    mode: QueueActivitySortMode, deferredTicketIDs: [String]
+  ) {
+    let stateURL = supportDirectory.appendingPathComponent("state.json")
+    guard let data = try? Data(contentsOf: stateURL),
+      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else { return (.recentActivity, []) }
+    let decodedMode = (object["queueSortMode"] as? String)
+      .flatMap(QueueActivitySortMode.init(rawValue:))
+    let mode = decodedMode == .manual
+      ? QueueActivitySortMode.recentActivity
+      : decodedMode ?? .recentActivity
+    let deferred = (object["deferredTicketIDs"] as? [Any])?.compactMap { $0 as? String } ?? []
+    return (mode, deferred)
+  }
+
+  /// Task context writes are atomic, so a read sees either complete version.
+  /// Symlinked and malformed entries are ignored like context discovery.
+  private func readTaskContexts(ticketIDs: Set<String>) -> [TaskContext] {
+    let tasks = supportDirectory.appendingPathComponent("tasks", isDirectory: true)
+    guard let entries = try? FileManager.default.contentsOfDirectory(
+      at: tasks,
+      includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+      options: [.skipsHiddenFiles])
+    else { return [] }
+    return entries.compactMap { entry in
+      guard ticketIDs.contains(entry.lastPathComponent.uppercased()),
+        let values = try? entry.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+        values.isDirectory == true, values.isSymbolicLink != true,
+        let data = try? Data(contentsOf: entry.appendingPathComponent("context.json")),
+        let context = try? JSONDecoder().decode(TaskContext.self, from: data),
+        ticketIDs.contains(context.ticketID.uppercased())
+      else { return nil }
+      return context
+    }
   }
 
   private func validateNoCrossProjectDuplicate(

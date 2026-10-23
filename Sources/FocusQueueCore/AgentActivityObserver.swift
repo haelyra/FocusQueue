@@ -89,7 +89,13 @@ public struct AgentActivityEvent: Sendable, Equatable {
                         ?? (message?["content"] as? [[String: Any]])?.first?["text"] as? String
                     if ["[Request interrupted by user]", "[Request interrupted by user for tool use]"].contains(text ?? "") {
                         kind = .attention(.interrupted); summary = "The agent turn was interrupted."
-                    } else { kind = Self.isClaudePrompt(record) ? .prompt : .working }
+                    } else if Self.isClaudePrompt(record) {
+                        kind = .prompt
+                    } else if Self.isClaudeToolResult(record) {
+                        kind = .working
+                    }
+                    // Compaction summaries (including idle compaction), meta notices,
+                    // and slash-command echoes are written without a running turn.
                 }
                 if type == "assistant", let message = record["message"] as? [String: Any] {
                     let content = message["content"] as? [[String: Any]] ?? []
@@ -169,6 +175,14 @@ public struct AgentActivityEvent: Sendable, Equatable {
         let metadata = payload["internal_chat_message_metadata_passthrough"] as? [String: Any]
         let kinds = metadata?["content_item_kinds"] as? [String] ?? []
         return kinds.contains { $0.hasPrefix("user.") }
+    }
+
+    /// A tool's output, written while the turn that called it is still running.
+    private static func isClaudeToolResult(_ record: [String: Any]) -> Bool {
+        guard record["isMeta"] as? Bool != true, record["isCompactSummary"] as? Bool != true else { return false }
+        if record["toolUseResult"] != nil { return true }
+        let content = (record["message"] as? [String: Any])?["content"] as? [[String: Any]] ?? []
+        return content.contains { $0["type"] as? String == "tool_result" }
     }
 
     /// Tool results, compaction summaries, background-task notices, and local

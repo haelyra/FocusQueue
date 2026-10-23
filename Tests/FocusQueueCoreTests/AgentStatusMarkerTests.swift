@@ -122,6 +122,21 @@ struct AgentStatusMarkerTests {
         #expect(codexEvents.map(\.kind) == [.working, .working, .working])
     }
 
+    @Test("Idle compaction and meta records after a result are not work; tool results are")
+    func idleCompactionIsNotWork() {
+        let session = UUID().uuidString
+        let lines = [
+            #"{"timestamp":"2026-10-23T20:21:56Z","type":"assistant","sessionId":"\#(session)","uuid":"r","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}"#,
+            #"{"timestamp":"2026-10-23T21:16:35Z","type":"system","subtype":"compact_boundary","sessionId":"\#(session)","uuid":"b","content":"Conversation compacted"}"#,
+            #"{"timestamp":"2026-10-23T21:16:35Z","type":"user","sessionId":"\#(session)","uuid":"s","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued from a previous conversation."}}"#,
+            #"{"timestamp":"2026-10-23T21:16:36Z","type":"user","sessionId":"\#(session)","uuid":"m","isMeta":true,"message":{"role":"user","content":"Caveat: local command output follows."}}"#,
+            #"{"timestamp":"2026-10-23T21:16:37Z","type":"user","sessionId":"\#(session)","uuid":"c","message":{"role":"user","content":"<local-command-stdout>Compacted</local-command-stdout>"}}"#,
+            #"{"timestamp":"2026-10-23T21:20:00Z","type":"user","sessionId":"\#(session)","uuid":"t","toolUseResult":{},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":"ok"}]}}"#,
+        ].joined(separator: "\n")
+        let events = AgentActivityEvent.events(in: Data(lines.utf8), provider: .claude, sessionID: session)
+        #expect(events.map(\.kind) == [.result, .working])
+    }
+
     @Test("Kimi's main wire transcript is located and parsed into prompts, work, and results")
     func kimiTranscript() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

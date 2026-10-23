@@ -289,7 +289,8 @@ struct SubtaskFocusTests {
             #"{"timestamp":"2026-10-19T17:00:06Z","type":"user","sessionId":"\#(session)","uuid":"g","message":{"role":"user","content":[{"type":"image"},{"type":"text","text":"Legacy prompt"}]}}"#,
         ].joined(separator: "\n")
         let claudeKinds = AgentActivityEvent.events(in: Data(claude.utf8), provider: .claude, sessionID: session).map(\.kind)
-        #expect(claudeKinds == [.prompt, .working, .working, .working, .working, .working, .prompt])
+        // Only tool output is in-turn work; notices, summaries, and command echoes are not.
+        #expect(claudeKinds == [.prompt, .working, .prompt])
 
         let codex = [
             #"{"timestamp":"2026-10-19T17:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"AGENTS.md instructions"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["agents_md.instructions","environments.environment_context"]}}}"#,

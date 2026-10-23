@@ -270,4 +270,68 @@ public struct ProjectContextStore: Sendable {
         }
         return url
     }
+
+    /// Known project documents in reading order. Only files that exist are listed, so a
+    /// project that never received practices or a PRD shows just its plan.
+    public func documents(projectID: String) throws -> [ProjectDocument] {
+        let directory = try planURL(projectID: projectID).deletingLastPathComponent()
+        return ProjectDocument.Kind.allCases.compactMap { kind in
+            let url = directory.appendingPathComponent(kind.fileName)
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+                  !isDirectory.boolValue else { return nil }
+            return ProjectDocument(kind: kind, url: url)
+        }
+    }
+
+    /// External links recorded in the project's context.json (repository, deployments, databases).
+    public func links(projectID: String) throws -> [DashboardLink] {
+        let url = try planURL(projectID: projectID).deletingLastPathComponent()
+            .appendingPathComponent(ProjectDocument.Kind.context.fileName)
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+        return ["links", "deployments", "databases"].flatMap { key in
+            (object[key] as? [[String: Any]] ?? []).compactMap { entry -> DashboardLink? in
+                guard let target = entry["url"] as? String, !target.isEmpty else { return nil }
+                let label = (entry["label"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? target
+                return DashboardLink(label: label, url: target, type: entry["kind"] as? String)
+            }
+        }
+    }
+}
+
+public struct ProjectDocument: Identifiable, Equatable, Sendable {
+    public enum Kind: String, CaseIterable, Sendable {
+        case plan, practices, prd, architecture, evidence, data, context
+
+        public var fileName: String { self == .context ? "context.json" : "\(rawValue).md" }
+
+        public var title: String {
+            switch self {
+            case .plan: "Project plan"
+            case .practices: "Practices"
+            case .prd: "Product requirements"
+            case .architecture: "Architecture"
+            case .evidence: "Evidence index"
+            case .data: "Project data"
+            case .context: "Project context"
+            }
+        }
+
+        public var systemImage: String {
+            switch self {
+            case .plan: "doc.text"
+            case .practices: "checklist"
+            case .prd: "list.bullet.rectangle"
+            case .architecture: "square.stack.3d.up"
+            case .evidence: "checkmark.seal"
+            case .data: "tablecells"
+            case .context: "curlybraces"
+            }
+        }
+    }
+
+    public var id: String { kind.rawValue }
+    public let kind: Kind
+    public let url: URL
 }

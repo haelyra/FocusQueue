@@ -874,6 +874,7 @@ struct QueueView: View {
         syncLabel.font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
           .lineLimit(1).minimumScaleFactor(0.8)
         Spacer()
+        ProjectFilesButton(model: model)
         monitorButton
         Button {
           if model.dailyReport == nil {
@@ -1154,6 +1155,24 @@ struct QueueView: View {
     model.canSwitchMonitor
       ? "Move queue to next display" : "Connect another display to move the queue"
   }
+}
+
+/// Header entry point for project-level documents, the project counterpart of a
+/// task's "Context, evidence & links".
+struct ProjectFilesButton: View {
+    let model: QueueViewModel
+    @State private var isPresented = false
+
+    var body: some View {
+        Button { isPresented.toggle() } label: {
+            Image(systemName: "folder.badge.gearshape").font(.system(size: 13, weight: .semibold))
+        }
+        .buttonStyle(.plain).minimumHitTarget(width: 30, height: 34)
+        .disabled(model.activeProjects.isEmpty)
+        .accessibilityLabel("Show project files")
+        .help("Project plan, practices, context, evidence, and links")
+        .popover(isPresented: $isPresented, arrowEdge: .bottom) { ProjectFilesPanel(model: model) }
+    }
 }
 
 private enum QueueScreen {

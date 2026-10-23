@@ -81,6 +81,32 @@ struct ProjectTests {
         #expect((try FileManager.default.attributesOfItem(atPath: plan.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600)
     }
 
+    @Test func projectDocumentsListExistingFilesAndContextLinks() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = ProjectDefinition(id: "focus", name: "Focus", dashboardPath: "/tmp/d.json",
+            workspacePath: "/tmp", taskPrefix: "FOC")
+        let store = ProjectContextStore(root: root)
+        let directory = try store.ensurePlan(for: project).deletingLastPathComponent()
+        #expect(try store.documents(projectID: "focus").map(\.kind) == [.plan])
+        #expect(try store.links(projectID: "focus").isEmpty)
+        for name in ["evidence.md", "practices.md", "notes.md"] {
+            try Data("# \(name)\n".utf8).write(to: directory.appendingPathComponent(name))
+        }
+        try FileManager.default.createDirectory(at: directory.appendingPathComponent("prd.md"),
+            withIntermediateDirectories: true)
+        try Data("""
+        {"links":[{"kind":"repository","label":"GitHub","url":"https://github.com/o/r"},{"label":"no url"}],
+         "deployments":[{"url":"https://example.com"}]}
+        """.utf8).write(to: directory.appendingPathComponent("context.json"))
+        #expect(try store.documents(projectID: "focus").map(\.kind) == [.plan, .practices, .evidence, .context])
+        #expect(try store.links(projectID: "focus") == [
+            DashboardLink(label: "GitHub", url: "https://github.com/o/r", type: "repository"),
+            DashboardLink(label: "https://example.com", url: "https://example.com"),
+        ])
+        #expect(throws: (any Error).self) { try store.documents(projectID: "../escape") }
+    }
+
     @Test func worktreeRepositoryIdentity() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

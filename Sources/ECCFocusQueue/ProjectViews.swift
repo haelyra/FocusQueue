@@ -203,3 +203,154 @@ private struct ProjectTaskEditor: View {
             .onAppear { projectID = model.selectedProject?.id ?? ProjectCatalog.otherID }
     }
 }
+
+struct ProjectFilesPanel: View {
+    let model: QueueViewModel
+    /// Offscreen snapshots cannot capture WebKit; tests render the list without the preview.
+    var rendersPreview = true
+    @State private var projectID = ""
+    @State private var documents: [ProjectDocument] = []
+    @State private var links: [DashboardLink] = []
+    @State private var selection: URL?
+    @State private var content: SideDocumentContent?
+    @State private var error: String?
+    @State private var revision = 0
+    private let loader = SideDocumentLoader()
+
+    private var project: ProjectDefinition? { model.activeProjects.first { $0.id == projectID } }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            sidebar.frame(width: 210)
+            Divider()
+            if rendersPreview { preview.frame(maxWidth: .infinity, maxHeight: .infinity) }
+        }
+        .frame(width: 780, height: 540)
+        .onAppear {
+            guard projectID.isEmpty else { return }
+            let preferred = model.showsAllProjects ? nil : model.selectedProject?.id
+            projectID = model.activeProjects.first { $0.id == preferred }?.id ?? model.activeProjects.first?.id ?? ""
+        }
+        .onChange(of: projectID, initial: true) { reloadDocuments() }
+        .task(id: "\(selection?.path ?? ""):\(revision)") {
+            content = nil
+            guard let selection else { return }
+            do {
+                let loaded = try await loader.load(selection)
+                guard !Task.isCancelled else { return }
+                content = loaded; error = nil
+            } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+        }
+    }
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Menu {
+                ForEach(model.activeProjects) { project in
+                    Button(project.name) { projectID = project.id }
+                }
+            } label: {
+                Label(project?.name ?? "Choose project", systemImage: "folder")
+                    .font(.system(size: 13, weight: .semibold)).lineLimit(1)
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+            .accessibilityLabel("Project: \(project?.name ?? "none")")
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(documents) { document in
+                        Button { selection = document.url } label: {
+                            Label {
+                                Text(document.kind.title)
+                            } icon: {
+                                Image(systemName: document.kind.systemImage).frame(width: 16)
+                            }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 8).padding(.vertical, 5)
+                                .background(selection == document.url ? Color.accentColor.opacity(0.16) : .clear,
+                                    in: RoundedRectangle(cornerRadius: 6))
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help(document.url.path)
+                    }
+                    if !links.isEmpty {
+                        Text("Links").font(.caption.bold()).foregroundStyle(.secondary).padding(.top, 10)
+                        ForEach(links) { link in
+                            Button(link.label, systemImage: "link") { model.open(link.url) }
+                                .buttonStyle(.link).multilineTextAlignment(.leading).help(link.url)
+                        }
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Spacer(minLength: 0)
+            if let directory = documents.first?.url.deletingLastPathComponent() {
+                Button("Open project folder", systemImage: "folder") { NSWorkspace.shared.open(directory) }
+                    .buttonStyle(.link)
+            }
+        }
+        .font(.system(size: 12))
+        .padding(12)
+    }
+
+    @ViewBuilder private var preview: some View {
+        if let selection {
+            VStack(spacing: 8) {
+                HStack {
+                    Text(selection.lastPathComponent).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                    Spacer()
+                    Button { revision += 1 } label: { Image(systemName: "arrow.clockwise") }.help("Reload document")
+                    Button { NSWorkspace.shared.open(selection) } label: { Image(systemName: "arrow.up.forward.app") }
+                        .help("Open in the default app to edit")
+                }
+                Group {
+                    if let error {
+                        ContentUnavailableView("Preview unavailable", systemImage: "doc", description: Text(error))
+                    } else if let content {
+                        switch content {
+                        case .markdown(let text):
+                            EmbeddedPlanDocument(markdown: text, sourceURL: selection, appearance: model.appearance,
+                                accentStyle: model.accentStyle, canvasSelection: nil, open: open, select: { _ in })
+                        case .text(let text):
+                            FindableTextDocument(text: text, query: "", request: 0, searchesBackwards: false)
+                        case .rendered(let resource):
+                            ReadOnlyResourceDocument(url: resource, open: open)
+                        }
+                    } else { ProgressView("Loading document…") }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: 9))
+            }.padding(12)
+        } else {
+            ContentUnavailableView(error == nil ? "No project files" : "Project files unavailable",
+                systemImage: "folder", description: Text(error ?? "Choose a project to see its documents."))
+        }
+    }
+
+    private func reloadDocuments() {
+        guard let project else { documents = []; links = []; selection = nil; return }
+        do {
+            let store = model.projectContextStore
+            try store.ensurePlan(for: project)
+            documents = try store.documents(projectID: project.id)
+            links = try store.links(projectID: project.id)
+            error = nil
+            if selection.map({ url in !documents.contains { $0.url == url } }) ?? true {
+                selection = documents.first?.url
+            }
+        } catch {
+            documents = []; links = []; selection = nil
+            self.error = error.localizedDescription
+        }
+    }
+
+    /// Links inside a project document stay in this viewer when they point at
+    /// another project document; everything else opens through the queue.
+    private func open(_ url: URL) {
+        let target = DocumentPaneLocation.normalized(url) ?? url
+        if let document = documents.first(where: { $0.url.standardizedFileURL == target.standardizedFileURL }) {
+            selection = document.url
+        } else {
+            model.open(target.absoluteString)
+        }
+    }
+}

@@ -376,8 +376,9 @@ public struct TaskContext: Codable, Equatable, Sendable {
         return ([prompt.isEmpty ? "Prepare the task context, then wait for my instruction before implementing anything." : prompt, ""]
             + briefHeader(subtask: subtask, prompt: prompt)
             + ["Task plan: \(planPath) (read before acting). Task data: \(dataURL.path). Agent log: \(agentLogURL.path).",
-               "User data: \(userDataURL.path). Project data: \(projectDataURL?.path ?? "none"). Read relevant saved facts before acting.",
-               Self.dataWritingRule,
+               Self.dataWritingRule]
+            + scopedDataLines()
+            + ["Read relevant saved facts before acting.",
                "Register with `focus-queue-session attach`, then report with `focus-queue-session progress|complete`. Rules: `focus-queue-session rules`."])
             .joined(separator: "\n")
     }
@@ -399,13 +400,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
         if let project = Self.inlineDocument(atPath: projectPlanPath, limit: 1_500) {
             lines.append("About the project: \(project)")
         }
-        if let userData = Self.inlineDocument(atPath: userDataURL.path, limit: 2_000) {
-            lines += ["User data (\(userDataURL.path)):", userData]
-        }
-        if let projectDataURL,
-           let projectData = Self.inlineDocument(atPath: projectDataURL.path, limit: 3_000) {
-            lines += ["Project data (\(projectDataURL.path)):", projectData]
-        }
+        lines += scopedDataLines(includeTask: false)
         if let plan = Self.inlineDocument(atPath: planPath, limit: 4_000, prompt: trimmed ?? "") {
             lines += ["Task plan (\(planPath)):", plan]
         } else {
@@ -425,6 +420,21 @@ public struct TaskContext: Codable, Equatable, Sendable {
             "More rules: `focus-queue-session rules`.",
         ]
         return lines.joined(separator: "\n")
+    }
+
+    private func scopedDataLines(includeTask: Bool = true) -> [String] {
+        var lines: [String] = []
+        if let data = Self.inlineDocument(atPath: userDataURL.path, limit: 2_000) {
+            lines += ["User data (\(userDataURL.path)):", data]
+        }
+        if let projectDataURL,
+           let data = Self.inlineDocument(atPath: projectDataURL.path, limit: 3_000) {
+            lines += ["Project data (\(projectDataURL.path)):", data]
+        }
+        if includeTask, let data = Self.inlineDocument(atPath: dataURL.path, limit: 2_000) {
+            lines += ["Task data (\(dataURL.path)):", data]
+        }
+        return lines
     }
 
     /// Identity lines shared by both prompt modes. Assignment text is repeated only when it says

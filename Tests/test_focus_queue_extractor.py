@@ -256,5 +256,110 @@ class ApplyTests(unittest.TestCase):
             self.assertFalse((Path(directory) / "tasks/WEB-999/data.md").exists())
 
 
+class CrossProjectTests(unittest.TestCase):
+    def catalog(self, root, prompt):
+        import json
+        sites = root / "sites.json"
+        sites.write_text(json.dumps({"tickets": [
+            {"id": "WEB-001", "title": "Landing Page", "status": "backlog",
+             "summary": "Build company landing page and waitlist"},
+            {"id": "WEB-002", "title": "Demo Video", "status": "backlog",
+             "summary": "Create product video and short version"}]}))
+        queue = root / "queue.json"
+        queue.write_text(json.dumps({"tickets": [
+            {"id": "FOC-010", "title": "Data placement", "status": "backlog",
+             "summary": "Route durable user facts"}]}))
+        config = {"focusQueueProjects": [
+            {"id": "focus-queue", "name": "Focus Queue", "dashboardPath": str(queue)},
+            {"id": "space-site", "name": "Space Website", "dashboardPath": str(sites)}]}
+        return EXTRACTOR.candidate_catalog(config, prompt, "focus-queue", "FOC-010", root)
+
+    def test_zero_model_filter_includes_other_project_owner(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = self.catalog(Path(directory),
+                "For the Space Website, the demo video needs an under-ten-second version.")
+            self.assertEqual({p["id"] for p in catalog["projects"]},
+                             {"focus-queue", "space-site", "other"})
+            self.assertIn("WEB-002", [task["id"] for task in catalog["tasks"]])
+            self.assertEqual(next(task for task in catalog["tasks"] if task["id"] == "WEB-002")["project_id"],
+                             "space-site")
+
+    def test_other_project_and_global_scope_validation(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            prompt = ("For the Space Website, always use gray with blue accents. "
+                      "The demo video needs a short version later. "
+                      "I always want concise output across all projects.")
+            catalog = self.catalog(Path(directory), prompt)
+            base = atom()
+            cases = [
+                ("project", "space-site", "preference",
+                 "For the Space Website, always use gray with blue accents."),
+                ("task", "WEB-002", "deferred", "The demo video needs a short version later."),
+                ("user", "user", "preference",
+                 "I always want concise output across all projects."),
+            ]
+            for destination, target, kind, quote in cases:
+                clean, reason = EXTRACTOR.validate_atom(dict(base, destination=destination,
+                    target_id=target, kind=kind, quote=quote), catalog, prompt, 0.85)
+                self.assertIsNone(reason, (destination, reason))
+                self.assertEqual(clean["target_id"], target)
+            bad, reason = EXTRACTOR.validate_atom(dict(base, destination="user", target_id="user",
+                quote="For the Space Website, always use gray with blue accents."),
+                catalog, prompt, 0.85)
+            self.assertEqual(bad["destination"], "inbox")
+            self.assertIn("scope evidence", reason)
+
+    def test_cross_project_flow_places_four_scopes_without_runtime_trace(self):
+        import json
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prompt = ("For the Space Website, always use gray with blue accents. "
+                      "The demo video needs a version under 10 seconds later. "
+                      "I need a company Instagram account later. "
+                      "Across all projects, always keep replies concise.")
+            catalog = self.catalog(root, prompt)
+            proposals = [
+                atom(quote="For the Space Website, always use gray with blue accents.",
+                     text="Use gray with blue accents for the Space Website.",
+                     destination="project", target_id="space-site"),
+                atom(quote="The demo video needs a version under 10 seconds later.",
+                     text="Provide a demo video version under 10 seconds.",
+                     destination="task", target_id="WEB-002", kind="deferred"),
+                atom(quote="I need a company Instagram account later.",
+                     text="Create a company Instagram account.",
+                     destination="new_task", target_id="space-site", kind="deferred"),
+                atom(quote="Across all projects, always keep replies concise.",
+                     text="Keep replies concise.",
+                     destination="user", target_id="user"),
+            ]
+            def model(*_args):
+                return json.dumps({"structured_output": {"atoms": proposals}}), ""
+            environment = {"FOCUS_QUEUE_SUPPORT_DIR": directory,
+                           "FOCUS_QUEUE_PLACEMENT_CLAUDE_EXECUTABLE": "/bin/echo",
+                           "FOCUS_QUEUE_SESSION_EXECUTABLE": "/bin/echo", "PATH": ""}
+            settings = {"provider": "claude", "model": "haiku", "effort": "low",
+                        "threshold": 0.85, "timeout": 5}
+            record = EXTRACTOR.extract(prompt, catalog, current_task_id="FOC-010",
+                                       settings=settings, environment=environment, runner=model)
+            self.assertEqual(record["accepted"], 4)
+            self.assertIsNone(record["promptExcerpt"])
+            self.assertFalse((root / "extraction-ledger.sqlite").exists())
+            def create_task(command, **_kwargs):
+                self.assertEqual(command[3], "space-site")
+                return subprocess.CompletedProcess(command, 0,
+                    json.dumps({"taskID": "WEB-003", "created": "true"}), "")
+            receipts = EXTRACTOR.apply_record(record, catalog, environment=environment,
+                                              command_runner=create_task)
+            self.assertEqual(len(receipts), 4)
+            self.assertIn("gray with blue", (root / "projects/space-site/data.md").read_text())
+            self.assertIn("under 10 seconds", (root / "tasks/WEB-002/data.md").read_text())
+            self.assertIn("concise", (root / "user/data.md").read_text())
+            self.assertFalse((root / "projects/focus-queue/data.md").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

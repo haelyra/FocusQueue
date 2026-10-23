@@ -41,6 +41,7 @@ enum SessionRegistrationError: Error, LocalizedError {
                 print("Agent rules: rules (lifecycle, plan, workspace, and map-scope rules for managed agents)")
                 print("Launch brief preview: brief <TASK-ID> <SUBTASK-ID> (the exact prompt a fresh launch of that agent receives)")
                 print("Maintenance: reconcile <TASK-ID> [--no-cleanup] (repair documents and save a receipt; optional workspace cleanup)")
+                print("Data placement: data-placement status|on|off (automatic native prompt capture; off by default)")
                 print("Persistent terminals: tmux list | tmux start <name> [--cwd <directory>] [-- <command> ...] | tmux start-agent <TASK-ID> <AGENT-ID> [--cwd <directory>] -- <command> ... | tmux attach <name> | tmux ssh-command <user@host> <name>")
                 print("Task layouts: tmux panes <name> | tmux arrange <name> | tmux manual <name> | tmux save | tmux restore | tmux persistence")
             }
@@ -54,6 +55,7 @@ enum SessionRegistrationError: Error, LocalizedError {
             else if arguments.first == "architecture" { try await architectureCommand(arguments: arguments) }
             else if arguments.first == "diagnose" { try await diagnose(arguments: arguments) }
             else if arguments.first == "register-event" { try await registerEvent(arguments: arguments) }
+            else if arguments.first == "data-placement" { try await dataPlacement(arguments: arguments) }
             else if arguments == ["intake-changed"] {
                 notifyContextChanged()
                 try emit(["status": "notified"])
@@ -722,6 +724,10 @@ enum SessionRegistrationError: Error, LocalizedError {
     }
 
     private static func registerEvent(arguments: [String]) async throws {
+        if ProcessInfo.processInfo.environment["FOCUS_QUEUE_EXTRACTION_CHILD"] == "1" {
+            try emit(["status": "ignored"])
+            return
+        }
         var provider: AgentProvider?
         var taskID: String?
         var index = 1
@@ -812,6 +818,53 @@ enum SessionRegistrationError: Error, LocalizedError {
         output["agentID"] = record.agentID; output["parentSessionID"] = record.parentSessionID
         output["placementPath"] = placement?.capsulePath
         try emit(output)
+        if config.dataPlacementEnabled == true,
+           environment["FOCUS_QUEUE_EXTRACTION_CHILD"] != "1",
+           event.hookEventName == "UserPromptSubmit", !event.isSubagent,
+           let prompt = event.prompt?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !prompt.isEmpty, prompt.count <= 4_000,
+           let projectID = placement?.projectID {
+            // The provider hook has a short deadline. Let extraction finish in a child
+            // process while registration returns immediately to the user's agent.
+            let script = root.appendingPathComponent("automation/Scripts/focus_queue_extractor.py")
+            if FileManager.default.fileExists(atPath: script.path) {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+                var arguments = [script.path, "extract", "--prompt-stdin", "--project", projectID,
+                                 "--provider", provider.rawValue, "--apply"]
+                if let taskID = record.taskID { arguments += ["--task", taskID] }
+                process.arguments = arguments
+                var childEnvironment = environment
+                childEnvironment["FOCUS_QUEUE_EXTRACTION_CHILD"] = "1"
+                childEnvironment["FOCUS_QUEUE_SESSION_EXECUTABLE"] = CommandLine.arguments[0]
+                process.environment = childEnvironment
+                let input = Pipe()
+                process.standardInput = input
+                process.standardOutput = FileHandle.nullDevice
+                process.standardError = FileHandle.nullDevice
+                do {
+                    try process.run()
+                    input.fileHandleForWriting.write(Data(prompt.utf8))
+                    try? input.fileHandleForWriting.close()
+                } catch {
+                    try? input.fileHandleForWriting.close()
+                }
+            }
+        }
+    }
+
+    private static func dataPlacement(arguments: [String]) async throws {
+        guard arguments.count == 2, ["on", "off", "status"].contains(arguments[1]) else {
+            throw SessionRegistrationError.usage
+        }
+        let root = supportDirectory(environment: ProcessInfo.processInfo.environment)
+        let repository = JSONConfigurationRepository(url: root.appendingPathComponent("config.json"))
+        var configuration = try loadConfiguration(from: root)
+        if arguments[1] != "status" {
+            configuration.dataPlacementEnabled = arguments[1] == "on"
+            try await repository.save(configuration)
+        }
+        try emit(["dataPlacementEnabled": configuration.dataPlacementEnabled == true])
     }
 
     private static func locateRuntime(provider: AgentProvider, sessionID: String) async throws {

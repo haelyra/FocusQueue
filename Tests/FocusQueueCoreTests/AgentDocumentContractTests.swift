@@ -63,7 +63,7 @@ struct AgentDocumentContractTests {
         #expect(context.evidenceLinks([]).map(\.label) == ["Task data (data.md)"])
     }
 
-    @Test("Scoped saved facts appear in detailed prompts and compact pointers")
+    @Test("Scoped saved facts appear in detailed and compact launch prompts")
     func scopedData() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("scoped-data-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -76,12 +76,17 @@ struct AgentDocumentContractTests {
         try Data("- Use the gray theme.\n".utf8).write(to: projectData)
         try FileManager.default.createDirectory(at: context.userDataURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data("- Keep answers concise.\n".utf8).write(to: context.userDataURL)
+        try Data("- Keep the demo under ten seconds.\n".utf8).write(to: context.dataURL)
         let prompt = context.agentPrompt(subtask: .init(id: "agent", title: "Facts"))
         #expect(prompt.contains("Use the gray theme."))
         #expect(prompt.contains("Keep answers concise."))
+        #expect(prompt.contains("Keep the demo under ten seconds."))
         let bootstrap = context.agentBootstrap(subtask: .init(id: "agent", title: "Facts"))
         #expect(bootstrap.contains(projectData.path))
         #expect(bootstrap.contains(context.userDataURL.path))
+        #expect(bootstrap.contains("Use the gray theme."))
+        #expect(bootstrap.contains("Keep answers concise."))
+        #expect(bootstrap.contains("Keep the demo under ten seconds."))
     }
 
     @Test("Independent stores append without lost entries or changes to plan and task state")

@@ -82,25 +82,30 @@ struct QueueViewModelTests {
     try await eventually { dashboards.loads > loadBaseline }
   }
 
-  @Test("Discovered Codex subagent metadata supplies a readable title once")
-  func discoveredSubagentPromptHintNamesAgent() async throws {
+  @Test("Discovered Codex subagents never add a second agent for one Codex session")
+  func discoveredSubagentDoesNotAddAgent() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let store = TaskContextStore(root: fixture.root)
     _ = try await store.ensureContext(ticket: fixture.tickets[0])
     let parentID = UUID().uuidString.lowercased()
     let childID = UUID().uuidString.lowercased()
+    let laterID = UUID().uuidString.lowercased()
     let rootPath = fixture.root.path
     var parent = TaskSubtask(id: "parent-agent", title: "Parent agent", sessionID: parentID)
     parent.workspace = AgentWorkspace(path: rootPath, repositoryPath: rootPath)
     _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: parent)
 
+    // The root process is listed after the subagent, so its row proves the
+    // subagent was already processed.
     let model = await fixture.model(
       agent: ControlledQueueAgent(), terminalController: LabelRecorder(),
       discoverExternalAgents: {
       [KnownProviderProcess(
         provider: .codex, sessionID: childID, parentSessionID: parentID,
         isSubagent: true, promptHint: "registration fix", processID: 42,
+        tty: nil, cwd: rootPath),
+       KnownProviderProcess(provider: .codex, sessionID: laterID, processID: 43,
         tty: nil, cwd: rootPath)]
       })
     model.setPanelVisible(false)
@@ -108,12 +113,11 @@ struct QueueViewModelTests {
     await model.refresh()
 
     try await eventually {
-      let context = try await store.load(ticketID: "ECC-101")
-      return context?.subtasks.contains {
-        $0.sessionID == childID && $0.title == "Registration fix"
-          && $0.assignmentDescription == "registration fix"
-      } == true
+      try await store.load(ticketID: "ECC-101")?.subtasks.contains { $0.sessionID == laterID } == true
     }
+    let sessions = try await store.load(ticketID: "ECC-101")?.subtasks.compactMap(\.sessionID)
+    #expect(sessions?.contains(childID) == false)
+    #expect(sessions?.filter { $0 == parentID }.count == 1)
   }
 
   @Test("Transcript observer retains a result followed by newer working activity")

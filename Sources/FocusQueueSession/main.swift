@@ -734,6 +734,18 @@ enum SessionRegistrationError: Error, LocalizedError {
         let environment = ProcessInfo.processInfo.environment
         guard let (provider, sessionID) = TaskSessionBinding.providerSession(environment: environment),
               UUID(uuidString: sessionID) != nil else { throw SessionRegistrationError.missingSessionIdentity }
+        // A Codex sub-agent inherits its parent's history, including the startup
+        // instruction to attach, but exports its own thread UUID. Attaching that
+        // thread would add a second agent for one Codex session.
+        if provider == .codex, let parent = CodexSessionLineage.subagentParent(of: sessionID) {
+            var output = ["status": "subagent", "provider": provider.rawValue,
+                          "sessionID": sessionID.lowercased(), "parentSessionID": parent,
+                          "reason": ExternalAgentRegistry.codexSubagentReason]
+            output["taskID"] = environment["FOCUS_QUEUE_TASK_ID"]
+            output["subtaskID"] = environment["FOCUS_QUEUE_SUBTASK_ID"]
+            try emit(output)
+            return
+        }
         let event = ExternalAgentEvent(sessionID: sessionID, cwd: FileManager.default.currentDirectoryPath,
             hookEventName: "ExplicitAttach")
         try await registerEvent(event, provider: provider, explicitTaskID: arguments[1], environment: environment)

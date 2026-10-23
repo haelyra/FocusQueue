@@ -3141,6 +3141,36 @@ struct QueueViewModelTests {
     #expect(try await store.load(ticketID: "ECC-101")?.updatedAt == terminalContext.updatedAt)
   }
 
+  @Test("Archiving an app-launched Codex agent does not resurrect it from its launch receipt")
+  func archivedAppLaunchStaysArchived() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let agentID = UUID().uuidString
+    let launchID = UUID().uuidString.lowercased()
+    var agent = TaskSubtask(id: agentID, title: "Codex agent", provider: .codex)
+    agent.launchConfiguration = AgentLaunchConfiguration(launchID: launchID)
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: agent)
+    let receipt = try JSONDecoder().decode(AgentIntakeReceipt.self,
+      from: JSONSerialization.data(withJSONObject: [
+        "launchID": launchID, "taskID": "ECC-101", "agentID": agentID,
+        "cwd": fixture.root.path, "phase": "ready", "title": "Codex agent",
+        "workspacePolicy": "assigned",
+      ]))
+    try await model.importProvisionalAgentIntakes([receipt])
+    let launched = try #require(model.visibleAgents(for: "ECC-101").first { $0.id == agentID })
+    #expect(model.visibleAgents(for: "ECC-101").count == 1)
+
+    model.removeAgent(launched, from: fixture.tickets[0])
+    try await eventually { model.visibleAgents(for: "ECC-101").isEmpty }
+    try await model.importProvisionalAgentIntakes([receipt])
+    #expect(model.visibleAgents(for: "ECC-101").isEmpty)
+    let saved = try #require(try await store.load(ticketID: "ECC-101"))
+    #expect(!saved.subtasks.contains { $0.id == launchID })
+  }
+
   @Test("A launch initializes an existing task directory when its context is missing")
   func provisionalLaunchInitializesMissingContext() async throws {
     let fixture = try await Fixture()

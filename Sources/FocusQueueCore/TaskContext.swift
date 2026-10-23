@@ -342,6 +342,12 @@ public struct TaskContext: Codable, Equatable, Sendable {
         "launch:" + launchID.lowercased()
     }
 
+    /// An app-launched agent's intake receipt is keyed by its placement launch
+    /// ID, not its row ID, so both must be retired or the receipt recreates it.
+    static func launchRemovalKeys(for agent: TaskSubtask) -> [String] {
+        [agent.id, agent.launchConfiguration?.launchID].compactMap { $0 }.map(launchRemovalKey)
+    }
+
     public func hasDismissedLaunch(_ launchID: String) -> Bool {
         (removedAgentSessionKeys ?? []).contains(Self.launchRemovalKey(launchID))
     }
@@ -1024,8 +1030,8 @@ public actor TaskContextStore {
             ticketID: ticketID, archiveChanges: true, archiveBeforeChanges: true
         ) { context in
             let keys = context.subtasks.flatMap { subtask in
-                [subtask.sessionID.map { subtask.provider.rawValue + ":" + $0.lowercased() },
-                 subtask.hasAgent ? TaskContext.launchRemovalKey(subtask.id) : nil].compactMap { $0 }
+                [subtask.sessionID.map { subtask.provider.rawValue + ":" + $0.lowercased() }].compactMap { $0 }
+                    + (subtask.hasAgent ? TaskContext.launchRemovalKeys(for: subtask) : [])
             }
             context.removedAgentSessionKeys = Array(Set((context.removedAgentSessionKeys ?? []) + keys)).sorted()
             context.subtasks.removeAll()
@@ -1052,8 +1058,8 @@ public actor TaskContextStore {
             let removedSessionKeys = context.subtasks.filter { candidate in
                 candidate.id == removed.id || linkedAgentIDs.contains(candidate.id)
             }.flatMap { agent in
-                [agent.sessionID.map { agent.provider.rawValue + ":" + $0.lowercased() },
-                 agent.hasAgent ? TaskContext.launchRemovalKey(agent.id) : nil].compactMap { $0 }
+                [agent.sessionID.map { agent.provider.rawValue + ":" + $0.lowercased() }].compactMap { $0 }
+                    + (agent.hasAgent ? TaskContext.launchRemovalKeys(for: agent) : [])
             }
             context.removedAgentSessionKeys = Array(Set((context.removedAgentSessionKeys ?? []) + removedSessionKeys)).sorted()
             context.subtasks.removeAll { candidate in
@@ -1130,7 +1136,7 @@ public actor TaskContextStore {
             let session = context.subtasks[index].sessionID
             let provider = context.subtasks[index].provider
             context.removedAgentSessionKeys = Array(Set((context.removedAgentSessionKeys ?? [])
-                + [TaskContext.launchRemovalKey(context.subtasks[index].id)])).sorted()
+                + TaskContext.launchRemovalKeys(for: context.subtasks[index]))).sorted()
             for i in context.subtasks.indices where i == index || (session != nil && context.subtasks[i].provider == provider && context.subtasks[i].sessionID?.lowercased() == session?.lowercased()) {
                 context.subtasks[i].completionTerminalRetained = automatically && context.subtasks[i].status == .completed
                 context.subtasks[i].agentRemovedAt = Date()

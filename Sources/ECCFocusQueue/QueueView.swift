@@ -400,7 +400,7 @@ struct QueueView: View {
       HStack {
         focusHeading(resultCount: search?.tickets.count)
         Menu {
-          ForEach(QueueActivitySortMode.allCases) { mode in
+          ForEach(QueueActivitySortMode.allCases.filter { $0 != .manual }) { mode in
             Button { model.setQueueActivitySortMode(mode) } label: {
               if model.queueActivitySortMode == mode {
                 Label(mode.displayName, systemImage: "checkmark")
@@ -3254,6 +3254,12 @@ private struct TicketCard: View {
       }
       .contextMenu {
         Button("View details", systemImage: "info.circle") { openTaskDetails() }
+        Button(
+          model.isTicketPinned(ticket.id) ? "Unpin" : "Pin",
+          systemImage: model.isTicketPinned(ticket.id) ? "pin.slash" : "pin"
+        ) {
+          Task { await model.setTicketPinned(ticket, pinned: !model.isTicketPinned(ticket.id)) }
+        }
         Divider()
         Button("Move to top") { model.moveTicket(ticket.id, to: .top) }
         Button("Move up") { moveOnePosition(up: true) }

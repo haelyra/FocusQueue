@@ -317,6 +317,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
     public var managedWorktree = false
     public var subtasks: [TaskSubtask] = []
     public var lastPromptAt: Date? = nil
+    public var pinnedAt: Date? = nil
     public var removedAgentSessionKeys: [String]?
     public var updatedAt: Date
 
@@ -705,6 +706,7 @@ public actor TaskContextStore {
                 }
                 existing.summary = ticket.summary
                 existing.successCriteria = ticket.doneWhen ?? existing.successCriteria
+                if !ticket.isOpen { existing.pinnedAt = nil }
                 // A retained branch with no workspace records completed cleanup. Dashboard
                 // metadata may still mention the former workspace until its next refresh.
                 if existing.worktreePath == nil, existing.branch == nil { existing.worktreePath = worktreePath ?? ticket.worktree }
@@ -1366,6 +1368,16 @@ public actor TaskContextStore {
         try mutate(ticketID: ticketID) { context in
             context.worktreePath = path; context.branch = branch; context.baseBranch = baseBranch; context.managedWorktree = managed
             if let repositoryPath { context.repositoryPath = repositoryPath }
+        }
+    }
+
+    /// Pin state shares the task context lock so app and CLI changes cannot
+    /// overwrite concurrent context updates.
+    @discardableResult public func setPinned(
+        ticketID: String, at date: Date?
+    ) throws -> TaskContext {
+        try mutate(ticketID: ticketID) { context in
+            context.pinnedAt = date
         }
     }
 

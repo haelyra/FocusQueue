@@ -5,6 +5,35 @@ public enum QueuePlacement: Sendable {
     case top, bottom, before(String), after(String)
 }
 
+/// A manual adjustment to one automatic queue snapshot. It remains applicable
+/// only while the same sort mode produces the same automatic order.
+public struct QueueOrderDocument: Codable, Equatable, Sendable {
+    public static let currentSchemaVersion = 1
+
+    public var schemaVersion: Int
+    public var orderedIDs: [String]
+    public var automaticBaselineIDs: [String]
+    public var sortMode: QueueActivitySortMode
+
+    public init(
+        schemaVersion: Int = QueueOrderDocument.currentSchemaVersion,
+        orderedIDs: [String],
+        automaticBaselineIDs: [String],
+        sortMode: QueueActivitySortMode
+    ) {
+        self.schemaVersion = schemaVersion
+        self.orderedIDs = orderedIDs
+        self.automaticBaselineIDs = automaticBaselineIDs
+        self.sortMode = sortMode
+    }
+
+    public func applies(to automaticIDs: [String], sortMode: QueueActivitySortMode) -> Bool {
+        schemaVersion == Self.currentSchemaVersion
+            && self.sortMode == sortMode
+            && automaticBaselineIDs == automaticIDs
+    }
+}
+
 /// Shared by the app and its agent helper. A separate file prevents unrelated
 /// cached app state from overwriting an agent's queue changes.
 public struct QueueOrderStore: Sendable {
@@ -32,12 +61,51 @@ public struct QueueOrderStore: Sendable {
     }
 
     public func load() throws -> [String]? {
-        let source = FileManager.default.fileExists(atPath: file.path)
-            ? file
-            : (projectID != nil && FileManager.default.fileExists(atPath: legacyFile.path)
-                ? legacyFile : nil)
-        guard let source else { return nil }
-        return try JSONDecoder().decode([String].self, from: Data(contentsOf: source))
+        guard let source = sourceURL() else { return nil }
+        let data = try Data(contentsOf: source)
+        if let document = try? JSONDecoder().decode(QueueOrderDocument.self, from: data) {
+            return document.orderedIDs
+        }
+        return try JSONDecoder().decode([String].self, from: data)
+    }
+
+    /// Versioned overrides are presentation state, unlike legacy arrays. Old
+    /// arrays remain readable by `load()` for migration and transactions, but
+    /// are intentionally not applied to the dynamic queue.
+    public func loadOverride() throws -> QueueOrderDocument? {
+        guard let source = sourceURL() else { return nil }
+        let data = try Data(contentsOf: source)
+        if let document = try? JSONDecoder().decode(QueueOrderDocument.self, from: data) {
+            return document
+        }
+        if (try? JSONDecoder().decode([String].self, from: data)) != nil { return nil }
+        return try JSONDecoder().decode(QueueOrderDocument.self, from: data)
+    }
+
+    /// Returns the override only for the automatic snapshot it was created
+    /// from. A stale versioned override is removed while holding the order lock
+    /// so it cannot become active again after another refresh.
+    public func applicableOrder(
+        automaticIDs: [String], sortMode: QueueActivitySortMode
+    ) throws -> [String]? {
+        try locked {
+            guard let source = sourceURL() else { return nil }
+            let data = try Data(contentsOf: source)
+            guard let document = try? JSONDecoder().decode(QueueOrderDocument.self, from: data) else {
+                if (try? JSONDecoder().decode([String].self, from: data)) != nil { return nil }
+                return try JSONDecoder().decode(QueueOrderDocument.self, from: data).orderedIDs
+            }
+            // A newer build owns future schemas. Ignore them without erasing
+            // data this version cannot safely classify as stale.
+            guard document.schemaVersion == QueueOrderDocument.currentSchemaVersion else {
+                return nil
+            }
+            guard document.applies(to: automaticIDs, sortMode: sortMode) else {
+                if source == file { try FileManager.default.removeItem(at: source) }
+                return nil
+            }
+            return document.orderedIDs
+        }
     }
 
     /// Saved tasks retain their positions; new tasks append in priority order.
@@ -110,11 +178,80 @@ public struct QueueOrderStore: Sendable {
         }
     }
 
+    /// Pinned tasks form a durable top tier ordered by the newest pin first.
+    /// The automatic order remains the stable tie-breaker and controls all
+    /// unpinned tasks.
+    public static func prioritizingPins(
+        _ tickets: [DashboardTicket], pinnedAtByTicketID: [String: Date]
+    ) -> [DashboardTicket] {
+        tickets.enumerated().sorted { left, right in
+            let leftPin = pinnedAtByTicketID[left.element.id]
+            let rightPin = pinnedAtByTicketID[right.element.id]
+            switch (leftPin, rightPin) {
+            case let (.some(leftDate), .some(rightDate)):
+                if leftDate != rightDate { return leftDate > rightDate }
+                return left.offset < right.offset
+            case (.some, .none): return true
+            case (.none, .some): return false
+            case (.none, .none): return left.offset < right.offset
+            }
+        }.map(\.element)
+    }
+
+    /// Shared automatic projection for queue helpers and project creation.
+    /// Manual placement is deliberately absent; callers apply a matching
+    /// temporary override only after this baseline is complete.
+    public static func automaticTickets(
+        _ tickets: [DashboardTicket],
+        deferredTicketIDs: [String],
+        mode: QueueActivitySortMode,
+        contexts: [TaskContext],
+        now: Date = Date()
+    ) -> [DashboardTicket] {
+        let promptDates = Dictionary(contexts.compactMap { context in
+            context.lastPromptAt.map { (context.ticketID, $0) }
+        }, uniquingKeysWith: max)
+        let outputDates = Dictionary(contexts.compactMap { context in
+            context.subtasks.compactMap { $0.lastOutputAt ?? $0.resultAt }.max()
+                .map { (context.ticketID, $0) }
+        }, uniquingKeysWith: max)
+        let pinnedDates = Dictionary(contexts.compactMap { context in
+            context.pinnedAt.map { (context.ticketID, $0) }
+        }, uniquingKeysWith: max)
+        let baseline = DashboardOrdering.openTickets(
+            in: tickets, deferredTicketIDs: deferredTicketIDs)
+        let activity = prioritizingActivity(
+            baseline,
+            mode: mode,
+            lastPromptAtByTicketID: promptDates,
+            lastOutputAtByTicketID: outputDates,
+            now: now)
+        return prioritizingPins(activity, pinnedAtByTicketID: pinnedDates)
+    }
+
     @discardableResult
     public func move(_ ticketID: String, to placement: QueuePlacement,
-                     tickets: [DashboardTicket], fallbackIDs: [String], visibleIDs: Set<String>? = nil) throws -> [String] {
+                     tickets: [DashboardTicket], fallbackIDs: [String], visibleIDs: Set<String>? = nil,
+                     currentIDs: [String]? = nil, expectedStoredIDs: [String]? = nil,
+                     automaticBaselineIDs: [String]? = nil,
+                     sortMode: QueueActivitySortMode? = nil) throws -> [String] {
         try locked {
-            let allIDs = Self.orderedTickets(tickets, savedIDs: try load() ?? fallbackIDs).map(\.id)
+            let versioned = automaticBaselineIDs != nil && sortMode != nil
+            let document = try loadOverride()
+            let storedIDs = try load()
+            let savedIDs = if let automaticBaselineIDs, let sortMode,
+                              let document,
+                              document.applies(to: automaticBaselineIDs, sortMode: sortMode) {
+                document.orderedIDs
+            } else if versioned, let currentIDs {
+                currentIDs
+            } else if let currentIDs, storedIDs == expectedStoredIDs {
+                currentIDs
+            } else {
+                storedIDs ?? fallbackIDs
+            }
+            let allIDs = Self.orderedTickets(
+                tickets, savedIDs: savedIDs).map(\.id)
             var ids = allIDs.filter { visibleIDs?.contains($0) ?? true }
             guard ids.contains(ticketID) else {
                 throw TaskContextError.commandFailed("No open task named \(ticketID) exists in this queue.")
@@ -138,7 +275,14 @@ public struct QueueOrderStore: Sendable {
             let result = allIDs.map { id in
                 (visibleIDs?.contains(id) ?? true) ? iterator.next()! : id
             }
-            try write(result)
+            if let automaticBaselineIDs, let sortMode {
+                try write(QueueOrderDocument(
+                    orderedIDs: result,
+                    automaticBaselineIDs: automaticBaselineIDs,
+                    sortMode: sortMode))
+            } else {
+                try write(result)
+            }
             return result
         }
     }
@@ -152,9 +296,26 @@ public struct QueueOrderStore: Sendable {
     /// omitted keep their relative order at the end, so a partial list never
     /// drops tasks from the queue.
     @discardableResult
-    public func setOrder(_ ids: [String], tickets: [DashboardTicket], fallbackIDs: [String]) throws -> [String] {
+    public func setOrder(_ ids: [String], tickets: [DashboardTicket], fallbackIDs: [String],
+                         currentIDs: [String]? = nil, expectedStoredIDs: [String]? = nil,
+                         automaticBaselineIDs: [String]? = nil,
+                         sortMode: QueueActivitySortMode? = nil) throws -> [String] {
         try locked {
-            let allIDs = Self.orderedTickets(tickets, savedIDs: try load() ?? fallbackIDs).map(\.id)
+            let versioned = automaticBaselineIDs != nil && sortMode != nil
+            let document = try loadOverride()
+            let storedIDs = try load()
+            let savedIDs = if let automaticBaselineIDs, let sortMode,
+                              let document,
+                              document.applies(to: automaticBaselineIDs, sortMode: sortMode) {
+                document.orderedIDs
+            } else if versioned, let currentIDs {
+                currentIDs
+            } else if let currentIDs, storedIDs == expectedStoredIDs {
+                currentIDs
+            } else {
+                storedIDs ?? fallbackIDs
+            }
+            let allIDs = Self.orderedTickets(tickets, savedIDs: savedIDs).map(\.id)
             let known = Set(allIDs)
             var seen = Set<String>()
             var requested: [String] = []
@@ -165,7 +326,14 @@ public struct QueueOrderStore: Sendable {
                 if seen.insert(id).inserted { requested.append(id) }
             }
             let result = requested + allIDs.filter { !seen.contains($0) }
-            try write(result)
+            if let automaticBaselineIDs, let sortMode {
+                try write(QueueOrderDocument(
+                    orderedIDs: result,
+                    automaticBaselineIDs: automaticBaselineIDs,
+                    sortMode: sortMode))
+            } else {
+                try write(result)
+            }
             return result
         }
     }
@@ -186,6 +354,20 @@ public struct QueueOrderStore: Sendable {
         try encoder.encode(ids).write(to: file, options: .atomic)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o600], ofItemAtPath: file.path)
+    }
+
+    private func write(_ document: QueueOrderDocument) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(document).write(to: file, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: file.path)
+    }
+
+    private func sourceURL() -> URL? {
+        if FileManager.default.fileExists(atPath: file.path) { return file }
+        if projectID != nil, FileManager.default.fileExists(atPath: legacyFile.path) { return legacyFile }
+        return nil
     }
 
     private func locked<T>(_ body: () throws -> T) throws -> T {

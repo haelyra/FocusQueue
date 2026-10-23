@@ -304,8 +304,9 @@ enum SessionRegistrationError: Error, LocalizedError {
                 tickets += try await repository.loadSnapshot(from: URL(fileURLWithPath: path)).document.tickets
             }
             if modes.contains("--completed") {
+                let open = Set(tickets.filter(\.isOpen).map(\.id))
                 for ticket in tickets where ticket.isCompleted {
-                    reports.append(await cleanup.run(ticketID: ticket.id, dryRun: dryRun))
+                    reports.append(await cleanup.run(ticketID: ticket.id, dryRun: dryRun, protecting: open))
                 }
             }
             if modes.contains("--orphans") {

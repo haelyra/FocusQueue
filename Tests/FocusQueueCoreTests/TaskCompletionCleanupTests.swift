@@ -227,3 +227,29 @@ func completionCleanupRecognizesRebasedWork() async throws {
     let unshipped = try await fixture.git(["rev-parse", "HEAD"], in: path)
     #expect(try await !fixture.manager.isIntegrated(unshipped, into: ["refs/heads/main"], repositoryPath: fixture.repository.path))
 }
+
+@Test("The orphan sweep keeps worktrees and branches an open task records, whatever folder they sit in")
+func completionCleanupKeepsOpenTaskClaims() async throws {
+    let fixture = try await CleanupFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    _ = try await fixture.store.ensureContext(ticket: ticket("FOC-908"))
+    _ = try await fixture.store.ensureContext(ticket: ticket("ECC-909"))
+    let (orphan, orphanPath) = try await fixture.agent("ECC-909", "Adopted by an open task")
+    var adopted = TaskSubtask(id: UUID().uuidString, title: "Adopted", status: .working)
+    adopted.workspace = orphan.workspace
+    _ = try await fixture.store.upsertSubtask(ticketID: "FOC-908", subtask: adopted)
+    try await fixture.git(["branch", "focus-queue/agent-claimed"])
+    var branchOnly = TaskSubtask(id: UUID().uuidString, title: "Branch only", status: .working)
+    branchOnly.workspace = AgentWorkspace(path: "/nonexistent/claimed", repositoryPath: fixture.repository.path,
+        branch: "focus-queue/agent-claimed")
+    _ = try await fixture.store.upsertSubtask(ticketID: "FOC-908", subtask: branchOnly)
+
+    let report = await fixture.cleanup().sweepOrphans(openTicketIDs: ["FOC-908"], dryRun: false)
+
+    #expect(report.worktrees.isEmpty)
+    #expect(FileManager.default.fileExists(atPath: orphanPath.path))
+    #expect(report.notes.contains { $0.contains("open task FOC-908") })
+    let branches = try await fixture.git(["for-each-ref", "--format=%(refname:short)", "refs/heads/"])
+    #expect(branches.contains("focus-queue/agent-claimed"))
+    #expect(branches.contains(try #require(orphan.workspace?.branch)))
+}

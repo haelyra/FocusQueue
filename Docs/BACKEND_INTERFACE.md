@@ -144,6 +144,8 @@ The Router agent, its `route inspect` / `route start` commands, the in-app compo
 
 **`task create <PROJECT-ID> <title> <summary>`** — creates a backlog task in the named active project through the locked dashboard repository. It chooses the next project ID, returns the existing open task for an exact title and summary replay, and initializes its task context.
 
+**`data place <user|project|task> <target-id> <fact>`** — appends one short fact to `user/data.md`, `projects/<id>/data.md`, or `tasks/<ID>/data.md`. The command verifies active project or open task identity, limits the fact to 200 characters and two sentences, rejects symlink destinations, and returns `{scope,targetID,path,added}`. An identical line returns `added: false`. Use `task create` for deferred work; the extractor calls these commands after validating the model proposal.
+
 **`task rename <TASK-ID> <title...>`** — revision-checked rename.
 **`task priority <TASK-ID> critical|high|medium|low`** — validated enum.
 **`task status <TASK-ID> <status>`** — ⚠ **accepts any string.** No enum validation. A typo (`complted`) writes successfully and the ticket just stays "open" forever. See §8.

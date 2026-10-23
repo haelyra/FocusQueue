@@ -219,15 +219,22 @@ class ApplyTests(unittest.TestCase):
             ]}
             catalog = {"id": "space-site", "tasks": [{"id": "WEB-001"}, {"id": "WEB-002"}]}
             calls = []
-            for relative in ("projects/space-site/data.md", "tasks/WEB-002/data.md"):
-                path = Path(directory) / relative
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("")
-
             def runner(command, **kwargs):
                 calls.append(command)
+                if command[1:3] == ["data", "place"]:
+                    _, _, _, scope, target, fact = command
+                    path = Path(directory) / ("user" if scope == "user" else
+                        f"{scope}s/{target}") / "data.md"
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    line = f"- {fact}\n"
+                    old = path.read_text() if path.exists() else ""
+                    if line not in old:
+                        path.write_text(old + line)
+                    return subprocess.CompletedProcess(command, 0, json.dumps({
+                        "scope": scope, "targetID": target, "path": str(path),
+                        "added": line not in old}), "")
                 return subprocess.CompletedProcess(command, 0,
-                    json.dumps({"taskID": f"WEB-{len(calls) + 2:03d}", "created": "true"}), "")
+                    json.dumps({"taskID": f"WEB-{len([c for c in calls if c[1:3] == ['task', 'create']]) + 2:03d}", "created": "true"}), "")
 
             receipts = EXTRACTOR.apply_record(record, catalog, environment=environment,
                                               command_runner=runner)
@@ -237,7 +244,8 @@ class ApplyTests(unittest.TestCase):
             self.assertEqual((root / "tasks/WEB-002/data.md").read_text(),
                              "- Provide a demo video version shorter than 10 seconds.\n")
             self.assertFalse((root / "tasks/WEB-001/data.md").exists())
-            self.assertEqual(len(calls), 2)
+            self.assertEqual(len(calls), 4)
+            self.assertEqual([c[1:3] for c in calls[:2]], [["data", "place"], ["data", "place"]])
             self.assertEqual([x["target_id"] for x in receipts if x["destination"] == "new_task"],
                              ["WEB-003", "WEB-004"])
             EXTRACTOR.apply_record(record, catalog, environment=environment,
@@ -349,9 +357,17 @@ class CrossProjectTests(unittest.TestCase):
             self.assertIsNone(record["promptExcerpt"])
             self.assertFalse((root / "extraction-ledger.sqlite").exists())
             def create_task(command, **_kwargs):
-                self.assertEqual(command[3], "space-site")
-                return subprocess.CompletedProcess(command, 0,
-                    json.dumps({"taskID": "WEB-003", "created": "true"}), "")
+                if command[1:3] == ["task", "create"]:
+                    self.assertEqual(command[3], "space-site")
+                    return subprocess.CompletedProcess(command, 0,
+                        json.dumps({"taskID": "WEB-003", "created": "true"}), "")
+                self.assertEqual(command[1:3], ["data", "place"])
+                scope, target, fact = command[3:]
+                path = root / ("user" if scope == "user" else f"{scope}s/{target}") / "data.md"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(f"- {fact}\n")
+                return subprocess.CompletedProcess(command, 0, json.dumps({
+                    "scope": scope, "targetID": target, "path": str(path), "added": True}), "")
             receipts = EXTRACTOR.apply_record(record, catalog, environment=environment,
                                               command_runner=create_task)
             self.assertEqual(len(receipts), 4)

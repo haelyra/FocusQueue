@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -587,44 +586,11 @@ def extract(prompt, catalog, *, current_task_id=None, settings=None, environment
     return record
 
 
-def append_data(path, text, byte_limit):
-    """Idempotently append one bounded memory under a per-file advisory lock."""
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    lock_path = path.with_name(path.name + ".lock")
-    if path.is_symlink() or lock_path.is_symlink():
-        raise ExtractorError(f"refusing symbolic-link data path {path}")
-    with lock_path.open("a+b") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        if path.is_symlink():
-            raise ExtractorError(f"refusing symbolic-link data path {path}")
-        old = path.read_text(encoding="utf-8") if path.exists() else ""
-        entry = f"- {text}\n"
-        if entry in old.splitlines(keepends=True):
-            return False
-        separator = "" if not old or old.endswith("\n") else "\n"
-        updated = old + separator + entry
-        if len(updated.encode("utf-8")) > byte_limit:
-            raise ExtractorError(f"data file exceeds {byte_limit} bytes: {path}")
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
-                                         prefix=".data-", delete=False) as output:
-            temporary = Path(output.name)
-            output.write(updated)
-            output.flush()
-            os.fsync(output.fileno())
-        try:
-            os.chmod(temporary, 0o600)
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
-        return True
-
-
 def apply_record(record, catalog, *, environment=None, command_runner=None):
     """Apply accepted atoms only when explicitly invoked; keep per-atom receipts."""
     environment = os.environ if environment is None else environment
     if record.get("error") or record.get("projectID") != catalog["id"]:
         raise ExtractorError("cannot apply an errored or mismatched extraction")
-    support = support_directory(environment)
     project_ids = {row["id"] for row in catalog.get("projects") or [{"id": catalog["id"]}]}
     if any(not re.fullmatch(r"[a-zA-Z0-9_-]+", project_id) for project_id in project_ids):
         raise ExtractorError("unsafe project identifier")
@@ -637,13 +603,10 @@ def apply_record(record, catalog, *, environment=None, command_runner=None):
             continue
         if len(text) > TEXT_LIMIT or memory_sentence_count(text) > 2:
             raise ExtractorError("refusing verbose memory during apply")
-        if destination == "user" and target == "user":
-            path, limit = support / "user/data.md", 2_000
-        elif destination == "project" and target in project_ids:
-            path, limit = support / "projects" / target / "data.md", 3_000
-        elif destination == "task" and target in task_ids:
-            path, limit = support / "tasks" / target / "data.md", 2_000
-        elif destination == "new_task" and target in project_ids:
+        valid_data_target = ((destination == "user" and target == "user") or
+                             (destination == "project" and target in project_ids) or
+                             (destination == "task" and target in task_ids))
+        if destination == "new_task" and target in project_ids:
             executable = environment.get("FOCUS_QUEUE_SESSION_EXECUTABLE") or shutil.which(
                 "focus-queue-session", path=environment.get("PATH", ""))
             if not executable:
@@ -662,10 +625,26 @@ def apply_record(record, catalog, *, environment=None, command_runner=None):
             receipts.append({"destination": destination, "target_id": task_id,
                              "created": json.loads(completed.stdout).get("created") == "true"})
             continue
-        else:
+        if not valid_data_target:
             raise ExtractorError(f"unvalidated destination or target: {destination}/{target}")
-        receipts.append({"destination": destination, "target_id": target,
-                         "path": str(path), "added": append_data(path, text, limit)})
+        executable = environment.get("FOCUS_QUEUE_SESSION_EXECUTABLE") or shutil.which(
+            "focus-queue-session", path=environment.get("PATH", ""))
+        if not executable:
+            raise ExtractorError("focus-queue-session is required to place scoped data")
+        child = {key: value for key, value in environment.items() if key not in SESSION_VARIABLES}
+        completed = (command_runner or subprocess.run)(
+            [executable, "data", "place", destination, target, text],
+            env=child, text=True, capture_output=True)
+        if completed.returncode:
+            raise ExtractorError(f"data placement failed: {one_line(completed.stderr, 200)}")
+        try:
+            placed = json.loads(completed.stdout)
+            if placed["scope"] != destination or placed["targetID"] != target:
+                raise ValueError("mismatched placement receipt")
+            receipts.append({"destination": destination, "target_id": target,
+                             "path": placed["path"], "added": placed["added"]})
+        except (ValueError, KeyError, TypeError) as error:
+            raise ExtractorError("data placement returned an invalid receipt") from error
     return receipts
 
 

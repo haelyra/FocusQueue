@@ -110,7 +110,7 @@ class QueueOrderCLITests(unittest.TestCase):
             self.assertEqual(self.command("list"), before)
         self.assertEqual(self.command("reset"), ["ECC-035", "ECC-040", "ECC-029"])
 
-    def test_manual_moves_override_recent_agent_prompts(self):
+    def test_recent_agent_prompts_temporarily_lead_the_saved_queue(self):
         self.assertEqual(self.command("move", "ECC-035", "top"),
                          ["ECC-035", "ECC-040", "ECC-029"])
         self.set_recent_activity()

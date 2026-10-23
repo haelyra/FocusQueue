@@ -49,15 +49,42 @@ public struct QueueOrderStore: Sendable {
         return saved + canonical.filter { remaining.removeValue(forKey: $0.id) != nil }
     }
 
+    /// Tasks created or touched by an agent within this window lead the
+    /// recent-activity queue.
+    public static let recentActivityWindow: TimeInterval = 2 * 24 * 60 * 60
+
     public static func prioritizingActivity(
         _ tickets: [DashboardTicket],
         mode: QueueActivitySortMode,
         lastPromptAtByTicketID: [String: Date],
-        lastOutputAtByTicketID: [String: Date]
+        lastOutputAtByTicketID: [String: Date],
+        now: Date = Date()
     ) -> [DashboardTicket] {
         switch mode {
         case .manual:
             return tickets
+        case .recentActivity:
+            // Ticket edits are excluded: dashboard syncs touch updatedAt without
+            // any agent working on the task.
+            let cutoff = now.addingTimeInterval(-recentActivityWindow)
+            let ranked = tickets.enumerated().map { index, ticket in
+                let activity = [lastPromptAtByTicketID[ticket.id], lastOutputAtByTicketID[ticket.id],
+                    TaskTriagePolicy.date(from: ticket.createdAt)].compactMap { $0 }.max() ?? .distantPast
+                return (index: index, ticket: ticket, activity: activity)
+            }
+            let recent = ranked.filter { $0.activity >= cutoff }.sorted {
+                if $0.activity != $1.activity { return $0.activity > $1.activity }
+                return $0.index < $1.index
+            }
+            // Within a priority, newer activity breaks ties before any saved order.
+            let rest = ranked.filter { $0.activity < cutoff }.sorted {
+                if $0.ticket.priorityRank != $1.ticket.priorityRank {
+                    return $0.ticket.priorityRank < $1.ticket.priorityRank
+                }
+                if $0.activity != $1.activity { return $0.activity > $1.activity }
+                return $0.index < $1.index
+            }
+            return (recent + rest).map(\.ticket)
         case .triage:
             return TaskTriagePolicy.deadlineOrdered(
                 tickets,

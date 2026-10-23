@@ -305,7 +305,9 @@ rewrite of the scheduler or report engine.
 
 ## Queue ordering and chat
 
-The queue offers four ordering modes. **Recent interaction** puts the tasks whose
+The queue offers five ordering modes. **Recent activity**, the default, puts tasks
+created or worked on by an agent (a prompt or agent output) in the last two days
+first, newest first, and orders every other task by priority. **Recent interaction** puts the tasks whose
 agents you prompted most recently first, using provider hooks or, when hooks are
 off, prompts read from the Codex and Claude transcripts. **Recent output** uses the
 latest actual agent output,
@@ -313,7 +315,8 @@ latest actual agent output,
 uses your saved sequence. Activity modes use deadline triage for the remaining
 tasks. Drag a task onto the upper or lower half of another card, or use the card
 menu's Move actions, to switch to Manual order. Moving a task preserves the
-relative order of all other tasks. **Restore triage order** clears that override.
+relative order of all other tasks. **Restore default order** clears that override
+and returns to Recent activity.
 
 Hard due dates stay visible on cards. Open non-recurring tasks without one receive
 a rough triage target from the latest activity plus 1 day for critical, 2 for high,

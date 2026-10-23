@@ -1832,6 +1832,7 @@ public struct TaskAgentSession: Codable, Identifiable, Equatable, Sendable {
 }
 
 public enum QueueActivitySortMode: String, Codable, CaseIterable, Identifiable, Sendable {
+  case recentActivity
   case recentInteraction
   case recentOutput
   case triage
@@ -1841,6 +1842,7 @@ public enum QueueActivitySortMode: String, Codable, CaseIterable, Identifiable, 
 
   public var displayName: String {
     switch self {
+    case .recentActivity: "Recent activity"
     case .recentInteraction: "Recent interaction"
     case .recentOutput: "Recent output"
     case .triage: "Triage deadlines"
@@ -2013,7 +2015,9 @@ public struct LocalState: Codable, Equatable, Sendable {
     case agentSessions
     case viewedTicketIDs
     case viewedTicketSources
-    case queueActivitySortMode
+    // Renamed from queueActivitySortMode so every queue starts once on recent
+    // activity; queue moves had silently pinned many to Manual order.
+    case queueActivitySortMode = "queueSortMode"
     case lastAgentLaunch
     case lastAgentLaunches
   }

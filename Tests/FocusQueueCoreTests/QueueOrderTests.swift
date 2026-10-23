@@ -61,6 +61,39 @@ struct QueueOrderTests {
         #expect(ordered.map(\.id) == ["ECC-2", "ECC-4", "ECC-3", "ECC-5", "ECC-6", "ECC-7", "ECC-8"])
     }
 
+    @Test("Recent activity leads for two days, newest first, then priority orders the rest")
+    func recentActivityTier() {
+        let now = Date(timeIntervalSinceReferenceDate: 1_000_000)
+        let day: TimeInterval = 24 * 60 * 60
+        let created = ISO8601DateFormatter().string(from: now.addingTimeInterval(-day))
+        let stale = ISO8601DateFormatter().string(from: now.addingTimeInterval(-10 * day))
+        let baseline = [
+            DashboardTicket(id: "A", title: "Low stale", priority: "low", status: "open", summary: "",
+                createdAt: stale),
+            DashboardTicket(id: "B", title: "High stale", priority: "high", status: "open", summary: "",
+                createdAt: stale),
+            DashboardTicket(id: "C", title: "New task", priority: "low", status: "open", summary: "",
+                createdAt: created),
+            DashboardTicket(id: "D", title: "Old prompt", priority: "critical", status: "open", summary: ""),
+            DashboardTicket(id: "E", title: "Recent output", priority: "medium", status: "open", summary: "",
+                createdAt: stale),
+            DashboardTicket(id: "F", title: "Recent prompt", priority: "low", status: "open", summary: ""),
+            DashboardTicket(id: "G", title: "Medium stale", priority: "medium", status: "open", summary: ""),
+            DashboardTicket(id: "H", title: "Medium older output", priority: "medium", status: "open",
+                summary: ""),
+        ]
+        let ordered = QueueOrderStore.prioritizingActivity(
+            baseline,
+            mode: .recentActivity,
+            lastPromptAtByTicketID: ["D": now.addingTimeInterval(-3 * day), "F": now.addingTimeInterval(-60)],
+            lastOutputAtByTicketID: ["E": now.addingTimeInterval(-2 * day + 60), "H": now.addingTimeInterval(-5 * day)],
+            now: now)
+
+        // F, C, E fall inside the window; D's prompt expired, so it sorts by priority.
+        // Among stale medium tasks, H's older output still outranks G's none.
+        #expect(ordered.map(\.id) == ["F", "C", "E", "D", "B", "H", "G", "A"])
+    }
+
     @Test("Recent interactions have no expiry and deadline triage orders the remainder")
     func recentInteractionTier() {
         let baseline = QueueOrderStore.orderedTickets(
@@ -140,4 +173,12 @@ struct QueueOrderTests {
         let result = try QueueOrderStore(root: root).move("ECC-8", to: .top, tickets: tickets, fallbackIDs: old)
         #expect(result == ["ECC-8"] + old.filter { $0 != "ECC-8" })
     }
+}
+
+@Test("A sort mode saved under the old key resets once to recent activity")
+func legacySortModeResets() throws {
+    let legacy = try JSONDecoder().decode(LocalState.self, from: Data(#"{"queueActivitySortMode":"manual"}"#.utf8))
+    #expect(legacy.queueActivitySortMode == nil)
+    let saved = try JSONEncoder().encode(LocalState(queueActivitySortMode: .manual))
+    #expect(try JSONDecoder().decode(LocalState.self, from: saved).queueActivitySortMode == .manual)
 }

@@ -421,7 +421,7 @@ struct QueueView: View {
             staleAgentCandidateCount = model.staleAgentCandidates().count
             showsStaleAgentCleanupConfirmation = true
           }
-          Button("Restore triage order") { model.resetQueueOrder() }
+          Button("Restore default order") { model.resetQueueOrder() }
         } label: { Image(systemName: "arrow.up.arrow.down") }
           .menuStyle(.borderlessButton).fixedSize()
           .accessibilityLabel("Queue view and ordering")

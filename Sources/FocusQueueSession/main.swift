@@ -164,7 +164,7 @@ enum SessionRegistrationError: Error, LocalizedError {
         case "reset" where arguments.count == 2:
             if let visible { _ = try store.reset(tickets: dashboard.tickets, visibleIDs: visible, fallbackIDs: fallback) }
             else { try store.reset() }
-            state.queueActivitySortMode = .triage
+            state.queueActivitySortMode = .recentActivity
         case "move" where arguments.count == 4 || arguments.count == 5:
             let placement: QueuePlacement
             switch arguments[3] {
@@ -195,7 +195,7 @@ enum SessionRegistrationError: Error, LocalizedError {
         })
         let order = QueueOrderStore.prioritizingActivity(
             baseline,
-            mode: state.queueActivitySortMode ?? .recentInteraction,
+            mode: state.queueActivitySortMode ?? .recentActivity,
             lastPromptAtByTicketID: promptDates,
             lastOutputAtByTicketID: outputDates)
         try emit(["order": order.filter { visible?.contains($0.id) ?? true }.map(\.id)])

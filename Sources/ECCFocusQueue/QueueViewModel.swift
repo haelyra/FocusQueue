@@ -408,7 +408,7 @@ final class QueueViewModel {
     let lastOutputAt = taskContexts.compactMapValues { context in
       context.subtasks.compactMap { $0.lastOutputAt ?? $0.resultAt }.max()
     }
-    let mode = localState.queueActivitySortMode ?? .recentInteraction
+    let mode = localState.queueActivitySortMode ?? .recentActivity
     let key: OpenTicketsKey
     if let savedQueueOrder {
       key = .saved(order: savedQueueOrder, tickets: tickets, lastPromptAt: lastPromptAt,
@@ -1467,11 +1467,12 @@ final class QueueViewModel {
   }
 
   var queueActivitySortMode: QueueActivitySortMode {
-    localState.queueActivitySortMode ?? .recentInteraction
+    localState.queueActivitySortMode ?? .recentActivity
   }
 
   var queueActivitySortCaption: String {
     switch queueActivitySortMode {
+    case .recentActivity: "Active in the last 2 days first · then by priority"
     case .recentInteraction: "Last agent interaction first · deadlines cycle the rest"
     case .recentOutput: "Latest agent output first · deadlines cycle the rest"
     case .triage: "Hard due dates and rough triage targets"
@@ -1553,7 +1554,7 @@ final class QueueViewModel {
     do {
       try queueOrderStore.reset()
       savedQueueOrder = []
-      localState.queueActivitySortMode = .triage
+      localState.queueActivitySortMode = .recentActivity
       persistLocalState()
     } catch { loadError = error.localizedDescription }
   }
@@ -1577,7 +1578,7 @@ final class QueueViewModel {
       let updated = try queueOrderStore.load()
       if savedQueueOrder != updated {
         savedQueueOrder = updated
-        setQueueActivitySortMode(updated?.isEmpty == false ? .manual : .triage)
+        setQueueActivitySortMode(updated?.isEmpty == false ? .manual : .recentActivity)
       }
     } catch {
       // The next full refresh reports a persistent read failure.

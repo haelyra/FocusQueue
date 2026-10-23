@@ -388,10 +388,10 @@ final class QueueViewModel {
 
   private enum OpenTicketsKey: Equatable {
     case saved(order: [String], tickets: [DashboardTicket], lastPromptAt: [String: Date],
-      lastOutputAt: [String: Date], mode: QueueActivitySortMode)
+      lastOutputAt: [String: Date], mode: QueueActivitySortMode, activityHour: Int?)
     case derived(tickets: [DashboardTicket], deferredIDs: [String], noBacklogIDs: Set<String>,
       closureMessages: [String: String], lastPromptAt: [String: Date], lastOutputAt: [String: Date],
-      mode: QueueActivitySortMode)
+      mode: QueueActivitySortMode, activityHour: Int?)
   }
 
   /// Ticket cards, tab labels, and headers each read these lists, so one render
@@ -409,23 +409,27 @@ final class QueueViewModel {
       context.subtasks.compactMap { $0.lastOutputAt ?? $0.resultAt }.max()
     }
     let mode = localState.queueActivitySortMode ?? .recentActivity
+    // Tasks leave the recent-activity window with time alone, so the memo
+    // re-sorts at least hourly in that mode.
+    let activityHour = mode == .recentActivity ? Int(Date().timeIntervalSinceReferenceDate / 3600) : nil
     let key: OpenTicketsKey
     if let savedQueueOrder {
       key = .saved(order: savedQueueOrder, tickets: tickets, lastPromptAt: lastPromptAt,
-        lastOutputAt: lastOutputAt, mode: mode)
+        lastOutputAt: lastOutputAt, mode: mode, activityHour: activityHour)
     } else {
       key = .derived(tickets: tickets, deferredIDs: localState.deferredTicketIDs,
         noBacklogIDs: Set(recurringPRProgressByTicketID.compactMap { ticketID, progress in
           progress.openCount == 0 ? ticketID : nil
         }),
-        closureMessages: closureMessages, lastPromptAt: lastPromptAt, lastOutputAt: lastOutputAt, mode: mode)
+        closureMessages: closureMessages, lastPromptAt: lastPromptAt, lastOutputAt: lastOutputAt, mode: mode,
+        activityHour: activityHour)
     }
     return openTicketsMemo.value(for: key) {
       let baseline: [DashboardTicket]
       switch key {
-      case .saved(let order, let tickets, _, _, _):
+      case .saved(let order, let tickets, _, _, _, _):
         baseline = QueueOrderStore.orderedTickets(tickets, savedIDs: order)
-      case .derived(let tickets, let deferredIDs, let noBacklogIDs, let closureMessages, _, _, _):
+      case .derived(let tickets, let deferredIDs, let noBacklogIDs, let closureMessages, _, _, _, _):
         let ordered = DashboardOrdering.openTickets(in: tickets, deferredTicketIDs: deferredIDs)
         let closurePending = tickets.filter { $0.isCompleted && closureMessages[$0.id] != nil }
         baseline = closurePending + ordered.filter { !noBacklogIDs.contains($0.id) }

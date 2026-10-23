@@ -32,6 +32,20 @@ class QueueOrderCLITests(unittest.TestCase):
         self.assertEqual(result.returncode, expected, result.stderr)
         return json.loads(result.stdout)["order"] if expected == 0 else result.stderr
 
+    def write_task_activity(self):
+        now = time.time() - 978307200
+        for ticket, age in [("ECC-029", 60), ("ECC-040", 3600), ("ECC-035", 3 * 86400 + 1)]:
+            task = self.root / "tasks" / ticket
+            task.mkdir(parents=True)
+            plan = task / "plan.md"
+            plan.write_text(f"# {ticket}\n")
+            (task / "context.json").write_text(json.dumps({
+                "schemaVersion": 2, "ticketID": ticket, "title": ticket,
+                "summary": "", "successCriteria": "", "planPath": str(plan),
+                "managedWorktree": False, "subtasks": [], "updatedAt": now,
+                "lastPromptAt": now - age,
+            }))
+
     def test_project_commands_require_the_active_dashboard_and_keep_orders_isolated(self):
         config = json.loads((self.root / "config.json").read_text())
         focus_dashboard = self.root / "focus-dashboard.json"
@@ -64,15 +78,21 @@ class QueueOrderCLITests(unittest.TestCase):
                          ["FOC-002", "FOC-001"])
         self.command("list", project="ecc", expected=1)
 
-    def test_moves_preserve_other_tasks_and_do_not_edit_dashboard_or_app_state(self):
-        original = {name: (self.root / name).read_bytes() for name in ["dashboard.json", "state.json"]}
-        self.assertEqual(self.command("list"), ["ECC-035", "ECC-040", "ECC-029"])
+    def test_moves_preserve_other_tasks_and_only_change_the_queue_mode(self):
+        self.command("reset")
+        original_dashboard = self.dashboard.read_bytes()
+        original_state = json.loads((self.root / "state.json").read_text())
+        self.assertEqual(self.command("list"), ["ECC-029", "ECC-035", "ECC-040"])
         self.assertEqual(self.command("move", "ecc-029", "after", "ecc-035"), ["ECC-035", "ECC-029", "ECC-040"])
         self.assertEqual(self.command("move", "ECC-040", "top"), ["ECC-040", "ECC-035", "ECC-029"])
         self.assertEqual(self.command("move", "ECC-040", "bottom"), ["ECC-035", "ECC-029", "ECC-040"])
         self.assertEqual(self.command("move", "ECC-029", "before", "ECC-035"), ["ECC-029", "ECC-035", "ECC-040"])
         self.assertEqual(self.command("list"), ["ECC-029", "ECC-035", "ECC-040"])
-        self.assertEqual(original, {name: (self.root / name).read_bytes() for name in original})
+        updated_state = json.loads((self.root / "state.json").read_text())
+        self.assertEqual(updated_state.pop("queueSortMode"), "manual")
+        original_state.pop("queueSortMode")
+        self.assertEqual(updated_state, original_state)
+        self.assertEqual(self.dashboard.read_bytes(), original_dashboard)
 
     def test_invalid_commands_are_atomic_and_reset_restores_priority_order(self):
         self.command("move", "ECC-040", "top")
@@ -83,21 +103,15 @@ class QueueOrderCLITests(unittest.TestCase):
             self.assertEqual(self.command("list"), before)
         self.assertEqual(self.command("reset"), ["ECC-029", "ECC-035", "ECC-040"])
 
-    def test_recent_agent_prompts_temporarily_lead_the_saved_queue(self):
+    def test_manual_moves_override_recent_agent_prompts(self):
         self.assertEqual(self.command("move", "ECC-035", "top"),
                          ["ECC-035", "ECC-040", "ECC-029"])
-        now = time.time() - 978307200
-        for ticket, age in [("ECC-029", 60), ("ECC-040", 3600), ("ECC-035", 3 * 86400 + 1)]:
-            task = self.root / "tasks" / ticket
-            task.mkdir(parents=True)
-            plan = task / "plan.md"
-            plan.write_text(f"# {ticket}\n")
-            (task / "context.json").write_text(json.dumps({
-                "schemaVersion": 2, "ticketID": ticket, "title": ticket,
-                "summary": "", "successCriteria": "", "planPath": str(plan),
-                "managedWorktree": False, "subtasks": [], "updatedAt": now,
-                "lastPromptAt": now - age,
-            }))
+        self.write_task_activity()
+
+        self.assertEqual(self.command("list"), ["ECC-035", "ECC-040", "ECC-029"])
+
+    def test_recent_agent_prompts_lead_an_untouched_queue(self):
+        self.write_task_activity()
 
         self.assertEqual(self.command("list"), ["ECC-029", "ECC-040", "ECC-035"])
 

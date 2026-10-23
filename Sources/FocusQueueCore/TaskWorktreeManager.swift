@@ -273,7 +273,28 @@ public actor TaskWorktreeManager {
         }
         try ensureManagedAncestors(root: managedRoot,
             through: expected.deletingLastPathComponent(), createMissing: true)
-        _ = try await git(["show-ref", "--verify", "refs/heads/\(branch)"], in: saved.repositoryPath)
+        let retained = try await runner.run(.init(executable: "/usr/bin/git",
+            arguments: ["show-ref", "--verify", "--quiet", "refs/heads/\(branch)"],
+            workingDirectory: saved.repositoryPath))
+        if !retained.succeeded {
+            // Task completion deletes agent branches. Recreate one from its
+            // archived work, or from the base branch that absorbed it.
+            var start: String?
+            for candidate in [Self.archiveRef(forBranch: branch) + "-uncommitted",
+                              Self.archiveRef(forBranch: branch)] + [saved.baseBranch].compactMap({ $0 }) {
+                let resolved = try await runner.run(.init(executable: "/usr/bin/git",
+                    arguments: ["rev-parse", "--verify", "--quiet", candidate + "^{commit}"],
+                    workingDirectory: saved.repositoryPath))
+                if resolved.succeeded {
+                    start = resolved.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+                    break
+                }
+            }
+            guard let start else {
+                throw TaskContextError.unsafeWorktree("The saved branch \(branch) and its archive are missing.")
+            }
+            _ = try await git(["branch", branch, start], in: saved.repositoryPath)
+        }
         _ = try await git(["worktree", "add", saved.path, branch], in: saved.repositoryPath)
         try ensureManagedAncestors(root: managedRoot, through: expected, createMissing: false)
     }
@@ -869,7 +890,8 @@ public actor TaskWorktreeManager {
     private func removeVerifiedManagedWorkspace(
         expected: URL,
         identity: ManagedWorkspaceIdentity,
-        referenceContext: TaskContext?
+        referenceContext: TaskContext?,
+        requireClean: Bool = true
     ) async throws -> RetainedManagedWorkspace {
         let repository = URL(fileURLWithPath: identity.commonDirectory, isDirectory: true)
             .deletingLastPathComponent()
@@ -894,8 +916,18 @@ public actor TaskWorktreeManager {
             root: managedRoot, target: expected, expectedIdentity: identity.file,
             prefix: ".focus-queue-retained-")
         do {
-            try await requireCleanQuarantinedWorkspace(
-                quarantine, identity: identity, referenceContext: referenceContext)
+            if requireClean {
+                try await requireCleanQuarantinedWorkspace(
+                    quarantine, identity: identity, referenceContext: referenceContext)
+            } else {
+                // Completion already archived any uncommitted work; only the
+                // exact checkout and its Git administration may move.
+                guard try fileIdentity(at: quarantine.path) == identity.file,
+                      try fileIdentity(at: identity.gitDirectory) == identity.gitAdminFile else {
+                    throw TaskContextError.unsafeWorktree(
+                        "Managed workspace identity changed after quarantine; no files were removed.")
+                }
+            }
             let retainedAdmin = try retainGitAdminDirectory(
                 common: common, admin: admin,
                 expectedIdentity: identity.gitAdminFile)
@@ -1328,4 +1360,311 @@ public actor TaskWorktreeManager {
         return common.deletingLastPathComponent()
     }
 
+
+    // MARK: - Completion retirement
+
+    /// Regenerated build output, deleted before staging so a completed
+    /// workspace frees its disk at once. Everything else is staged.
+    public nonisolated static let disposableBuildDirectories = [
+        ".build", ".swiftpm", "node_modules", "DerivedData", ".pytest_cache", "__pycache__",
+    ]
+    public nonisolated static let archiveRefPrefix = "refs/focus-queue/archive/"
+    public nonisolated static let trashDirectoryName = ".trash"
+    public nonisolated static let retainedPrefixes = [".focus-queue-retained-", ".focus-queue-removing-"]
+
+    public nonisolated static func managedRoots(repositoryPath: String) -> [URL] {
+        [managedRoot(repositoryPath: repositoryPath), legacyManagedRoot(repositoryPath: repositoryPath)]
+    }
+
+    /// The task branch and every agent branch of one ticket.
+    public nonisolated static func ownsBranch(_ name: String, ticketID: String) -> Bool {
+        let task = "focus-queue/" + ticketID.lowercased()
+        return name == task || name.hasPrefix(task + "-")
+    }
+
+    /// Archive refs live outside refs/heads, so `git branch` stays short while
+    /// the commits remain reachable for recovery.
+    public nonisolated static func archiveRef(forBranch branch: String) -> String {
+        let leaf = branch.hasPrefix("focus-queue/") ? String(branch.dropFirst("focus-queue/".count)) : branch
+        return archiveRefPrefix + leaf
+    }
+
+    public func primaryRepositoryPath(of path: String) async throws -> String {
+        try await primaryRepository(at: path).path
+    }
+
+    /// True when every change on `head` already exists in a target: an
+    /// ancestor, rebased or cherry-picked commits, or a squash merge.
+    public func isIntegrated(_ head: String, into targets: [String], repositoryPath: String) async throws -> Bool {
+        for target in targets {
+            let ancestor = try await runner.run(.init(executable: "/usr/bin/git",
+                arguments: ["merge-base", "--is-ancestor", head, target], workingDirectory: repositoryPath))
+            if ancestor.succeeded { return true }
+            // Rebased or cherry-picked commits match by patch ID even when
+            // later base commits edit the same lines.
+            let cherry = try await runner.run(.init(executable: "/usr/bin/git",
+                arguments: ["cherry", target, head], workingDirectory: repositoryPath, timeoutSeconds: 120))
+            if cherry.succeeded, cherry.standardOutput.split(separator: "\n").allSatisfy({ $0.hasPrefix("-") }) {
+                return true
+            }
+            let merged = try await runner.run(.init(executable: "/usr/bin/git",
+                arguments: ["merge-tree", "--write-tree", "--no-messages", target, head],
+                workingDirectory: repositoryPath, timeoutSeconds: 120))
+            guard merged.succeeded,
+                  let tree = merged.standardOutput.split(separator: "\n").first.map(String.init) else { continue }
+            let targetTree = try await git(["rev-parse", target + "^{tree}"], in: repositoryPath)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if tree == targetTree { return true }
+        }
+        return false
+    }
+
+    /// Completion is authoritative. Uncommitted or unmerged work is kept under
+    /// an archive ref, build output is deleted, and the checkout moves to the
+    /// managed trash with its Git registration removed. Nothing is deleted here.
+    public func retireWorktree(
+        path: String, repositoryPath: String, ticketID: String,
+        integrationTargets: [String], dryRun: Bool, now: Date = Date()
+    ) async throws -> WorktreeRetirement {
+        let pathURL = URL(fileURLWithPath: path).standardizedFileURL
+        let managedRoot = try await prepareManagedRoot(
+            repositoryPath: repositoryPath, containing: pathURL.path, createIfMissing: false)
+        let trash = managedRoot.appendingPathComponent(Self.trashDirectoryName, isDirectory: true)
+        guard pathURL.path != managedRoot.path, !pathURL.path.hasPrefix(trash.path + "/") else {
+            throw TaskContextError.unsafeWorktree("Only a managed task workspace can be retired: \(pathURL.path)")
+        }
+        try ensureManagedAncestors(root: managedRoot, through: pathURL, createMissing: false)
+        let identity = try await managedWorkspaceIdentity(
+            path: pathURL.path, expected: pathURL, repositoryPath: repositoryPath)
+        var record = WorktreeRetirement(path: pathURL.path, repositoryPath: repositoryPath)
+        let branch = try await runner.run(.init(executable: "/usr/bin/git",
+            arguments: ["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory: pathURL.path))
+        record.branch = branch.succeeded ? branch.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines) : nil
+        let head = try await git(["rev-parse", "HEAD"], in: pathURL.path).trimmingCharacters(in: .whitespacesAndNewlines)
+        record.head = head
+        record.integrated = try await isIntegrated(head, into: integrationTargets, repositoryPath: repositoryPath)
+        let leafRef = record.branch.map(Self.archiveRef(forBranch:))
+            ?? Self.archiveRefPrefix + ticketID.lowercased() + "-" + pathURL.lastPathComponent
+        let buildOutput = try Self.disposableBuildDirectories.filter { name in
+            guard let metadata = try nodeMetadata(at: pathURL.appendingPathComponent(name).path) else { return false }
+            return metadata.mode & S_IFMT == S_IFDIR
+        }
+        if !dryRun {
+            for name in buildOutput {
+                let ignored = try await runner.run(.init(executable: "/usr/bin/git",
+                    arguments: ["check-ignore", "--quiet", "--", name], workingDirectory: pathURL.path))
+                guard ignored.succeeded else { continue }
+                try FileManager.default.removeItem(at: pathURL.appendingPathComponent(name, isDirectory: true))
+                record.removedBuildOutput.append(name)
+            }
+        }
+        record.dirty = !(try await git(["status", "--porcelain", "--untracked-files=all"], in: pathURL.path))
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if record.dirty { record.archiveRef = leafRef + "-uncommitted" }
+        else if !record.integrated { record.archiveRef = leafRef }
+        let stagedName = Self.stagingName(ticketID: ticketID, leaf: pathURL.lastPathComponent, now: now)
+        guard !dryRun else {
+            record.removedBuildOutput = buildOutput
+            record.outcome = "Would stage at \(trash.appendingPathComponent(stagedName).path)"
+            return record
+        }
+        if let ref = record.archiveRef {
+            let commit = record.dirty
+                ? try await snapshotCommit(worktree: pathURL.path, gitDirectory: identity.gitDirectory, head: head)
+                : head
+            _ = try await git(["update-ref", "-m", "Focus Queue completion archive", ref, commit], in: repositoryPath)
+            record.archivedCommit = commit
+        }
+        try await requireUnchangedManagedWorkspace(
+            path: pathURL.path, expected: pathURL, repositoryPath: repositoryPath, baseline: identity)
+        let retained = try await removeVerifiedManagedWorkspace(
+            expected: pathURL, identity: identity, referenceContext: nil, requireClean: false)
+        let staged = try moveIntoTrash(root: managedRoot, item: retained.files, name: stagedName)
+        record.stagedPath = staged.path
+        try writeStagingManifest(StagingManifest(kind: "worktree", ticketID: ticketID,
+            originalPath: pathURL.path, stagedPath: staged.path, repositoryPath: repositoryPath,
+            branch: record.branch, head: head, archiveRef: record.archiveRef,
+            archivedCommit: record.archivedCommit, gitAdministration: retained.gitAdmin.path,
+            stagedAt: now, purgeAfter: now.addingTimeInterval(TaskCompletionCleanup.stagingRetention)),
+            beside: staged)
+        removeEmptyAncestors(of: pathURL, root: managedRoot)
+        record.outcome = "Staged"
+        return record
+    }
+
+    /// Earlier cleanups left recoverable checkouts beside the workspace. Move
+    /// them into the trash so the same retention window applies.
+    public func stageRetainedCheckouts(
+        under directory: URL, repositoryPath: String, ticketID: String, dryRun: Bool, now: Date = Date()
+    ) async throws -> [String] {
+        let directory = directory.standardizedFileURL
+        guard try nodeMetadata(at: directory.path) != nil else { return [] }
+        let managedRoot = try await prepareManagedRoot(
+            repositoryPath: repositoryPath, containing: directory.path, createIfMissing: false)
+        try ensureManagedAncestors(root: managedRoot, through: directory, createMissing: false)
+        var candidates: [URL] = []
+        for parent in [directory, directory.appendingPathComponent("agents", isDirectory: true)] {
+            guard let names = try? FileManager.default.contentsOfDirectory(atPath: parent.path) else { continue }
+            for name in names.sorted() where Self.retainedPrefixes.contains(where: name.hasPrefix) {
+                candidates.append(parent.appendingPathComponent(name, isDirectory: true))
+            }
+        }
+        guard !dryRun else { return candidates.map(\.path) }
+        var staged: [String] = []
+        for candidate in candidates {
+            try ensureManagedAncestors(root: managedRoot, through: candidate, createMissing: false)
+            let destination = try moveIntoTrash(root: managedRoot, item: candidate,
+                name: Self.stagingName(ticketID: ticketID, leaf: candidate.lastPathComponent, now: now))
+            try writeStagingManifest(StagingManifest(kind: "retained-checkout", ticketID: ticketID,
+                originalPath: candidate.path, stagedPath: destination.path, repositoryPath: repositoryPath,
+                stagedAt: now, purgeAfter: now.addingTimeInterval(TaskCompletionCleanup.stagingRetention)),
+                beside: destination)
+            staged.append(destination.path)
+        }
+        removeEmptyAncestors(of: directory.appendingPathComponent("agents", isDirectory: true), root: managedRoot)
+        return staged
+    }
+
+    /// Deletes a branch after its work is integrated or archived. A merged
+    /// remote branch of the same name is deleted only when it holds no extra work.
+    public func retireBranch(
+        _ name: String, repositoryPath: String, integrationTargets: [String],
+        remote: String?, remoteHead: String?, dryRun: Bool
+    ) async throws -> BranchRetirement {
+        var record = BranchRetirement(name: name, repositoryPath: repositoryPath, remoteHead: remoteHead)
+        let local = try await runner.run(.init(executable: "/usr/bin/git",
+            arguments: ["rev-parse", "--verify", "--quiet", "refs/heads/\(name)^{commit}"],
+            workingDirectory: repositoryPath))
+        if local.succeeded {
+            let head = local.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+            record.head = head
+            let worktrees = try await git(["worktree", "list", "--porcelain"], in: repositoryPath)
+            guard !worktrees.split(separator: "\n").contains(where: { $0 == "branch refs/heads/\(name)" }) else {
+                record.outcome = "Kept: still checked out in a worktree."
+                return record
+            }
+            record.integrated = try await isIntegrated(head, into: integrationTargets, repositoryPath: repositoryPath)
+            if !record.integrated { record.archiveRef = Self.archiveRef(forBranch: name) }
+            if !dryRun {
+                if let ref = record.archiveRef {
+                    _ = try await git(["update-ref", "-m", "Focus Queue completion archive", ref, head], in: repositoryPath)
+                }
+                // The old value makes deletion fail if another writer moved the branch.
+                _ = try await git(["update-ref", "-d", "refs/heads/\(name)", head], in: repositoryPath)
+                record.localDeleted = true
+            }
+        }
+        if let remote, let remoteHead {
+            let present = try await runner.run(.init(executable: "/usr/bin/git",
+                arguments: ["cat-file", "-e", remoteHead + "^{commit}"], workingDirectory: repositoryPath))
+            if !present.succeeded {
+                _ = try await runner.run(.init(executable: "/usr/bin/git",
+                    arguments: ["fetch", "--quiet", "--no-tags", remote, "refs/heads/\(name)"],
+                    workingDirectory: repositoryPath, timeoutSeconds: 120))
+            }
+            let remoteIntegrated = remoteHead == record.head && record.head != nil
+                ? record.integrated
+                : (try? await isIntegrated(remoteHead, into: integrationTargets, repositoryPath: repositoryPath)) ?? false
+            if !remoteIntegrated {
+                record.outcome = "Remote branch kept: it has work absent from the base branch."
+            } else if !dryRun {
+                let pushed = try await runner.run(.init(executable: "/usr/bin/git",
+                    arguments: ["push", "--porcelain", "--force-with-lease=refs/heads/\(name):\(remoteHead)",
+                                remote, ":refs/heads/\(name)"],
+                    workingDirectory: repositoryPath, timeoutSeconds: 120))
+                guard pushed.succeeded else {
+                    throw TaskContextError.commandFailed("Could not delete \(remote)/\(name): "
+                        + (pushed.standardError.isEmpty ? pushed.standardOutput : pushed.standardError))
+                }
+                record.remoteDeleted = true
+            }
+        }
+        if record.outcome.isEmpty {
+            record.outcome = dryRun ? "Would delete" + (record.archiveRef.map { " after archiving to \($0)" } ?? "")
+                : "Deleted" + (record.archiveRef.map { "; work archived at \($0)" } ?? "")
+        }
+        return record
+    }
+
+    private nonisolated static func stagingName(ticketID: String, leaf: String, now: Date) -> String {
+        let stamp = ISO8601DateFormatter().string(from: now)
+            .replacingOccurrences(of: ":", with: "").replacingOccurrences(of: "-", with: "")
+        return "\(ticketID.lowercased())-\(leaf)-\(stamp)"
+    }
+
+    /// Records tracked and untracked changes in a commit without touching the
+    /// checkout's index, branch, or files.
+    private func snapshotCommit(worktree: String, gitDirectory: String, head: String) async throws -> String {
+        let index = URL(fileURLWithPath: gitDirectory)
+            .appendingPathComponent("focus-queue-snapshot-index-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: index) }
+        let environment = [
+            "GIT_INDEX_FILE": index.path,
+            "GIT_AUTHOR_NAME": "Focus Queue", "GIT_AUTHOR_EMAIL": "focus-queue@localhost",
+            "GIT_COMMITTER_NAME": "Focus Queue", "GIT_COMMITTER_EMAIL": "focus-queue@localhost",
+        ]
+        var output = ""
+        for arguments in [["read-tree", head], ["add", "--all", "--", "."], ["write-tree"]] {
+            let result = try await runner.run(.init(executable: "/usr/bin/git", arguments: arguments,
+                workingDirectory: worktree, environment: environment, timeoutSeconds: 300))
+            guard result.succeeded else {
+                throw TaskContextError.commandFailed("Could not archive uncommitted work: \(result.standardError)")
+            }
+            output = result.standardOutput
+        }
+        let tree = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let commit = try await runner.run(.init(executable: "/usr/bin/git",
+            arguments: ["commit-tree", tree, "-p", head, "-m", "Focus Queue completion snapshot of uncommitted work"],
+            workingDirectory: worktree, environment: environment))
+        guard commit.succeeded else {
+            throw TaskContextError.commandFailed("Could not archive uncommitted work: \(commit.standardError)")
+        }
+        return commit.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func moveIntoTrash(root: URL, item: URL, name: String) throws -> URL {
+        let trash = root.appendingPathComponent(Self.trashDirectoryName, isDirectory: true)
+        try ensureManagedAncestors(root: root, through: trash, createMissing: true)
+        let parent = Darwin.open(item.deletingLastPathComponent().path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parent >= 0 else { throw TaskContextError.unsafeWorktree("Staging source could not be opened safely.") }
+        defer { Darwin.close(parent) }
+        let destination = Darwin.open(trash.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard destination >= 0 else { throw TaskContextError.unsafeWorktree("The managed trash could not be opened safely.") }
+        defer { Darwin.close(destination) }
+        try requireSafeDirectoryDescriptor(parent)
+        try requireSafeDirectoryDescriptor(destination)
+        var leaf = name
+        for _ in 0..<16 {
+            if Darwin.renameatx_np(parent, item.lastPathComponent, destination, leaf, UInt32(RENAME_EXCL)) == 0 {
+                return trash.appendingPathComponent(leaf, isDirectory: true)
+            }
+            guard errno == EEXIST else {
+                throw TaskContextError.unsafeWorktree("Could not stage \(item.path) in the managed trash.")
+            }
+            leaf = name + "-" + UUID().uuidString.lowercased().prefix(8)
+        }
+        throw TaskContextError.unsafeWorktree("The managed trash could not reserve a name for \(item.path).")
+    }
+
+    private func writeStagingManifest(_ manifest: StagingManifest, beside staged: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(manifest).write(to: staged.appendingPathExtension("json"), options: .atomic)
+    }
+
+    /// Ticket folders empty out once every workspace is staged. Only empty
+    /// directories (or ones holding a lone .DS_Store) are removed.
+    private func removeEmptyAncestors(of path: URL, root: URL) {
+        var current = path.standardizedFileURL.deletingLastPathComponent()
+        if (try? nodeMetadata(at: path.path)) != nil { current = path.standardizedFileURL }
+        let normalizedRoot = root.standardizedFileURL.path
+        while current.path.hasPrefix(normalizedRoot + "/") {
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: current.path)) ?? ["?"]
+            guard names.allSatisfy({ $0 == ".DS_Store" }) else { return }
+            if !names.isEmpty { try? FileManager.default.removeItem(at: current.appendingPathComponent(".DS_Store")) }
+            guard Darwin.rmdir(current.path) == 0 else { return }
+            current.deleteLastPathComponent()
+        }
+    }
 }

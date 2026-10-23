@@ -82,6 +82,22 @@ class ValidateAtomTests(unittest.TestCase):
         self.assertEqual(clean["destination"], "inbox")
         self.assertIn("deferred work or decisions", reason)
 
+    def test_first_person_account_task_preserves_user_ownership(self):
+        quote = "I need to make a new Instagram account for this to be more professional."
+        value = atom(destination="new_task", target_id="focus-queue", kind="deferred",
+                     quote=quote, text="Create a new company Instagram account.")
+        clean, reason = self.check(value, prompt=quote)
+        self.assertIsNone(reason)
+        self.assertEqual(clean["text"], "The user will create a new company Instagram account.")
+
+    def test_account_task_keeps_explicit_user_ownership(self):
+        quote = "I need to make a new Instagram account for this to be more professional."
+        value = atom(destination="new_task", target_id="focus-queue", kind="deferred",
+                     quote=quote, text="The user will create a company Instagram account.")
+        clean, reason = self.check(value, prompt=quote)
+        self.assertIsNone(reason)
+        self.assertEqual(clean["text"], value["text"])
+
     def test_low_confidence_goes_to_inbox(self):
         clean, reason = self.check(atom(confidence=0.5))
         self.assertEqual(clean["destination"], "inbox")

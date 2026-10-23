@@ -317,6 +317,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
     public var managedWorktree = false
     public var subtasks: [TaskSubtask] = []
     public var lastPromptAt: Date? = nil
+    public var pinnedAt: Date? = nil
     public var removedAgentSessionKeys: [String]?
     public var updatedAt: Date
 
@@ -348,6 +349,12 @@ public struct TaskContext: Codable, Equatable, Sendable {
 
     public static func launchRemovalKey(_ launchID: String) -> String {
         "launch:" + launchID.lowercased()
+    }
+
+    /// An app-launched agent's intake receipt is keyed by its placement launch
+    /// ID, not its row ID, so both must be retired or the receipt recreates it.
+    static func launchRemovalKeys(for agent: TaskSubtask) -> [String] {
+        [agent.id, agent.launchConfiguration?.launchID].compactMap { $0 }.map(launchRemovalKey)
     }
 
     public func hasDismissedLaunch(_ launchID: String) -> Bool {
@@ -741,6 +748,7 @@ public actor TaskContextStore {
                 }
                 existing.summary = ticket.summary
                 existing.successCriteria = ticket.doneWhen ?? existing.successCriteria
+                if !ticket.isOpen { existing.pinnedAt = nil }
                 // A retained branch with no workspace records completed cleanup. Dashboard
                 // metadata may still mention the former workspace until its next refresh.
                 if existing.worktreePath == nil, existing.branch == nil { existing.worktreePath = worktreePath ?? ticket.worktree }
@@ -1058,8 +1066,8 @@ public actor TaskContextStore {
             ticketID: ticketID, archiveChanges: true, archiveBeforeChanges: true
         ) { context in
             let keys = context.subtasks.flatMap { subtask in
-                [subtask.sessionID.map { subtask.provider.rawValue + ":" + $0.lowercased() },
-                 subtask.hasAgent ? TaskContext.launchRemovalKey(subtask.id) : nil].compactMap { $0 }
+                [subtask.sessionID.map { subtask.provider.rawValue + ":" + $0.lowercased() }].compactMap { $0 }
+                    + (subtask.hasAgent ? TaskContext.launchRemovalKeys(for: subtask) : [])
             }
             context.removedAgentSessionKeys = Array(Set((context.removedAgentSessionKeys ?? []) + keys)).sorted()
             context.subtasks.removeAll()
@@ -1086,8 +1094,8 @@ public actor TaskContextStore {
             let removedSessionKeys = context.subtasks.filter { candidate in
                 candidate.id == removed.id || linkedAgentIDs.contains(candidate.id)
             }.flatMap { agent in
-                [agent.sessionID.map { agent.provider.rawValue + ":" + $0.lowercased() },
-                 agent.hasAgent ? TaskContext.launchRemovalKey(agent.id) : nil].compactMap { $0 }
+                [agent.sessionID.map { agent.provider.rawValue + ":" + $0.lowercased() }].compactMap { $0 }
+                    + (agent.hasAgent ? TaskContext.launchRemovalKeys(for: agent) : [])
             }
             context.removedAgentSessionKeys = Array(Set((context.removedAgentSessionKeys ?? []) + removedSessionKeys)).sorted()
             context.subtasks.removeAll { candidate in
@@ -1164,7 +1172,7 @@ public actor TaskContextStore {
             let session = context.subtasks[index].sessionID
             let provider = context.subtasks[index].provider
             context.removedAgentSessionKeys = Array(Set((context.removedAgentSessionKeys ?? [])
-                + [TaskContext.launchRemovalKey(context.subtasks[index].id)])).sorted()
+                + TaskContext.launchRemovalKeys(for: context.subtasks[index]))).sorted()
             for i in context.subtasks.indices where i == index || (session != nil && context.subtasks[i].provider == provider && context.subtasks[i].sessionID?.lowercased() == session?.lowercased()) {
                 context.subtasks[i].completionTerminalRetained = automatically && context.subtasks[i].status == .completed
                 context.subtasks[i].agentRemovedAt = Date()
@@ -1402,6 +1410,31 @@ public actor TaskContextStore {
         try mutate(ticketID: ticketID) { context in
             context.worktreePath = path; context.branch = branch; context.baseBranch = baseBranch; context.managedWorktree = managed
             if let repositoryPath { context.repositoryPath = repositoryPath }
+        }
+    }
+
+    /// After completion cleanup the task keeps its plan, log, and agent
+    /// records, but no longer claims a workspace or a tmux runtime.
+    @discardableResult public func recordCompletionCleanup(ticketID: String) throws -> TaskContext {
+        try mutate(ticketID: ticketID) { context in
+            if context.managedWorktree, let path = context.worktreePath, !files.fileExists(atPath: path) {
+                context.worktreePath = nil
+                context.managedWorktree = false
+            }
+            for index in context.subtasks.indices {
+                context.subtasks[index].tmux = nil
+                context.subtasks[index].completionTerminalRetained = nil
+            }
+        }
+    }
+
+    /// Pin state shares the task context lock so app and CLI changes cannot
+    /// overwrite concurrent context updates.
+    @discardableResult public func setPinned(
+        ticketID: String, at date: Date?
+    ) throws -> TaskContext {
+        try mutate(ticketID: ticketID) { context in
+            context.pinnedAt = date
         }
     }
 

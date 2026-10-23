@@ -108,6 +108,7 @@ Pitfalls:
 - Fails with `missingSessionIdentity` if the env session ID is absent **or not a UUID** (Kimi ULIDs fail here — use `register-event` instead).
 - Correctly ignores a stale inherited `FOCUS_QUEUE_SUBTASK_ID` — re-attach after switching tickets, every time.
 - **Does not validate that the ticket exists on a dashboard.** Attaching to a typo'd ticket registers a session for a task that doesn't exist.
+- A Codex sub-agent thread (rollout `session_meta` marks `source.subagent`, `thread_source: subagent`, or `parent_thread_id`) registers nothing: attach returns `status: "subagent"` with `parentSessionID` and the inherited `taskID`/`subtaskID`, and exits 0. `register-event` and app process discovery likewise never add an agent row for a Codex sub-agent, so one Codex session stays one agent.
 
 **`focus-queue-session register-event --provider codex|claude|kimi [--task <TASK-ID>]`**
 The hook-ingestion path; reads **one JSON `ExternalAgentEvent` from stdin** (≤1 MB, oversized → exit 1). This is how provider hooks (SessionStart, UserPromptSubmit, SubagentStart/Stop, ProcessDiscovery) register identity. Payload (snake_case):
@@ -149,6 +150,7 @@ The Router agent, its `route inspect` / `route start` commands, the in-app compo
 **`task rename <TASK-ID> <title...>`** — revision-checked rename.
 **`task priority <TASK-ID> critical|high|medium|low`** — validated enum.
 **`task status <TASK-ID> <status>`** — ⚠ **accepts any string.** No enum validation. A typo (`complted`) writes successfully and the ticket just stays "open" forever. See §8.
+`resolved` and `cancelled` are final: the command then runs completion cleanup (below) and reports its summary as `cleanup`.
 
 **`task link <TASK-ID> <url> <label> [type]`** — appends an evidence link to the ticket under the dashboard lock with a revision check. A link whose URL is already present is left unchanged. Use this instead of hand-editing `links`.
 
@@ -191,6 +193,9 @@ These manage the per-agent slots inside `tasks/<TICKET>/context.json`:
 | `runtime repair <TASK> <SUBTASK>` | Repair a broken runtime record |
 | `diagnose <TASK>` | Read-only WezTerm/socket inspection |
 | `reconcile <TASK> [--no-cleanup]` | Repair task documents, write a receipt |
+| `cleanup <TASK> [--dry-run]` | Completion cleanup for one task: kill its tmux sessions, archive unmerged or uncommitted work under `refs/focus-queue/archive/`, stage its worktrees in `.worktrees/.trash`, delete its local branches and merged remote branches, stage `archive/` and `maintenance-history/`. Writes `tasks/<TASK>/cleanup.json`. |
+| `cleanup --completed [--orphans] [--dry-run]` | Backfill: run completion cleanup for every resolved or cancelled ticket; `--orphans` also retires managed worktrees and `focus-queue/*` branches no open ticket owns (a worktree any process uses is kept). Every project dashboard must load. |
+| `cleanup --purge` | Delete staged items whose 7-day `purgeAfter` has passed. The app purges at most every 6 hours. |
 | `architecture <TASK> [repository-path]` | Generate/update architecture docs |
 
 ### 3.8 Projects

@@ -495,6 +495,20 @@ def validate_atom(atom, catalog, prompt, threshold):
             return inbox(clean, "new tasks must be deferred work or decisions")
         if target not in projects:
             return inbox(clean, f"unknown project {one_line(target, 40)!r}")
+        # A first-person promise to create an external account is a deferred
+        # user action. Keep that ownership in the task summary, even when the
+        # model's proposed wording reads like an instruction to an agent.
+        user_account_action = re.search(
+            r"\bI\s+(?:need|have|plan|intend)\s+to\s+(?:make|create|set up|open)\b[^.!?]{0,120}\baccount\b",
+            quote, re.IGNORECASE)
+        if user_account_action and not re.search(r"\buser\b", clean["text"], re.IGNORECASE):
+            action = re.match(r"^(Create|Make|Set up|Open)\b", clean["text"], re.IGNORECASE)
+            if action:
+                clean["text"] = "The user will " + clean["text"][0].lower() + clean["text"][1:]
+            else:
+                clean["text"] += " The user will handle account setup."
+            if len(clean["text"]) > TEXT_LIMIT or memory_sentence_count(clean["text"]) > 2:
+                return inbox(clean, "user-owned account task exceeds the short-memory limit")
     return clean, None
 
 

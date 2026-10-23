@@ -13,7 +13,7 @@ enum SessionRegistrationError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .usage:
-            "Usage: focus-queue-session intake-changed | data place <user|project|task> <target-id> <fact> | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|reset | task create <PROJECT-ID> <title> <summary> | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
+            "Usage: focus-queue-session intake-changed | data place <user|project|task> <target-id> <fact> | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|pin <TASK-ID>|unpin <TASK-ID>|reset | task create <PROJECT-ID> <title> <summary> | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | cleanup <TASK-ID>|--completed|--orphans|--purge [--dry-run] | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
         case .missingSessionIdentity:
             "No Codex, Claude, or Kimi session ID was found in the environment or current WezTerm pane."
         case .missingManagedRuntime:
@@ -43,6 +43,7 @@ enum SessionRegistrationError: Error, LocalizedError {
                 print("Maintenance: reconcile <TASK-ID> [--no-cleanup] (repair documents and save a receipt; optional workspace cleanup)")
                 print("Data placement: data-placement status|on|off (automatic native prompt capture; off by default)")
                 print("Scoped data: data place <user|project|task> <target-id> <one-or-two-sentence fact>")
+                print("Completion cleanup: cleanup <TASK-ID> | cleanup --completed | cleanup --orphans | cleanup --purge, each with optional --dry-run (stops tmux, stages worktrees in .worktrees/.trash for 7 days, archives unmerged work under refs/focus-queue/archive/, deletes merged local and remote branches)")
                 print("Persistent terminals: tmux list | tmux start <name> [--cwd <directory>] [-- <command> ...] | tmux start-agent <TASK-ID> <AGENT-ID> [--cwd <directory>] -- <command> ... | tmux attach <name> | tmux ssh-command <user@host> <name>")
                 print("Task layouts: tmux panes <name> | tmux arrange <name> | tmux manual <name> | tmux save | tmux restore | tmux persistence")
             }
@@ -55,6 +56,7 @@ enum SessionRegistrationError: Error, LocalizedError {
             else if arguments.first == "library" { try await libraryCommand(arguments: arguments) }
             else if arguments.first == "architecture" { try await architectureCommand(arguments: arguments) }
             else if arguments.first == "diagnose" { try await diagnose(arguments: arguments) }
+            else if arguments.first == "cleanup" { try await cleanupCommand(arguments: arguments) }
             else if arguments.first == "register-event" { try await registerEvent(arguments: arguments) }
             else if arguments.first == "data-placement" { try await dataPlacement(arguments: arguments) }
             else if arguments.first == "data" { try await dataCommand(arguments: arguments) }
@@ -154,21 +156,47 @@ enum SessionRegistrationError: Error, LocalizedError {
         let store = QueueOrderStore(
             root: root,
             projectID: showsAllProjects ? ProjectCatalog.allProjectsScopeID : config.selectedProjectID)
-        let fallback = DashboardOrdering.openTickets(in: dashboard.tickets,
-            deferredTicketIDs: state.deferredTicketIDs).map(\.id)
         let requestedScope = ProcessInfo.processInfo.environment["FOCUS_QUEUE_PROJECT_ID"].flatMap { $0.isEmpty ? nil : $0 }
         guard requestedScope == nil || requestedScope == config.selectedProjectID
             || (showsAllProjects && config.projects.contains { $0.id == requestedScope }) else {
             throw TaskContextError.commandFailed(
                 "The requested project is not the active dashboard. Select it before changing its queue.")
         }
-        let visible: Set<String>? = nil
+        let contextStore = TaskContextStore(root: root)
+        var contexts = try await contextStore.loadAvailableForDiscovery()
+        let currentMode: QueueActivitySortMode
+        if state.queueActivitySortMode == .manual {
+            currentMode = .recentActivity
+            state.queueActivitySortMode = currentMode
+        } else {
+            currentMode = state.queueActivitySortMode ?? .recentActivity
+        }
+
+        func presentation(_ contexts: [TaskContext]) throws -> (
+            automatic: [DashboardTicket], displayed: [DashboardTicket]
+        ) {
+            let pinnedDates = Dictionary(uniqueKeysWithValues: contexts.compactMap { context in
+                context.pinnedAt.map { (context.ticketID, $0) }
+            })
+            let automatic = QueueOrderStore.automaticTickets(
+                dashboard.tickets,
+                deferredTicketIDs: state.deferredTicketIDs,
+                mode: currentMode,
+                contexts: contexts)
+            let automaticIDs = automatic.map(\.id)
+            guard let override = try store.applicableOrder(
+                automaticIDs: automaticIDs, sortMode: currentMode)
+            else { return (automatic, automatic) }
+            let manuallyOrdered = QueueOrderStore.orderedTickets(automatic, savedIDs: override)
+            return (automatic, QueueOrderStore.prioritizingPins(
+                manuallyOrdered, pinnedAtByTicketID: pinnedDates))
+        }
+
+        var projection = try presentation(contexts)
         switch arguments.dropFirst().first {
         case "list" where arguments.count == 2: break
         case "reset" where arguments.count == 2:
-            if let visible { _ = try store.reset(tickets: dashboard.tickets, visibleIDs: visible, fallbackIDs: fallback) }
-            else { try store.reset() }
-            state.queueActivitySortMode = .recentActivity
+            try store.reset()
         case "move" where arguments.count == 4 || arguments.count == 5:
             let placement: QueuePlacement
             switch arguments[3] {
@@ -178,31 +206,35 @@ enum SessionRegistrationError: Error, LocalizedError {
             case "after" where arguments.count == 5: placement = .after(arguments[4].uppercased())
             default: throw SessionRegistrationError.usage
             }
+            let automaticIDs = projection.automatic.map(\.id)
             try store.move(arguments[2].uppercased(), to: placement,
-                tickets: dashboard.tickets, fallbackIDs: fallback, visibleIDs: visible)
-            state.queueActivitySortMode = .manual
+                tickets: dashboard.tickets, fallbackIDs: automaticIDs,
+                currentIDs: projection.displayed.map(\.id),
+                automaticBaselineIDs: automaticIDs, sortMode: currentMode)
         case "reorder" where arguments.count > 2:
+            let automaticIDs = projection.automatic.map(\.id)
             try store.setOrder(arguments.dropFirst(2).map { $0.uppercased() },
-                tickets: dashboard.tickets, fallbackIDs: fallback)
-            state.queueActivitySortMode = .manual
+                tickets: dashboard.tickets, fallbackIDs: automaticIDs,
+                currentIDs: projection.displayed.map(\.id),
+                automaticBaselineIDs: automaticIDs, sortMode: currentMode)
+        case "pin" where arguments.count == 3,
+             "unpin" where arguments.count == 3:
+            let ticketID = arguments[2].uppercased()
+            guard let ticket = dashboard.tickets.first(where: { $0.id == ticketID && $0.isOpen }) else {
+                throw TaskContextError.commandFailed("No open task named \(ticketID) exists in this queue.")
+            }
+            if try await contextStore.load(ticketID: ticketID) == nil {
+                let project = ticket.projectID.flatMap { id in config.projects.first { $0.id == id } }
+                _ = try await contextStore.ensureContext(ticket: ticket, project: project)
+            }
+            _ = try await contextStore.setPinned(
+                ticketID: ticketID,
+                at: arguments[1] == "pin" ? Date() : nil)
+            contexts = try await contextStore.loadAvailableForDiscovery()
         default: throw SessionRegistrationError.usage
         }
-        let baseline = QueueOrderStore.orderedTickets(
-            dashboard.tickets, savedIDs: try store.load() ?? fallback)
-        let contexts = try await TaskContextStore(root: root).loadAvailableForDiscovery()
-        let promptDates = Dictionary(uniqueKeysWithValues: contexts.compactMap { context in
-            context.lastPromptAt.map { (context.ticketID, $0) }
-        })
-        let outputDates = Dictionary(uniqueKeysWithValues: contexts.compactMap { context in
-            context.subtasks.compactMap { $0.lastOutputAt ?? $0.resultAt }.max()
-                .map { (context.ticketID, $0) }
-        })
-        let order = QueueOrderStore.prioritizingActivity(
-            baseline,
-            mode: state.queueActivitySortMode ?? .recentActivity,
-            lastPromptAtByTicketID: promptDates,
-            lastOutputAtByTicketID: outputDates)
-        try emit(["order": order.filter { visible?.contains($0.id) ?? true }.map(\.id)])
+        projection = try presentation(contexts)
+        try emit(["order": projection.displayed.map(\.id)])
         if arguments.dropFirst().first != "list" {
             try await stateStore.save(state)
             DistributedNotificationCenter.default().postNotificationName(
@@ -290,10 +322,25 @@ enum SessionRegistrationError: Error, LocalizedError {
             try emit(["updated": ticketID, "priority": priority])
         case "status" where arguments.count == 4:
             let status = arguments[3].lowercased()
-            _ = try await mutateTicket(ticketID, in: dashboardURLs, repository: repository) { url, snapshot in
+            let updated = try await mutateTicket(ticketID, in: dashboardURLs, repository: repository) { url, snapshot in
                 try await repository.setTicketStatus(id: ticketID, to: status, in: url, expectedRevision: snapshot.revision)
             }
-            try emit(["updated": ticketID, "status": status])
+            if let ticket = updated.document.tickets.first(where: {
+                $0.id.caseInsensitiveCompare(ticketID) == .orderedSame
+            }), !ticket.isOpen {
+                let contextStore = TaskContextStore(root: root)
+                if try await contextStore.load(ticketID: ticket.id) != nil {
+                    _ = try await contextStore.setPinned(ticketID: ticket.id, at: nil)
+                }
+            }
+            guard ["resolved", "cancelled"].contains(status) else {
+                try emit(["updated": ticketID, "status": status])
+                break
+            }
+            // Completion is final: the task's runtime, worktrees, and branches go now.
+            notifyContextChanged()
+            let report = await completionCleanup(root: root, config: config).run(ticketID: ticketID)
+            try emit(["updated": ticketID, "status": status, "cleanup": report.summary])
         case "link" where (5...6).contains(arguments.count):
             let updated = try await mutateTicket(ticketID, in: dashboardURLs, repository: repository) { url, snapshot in
                 try await repository.addTicketLink(id: ticketID, label: arguments[4], url: arguments[3],
@@ -305,6 +352,63 @@ enum SessionRegistrationError: Error, LocalizedError {
             throw SessionRegistrationError.usage
         }
         notifyContextChanged()
+    }
+
+    static func completionCleanup(root: URL, config: AppConfiguration) -> TaskCompletionCleanup {
+        TaskCompletionCleanup(root: root,
+            projectRepositories: config.projects.flatMap { [$0.repositoryPath, $0.workspacePath] },
+            tmuxExecutable: config.tmuxExecutable)
+    }
+
+    /// cleanup <TASK-ID> | --completed | --orphans | --purge, each with optional --dry-run.
+    private static func cleanupCommand(arguments: [String]) async throws {
+        let options = Set(arguments.dropFirst().filter { $0.hasPrefix("--") })
+        let targets = arguments.dropFirst().filter { !$0.hasPrefix("--") }
+        let modes = options.subtracting(["--dry-run"])
+        guard options.isSubset(of: ["--dry-run", "--completed", "--orphans", "--purge"]),
+              modes.count + targets.count == 1 || (modes == ["--completed", "--orphans"] && targets.isEmpty) else {
+            throw SessionRegistrationError.usage
+        }
+        let dryRun = options.contains("--dry-run")
+        let root = supportDirectory(environment: ProcessInfo.processInfo.environment)
+        let config = try loadConfiguration(from: root)
+        let cleanup = completionCleanup(root: root, config: config)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .iso8601
+        if modes == ["--purge"] {
+            let purged = dryRun ? [] : await cleanup.purgeExpiredStaging()
+            FileHandle.standardOutput.write(try encoder.encode(["purged": purged]))
+            FileHandle.standardOutput.write(Data("\n".utf8))
+            return
+        }
+        var reports: [TaskCleanupReport] = []
+        if let ticketID = targets.first {
+            reports.append(await cleanup.run(ticketID: ticketID, dryRun: dryRun))
+        } else {
+            // Every dashboard must load: an unknown open task must never look orphaned.
+            let repository = JSONDashboardRepository()
+            var tickets: [DashboardTicket] = []
+            var seen = Set<String>()
+            for path in config.projects.map(\.dashboardPath) where seen.insert(path).inserted {
+                tickets += try await repository.loadSnapshot(from: URL(fileURLWithPath: path)).document.tickets
+            }
+            if modes.contains("--completed") {
+                for ticket in tickets where ticket.isCompleted {
+                    reports.append(await cleanup.run(ticketID: ticket.id, dryRun: dryRun))
+                }
+            }
+            if modes.contains("--orphans") {
+                reports.append(await cleanup.sweepOrphans(
+                    openTicketIDs: Set(tickets.filter(\.isOpen).map(\.id)), dryRun: dryRun))
+            }
+        }
+        if !dryRun {
+            _ = await cleanup.purgeExpiredStaging()
+            notifyContextChanged()
+        }
+        FileHandle.standardOutput.write(try encoder.encode(reports))
+        FileHandle.standardOutput.write(Data("\n".utf8))
     }
 
     private static func mutateTicket(
@@ -720,6 +824,18 @@ enum SessionRegistrationError: Error, LocalizedError {
         let environment = ProcessInfo.processInfo.environment
         guard let (provider, sessionID) = TaskSessionBinding.providerSession(environment: environment),
               UUID(uuidString: sessionID) != nil else { throw SessionRegistrationError.missingSessionIdentity }
+        // A Codex sub-agent inherits its parent's history, including the startup
+        // instruction to attach, but exports its own thread UUID. Attaching that
+        // thread would add a second agent for one Codex session.
+        if provider == .codex, let parent = CodexSessionLineage.subagentParent(of: sessionID) {
+            var output = ["status": "subagent", "provider": provider.rawValue,
+                          "sessionID": sessionID.lowercased(), "parentSessionID": parent,
+                          "reason": ExternalAgentRegistry.codexSubagentReason]
+            output["taskID"] = environment["FOCUS_QUEUE_TASK_ID"]
+            output["subtaskID"] = environment["FOCUS_QUEUE_SUBTASK_ID"]
+            try emit(output)
+            return
+        }
         let event = ExternalAgentEvent(sessionID: sessionID, cwd: FileManager.default.currentDirectoryPath,
             hookEventName: "ExplicitAttach")
         try await registerEvent(event, provider: provider, explicitTaskID: arguments[1], environment: environment)

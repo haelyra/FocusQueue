@@ -159,6 +159,35 @@ func exactCodexResumeRecipe() async throws {
     "--add-dir", context.contextDirectory.path])
 }
 
+@Test("Only explicit Codex sub-agent metadata names a parent thread")
+func subagentParentRequiresSubagentMetadata() throws {
+  let fixture = FileManager.default.temporaryDirectory.appendingPathComponent(
+    "lineage-subagent-\(UUID().uuidString)", isDirectory: true)
+  let sessions = fixture.appendingPathComponent("sessions/2026/10/23", isDirectory: true)
+  try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: fixture) }
+  let rootID = "01a16a03-76d9-7c33-a528-a62d9dfecf67"
+  let childID = "01a16a03-fa2d-7553-8859-0219d4c23406"
+  let forkID = "01a16a0b-0000-7000-8000-000000000001"
+  for (id, payload) in [
+    (rootID, "\"session_id\":\"\(rootID)\",\"source\":\"cli\",\"thread_source\":\"user\""),
+    (childID, "\"session_id\":\"\(rootID)\",\"parent_thread_id\":\"\(rootID)\","
+      + "\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"\(rootID)\"}}},"
+      + "\"thread_source\":\"subagent\""),
+    // A user fork shares the session family but is its own agent.
+    (forkID, "\"session_id\":\"\(rootID)\",\"forked_from_id\":\"\(rootID)\",\"source\":\"cli\""),
+  ] {
+    try Data("{\"type\":\"session_meta\",\"payload\":{\"id\":\"\(id)\",\(payload)}}\n".utf8)
+      .write(to: sessions.appendingPathComponent("rollout-2026-10-23T14-26-14-\(id).jsonl"))
+  }
+  #expect(CodexSessionLineage.subagentParent(of: childID, codexRoot: fixture) == rootID)
+  #expect(CodexSessionLineage.subagentParent(of: childID.uppercased(), codexRoot: fixture) == rootID)
+  #expect(CodexSessionLineage.subagentParent(of: rootID, codexRoot: fixture) == nil)
+  #expect(CodexSessionLineage.subagentParent(of: forkID, codexRoot: fixture) == nil)
+  #expect(CodexSessionLineage.subagentParent(
+    of: "dddddddd-4444-4444-8444-dddddddddddd", codexRoot: fixture) == nil)
+}
+
 @Test("A Codex sub-agent resume targets the root of its conversation lineage")
 func subagentResumeTargetsLineageRoot() throws {
   let fixture = FileManager.default.temporaryDirectory.appendingPathComponent(

@@ -10,9 +10,17 @@ struct ProjectTransactionTests {
   func createsProjectAndPreservesCanonicalData() throws {
     let fixture = try ProjectTransactionFixture()
     defer { fixture.remove() }
+    let sourceAutomaticIDs = QueueOrderStore.automaticTickets(
+      try fixture.decodedTickets,
+      deferredTicketIDs: [],
+      mode: .recentActivity,
+      contexts: []).map(\.id)
     _ = try QueueOrderStore(root: fixture.support, projectID: "ecc").move(
       "ECC-044", to: .top, tickets: fixture.decodedTickets,
-      fallbackIDs: ["ECC-035", "ECC-044", "ECC-999"])
+      fallbackIDs: sourceAutomaticIDs,
+      currentIDs: sourceAutomaticIDs,
+      automaticBaselineIDs: sourceAutomaticIDs,
+      sortMode: .recentActivity)
 
     let receipt = try fixture.transaction.create(fixture.request)
 
@@ -33,6 +41,16 @@ struct ProjectTransactionTests {
     #expect(moved[1]["worktree"] as? String == fixture.workspace.path)
     #expect(try QueueOrderStore(root: fixture.support, projectID: "focus-queue").load()
       == ["ECC-044", "ECC-035"])
+    let movedDocument = try JSONDecoder().decode(
+      DashboardDocument.self, from: Data(contentsOf: fixture.destinationDashboard))
+    let automaticIDs = QueueOrderStore.prioritizingActivity(
+      DashboardOrdering.openTickets(in: movedDocument.tickets),
+      mode: .recentActivity,
+      lastPromptAtByTicketID: [:],
+      lastOutputAtByTicketID: [:]).map(\.id)
+    #expect(try QueueOrderStore(root: fixture.support, projectID: "focus-queue")
+      .applicableOrder(automaticIDs: automaticIDs, sortMode: .recentActivity)
+      == ["ECC-044", "ECC-035"])
 
     let config = try fixture.object(at: fixture.configuration)
     #expect((config["vendorMetadata"] as? [String: Any])?["revision"] as? Int == 7)
@@ -48,6 +66,162 @@ struct ProjectTransactionTests {
     #expect(try fixture.permissions(
       of: QueueOrderStore(root: fixture.support, projectID: "focus-queue")
         .storageURL.deletingLastPathComponent()) == 0o700)
+  }
+
+  @Test("Project creation uses live recent-output order when no source override exists")
+  func projectCreationUsesAutomaticSourceOrder() async throws {
+    let fixture = try ProjectTransactionFixture()
+    defer { fixture.remove() }
+    let contextStore = TaskContextStore(root: fixture.support)
+    _ = try await contextStore.ensureContext(
+      ticket: try #require(fixture.decodedTickets.first { $0.id == "ECC-044" }))
+    _ = try await contextStore.upsertSubtask(
+      ticketID: "ECC-044",
+      subtask: TaskSubtask(
+        id: "newest-output", title: "Newest output",
+        lastOutputAt: Date(timeIntervalSinceReferenceDate: 500)))
+    try fixture.writeQueueState(mode: .recentOutput)
+
+    let receipt = try fixture.transaction.create(fixture.request)
+
+    #expect(receipt.movedTaskIDs == ["ECC-044", "ECC-035"])
+  }
+
+  @Test("Project creation ignores a source override after activity changes")
+  func projectCreationIgnoresStaleSourceOverride() async throws {
+    let fixture = try ProjectTransactionFixture()
+    defer { fixture.remove() }
+    let tickets = try fixture.decodedTickets
+    let contextStore = TaskContextStore(root: fixture.support)
+    for ticket in tickets { _ = try await contextStore.ensureContext(ticket: ticket) }
+    _ = try await contextStore.upsertSubtask(
+      ticketID: "ECC-035",
+      subtask: TaskSubtask(
+        id: "initial-35", title: "Initial 35 output",
+        lastOutputAt: Date(timeIntervalSinceReferenceDate: 200)))
+    _ = try await contextStore.upsertSubtask(
+      ticketID: "ECC-044",
+      subtask: TaskSubtask(
+        id: "initial-44", title: "Initial 44 output",
+        lastOutputAt: Date(timeIntervalSinceReferenceDate: 100)))
+    try fixture.writeQueueState(mode: .recentOutput)
+    var contexts = try await contextStore.loadAvailableForDiscovery()
+    let initialAutomaticIDs = QueueOrderStore.automaticTickets(
+      tickets, deferredTicketIDs: [], mode: .recentOutput, contexts: contexts).map(\.id)
+    _ = try QueueOrderStore(root: fixture.support, projectID: "ecc").move(
+      "ECC-999", to: .top, tickets: tickets,
+      fallbackIDs: initialAutomaticIDs,
+      currentIDs: initialAutomaticIDs,
+      automaticBaselineIDs: initialAutomaticIDs,
+      sortMode: .recentOutput)
+    _ = try await contextStore.upsertSubtask(
+      ticketID: "ECC-044",
+      subtask: TaskSubtask(
+        id: "new-44", title: "New 44 output",
+        lastOutputAt: Date(timeIntervalSinceReferenceDate: 300)))
+    contexts = try await contextStore.loadAvailableForDiscovery()
+    #expect(QueueOrderStore.automaticTickets(
+      tickets, deferredTicketIDs: [], mode: .recentOutput, contexts: contexts).map(\.id)
+      == ["ECC-044", "ECC-035", "ECC-999"])
+
+    let receipt = try fixture.transaction.create(fixture.request)
+
+    #expect(receipt.movedTaskIDs == ["ECC-044", "ECC-035"])
+  }
+
+  @Test("Project creation applies an active source override beneath the pin tier")
+  func projectCreationUsesActiveSourceOverride() async throws {
+    let fixture = try ProjectTransactionFixture()
+    defer { fixture.remove() }
+    let tickets = try fixture.decodedTickets
+    let contextStore = TaskContextStore(root: fixture.support)
+    for ticket in tickets { _ = try await contextStore.ensureContext(ticket: ticket) }
+    _ = try await contextStore.upsertSubtask(
+      ticketID: "ECC-035",
+      subtask: TaskSubtask(
+        id: "output-35", title: "35 output",
+        lastOutputAt: Date(timeIntervalSinceReferenceDate: 200)))
+    _ = try await contextStore.upsertSubtask(
+      ticketID: "ECC-044",
+      subtask: TaskSubtask(
+        id: "output-44", title: "44 output",
+        lastOutputAt: Date(timeIntervalSinceReferenceDate: 100)))
+    _ = try await contextStore.setPinned(
+      ticketID: "ECC-999", at: Date(timeIntervalSinceReferenceDate: 300))
+    try fixture.writeQueueState(mode: .recentOutput)
+    let contexts = try await contextStore.loadAvailableForDiscovery()
+    let automaticIDs = QueueOrderStore.automaticTickets(
+      tickets, deferredTicketIDs: [], mode: .recentOutput, contexts: contexts).map(\.id)
+    #expect(automaticIDs == ["ECC-999", "ECC-035", "ECC-044"])
+    _ = try QueueOrderStore(root: fixture.support, projectID: "ecc").move(
+      "ECC-044", to: .top, tickets: tickets,
+      fallbackIDs: automaticIDs,
+      currentIDs: automaticIDs,
+      automaticBaselineIDs: automaticIDs,
+      sortMode: .recentOutput)
+
+    let receipt = try fixture.transaction.create(
+      fixture.request.replacing(taskIDs: ["ECC-035", "ECC-044", "ECC-999"]))
+
+    #expect(receipt.movedTaskIDs == ["ECC-999", "ECC-044", "ECC-035"])
+  }
+
+  @Test("Created-project override uses live sort mode, deferrals, activity, and pins")
+  func createdProjectOrderUsesLiveAutomaticInputs() async throws {
+    let fixture = try ProjectTransactionFixture()
+    defer { fixture.remove() }
+    let tickets = try fixture.decodedTickets
+    _ = try QueueOrderStore(root: fixture.support, projectID: "ecc").move(
+      "ECC-044", to: .top, tickets: tickets,
+      fallbackIDs: tickets.map(\.id))
+
+    let contextStore = TaskContextStore(root: fixture.support)
+    for ticket in tickets { _ = try await contextStore.ensureContext(ticket: ticket) }
+    _ = try await contextStore.upsertSubtask(
+      ticketID: "ECC-035",
+      subtask: TaskSubtask(
+        id: "recent-output", title: "Recent output",
+        lastOutputAt: Date(timeIntervalSinceReferenceDate: 500)))
+    _ = try await contextStore.setPinned(
+      ticketID: "ECC-999", at: Date(timeIntervalSinceReferenceDate: 600))
+    let stateData = try JSONSerialization.data(withJSONObject: [
+      "queueSortMode": "recentOutput",
+      "deferredTicketIDs": ["ECC-044"],
+      "futureStateMetadata": ["schema": 99],
+    ], options: [.prettyPrinted, .sortedKeys])
+    try stateData.write(to: fixture.support.appendingPathComponent("state.json"))
+
+    let request = fixture.request.replacing(
+      taskIDs: ["ECC-044", "ECC-035", "ECC-999"])
+    let receipt = try fixture.transaction.create(request)
+
+    let destination = try JSONDecoder().decode(
+      DashboardDocument.self, from: Data(contentsOf: fixture.destinationDashboard))
+    let contexts = try await contextStore.loadAvailableForDiscovery()
+    let promptDates = Dictionary(uniqueKeysWithValues: contexts.compactMap { context in
+      context.lastPromptAt.map { (context.ticketID, $0) }
+    })
+    let outputDates = Dictionary(uniqueKeysWithValues: contexts.compactMap { context in
+      context.subtasks.compactMap { $0.lastOutputAt ?? $0.resultAt }.max()
+        .map { (context.ticketID, $0) }
+    })
+    let pinnedDates = Dictionary(uniqueKeysWithValues: contexts.compactMap { context in
+      context.pinnedAt.map { (context.ticketID, $0) }
+    })
+    let activity = QueueOrderStore.prioritizingActivity(
+      DashboardOrdering.openTickets(
+        in: destination.tickets, deferredTicketIDs: ["ECC-044"]),
+      mode: .recentOutput,
+      lastPromptAtByTicketID: promptDates,
+      lastOutputAtByTicketID: outputDates)
+    let liveAutomaticIDs = QueueOrderStore.prioritizingPins(
+      activity, pinnedAtByTicketID: pinnedDates).map(\.id)
+
+    #expect(liveAutomaticIDs == ["ECC-999", "ECC-035", "ECC-044"])
+    #expect(receipt.movedTaskIDs == ["ECC-999", "ECC-035", "ECC-044"])
+    #expect(try QueueOrderStore(root: fixture.support, projectID: "focus-queue")
+      .applicableOrder(automaticIDs: liveAutomaticIDs, sortMode: .recentOutput)
+      == receipt.movedTaskIDs)
   }
 
   @Test("Invalid or ambiguous project requests leave every source byte unchanged")
@@ -360,6 +534,17 @@ private struct ProjectTransactionFixture {
 
   func object(at url: URL) throws -> [String: Any] {
     try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+  }
+
+  func writeQueueState(
+    mode: QueueActivitySortMode,
+    deferredTicketIDs: [String] = []
+  ) throws {
+    let data = try JSONSerialization.data(withJSONObject: [
+      "queueSortMode": mode.rawValue,
+      "deferredTicketIDs": deferredTicketIDs,
+    ], options: [.prettyPrinted, .sortedKeys])
+    try data.write(to: support.appendingPathComponent("state.json"), options: .atomic)
   }
 
   func permissions(of url: URL) throws -> Int {

@@ -400,7 +400,7 @@ struct QueueView: View {
       HStack {
         focusHeading(resultCount: search?.tickets.count)
         Menu {
-          ForEach(QueueActivitySortMode.allCases) { mode in
+          ForEach(QueueActivitySortMode.allCases.filter { $0 != .manual }) { mode in
             Button { model.setQueueActivitySortMode(mode) } label: {
               if model.queueActivitySortMode == mode {
                 Label(mode.displayName, systemImage: "checkmark")
@@ -2718,6 +2718,13 @@ private struct CompletedTicketCard: View {
           }
           .buttonStyle(.plain)
         }
+        if let message = model.closureMessages[ticket.id] {
+          Label(message, systemImage: "exclamationmark.triangle.fill")
+            .font(.system(size: 11)).foregroundStyle(.orange)
+            .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+          Button("Retry cleanup") { model.retryCleanup(for: ticket) }
+            .buttonStyle(.link).font(.system(size: 11))
+        }
         Button(action: toggleExpansion) {
           HStack(spacing: 7) {
             StatusPill(text: ticket.status, color: statusColor)
@@ -3254,6 +3261,12 @@ private struct TicketCard: View {
       }
       .contextMenu {
         Button("View details", systemImage: "info.circle") { openTaskDetails() }
+        Button(
+          model.isTicketPinned(ticket.id) ? "Unpin" : "Pin",
+          systemImage: model.isTicketPinned(ticket.id) ? "pin.slash" : "pin"
+        ) {
+          Task { await model.setTicketPinned(ticket, pinned: !model.isTicketPinned(ticket.id)) }
+        }
         Divider()
         Button("Move to top") { model.moveTicket(ticket.id, to: .top) }
         Button("Move up") { moveOnePosition(up: true) }

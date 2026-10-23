@@ -35,9 +35,7 @@ public enum InteractiveAgentShell {
 /// saved session is the root ancestor of its family.
 public enum CodexSessionLineage {
   public static func root(of sessionID: String, codexRoot: URL? = nil) -> String {
-    let home = codexRoot
-      ?? ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) }
-      ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex", isDirectory: true)
+    let home = codexHome(codexRoot)
     var current = sessionID.lowercased()
     var visited: Set<String> = [current]
     var resolved = false
@@ -51,7 +49,41 @@ public enum CodexSessionLineage {
     return resolved ? current : sessionID
   }
 
+  /// The parent thread of a multi-agent sub-agent, or nil for a root
+  /// conversation. Only explicit sub-agent metadata qualifies, so a user fork
+  /// that merely shares a session family is still its own agent.
+  public static func subagentParent(of sessionID: String, codexRoot: URL? = nil) -> String? {
+    let sessionID = sessionID.lowercased()
+    guard let payload = sessionMeta(of: sessionID, codexRoot: codexHome(codexRoot)),
+          (payload["source"] as? [String: Any])?["subagent"] != nil
+            || payload["thread_source"] as? String == "subagent"
+            || payload["parent_thread_id"] is String
+    else { return nil }
+    return parent(in: payload, of: sessionID)
+  }
+
+  private static func codexHome(_ codexRoot: URL?) -> URL {
+    codexRoot
+      ?? ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) }
+      ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex", isDirectory: true)
+  }
+
   private static func parentThreadID(of sessionID: String, codexRoot: URL) -> String? {
+    sessionMeta(of: sessionID, codexRoot: codexRoot).flatMap { parent(in: $0, of: sessionID) }
+  }
+
+  private static func parent(in payload: [String: Any], of sessionID: String) -> String? {
+    for key in ["parent_thread_id", "session_id"] {
+      if let parent = (payload[key] as? String)?.lowercased(),
+         parent != sessionID, UUID(uuidString: parent) != nil {
+        return parent
+      }
+    }
+    return nil
+  }
+
+  /// The rollout's first-line `session_meta` payload for an exact thread UUID.
+  private static func sessionMeta(of sessionID: String, codexRoot: URL) -> [String: Any]? {
     guard UUID(uuidString: sessionID) != nil else { return nil }
     for subdirectory in ["sessions", "archived_sessions"] {
       let root = codexRoot.appendingPathComponent(subdirectory, isDirectory: true)
@@ -68,13 +100,7 @@ public enum CodexSessionLineage {
               let payload = record["payload"] as? [String: Any]
         else { continue }
         try? handle.close()
-        for key in ["parent_thread_id", "session_id"] {
-          if let parent = (payload[key] as? String)?.lowercased(),
-             parent != sessionID, UUID(uuidString: parent) != nil {
-            return parent
-          }
-        }
-        return nil
+        return payload
       }
     }
     return nil

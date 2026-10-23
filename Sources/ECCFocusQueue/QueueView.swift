@@ -4093,6 +4093,8 @@ struct AgentStatusIndicator: View {
     if issue != nil { return "Problem" }
     if let attention { return attention.label }
     if status == .blocked { return "Problem" }
+    // A busy agent reads as Working; an earlier unread result is only noted.
+    if status == .working { return hasUnreadCompletion ? "Working · New" : "Working" }
     if hasUnreadCompletion && status != .completed { return "New result" }
     switch status {
     case .working: return "Working"
@@ -4122,7 +4124,7 @@ struct AgentStatusIndicator: View {
       return QueueAccentPalette.color(.danger, style: accentStyle)
     }
     if attention != nil { return QueueAccentPalette.color(.warning, style: accentStyle) }
-    if hasUnreadCompletion { return QueueAccentPalette.color(.success, style: accentStyle) }
+    if hasUnreadCompletion && status != .working { return QueueAccentPalette.color(.success, style: accentStyle) }
     if status == .blocked { return QueueAccentPalette.color(.danger, style: accentStyle) }
     switch status {
     case .working: return QueueAccentPalette.color(.warning, style: accentStyle)
@@ -4137,13 +4139,16 @@ struct AgentStatusIndicator: View {
 
   private var helpText: String {
     switch status {
-    case .working: return "The agent sent a progress update within the last five minutes."
+    case .working:
+      return hasUnreadCompletion
+        ? "The agent is working again. Its earlier result has not been opened here."
+        : "The agent's transcript or progress reports show it is mid-turn."
     case .completed:
       return hasUnreadCompletion
         ? "The agent finished and has a new update to review."
         : "The agent finished and its update has been viewed."
     case .queued: return "The agent is waiting to start."
-    case .idle: return "The agent has not sent a progress update within five minutes."
+    case .idle: return "The agent is waiting for input, or its transcript has gone quiet."
     case .blocked: return "The agent reported a blocker or session problem."
     }
   }

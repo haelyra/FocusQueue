@@ -158,6 +158,8 @@ final class QueueViewModel {
   @ObservationIgnored private var lastMaintenanceAt: Date?
   @ObservationIgnored private let maintenanceEnabled: Bool
   private(set) var subtaskActivityRevision = 0
+  /// Agents whose tmux or WezTerm pane the last refresh confirmed alive.
+  @ObservationIgnored private var liveRuntimeSubtaskIDs: Set<String> = []
   private(set) var isQueueChatInspectorPresented = false
   private(set) var isNotificationsInspectorPresented = false
   /// Set while an update or report opened from the notifications list is shown,
@@ -2111,7 +2113,15 @@ final class QueueViewModel {
       let observed = tickets.flatMap { ticket in
         visibleAgents(for: ticket.id).map { (ticketID: ticket.id, subtask: $0) }
       }
-      for entry in observed {
+      // A finished agent archived with its terminal kept open can be prompted
+      // there again; only its transcript shows that it went back to work.
+      let retained = tickets.filter(\.isOpen).flatMap { ticket in
+        subtasks(for: ticket.id).filter {
+          $0.status == .completed && $0.agentRemovedAt != nil && $0.completionTerminalRetained == true
+            && $0.sessionID != nil
+        }.map { (ticketID: ticket.id, subtask: $0) }
+      }
+      for entry in observed + retained {
         if let events = try? await agentActivityObserver.events(for: entry.subtask) {
           for event in events {
             do {
@@ -2127,6 +2137,8 @@ final class QueueViewModel {
       }
       let terminalSnapshot = await taskAgentLauncher.runtimeSnapshot(
         subtasks: observed.map(\.subtask), configuration: config.wezTerm)
+      liveRuntimeSubtaskIDs = TaskAgentLauncher.liveRuntimeSubtaskIDs(
+        subtasks: observed.map(\.subtask), configuration: config.wezTerm, snapshot: terminalSnapshot)
       let attentions = await taskAgentLauncher.runtimeAttention(
         subtasks: observed.map(\.subtask), configuration: config.wezTerm, snapshot: terminalSnapshot)
       for entry in observed {
@@ -2158,7 +2170,7 @@ final class QueueViewModel {
     for session in localState.agentSessions { await bindSubtask(to: session) }
     let now = Date()
     if taskContexts.values.contains(where: { context in
-      context.subtasks.contains { $0.effectiveStatus(now: lastActivityCheck) != $0.effectiveStatus(now: now) }
+      context.subtasks.contains { displayStatus($0, now: lastActivityCheck) != displayStatus($0, now: now) }
     }) { subtaskActivityRevision &+= 1 }
     lastActivityCheck = now
     await reloadPresentedPlan()
@@ -2628,7 +2640,19 @@ final class QueueViewModel {
 
   func effectiveStatus(for subtask: TaskSubtask) -> TaskSubtaskStatus {
     _ = subtaskActivityRevision
-    return subtask.effectiveStatus()
+    return displayStatus(subtask)
+  }
+
+  /// A long tool call writes no transcript records, so a live pane keeps
+  /// Working longer before it reads as "No recent update".
+  private func displayStatus(_ subtask: TaskSubtask, now: Date = Date()) -> TaskSubtaskStatus {
+    subtask.effectiveStatus(now: now, heartbeatLifetime: liveRuntimeSubtaskIDs.contains(subtask.id)
+      ? TaskSubtask.liveRuntimeHeartbeatLifetime : TaskSubtask.heartbeatLifetime)
+  }
+
+  /// Only a fresh conversation sent its initial prompt starts out Working.
+  private static func launchStatus(_ subtask: TaskSubtask, includePrompt: Bool) -> TaskSubtaskStatus {
+    subtask.sessionID == nil && includePrompt ? .working : .idle
   }
 
   func isOpening(_ subtask: TaskSubtask, ticketID: String) -> Bool {
@@ -2827,8 +2851,10 @@ final class QueueViewModel {
           let runtime = try await taskAgentLauncher.startManagedSession(context: context, subtask: assignment,
             supportDirectory: paths.supportDirectory, tmuxExecutable: executable,
             usageBarEnabled: config.agentUsageBarEnabled)
+          // A resumed conversation is sent no prompt, so it waits for input.
           taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
-            ticketID: ticket.id, subtaskID: assignment.id, tmux: runtime)
+            ticketID: ticket.id, subtaskID: assignment.id, tmux: runtime,
+            status: assignment.sessionID == nil ? .working : .idle)
           assignment.tmux = runtime
           _ = try await terminalController.openAgentRuntime(assignment, taskID: ticket.id, taskTitle: ticket.title, configuration: config.wezTerm)
         } else {
@@ -2836,7 +2862,8 @@ final class QueueViewModel {
           let receipt = try await taskAgentLauncher.launchDirect(context: context, subtask: assignment,
             configuration: config.wezTerm, supportDirectory: paths.supportDirectory)
           taskContexts[ticket.id] = try await taskContextStore.setDirectRuntime(
-            ticketID: ticket.id, subtaskID: assignment.id, paneID: receipt.paneID, socketPath: receipt.socketPath)
+            ticketID: ticket.id, subtaskID: assignment.id, paneID: receipt.paneID, socketPath: receipt.socketPath,
+            status: assignment.sessionID == nil ? .working : .idle)
           assignment.tmux = nil
           assignment.terminalPaneID = receipt.paneID
           assignment.terminalSocketPath = receipt.socketPath
@@ -3015,7 +3042,8 @@ final class QueueViewModel {
           runtimeStarted = true
           phase = "saving the confirmed tmux process"
           taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
-            ticketID: ticket.id, subtaskID: subtask.id, tmux: tmux)
+            ticketID: ticket.id, subtaskID: subtask.id, tmux: tmux,
+            status: Self.launchStatus(subtask, includePrompt: includePrompt))
           if includePrompt {
             taskContexts[ticket.id] = try await taskContextStore.recordPrompt(ticketID: ticket.id)
           }
@@ -3044,7 +3072,8 @@ final class QueueViewModel {
           phase = "saving the direct WezTerm pane"
           taskContexts[ticket.id] = try await taskContextStore.setDirectRuntime(
             ticketID: ticket.id, subtaskID: subtask.id, paneID: receipt.paneID,
-            socketPath: receipt.socketPath)
+            socketPath: receipt.socketPath,
+            status: Self.launchStatus(subtask, includePrompt: includePrompt))
           if includePrompt {
             taskContexts[ticket.id] = try await taskContextStore.recordPrompt(ticketID: ticket.id)
           }
@@ -3130,7 +3159,8 @@ final class QueueViewModel {
             Self.subtaskKey(ticketID: ticket.id, subtaskID: assignment.id)
           ] = error.localizedDescription
           taskContexts[ticket.id] = try? await taskContextStore.updateProgress(ticketID: ticket.id,
-            subtaskID: assignment.id, status: runtimeStarted ? .working : .blocked,
+            subtaskID: assignment.id,
+            status: runtimeStarted ? Self.launchStatus(assignment, includePrompt: includePrompt) : .blocked,
             summary: !runtimeStarted
               ? "Agent did not start during \(phase): \(error.localizedDescription)"
               : "Agent is running; its terminal view did not open: \(error.localizedDescription)")
@@ -3846,7 +3876,7 @@ final class QueueViewModel {
       let shouldForceReferenceDiscovery = force && !unseenReferenceKeys.isEmpty
       if shouldForceReferenceDiscovery { forcedIntakeReferenceKeys.formUnion(unseenReferenceKeys) }
       let hasActiveVisibleAgents = dashboard.tickets.contains { ticket in
-        visibleAgents(for: ticket.id).contains { $0.effectiveStatus() == .working }
+        visibleAgents(for: ticket.id).contains { displayStatus($0) == .working }
       }
       // Idle polls recover half as often; active agents keep the fast cadence.
       let recoveryDue = lastExternalAgentDiscovery == nil

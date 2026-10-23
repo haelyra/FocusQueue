@@ -338,6 +338,21 @@ public actor TaskAgentLauncher {
     return identities
   }
 
+  /// Subtasks whose saved tmux pane or WezTerm pane is present in the tick's
+  /// listing. Display uses it to keep Working through silent tool calls.
+  public static func liveRuntimeSubtaskIDs(
+    subtasks: [TaskSubtask], configuration: WezTermConfiguration, snapshot: RuntimeSnapshot
+  ) -> Set<String> {
+    Set(subtasks.filter { subtask in
+      if let tmux = subtask.tmux {
+        return tmuxRuntimeState(tmux, listing: snapshot.tmuxPanes[tmux.executable]) == .verified
+      }
+      guard let paneID = subtask.terminalPaneID else { return false }
+      let key = RuntimeSnapshot.socketKey(subtask.terminalSocketPath ?? configuration.socketPath)
+      return snapshot.connections[key]?.panes.contains { $0.paneID == paneID } == true
+    }.map(\.id))
+  }
+
   private enum TmuxRuntimeState { case verified, stopped, unknown }
 
   /// Listing-based equivalent of TmuxController.verify: exact pane identity

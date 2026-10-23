@@ -13,7 +13,7 @@ enum SessionRegistrationError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .usage:
-            "Usage: focus-queue-session intake-changed | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|reset | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
+            "Usage: focus-queue-session intake-changed | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|reset | task create <PROJECT-ID> <title> <summary> | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
         case .missingSessionIdentity:
             "No Codex, Claude, or Kimi session ID was found in the environment or current WezTerm pane."
         case .missingManagedRuntime:
@@ -221,6 +221,54 @@ enum SessionRegistrationError: Error, LocalizedError {
         let action = arguments[1]
         let ticketID = arguments[2]
         switch action {
+        case "create" where arguments.count == 5:
+            guard let project = config.projects.first(where: { $0.id == ticketID && $0.archivedAt == nil }) else {
+                throw TaskContextError.commandFailed("Unknown or archived project \(ticketID).")
+            }
+            let title = arguments[3].trimmingCharacters(in: .whitespacesAndNewlines)
+            let summary = arguments[4].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty, !summary.isEmpty, title.count <= 80, summary.count <= 200 else {
+                throw TaskContextError.commandFailed("A deferred task needs a title (up to 80 characters) and summary (up to 200 characters).")
+            }
+            let targetURL = URL(fileURLWithPath: project.dashboardPath)
+            let others = config.projects.filter { $0.id != project.id }.map { URL(fileURLWithPath: $0.dashboardPath) }
+            for attempt in 0..<3 {
+                let snapshot = try await repository.loadSnapshot(from: targetURL)
+                if let existing = snapshot.document.tickets.first(where: {
+                    $0.projectID == project.id && $0.title.caseInsensitiveCompare(title) == .orderedSame
+                        && $0.summary.caseInsensitiveCompare(summary) == .orderedSame && $0.isOpen
+                }) {
+                    try emit(["taskID": existing.id, "created": "false"])
+                    return
+                }
+                var known = snapshot.document.tickets
+                for url in others { known += (try await repository.load(from: url)).tickets }
+                let prefix = project.taskPrefix + "-"
+                let numbers = known.compactMap { ticket -> (Int, Int)? in
+                    guard ticket.id.uppercased().hasPrefix(prefix),
+                          let number = Int(ticket.id.dropFirst(prefix.count)) else { return nil }
+                    return (number, ticket.id.count - prefix.count)
+                }
+                let width = max(3, numbers.map { $0.1 }.max() ?? 0)
+                let next = (numbers.map { $0.0 }.max() ?? 0) + 1
+                let newID = "\(prefix)\(String(format: "%0\(width)d", next))"
+                let day = String(ISO8601DateFormatter().string(from: Date()).prefix(10))
+                let ticket = DashboardTicket(id: newID, title: title, projectID: project.id,
+                    category: project.name, status: "backlog", summary: summary,
+                    next: "Review this deferred requirement and choose an owner.",
+                    doneWhen: TaskContext.genericSuccessCriteria, updatedAt: day, createdAt: day)
+                do {
+                    _ = try await repository.createTicket(ticket, in: targetURL,
+                        expectedRevision: snapshot.revision, checking: others)
+                    _ = try await TaskContextStore(root: root).ensureContext(ticket: ticket)
+                    try emit(["taskID": newID, "created": "true"])
+                    notifyContextChanged()
+                    return
+                } catch {
+                    if attempt == 2 { throw error }
+                }
+            }
+            throw TaskContextError.commandFailed("The dashboard kept changing while creating the deferred task.")
         case "rename" where arguments.count > 3:
             let title = arguments.dropFirst(3).joined(separator: " ")
             let updated = try await mutateTicket(ticketID, in: dashboardURLs, repository: repository) { url, snapshot in

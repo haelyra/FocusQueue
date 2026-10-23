@@ -198,5 +198,63 @@ class ExtractFlowTests(unittest.TestCase):
             self.assertEqual(rows, [(1, 100, 50)])
 
 
+class ApplyTests(unittest.TestCase):
+    def test_accepted_facts_fill_only_their_scoped_files_and_are_idempotent(self):
+        import json
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            environment = {"FOCUS_QUEUE_SUPPORT_DIR": directory,
+                           "FOCUS_QUEUE_SESSION_EXECUTABLE": "/bin/echo", "PATH": ""}
+            record = {"projectID": "space-site", "atoms": [
+                {"destination": "project", "target_id": "space-site",
+                 "text": "Use an all-gray theme with blue accents. Never use beige."},
+                {"destination": "task", "target_id": "WEB-002",
+                 "text": "Provide a demo video version shorter than 10 seconds."},
+                {"destination": "new_task", "target_id": "space-site",
+                 "title": "Company Instagram account", "text": "Create a company Instagram account."},
+                {"destination": "new_task", "target_id": "space-site",
+                 "title": "Decide contacts page", "text": "Decide whether to create a contacts page."},
+                {"destination": "inbox", "target_id": "space-site", "text": "Ignore this."},
+            ]}
+            catalog = {"id": "space-site", "tasks": [{"id": "WEB-001"}, {"id": "WEB-002"}]}
+            calls = []
+            for relative in ("projects/space-site/data.md", "tasks/WEB-002/data.md"):
+                path = Path(directory) / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("")
+
+            def runner(command, **kwargs):
+                calls.append(command)
+                return subprocess.CompletedProcess(command, 0,
+                    json.dumps({"taskID": f"WEB-{len(calls) + 2:03d}", "created": "true"}), "")
+
+            receipts = EXTRACTOR.apply_record(record, catalog, environment=environment,
+                                              command_runner=runner)
+            root = Path(directory)
+            self.assertEqual((root / "projects/space-site/data.md").read_text(),
+                             "- Use an all-gray theme with blue accents. Never use beige.\n")
+            self.assertEqual((root / "tasks/WEB-002/data.md").read_text(),
+                             "- Provide a demo video version shorter than 10 seconds.\n")
+            self.assertFalse((root / "tasks/WEB-001/data.md").exists())
+            self.assertEqual(len(calls), 2)
+            self.assertEqual([x["target_id"] for x in receipts if x["destination"] == "new_task"],
+                             ["WEB-003", "WEB-004"])
+            EXTRACTOR.apply_record(record, catalog, environment=environment,
+                                   command_runner=runner)
+            self.assertEqual((root / "projects/space-site/data.md").read_text().count("Never use beige."), 1)
+
+    def test_verbose_or_wrong_target_cannot_be_applied(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            environment = {"FOCUS_QUEUE_SUPPORT_DIR": directory}
+            catalog = {"id": "space-site", "tasks": [{"id": "WEB-002"}]}
+            with self.assertRaises(EXTRACTOR.ExtractorError):
+                EXTRACTOR.apply_record({"projectID": "space-site", "atoms": [
+                    {"destination": "task", "target_id": "WEB-999", "text": "Do this."}]},
+                    catalog, environment=environment)
+            self.assertFalse((Path(directory) / "tasks/WEB-999/data.md").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

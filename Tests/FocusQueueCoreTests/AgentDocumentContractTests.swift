@@ -63,6 +63,27 @@ struct AgentDocumentContractTests {
         #expect(context.evidenceLinks([]).map(\.label) == ["Task data (data.md)"])
     }
 
+    @Test("Scoped saved facts appear in detailed prompts and compact pointers")
+    func scopedData() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("scoped-data-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = ProjectDefinition(id: "demo", name: "Demo", taskPrefix: "DOC", repositoryPath: root.path)
+        let ticket = DashboardTicket(id: "DOC-3", title: "Page", projectID: project.id,
+                                     status: "open", summary: "Build a page")
+        let context = try await TaskContextStore(root: root).ensureContext(ticket: ticket, project: project)
+        let projectData = try #require(context.projectDataURL)
+        try FileManager.default.createDirectory(at: projectData.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("- Use the gray theme.\n".utf8).write(to: projectData)
+        try FileManager.default.createDirectory(at: context.userDataURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("- Keep answers concise.\n".utf8).write(to: context.userDataURL)
+        let prompt = context.agentPrompt(subtask: .init(id: "agent", title: "Facts"))
+        #expect(prompt.contains("Use the gray theme."))
+        #expect(prompt.contains("Keep answers concise."))
+        let bootstrap = context.agentBootstrap(subtask: .init(id: "agent", title: "Facts"))
+        #expect(bootstrap.contains(projectData.path))
+        #expect(bootstrap.contains(context.userDataURL.path))
+    }
+
     @Test("Independent stores append without lost entries or changes to plan and task state")
     func concurrentLogs() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("agent-log-\(UUID().uuidString)")

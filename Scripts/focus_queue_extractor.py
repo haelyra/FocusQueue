@@ -10,13 +10,15 @@ placements; deterministic policy guards then enforce destination identity,
 scope, and deferral before anything is recorded.
 
 Shadow mode (the default) records proposals to the extraction ledger only.
-Nothing is written to plans, dashboards, or task context. Design and policy
-rules derive from Docs/Experiments/Context-Routing-Plan.md (FOC-014).
+Explicit --apply writes accepted scoped memories and creates deferred tasks
+through the queue backend. Design and policy rules derive from
+Docs/Experiments/Context-Routing-Plan.md (FOC-014).
 """
 from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -515,6 +517,88 @@ def extract(prompt, catalog, *, current_task_id=None, settings=None, environment
     return record
 
 
+def append_data(path, text, byte_limit):
+    """Idempotently append one bounded memory under a per-file advisory lock."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock_path = path.with_name(path.name + ".lock")
+    if path.is_symlink() or lock_path.is_symlink():
+        raise ExtractorError(f"refusing symbolic-link data path {path}")
+    with lock_path.open("a+b") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if path.is_symlink():
+            raise ExtractorError(f"refusing symbolic-link data path {path}")
+        old = path.read_text(encoding="utf-8") if path.exists() else ""
+        entry = f"- {text}\n"
+        if entry in old.splitlines(keepends=True):
+            return False
+        separator = "" if not old or old.endswith("\n") else "\n"
+        updated = old + separator + entry
+        if len(updated.encode("utf-8")) > byte_limit:
+            raise ExtractorError(f"data file exceeds {byte_limit} bytes: {path}")
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=".data-", delete=False) as output:
+            temporary = Path(output.name)
+            output.write(updated)
+            output.flush()
+            os.fsync(output.fileno())
+        try:
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return True
+
+
+def apply_record(record, catalog, *, environment=None, command_runner=None):
+    """Apply accepted atoms only when explicitly invoked; keep per-atom receipts."""
+    environment = os.environ if environment is None else environment
+    if record.get("error") or record.get("projectID") != catalog["id"]:
+        raise ExtractorError("cannot apply an errored or mismatched extraction")
+    support = support_directory(environment)
+    project_id = catalog["id"]
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", project_id):
+        raise ExtractorError("unsafe project identifier")
+    task_ids = {row["id"] for row in catalog.get("tasks", [])}
+    receipts = []
+    for atom in record.get("atoms") or []:
+        destination, target = atom.get("destination"), atom.get("target_id")
+        text = str(atom.get("text") or "")
+        if destination == "inbox":
+            continue
+        if len(text) > TEXT_LIMIT or memory_sentence_count(text) > 2:
+            raise ExtractorError("refusing verbose memory during apply")
+        if destination == "user" and target == "user":
+            path, limit = support / "user/data.md", 2_000
+        elif destination == "project" and target == project_id:
+            path, limit = support / "projects" / project_id / "data.md", 3_000
+        elif destination == "task" and target in task_ids:
+            path, limit = support / "tasks" / target / "data.md", 2_000
+        elif destination == "new_task" and target == project_id:
+            executable = environment.get("FOCUS_QUEUE_SESSION_EXECUTABLE") or shutil.which(
+                "focus-queue-session", path=environment.get("PATH", ""))
+            if not executable:
+                raise ExtractorError("focus-queue-session is required to create a deferred task")
+            title = str(atom.get("title") or "").strip()[:TITLE_LIMIT] or text[:TITLE_LIMIT]
+            child = {key: value for key, value in environment.items() if key not in SESSION_VARIABLES}
+            completed = (command_runner or subprocess.run)(
+                [executable, "task", "create", project_id, title, text],
+                env=child, text=True, capture_output=True)
+            if completed.returncode:
+                raise ExtractorError(f"task creation failed: {one_line(completed.stderr, 200)}")
+            try:
+                task_id = json.loads(completed.stdout)["taskID"]
+            except (ValueError, KeyError) as error:
+                raise ExtractorError("task creation returned no task ID") from error
+            receipts.append({"destination": destination, "target_id": task_id,
+                             "created": json.loads(completed.stdout).get("created") == "true"})
+            continue
+        else:
+            raise ExtractorError(f"unvalidated destination or target: {destination}/{target}")
+        receipts.append({"destination": destination, "target_id": target,
+                         "path": str(path), "added": append_data(path, text, limit)})
+    return receipts
+
+
 GRADE_STOPWORDS = {"the", "a", "an", "to", "of", "and", "or", "must", "should", "have",
                    "has", "be", "is", "for", "on", "in", "with", "that", "this", "it",
                    "not", "only", "after", "whether"}
@@ -634,6 +718,8 @@ def main(argv=None):
     extract_parser.add_argument("--task", default=None, help="Current task id, when known.")
     extract_parser.add_argument("--provider", choices=PROVIDERS, default=None)
     extract_parser.add_argument("--model", default=None)
+    extract_parser.add_argument("--apply", action="store_true",
+                                help="Apply accepted memories and deferred tasks; default is shadow mode.")
     eval_parser = subcommands.add_parser("eval", help="Run labeled fixtures and report metrics.")
     eval_parser.add_argument("--fixtures", required=True, type=Path)
     eval_parser.add_argument("--provider", choices=PROVIDERS, default="claude")
@@ -652,6 +738,8 @@ def main(argv=None):
                 settings["model"] = options.model
             record = extract(options.prompt, catalog, current_task_id=options.task,
                              settings=settings)
+            if options.apply:
+                record["applied"] = apply_record(record, catalog, environment=environment)
             print(json.dumps(record, indent=2, sort_keys=True))
             return 1 if record.get("error") else 0
         report = run_eval(options.fixtures, options.provider, options.model,

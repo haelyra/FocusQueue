@@ -326,6 +326,15 @@ public struct TaskContext: Codable, Equatable, Sendable {
 
     /// Cached task facts and test data, kept beside the plan so every task view and agent can find it.
     public var dataURL: URL { contextDirectory.appendingPathComponent("data.md") }
+    public var userDataURL: URL {
+        contextDirectory.deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("user/data.md")
+    }
+    public var projectDataURL: URL? {
+        guard let projectPlanPath, !projectPlanPath.isEmpty else { return nil }
+        return URL(fileURLWithPath: projectPlanPath).deletingLastPathComponent()
+            .appendingPathComponent("data.md")
+    }
 
     /// The task data file leads the evidence list even when the dashboard records no links.
     public func evidenceLinks(_ ticketLinks: [DashboardLink]) -> [DashboardLink] {
@@ -359,7 +368,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
     static let dataTemplateBody = "Cached facts, inputs, and test data for this task. Agents read this before acting and add durable task facts here."
 
     /// Data is a small memory layer, not a second plan or a progress report.
-    static let dataWritingRule = "Use task data only for durable task-specific facts or future requirements supplied by the user. Keep each entry to one or two short sentences. Put current work in the plan and decisions, research, test results, and evidence in the agent log; do not copy those into data."
+    static let dataWritingRule = "Write only durable task-specific user facts or deferred requirements to task data, in one or two short sentences each. Keep current work in the plan; research, test results, and evidence in the agent log."
 
     /// Compact mode: identity and document pointers only. Document contents stay on disk.
     public func agentBootstrap(subtask: TaskSubtask) -> String {
@@ -367,6 +376,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
         return ([prompt.isEmpty ? "Prepare the task context, then wait for my instruction before implementing anything." : prompt, ""]
             + briefHeader(subtask: subtask, prompt: prompt)
             + ["Task plan: \(planPath) (read before acting). Task data: \(dataURL.path). Agent log: \(agentLogURL.path).",
+               "User data: \(userDataURL.path). Project data: \(projectDataURL?.path ?? "none"). Read relevant saved facts before acting.",
                Self.dataWritingRule,
                "Register with `focus-queue-session attach`, then report with `focus-queue-session progress|complete`. Rules: `focus-queue-session rules`."])
             .joined(separator: "\n")
@@ -388,6 +398,13 @@ public struct TaskContext: Codable, Equatable, Sendable {
         var lines = [prompt, ""] + briefHeader(subtask: subtask, prompt: trimmed ?? "")
         if let project = Self.inlineDocument(atPath: projectPlanPath, limit: 1_500) {
             lines.append("About the project: \(project)")
+        }
+        if let userData = Self.inlineDocument(atPath: userDataURL.path, limit: 2_000) {
+            lines += ["User data (\(userDataURL.path)):", userData]
+        }
+        if let projectDataURL,
+           let projectData = Self.inlineDocument(atPath: projectDataURL.path, limit: 3_000) {
+            lines += ["Project data (\(projectDataURL.path)):", projectData]
         }
         if let plan = Self.inlineDocument(atPath: planPath, limit: 4_000, prompt: trimmed ?? "") {
             lines += ["Task plan (\(planPath)):", plan]

@@ -7,7 +7,9 @@ import SwiftUI
 struct TaskCreatorSheet: View {
   let model: QueueViewModel
   let projectID: String?
+  let autofocusPrompt: Bool
   @Environment(\.dismiss) private var dismiss
+  @FocusState private var promptFocused: Bool
   @State private var description = ""
   @State private var title = ""
   @State private var displayDescription = ""
@@ -24,9 +26,10 @@ struct TaskCreatorSheet: View {
   @State private var cachedSuggestion: TaskPlacementSuggestion?
   @State private var message: String?
 
-  init(model: QueueViewModel, projectID: String?) {
+  init(model: QueueViewModel, projectID: String?, autofocusPrompt: Bool = false) {
     self.model = model
     self.projectID = projectID
+    self.autofocusPrompt = autofocusPrompt
     _agent = State(initialValue: model.taskCreatorLaunchDefaults)
   }
 
@@ -51,6 +54,7 @@ struct TaskCreatorSheet: View {
             TextEditor(text: $description)
               .font(.body).frame(minHeight: 130)
               .scrollContentBackground(.hidden)
+              .focused($promptFocused)
               .accessibilityLabel("Task prompt")
           }
           TextField("Title (optional)", text: $title,
@@ -108,6 +112,7 @@ struct TaskCreatorSheet: View {
       match = nil
     }
     .task(id: agent.provider) { plugins = ProviderPluginCatalog.installed(for: agent.provider) }
+    .onAppear { if autofocusPrompt { promptFocused = true } }
   }
 
   @ViewBuilder private var agentOptions: some View {

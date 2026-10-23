@@ -2,6 +2,7 @@ import importlib.util
 import fcntl
 import hashlib
 import json
+import os
 from pathlib import Path
 import plistlib
 import shutil
@@ -792,6 +793,15 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(self.installer.app.exists())
         self.assertTrue(Path(result["backupDirectory"]).exists())
 
+    def test_install_reports_opensuperwhisper_skip_without_a_pinned_release(self):
+        result = self.installer.install()
+        self.assertEqual(
+            result["openSuperWhisper"], "skipped: no pinned release URL configured"
+        )
+        self.assertFalse(
+            (self.home / "Applications" / MODULE.OSW_APP_NAME).exists()
+        )
+
     def test_uninstall_accepts_verified_manifest_owned_legacy_app(self):
         self.installer.install()
         self.installer.app.rename(self.installer.legacy_app)
@@ -808,6 +818,120 @@ class InstallerTests(unittest.TestCase):
 
         self.assertEqual(result["mode"], "uninstalled")
         self.assertFalse(self.installer.legacy_app.exists())
+
+
+class OpenSuperWhisperTests(unittest.TestCase):
+    release_url = "https://example.invalid/opensuperwhisper.zip"
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name) / "home"
+        self.app = self.home / "Applications" / MODULE.OSW_APP_NAME
+        self.executable = self.app / "Contents/MacOS" / MODULE.OSW_EXECUTABLE_NAME
+        self.agent = (
+            self.home / "Library/LaunchAgents"
+            / f"{MODULE.OSW_LAUNCH_AGENT_LABEL}.plist"
+        )
+        self.messages = []
+
+    def ensure(self, **kwargs):
+        return MODULE.ensure_opensuperwhisper(
+            self.home, log=self.messages.append, **kwargs
+        )
+
+    def patched_download(self, payload):
+        download = mock.MagicMock()
+        download.return_value.__enter__.return_value.read.return_value = payload
+        return mock.patch.object(MODULE.urllib.request, "urlopen", download)
+
+    def patched_release(self, payload):
+        return (
+            mock.patch.object(MODULE, "OSW_RELEASE_URL", self.release_url),
+            mock.patch.object(MODULE, "OSW_SHA256", hashlib.sha256(payload).hexdigest()),
+            self.patched_download(payload),
+        )
+
+    def test_skips_when_app_already_installed(self):
+        self.app.mkdir(parents=True)
+        with mock.patch.object(MODULE, "OSW_RELEASE_URL", self.release_url), \
+                mock.patch.object(
+                    MODULE.urllib.request, "urlopen", side_effect=AssertionError("downloaded")
+                ):
+            result = self.ensure()
+        self.assertEqual(result, "already installed")
+        self.assertFalse(self.agent.exists())
+
+    def test_skips_without_a_pinned_release_url(self):
+        result = self.ensure()
+        self.assertEqual(result, "skipped: no pinned release URL configured")
+        self.assertIn(
+            "OpenSuperWhisper auto-install skipped: no pinned release URL configured",
+            self.messages,
+        )
+        self.assertFalse(self.app.exists())
+        self.assertFalse(self.agent.exists())
+
+    def test_sha256_mismatch_aborts_without_touching_the_destination(self):
+        payload = b"release zip"
+        with mock.patch.object(MODULE, "OSW_RELEASE_URL", self.release_url), \
+                mock.patch.object(MODULE, "OSW_SHA256", "0" * 64), \
+                self.patched_download(payload):
+            result = self.ensure()
+        self.assertTrue(result.startswith("failed: "), result)
+        self.assertTrue(any("sha256" in message for message in self.messages))
+        self.assertFalse(self.app.exists())
+        self.assertFalse(self.agent.exists())
+
+    def test_installs_launch_agent_and_prints_setup_note(self):
+        payload = b"release zip"
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append(args)
+            if args[0] == "/usr/bin/ditto":
+                self.executable.parent.mkdir(parents=True)
+                self.executable.write_bytes(b"osw")
+                self.executable.chmod(0o755)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        patches = self.patched_release(payload)
+        with patches[0], patches[1], patches[2], mock.patch.object(
+            MODULE.subprocess, "run", side_effect=run
+        ):
+            result = self.ensure()
+
+        self.assertEqual(result, "installed")
+        self.assertEqual(self.executable.read_bytes(), b"osw")
+        agent = plistlib.loads(self.agent.read_bytes())
+        self.assertEqual(agent["Label"], MODULE.OSW_LAUNCH_AGENT_LABEL)
+        self.assertEqual(agent["ProgramArguments"], [str(self.executable)])
+        self.assertTrue(agent["RunAtLoad"])
+        self.assertFalse(agent["KeepAlive"])
+        self.assertIn(
+            ["/bin/launchctl", "bootstrap", f"gui/{os.getuid()}", str(self.agent)],
+            calls,
+        )
+        self.assertTrue(
+            any(
+                "Microphone" in message
+                and "Accessibility" in message
+                and "Input Monitoring" in message
+                and "Whisper model" in message
+                for message in self.messages
+            ),
+            self.messages,
+        )
+
+    def test_failure_does_not_raise(self):
+        with mock.patch.object(MODULE, "OSW_RELEASE_URL", self.release_url), \
+                mock.patch.object(MODULE, "OSW_SHA256", "0" * 64), \
+                mock.patch.object(
+                    MODULE.urllib.request, "urlopen", side_effect=OSError("offline")
+                ):
+            result = self.ensure()
+        self.assertTrue(result.startswith("failed: "), result)
+        self.assertTrue(any("unaffected" in message for message in self.messages))
 
 
 if __name__ == "__main__":

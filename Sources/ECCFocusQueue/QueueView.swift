@@ -25,8 +25,6 @@ struct QueueView: View {
   @State private var queueAgentDraft = ""
   @State private var taskAgentDrafts: [String: String] = [:]
   @State private var showsTerminals = false
-  @State private var showsNewTask = false
-  @State private var newTaskProjectID: String?
   @State private var updateDrafts: [String: String] = [:]
   @State private var settingsTarget: QueueSettingsTarget?
   @State private var showsStaleAgentCleanupConfirmation = false
@@ -68,8 +66,13 @@ struct QueueView: View {
       if count == 0 { model.setNotificationsInspectorPresented(false) }
     }
     .sheet(isPresented: $showsTerminals) { TerminalBrowserView(model: model) }
-    .sheet(isPresented: $showsNewTask) {
-      TaskCreatorSheet(model: model, projectID: newTaskProjectID)
+    .sheet(item: Binding(
+      get: { model.newTaskRequest },
+      set: { if $0 == nil { model.clearNewTaskRequest() } }
+    )) { request in
+      TaskCreatorSheet(
+        model: model, projectID: request.projectID,
+        autofocusPrompt: request.autofocusPrompt)
     }
     .sheet(item: Binding(get: { model.launchDiagnostics }, set: { model.launchDiagnostics = $0 })) { log in
       VStack(alignment: .leading, spacing: 12) {
@@ -638,8 +641,7 @@ struct QueueView: View {
   private var queueTabs: some View {
     HStack(spacing: 6) {
       Button {
-        newTaskProjectID = model.selectedProject?.id
-        showsNewTask = true
+        model.requestNewTask()
       } label: {
         Image(systemName: "plus").font(.system(size: 13, weight: .semibold))
       }
@@ -2035,6 +2037,14 @@ private struct QueueSettingsView: View {
             Toggle("Show agent usage bar", isOn: Binding(
               get: { model.config.agentUsageBarEnabled },
               set: { model.setAgentUsageBarEnabled($0) }))
+          }
+          settingsSection(
+            title: "Voice task hotkey",
+            detail: "Right Option + Shift reveals the queue, opens a new task with the prompt focused, and toggles OpenSuperWhisper recording."
+          ) {
+            Toggle("Voice task hotkey (Right Option + Shift)", isOn: Binding(
+              get: { model.voiceTaskHotkeyEnabled },
+              set: { model.setVoiceTaskHotkeyEnabled($0) }))
           }
           settingsSection(
             title: "Appearance", detail: "Dark uses your WezTerm #1A1D23 background color."

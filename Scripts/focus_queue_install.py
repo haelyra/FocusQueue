@@ -18,6 +18,7 @@ import tempfile
 import time
 import sys
 from urllib.parse import urlparse
+import urllib.request
 
 PRODUCT = "Focus Queue"
 LEGACY_PRODUCT = "ECC Focus Queue"
@@ -29,6 +30,11 @@ PROVENANCE_SCHEMA_VERSION = 1
 MANIFEST_VERSION = 2
 DEFAULT_INTEGRATION_REF = "origin/main"
 OFFICIAL_REPOSITORY_IDENTITY = "github.com/haelyra/eccfocusqueue"
+OSW_APP_NAME = "OpenSuperWhisper.app"
+OSW_EXECUTABLE_NAME = "OpenSuperWhisper"
+OSW_RELEASE_URL = ""  # TODO(FOC-047): pinned fork release zip URL; empty disables auto-install
+OSW_SHA256 = ""  # TODO(FOC-047): sha256 of the pinned release zip
+OSW_LAUNCH_AGENT_LABEL = "com.haelyra.ecc-focus-queue.opensuperwhisper"
 PROVENANCE_FIELDS = {
     "schemaVersion",
     "repositoryIdentity",
@@ -427,6 +433,69 @@ def verify_installed_app(path, description):
         ) from error
 
 
+def ensure_opensuperwhisper(home, *, start=True, log=None):
+    """Best-effort OpenSuperWhisper companion install; never fails the app install."""
+    if log is None:
+        def log(message):
+            print(message, file=sys.stderr)
+    try:
+        app = home / "Applications" / OSW_APP_NAME
+        if app.exists():
+            log(f"OpenSuperWhisper already installed at {app}; skipping.")
+            return "already installed"
+        if not OSW_RELEASE_URL:
+            log("OpenSuperWhisper auto-install skipped: no pinned release URL configured")
+            return "skipped: no pinned release URL configured"
+        safe_destination(app, home)
+        handle, name = tempfile.mkstemp(prefix="opensuperwhisper-", suffix=".zip")
+        os.close(handle)
+        archive = Path(name)
+        try:
+            with urllib.request.urlopen(OSW_RELEASE_URL, timeout=120) as response:
+                archive.write_bytes(response.read())
+            if digest(archive) != OSW_SHA256:
+                raise ValueError("OpenSuperWhisper release archive sha256 mismatch.")
+            subprocess.run(
+                ["/usr/bin/ditto", "-x", "-k", str(archive), str(app.parent)],
+                check=True,
+                capture_output=True,
+            )
+        finally:
+            archive.unlink(missing_ok=True)
+        executable = app / "Contents/MacOS" / OSW_EXECUTABLE_NAME
+        if not executable.is_file():
+            shutil.rmtree(app, ignore_errors=True)
+            raise ValueError(
+                f"OpenSuperWhisper release archive lacks the {OSW_EXECUTABLE_NAME} executable."
+            )
+        agent = home / "Library/LaunchAgents" / f"{OSW_LAUNCH_AGENT_LABEL}.plist"
+        safe_destination(agent, home)
+        agent.parent.mkdir(parents=True, exist_ok=True)
+        agent.write_bytes(plistlib.dumps({
+            "Label": OSW_LAUNCH_AGENT_LABEL,
+            "ProgramArguments": [str(executable)],
+            "RunAtLoad": True,
+            "KeepAlive": False,
+        }))
+        if start:
+            result = subprocess.run(
+                ["/bin/launchctl", "bootstrap", f"gui/{os.getuid()}", str(agent)],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode:
+                log(f"Warning: OpenSuperWhisper login service did not start: {result.stderr.strip()}")
+        log(
+            "OpenSuperWhisper installed. One-time manual setup on first launch:\n"
+            "  - grant the Microphone, Accessibility and Input Monitoring prompts\n"
+            "  - download a Whisper model in OpenSuperWhisper Settings"
+        )
+        return "installed"
+    except Exception as error:
+        log(f"Warning: OpenSuperWhisper install failed; the Focus Queue install is unaffected: {error}")
+        return f"failed: {error}"
+
+
 class Installer:
     def __init__(self, bundle, home, *, login=False, desktop=False, start=True):
         self.bundle = bundle.absolute()
@@ -690,7 +759,9 @@ class Installer:
     def install(self):
         self.preflight()
         with installation_lock(self.support, self.home):
-            return self._install_locked()
+            result = self._install_locked()
+        result["openSuperWhisper"] = ensure_opensuperwhisper(self.home, start=self.start)
+        return result
 
     def _install_locked(self):
         self.preflight()

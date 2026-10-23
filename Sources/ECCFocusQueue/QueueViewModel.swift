@@ -31,6 +31,14 @@ enum QueuePanelMode: Equatable {
   case collapsed
 }
 
+/// One open-the-task-creator intent. Identifiable so `.sheet(item:)` reopens
+/// even when two requests carry the same project.
+struct NewTaskRequest: Equatable, Identifiable {
+  let id = UUID()
+  let projectID: String?
+  let autofocusPrompt: Bool
+}
+
 /// Remembers one derived value for its inputs. Unchanged collections compare
 /// by storage identity, so a hit costs far less than the sort or scan it saves.
 private struct ProjectionMemo<Key: Equatable, Value> {
@@ -118,6 +126,9 @@ final class QueueViewModel {
   }
   private(set) var pendingDailyReportApproval: DailyReportApprovalRequest?
   private(set) var requestedReportTaskID: String?
+  private(set) var newTaskRequest: NewTaskRequest?
+  private(set) var voiceTaskHotkeyEnabled =
+    UserDefaults.standard.bool(forKey: "voiceTaskHotkeyEnabled")
   private(set) var panelMode: QueuePanelMode = .expanded
   private(set) var canSwitchMonitor = false
   private(set) var actionMessages: [String: String] = [:] {
@@ -299,6 +310,7 @@ final class QueueViewModel {
     @MainActor (String, String?) async throws -> Void
   )?
   @ObservationIgnored var quitHandler: (() -> Void)?
+  @ObservationIgnored var voiceHotkeyEnabledHandler: ((Bool) -> Void)?
 
   init(
     paths: AppPaths = .live(),
@@ -4345,6 +4357,24 @@ final class QueueViewModel {
 
   func clearRequestedReportTask() {
     requestedReportTaskID = nil
+  }
+
+  func requestNewTask(projectID: String? = nil, autofocusPrompt: Bool = false) {
+    newTaskRequest = NewTaskRequest(
+      projectID: projectID ?? selectedProject?.id,
+      autofocusPrompt: autofocusPrompt
+    )
+  }
+
+  func clearNewTaskRequest() {
+    newTaskRequest = nil
+  }
+
+  func setVoiceTaskHotkeyEnabled(_ enabled: Bool) {
+    guard voiceTaskHotkeyEnabled != enabled else { return }
+    voiceTaskHotkeyEnabled = enabled
+    UserDefaults.standard.set(enabled, forKey: "voiceTaskHotkeyEnabled")
+    voiceHotkeyEnabledHandler?(enabled)
   }
 
   func setDailyReportSchedule(hour: Int, minute: Int) {

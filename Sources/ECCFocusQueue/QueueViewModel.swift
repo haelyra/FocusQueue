@@ -603,6 +603,7 @@ final class QueueViewModel {
   }
 
   var configurationURL: URL { paths.configurationFile }
+  var projectContextStore: ProjectContextStore { ProjectContextStore(root: paths.supportDirectory) }
   var projects: [ProjectConfiguration] { config.projects }
   var selectedProject: ProjectConfiguration? { config.selectedProject }
   var windowSnapshot: WindowSnapshot? { localState.window }

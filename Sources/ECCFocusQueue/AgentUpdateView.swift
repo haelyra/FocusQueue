@@ -89,7 +89,7 @@ struct AgentUpdateView: View {
                 }.disabled(model.localState.completionRequests.contains {
                   $0.ticketID == ticket.id && $0.subtaskID == review.subtaskID && [.pending, .running].contains($0.status)
                 })
-                if let path = review.logPath { Button("Open full log") { model.open(path) } }
+                if let path = review.logPath { Button("Open full log") { model.open(path, ticketID: ticket.id) } }
               }
             }
             if update.isCleanup {
@@ -200,9 +200,5 @@ struct TaskContextLinksView: View {
     }.buttonStyle(.link).font(.system(size: 12)).frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  private func open(_ value: String) {
-    if let url = ResourceLocator.url(for: value), let document = EmbeddedDocumentLink.documentURL(url) {
-      model.openPlan(for: ticket, sourceURL: document)
-    } else { model.open(value) }
-  }
+  private func open(_ value: String) { model.open(value, ticketID: ticket.id) }
 }

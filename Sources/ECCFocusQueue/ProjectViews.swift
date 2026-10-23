@@ -203,3 +203,206 @@ private struct ProjectTaskEditor: View {
             .onAppear { projectID = model.selectedProject?.id ?? ProjectCatalog.otherID }
     }
 }
+
+/// Settings section for project-level documents. Choosing a file opens it in
+/// the side document viewer with its project chat, like a central plan.
+struct ProjectFilesSection: View {
+    let model: QueueViewModel
+    @State private var projectID = ""
+    @State private var documents: [ProjectDocument] = []
+    @State private var links: [DashboardLink] = []
+    @State private var error: String?
+
+    private var project: ProjectDefinition? { model.activeProjects.first { $0.id == projectID } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Picker("Project", selection: $projectID) {
+                    ForEach(model.activeProjects) { Text($0.name).tag($0.id) }
+                }
+                .labelsHidden().fixedSize()
+                .accessibilityLabel("Project for files: \(project?.name ?? "none")")
+                Spacer()
+                if let directory = documents.first?.url.deletingLastPathComponent() {
+                    Button("Show in Finder", systemImage: "folder") { NSWorkspace.shared.open(directory) }
+                        .buttonStyle(.link).font(.caption)
+                }
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(documents) { document in
+                    let isOpen = model.isDocumentViewerPresented && model.documentViewer.selected == document.url
+                    Button {
+                        model.openDocumentViewer(document.url, scope: .project(projectID))
+                    } label: {
+                        HStack {
+                            Image(systemName: document.systemImage).frame(width: 16)
+                            Text(document.title)
+                            Spacer()
+                            Text(document.url.lastPathComponent).font(.caption).foregroundStyle(.secondary)
+                            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 6)
+                        .background(isOpen ? Color.accentColor.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 6))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(document.url.path)
+                    .accessibilityLabel("Open \(document.title)")
+                }
+            }
+            .font(.system(size: 12))
+            if !links.isEmpty {
+                Text("Links").font(.caption.bold()).foregroundStyle(.secondary).padding(.top, 4)
+                ForEach(links) { link in
+                    Button(link.label, systemImage: "link") { model.open(link.url) }
+                        .buttonStyle(.link).font(.system(size: 12)).multilineTextAlignment(.leading).help(link.url)
+                }
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.orange) }
+        }
+        .onAppear {
+            guard projectID.isEmpty else { return }
+            let preferred = model.showsAllProjects ? nil : model.selectedProject?.id
+            projectID = model.activeProjects.first { $0.id == preferred }?.id ?? model.activeProjects.first?.id ?? ""
+        }
+        .onChange(of: projectID, initial: true) { reloadDocuments() }
+    }
+
+    private func reloadDocuments() {
+        guard let project else { documents = []; links = []; return }
+        do {
+            let store = model.projectContextStore
+            try store.ensurePlan(for: project)
+            documents = try store.documents(projectID: project.id)
+            links = try store.links(projectID: project.id)
+            error = nil
+        } catch {
+            documents = []; links = []
+            self.error = error.localizedDescription
+        }
+    }
+}
+
+/// The side document viewer: tabs, the selected document, and its chat. Links
+/// inside a document open beside it, matching the task plan's document panes.
+struct DocumentViewerInspector: View {
+    let model: QueueViewModel
+
+    private var panes: DocumentPaneState { model.documentViewer }
+
+    private var scopeLabel: String {
+        switch model.documentViewerScope {
+        case .task(let id): id
+        case .project(let id): model.config.projects.first { $0.id == id }?.name ?? id
+        case nil: "Document"
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 10) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.system(size: 14, weight: .semibold)).foregroundStyle(.secondary)
+                    .frame(width: 34, height: 34)
+                    .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(panes.primaryDocument?.lastPathComponent ?? panes.selected?.lastPathComponent ?? "Document")
+                        .font(.system(size: 20, weight: .bold, design: .rounded)).lineLimit(1)
+                    Text(scopeLabel).font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { model.closeDocumentViewer() } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.plain).frame(width: 40, height: 40)
+                    .help("Close the document viewer").accessibilityLabel("Close document viewer")
+            }
+            .padding(12)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                .allowsHitTesting(false))
+            if let error = panes.error {
+                HStack {
+                    Text(error).font(.caption).foregroundStyle(.orange)
+                    Button("Dismiss") { panes.error = nil }.font(.caption)
+                }
+            }
+            tabBar
+            GeometryReader { geometry in
+                ScrollView(.horizontal) {
+                    if let secondary = panes.secondaryDocument, let primary = panes.primaryDocument {
+                        PlanPaneSplit(initialFraction: 0.5, minimumPrimary: 500, minimumSecondary: 460) {
+                            pane(primary)
+                        } secondary: {
+                            pane(secondary).padding(.horizontal, 4)
+                        }
+                        .frame(width: max(geometry.size.width, QueueInspectorLayout.documentPairMinimumWidth),
+                               height: geometry.size.height)
+                    } else if let document = panes.selected {
+                        PlanPaneSplit(initialFraction: 0.74, minimumPrimary: QueueInspectorLayout.documentMinimumWidth,
+                                      minimumSecondary: QueueInspectorLayout.chatMinimumWidth) {
+                            pane(document).padding(.horizontal, 4)
+                        } secondary: {
+                            DocumentConversationPane(queue: model, scope: model.documentViewerScope, document: document)
+                        }
+                        .frame(width: max(geometry.size.width, QueueInspectorLayout.inspectorMinimumWidth),
+                               height: geometry.size.height)
+                    }
+                }.scrollIndicators(.automatic)
+            }
+        }
+        .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func pane(_ document: URL) -> some View {
+        SideDocumentPane(
+            queue: model, scopeLabel: scopeLabel, document: document,
+            open: { panes.openLinkedDocument($0) },
+            close: { model.closeDocumentViewerTab(document) },
+            receiveDocument: { identifier in
+                guard let url = panes.tabs.first(where: { $0.absoluteString == identifier }) else { return false }
+                panes.moveToSecondary(url)
+                return true
+            },
+            discuss: { action in
+                guard let scope = model.documentViewerScope,
+                      let conversation = model.documentConversation(for: document, scope: scope) else { return }
+                if !conversation.draft.isEmpty { conversation.draft += "\n\n" }
+                conversation.draft += "Selected passage: \(action.selection.excerpt)\n\(action.initialText)"
+            })
+    }
+
+    private var tabBar: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 6) {
+                ForEach(panes.tabs, id: \.self) { url in
+                    let isSelected = panes.primaryDocument == url
+                    HStack(spacing: 4) {
+                        Button(url.isFileURL ? url.lastPathComponent : (url.host ?? url.absoluteString)) {
+                            panes.select(url)
+                        }.lineLimit(1)
+                        Button { model.closeDocumentViewerTab(url) } label: {
+                            Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                        }
+                        .accessibilityLabel("Close \(url.lastPathComponent)")
+                    }
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                    .padding(.horizontal, 8).padding(.vertical, 6)
+                    .background(Color(nsColor: .controlBackgroundColor).opacity(isSelected ? 0.98 : 0.94),
+                        in: RoundedRectangle(cornerRadius: 7))
+                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.18), lineWidth: 1)
+                        .allowsHitTesting(false))
+                    .draggable(url.absoluteString)
+                    .help(url.absoluteString)
+                }
+            }
+            .padding(.vertical, 2)
+            .dropDestination(for: String.self) { identifiers, _ in
+                guard let identifier = identifiers.last,
+                      let url = panes.tabs.first(where: { $0.absoluteString == identifier }) else { return false }
+                panes.select(url)
+                return true
+            }
+        }.accessibilityLabel("Open documents")
+    }
+}

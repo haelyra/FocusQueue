@@ -33,16 +33,12 @@ struct QueueViewModelTests {
     #expect(model.visibleAgents(for: "ECC-101").map(\.id) == ["primed-worker"])
   }
 
-  @Test("Disabling auto-exit preserves completed agents through refresh and saves the setting")
-  func completedAgentOptOut() async throws {
+  @Test("A completed agent keeps running and is never archived through refresh")
+  func completedAgentKeepsRunning() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let launcher = DirectCreationRunner()
     let model = await fixture.model(agent: ControlledQueueAgent(), taskAgentLauncher: TaskAgentLauncher(runner: launcher))
-    model.setAutoExitCompletedAgents(false)
-    try await eventually {
-      try JSONDecoder().decode(AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile)).autoExitCompletedAgents == false
-    }
     let store = TaskContextStore(root: fixture.root)
     _ = try await store.ensureContext(ticket: fixture.tickets[0])
     let agent = TaskSubtask(id: "completed-worker", title: "Done", sessionID: UUID().uuidString, status: .completed)
@@ -52,11 +48,14 @@ struct QueueViewModelTests {
     await model.refresh()
     let retained = try #require(model.subtasks(for: "ECC-101").first { $0.id == agent.id })
     #expect(retained.agentRemovedAt == nil)
+    #expect(retained.completionTerminalRetained == nil)
     #expect(await launcher.commands.isEmpty)
-    model.setAutoExitCompletedAgents(true)
+    // Approving the subtask by hand is completion too; it must not retire the agent either.
+    model.overrideCompletion(retained, for: fixture.tickets[0])
     try await Task.sleep(for: .seconds(2.1))
     await model.refresh()
-    #expect(model.subtasks(for: "ECC-101").first { $0.id == agent.id }?.agentRemovedAt != nil)
+    #expect(model.subtasks(for: "ECC-101").first { $0.id == agent.id }?.agentRemovedAt == nil)
+    #expect(await launcher.commands.isEmpty)
   }
 
   @Test("A hidden panel skips external agent discovery, and reveal refreshes immediately")
@@ -149,6 +148,38 @@ struct QueueViewModelTests {
     #expect(agent.completionUnread)
     #expect(agent.resultSummary == "Ready to review")
     #expect(agent.lastOutputAt == ISO8601DateFormatter().date(from: "2026-09-29T18:00:00Z"))
+  }
+
+  @Test("A prompt typed into a seen, completed agent returns it to work items")
+  func promptReopensSeenCompletedAgent() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let sessionID = UUID().uuidString
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: TaskSubtask(
+      id: "finished-worker", title: "Finished worker", provider: .codex, sessionID: sessionID))
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: TaskSubtask(id: "pending", title: "Pending"))
+    let completedAt = try #require(ISO8601DateFormatter().date(from: "2026-09-29T18:00:00Z"))
+    _ = try await store.updateProgress(ticketID: "ECC-101", subtaskID: "finished-worker",
+      status: .completed, summary: "Ready", now: completedAt)
+    let seen = try await store.acknowledgeCompletion(ticketID: "ECC-101", subtaskID: "finished-worker")
+    #expect(seen.isCompletionSeen(try #require(seen.subtasks.first { $0.id == "finished-worker" })))
+    let transcriptRoot = fixture.root.appendingPathComponent("activity")
+    let sessions = transcriptRoot.appendingPathComponent(".codex/sessions/2026/09/29")
+    try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+    let prompt = #"{"timestamp":"2026-09-29T18:05:00Z","type":"event_msg","payload":{"type":"user_message","thread_id":"\#(sessionID)","message":"One more change"}}"#
+    try Data("\(prompt)\n".utf8).write(to:
+      sessions.appendingPathComponent("rollout-reopen-\(sessionID).jsonl"))
+    let observer = AgentActivityObserver(
+      codexRoot: transcriptRoot.appendingPathComponent(".codex"),
+      claudeRoot: transcriptRoot.appendingPathComponent(".claude"))
+
+    let model = await fixture.model(agent: ControlledQueueAgent(), agentActivityObserver: observer)
+
+    let agent = try #require(model.subtasks(for: "ECC-101").first { $0.id == "finished-worker" })
+    #expect(agent.status == .working)
+    #expect(!model.isCompletionSeen(agent, ticketID: "ECC-101"))
   }
 
   @Test("Background polling reuses an unchanged dashboard and detects atomic updates")
@@ -2662,7 +2693,7 @@ struct QueueViewModelTests {
     #expect(model.localState.agentSessions.first?.paneID == 42)
   }
 
-  @Test("Override completes only the selected subtask and removes its agent without queuing parent review")
+  @Test("Override completes only the selected subtask and keeps its agent without queuing parent review")
   func manualOverride() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -2672,8 +2703,8 @@ struct QueueViewModelTests {
     _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: subtask)
     let model = await fixture.model(agent: ControlledQueueAgent())
     model.overrideCompletion(subtask, for: fixture.tickets[0])
-    try await eventually { model.subtasks(for: "ECC-101").first?.agentRemovedAt != nil }
-    #expect(model.subtasks(for: "ECC-101").first?.status == .completed)
+    try await eventually { model.subtasks(for: "ECC-101").first?.status == .completed }
+    #expect(model.subtasks(for: "ECC-101").first?.agentRemovedAt == nil)
     #expect(model.visibleAgents(for: "ECC-101").isEmpty)
     #expect(model.dashboard.tickets[0].isOpen)
     try await Task.sleep(for: .milliseconds(2100))
@@ -2701,7 +2732,8 @@ struct QueueViewModelTests {
     model.requestSubtaskCompletion(child, for: fixture.tickets[0])
     try await eventually { await verifier.hasPendingReply }
     model.overrideCompletion(assignment, for: fixture.tickets[0])
-    try await eventually { model.subtasks(for: "ECC-101").first(where: { $0.id == child.id })?.agentRemovedAt != nil }
+    try await eventually { model.subtasks(for: "ECC-101").first(where: { $0.id == child.id })?.status == .completed }
+    #expect(model.subtasks(for: "ECC-101").first(where: { $0.id == child.id })?.agentRemovedAt == nil)
     #expect(model.localState.completionRequests.first?.status == .accepted)
     await verifier.reply()
     try await eventually { model.localState.completionRequests.first?.logPath != nil }
@@ -2734,7 +2766,7 @@ struct QueueViewModelTests {
     }
   }
 
-  @Test("Completed agents disappear automatically while blank agents never drive parent completion")
+  @Test("Completed agents are never archived while blank agents never drive parent completion")
   func completedAndBlankAgents() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -2745,7 +2777,7 @@ struct QueueViewModelTests {
     _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: blank)
     let model = await fixture.model(agent: ControlledQueueAgent())
     #expect(model.visibleAgents(for: "ECC-101").isEmpty)
-    #expect(model.subtasks(for: "ECC-101").first?.agentRemovedAt != nil)
+    #expect(model.subtasks(for: "ECC-101").first?.agentRemovedAt == nil)
     #expect(model.localState.completionRequests.isEmpty)
     #expect(model.dashboard.tickets[0].isOpen)
   }

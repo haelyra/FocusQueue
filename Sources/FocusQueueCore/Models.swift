@@ -302,7 +302,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var tmuxExecutable: String?
   public var setupCompleted: Bool?
   public var completionReviewEnabled: Bool
-  public var autoExitCompletedAgents: Bool
   public var agentUsageBarEnabled: Bool
   public var agentProviderFallbackOrder: [AgentProvider]
   public var agentEscalationAutoLaunch: Bool
@@ -439,7 +438,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.verifier = verifier
     self.dailyReport = dailyReport
     self.completionReviewEnabled = true
-    self.autoExitCompletedAgents = true
     self.agentUsageBarEnabled = true
     self.agentProviderFallbackOrder = Self.defaultAgentProviderFallbackOrder
     self.agentEscalationAutoLaunch = true
@@ -472,7 +470,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case appName, dashboardPath, workspacePath, defaultPlacement, refreshIntervalSeconds
     case dailyRoutines, wezTerm, verifier, dailyReport, persistentTerminals, tmuxExecutable, setupCompleted
     case completionReviewEnabled
-    case autoExitCompletedAgents
     case agentUsageBarEnabled
     case agentProviderFallbackOrder
     case agentEscalationAutoLaunch
@@ -502,7 +499,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     setupCompleted = try container.decodeIfPresent(Bool.self, forKey: .setupCompleted)
     completionReviewEnabled =
       try container.decodeIfPresent(Bool.self, forKey: .completionReviewEnabled) ?? true
-    autoExitCompletedAgents = try container.decodeIfPresent(Bool.self, forKey: .autoExitCompletedAgents) ?? true
     agentUsageBarEnabled = try container.decodeIfPresent(Bool.self, forKey: .agentUsageBarEnabled) ?? true
     // Unknown providers (for example from a newer build) are skipped, never fatal.
     var seenProviders = Set<AgentProvider>()
@@ -597,7 +593,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encodeIfPresent(tmuxExecutable, forKey: .tmuxExecutable)
     try container.encodeIfPresent(setupCompleted, forKey: .setupCompleted)
     try container.encode(completionReviewEnabled, forKey: .completionReviewEnabled)
-    try container.encode(autoExitCompletedAgents, forKey: .autoExitCompletedAgents)
     try container.encode(agentUsageBarEnabled, forKey: .agentUsageBarEnabled)
     try container.encode(agentProviderFallbackOrder, forKey: .agentProviderFallbackOrder)
     try container.encode(agentEscalationAutoLaunch, forKey: .agentEscalationAutoLaunch)

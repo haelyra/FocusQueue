@@ -172,4 +172,24 @@ struct AgentStatusMarkerTests {
             #expect(events.contains { $0.kind == .result })
         }
     }
+
+    @Test("A completed result stays a work item until it has been seen")
+    func completionStaysWorkUntilSeen() async throws {
+        var assignment = TaskSubtask(id: "assignment", title: "Assignment", status: .completed)
+        assignment.isAssignmentOnly = true
+        let (store, root) = try await makeStore(assignment)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var agent = TaskSubtask(id: "worker", title: "Worker", sessionID: UUID().uuidString, status: .working)
+        agent.parentSubtaskID = assignment.id
+        _ = try await store.upsertSubtask(ticketID: "ECC-900", subtask: agent)
+        let finished = try await store.updateProgress(ticketID: "ECC-900", subtaskID: agent.id,
+            status: .completed, summary: "Ready")
+        let unseen = try #require(finished.subtasks.first { $0.id == agent.id })
+        #expect(unseen.status == .completed)
+        #expect(!finished.isCompletionSeen(unseen))
+        #expect(!finished.isCompletionSeen(try #require(finished.subtasks.first { $0.id == assignment.id })))
+        let viewed = try await store.acknowledgeCompletion(ticketID: "ECC-900", subtaskID: agent.id)
+        #expect(viewed.isCompletionSeen(try #require(viewed.subtasks.first { $0.id == agent.id })))
+        #expect(viewed.isCompletionSeen(try #require(viewed.subtasks.first { $0.id == assignment.id })))
+    }
 }

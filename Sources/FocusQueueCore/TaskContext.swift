@@ -125,6 +125,8 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         !isAssignmentOnly && (workspace?.managed == true || workspaceHistory.contains(where: \.managed))
     }
     public var isAgentVisible: Bool { agentRemovedAt == nil && (status != .completed || completedRuntimeOpenedAt != nil) }
+    /// Finished work stays a work item until the person has seen its result.
+    public var isCompletionSeen: Bool { status == .completed && !completionUnread }
     public var workDescription: String {
         for value in [assignmentDescription, initialPrompt, progressSummary] {
             let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -663,9 +665,10 @@ public actor TaskContextStore {
                 let context: TaskContext?
                 if ticket.isCompleted, version == nil { context = nil }
                 else { context = try ensureContext(ticket: ticket, project: contextProject) }
-                // An agent may edit the Markdown or JSON directly. Retain the
-                // changed source even when no dashboard fields require merging.
-                if context != nil { try archive(ticketID: ticket.id) }
+                // An agent may edit an open task's Markdown or JSON directly.
+                // Completed-task cleanup intentionally stages this archive, so
+                // background refreshes must not recreate it afterward.
+                if context != nil, ticket.isOpen { try archive(ticketID: ticket.id) }
                 let finalVersion = try fileVersion(at: url)
                 let finalPlanURL = context.map { URL(fileURLWithPath: $0.planPath) } ?? planURL
                 let finalPlanVersion = try fileVersion(at: finalPlanURL)
@@ -801,7 +804,10 @@ public actor TaskContextStore {
                     previousTitle: previous.title
                 )
                 if previous != existing { existing.updatedAt = Date(); try write(existing); try snapshot(existing) }
-                else if !files.fileExists(atPath: existing.contextDirectory.appendingPathComponent("archive").path) { try snapshot(existing) }
+                else if ticket.isOpen,
+                        !files.fileExists(atPath: existing.contextDirectory.appendingPathComponent("archive").path) {
+                    try snapshot(existing)
+                }
                 return existing
             }
             let directory = try directory(ticketID: ticket.id)

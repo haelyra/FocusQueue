@@ -37,8 +37,14 @@ struct AgentDocumentContractTests {
         #expect(context.dataURL.lastPathComponent == "data.md")
         #expect(try Data(contentsOf: context.dataURL).isEmpty)
         #expect(try await store.readPlan(ticketID: ticket.id).contains("[Task data](data.md)"))
-        #expect(context.agentPrompt(subtask: .init(id: "agent", title: "Facts")).contains(context.dataURL.path))
-        #expect(context.agentBootstrap(subtask: .init(id: "agent", title: "Facts")).contains(context.dataURL.path))
+        let prompt = context.agentPrompt(subtask: .init(id: "agent", title: "Facts"))
+        let bootstrap = context.agentBootstrap(subtask: .init(id: "agent", title: "Facts"))
+        #expect(prompt.contains(context.dataURL.path))
+        #expect(bootstrap.contains(context.dataURL.path))
+        for launchText in [prompt, bootstrap] {
+            #expect(launchText.contains("one or two short sentences"))
+            #expect(launchText.contains("test results, and evidence in the agent log"))
+        }
 
         try Data("# Facts\nPort 8080.\n".utf8).write(to: context.dataURL)
         _ = try await store.ensureContext(ticket: ticket)

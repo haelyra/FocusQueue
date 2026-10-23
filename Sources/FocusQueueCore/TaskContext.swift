@@ -358,12 +358,16 @@ public struct TaskContext: Codable, Equatable, Sendable {
     /// The generated data.md body before any agent records a fact; briefs point to it instead of inlining it.
     static let dataTemplateBody = "Cached facts, inputs, and test data for this task. Agents read this before acting and add durable task facts here."
 
+    /// Data is a small memory layer, not a second plan or a progress report.
+    static let dataWritingRule = "Use task data only for durable task-specific facts or future requirements supplied by the user. Keep each entry to one or two short sentences. Put current work in the plan and decisions, research, test results, and evidence in the agent log; do not copy those into data."
+
     /// Compact mode: identity and document pointers only. Document contents stay on disk.
     public func agentBootstrap(subtask: TaskSubtask) -> String {
         let prompt = subtask.initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return ([prompt.isEmpty ? "Prepare the task context, then wait for my instruction before implementing anything." : prompt, ""]
             + briefHeader(subtask: subtask, prompt: prompt)
             + ["Task plan: \(planPath) (read before acting). Task data: \(dataURL.path). Agent log: \(agentLogURL.path).",
+               Self.dataWritingRule,
                "Register with `focus-queue-session attach`, then report with `focus-queue-session progress|complete`. Rules: `focus-queue-session rules`."])
             .joined(separator: "\n")
     }
@@ -394,9 +398,10 @@ public struct TaskContext: Codable, Equatable, Sendable {
            data != Self.dataTemplateBody {
             lines += ["Task data (\(dataURL.path)):", data]
         } else {
-            lines.append("Task data: \(dataURL.path) (record durable task facts and test data here).")
+            lines.append("Task data: \(dataURL.path).")
         }
         lines += [
+            Self.dataWritingRule,
             "Before anything else run `focus-queue-session attach`.",
             "Report with `focus-queue-session <verb>`; task and agent IDs come from the environment: progress working|idle|blocked \"summary\" · attention approval|question \"summary\" · result \"summary\" · complete \"what changed and how it was verified\".",
             "Before reporting result or complete, update the task plan: fill empty What/Why/How lines and tick or add Progress items. Log decisions and evidence with `focus-queue-session log \"entry\"`.",
@@ -473,6 +478,10 @@ public struct TaskContext: Codable, Equatable, Sendable {
         Task plan (tasks/<TASK-ID>/plan.md)
         - Keep it bare: What/Why/How (one sentence each), success criteria, a Progress checklist, and links to crucial context or evidence.
         - Tick Progress items as they finish and add the next ones. Re-read before editing and preserve other agents' concurrent edits.
+
+        Task data (tasks/<TASK-ID>/data.md)
+        - \(dataWritingRule)
+        - Record only information owned by this task. A project-wide preference belongs in project context; a separate deferred deliverable belongs in its own task.
 
         Workspace and scope
         - Your assigned workspace is immutable; a different checkout requires a new agent assignment. `workspace <TASK-ID> <AGENT-ID> <absolute-path>` only records the first assignment or refreshes metadata for the same path.

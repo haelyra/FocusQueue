@@ -105,6 +105,21 @@ class ValidateAtomTests(unittest.TestCase):
         clean, reason = self.check(atom(kind="wish"))
         self.assertIsNone(clean)
 
+    def test_verbose_memory_is_inboxed(self):
+        clean, reason = self.check(atom(text="First fact. Second fact. Third fact."))
+        self.assertEqual(clean["destination"], "inbox")
+        self.assertIn("two sentences", reason)
+        clean, reason = self.check(atom(text="A" * 201))
+        self.assertEqual(clean["destination"], "inbox")
+        self.assertIn("200 characters", reason)
+
+    def test_short_deferred_memory_is_accepted(self):
+        clean, reason = self.check(atom(destination="task", target_id="FOC-013",
+            quote="The embedding index needs incremental rebuilds, leave that for the embedding task.",
+            text="Add incremental rebuilds to the embedding index.", kind="deferred"))
+        self.assertIsNone(reason)
+        self.assertEqual(clean["destination"], "task")
+
 
 class GradeTests(unittest.TestCase):
     def record(self, atoms):

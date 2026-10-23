@@ -143,6 +143,10 @@ The Router agent, its `route inspect` / `route start` commands, the in-app compo
 
 ### 3.4 Task mutations
 
+**`task create <PROJECT-ID> <title> <summary>`** — creates a backlog task in the named active project through the locked dashboard repository. It chooses the next project ID, returns the existing open task for an exact title and summary replay, and initializes its task context.
+
+**`data place <user|project|task> <target-id> <fact>`** — appends one short fact to `user/data.md`, `projects/<id>/data.md`, or `tasks/<ID>/data.md`. The command verifies active project or open task identity, limits the fact to 200 characters and two sentences, rejects symlink destinations, and returns `{scope,targetID,path,added}`. An identical line returns `added: false`. Use `task create` for deferred work; the extractor calls these commands after validating the model proposal.
+
 **`task rename <TASK-ID> <title...>`** — revision-checked rename.
 **`task priority <TASK-ID> critical|high|medium|low`** — validated enum.
 **`task status <TASK-ID> <status>`** — ⚠ **accepts any string.** No enum validation. A typo (`complted`) writes successfully and the ticket just stays "open" forever. See §8.
@@ -150,9 +154,9 @@ The Router agent, its `route inspect` / `route start` commands, the in-app compo
 
 **`task link <TASK-ID> <url> <label> [type]`** — appends an evidence link to the ticket under the dashboard lock with a revision check. A link whose URL is already present is left unchanged. Use this instead of hand-editing `links`.
 
-All three go through `JSONDashboardRepository` with optimistic-concurrency revision checks, duplicate-ID rejection, and type-safe re-encoding — this is what hand-editing `dashboard.json` bypasses.
+These mutations go through `JSONDashboardRepository` with optimistic-concurrency revision checks, duplicate-ID rejection, and type-safe re-encoding — this is what hand-editing `dashboard.json` bypasses.
 
-**There is no `task create`, no `task show`, no generic `task set <field>`.** See §8 — this is the single biggest gap.
+There is no `task show` or generic `task set <field>`.
 
 ### 3.5 Queue ordering
 

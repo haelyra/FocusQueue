@@ -37,6 +37,7 @@ for script in \
   focus_queue_morning.py focus_queue_codex.py focus_queue_claude.py focus_queue_kimi.py \
   focus_queue_lock.py focus_queue_mail.py focus_queue_gmail.py \
   focus_queue_discord.py focus_queue_slack.py focus_queue_connectors.py focus_queue_triage.py \
+  focus_queue_extractor.py \
   focus-queue-mail.js; do
   /bin/cp "$project_dir/Scripts/$script" "$automation_resources/Scripts/$script"
 done

@@ -349,6 +349,15 @@ public struct TaskContext: Codable, Equatable, Sendable {
 
     /// Cached task facts and test data, kept beside the plan so every task view and agent can find it.
     public var dataURL: URL { contextDirectory.appendingPathComponent("data.md") }
+    public var userDataURL: URL {
+        contextDirectory.deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("user/data.md")
+    }
+    public var projectDataURL: URL? {
+        guard let projectPlanPath, !projectPlanPath.isEmpty else { return nil }
+        return URL(fileURLWithPath: projectPlanPath).deletingLastPathComponent()
+            .appendingPathComponent("data.md")
+    }
 
     /// The task data file leads the evidence list even when the dashboard records no links.
     public func evidenceLinks(_ ticketLinks: [DashboardLink]) -> [DashboardLink] {
@@ -362,6 +371,12 @@ public struct TaskContext: Codable, Equatable, Sendable {
 
     public static func launchRemovalKey(_ launchID: String) -> String {
         "launch:" + launchID.lowercased()
+    }
+
+    /// An app-launched agent's intake receipt is keyed by its placement launch
+    /// ID, not its row ID, so both must be retired or the receipt recreates it.
+    static func launchRemovalKeys(for agent: TaskSubtask) -> [String] {
+        [agent.id, agent.launchConfiguration?.launchID].compactMap { $0 }.map(launchRemovalKey)
     }
 
     public func hasDismissedLaunch(_ launchID: String) -> Bool {
@@ -381,12 +396,18 @@ public struct TaskContext: Codable, Equatable, Sendable {
     /// The generated data.md body before any agent records a fact; briefs point to it instead of inlining it.
     static let dataTemplateBody = "Cached facts, inputs, and test data for this task. Agents read this before acting and add durable task facts here."
 
+    /// Data is a small memory layer, not a second plan or a progress report.
+    static let dataWritingRule = "Write only durable task-specific user facts or deferred requirements to task data, in one or two short sentences each. Keep current work in the plan; research, test results, and evidence in the agent log."
+
     /// Compact mode: identity and document pointers only. Document contents stay on disk.
     public func agentBootstrap(subtask: TaskSubtask) -> String {
         let prompt = subtask.initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return ([prompt.isEmpty ? "Prepare the task context, then wait for my instruction before implementing anything." : prompt, ""]
             + briefHeader(subtask: subtask, prompt: prompt)
             + ["Task plan: \(planPath) (read before acting). Task data: \(dataURL.path). Agent log: \(agentLogURL.path).",
+               Self.dataWritingRule]
+            + scopedDataLines()
+            + ["Read relevant saved facts before acting.",
                "Register with `focus-queue-session attach`, then report with `focus-queue-session progress|complete`. Rules: `focus-queue-session rules`."])
             .joined(separator: "\n")
     }
@@ -408,6 +429,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
         if let project = Self.inlineDocument(atPath: projectPlanPath, limit: 1_500) {
             lines.append("About the project: \(project)")
         }
+        lines += scopedDataLines(includeTask: false)
         if let plan = Self.inlineDocument(atPath: planPath, limit: 4_000, prompt: trimmed ?? "") {
             lines += ["Task plan (\(planPath)):", plan]
         } else {
@@ -417,15 +439,31 @@ public struct TaskContext: Codable, Equatable, Sendable {
            data != Self.dataTemplateBody {
             lines += ["Task data (\(dataURL.path)):", data]
         } else {
-            lines.append("Task data: \(dataURL.path) (record durable task facts and test data here).")
+            lines.append("Task data: \(dataURL.path).")
         }
         lines += [
+            Self.dataWritingRule,
             "Before anything else run `focus-queue-session attach`.",
             "Report with `focus-queue-session <verb>`; task and agent IDs come from the environment: progress working|idle|blocked \"summary\" · attention approval|question \"summary\" · result \"summary\" · complete \"what changed and how it was verified\".",
             "Before reporting result or complete, update the task plan: fill empty What/Why/How lines and tick or add Progress items. Log decisions and evidence with `focus-queue-session log \"entry\"`.",
             "More rules: `focus-queue-session rules`.",
         ]
         return lines.joined(separator: "\n")
+    }
+
+    private func scopedDataLines(includeTask: Bool = true) -> [String] {
+        var lines: [String] = []
+        if let data = Self.inlineDocument(atPath: userDataURL.path, limit: 2_000) {
+            lines += ["User data (\(userDataURL.path)):", data]
+        }
+        if let projectDataURL,
+           let data = Self.inlineDocument(atPath: projectDataURL.path, limit: 3_000) {
+            lines += ["Project data (\(projectDataURL.path)):", data]
+        }
+        if includeTask, let data = Self.inlineDocument(atPath: dataURL.path, limit: 2_000) {
+            lines += ["Task data (\(dataURL.path)):", data]
+        }
+        return lines
     }
 
     /// Identity lines shared by both prompt modes. Assignment text is repeated only when it says
@@ -496,6 +534,10 @@ public struct TaskContext: Codable, Equatable, Sendable {
         Task plan (tasks/<TASK-ID>/plan.md)
         - Keep it bare: What/Why/How (one sentence each), success criteria, a Progress checklist, and links to crucial context or evidence.
         - Tick Progress items as they finish and add the next ones. Re-read before editing and preserve other agents' concurrent edits.
+
+        Task data (tasks/<TASK-ID>/data.md)
+        - \(dataWritingRule)
+        - Record only information owned by this task. A project-wide preference belongs in project context; a separate deferred deliverable belongs in its own task.
 
         Workspace and scope
         - Your assigned workspace is immutable; a different checkout requires a new agent assignment. `workspace <TASK-ID> <AGENT-ID> <absolute-path>` only records the first assignment or refreshes metadata for the same path.
@@ -1043,8 +1085,8 @@ public actor TaskContextStore {
             ticketID: ticketID, archiveChanges: true, archiveBeforeChanges: true
         ) { context in
             let keys = context.subtasks.flatMap { subtask in
-                [subtask.sessionID.map { subtask.provider.rawValue + ":" + $0.lowercased() },
-                 subtask.hasAgent ? TaskContext.launchRemovalKey(subtask.id) : nil].compactMap { $0 }
+                [subtask.sessionID.map { subtask.provider.rawValue + ":" + $0.lowercased() }].compactMap { $0 }
+                    + (subtask.hasAgent ? TaskContext.launchRemovalKeys(for: subtask) : [])
             }
             context.removedAgentSessionKeys = Array(Set((context.removedAgentSessionKeys ?? []) + keys)).sorted()
             context.subtasks.removeAll()
@@ -1071,8 +1113,8 @@ public actor TaskContextStore {
             let removedSessionKeys = context.subtasks.filter { candidate in
                 candidate.id == removed.id || linkedAgentIDs.contains(candidate.id)
             }.flatMap { agent in
-                [agent.sessionID.map { agent.provider.rawValue + ":" + $0.lowercased() },
-                 agent.hasAgent ? TaskContext.launchRemovalKey(agent.id) : nil].compactMap { $0 }
+                [agent.sessionID.map { agent.provider.rawValue + ":" + $0.lowercased() }].compactMap { $0 }
+                    + (agent.hasAgent ? TaskContext.launchRemovalKeys(for: agent) : [])
             }
             context.removedAgentSessionKeys = Array(Set((context.removedAgentSessionKeys ?? []) + removedSessionKeys)).sorted()
             context.subtasks.removeAll { candidate in
@@ -1149,7 +1191,7 @@ public actor TaskContextStore {
             let session = context.subtasks[index].sessionID
             let provider = context.subtasks[index].provider
             context.removedAgentSessionKeys = Array(Set((context.removedAgentSessionKeys ?? [])
-                + [TaskContext.launchRemovalKey(context.subtasks[index].id)])).sorted()
+                + TaskContext.launchRemovalKeys(for: context.subtasks[index]))).sorted()
             for i in context.subtasks.indices where i == index || (session != nil && context.subtasks[i].provider == provider && context.subtasks[i].sessionID?.lowercased() == session?.lowercased()) {
                 context.subtasks[i].completionTerminalRetained = automatically && context.subtasks[i].status == .completed
                 context.subtasks[i].agentRemovedAt = Date()

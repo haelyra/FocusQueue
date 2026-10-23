@@ -320,6 +320,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var placementConfidenceThreshold: Double?
   /// Seconds the placement call may take before `fq` falls back to heuristics.
   public var placementTimeoutSeconds: Int?
+  /// Opts native prompt hooks into automatic durable-data placement; nil is off.
+  public var dataPlacementEnabled: Bool?
 
   public static let defaultAgentProviderFallbackOrder: [AgentProvider] = [.codex, .claude]
   public var agentModelChoices: [AgentModelChoice]
@@ -448,6 +450,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.placementEfforts = [:]
     self.placementConfidenceThreshold = nil
     self.placementTimeoutSeconds = nil
+    self.dataPlacementEnabled = nil
     self.agentModelChoices = Self.defaultAgentModelChoices
     self.autoArchiveStaleAgents = false
     self.defaultAgentProvider = nil
@@ -476,6 +479,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case agentsPerWindow
     case placementModelEnabled, placementProvider, placementModels, placementEfforts
     case placementConfidenceThreshold, placementTimeoutSeconds
+    case dataPlacementEnabled
     case agentModelChoices
     case autoArchiveStaleAgents
     case defaultAgentProvider, defaultAgentModels, defaultAgentEfforts
@@ -519,6 +523,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     placementConfidenceThreshold =
       try container.decodeIfPresent(Double.self, forKey: .placementConfidenceThreshold)
     placementTimeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .placementTimeoutSeconds)
+    dataPlacementEnabled = try container.decodeIfPresent(Bool.self, forKey: .dataPlacementEnabled)
     agentModelChoices = Self.mergedAgentModelChoices(
       (try container.decodeIfPresent([AgentModelChoice].self, forKey: .agentModelChoices)) ?? [])
     autoArchiveStaleAgents = try container.decodeIfPresent(Bool.self, forKey: .autoArchiveStaleAgents) ?? false
@@ -603,6 +608,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encode(Self.rawProviderValues(placementEfforts), forKey: .placementEfforts)
     try container.encodeIfPresent(placementConfidenceThreshold, forKey: .placementConfidenceThreshold)
     try container.encodeIfPresent(placementTimeoutSeconds, forKey: .placementTimeoutSeconds)
+    try container.encodeIfPresent(dataPlacementEnabled, forKey: .dataPlacementEnabled)
     try container.encode(agentModelChoices, forKey: .agentModelChoices)
     try container.encode(autoArchiveStaleAgents, forKey: .autoArchiveStaleAgents)
     try container.encodeIfPresent(defaultAgentProvider, forKey: .defaultAgentProvider)

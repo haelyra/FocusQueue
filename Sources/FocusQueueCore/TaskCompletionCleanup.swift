@@ -138,7 +138,10 @@ public actor TaskCompletionCleanup {
         return (try? Data(contentsOf: url)).flatMap { try? decoder.decode(TaskCleanupReport.self, from: $0) }
     }
 
-    public func run(ticketID rawTicketID: String, dryRun: Bool = false, now: Date = Date()) async -> TaskCleanupReport {
+    /// `openTicketIDs` limits which other tasks' recorded workspaces are
+    /// protected; without it every other task's records are protected.
+    public func run(ticketID rawTicketID: String, dryRun: Bool = false, now: Date = Date(),
+                    protecting openTicketIDs: Set<String>? = nil) async -> TaskCleanupReport {
         let ticketID = rawTicketID.uppercased()
         var report = TaskCleanupReport(ticketID: ticketID, dryRun: dryRun, finishedAt: now)
         let lease: TaskMaintenance.Lease
@@ -161,8 +164,10 @@ public actor TaskCompletionCleanup {
             }
         }
 
+        let claims = await claims(excluding: ticketID, limitedTo: openTicketIDs)
         for repository in await repositories(for: context) {
-            await retire(ticketID: ticketID, repository: repository, context: context, dryRun: dryRun, now: now, report: &report)
+            await retire(ticketID: ticketID, repository: repository, context: context, claims: claims,
+                dryRun: dryRun, now: now, report: &report)
         }
 
         if let context {
@@ -193,11 +198,13 @@ public actor TaskCompletionCleanup {
     }
 
     /// Worktrees and branches left by tasks that no open ticket owns. A
-    /// worktree that is any live process's current directory is retained.
+    /// worktree an open task records, or that any live process uses as its
+    /// current directory, is retained, whatever folder it sits in.
     public func sweepOrphans(openTicketIDs: Set<String>, dryRun: Bool, now: Date = Date()) async -> TaskCleanupReport {
         var report = TaskCleanupReport(ticketID: "ORPHANS", dryRun: dryRun, finishedAt: now)
         let open = Set(openTicketIDs.map { $0.lowercased() })
         let liveDirectories = await processDirectories()
+        let claims = await claims(excluding: nil, limitedTo: openTicketIDs)
         for repository in await repositories(for: nil) {
             let targets = await integrationTargets(repository: repository, context: nil, report: &report)
             let entries = await worktreeEntries(repository: repository)
@@ -209,6 +216,10 @@ public actor TaskCompletionCleanup {
                     for entry in entries where !entry.prunable && (entry.path.hasPrefix(folder.path + "/") || entry.path == folder.path) {
                         if liveDirectories.contains(where: { $0 == entry.path || $0.hasPrefix(entry.path + "/") }) {
                             report.notes.append("Kept \(entry.path): a running process uses it.")
+                            continue
+                        }
+                        if let owner = claims.owner(ofWorktree: entry.path, branch: entry.branch) {
+                            report.notes.append("Kept \(entry.path): open task \(owner) records it.")
                             continue
                         }
                         do {
@@ -228,13 +239,17 @@ public actor TaskCompletionCleanup {
             let protected = await protectedBranches(repository: repository, context: nil)
             let remoteHeads = await remoteBranches(repository: repository, report: &report)
             let local = await localBranches(repository: repository)
-            let candidates = Set((local + Array(remoteHeads.keys)).filter { name in
+            let orphaned = Set((local + Array(remoteHeads.keys)).filter { name in
                 guard !protected.contains(name) else { return false }
                 if retiredBranches.contains(name) { return true }
                 guard name.hasPrefix("focus-queue/") else { return false }
                 let ticket = Self.ticketComponent(ofBranch: name)
                 return ticket.map { !open.contains($0) } ?? false
             })
+            let candidates = orphaned.filter { claims.branches[$0] == nil }
+            for name in orphaned.subtracting(candidates).sorted() {
+                report.notes.append("Kept branch \(name): open task \(claims.branches[name] ?? "") records it.")
+            }
             for name in candidates.sorted() {
                 do {
                     report.branches.append(try await worktrees.retireBranch(name, repositoryPath: repository,
@@ -282,8 +297,8 @@ public actor TaskCompletionCleanup {
 
     // MARK: - Per repository
 
-    private func retire(ticketID: String, repository: String, context: TaskContext?, dryRun: Bool, now: Date,
-                        report: inout TaskCleanupReport) async {
+    private func retire(ticketID: String, repository: String, context: TaskContext?, claims: Claims,
+                        dryRun: Bool, now: Date, report: inout TaskCleanupReport) async {
         let targets = await integrationTargets(repository: repository, context: context, report: &report)
         let entries = await worktreeEntries(repository: repository)
         let folders = TaskWorktreeManager.managedRoots(repositoryPath: repository)
@@ -295,6 +310,10 @@ public actor TaskCompletionCleanup {
             guard managed || owned, !entry.prunable else { continue }
             guard managed else {
                 report.problems.append("Branch \(entry.branch ?? "") is checked out at \(entry.path), outside Focus Queue's managed folder; left in place.")
+                continue
+            }
+            if let owner = claims.owner(ofWorktree: entry.path, branch: entry.branch) {
+                report.notes.append("Kept \(entry.path): task \(owner) also records it.")
                 continue
             }
             do {
@@ -318,7 +337,8 @@ public actor TaskCompletionCleanup {
         let remoteHeads = await remoteBranches(repository: repository, report: &report)
         let local = await localBranches(repository: repository)
         let candidates = Set((local + Array(remoteHeads.keys)).filter {
-            !protected.contains($0) && (TaskWorktreeManager.ownsBranch($0, ticketID: ticketID) || retiredBranches.contains($0))
+            !protected.contains($0) && claims.branches[$0] == nil
+                && (TaskWorktreeManager.ownsBranch($0, ticketID: ticketID) || retiredBranches.contains($0))
         })
         for name in candidates.sorted() {
             do {
@@ -327,6 +347,46 @@ public actor TaskCompletionCleanup {
                     remoteHead: remoteHeads[name], dryRun: dryRun))
             } catch { report.problems.append("Branch \(name): \(error.localizedDescription)") }
         }
+    }
+
+    /// Workspaces and branches other tasks recorded, mapped to their ticket.
+    struct Claims {
+        var paths: [String: String] = [:]
+        var branches: [String: String] = [:]
+
+        func owner(ofWorktree path: String, branch: String?) -> String? {
+            if let branch, let owner = branches[branch] { return owner }
+            return paths.first { $0.key == path || $0.key.hasPrefix(path + "/") }?.value
+        }
+    }
+
+    /// Task contexts and placement capsules both record workspaces; ticket
+    /// status lives in the dashboards, so callers pass the open tickets.
+    func claims(excluding ticketID: String?, limitedTo tickets: Set<String>?) async -> Claims {
+        let allowed = tickets.map { Set($0.map { $0.uppercased() }) }
+        var claims = Claims()
+        func record(_ ticket: String, path: String?, branch: String?) {
+            let ticket = ticket.uppercased()
+            guard ticket != ticketID?.uppercased(), allowed?.contains(ticket) ?? true else { return }
+            if let path, !path.isEmpty { claims.paths[URL(fileURLWithPath: path).standardizedFileURL.path] = ticket }
+            if let branch, !branch.isEmpty { claims.branches[branch] = ticket }
+        }
+        for context in (try? await TaskContextStore(root: root).loadAll()) ?? [] {
+            record(context.ticketID, path: context.worktreePath, branch: context.branch)
+            for subtask in context.subtasks {
+                for workspace in [subtask.workspace].compactMap({ $0 }) + subtask.workspaceHistory {
+                    record(context.ticketID, path: workspace.path, branch: workspace.branch)
+                }
+            }
+        }
+        let placements = root.appendingPathComponent("tracking/placements", isDirectory: true)
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: placements.path)) ?? [] where name.hasSuffix(".json") {
+            guard let data = try? Data(contentsOf: placements.appendingPathComponent(name)),
+                  let capsule = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let ticket = capsule["taskID"] as? String, !ticket.isEmpty else { continue }
+            record(ticket, path: capsule["workspacePath"] as? String, branch: capsule["branch"] as? String)
+        }
+        return claims
     }
 
     private struct WorktreeEntry {

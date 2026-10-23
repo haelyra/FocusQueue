@@ -37,8 +37,14 @@ struct AgentDocumentContractTests {
         #expect(context.dataURL.lastPathComponent == "data.md")
         #expect(try Data(contentsOf: context.dataURL).isEmpty)
         #expect(try await store.readPlan(ticketID: ticket.id).contains("[Task data](data.md)"))
-        #expect(context.agentPrompt(subtask: .init(id: "agent", title: "Facts")).contains(context.dataURL.path))
-        #expect(context.agentBootstrap(subtask: .init(id: "agent", title: "Facts")).contains(context.dataURL.path))
+        let prompt = context.agentPrompt(subtask: .init(id: "agent", title: "Facts"))
+        let bootstrap = context.agentBootstrap(subtask: .init(id: "agent", title: "Facts"))
+        #expect(prompt.contains(context.dataURL.path))
+        #expect(bootstrap.contains(context.dataURL.path))
+        for launchText in [prompt, bootstrap] {
+            #expect(launchText.contains("one or two short sentences"))
+            #expect(launchText.contains("test results, and evidence in the agent log"))
+        }
 
         try Data("# Facts\nPort 8080.\n".utf8).write(to: context.dataURL)
         _ = try await store.ensureContext(ticket: ticket)
@@ -55,6 +61,32 @@ struct AgentDocumentContractTests {
         let links = context.evidenceLinks(ticket.links + [DashboardLink(label: "Data", url: context.dataURL.path)])
         #expect(links.map(\.url) == [context.dataURL.path, "https://example.com/spec"])
         #expect(context.evidenceLinks([]).map(\.label) == ["Task data (data.md)"])
+    }
+
+    @Test("Scoped saved facts appear in detailed and compact launch prompts")
+    func scopedData() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("scoped-data-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = ProjectDefinition(id: "demo", name: "Demo", taskPrefix: "DOC", repositoryPath: root.path)
+        let ticket = DashboardTicket(id: "DOC-3", title: "Page", projectID: project.id,
+                                     status: "open", summary: "Build a page")
+        let context = try await TaskContextStore(root: root).ensureContext(ticket: ticket, project: project)
+        let projectData = try #require(context.projectDataURL)
+        try FileManager.default.createDirectory(at: projectData.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("- Use the gray theme.\n".utf8).write(to: projectData)
+        try FileManager.default.createDirectory(at: context.userDataURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("- Keep answers concise.\n".utf8).write(to: context.userDataURL)
+        try Data("- Keep the demo under ten seconds.\n".utf8).write(to: context.dataURL)
+        let prompt = context.agentPrompt(subtask: .init(id: "agent", title: "Facts"))
+        #expect(prompt.contains("Use the gray theme."))
+        #expect(prompt.contains("Keep answers concise."))
+        #expect(prompt.contains("Keep the demo under ten seconds."))
+        let bootstrap = context.agentBootstrap(subtask: .init(id: "agent", title: "Facts"))
+        #expect(bootstrap.contains(projectData.path))
+        #expect(bootstrap.contains(context.userDataURL.path))
+        #expect(bootstrap.contains("Use the gray theme."))
+        #expect(bootstrap.contains("Keep answers concise."))
+        #expect(bootstrap.contains("Keep the demo under ten seconds."))
     }
 
     @Test("Independent stores append without lost entries or changes to plan and task state")

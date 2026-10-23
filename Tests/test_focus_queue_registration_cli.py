@@ -67,6 +67,36 @@ class RegistrationCLITests(unittest.TestCase):
         self.assertEqual(attached["status"], "registered")
         self.assertNotEqual(attached["subtaskID"], "deleted-inherited-id")
 
+    def test_data_placement_switch_dispatches_prompt_only_when_enabled(self):
+        import time
+        script = self.support / "automation/Scripts/focus_queue_extractor.py"
+        script.parent.mkdir(parents=True)
+        capture = self.support / "hook-capture.json"
+        script.write_text("import json, pathlib, sys\n" +
+            f"pathlib.Path({str(capture)!r}).write_text(json.dumps({{'args': sys.argv[1:], 'prompt': sys.stdin.read()}}))\n")
+        self.assertFalse(self.command("data-placement", "status")["dataPlacementEnabled"])
+        prompt = "Remember blue accents for the space website."
+        self.command("register-event", "--provider", "codex", "--task", "ECC-401",
+            payload=self.event(str(uuid.uuid4()), "UserPromptSubmit", prompt=prompt))
+        self.assertFalse(capture.exists())
+        self.assertTrue(self.command("data-placement", "on")["dataPlacementEnabled"])
+        self.command("register-event", "--provider", "codex", "--task", "ECC-401",
+            payload=self.event(str(uuid.uuid4()), "UserPromptSubmit", prompt=prompt))
+        for _ in range(50):
+            if capture.exists():
+                break
+            time.sleep(0.05)
+        self.assertTrue(capture.exists())
+        result = json.loads(capture.read_text())
+        self.assertEqual(result["prompt"], prompt)
+        self.assertIn("--apply", result["args"])
+        self.assertIn("--prompt-stdin", result["args"])
+        nested = self.command("register-event", "--provider", "codex",
+            payload=self.event(str(uuid.uuid4()), "UserPromptSubmit", prompt="Nested model call"),
+            extra_environment={"FOCUS_QUEUE_EXTRACTION_CHILD": "1"})
+        self.assertEqual(nested["status"], "ignored")
+        self.assertFalse(self.command("data-placement", "off")["dataPlacementEnabled"])
+
     def test_manual_prompt_creates_a_tracked_task_until_explicitly_reassigned(self):
         self.add_task("ECC-402")
         session_id = str(uuid.uuid4())

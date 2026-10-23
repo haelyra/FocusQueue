@@ -13,7 +13,7 @@ enum SessionRegistrationError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .usage:
-            "Usage: focus-queue-session intake-changed | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|pin <TASK-ID>|unpin <TASK-ID>|reset | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | cleanup <TASK-ID>|--completed|--orphans|--purge [--dry-run] | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
+            "Usage: focus-queue-session intake-changed | data place <user|project|task> <target-id> <fact> | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|pin <TASK-ID>|unpin <TASK-ID>|reset | task create <PROJECT-ID> <title> <summary> | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | cleanup <TASK-ID>|--completed|--orphans|--purge [--dry-run] | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
         case .missingSessionIdentity:
             "No Codex, Claude, or Kimi session ID was found in the environment or current WezTerm pane."
         case .missingManagedRuntime:
@@ -41,6 +41,8 @@ enum SessionRegistrationError: Error, LocalizedError {
                 print("Agent rules: rules (lifecycle, plan, workspace, and map-scope rules for managed agents)")
                 print("Launch brief preview: brief <TASK-ID> <SUBTASK-ID> (the exact prompt a fresh launch of that agent receives)")
                 print("Maintenance: reconcile <TASK-ID> [--no-cleanup] (repair documents and save a receipt; optional workspace cleanup)")
+                print("Data placement: data-placement status|on|off (automatic native prompt capture; off by default)")
+                print("Scoped data: data place <user|project|task> <target-id> <one-or-two-sentence fact>")
                 print("Completion cleanup: cleanup <TASK-ID> | cleanup --completed | cleanup --orphans | cleanup --purge, each with optional --dry-run (stops tmux, stages worktrees in .worktrees/.trash for 7 days, archives unmerged work under refs/focus-queue/archive/, deletes merged local and remote branches)")
                 print("Persistent terminals: tmux list | tmux start <name> [--cwd <directory>] [-- <command> ...] | tmux start-agent <TASK-ID> <AGENT-ID> [--cwd <directory>] -- <command> ... | tmux attach <name> | tmux ssh-command <user@host> <name>")
                 print("Task layouts: tmux panes <name> | tmux arrange <name> | tmux manual <name> | tmux save | tmux restore | tmux persistence")
@@ -56,6 +58,8 @@ enum SessionRegistrationError: Error, LocalizedError {
             else if arguments.first == "diagnose" { try await diagnose(arguments: arguments) }
             else if arguments.first == "cleanup" { try await cleanupCommand(arguments: arguments) }
             else if arguments.first == "register-event" { try await registerEvent(arguments: arguments) }
+            else if arguments.first == "data-placement" { try await dataPlacement(arguments: arguments) }
+            else if arguments.first == "data" { try await dataCommand(arguments: arguments) }
             else if arguments == ["intake-changed"] {
                 notifyContextChanged()
                 try emit(["status": "notified"])
@@ -253,6 +257,54 @@ enum SessionRegistrationError: Error, LocalizedError {
         let action = arguments[1]
         let ticketID = arguments[2]
         switch action {
+        case "create" where arguments.count == 5:
+            guard let project = config.projects.first(where: { $0.id == ticketID && $0.archivedAt == nil }) else {
+                throw TaskContextError.commandFailed("Unknown or archived project \(ticketID).")
+            }
+            let title = arguments[3].trimmingCharacters(in: .whitespacesAndNewlines)
+            let summary = arguments[4].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty, !summary.isEmpty, title.count <= 80, summary.count <= 200 else {
+                throw TaskContextError.commandFailed("A deferred task needs a title (up to 80 characters) and summary (up to 200 characters).")
+            }
+            let targetURL = URL(fileURLWithPath: project.dashboardPath)
+            let others = config.projects.filter { $0.id != project.id }.map { URL(fileURLWithPath: $0.dashboardPath) }
+            for attempt in 0..<3 {
+                let snapshot = try await repository.loadSnapshot(from: targetURL)
+                if let existing = snapshot.document.tickets.first(where: {
+                    $0.projectID == project.id && $0.title.caseInsensitiveCompare(title) == .orderedSame
+                        && $0.summary.caseInsensitiveCompare(summary) == .orderedSame && $0.isOpen
+                }) {
+                    try emit(["taskID": existing.id, "created": "false"])
+                    return
+                }
+                var known = snapshot.document.tickets
+                for url in others { known += (try await repository.load(from: url)).tickets }
+                let prefix = project.taskPrefix + "-"
+                let numbers = known.compactMap { ticket -> (Int, Int)? in
+                    guard ticket.id.uppercased().hasPrefix(prefix),
+                          let number = Int(ticket.id.dropFirst(prefix.count)) else { return nil }
+                    return (number, ticket.id.count - prefix.count)
+                }
+                let width = max(3, numbers.map { $0.1 }.max() ?? 0)
+                let next = (numbers.map { $0.0 }.max() ?? 0) + 1
+                let newID = "\(prefix)\(String(format: "%0\(width)d", next))"
+                let day = String(ISO8601DateFormatter().string(from: Date()).prefix(10))
+                let ticket = DashboardTicket(id: newID, title: title, projectID: project.id,
+                    category: project.name, status: "backlog", summary: summary,
+                    next: "Review this deferred requirement and choose an owner.",
+                    doneWhen: TaskContext.genericSuccessCriteria, updatedAt: day, createdAt: day)
+                do {
+                    _ = try await repository.createTicket(ticket, in: targetURL,
+                        expectedRevision: snapshot.revision, checking: others)
+                    _ = try await TaskContextStore(root: root).ensureContext(ticket: ticket)
+                    try emit(["taskID": newID, "created": "true"])
+                    notifyContextChanged()
+                    return
+                } catch {
+                    if attempt == 2 { throw error }
+                }
+            }
+            throw TaskContextError.commandFailed("The dashboard kept changing while creating the deferred task.")
         case "rename" where arguments.count > 3:
             let title = arguments.dropFirst(3).joined(separator: " ")
             let updated = try await mutateTicket(ticketID, in: dashboardURLs, repository: repository) { url, snapshot in
@@ -342,8 +394,9 @@ enum SessionRegistrationError: Error, LocalizedError {
                 tickets += try await repository.loadSnapshot(from: URL(fileURLWithPath: path)).document.tickets
             }
             if modes.contains("--completed") {
+                let open = Set(tickets.filter(\.isOpen).map(\.id))
                 for ticket in tickets where ticket.isCompleted {
-                    reports.append(await cleanup.run(ticketID: ticket.id, dryRun: dryRun))
+                    reports.append(await cleanup.run(ticketID: ticket.id, dryRun: dryRun, protecting: open))
                 }
             }
             if modes.contains("--orphans") {
@@ -790,6 +843,10 @@ enum SessionRegistrationError: Error, LocalizedError {
     }
 
     private static func registerEvent(arguments: [String]) async throws {
+        if ProcessInfo.processInfo.environment["FOCUS_QUEUE_EXTRACTION_CHILD"] == "1" {
+            try emit(["status": "ignored"])
+            return
+        }
         var provider: AgentProvider?
         var taskID: String?
         var index = 1
@@ -880,6 +937,65 @@ enum SessionRegistrationError: Error, LocalizedError {
         output["agentID"] = record.agentID; output["parentSessionID"] = record.parentSessionID
         output["placementPath"] = placement?.capsulePath
         try emit(output)
+        if config.dataPlacementEnabled == true,
+           environment["FOCUS_QUEUE_EXTRACTION_CHILD"] != "1",
+           event.hookEventName == "UserPromptSubmit", !event.isSubagent,
+           let prompt = event.prompt?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !prompt.isEmpty, prompt.count <= 4_000,
+           let projectID = placement?.projectID {
+            // The provider hook has a short deadline. Let extraction finish in a child
+            // process while registration returns immediately to the user's agent.
+            let script = root.appendingPathComponent("automation/Scripts/focus_queue_extractor.py")
+            if FileManager.default.fileExists(atPath: script.path) {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+                var arguments = [script.path, "extract", "--prompt-stdin", "--project", projectID,
+                                 "--provider", provider.rawValue, "--apply"]
+                if let taskID = record.taskID { arguments += ["--task", taskID] }
+                process.arguments = arguments
+                var childEnvironment = environment
+                childEnvironment["FOCUS_QUEUE_EXTRACTION_CHILD"] = "1"
+                childEnvironment["FOCUS_QUEUE_SESSION_EXECUTABLE"] = CommandLine.arguments[0]
+                process.environment = childEnvironment
+                let input = Pipe()
+                process.standardInput = input
+                process.standardOutput = FileHandle.nullDevice
+                process.standardError = FileHandle.nullDevice
+                do {
+                    try process.run()
+                    input.fileHandleForWriting.write(Data(prompt.utf8))
+                    try? input.fileHandleForWriting.close()
+                } catch {
+                    try? input.fileHandleForWriting.close()
+                }
+            }
+        }
+    }
+
+    private static func dataPlacement(arguments: [String]) async throws {
+        guard arguments.count == 2, ["on", "off", "status"].contains(arguments[1]) else {
+            throw SessionRegistrationError.usage
+        }
+        let root = supportDirectory(environment: ProcessInfo.processInfo.environment)
+        let repository = JSONConfigurationRepository(url: root.appendingPathComponent("config.json"))
+        var configuration = try loadConfiguration(from: root)
+        if arguments[1] != "status" {
+            configuration.dataPlacementEnabled = arguments[1] == "on"
+            try await repository.save(configuration)
+        }
+        try emit(["dataPlacementEnabled": configuration.dataPlacementEnabled == true])
+    }
+
+    private static func dataCommand(arguments: [String]) async throws {
+        guard arguments.count == 5, arguments[1] == "place" else {
+            throw SessionRegistrationError.usage
+        }
+        let root = supportDirectory(environment: ProcessInfo.processInfo.environment)
+        let receipt = try await ScopedDataPlacement.place(
+            scope: arguments[2], targetID: arguments[3], text: arguments[4],
+            root: root, configuration: loadConfiguration(from: root))
+        if receipt.added { notifyContextChanged() }
+        try emit(receipt)
     }
 
     private static func locateRuntime(provider: AgentProvider, sessionID: String) async throws {

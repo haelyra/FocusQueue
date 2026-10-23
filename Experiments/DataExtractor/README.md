@@ -6,8 +6,10 @@ FOC-014 (`Docs/Experiments/Context-Routing-Plan.md`, branch
 `experiment/proactive-context-routing`). Implementation:
 `Scripts/focus_queue_extractor.py`, modeled on the agent-placement classifier
 `Scripts/focus_queue_placement.py`: one structured CLI model call, then
-deterministic policy guards before anything is recorded. Shadow mode only:
-results go to `extraction-ledger.sqlite`, never to plans or dashboards.
+deterministic policy guards before anything is recorded. Shadow mode remains
+the default: proposals go to `extraction-ledger.sqlite`. Explicit
+`extract --apply` writes accepted memories to scoped `data.md` files and
+creates deferred tasks through the queue backend. No app hook calls it yet.
 
 ## Fixtures
 
@@ -67,11 +69,15 @@ python3 Scripts/focus_queue_extractor.py eval --fixtures Experiments/DataExtract
   --provider claude --samples 2 --output Experiments/DataExtractor/results/eval-claude-haiku.json
 ```
 
+The FOC-010 evidence PDF records a live landing-page run in a scratch project:
+the gray-theme sentence went to project data, the short-video sentence went
+to WEB-002 data, and WEB-003/WEB-004 were created. Replaying the same accepted
+record added no duplicate facts or tasks.
+
 ## Next
 
 - Corpus expansion (the FOC-014 plan targets ~600 labeled prompts; six
   fixtures is a smoke test, not a gate).
 - Capture hook (UserPromptSubmit → normalized event) feeding `extract` in
   shadow mode on real sessions.
-- Apply mode behind a flag: project/user preferences → adaptive context
-  file; task requirements → plan append; new_task → dashboard draft.
+- Broader calibration before automatic apply on live prompts.

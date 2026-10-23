@@ -1940,6 +1940,36 @@ struct QueueViewModelTests {
     #expect(history.count == 1)
   }
 
+  @Test("A completed task whose cleanup needs attention stays in Completed, and old completions are not swept")
+  func completedTaskWithCleanupProblemStaysVisible() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let tickets = fixture.tickets.map {
+      DashboardTicket(id: $0.id, title: $0.title, status: "resolved", summary: $0.summary,
+        updatedAt: "2026-10-18T14:00:00Z", completedAt: "2026-10-18T14:00:00Z")
+    }
+    try JSONEncoder().encode(DashboardDocument(tickets: tickets))
+      .write(to: fixture.root.appendingPathComponent("dashboard.json"))
+    let store = TaskContextStore(root: fixture.root)
+    for ticket in tickets { _ = try await store.ensureContext(ticket: ticket) }
+    var report = TaskCleanupReport(ticketID: "ECC-101", dryRun: false, finishedAt: Date())
+    report.problems = ["Worktree /tmp/example: identity changed"]
+    let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+    try encoder.encode(report).write(to: fixture.root
+      .appendingPathComponent("tasks/ECC-101/\(TaskCompletionCleanup.reportName)"))
+
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    await model.refresh()
+
+    try await eventually { model.closureMessages["ECC-101"] != nil }
+    #expect(model.closureMessages["ECC-101"]?.contains("Needs attention") == true)
+    #expect(model.completedTickets.map(\.id).contains("ECC-101"))
+    #expect(!model.openTickets.map(\.id).contains("ECC-101"))
+    #expect(model.completedTickets.map(\.id).contains("ECC-102"))
+    // ECC-102 completed days ago: only the reviewed CLI sweep may clean it.
+    #expect(TaskCompletionCleanup.savedReport(ticketID: "ECC-102", root: fixture.root) == nil)
+  }
+
   @Test("Archiving an open task skips review and does not record successful completion")
   func archiveTaskWithoutCompletion() async throws {
     let fixture = try await Fixture()
@@ -2012,8 +2042,8 @@ struct QueueViewModelTests {
     #expect(model.dashboard.tickets.first?.isOpen == true)
   }
 
-  @Test("Restart retains closure review for a completed task with unfinished subtasks")
-  func completedTaskClosureWarningSurvivesRestart() async throws {
+  @Test("Restart keeps a completed task with unfinished subtasks in Completed with its records")
+  func completedTaskWithOpenSubtasksStaysCompleted() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let store = TaskContextStore(root: fixture.paths.supportDirectory)
@@ -2029,9 +2059,9 @@ struct QueueViewModelTests {
 
     for _ in 0..<2 {
       let restarted = await fixture.model(agent: ControlledQueueAgent())
-      #expect(restarted.closureMessages["ECC-101"]?.contains("subtasks remain open") == true)
-      #expect(restarted.openTickets.map(\.id).contains("ECC-101"))
-      #expect(!restarted.completedTickets.map(\.id).contains("ECC-101"))
+      // Completion is final; it no longer bounces back into the queue.
+      #expect(!restarted.openTickets.map(\.id).contains("ECC-101"))
+      #expect(restarted.completedTickets.map(\.id).contains("ECC-101"))
       #expect(restarted.subtasks(for: "ECC-101").first?.status == .working)
       #expect(restarted.taskContexts["ECC-999"] == nil)
       #expect(restarted.completedTickets.map(\.id).contains("ECC-999"))

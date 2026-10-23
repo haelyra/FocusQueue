@@ -13,7 +13,7 @@ enum SessionRegistrationError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .usage:
-            "Usage: focus-queue-session intake-changed | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|reset | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
+            "Usage: focus-queue-session intake-changed | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|reset | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | cleanup <TASK-ID>|--completed|--orphans|--purge [--dry-run] | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
         case .missingSessionIdentity:
             "No Codex, Claude, or Kimi session ID was found in the environment or current WezTerm pane."
         case .missingManagedRuntime:
@@ -41,6 +41,7 @@ enum SessionRegistrationError: Error, LocalizedError {
                 print("Agent rules: rules (lifecycle, plan, workspace, and map-scope rules for managed agents)")
                 print("Launch brief preview: brief <TASK-ID> <SUBTASK-ID> (the exact prompt a fresh launch of that agent receives)")
                 print("Maintenance: reconcile <TASK-ID> [--no-cleanup] (repair documents and save a receipt; optional workspace cleanup)")
+                print("Completion cleanup: cleanup <TASK-ID> | cleanup --completed | cleanup --orphans | cleanup --purge, each with optional --dry-run (stops tmux, stages worktrees in .worktrees/.trash for 7 days, archives unmerged work under refs/focus-queue/archive/, deletes merged local and remote branches)")
                 print("Persistent terminals: tmux list | tmux start <name> [--cwd <directory>] [-- <command> ...] | tmux start-agent <TASK-ID> <AGENT-ID> [--cwd <directory>] -- <command> ... | tmux attach <name> | tmux ssh-command <user@host> <name>")
                 print("Task layouts: tmux panes <name> | tmux arrange <name> | tmux manual <name> | tmux save | tmux restore | tmux persistence")
             }
@@ -53,6 +54,7 @@ enum SessionRegistrationError: Error, LocalizedError {
             else if arguments.first == "library" { try await libraryCommand(arguments: arguments) }
             else if arguments.first == "architecture" { try await architectureCommand(arguments: arguments) }
             else if arguments.first == "diagnose" { try await diagnose(arguments: arguments) }
+            else if arguments.first == "cleanup" { try await cleanupCommand(arguments: arguments) }
             else if arguments.first == "register-event" { try await registerEvent(arguments: arguments) }
             else if arguments == ["intake-changed"] {
                 notifyContextChanged()
@@ -241,7 +243,14 @@ enum SessionRegistrationError: Error, LocalizedError {
             _ = try await mutateTicket(ticketID, in: dashboardURLs, repository: repository) { url, snapshot in
                 try await repository.setTicketStatus(id: ticketID, to: status, in: url, expectedRevision: snapshot.revision)
             }
-            try emit(["updated": ticketID, "status": status])
+            guard ["resolved", "cancelled"].contains(status) else {
+                try emit(["updated": ticketID, "status": status])
+                break
+            }
+            // Completion is final: the task's runtime, worktrees, and branches go now.
+            notifyContextChanged()
+            let report = await completionCleanup(root: root, config: config).run(ticketID: ticketID)
+            try emit(["updated": ticketID, "status": status, "cleanup": report.summary])
         case "link" where (5...6).contains(arguments.count):
             let updated = try await mutateTicket(ticketID, in: dashboardURLs, repository: repository) { url, snapshot in
                 try await repository.addTicketLink(id: ticketID, label: arguments[4], url: arguments[3],
@@ -253,6 +262,63 @@ enum SessionRegistrationError: Error, LocalizedError {
             throw SessionRegistrationError.usage
         }
         notifyContextChanged()
+    }
+
+    static func completionCleanup(root: URL, config: AppConfiguration) -> TaskCompletionCleanup {
+        TaskCompletionCleanup(root: root,
+            projectRepositories: config.projects.flatMap { [$0.repositoryPath, $0.workspacePath] },
+            tmuxExecutable: config.tmuxExecutable)
+    }
+
+    /// cleanup <TASK-ID> | --completed | --orphans | --purge, each with optional --dry-run.
+    private static func cleanupCommand(arguments: [String]) async throws {
+        let options = Set(arguments.dropFirst().filter { $0.hasPrefix("--") })
+        let targets = arguments.dropFirst().filter { !$0.hasPrefix("--") }
+        let modes = options.subtracting(["--dry-run"])
+        guard options.isSubset(of: ["--dry-run", "--completed", "--orphans", "--purge"]),
+              modes.count + targets.count == 1 || (modes == ["--completed", "--orphans"] && targets.isEmpty) else {
+            throw SessionRegistrationError.usage
+        }
+        let dryRun = options.contains("--dry-run")
+        let root = supportDirectory(environment: ProcessInfo.processInfo.environment)
+        let config = try loadConfiguration(from: root)
+        let cleanup = completionCleanup(root: root, config: config)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .iso8601
+        if modes == ["--purge"] {
+            let purged = dryRun ? [] : await cleanup.purgeExpiredStaging()
+            FileHandle.standardOutput.write(try encoder.encode(["purged": purged]))
+            FileHandle.standardOutput.write(Data("\n".utf8))
+            return
+        }
+        var reports: [TaskCleanupReport] = []
+        if let ticketID = targets.first {
+            reports.append(await cleanup.run(ticketID: ticketID, dryRun: dryRun))
+        } else {
+            // Every dashboard must load: an unknown open task must never look orphaned.
+            let repository = JSONDashboardRepository()
+            var tickets: [DashboardTicket] = []
+            var seen = Set<String>()
+            for path in config.projects.map(\.dashboardPath) where seen.insert(path).inserted {
+                tickets += try await repository.loadSnapshot(from: URL(fileURLWithPath: path)).document.tickets
+            }
+            if modes.contains("--completed") {
+                for ticket in tickets where ticket.isCompleted {
+                    reports.append(await cleanup.run(ticketID: ticket.id, dryRun: dryRun))
+                }
+            }
+            if modes.contains("--orphans") {
+                reports.append(await cleanup.sweepOrphans(
+                    openTicketIDs: Set(tickets.filter(\.isOpen).map(\.id)), dryRun: dryRun))
+            }
+        }
+        if !dryRun {
+            _ = await cleanup.purgeExpiredStaging()
+            notifyContextChanged()
+        }
+        FileHandle.standardOutput.write(try encoder.encode(reports))
+        FileHandle.standardOutput.write(Data("\n".utf8))
     }
 
     private static func mutateTicket(

@@ -1369,6 +1369,21 @@ public actor TaskContextStore {
         }
     }
 
+    /// After completion cleanup the task keeps its plan, log, and agent
+    /// records, but no longer claims a workspace or a tmux runtime.
+    @discardableResult public func recordCompletionCleanup(ticketID: String) throws -> TaskContext {
+        try mutate(ticketID: ticketID) { context in
+            if context.managedWorktree, let path = context.worktreePath, !files.fileExists(atPath: path) {
+                context.worktreePath = nil
+                context.managedWorktree = false
+            }
+            for index in context.subtasks.indices {
+                context.subtasks[index].tmux = nil
+                context.subtasks[index].completionTerminalRetained = nil
+            }
+        }
+    }
+
     public func archive(ticketID: String) throws {
         try locked(ticketID: ticketID) {
             guard let context = try load(ticketID: ticketID) else { throw TaskContextError.missingContext(ticketID) }

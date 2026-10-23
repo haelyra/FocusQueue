@@ -145,6 +145,7 @@ The Router agent, its `route inspect` / `route start` commands, the in-app compo
 **`task rename <TASK-ID> <title...>`** — revision-checked rename.
 **`task priority <TASK-ID> critical|high|medium|low`** — validated enum.
 **`task status <TASK-ID> <status>`** — ⚠ **accepts any string.** No enum validation. A typo (`complted`) writes successfully and the ticket just stays "open" forever. See §8.
+`resolved` and `cancelled` are final: the command then runs completion cleanup (below) and reports its summary as `cleanup`.
 
 **`task link <TASK-ID> <url> <label> [type]`** — appends an evidence link to the ticket under the dashboard lock with a revision check. A link whose URL is already present is left unchanged. Use this instead of hand-editing `links`.
 
@@ -187,6 +188,9 @@ These manage the per-agent slots inside `tasks/<TICKET>/context.json`:
 | `runtime repair <TASK> <SUBTASK>` | Repair a broken runtime record |
 | `diagnose <TASK>` | Read-only WezTerm/socket inspection |
 | `reconcile <TASK> [--no-cleanup]` | Repair task documents, write a receipt |
+| `cleanup <TASK> [--dry-run]` | Completion cleanup for one task: kill its tmux sessions, archive unmerged or uncommitted work under `refs/focus-queue/archive/`, stage its worktrees in `.worktrees/.trash`, delete its local branches and merged remote branches, stage `archive/` and `maintenance-history/`. Writes `tasks/<TASK>/cleanup.json`. |
+| `cleanup --completed [--orphans] [--dry-run]` | Backfill: run completion cleanup for every resolved or cancelled ticket; `--orphans` also retires managed worktrees and `focus-queue/*` branches no open ticket owns (a worktree any process uses is kept). Every project dashboard must load. |
+| `cleanup --purge` | Delete staged items whose 7-day `purgeAfter` has passed. The app purges at most every 6 hours. |
 | `architecture <TASK> [repository-path]` | Generate/update architecture docs |
 
 ### 3.8 Projects

@@ -12,6 +12,30 @@ Until the dashboard emits a dedicated completion timestamp, the app uses
 it takes precedence. The app does not copy completed tickets into its local
 state or mutate their source records.
 
+## Cleanup after completion
+
+Completion is final. When a task becomes `resolved` or `cancelled` (in the app
+or through `focus-queue-session task status`), `TaskCompletionCleanup` runs:
+
+1. Kills the task's tmux sessions (`fq-task-<id>` and its agents' sessions),
+   even mid-turn. Provider transcripts survive for later resume.
+2. Deletes regenerated build output (`.build`, `node_modules`, …), archives
+   uncommitted work as a snapshot commit and unmerged commits under
+   `refs/focus-queue/archive/<branch>`, then moves each worktree to
+   `<repo>/.worktrees/.trash/` with a JSON manifest.
+3. Deletes the task's local branches. A remote branch of the same name is
+   deleted only when its work is already in the base branch (ancestor,
+   patch-equivalent, or squash-merged).
+4. Moves `archive/` and `maintenance-history/` to `<support>/trash/`. The plan,
+   agent log, task data, and `context.json` stay for the Completed tab.
+
+Staged items are purged 7 days later. Reopening an agent recreates its branch
+from the archive ref or the base branch. The app only cleans tasks completed in
+the last 24 hours; older completions wait for the reviewed
+`focus-queue-session cleanup --completed --dry-run`, then the same command
+without `--dry-run`. A task whose cleanup needs attention stays in the
+Completed tab with the message and a retry link.
+
 ## Supported canonical completion fields
 
 Dashboard producers can retain completed tickets and include:

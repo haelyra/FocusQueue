@@ -247,6 +247,8 @@ final class QueueViewModel {
   @ObservationIgnored private var lastExternalRegistrationRefresh: Date?
   @ObservationIgnored private var reportStateSaveTask: Task<Void, Never>?
   @ObservationIgnored private var cleanupSignatures: [String: Date] = [:]
+  @ObservationIgnored private var cleaningTaskIDs: Set<String> = []
+  @ObservationIgnored private var lastStagingPurge: Date?
   @ObservationIgnored private var lastReportRefresh: Date?
   @ObservationIgnored private var refreshTask: Task<Void, Never>?
   @ObservationIgnored private var reviewTasks: [UUID: Task<Void, Never>] = [:]
@@ -390,7 +392,7 @@ final class QueueViewModel {
     case saved(order: [String], tickets: [DashboardTicket], lastPromptAt: [String: Date],
       lastOutputAt: [String: Date], mode: QueueActivitySortMode, activityHour: Int?)
     case derived(tickets: [DashboardTicket], deferredIDs: [String], noBacklogIDs: Set<String>,
-      closureMessages: [String: String], lastPromptAt: [String: Date], lastOutputAt: [String: Date],
+      lastPromptAt: [String: Date], lastOutputAt: [String: Date],
       mode: QueueActivitySortMode, activityHour: Int?)
   }
 
@@ -421,7 +423,7 @@ final class QueueViewModel {
         noBacklogIDs: Set(recurringPRProgressByTicketID.compactMap { ticketID, progress in
           progress.openCount == 0 ? ticketID : nil
         }),
-        closureMessages: closureMessages, lastPromptAt: lastPromptAt, lastOutputAt: lastOutputAt, mode: mode,
+        lastPromptAt: lastPromptAt, lastOutputAt: lastOutputAt, mode: mode,
         activityHour: activityHour)
     }
     return openTicketsMemo.value(for: key) {
@@ -429,10 +431,9 @@ final class QueueViewModel {
       switch key {
       case .saved(let order, let tickets, _, _, _, _):
         baseline = QueueOrderStore.orderedTickets(tickets, savedIDs: order)
-      case .derived(let tickets, let deferredIDs, let noBacklogIDs, let closureMessages, _, _, _, _):
+      case .derived(let tickets, let deferredIDs, let noBacklogIDs, _, _, _, _):
         let ordered = DashboardOrdering.openTickets(in: tickets, deferredTicketIDs: deferredIDs)
-        let closurePending = tickets.filter { $0.isCompleted && closureMessages[$0.id] != nil }
-        baseline = closurePending + ordered.filter { !noBacklogIDs.contains($0.id) }
+        baseline = ordered.filter { !noBacklogIDs.contains($0.id) }
           + ordered.filter { noBacklogIDs.contains($0.id) }
       }
       return QueueOrderStore.prioritizingActivity(
@@ -445,7 +446,6 @@ final class QueueViewModel {
 
   private struct CompletedTicketsKey: Equatable {
     var tickets: [DashboardTicket]
-    var closureMessages: [String: String]
     var today: String
   }
 
@@ -456,11 +456,13 @@ final class QueueViewModel {
   }
 
   private var completedTicketLists: CompletedTicketLists {
-    let key = CompletedTicketsKey(tickets: projectTickets, closureMessages: closureMessages,
+    let key = CompletedTicketsKey(tickets: projectTickets,
       today: Self.dayFormatter.string(from: Date()))
     return completedTicketsMemo.value(for: key) {
+      // A completed task stays here even when its cleanup needs attention;
+      // the card shows the cleanup message and a retry.
       let all = key.tickets
-        .filter { $0.isCompleted && key.closureMessages[$0.id] == nil }
+        .filter(\.isCompleted)
         .sorted {
           if $0.completionTimestamp != $1.completionTimestamp {
             return ($0.completionTimestamp ?? "") > ($1.completionTimestamp ?? "")
@@ -2014,7 +2016,7 @@ final class QueueViewModel {
       guard snapshot.errors[ticket.id] == nil, let context = taskContexts[ticket.id] else { continue }
       if ticket.isCompleted, cleanupSignatures[ticket.id] != context.updatedAt {
         cleanupSignatures[ticket.id] = context.updatedAt
-        await finalizeCompletedTask(ticket)
+        Task { await finalizeCompletedTask(ticket) }
       } else if config.completionReviewEnabled, ticket.isOpen,
                 ticket.queueTaskKind != .customerConcern,
                 !context.focusSubtasks.filter(\.tracksCompletion).isEmpty, context.focusSubtasks.filter(\.tracksCompletion).allSatisfy({ $0.status == .completed }),
@@ -3381,40 +3383,47 @@ final class QueueViewModel {
     }
   }
 
-  private func finalizeCompletedTask(_ ticket: DashboardTicket) async {
-    do {
-      let lease = try await TaskMaintenance.lease(ticketID: ticket.id, root: paths.supportDirectory)
-      defer { lease.release() }
-      let maintenance = TaskMaintenance(root: paths.supportDirectory)
-      try await taskContextStore.archive(ticketID: ticket.id)
-      if focusSubtasks(for: ticket.id).contains(where: { $0.tracksCompletion && $0.status != .completed }) {
-        closureMessages[ticket.id] = "Completion needs review: some subtasks remain open."
+  /// Completion is final: tmux stops, worktrees move to a 7-day trash, and
+  /// branches are deleted once their work is merged or archived. Tasks that
+  /// were completed before this ran are left for an explicit, reviewed
+  /// `focus-queue-session cleanup --completed`, never swept on launch.
+  private func finalizeCompletedTask(_ ticket: DashboardTicket, force: Bool = false) async {
+    guard cleaningTaskIDs.insert(ticket.id).inserted else { return }
+    defer { cleaningTaskIDs.remove(ticket.id) }
+    let completedAt = ticket.completionTimestamp.flatMap(Self.parseCompletionDate)
+    if !force {
+      if let saved = TaskCompletionCleanup.savedReport(ticketID: ticket.id, root: paths.supportDirectory),
+         completedAt.map({ saved.finishedAt >= $0 }) ?? true {
+        closureMessages[ticket.id] = saved.isClean ? nil : saved.summary
         return
       }
-      for subtask in subtasks(for: ticket.id) where subtask.hasManagedWorkspaces {
-        guard subtask.status == .completed else {
-          closureMessages[ticket.id] = "Workspace retained: an agent assignment is still open."
-          return
-        }
-        try await maintenance.requireInactive(subtask)
-        let cleanup = try await taskWorktreeManager.cleanupAgent(ticketID: ticket.id, subtask: subtask, store: taskContextStore)
-        if !cleanup.removed { closureMessages[ticket.id] = cleanup.message; return }
-      }
-      let wasManaged = taskContexts[ticket.id]?.managedWorktree == true
-      if wasManaged, let context = taskContexts[ticket.id], let path = context.worktreePath {
-        var owner = TaskSubtask(id: "task-workspace", title: ticket.id)
-        owner.workspace = AgentWorkspace(path: path, repositoryPath: context.repositoryPath ?? path, managed: true)
-        try await maintenance.requireInactive(owner)
-      }
-      let result = try await taskWorktreeManager.cleanup(ticketID: ticket.id, store: taskContextStore)
-      closureMessages[ticket.id] = wasManaged && !result.removed ? result.message : nil
-      actionMessages[ticket.id] = result.message
-      taskContexts[ticket.id] = try await taskContextStore.load(ticketID: ticket.id)
-    } catch { closureMessages[ticket.id] = "Cleanup needs attention: \(error.localizedDescription)" }
+      guard let completedAt, Date().timeIntervalSince(completedAt) < 24 * 60 * 60 else { return }
+    }
+    let cleanup = TaskCompletionCleanup(root: paths.supportDirectory,
+      projectRepositories: config.projects.flatMap { [$0.repositoryPath, $0.workspacePath] },
+      tmuxExecutable: config.tmuxExecutable)
+    let report = await cleanup.run(ticketID: ticket.id)
+    closureMessages[ticket.id] = report.isClean ? nil : report.summary
+    actionMessages[ticket.id] = report.summary
+    if let context = try? await taskContextStore.load(ticketID: ticket.id) {
+      taskContexts[ticket.id] = context
+      cleanupSignatures[ticket.id] = context.updatedAt
+    }
+    if lastStagingPurge.map({ Date().timeIntervalSince($0) > 6 * 60 * 60 }) ?? true {
+      lastStagingPurge = Date()
+      _ = await cleanup.purgeExpiredStaging()
+    }
+  }
+
+  private static func parseCompletionDate(_ value: String) -> Date? {
+    let formatter = ISO8601DateFormatter()
+    if let date = formatter.date(from: value) { return date }
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.date(from: value)
   }
 
   func retryCleanup(for ticket: DashboardTicket) {
-    Task { await finalizeCompletedTask(ticket) }
+    Task { await finalizeCompletedTask(ticket, force: true) }
   }
 
   func routineIsComplete(_ id: String) -> Bool {

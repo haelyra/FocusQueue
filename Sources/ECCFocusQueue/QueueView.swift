@@ -2718,6 +2718,13 @@ private struct CompletedTicketCard: View {
           }
           .buttonStyle(.plain)
         }
+        if let message = model.closureMessages[ticket.id] {
+          Label(message, systemImage: "exclamationmark.triangle.fill")
+            .font(.system(size: 11)).foregroundStyle(.orange)
+            .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+          Button("Retry cleanup") { model.retryCleanup(for: ticket) }
+            .buttonStyle(.link).font(.system(size: 11))
+        }
         Button(action: toggleExpansion) {
           HStack(spacing: 7) {
             StatusPill(text: ticket.status, color: statusColor)

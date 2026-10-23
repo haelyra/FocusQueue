@@ -4,22 +4,20 @@ import Testing
 
 @Suite("Agent completion terminal")
 struct AgentCompletionTerminalTests {
-  @Test("Auto-exit defaults on for old configuration and persists opt-out")
+  @Test("Usage bar defaults on for old configuration and the retired auto-exit key is dropped")
   func configurationMigration() throws {
     var config = AppConfiguration.eccDefault()
-    #expect(config.autoExitCompletedAgents)
     #expect(config.agentUsageBarEnabled)
     var old = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(config)) as? [String: Any])
-    old.removeValue(forKey: "autoExitCompletedAgents")
     old.removeValue(forKey: "agentUsageBarEnabled")
+    old["autoExitCompletedAgents"] = true
     let migrated = try JSONDecoder().decode(
       AppConfiguration.self, from: JSONSerialization.data(withJSONObject: old))
-    #expect(migrated.autoExitCompletedAgents)
     #expect(migrated.agentUsageBarEnabled)
-    config.autoExitCompletedAgents = false
+    let resaved = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(migrated)) as? [String: Any])
+    #expect(resaved["autoExitCompletedAgents"] == nil)
     config.agentUsageBarEnabled = false
     let saved = try JSONDecoder().decode(AppConfiguration.self, from: JSONEncoder().encode(config))
-    #expect(!saved.autoExitCompletedAgents)
     #expect(!saved.agentUsageBarEnabled)
   }
 

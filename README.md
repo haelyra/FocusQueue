@@ -375,12 +375,11 @@ latest comprehensive report used by the once-a-day scheduler.
 
 ## Completed agent terminals
 
-Settings → Agent completion → **Automatically exit completed agents** is enabled
-by default. When an assignment is marked complete, Focus Queue exits its agent
-and leaves the terminal window open with a completion message and an exact
-conversation resume command. The assignment's workspace is retained for that
-command. Disable the setting to keep completed agents running. Explicitly
-removing an agent still closes its runtime.
+Completing an assignment never stops, replaces, or archives its agent. The
+provider keeps running in its pane with its output visible, and its workspace
+is retained. Only an explicit action closes a runtime: archiving the agent, or
+resolving or cancelling the task. Panes left by older builds that showed a
+completion message and resume command are still recognized and protected.
 
 ## Build and install
 

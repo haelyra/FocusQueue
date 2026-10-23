@@ -2103,11 +2103,6 @@ final class QueueViewModel {
         }
       }
     }
-    for ticket in tickets {
-      for subtask in subtasks(for: ticket.id) where taskContexts[ticket.id]?.canAutomaticallyRetire(subtask) == true {
-        await retireAgent(subtask, for: ticket, automatically: true)
-      }
-    }
     if panelVisible, lastIdentityRefresh == nil || Date().timeIntervalSince(lastIdentityRefresh!) >= 15 {
       lastIdentityRefresh = Date()
       let observed = tickets.flatMap { ticket in
@@ -4073,27 +4068,13 @@ final class QueueViewModel {
     archiveAgent(subtask, from: ticket)
   }
 
-  private func retireAgent(_ subtask: TaskSubtask, for ticket: DashboardTicket, automatically: Bool = false) async {
-    if automatically && !config.autoExitCompletedAgents { return }
+  /// Only an explicit user action retires an agent. Completion never stops,
+  /// replaces, or archives the provider; it keeps running in its pane.
+  private func retireAgent(_ subtask: TaskSubtask, for ticket: DashboardTicket) async {
     do {
       let lease = try await TaskMaintenance.lease(ticketID: ticket.id, root: paths.supportDirectory)
       defer { lease.release() }
-      if automatically {
-        guard let context = taskContexts[ticket.id], context.canAutomaticallyRetire(subtask) else { return }
-        let terminal = try await taskAgentLauncher.finishRuntime(
-          context: context, subtask: subtask, taskCompleted: ticket.isCompleted,
-          configuration: config.wezTerm)
-        switch terminal {
-        case .managed(let reference):
-          taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
-            ticketID: ticket.id, subtaskID: subtask.id, tmux: reference)
-        case .direct(let receipt):
-          taskContexts[ticket.id] = try await taskContextStore.setDirectRuntime(
-            ticketID: ticket.id, subtaskID: subtask.id, paneID: receipt.paneID, socketPath: receipt.socketPath)
-        case .absent: break
-        }
-      }
-      taskContexts[ticket.id] = try await taskContextStore.archiveAgent(ticketID: ticket.id, subtaskID: subtask.id, automatically: automatically)
+      taskContexts[ticket.id] = try await taskContextStore.archiveAgent(ticketID: ticket.id, subtaskID: subtask.id)
       localState.agentSessions.removeAll {
         $0.ticketID == ticket.id && ($0.subtaskID == subtask.id ||
           ($0.provider == subtask.provider && $0.sessionID.caseInsensitiveCompare(subtask.sessionID ?? "") == .orderedSame))
@@ -4101,10 +4082,6 @@ final class QueueViewModel {
       agentSessionErrors[Self.subtaskKey(ticketID: ticket.id, subtaskID: subtask.id)] = nil
       persistLocalState()
       actionMessages[ticket.id] = "Agent archived. Its assignment, conversation, and workspace history are retained."
-      if automatically {
-        actionMessages[ticket.id] = "Agent exited. Its terminal and workspace remain available to continue the conversation."
-        return
-      }
       // List removal is independent of process cleanup and completion approval.
       do { try await taskAgentLauncher.closeRuntime(subtask: subtask, configuration: config.wezTerm) }
       catch { actionMessages[ticket.id] = "Agent archived. \(error.localizedDescription)" }
@@ -4182,10 +4159,6 @@ final class QueueViewModel {
         settleOverriddenReviews(ticketID: ticket.id)
         persistLocalState()
         closureMessages[ticket.id] = nil
-        let completedAgents = taskContexts[ticket.id]?.agents(for: subtask.id, includingRemoved: true) ?? []
-        for completed in completedAgents where completed.status == .completed {
-          await retireAgent(completed, for: ticket, automatically: true)
-        }
         actionMessages[ticket.id] = "Subtask marked complete. Review history saved."
         if presentedAgentUpdate?.ticketID == ticket.id { closeAgentUpdate() }
       } catch { actionMessages[ticket.id] = error.localizedDescription }
@@ -5126,11 +5099,6 @@ final class QueueViewModel {
     let warning = warnings.isEmpty ? nil : NSError(domain: "ECCFocusQueue.DurableImport", code: 1,
       userInfo: [NSLocalizedDescriptionKey: warnings.prefix(3).joined(separator: "\n")])
     recordDurableError(warning, scope: "import-warnings")
-  }
-
-  func setAutoExitCompletedAgents(_ enabled: Bool) {
-    config.autoExitCompletedAgents = enabled
-    persistConfiguration()
   }
 
   func setCompletionReviewEnabled(_ enabled: Bool) {

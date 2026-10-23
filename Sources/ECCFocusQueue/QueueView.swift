@@ -2013,14 +2013,6 @@ private struct QueueSettingsView: View {
               set: { model.setCompletionReviewEnabled($0) }))
           }
           settingsSection(
-            title: "Agent completion",
-            detail: "After completion, leave the terminal open with a command to continue the same conversation. Turn this off to keep the agent running."
-          ) {
-            Toggle("Automatically exit completed agents", isOn: Binding(
-              get: { model.config.autoExitCompletedAgents },
-              set: { model.setAutoExitCompletedAgents($0) }))
-          }
-          settingsSection(
             title: "Stale agent cleanup",
             detail: "Once a day, archive interrupted or idle agents that have no live process, no unseen output, and no activity in 5 days. Archived agents stay recallable under Archived agents."
           ) {

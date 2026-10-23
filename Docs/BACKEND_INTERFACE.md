@@ -108,6 +108,7 @@ Pitfalls:
 - Fails with `missingSessionIdentity` if the env session ID is absent **or not a UUID** (Kimi ULIDs fail here — use `register-event` instead).
 - Correctly ignores a stale inherited `FOCUS_QUEUE_SUBTASK_ID` — re-attach after switching tickets, every time.
 - **Does not validate that the ticket exists on a dashboard.** Attaching to a typo'd ticket registers a session for a task that doesn't exist.
+- A Codex sub-agent thread (rollout `session_meta` marks `source.subagent`, `thread_source: subagent`, or `parent_thread_id`) registers nothing: attach returns `status: "subagent"` with `parentSessionID` and the inherited `taskID`/`subtaskID`, and exits 0. `register-event` and app process discovery likewise never add an agent row for a Codex sub-agent, so one Codex session stays one agent.
 
 **`focus-queue-session register-event --provider codex|claude|kimi [--task <TASK-ID>]`**
 The hook-ingestion path; reads **one JSON `ExternalAgentEvent` from stdin** (≤1 MB, oversized → exit 1). This is how provider hooks (SessionStart, UserPromptSubmit, SubagentStart/Stop, ProcessDiscovery) register identity. Payload (snake_case):

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import FocusQueueCore
@@ -126,7 +127,7 @@ struct ExternalAgentRegistrationTests {
         #expect(try await store.load(ticketID: "ECC-102")?.subtasks.count == 1)
     }
 
-    @Test("Subagent start uses its own UUID and discovery shares the same receipt")
+    @Test("A Codex subagent start keeps its own UUID without adding an agent")
     func subagentIdentity() async throws {
         let (root, store) = try await fixture()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -136,24 +137,20 @@ struct ExternalAgentRegistrationTests {
             hookEventName: "SessionStart"), provider: .codex, explicitTaskID: "ECC-101")
         let child = try await registry.register(.init(sessionID: parentID, cwd: root.path,
             hookEventName: "SubagentStart", agentID: childID), provider: .codex)
-        let discovery = try await registry.register(.init(sessionID: childID, cwd: root.path,
-            hookEventName: "ProcessDiscovery"), provider: .codex, paneID: 45)
         #expect(child.sessionID == childID.lowercased())
         #expect(child.parentSessionID == parentID.lowercased())
-        #expect(child.subtaskID != parent.subtaskID)
-        #expect(discovery.id == child.id)
-        #expect(discovery.parentSessionID == parentID.lowercased())
-        #expect(discovery.paneID == nil, "A child sharing the parent process cannot relabel the parent's pane")
-        #expect(try await registry.registrations().count == 2)
-        #expect(try await store.load(ticketID: "ECC-101")?.subtasks.count == 2)
+        #expect(child.taskID == nil && child.subtaskID == nil)
+        #expect(child.reason == ExternalAgentRegistry.codexSubagentReason)
+        #expect(try await registry.registrations().map(\.id) == [parent.id])
+        #expect(try await store.load(ticketID: "ECC-101")?.subtasks.count == 1)
         let opaque = try await registry.register(.init(sessionID: parentID, cwd: root.path,
             hookEventName: "SubagentStart", agentID: "opaque-child"), provider: .claude)
         #expect(opaque.sessionID == nil)
         #expect(opaque.taskID == nil)
     }
 
-    @Test("Discovered siblings inherit their uniquely registered parent task")
-    func discoveredSiblingsInheritParentTask() async throws {
+    @Test("Discovered Codex subagents stay under their parent's single agent")
+    func discoveredSubagentsDoNotAddAgents() async throws {
         let (root, store) = try await fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let registry = ExternalAgentRegistry(root: root)
@@ -162,21 +159,32 @@ struct ExternalAgentRegistrationTests {
         let parent = try await registry.register(.init(
             sessionID: parentID, cwd: root.path, hookEventName: "SessionStart"
         ), provider: .codex, explicitTaskID: "ECC-101")
+        // A receipt saved by an older build is removed on the next discovery pass.
+        let staleID = SHA256.hash(data: Data(("codex:" + siblings[0].lowercased()).utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        let stale = ExternalAgentRegistration(id: staleID, provider: .codex,
+            sessionID: siblings[0].lowercased(), parentSessionID: parentID.lowercased(),
+            cwd: root.path, title: "Subagent", taskID: "ECC-101", subtaskID: "old",
+            eventName: "ProcessDiscovery", updatedAt: Date())
+        try JSONEncoder().encode(stale).write(to: root
+            .appendingPathComponent("external-agent-sessions/\(staleID).json"))
+        #expect(try await registry.registrations().count == 2)
 
         for sibling in siblings {
-            let child = try await registry.register(.init(
-                sessionID: sibling, cwd: root.path, hookEventName: "ProcessDiscovery",
-                parentSessionID: parentID
-            ), provider: .codex)
-            #expect(child.taskID == "ECC-101")
-            #expect(child.subtaskID != parent.subtaskID)
+            for _ in 0..<2 {
+                let child = try await registry.register(.init(
+                    sessionID: sibling, cwd: root.path, hookEventName: "ProcessDiscovery",
+                    parentSessionID: parentID, discoveredAsSubagent: true
+                ), provider: .codex, environment: ["FOCUS_QUEUE_TASK_ID": "ECC-101",
+                    "FOCUS_QUEUE_SUBTASK_ID": try #require(parent.subtaskID)])
+                #expect(child.taskID == nil && child.subtaskID == nil)
+                #expect(child.parentSessionID == parentID.lowercased())
+            }
         }
 
         let context = try #require(try await store.load(ticketID: "ECC-101"))
-        #expect(context.subtasks.count == 3)
-        #expect(Set(context.subtasks.compactMap(\.sessionID))
-            == Set([parentID.lowercased()] + siblings.map { $0.lowercased() }))
-        #expect(try await registry.registrations().count == 3)
+        #expect(context.subtasks.map(\.sessionID) == [parentID.lowercased()])
+        #expect(try await registry.registrations().map(\.id) == [parent.id])
     }
 
     @Test("Concurrent event writers retain one association and a useful prompt title")

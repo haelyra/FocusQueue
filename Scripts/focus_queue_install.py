@@ -32,8 +32,8 @@ DEFAULT_INTEGRATION_REF = "origin/main"
 OFFICIAL_REPOSITORY_IDENTITY = "github.com/haelyra/eccfocusqueue"
 OSW_APP_NAME = "OpenSuperWhisper.app"
 OSW_EXECUTABLE_NAME = "OpenSuperWhisper"
-OSW_RELEASE_URL = "https://github.com/haelyra/OpenSuperWhisper/releases/download/v0.1.0-foc047.1/OpenSuperWhisper-foc047.zip"
-OSW_SHA256 = "8ac0df7b0c0d670ca21e25c00e7494f61d194d234d9a7d0c526ebdc06bef3a13"
+OSW_RELEASE_URL = "https://github.com/haelyra/OpenSuperWhisper/releases/download/v0.1.0-foc047.2/OpenSuperWhisper-foc047.zip"
+OSW_SHA256 = "59918d177c8902ee6891f63e97889c5404ea4ad28a6f248882412e96b7d625ae"
 OSW_LAUNCH_AGENT_LABEL = "com.haelyra.ecc-focus-queue.opensuperwhisper"
 PROVENANCE_FIELDS = {
     "schemaVersion",

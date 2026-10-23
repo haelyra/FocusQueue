@@ -76,8 +76,18 @@ struct ProjectFilesSectionTests {
     #expect(InAppDocument.fileURL(for: URL(fileURLWithPath: "/tmp/run.log")) != nil)
     #expect(InAppDocument.fileURL(for: URL(fileURLWithPath: "/tmp/app.zip")) == nil)
     #expect(InAppDocument.fileURL(for: URL(string: "https://example.com/a.pdf")!) == nil)
-    #expect(InAppDocument.isEditable(URL(fileURLWithPath: "/tmp/a.md")))
-    #expect(!InAppDocument.isEditable(pdf))
+
+    // Editing is gated on the loaded content, not the extension: anything that
+    // loads as text is editable; PDFs and rendered pages are not.
+    let store = DocumentContentStore()
+    let notes = directory.appendingPathComponent("notes.md")
+    try Data("editable".utf8).write(to: notes)
+    store.ensureLoaded(notes)
+    for _ in 0..<200 where store.loadedText(for: notes) == nil {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(store.loadedText(for: notes) == "editable")
+    #expect(store.loadedText(for: pdf) == nil)
 
     // A project file with no task opens in the viewer under its own project.
     model.open(pdf.path)

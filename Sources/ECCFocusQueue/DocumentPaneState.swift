@@ -148,10 +148,4 @@ enum InAppDocument {
         }
         return location
     }
-
-    static func isEditable(_ url: URL) -> Bool {
-        guard url.isFileURL else { return false }
-        let ext = url.pathExtension.lowercased()
-        return markdownExtensions.contains(ext) || textExtensions.contains(ext)
-    }
 }

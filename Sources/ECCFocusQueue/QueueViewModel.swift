@@ -173,6 +173,9 @@ final class QueueViewModel {
   private(set) var isDocumentViewerPresented = false
   private(set) var documentViewerScope: DocumentScope?
   private(set) var documentViewer = DocumentPaneState()
+  /// Shared document cache: previews survive split-layout changes and follow
+  /// on-disk writes, so an open file never sticks on a transient read error.
+  let documentContentStore = DocumentContentStore()
   private(set) var presentedPlanURL: URL?
   private(set) var presentedPlanMarkdown = ""
   private(set) var isPlanLoading = false

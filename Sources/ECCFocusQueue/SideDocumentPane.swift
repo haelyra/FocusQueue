@@ -197,22 +197,15 @@ struct SideDocumentPane: View {
     let close: () -> Void
     let receiveDocument: (String) -> Bool
     let discuss: (PlanCanvasSelectionAction) -> Void
-    @State private var content: SideDocumentContent?
-    @State private var error: String?
-    @State private var revision = 0
     @State private var find = DocumentFindState()
-    @State private var isEditing = false
-    @State private var editDraft = ""
-    @State private var editBaseline = ""
-    @State private var saveError: String?
-    @State private var changedOnDisk = false
-    private let loader = SideDocumentLoader()
 
-    private var loadedText: String? {
-        switch content {
-        case .markdown(let text), .text(let text): text
-        default: nil
-        }
+    private var store: DocumentContentStore { queue.documentContentStore }
+    private var entry: DocumentContentStore.Entry { store.entry(for: document) }
+    private var editSession: DocumentContentStore.EditSession? { store.editSessions[document] }
+    private var editDraftBinding: Binding<String> {
+        Binding(
+            get: { editSession?.draft ?? "" },
+            set: { store.updateDraft(document, $0) })
     }
 
     var body: some View {
@@ -224,18 +217,16 @@ struct SideDocumentPane: View {
                     .lineLimit(1)
                     .draggable(document.absoluteString)
                 Spacer()
-                if InAppDocument.isEditable(document), let loadedText {
+                if document.isFileURL, store.loadedText(for: document) != nil {
                     Button {
-                        if isEditing { isEditing = false } else {
-                            editDraft = loadedText; editBaseline = loadedText
-                            saveError = nil; changedOnDisk = false; isEditing = true
-                        }
-                    } label: { Image(systemName: isEditing ? "eye" : "pencil") }
-                        .help(isEditing ? "Stop editing without saving" : "Edit this document")
-                        .accessibilityLabel(isEditing ? "Stop editing" : "Edit document")
+                        if editSession != nil { store.discardEdit(document) }
+                        else { store.beginEditing(document) }
+                    } label: { Image(systemName: editSession != nil ? "eye" : "pencil") }
+                        .help(editSession != nil ? "Stop editing without saving" : "Edit this document")
+                        .accessibilityLabel(editSession != nil ? "Stop editing" : "Edit document")
                 }
-                Button { revision += 1 } label: { Image(systemName: "arrow.clockwise") }
-                    .help("Reload document").disabled(isEditing)
+                Button { store.reload(document) } label: { Image(systemName: "arrow.clockwise") }
+                    .help("Reload document").disabled(editSession != nil)
                 if document.isFileURL {
                     Button { NSWorkspace.shared.open(document) } label: { Image(systemName: "arrow.up.forward.app") }
                         .help("Open in the default app")
@@ -243,29 +234,28 @@ struct SideDocumentPane: View {
                 Button(action: close) { Image(systemName: "xmark") }
                     .help("Close this document viewer")
             }
-            DocumentMetadataStrip(url: document, taskID: scopeLabel, revision: revision)
-            if isEditing { editor } else { viewer }
+            DocumentMetadataStrip(url: document, taskID: scopeLabel, revision: entry.revision)
+            if editSession != nil { editor } else { viewer }
         }
         .dropDestination(for: String.self) { identifiers, _ in
             guard let identifier = identifiers.last else { return false }
             return receiveDocument(identifier)
         }
-        .onChange(of: document) { _, _ in isEditing = false }
-        .task(id: "\(document.absoluteString):\(revision)") {
-            content = nil; error = nil
-            do {
-                let loaded = try await loader.load(document)
-                guard !Task.isCancelled else { return }
-                content = loaded
-            } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
-        }
+        .task(id: document.absoluteString) { store.ensureLoaded(document) }
     }
 
     @ViewBuilder private var viewer: some View {
         DocumentFindBar(state: find)
         Group {
-            if let error { ContentUnavailableView("Preview unavailable", systemImage: "doc", description: Text(error)) }
-            else if let content {
+            if let error = entry.error, entry.content == nil {
+                ContentUnavailableView {
+                    Label("Preview unavailable", systemImage: "doc")
+                } description: {
+                    Text(error)
+                } actions: {
+                    Button("Retry") { store.reload(document) }
+                }
+            } else if let content = entry.content {
                 switch content {
                 case .markdown(let text):
                     EmbeddedPlanDocument(markdown: text, sourceURL: document, appearance: queue.appearance,
@@ -292,33 +282,25 @@ struct SideDocumentPane: View {
     }
 
     @ViewBuilder private var editor: some View {
-        TextEditor(text: $editDraft).font(.system(size: 13, design: .monospaced))
+        TextEditor(text: editDraftBinding).font(.system(size: 13, design: .monospaced))
             .accessibilityLabel("\(document.lastPathComponent) source")
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipShape(RoundedRectangle(cornerRadius: 9))
-        if let saveError { Text(saveError).font(.caption).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading) }
+        if let saveError = editSession?.saveError {
+            Text(saveError).font(.caption).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading)
+        }
         HStack {
             Text("Saves directly to this file.").font(.caption2).foregroundStyle(.secondary)
             Spacer()
-            Button("Cancel") { isEditing = false }
-            if changedOnDisk {
-                Button("Overwrite") { save(expected: nil) }
+            Button("Cancel") { store.discardEdit(document) }
+            if editSession?.changedOnDisk == true {
+                Button("Overwrite") { _ = store.saveEdit(document, overwrite: true) }
                     .help("Replace the newer file on disk with your draft")
             }
-            Button("Save") { save(expected: editBaseline) }
-                .buttonStyle(.borderedProminent).disabled(editDraft == editBaseline)
+            Button("Save") { _ = store.saveEdit(document) }
+                .buttonStyle(.borderedProminent)
+                .disabled(editSession.map { $0.draft == $0.baseline } ?? true)
                 .keyboardShortcut("s", modifiers: .command)
-        }
-    }
-
-    private func save(expected: String?) {
-        do {
-            try DocumentFileWriter.save(editDraft, to: document, expected: expected)
-            isEditing = false; saveError = nil; changedOnDisk = false
-            revision += 1
-        } catch {
-            saveError = error.localizedDescription
-            if case DocumentFileWriter.SaveError.changedOnDisk = error { changedOnDisk = true }
         }
     }
 }

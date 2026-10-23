@@ -2110,7 +2110,7 @@ final class QueueViewModel {
         Task { await finalizeCompletedTask(ticket) }
       } else if config.completionReviewEnabled, ticket.isOpen,
                 ticket.queueTaskKind != .customerConcern,
-                !context.focusSubtasks.filter(\.tracksCompletion).isEmpty, context.focusSubtasks.filter(\.tracksCompletion).allSatisfy({ $0.status == .completed }),
+                !context.focusSubtasks.filter(\.tracksCompletion).isEmpty, context.focusSubtasks.filter(\.tracksCompletion).allSatisfy(context.isCompletionSeen),
                 !context.subtasks.contains(where: { $0.completionOverrideAt != nil }),
                 !localState.completionRequests.contains(where: {
                   $0.ticketID == ticket.id && [.pending, .running].contains($0.status)
@@ -2131,12 +2131,13 @@ final class QueueViewModel {
       let observed = tickets.flatMap { ticket in
         visibleAgents(for: ticket.id).map { (ticketID: ticket.id, subtask: $0) }
       }
-      // A finished agent archived with its terminal kept open can be prompted
-      // there again; only its transcript shows that it went back to work.
+      // A finished agent keeps running and can be prompted again; only its
+      // transcript shows that it went back to work. Older builds archived it
+      // with its terminal kept open.
       let retained = tickets.filter(\.isOpen).flatMap { ticket in
         subtasks(for: ticket.id).filter {
-          $0.status == .completed && $0.agentRemovedAt != nil && $0.completionTerminalRetained == true
-            && $0.sessionID != nil
+          $0.status == .completed && $0.sessionID != nil && !$0.isAgentVisible
+            && ($0.agentRemovedAt == nil || $0.completionTerminalRetained == true)
         }.map { (ticketID: ticket.id, subtask: $0) }
       }
       for entry in observed + retained {
@@ -2791,6 +2792,10 @@ final class QueueViewModel {
 
   func taskItems(for ticketID: String) -> [TaskSubtask] {
     taskContexts[ticketID]?.taskItems ?? []
+  }
+
+  func isCompletionSeen(_ subtask: TaskSubtask, ticketID: String) -> Bool {
+    taskContexts[ticketID]?.isCompletionSeen(subtask) ?? subtask.isCompletionSeen
   }
 
   func agents(for subtask: TaskSubtask, ticketID: String) -> [TaskSubtask] {

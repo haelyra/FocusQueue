@@ -381,6 +381,11 @@ is retained. Only an explicit action closes a runtime: archiving the agent, or
 resolving or cancelling the task. Panes left by older builds that showed a
 completion message and resume command are still recognized and protected.
 
+A completed agent stays under **Work items** with a green **New result** status
+until you open it. Once seen, it moves to **Completed items**. A new prompt typed
+into its terminal returns it to Work items as Working. Task progress counts and
+the automatic task completion review also wait until every result is seen.
+
 ## Build and install
 
 ```bash

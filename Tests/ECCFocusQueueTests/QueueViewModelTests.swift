@@ -150,6 +150,38 @@ struct QueueViewModelTests {
     #expect(agent.lastOutputAt == ISO8601DateFormatter().date(from: "2026-09-29T18:00:00Z"))
   }
 
+  @Test("A prompt typed into a seen, completed agent returns it to work items")
+  func promptReopensSeenCompletedAgent() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let sessionID = UUID().uuidString
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: TaskSubtask(
+      id: "finished-worker", title: "Finished worker", provider: .codex, sessionID: sessionID))
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: TaskSubtask(id: "pending", title: "Pending"))
+    let completedAt = try #require(ISO8601DateFormatter().date(from: "2026-09-29T18:00:00Z"))
+    _ = try await store.updateProgress(ticketID: "ECC-101", subtaskID: "finished-worker",
+      status: .completed, summary: "Ready", now: completedAt)
+    let seen = try await store.acknowledgeCompletion(ticketID: "ECC-101", subtaskID: "finished-worker")
+    #expect(seen.isCompletionSeen(try #require(seen.subtasks.first { $0.id == "finished-worker" })))
+    let transcriptRoot = fixture.root.appendingPathComponent("activity")
+    let sessions = transcriptRoot.appendingPathComponent(".codex/sessions/2026/09/29")
+    try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+    let prompt = #"{"timestamp":"2026-09-29T18:05:00Z","type":"event_msg","payload":{"type":"user_message","thread_id":"\#(sessionID)","message":"One more change"}}"#
+    try Data("\(prompt)\n".utf8).write(to:
+      sessions.appendingPathComponent("rollout-reopen-\(sessionID).jsonl"))
+    let observer = AgentActivityObserver(
+      codexRoot: transcriptRoot.appendingPathComponent(".codex"),
+      claudeRoot: transcriptRoot.appendingPathComponent(".claude"))
+
+    let model = await fixture.model(agent: ControlledQueueAgent(), agentActivityObserver: observer)
+
+    let agent = try #require(model.subtasks(for: "ECC-101").first { $0.id == "finished-worker" })
+    #expect(agent.status == .working)
+    #expect(!model.isCompletionSeen(agent, ticketID: "ECC-101"))
+  }
+
   @Test("Background polling reuses an unchanged dashboard and detects atomic updates")
   func backgroundPollingSkipsUnchangedDashboard() async throws {
     let fixture = try await Fixture()

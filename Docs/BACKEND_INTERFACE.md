@@ -147,6 +147,8 @@ The Router agent, its `route inspect` / `route start` commands, the in-app compo
 
 **`data place <user|project|task> <target-id> <fact>`** — appends one short fact to `user/data.md`, `projects/<id>/data.md`, or `tasks/<ID>/data.md`. The command verifies active project or open task identity, limits the fact to 200 characters and two sentences, rejects symlink destinations, and returns `{scope,targetID,path,added}`. An identical line returns `added: false`. Use `task create` for deferred work; the extractor calls these commands after validating the model proposal.
 
+**`data ensure`** — creates empty `user/data.md` and `projects/<id>/data.md` files for every active project. It preserves existing contents and returns `{created,existing}` path lists. Run it after adding a project or when provisioning an existing catalog. Append concise facts with `data place user user "<fact>"` or `data place project <id> "<fact>"`; this command only creates the files.
+
 **`task rename <TASK-ID> <title...>`** — revision-checked rename.
 **`task priority <TASK-ID> critical|high|medium|low`** — validated enum.
 **`task status <TASK-ID> <status>`** — ⚠ **accepts any string.** No enum validation. A typo (`complted`) writes successfully and the ticket just stays "open" forever. See §8.

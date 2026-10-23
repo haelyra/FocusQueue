@@ -127,6 +127,11 @@ func completionCleanupRetiresWorkspaces() async throws {
     #expect(!FileManager.default.fileExists(atPath: context.contextDirectory.appendingPathComponent("archive").path))
     #expect(TaskCompletionCleanup.savedReport(ticketID: "FOC-901", root: fixture.supportRoot)?.isClean == true)
 
+    // The running app refreshes completed contexts after cleanup notification.
+    // That refresh must not recreate the history folder cleanup just staged.
+    _ = await fixture.store.refreshContexts(tickets: [ticket("FOC-901")])
+    #expect(!FileManager.default.fileExists(atPath: context.contextDirectory.appendingPathComponent("archive").path))
+
     // A reopened agent gets its archived work back.
     try await fixture.manager.restoreIfNeeded(try #require(unmerged.workspace), ticketID: "FOC-901",
         subtaskID: unmerged.id, store: fixture.store)

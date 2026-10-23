@@ -291,10 +291,32 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     }
 
     /// A live terminal is not proof of activity. Only a recent explicit heartbeat is.
-    public func effectiveStatus(now: Date = Date(), heartbeatLifetime: TimeInterval = 300) -> TaskSubtaskStatus {
+    /// Without fresh transcript records, Working decays to idle after five minutes.
+    public static let heartbeatLifetime: TimeInterval = 300
+    /// A confirmed live pane keeps Working through long silent tool calls, such
+    /// as builds, test runs, or foreground sub-agents, for up to an hour.
+    public static let liveRuntimeHeartbeatLifetime: TimeInterval = 3_600
+
+    public func effectiveStatus(now: Date = Date(), heartbeatLifetime: TimeInterval = TaskSubtask.heartbeatLifetime) -> TaskSubtaskStatus {
         guard status == .working else { return status }
         guard let lastHeartbeatAt, now.timeIntervalSince(lastHeartbeatAt) <= heartbeatLifetime else { return .idle }
         return .working
+    }
+
+    /// A live pane clears an "ended" marker; only a known start changes the status.
+    mutating func recordRuntimeStart(status newStatus: TaskSubtaskStatus?, summary: String) {
+        guard status != .completed else { return }
+        guard let newStatus else {
+            if attention == .interrupted {
+                attention = nil
+                if status == .blocked { status = .idle }
+            }
+            return
+        }
+        status = newStatus
+        attention = nil
+        lastHeartbeatAt = Date()
+        progressSummary = summary
     }
 }
 
@@ -1019,8 +1041,12 @@ public actor TaskContextStore {
         }
     }
 
+    /// `status` is what the new process is doing: `.working` when it was sent
+    /// a prompt, `.idle` when it waits for input (every resume). `nil` records a
+    /// re-found or retained pane without changing what the agent is doing.
     @discardableResult public func setManagedRuntime(ticketID: String, subtaskID: String,
-                                                      tmux: TmuxSessionReference) throws -> TaskContext {
+                                                      tmux: TmuxSessionReference,
+                                                      status: TaskSubtaskStatus? = nil) throws -> TaskContext {
         try mutate(ticketID: ticketID, archiveChanges: true) { context in
             guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else {
                 throw TaskContextError.missingSubtask(subtaskID)
@@ -1029,18 +1055,15 @@ public actor TaskContextStore {
             context.subtasks[index].runtimeMode = .tmux
             context.subtasks[index].terminalPaneID = nil
             context.subtasks[index].terminalSocketPath = nil
-            if context.subtasks[index].status != .completed {
-                context.subtasks[index].status = .working
-                context.subtasks[index].attention = nil
-                context.subtasks[index].lastHeartbeatAt = Date()
-                context.subtasks[index].progressSummary =
-                    "Managed session started and remains available through tmux."
-            }
+            context.subtasks[index].recordRuntimeStart(status: status, summary: status == .idle
+                ? "Managed session is open in tmux and waiting for input."
+                : "Managed session started and remains available through tmux.")
         }
     }
 
     @discardableResult public func setDirectRuntime(
-        ticketID: String, subtaskID: String, paneID: Int, socketPath: String?
+        ticketID: String, subtaskID: String, paneID: Int, socketPath: String?,
+        status: TaskSubtaskStatus? = nil
     ) throws -> TaskContext {
         guard paneID >= 0 else { throw TaskContextError.commandFailed("Terminal returned an invalid pane identity.") }
         return try mutate(ticketID: ticketID, archiveChanges: true) { context in
@@ -1051,13 +1074,9 @@ public actor TaskContextStore {
             context.subtasks[index].runtimeMode = .terminal
             context.subtasks[index].terminalPaneID = paneID
             context.subtasks[index].terminalSocketPath = socketPath
-            if context.subtasks[index].status != .completed {
-                context.subtasks[index].status = .working
-                context.subtasks[index].attention = nil
-                context.subtasks[index].lastHeartbeatAt = Date()
-                context.subtasks[index].progressSummary =
-                    "Direct terminal session started. Closing its terminal ends the live process."
-            }
+            context.subtasks[index].recordRuntimeStart(status: status, summary: status == .idle
+                ? "Direct terminal session is open and waiting for input."
+                : "Direct terminal session started. Closing its terminal ends the live process.")
         }
     }
 
@@ -1315,8 +1334,30 @@ public actor TaskContextStore {
             if case .prompt = event.kind, event.date > (context.lastPromptAt ?? .distantPast) {
                 context.lastPromptAt = event.date
             }
-            guard context.subtasks[i].isAgentVisible, context.subtasks[i].status != .completed,
-                  context.subtasks[i].observedEventID != event.id else { return }
+            guard context.subtasks[i].observedEventID != event.id else { return }
+            if context.subtasks[i].status == .completed {
+                // A person's new prompt re-tasks a finished agent, including one
+                // auto-archived with its terminal kept open. It outranks a user
+                // completion override because it is the user's later action.
+                // The agent's own output after `complete` never reopens it.
+                let agent = context.subtasks[i]
+                guard case .prompt = event.kind,
+                      agent.agentRemovedAt == nil || agent.completionTerminalRetained == true,
+                      event.date > (agent.lastHeartbeatAt ?? .distantPast) else { return }
+                context.subtasks[i].status = .working
+                context.subtasks[i].agentRemovedAt = nil
+                context.subtasks[i].completionTerminalRetained = nil
+                context.subtasks[i].completedRuntimeOpenedAt = nil
+                context.subtasks[i].completionOverrideAt = nil
+                context.subtasks[i].completionUnread = false
+                context.subtasks[i].attention = nil
+                context.subtasks[i].lastHeartbeatAt = event.date
+                context.subtasks[i].observedEventID = event.id
+                context.subtasks[i].observedEventAt = event.date
+                context.subtasks[i].progressSummary = "Working on a new prompt after completing."
+                return
+            }
+            guard context.subtasks[i].isAgentVisible else { return }
             let isNewestObservedEvent = event.date >= (context.subtasks[i].observedEventAt ?? .distantPast)
             let isCurrentActivity = event.date >= (context.subtasks[i].lastHeartbeatAt ?? .distantPast)
             let isNewResult: Bool
@@ -1338,6 +1379,10 @@ public actor TaskContextStore {
                 if !event.summary.isEmpty { context.subtasks[i].progressSummary = event.summary }
                 context.subtasks[i].status = .working
                 context.subtasks[i].attention = nil
+                // Replying in the terminal means the person read the last result.
+                if case .prompt = event.kind, event.date >= (context.subtasks[i].resultAt ?? .distantPast) {
+                    context.subtasks[i].completionUnread = false
+                }
             case .result:
                 if isNewResult {
                     context.subtasks[i].completionUnread = true

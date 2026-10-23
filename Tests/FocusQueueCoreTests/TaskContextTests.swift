@@ -161,7 +161,7 @@ func taskContextManagedRuntimeAndClear() async throws {
         executable: "/opt/homebrew/bin/tmux").first)
 
     let managed = try await store.setManagedRuntime(
-        ticketID: initial.ticketID, subtaskID: "implement-recall", tmux: runtime)
+        ticketID: initial.ticketID, subtaskID: "implement-recall", tmux: runtime, status: .working)
     #expect(managed.subtasks[0].tmux == runtime)
     #expect(managed.subtasks[0].status == .working)
     #expect(try await store.load(ticketID: initial.ticketID)?.subtasks[0].tmux == runtime)
@@ -346,7 +346,7 @@ func taskContextDirectRuntime() async throws {
 
     let direct = try await store.setDirectRuntime(
         ticketID: initial.ticketID, subtaskID: "direct",
-        paneID: 42, socketPath: "/tmp/wezterm-focus.sock")
+        paneID: 42, socketPath: "/tmp/wezterm-focus.sock", status: .working)
     let subtask = try #require(direct.subtasks.first)
     #expect(subtask.runtimeMode == .terminal)
     #expect(subtask.terminalPaneID == 42)

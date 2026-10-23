@@ -1200,7 +1200,8 @@ struct QueueViewModelTests {
     let assignment = try #require(model.focusSubtasks(for: "ECC-101").first)
     #expect(!assignment.isAssignmentOnly)
     #expect(assignment.tracksCompletion)
-    #expect(assignment.status == .working)
+    // Launched without a prompt, the agent waits for input until its transcript shows one.
+    #expect(assignment.status == .idle)
     #expect(assignment.title == "New work")
     #expect(assignment.assignmentDescription == "Do the requested work")
     #expect(assignment.launchConfiguration?.model == "gpt-test")
@@ -1252,7 +1253,7 @@ struct QueueViewModelTests {
     let subtask = try #require(model.subtasks(for: "ECC-101").first)
     #expect(subtask.terminalPaneID == 42)
     #expect(subtask.runtimeMode == .terminal)
-    #expect(subtask.status == .working)
+    #expect(subtask.status == .idle)
     #expect(subtask.assignmentDescription == "Keep the exact pane identity")
     let message = try #require(model.actionMessages["ECC-101"])
     #expect(message.contains(failReveal ? "Click the subtask to retry" : "empty input"))

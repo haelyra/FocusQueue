@@ -6,10 +6,17 @@ public struct AgentActivityEvent: Sendable, Equatable {
     /// `prompt` is a person's message to the agent: working activity that also
     /// counts as the task's latest interaction.
     public enum Kind: Sendable, Equatable { case working, prompt, result, attention(AgentAttention) }
+    /// Transcripts are read after the fact; provider hooks report each turn edge as it happens.
+    public enum Source: Sendable, Equatable { case transcript, hook }
     public let id: String
     public let date: Date
     public let kind: Kind
     public let summary: String
+    public let source: Source
+
+    public init(id: String, date: Date, kind: Kind, summary: String, source: Source = .transcript) {
+        self.id = id; self.date = date; self.kind = kind; self.summary = summary; self.source = source
+    }
 
     private static let quotaMarkers = [
         "rate limit", "usage limit", "quota", "insufficient credits",

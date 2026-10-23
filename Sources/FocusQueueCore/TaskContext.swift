@@ -111,6 +111,8 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     public var resultAt: Date?
     public var observedEventID: String?
     public var observedEventAt: Date?
+    /// The latest provider hook event applied to this agent's status.
+    public var lastHookEventAt: Date?
     public var completionTerminalRetained: Bool?
     public var completedRuntimeOpenedAt: Date?
     public var launchConfiguration: AgentLaunchConfiguration?
@@ -246,7 +248,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         case runtimeMode, terminalPaneID, terminalSocketPath, workspace, workspaceHistory, initialPrompt, agentRemovedAt, tracksCompletion, completionOverrideAt
         case completionTerminalRetained
         case isAssignmentOnly, parentSubtaskID, associatedSubtaskIDs, mergedIntoSubtaskID, attention, resultID, resultSummary, resultAt, observedEventID, observedEventAt, completedRuntimeOpenedAt
-        case launchConfiguration
+        case lastHookEventAt, launchConfiguration
     }
 
     public init(from decoder: any Decoder) throws {
@@ -285,6 +287,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         resultAt = try values.decodeIfPresent(Date.self, forKey: .resultAt)
         observedEventID = try values.decodeIfPresent(String.self, forKey: .observedEventID)
         observedEventAt = try values.decodeIfPresent(Date.self, forKey: .observedEventAt)
+        lastHookEventAt = try values.decodeIfPresent(Date.self, forKey: .lastHookEventAt)
         completionTerminalRetained = try values.decodeIfPresent(Bool.self, forKey: .completionTerminalRetained)
         completedRuntimeOpenedAt = try values.decodeIfPresent(Date.self, forKey: .completedRuntimeOpenedAt)
         launchConfiguration = try values.decodeIfPresent(AgentLaunchConfiguration.self, forKey: .launchConfiguration)
@@ -296,6 +299,24 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     /// A confirmed live pane keeps Working through long silent tool calls, such
     /// as builds, test runs, or foreground sub-agents, for up to an hour.
     public static let liveRuntimeHeartbeatLifetime: TimeInterval = 3_600
+    /// A turn a provider hook reported as running ends only with a hook or
+    /// transcript turn end, so a live pane keeps it Working through long tools.
+    public static let hookedRuntimeHeartbeatLifetime: TimeInterval = 4 * 3_600
+
+    /// The current status came from a provider hook. Transcript records of the
+    /// same moment can land slightly later, so a two-minute overlap still counts.
+    public var statusFromHook: Bool {
+        guard let lastHookEventAt else { return false }
+        return lastHookEventAt >= (lastHeartbeatAt ?? .distantPast).addingTimeInterval(-120)
+    }
+
+    /// How long Working survives without a heartbeat. A live pane earns an hour;
+    /// a live pane whose turn a hook opened, or whose title shows a running
+    /// turn, keeps it until the turn's end is reported.
+    public func heartbeatLifetime(liveRuntime: Bool, runtimeShowsWork: Bool = false) -> TimeInterval {
+        guard liveRuntime else { return Self.heartbeatLifetime }
+        return statusFromHook || runtimeShowsWork ? Self.hookedRuntimeHeartbeatLifetime : Self.liveRuntimeHeartbeatLifetime
+    }
 
     public func effectiveStatus(now: Date = Date(), heartbeatLifetime: TimeInterval = TaskSubtask.heartbeatLifetime) -> TaskSubtaskStatus {
         guard status == .working else { return status }
@@ -1326,6 +1347,21 @@ public actor TaskContextStore {
         }
     }
 
+    /// The approval dialog closed while its pane stayed live, so the person
+    /// answered it. Claude sends no hook for an approval, so the approved step
+    /// reads as Working until the next hook. The heartbeat stays put: a denial
+    /// ends the turn with a later transcript marker, which must still apply.
+    @discardableResult public func resolveApproval(ticketID: String, subtaskID: String) throws -> TaskContext {
+        try mutate(ticketID: ticketID) { context in
+            guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
+            guard context.subtasks[index].status != .completed, context.subtasks[index].agentRemovedAt == nil,
+                  context.subtasks[index].attention == .approval else { return }
+            context.subtasks[index].attention = nil
+            context.subtasks[index].status = .working
+            context.subtasks[index].progressSummary = "Running the approved step."
+        }
+    }
+
     @discardableResult public func observeActivity(ticketID: String, subtaskID: String, event: AgentActivityEvent) throws -> TaskContext {
         try mutate(ticketID: ticketID) { context in
             guard let i = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
@@ -1354,6 +1390,7 @@ public actor TaskContextStore {
                 context.subtasks[i].lastHeartbeatAt = event.date
                 context.subtasks[i].observedEventID = event.id
                 context.subtasks[i].observedEventAt = event.date
+                if event.source == .hook { context.subtasks[i].lastHookEventAt = event.date }
                 context.subtasks[i].progressSummary = "Working on a new prompt after completing."
                 return
             }
@@ -1368,6 +1405,7 @@ public actor TaskContextStore {
                 isNewResult = false
             }
             guard (isNewestObservedEvent && isCurrentActivity) || isNewResult else { return }
+            if event.source == .hook, isCurrentActivity { context.subtasks[i].lastHookEventAt = event.date }
             if isNewestObservedEvent {
                 context.subtasks[i].observedEventID = event.id
                 context.subtasks[i].observedEventAt = event.date
@@ -1588,6 +1626,7 @@ extension TaskContext {
             context.subtasks[index].completionUnread = false
             context.subtasks[index].observedEventID = nil
             context.subtasks[index].observedEventAt = nil
+            context.subtasks[index].lastHookEventAt = nil
         }
         return context
     }

@@ -127,6 +127,23 @@ The hook-ingestion path; reads **one JSON `ExternalAgentEvent` from stdin** (≤
 
 A non-UUID `session_id` is accepted but degrades the record to a non-provider identity. Malformed JSON → exit 1.
 
+**`focus-queue-session status-event --provider codex|claude|kimi`**
+The status-hook path; reads one provider hook payload from stdin (≤1 MB), prints nothing, and always exits 0, so a failure never reaches the agent. It finds the agent whose saved provider session equals `session_id`. The inherited `FOCUS_QUEUE_TASK_ID`/`FOCUS_QUEUE_SUBTASK_ID` are a fast path, used only when that agent's session matches, so a nested launch never updates its parent. The app reads the change on its next refresh (2 s while visible).
+
+| Hook event | Status |
+|---|---|
+| `UserPromptSubmit` | Working; clears the unread result; reopens a completed agent |
+| `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `TurnStarted` (not from a sub-agent, `agent_id` set) | Working |
+| `PermissionRequest`; `Notification` `permission_prompt` | Needs approval |
+| `Notification` `elicitation_dialog` | Question |
+| `Stop` | New result, summary `last_assistant_message` |
+| `StopFailure` | Failed, or quota exhausted for `rate_limit`/`billing_error` |
+| `Interrupt` (Codex, Kimi) | Interrupted |
+
+App-launched Claude agents receive these hooks through the launch's single `--settings` value (Claude reads only the last one), which also carries `disableAllHooks: false` so the agent reports status even when the user's settings turn hooks off. The user's settings files are not changed. Codex and Kimi keep transcript tracking: Codex hooks require a trust review this integration does not bypass, and Kimi's `wire.jsonl` already records turns, approvals, and interrupts. A live Codex pane whose tmux title starts with Codex's braille spinner counts as a running turn.
+
+While the latest status came from a hook and the pane is live, Working lasts until a turn end is reported (up to four hours), instead of the one-hour live-pane limit for transcript-only agents. Claude sends no hook for Esc or for answering an approval: the transcript's interrupt marker covers Esc, and an approval dialog that disappears from the pane returns the agent to Working.
+
 **`focus-queue-session identify <TASK-ID> <SUBTASK-ID> <title> <description>`**
 Sets/replaces the agent's display title and assignment description. Hook-independent fallback for naming an `Agent N` slot.
 

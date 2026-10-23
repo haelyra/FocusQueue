@@ -64,14 +64,13 @@ import Testing
         #expect(result.succeeded, "\(shell): \(result.standardError)")
         let captured = result.standardOutput.split(separator: "\0", omittingEmptySubsequences: false).dropLast().map(String.init)
         #expect(captured.first == (provider == .codex ? "alias" : "function"))
-        if provider == .codex {
-          #expect(captured.dropFirst().prefix(3) == ["--no-daemon", "--add-dir", context.contextDirectory.path])
-        } else {
-          #expect(captured.dropFirst().prefix(2) == ["--add-dir", context.contextDirectory.path])
-          #expect(!captured.contains("--no-daemon"))
-        }
+        // Claude's status hooks arrive as one `--settings` JSON value ahead of the shared flags.
+        let leading = provider == .codex ? ["--no-daemon"]
+          : provider == .claude ? ["--settings", AgentHookStatus.claudeSettings(pluginOverrides: [:], statusHooks: true)!] : []
+        #expect(Array(captured.dropFirst().prefix(leading.count + 2)) == leading + ["--add-dir", context.contextDirectory.path])
+        if provider != .codex { #expect(!captured.contains("--no-daemon")) }
         if includePrompt { #expect(captured.last?.contains(hostile) == true) }
-        else { #expect(captured.count == (provider == .codex ? 4 : 3)) }
+        else { #expect(captured.count == leading.count + 3) }
         #expect(!FileManager.default.fileExists(atPath: sentinel.path))
       }
     }
@@ -504,6 +503,8 @@ func batchedRuntimeAttentionSharesListingAndSkipsFreshHeartbeats() async throws 
   #expect(!attentions.keys.contains(fresh.id))
   #expect(attentions[gone.id]! == .interrupted)
   let calls = await runner.specifications
-  #expect(calls.filter { $0.arguments.contains("list-panes") }.count == 1)
+  // One identity listing and one Codex title listing serve every subtask.
+  #expect(calls.filter { $0.arguments.contains("list-panes") && !$0.arguments.contains("#{pane_id} #{pane_title}") }.count == 1)
+  #expect(calls.filter { $0.arguments.contains("#{pane_id} #{pane_title}") }.count == 1)
   #expect(calls.filter { $0.arguments.contains("capture-pane") }.count == 1)
 }

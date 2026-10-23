@@ -1675,14 +1675,18 @@ public enum AgentProvider: String, Codable, CaseIterable, Equatable, Sendable {
 
   /// Turns installed plugins on or off for one launch without editing the
   /// provider's saved settings. Kimi has no plugin system; Codex drops IDs its
-  /// dotted `-c` path cannot address.
-  public func pluginArguments(overrides: [String: Bool]) -> [String] {
+  /// dotted `-c` path cannot address. `statusHooks` adds Claude's Focus Queue
+  /// status hooks to the same `--settings` value, the only one Claude reads.
+  public func pluginArguments(overrides: [String: Bool], statusHooks: Bool = false) -> [String] {
+    if self == .claude {
+      return AgentHookStatus.claudeSettings(pluginOverrides: overrides, statusHooks: statusHooks)
+        .map { ["--settings", $0] } ?? []
+    }
     let ids = overrides.keys.sorted()
     guard !ids.isEmpty else { return [] }
     switch self {
     case .claude:
-      let enabled = ids.map { "\(Self.jsonString($0)):\(overrides[$0]! ? "true" : "false")" }
-      return ["--settings", "{\"enabledPlugins\":{\(enabled.joined(separator: ","))}}"]
+      return []
     case .codex:
       return ids.filter { id in
         !id.isEmpty && id.unicodeScalars.allSatisfy {
@@ -1692,11 +1696,6 @@ public enum AgentProvider: String, Codable, CaseIterable, Equatable, Sendable {
     case .kimi:
       return []
     }
-  }
-
-  private static func jsonString(_ value: String) -> String {
-    let data = (try? JSONEncoder().encode(value)) ?? Data("\"\"".utf8)
-    return String(decoding: data, as: UTF8.self)
   }
 }
 

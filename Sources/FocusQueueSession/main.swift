@@ -41,6 +41,7 @@ enum SessionRegistrationError: Error, LocalizedError {
                 print("Agent rules: rules (lifecycle, plan, workspace, and map-scope rules for managed agents)")
                 print("Launch brief preview: brief <TASK-ID> <SUBTASK-ID> (the exact prompt a fresh launch of that agent receives)")
                 print("Maintenance: reconcile <TASK-ID> [--no-cleanup] (repair documents and save a receipt; optional workspace cleanup)")
+                print("Status hooks: status-event --provider claude|codex|kimi (reads one provider hook payload on stdin; exits 0 silently)")
                 print("Data placement: data-placement status|on|off (automatic native prompt capture; off by default)")
                 print("Scoped data: data place <user|project|task> <target-id> <one-or-two-sentence fact>")
                 print("Completion cleanup: cleanup <TASK-ID> | cleanup --completed | cleanup --orphans | cleanup --purge, each with optional --dry-run (stops tmux, stages worktrees in .worktrees/.trash for 7 days, archives unmerged work under refs/focus-queue/archive/, deletes merged local and remote branches)")
@@ -58,6 +59,7 @@ enum SessionRegistrationError: Error, LocalizedError {
             else if arguments.first == "diagnose" { try await diagnose(arguments: arguments) }
             else if arguments.first == "cleanup" { try await cleanupCommand(arguments: arguments) }
             else if arguments.first == "register-event" { try await registerEvent(arguments: arguments) }
+            else if arguments.first == "status-event" { await statusEvent(arguments: arguments) }
             else if arguments.first == "data-placement" { try await dataPlacement(arguments: arguments) }
             else if arguments.first == "data" { try await dataCommand(arguments: arguments) }
             else if arguments == ["intake-changed"] {
@@ -840,6 +842,26 @@ enum SessionRegistrationError: Error, LocalizedError {
         let event = ExternalAgentEvent(sessionID: sessionID, cwd: FileManager.default.currentDirectoryPath,
             hookEventName: "ExplicitAttach")
         try await registerEvent(event, provider: provider, explicitTaskID: arguments[1], environment: environment)
+    }
+
+    /// Provider status hooks run on every tool call, so this path stays quiet and
+    /// cheap: no output, no registration, and a failure never reaches the agent.
+    /// The app reads the changed context on its next refresh.
+    private static func statusEvent(arguments: [String]) async {
+        let date = Date()
+        guard arguments.count == 3, arguments[1] == "--provider",
+              let provider = AgentProvider(rawValue: arguments[2]) else { return }
+        var data = Data()
+        while data.count <= 1_048_576,
+              let chunk = try? FileHandle.standardInput.read(upToCount: min(65_536, 1_048_577 - data.count)),
+              !chunk.isEmpty {
+            data.append(chunk)
+        }
+        let environment = ProcessInfo.processInfo.environment
+        guard data.count <= 1_048_576,
+              let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+        _ = try? await AgentHookStatus.apply(payload: payload, provider: provider, environment: environment,
+            store: TaskContextStore(root: supportDirectory(environment: environment)), date: date)
     }
 
     private static func registerEvent(arguments: [String]) async throws {

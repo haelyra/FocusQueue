@@ -69,7 +69,8 @@ struct ProviderPluginTests {
     #expect(command.contains("FOCUS_QUEUE_LAUNCH_ID=\(launchID)"))
     #expect(command.contains("FOCUS_QUEUE_AGENT_CONTEXT=/tmp/support/tracking/placements/\(launchID).json"))
     let settings = try #require(command.firstIndex(of: "--settings"))
-    #expect(command[settings + 1] == #"{"enabledPlugins":{"ecc@ecc":true}}"#)
+    #expect(command[settings + 1] == AgentHookStatus.claudeSettings(pluginOverrides: ["ecc@ecc": true], statusHooks: true))
+    #expect(command.filter { $0 == "--settings" }.count == 1, "Claude reads only the last --settings")
 
     subtask.launchConfiguration = AgentLaunchConfiguration(launchID: "not-a-uuid")
     let unsafe = try TaskAgentLauncher.command(

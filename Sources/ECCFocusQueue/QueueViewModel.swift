@@ -160,6 +160,7 @@ final class QueueViewModel {
   private(set) var subtaskActivityRevision = 0
   /// Agents whose tmux or WezTerm pane the last refresh confirmed alive.
   @ObservationIgnored private var liveRuntimeSubtaskIDs: Set<String> = []
+  @ObservationIgnored private var spinningRuntimeSubtaskIDs: Set<String> = []
   private(set) var isQueueChatInspectorPresented = false
   private(set) var isNotificationsInspectorPresented = false
   /// Set while an update or report opened from the notifications list is shown,
@@ -2139,12 +2140,22 @@ final class QueueViewModel {
         subtasks: observed.map(\.subtask), configuration: config.wezTerm)
       liveRuntimeSubtaskIDs = TaskAgentLauncher.liveRuntimeSubtaskIDs(
         subtasks: observed.map(\.subtask), configuration: config.wezTerm, snapshot: terminalSnapshot)
+      spinningRuntimeSubtaskIDs = TaskAgentLauncher.spinningRuntimeSubtaskIDs(
+        subtasks: observed.map(\.subtask), snapshot: terminalSnapshot)
       let attentions = await taskAgentLauncher.runtimeAttention(
         subtasks: observed.map(\.subtask), configuration: config.wezTerm, snapshot: terminalSnapshot)
       for entry in observed {
         guard let attention = attentions[entry.subtask.id],
              let latest = subtasks(for: entry.ticketID).first(where: { $0.id == entry.subtask.id }),
              latest.attention != attention else { continue }
+        if attention == nil, latest.attention == .approval {
+          // The probe recognizes approval dialogs, so one that is gone was answered.
+          do {
+            taskContexts[entry.ticketID] = try await taskContextStore.resolveApproval(
+              ticketID: entry.ticketID, subtaskID: entry.subtask.id)
+          } catch { actionMessages[entry.ticketID] = error.localizedDescription }
+          continue
+        }
         do {
           taskContexts[entry.ticketID] = try await taskContextStore.reportAttention(ticketID: entry.ticketID,
             subtaskID: entry.subtask.id, attention: attention,
@@ -2646,8 +2657,9 @@ final class QueueViewModel {
   /// A long tool call writes no transcript records, so a live pane keeps
   /// Working longer before it reads as "No recent update".
   private func displayStatus(_ subtask: TaskSubtask, now: Date = Date()) -> TaskSubtaskStatus {
-    subtask.effectiveStatus(now: now, heartbeatLifetime: liveRuntimeSubtaskIDs.contains(subtask.id)
-      ? TaskSubtask.liveRuntimeHeartbeatLifetime : TaskSubtask.heartbeatLifetime)
+    subtask.effectiveStatus(now: now, heartbeatLifetime: subtask.heartbeatLifetime(
+      liveRuntime: liveRuntimeSubtaskIDs.contains(subtask.id),
+      runtimeShowsWork: spinningRuntimeSubtaskIDs.contains(subtask.id)))
   }
 
   /// Only a fresh conversation sent its initial prompt starts out Working.

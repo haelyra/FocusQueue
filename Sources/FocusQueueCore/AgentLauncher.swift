@@ -145,7 +145,7 @@ public actor TaskAgentLauncher {
   public static func command(context: TaskContext, subtask: TaskSubtask, supportDirectory: URL,
                              includePrompt: Bool = true, shellPath: String? = nil,
                              usageBarEnabled: Bool = true, codexRoot: URL? = nil,
-                             pastesPrompt: Bool = false) throws -> [String] {
+                             pastesPrompt: Bool = false, statusHooks: Bool = true) throws -> [String] {
     guard let directory = (subtask.workspace?.path ?? context.worktreePath), directory.hasPrefix("/") else {
       throw TaskContextError.unsafeWorktree("Choose a task worktree before launching an agent.")
     }
@@ -161,7 +161,7 @@ public actor TaskAgentLauncher {
       providerArguments += subtask.provider.effortArguments(effort: effort)
     }
     providerArguments += subtask.provider.pluginArguments(
-      overrides: subtask.launchConfiguration?.pluginOverrides ?? [:])
+      overrides: subtask.launchConfiguration?.pluginOverrides ?? [:], statusHooks: statusHooks)
     providerArguments += ["--add-dir", context.contextDirectory.path]
     if let sessionID = subtask.sessionID {
       guard subtask.provider.isValidSessionID(sessionID) else {
@@ -274,6 +274,7 @@ public actor TaskAgentLauncher {
   /// executable and one WezTerm connection per socket cover every subtask.
   public struct RuntimeSnapshot: Sendable {
     var tmuxPanes: [String: [TmuxPaneSnapshot]] = [:]
+    var tmuxPaneTitles: [String: [String: String]] = [:]
     var connections: [String: (configuration: WezTermConfiguration, panes: [WezTermPane])] = [:]
 
     static func socketKey(_ socketPath: String?) -> String { socketPath ?? "" }
@@ -287,6 +288,11 @@ public actor TaskAgentLauncher {
         .panes(executable: executable) {
         snapshot.tmuxPanes[executable] = panes
       }
+    }
+    for executable in Set(subtasks.filter { $0.provider == .codex }.compactMap(\.tmux?.executable))
+    where snapshot.tmuxPanes[executable] != nil {
+      snapshot.tmuxPaneTitles[executable] = try? await TmuxController(runner: runner, serverName: tmuxServerName)
+        .paneTitles(executable: executable)
     }
     let sockets = Set(subtasks.filter { $0.tmux == nil && $0.terminalPaneID != nil }
       .map { RuntimeSnapshot.socketKey($0.terminalSocketPath ?? configuration.socketPath) })
@@ -340,6 +346,21 @@ public actor TaskAgentLauncher {
 
   /// Subtasks whose saved tmux pane or WezTerm pane is present in the tick's
   /// listing. Display uses it to keep Working through silent tool calls.
+  /// Codex animates a braille spinner in its terminal title for the whole turn,
+  /// including silent tool calls. Claude's title stays fixed under tmux, and
+  /// Kimi's carries no state, so only Codex panes answer here.
+  public static func spinningRuntimeSubtaskIDs(
+    subtasks: [TaskSubtask], snapshot: RuntimeSnapshot
+  ) -> Set<String> {
+    Set(subtasks.filter { subtask in
+      guard subtask.provider == .codex, let tmux = subtask.tmux,
+            tmuxRuntimeState(tmux, listing: snapshot.tmuxPanes[tmux.executable]) == .verified,
+            let first = snapshot.tmuxPaneTitles[tmux.executable]?[tmux.paneID]?.unicodeScalars.first
+      else { return false }
+      return (0x2801...0x28FF).contains(first.value)
+    }.map(\.id))
+  }
+
   public static func liveRuntimeSubtaskIDs(
     subtasks: [TaskSubtask], configuration: WezTermConfiguration, snapshot: RuntimeSnapshot
   ) -> Set<String> {
@@ -435,9 +456,9 @@ public actor TaskAgentLauncher {
       $0.trimmingCharacters(in: .whitespaces).lowercased()
     }
     // Require both a provider confirmation prompt and its choice control, not just prose.
+    // Claude names the target in some prompts ("Do you want to make this edit to X?").
     let prompt = lines.contains { line in
-      ["would you like to run the following command?", "do you want to proceed?",
-       "do you want to make this edit?", "do you want to allow this?"].contains(line)
+      (line.hasPrefix("do you want to ") || line.hasPrefix("would you like to ")) && line.hasSuffix("?")
     }
     let choices = lines.contains { $0.contains("1. yes") } && lines.contains { $0.contains("esc") || $0.contains("no") }
     return prompt && choices ? .approval : nil

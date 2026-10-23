@@ -692,13 +692,13 @@ struct QueueView: View {
 
   private var completedSubtaskTickets: [DashboardTicket] {
     model.projectTickets.filter { ticket in
-      model.focusSubtasks(for: ticket.id).contains { $0.status == .completed }
+      model.focusSubtasks(for: ticket.id).contains { model.isCompletionSeen($0, ticketID: ticket.id) }
     }
   }
 
   private var completedSubtaskCount: Int {
     completedSubtaskTickets.reduce(0) { count, ticket in
-      count + model.focusSubtasks(for: ticket.id).filter { $0.status == .completed }.count
+      count + model.focusSubtasks(for: ticket.id).filter { model.isCompletionSeen($0, ticketID: ticket.id) }.count
     }
   }
 
@@ -716,7 +716,7 @@ struct QueueView: View {
                   maximumLines: 2)
               }
               .foregroundStyle(.secondary)
-              ForEach(model.focusSubtasks(for: ticket.id).filter { $0.status == .completed }) {
+              ForEach(model.focusSubtasks(for: ticket.id).filter { model.isCompletionSeen($0, ticketID: ticket.id) }) {
                 subtask in
                 ArchivedSubtaskRow(ticket: ticket, subtask: subtask, model: model)
               }
@@ -3457,8 +3457,9 @@ private struct TicketCard: View {
   private var agentControls: some View {
     VStack(alignment: .leading, spacing: 7) {
       let items = model.taskItems(for: ticket.id)
-      let activeItems = items.filter { $0.status != .completed }
-      let completedItems = items.filter { $0.status == .completed }
+      // An unseen result stays a work item; seeing it moves the item to Completed.
+      let activeItems = items.filter { !model.isCompletionSeen($0, ticketID: ticket.id) }
+      let completedItems = items.filter { model.isCompletionSeen($0, ticketID: ticket.id) }
       let archivedAgents = model.archivedAgents(for: ticket.id)
 
       DisclosureGroup("Work items (\(activeItems.count))", isExpanded: $showsSubtasks) {
@@ -3591,14 +3592,14 @@ private struct TicketCard: View {
         Spacer()
         let subtasks = model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion)
         if !subtasks.isEmpty {
-          Text("\(subtasks.filter { $0.status == .completed }.count)/\(subtasks.count) work items")
+          Text("\(subtasks.filter { model.isCompletionSeen($0, ticketID: ticket.id) }.count)/\(subtasks.count) work items")
         } else { Text(ticket.progressLabel) }
       }.font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
       if ticket.isRecurringPullRequestTask {
         RecurringPRProgressSummary(progress: recurringProgress, error: recurringProgressError)
       } else if !model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion).isEmpty {
         let subtasks = model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion)
-        ProgressView(value: Double(subtasks.filter { $0.status == .completed }.count), total: Double(subtasks.count))
+        ProgressView(value: Double(subtasks.filter { model.isCompletionSeen($0, ticketID: ticket.id) }.count), total: Double(subtasks.count))
           .accessibilityLabel("Work item completion")
       } else if !ticket.steps.isEmpty {
         ProgressView(value: Double(ticket.steps.filter(\.isDone).count), total: Double(ticket.steps.count))
@@ -4106,10 +4107,10 @@ struct AgentStatusIndicator: View {
     if status == .blocked { return "Problem" }
     // A busy agent reads as Working; an earlier unread result is only noted.
     if status == .working { return hasUnreadCompletion ? "Working · New" : "Working" }
-    if hasUnreadCompletion && status != .completed { return "New result" }
+    if hasUnreadCompletion { return "New result" }
     switch status {
     case .working: return "Working"
-    case .completed: return hasUnreadCompletion ? "Done · New" : "Done · Seen"
+    case .completed: return "Done"
     case .queued: return "Queued"
     case .idle: return "No recent update"
     case .blocked: return "Issue"
@@ -4120,9 +4121,10 @@ struct AgentStatusIndicator: View {
     if issue != nil { return "exclamationmark.circle.fill" }
     if let attention { return attention.icon }
     if status == .blocked { return "exclamationmark.circle.fill" }
+    if hasUnreadCompletion && status != .working { return "circle.fill" }
     switch status {
     case .working: return "circle.fill"
-    case .completed: return hasUnreadCompletion ? "checkmark.circle.fill" : "checkmark.circle"
+    case .completed: return "checkmark.circle"
     case .queued: return "clock"
     case .idle: return "minus.circle"
     case .blocked: return "exclamationmark.circle.fill"
@@ -4156,8 +4158,8 @@ struct AgentStatusIndicator: View {
         : "The agent's transcript or progress reports show it is mid-turn."
     case .completed:
       return hasUnreadCompletion
-        ? "The agent finished and has a new update to review."
-        : "The agent finished and its update has been viewed."
+        ? "The agent finished and has output to review. Opening it moves it to Completed items."
+        : "The agent finished and its output has been viewed."
     case .queued: return "The agent is waiting to start."
     case .idle: return "The agent is waiting for input, or its transcript has gone quiet."
     case .blocked: return "The agent reported a blocker or session problem."

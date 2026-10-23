@@ -123,6 +123,8 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         !isAssignmentOnly && (workspace?.managed == true || workspaceHistory.contains(where: \.managed))
     }
     public var isAgentVisible: Bool { agentRemovedAt == nil && (status != .completed || completedRuntimeOpenedAt != nil) }
+    /// Finished work stays a work item until the person has seen its result.
+    public var isCompletionSeen: Bool { status == .completed && !completionUnread }
     public var workDescription: String {
         for value in [assignmentDescription, initialPrompt, progressSummary] {
             let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

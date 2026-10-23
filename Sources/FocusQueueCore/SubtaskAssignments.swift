@@ -201,6 +201,11 @@ extension TaskContext {
         AssignmentIndex(subtasks).agents(for: subtaskID, includingRemoved: includingRemoved)
     }
 
+    /// An assignment is done only after every unread agent result under it has been seen.
+    public func isCompletionSeen(_ subtask: TaskSubtask) -> Bool {
+        subtask.isCompletionSeen && !agents(for: subtask.id).contains(where: \.completionUnread)
+    }
+
     public func canAutomaticallyRetire(_ agent: TaskSubtask) -> Bool {
         guard agent.hasAgent, agent.status == .completed, agent.agentRemovedAt == nil, agent.completedRuntimeOpenedAt == nil else { return false }
         guard let sessionID = agent.sessionID else { return true }

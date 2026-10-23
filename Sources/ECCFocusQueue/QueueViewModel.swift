@@ -127,6 +127,7 @@ final class QueueViewModel {
   private(set) var pendingDailyReportApproval: DailyReportApprovalRequest?
   private(set) var requestedReportTaskID: String?
   private(set) var newTaskRequest: NewTaskRequest?
+  private(set) var voiceRecordingActive = false
   private(set) var voiceTaskHotkeyEnabled =
     UserDefaults.standard.bool(forKey: "voiceTaskHotkeyEnabled")
   private(set) var panelMode: QueuePanelMode = .expanded
@@ -4368,6 +4369,11 @@ final class QueueViewModel {
 
   func clearNewTaskRequest() {
     newTaskRequest = nil
+    voiceRecordingActive = false
+  }
+
+  func setVoiceRecordingActive(_ active: Bool) {
+    voiceRecordingActive = active
   }
 
   func setVoiceTaskHotkeyEnabled(_ enabled: Bool) {

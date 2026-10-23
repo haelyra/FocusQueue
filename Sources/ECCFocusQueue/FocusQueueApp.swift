@@ -47,6 +47,7 @@ import UserNotifications
   private var exitTerminalFocusItem: NSMenuItem?
   private var terminalFocusController: TerminalFocusModeController?
   private var voiceHotkeyMonitor: VoiceTaskHotkeyMonitor?
+  private var voiceRecordingStateObserver: NSObjectProtocol?
   private var focusChromeRefreshTask: Task<Void, Never>?
   private var screenReconciliationTask: Task<Void, Never>?
   private var movePersistTask: Task<Void, Never>?
@@ -88,6 +89,16 @@ import UserNotifications
       name: Notification.Name(QueueOrderStore.changeNotificationName),
       object: nil
     )
+    voiceRecordingStateObserver = DistributedNotificationCenter.default().addObserver(
+      forName: SuperWhisperBridge.recordingStateNotification,
+      object: nil,
+      queue: nil
+    ) { notification in
+      let recording = notification.userInfo?["recording"] as? Bool ?? false
+      Task { @MainActor [weak self] in
+        self?.model.setVoiceRecordingActive(recording)
+      }
+    }
     model.placementHandler = { [weak self] placement in
       self?.positionPanelOnCurrentDisplay(placement, animated: true)
     }
@@ -218,6 +229,10 @@ import UserNotifications
   func applicationWillTerminate(_ notification: Notification) {
     programLog.record("Focus Queue is terminating.", category: "Lifecycle")
     voiceHotkeyMonitor?.stop()
+    if let voiceRecordingStateObserver {
+      DistributedNotificationCenter.default().removeObserver(voiceRecordingStateObserver)
+      self.voiceRecordingStateObserver = nil
+    }
     morningReconciliationTask?.cancel()
     _ = try? DailyReportWorkerControl.requestCancellation(
       runtimeDirectory: paths.ingestionRuntimeDirectory)
@@ -347,7 +362,7 @@ import UserNotifications
   private func handleVoiceTaskHotkey() {
     revealPanelOnPointerDisplay()
     model.requestNewTask(autofocusPrompt: true)
-    Task { await SuperWhisperBridge.toggleRecording() }
+    Task { await SuperWhisperBridge.prepareRecorder() }
   }
 
   @objc private func importAgentRegistration(_ notification: Notification) {

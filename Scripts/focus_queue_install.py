@@ -32,8 +32,8 @@ DEFAULT_INTEGRATION_REF = "origin/main"
 OFFICIAL_REPOSITORY_IDENTITY = "github.com/haelyra/eccfocusqueue"
 OSW_APP_NAME = "OpenSuperWhisper.app"
 OSW_EXECUTABLE_NAME = "OpenSuperWhisper"
-OSW_RELEASE_URL = ""  # TODO(FOC-047): pinned fork release zip URL; empty disables auto-install
-OSW_SHA256 = ""  # TODO(FOC-047): sha256 of the pinned release zip
+OSW_RELEASE_URL = "https://github.com/haelyra/OpenSuperWhisper/releases/download/v0.1.0-foc047.1/OpenSuperWhisper-foc047.zip"
+OSW_SHA256 = "8ac0df7b0c0d670ca21e25c00e7494f61d194d234d9a7d0c526ebdc06bef3a13"
 OSW_LAUNCH_AGENT_LABEL = "com.haelyra.ecc-focus-queue.opensuperwhisper"
 PROVENANCE_FIELDS = {
     "schemaVersion",
@@ -433,16 +433,19 @@ def verify_installed_app(path, description):
         ) from error
 
 
-def ensure_opensuperwhisper(home, *, start=True, log=None):
+def ensure_opensuperwhisper(home, *, start=True, log=None,
+                            system_applications=Path("/Applications")):
     """Best-effort OpenSuperWhisper companion install; never fails the app install."""
     if log is None:
         def log(message):
             print(message, file=sys.stderr)
     try:
         app = home / "Applications" / OSW_APP_NAME
-        if app.exists():
-            log(f"OpenSuperWhisper already installed at {app}; skipping.")
-            return "already installed"
+        system_app = system_applications / OSW_APP_NAME
+        for existing in (app, system_app):
+            if existing.exists():
+                log(f"OpenSuperWhisper already installed at {existing}; skipping.")
+                return "already installed"
         if not OSW_RELEASE_URL:
             log("OpenSuperWhisper auto-install skipped: no pinned release URL configured")
             return "skipped: no pinned release URL configured"
@@ -468,6 +471,13 @@ def ensure_opensuperwhisper(home, *, start=True, log=None):
             raise ValueError(
                 f"OpenSuperWhisper release archive lacks the {OSW_EXECUTABLE_NAME} executable."
             )
+        # The pinned build is ad-hoc signed, so Gatekeeper would block the
+        # quarantined download; the sha256 pin above is the trust anchor.
+        subprocess.run(
+            ["/usr/bin/xattr", "-dr", "com.apple.quarantine", str(app)],
+            check=True,
+            capture_output=True,
+        )
         agent = home / "Library/LaunchAgents" / f"{OSW_LAUNCH_AGENT_LABEL}.plist"
         safe_destination(agent, home)
         agent.parent.mkdir(parents=True, exist_ok=True)
@@ -497,9 +507,11 @@ def ensure_opensuperwhisper(home, *, start=True, log=None):
 
 
 class Installer:
-    def __init__(self, bundle, home, *, login=False, desktop=False, start=True):
+    def __init__(self, bundle, home, *, login=False, desktop=False, start=True,
+                 system_applications=Path("/Applications")):
         self.bundle = bundle.absolute()
         self.home = home.absolute()
+        self.system_applications = system_applications
         self.support = self.home / "Library/Application Support" / LEGACY_PRODUCT
         self.automation = self.support / "automation"
         self.app = self.home / "Applications" / f"{PRODUCT}.app"
@@ -760,7 +772,9 @@ class Installer:
         self.preflight()
         with installation_lock(self.support, self.home):
             result = self._install_locked()
-        result["openSuperWhisper"] = ensure_opensuperwhisper(self.home, start=self.start)
+        result["openSuperWhisper"] = ensure_opensuperwhisper(
+            self.home, start=self.start, system_applications=self.system_applications
+        )
         return result
 
     def _install_locked(self):

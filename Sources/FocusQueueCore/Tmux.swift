@@ -112,6 +112,20 @@ public actor TmuxController {
     }
   }
 
+  /// Pane titles by pane ID. Titles are program-set text and may contain any
+  /// separator, so they are read apart from the strict identity listing.
+  public func paneTitles(executable: String) async throws -> [String: String] {
+    let result = try await run(executable, ["list-panes", "-a", "-F", "#{pane_id} #{pane_title}"])
+    guard result.succeeded else { return [:] }
+    var titles: [String: String] = [:]
+    for line in result.standardOutput.split(separator: "\n") {
+      let parts = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
+      guard parts.count == 2, parts[0].range(of: "^%[0-9]+$", options: .regularExpression) != nil else { continue }
+      titles[String(parts[0])] = String(parts[1])
+    }
+    return titles
+  }
+
   public func list(executable: String) async throws -> [TmuxSessionReference] {
     let result = try await run(executable, ["list-panes", "-a", "-F", Self.format])
     if !result.succeeded {

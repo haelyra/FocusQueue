@@ -67,6 +67,36 @@ class RegistrationCLITests(unittest.TestCase):
         self.assertEqual(attached["status"], "registered")
         self.assertNotEqual(attached["subtaskID"], "deleted-inherited-id")
 
+    def test_data_placement_switch_dispatches_prompt_only_when_enabled(self):
+        import time
+        script = self.support / "automation/Scripts/focus_queue_extractor.py"
+        script.parent.mkdir(parents=True)
+        capture = self.support / "hook-capture.json"
+        script.write_text("import json, pathlib, sys\n" +
+            f"pathlib.Path({str(capture)!r}).write_text(json.dumps({{'args': sys.argv[1:], 'prompt': sys.stdin.read()}}))\n")
+        self.assertFalse(self.command("data-placement", "status")["dataPlacementEnabled"])
+        prompt = "Remember blue accents for the space website."
+        self.command("register-event", "--provider", "codex", "--task", "ECC-401",
+            payload=self.event(str(uuid.uuid4()), "UserPromptSubmit", prompt=prompt))
+        self.assertFalse(capture.exists())
+        self.assertTrue(self.command("data-placement", "on")["dataPlacementEnabled"])
+        self.command("register-event", "--provider", "codex", "--task", "ECC-401",
+            payload=self.event(str(uuid.uuid4()), "UserPromptSubmit", prompt=prompt))
+        for _ in range(50):
+            if capture.exists():
+                break
+            time.sleep(0.05)
+        self.assertTrue(capture.exists())
+        result = json.loads(capture.read_text())
+        self.assertEqual(result["prompt"], prompt)
+        self.assertIn("--apply", result["args"])
+        self.assertIn("--prompt-stdin", result["args"])
+        nested = self.command("register-event", "--provider", "codex",
+            payload=self.event(str(uuid.uuid4()), "UserPromptSubmit", prompt="Nested model call"),
+            extra_environment={"FOCUS_QUEUE_EXTRACTION_CHILD": "1"})
+        self.assertEqual(nested["status"], "ignored")
+        self.assertFalse(self.command("data-placement", "off")["dataPlacementEnabled"])
+
     def test_manual_prompt_creates_a_tracked_task_until_explicitly_reassigned(self):
         self.add_task("ECC-402")
         session_id = str(uuid.uuid4())
@@ -91,9 +121,34 @@ class RegistrationCLITests(unittest.TestCase):
         self.assertFalse((placements / f"{inherited_launch}.json").exists())
         self.command("register-event", "--provider", "codex", payload="{malformed", expected=1)
         self.command("register-event", "--provider", "codex", payload=self.event("not-a-uuid"), expected=1)
-        self.assertEqual(len(self.context()["subtasks"]), 2)
+        self.assertEqual(len(self.context()["subtasks"]), 1)
 
-    def test_discovered_child_prompt_inherits_parent_without_creating_task(self):
+    def test_codex_subagent_attach_registers_nothing(self):
+        parent, child = str(uuid.uuid4()), str(uuid.uuid4())
+        codex_home = self.root / "codex"
+        sessions = codex_home / "sessions" / "2026" / "10" / "23"
+        sessions.mkdir(parents=True)
+        (sessions / f"rollout-2026-10-23T14-26-48-{child}.jsonl").write_text(json.dumps({
+            "type": "session_meta", "payload": {
+                "id": child, "session_id": parent, "parent_thread_id": parent,
+                "thread_source": "subagent",
+                "source": {"subagent": {"thread_spawn": {"parent_thread_id": parent}}}}}) + "\n")
+        environment = {"CODEX_HOME": str(codex_home), "FOCUS_QUEUE_TASK_ID": "ECC-401"}
+        parent_attach = self.command("attach", "ECC-401",
+            extra_environment={**environment, "CODEX_THREAD_ID": parent})
+        self.assertEqual(parent_attach["status"], "registered")
+        environment["FOCUS_QUEUE_SUBTASK_ID"] = parent_attach["subtaskID"]
+        for _ in range(2):
+            child_attach = self.command("attach", "ECC-401",
+                extra_environment={**environment, "CODEX_THREAD_ID": child})
+            self.assertEqual(child_attach["status"], "subagent")
+            self.assertEqual(child_attach["parentSessionID"], parent)
+            self.assertEqual(child_attach["subtaskID"], parent_attach["subtaskID"])
+        self.assertEqual([agent["sessionID"] for agent in self.context()["subtasks"]], [parent])
+        receipts = list((self.support / "external-agent-sessions").glob("*.json"))
+        self.assertEqual([json.loads(path.read_text())["sessionID"] for path in receipts], [parent])
+
+    def test_discovered_child_adds_no_agent_or_task(self):
         context = self.context()
         context["repositoryPath"] = str(self.root / "different repository")
         (self.support / "tasks/ECC-401/context.json").write_text(json.dumps(context))
@@ -110,9 +165,9 @@ class RegistrationCLITests(unittest.TestCase):
                 focus_queue_discovered_subagent=True,
                 prompt="registration fix"))
 
-        self.assertEqual(registered_child["taskID"], "ECC-401")
+        self.assertNotIn("taskID", registered_child)
         self.assertEqual(registered_child["parentSessionID"], parent)
-        self.assertEqual(len(self.context()["subtasks"]), 2)
+        self.assertEqual(len(self.context()["subtasks"]), 1)
         self.assertEqual(
             {path.name for path in (self.support / "tasks").iterdir()}, {"ECC-401"})
 

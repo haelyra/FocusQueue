@@ -302,7 +302,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var tmuxExecutable: String?
   public var setupCompleted: Bool?
   public var completionReviewEnabled: Bool
-  public var autoExitCompletedAgents: Bool
   public var agentUsageBarEnabled: Bool
   public var agentProviderFallbackOrder: [AgentProvider]
   public var agentEscalationAutoLaunch: Bool
@@ -320,6 +319,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var placementConfidenceThreshold: Double?
   /// Seconds the placement call may take before `fq` falls back to heuristics.
   public var placementTimeoutSeconds: Int?
+  /// Opts native prompt hooks into automatic durable-data placement; nil is off.
+  public var dataPlacementEnabled: Bool?
 
   public static let defaultAgentProviderFallbackOrder: [AgentProvider] = [.codex, .claude]
   public var agentModelChoices: [AgentModelChoice]
@@ -437,7 +438,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.verifier = verifier
     self.dailyReport = dailyReport
     self.completionReviewEnabled = true
-    self.autoExitCompletedAgents = true
     self.agentUsageBarEnabled = true
     self.agentProviderFallbackOrder = Self.defaultAgentProviderFallbackOrder
     self.agentEscalationAutoLaunch = true
@@ -448,6 +448,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.placementEfforts = [:]
     self.placementConfidenceThreshold = nil
     self.placementTimeoutSeconds = nil
+    self.dataPlacementEnabled = nil
     self.agentModelChoices = Self.defaultAgentModelChoices
     self.autoArchiveStaleAgents = false
     self.defaultAgentProvider = nil
@@ -469,13 +470,13 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case appName, dashboardPath, workspacePath, defaultPlacement, refreshIntervalSeconds
     case dailyRoutines, wezTerm, verifier, dailyReport, persistentTerminals, tmuxExecutable, setupCompleted
     case completionReviewEnabled
-    case autoExitCompletedAgents
     case agentUsageBarEnabled
     case agentProviderFallbackOrder
     case agentEscalationAutoLaunch
     case agentsPerWindow
     case placementModelEnabled, placementProvider, placementModels, placementEfforts
     case placementConfidenceThreshold, placementTimeoutSeconds
+    case dataPlacementEnabled
     case agentModelChoices
     case autoArchiveStaleAgents
     case defaultAgentProvider, defaultAgentModels, defaultAgentEfforts
@@ -498,7 +499,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     setupCompleted = try container.decodeIfPresent(Bool.self, forKey: .setupCompleted)
     completionReviewEnabled =
       try container.decodeIfPresent(Bool.self, forKey: .completionReviewEnabled) ?? true
-    autoExitCompletedAgents = try container.decodeIfPresent(Bool.self, forKey: .autoExitCompletedAgents) ?? true
     agentUsageBarEnabled = try container.decodeIfPresent(Bool.self, forKey: .agentUsageBarEnabled) ?? true
     // Unknown providers (for example from a newer build) are skipped, never fatal.
     var seenProviders = Set<AgentProvider>()
@@ -519,6 +519,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     placementConfidenceThreshold =
       try container.decodeIfPresent(Double.self, forKey: .placementConfidenceThreshold)
     placementTimeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .placementTimeoutSeconds)
+    dataPlacementEnabled = try container.decodeIfPresent(Bool.self, forKey: .dataPlacementEnabled)
     agentModelChoices = Self.mergedAgentModelChoices(
       (try container.decodeIfPresent([AgentModelChoice].self, forKey: .agentModelChoices)) ?? [])
     autoArchiveStaleAgents = try container.decodeIfPresent(Bool.self, forKey: .autoArchiveStaleAgents) ?? false
@@ -592,7 +593,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encodeIfPresent(tmuxExecutable, forKey: .tmuxExecutable)
     try container.encodeIfPresent(setupCompleted, forKey: .setupCompleted)
     try container.encode(completionReviewEnabled, forKey: .completionReviewEnabled)
-    try container.encode(autoExitCompletedAgents, forKey: .autoExitCompletedAgents)
     try container.encode(agentUsageBarEnabled, forKey: .agentUsageBarEnabled)
     try container.encode(agentProviderFallbackOrder, forKey: .agentProviderFallbackOrder)
     try container.encode(agentEscalationAutoLaunch, forKey: .agentEscalationAutoLaunch)
@@ -603,6 +603,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encode(Self.rawProviderValues(placementEfforts), forKey: .placementEfforts)
     try container.encodeIfPresent(placementConfidenceThreshold, forKey: .placementConfidenceThreshold)
     try container.encodeIfPresent(placementTimeoutSeconds, forKey: .placementTimeoutSeconds)
+    try container.encodeIfPresent(dataPlacementEnabled, forKey: .dataPlacementEnabled)
     try container.encode(agentModelChoices, forKey: .agentModelChoices)
     try container.encode(autoArchiveStaleAgents, forKey: .autoArchiveStaleAgents)
     try container.encodeIfPresent(defaultAgentProvider, forKey: .defaultAgentProvider)
@@ -1669,14 +1670,18 @@ public enum AgentProvider: String, Codable, CaseIterable, Equatable, Sendable {
 
   /// Turns installed plugins on or off for one launch without editing the
   /// provider's saved settings. Kimi has no plugin system; Codex drops IDs its
-  /// dotted `-c` path cannot address.
-  public func pluginArguments(overrides: [String: Bool]) -> [String] {
+  /// dotted `-c` path cannot address. `statusHooks` adds Claude's Focus Queue
+  /// status hooks to the same `--settings` value, the only one Claude reads.
+  public func pluginArguments(overrides: [String: Bool], statusHooks: Bool = false) -> [String] {
+    if self == .claude {
+      return AgentHookStatus.claudeSettings(pluginOverrides: overrides, statusHooks: statusHooks)
+        .map { ["--settings", $0] } ?? []
+    }
     let ids = overrides.keys.sorted()
     guard !ids.isEmpty else { return [] }
     switch self {
     case .claude:
-      let enabled = ids.map { "\(Self.jsonString($0)):\(overrides[$0]! ? "true" : "false")" }
-      return ["--settings", "{\"enabledPlugins\":{\(enabled.joined(separator: ","))}}"]
+      return []
     case .codex:
       return ids.filter { id in
         !id.isEmpty && id.unicodeScalars.allSatisfy {
@@ -1686,11 +1691,6 @@ public enum AgentProvider: String, Codable, CaseIterable, Equatable, Sendable {
     case .kimi:
       return []
     }
-  }
-
-  private static func jsonString(_ value: String) -> String {
-    let data = (try? JSONEncoder().encode(value)) ?? Data("\"\"".utf8)
-    return String(decoding: data, as: UTF8.self)
   }
 }
 
@@ -2047,7 +2047,11 @@ public struct LocalState: Codable, Equatable, Sendable {
       try container.decodeIfPresent([TaskAgentSession].self, forKey: .agentSessions) ?? []
     viewedTicketIDs = try container.decodeIfPresent(Set<String>.self, forKey: .viewedTicketIDs)
     viewedTicketSources = try container.decodeIfPresent(Set<String>.self, forKey: .viewedTicketSources)
-    queueActivitySortMode = try container.decodeIfPresent(QueueActivitySortMode.self, forKey: .queueActivitySortMode)
+    let decodedQueueMode = try container.decodeIfPresent(
+      QueueActivitySortMode.self, forKey: .queueActivitySortMode)
+    // Manual ordering is now a temporary per-snapshot override. Normalize the
+    // retired persisted mode once without converting old arrays into pins.
+    queueActivitySortMode = decodedQueueMode == .manual ? .recentActivity : decodedQueueMode
     // A preset from a newer build must never block loading the rest of local state.
     lastAgentLaunch = (try? container.decodeIfPresent(AgentLaunchPreset.self, forKey: .lastAgentLaunch)) ?? nil
     // Decode entries one by one so an unknown provider drops only its own entry.

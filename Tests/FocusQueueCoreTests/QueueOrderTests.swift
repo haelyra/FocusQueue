@@ -50,6 +50,96 @@ struct QueueOrderTests {
         #expect(try store.move("ECC-2", to: .bottom, tickets: tickets, fallbackIDs: ids).last == "ECC-2")
     }
 
+    @Test("Temporary order applies only while its automatic baseline and mode still match")
+    func temporaryOverrideLifecycle() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = QueueOrderStore(root: root)
+        let automatic = tickets.map(\.id)
+        let moved = try store.move(
+            "ECC-8", to: .top, tickets: tickets, fallbackIDs: automatic,
+            currentIDs: automatic, automaticBaselineIDs: automatic, sortMode: .recentActivity)
+
+        let document = try #require(try store.loadOverride())
+        #expect(document.schemaVersion == QueueOrderDocument.currentSchemaVersion)
+        #expect(document.orderedIDs == moved)
+        #expect(document.automaticBaselineIDs == automatic)
+        #expect(document.sortMode == .recentActivity)
+        #expect(try store.applicableOrder(
+            automaticIDs: automatic, sortMode: .recentActivity) == moved)
+
+        let changedAutomatic = ["ECC-7"] + automatic.filter { $0 != "ECC-7" }
+        #expect(try store.applicableOrder(
+            automaticIDs: changedAutomatic, sortMode: .recentActivity) == nil)
+        #expect(try store.loadOverride() == nil)
+    }
+
+    @Test("Concurrent temporary moves build on the latest matching override")
+    func temporaryMovesPreserveConcurrentChanges() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let automatic = tickets.map(\.id)
+        let first = QueueOrderStore(root: root)
+        let second = QueueOrderStore(root: root)
+        _ = try first.move(
+            "ECC-8", to: .top, tickets: tickets, fallbackIDs: automatic,
+            currentIDs: automatic, automaticBaselineIDs: automatic, sortMode: .recentActivity)
+
+        let result = try second.move(
+            "ECC-7", to: .after("ECC-8"), tickets: tickets, fallbackIDs: automatic,
+            currentIDs: automatic, automaticBaselineIDs: automatic, sortMode: .recentActivity)
+
+        #expect(result.prefix(2) == ["ECC-8", "ECC-7"])
+        #expect(try first.applicableOrder(
+            automaticIDs: automatic, sortMode: .recentActivity) == result)
+    }
+
+    @Test("Unsupported future order documents are ignored without deletion")
+    func futureSchemaSurvivesValidation() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = QueueOrderStore(root: root)
+        try FileManager.default.createDirectory(
+            at: store.storageURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let future = QueueOrderDocument(
+            schemaVersion: QueueOrderDocument.currentSchemaVersion + 1,
+            orderedIDs: Array(tickets.map(\.id).reversed()),
+            automaticBaselineIDs: tickets.map(\.id),
+            sortMode: .recentActivity)
+        try JSONEncoder().encode(future).write(to: store.storageURL)
+
+        #expect(try store.applicableOrder(
+            automaticIDs: tickets.map(\.id), sortMode: .recentActivity) == nil)
+        #expect(FileManager.default.fileExists(atPath: store.storageURL.path))
+        #expect(try store.loadOverride() == future)
+    }
+
+    @Test("Legacy arrays remain readable but never activate as temporary overrides")
+    func legacyArraysAreIgnoredByPresentation() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = QueueOrderStore(root: root)
+        let legacy = try store.move(
+            "ECC-8", to: .top, tickets: tickets, fallbackIDs: tickets.map(\.id))
+
+        #expect(try store.load() == legacy)
+        #expect(try store.loadOverride() == nil)
+        #expect(try store.applicableOrder(
+            automaticIDs: tickets.map(\.id), sortMode: .recentActivity) == nil)
+    }
+
+    @Test("Pinned tasks form a newest-pin-first tier above automatic ordering")
+    func pinnedTier() {
+        let older = Date(timeIntervalSinceReferenceDate: 100)
+        let newer = Date(timeIntervalSinceReferenceDate: 200)
+        let ordered = QueueOrderStore.prioritizingPins(
+            tickets,
+            pinnedAtByTicketID: ["ECC-4": older, "ECC-7": newer])
+        #expect(ordered.map(\.id) == [
+            "ECC-7", "ECC-4", "ECC-1", "ECC-2", "ECC-3", "ECC-5", "ECC-6", "ECC-8",
+        ])
+    }
+
     @Test("Saved positions override updated priority and exclude stale or completed tasks")
     func refreshedDashboard() {
         var changed = tickets
@@ -180,5 +270,5 @@ func legacySortModeResets() throws {
     let legacy = try JSONDecoder().decode(LocalState.self, from: Data(#"{"queueActivitySortMode":"manual"}"#.utf8))
     #expect(legacy.queueActivitySortMode == nil)
     let saved = try JSONEncoder().encode(LocalState(queueActivitySortMode: .manual))
-    #expect(try JSONDecoder().decode(LocalState.self, from: saved).queueActivitySortMode == .manual)
+    #expect(try JSONDecoder().decode(LocalState.self, from: saved).queueActivitySortMode == .recentActivity)
 }

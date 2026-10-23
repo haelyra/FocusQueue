@@ -88,49 +88,43 @@ import Testing
 
 // MARK: - Agent view ordering
 
-@Test func agentViewOrderingRanksAttentionThenUnreadThenWorkingThenProblems() {
-  func rank(_ status: TaskSubtaskStatus, _ attention: AgentAttention? = nil,
-            unread: Bool = false, error: String? = nil) -> Int {
-    AgentViewOrdering.rank(status: status, attention: attention,
-                           completionUnread: unread, sessionError: error)
-  }
-  // 0: needs user input
-  #expect(rank(.idle, .question) == 0)
-  #expect(rank(.working, .approval) == 0)
-  // 1: result to review
-  #expect(rank(.completed, unread: true) == 1)
-  #expect(rank(.working, unread: true) == 1)
-  // 2: working
-  #expect(rank(.working) == 2)
-  // 3: interrupted and other problems, including session errors
-  #expect(rank(.idle, .interrupted) == 3)
-  #expect(rank(.blocked, .incomplete) == 3)
-  #expect(rank(.idle, .failed) == 3)
-  #expect(rank(.idle, error: "session lost") == 3)
-  // 4: idle or output viewed
-  #expect(rank(.idle) == 4)
-  #expect(rank(.completed) == 4)
-  // 5: everything else
-  #expect(rank(.queued) == 5)
-  #expect(rank(.blocked) == 5)
+@Test func agentViewActivityCountsOutputAndOpenAttentionRequests() {
+  let output = Date(timeIntervalSince1970: 1_000)
+  let later = Date(timeIntervalSince1970: 2_000)
+  // Output wins when nothing is waiting on the user.
+  #expect(AgentViewOrdering.activityDate(
+    lastOutputAt: output, resultAt: nil, attention: nil, lastHeartbeatAt: later) == output)
+  // A result stands in for missing output.
+  #expect(AgentViewOrdering.activityDate(
+    lastOutputAt: nil, resultAt: output, attention: nil, lastHeartbeatAt: later) == output)
+  // An open question stamps only the heartbeat, which then counts.
+  #expect(AgentViewOrdering.activityDate(
+    lastOutputAt: output, resultAt: nil, attention: .question, lastHeartbeatAt: later) == later)
+  #expect(AgentViewOrdering.activityDate(
+    lastOutputAt: nil, resultAt: nil, attention: .approval, lastHeartbeatAt: later) == later)
+  #expect(AgentViewOrdering.activityDate(
+    lastOutputAt: nil, resultAt: nil, attention: nil, lastHeartbeatAt: later) == nil)
 }
 
-@Test func agentViewOrderingSortsByRankThenMostRecentActivity() {
-  struct Row { let name: String; let rank: Int; let activity: Date? }
+@Test func agentViewGroupsTasksAndAgentsByMostRecentActivity() {
+  struct Agent { let name: String; let activity: Date? }
   let now = Date()
-  let rows = [
-    Row(name: "idle-old", rank: 4, activity: now.addingTimeInterval(-3600)),
-    Row(name: "question", rank: 0, activity: now.addingTimeInterval(-7200)),
-    Row(name: "queued", rank: 5, activity: now),
-    Row(name: "unread", rank: 1, activity: nil),
-    Row(name: "idle-new", rank: 4, activity: now.addingTimeInterval(-60)),
-    Row(name: "working", rank: 2, activity: now.addingTimeInterval(-10_000)),
-    Row(name: "interrupted", rank: 3, activity: now),
+  let groups: [(group: String, items: [Agent])] = [
+    ("stale", [Agent(name: "s1", activity: now.addingTimeInterval(-3600))]),
+    ("empty", []),
+    ("busy", [
+      Agent(name: "b-old", activity: now.addingTimeInterval(-600)),
+      Agent(name: "b-none", activity: nil),
+      Agent(name: "b-new", activity: now),
+    ]),
+    ("silent", [Agent(name: "q1", activity: nil), Agent(name: "q2", activity: nil)]),
+    ("middle", [Agent(name: "m1", activity: now.addingTimeInterval(-60))]),
   ]
-  let ordered = AgentViewOrdering.ordered(rows, rank: \.rank, activity: \.activity)
-  #expect(ordered.map(\.name) == [
-    "question", "unread", "working", "interrupted", "idle-new", "idle-old", "queued",
-  ])
+  let ordered = AgentViewOrdering.grouped(groups, activity: \.activity)
+  #expect(ordered.map(\.group) == ["busy", "middle", "stale", "silent"])
+  #expect(ordered[0].items.map(\.name) == ["b-new", "b-old", "b-none"])
+  // Ties keep the input order.
+  #expect(ordered[3].items.map(\.name) == ["q1", "q2"])
 }
 
 @Test func statusMenuOffersOpenWorkflowStatusesAndKeepsACustomCurrentValue() {

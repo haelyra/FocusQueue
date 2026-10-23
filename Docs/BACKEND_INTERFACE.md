@@ -108,6 +108,7 @@ Pitfalls:
 - Fails with `missingSessionIdentity` if the env session ID is absent **or not a UUID** (Kimi ULIDs fail here — use `register-event` instead).
 - Correctly ignores a stale inherited `FOCUS_QUEUE_SUBTASK_ID` — re-attach after switching tickets, every time.
 - **Does not validate that the ticket exists on a dashboard.** Attaching to a typo'd ticket registers a session for a task that doesn't exist.
+- A Codex sub-agent thread (rollout `session_meta` marks `source.subagent`, `thread_source: subagent`, or `parent_thread_id`) registers nothing: attach returns `status: "subagent"` with `parentSessionID` and the inherited `taskID`/`subtaskID`, and exits 0. `register-event` and app process discovery likewise never add an agent row for a Codex sub-agent, so one Codex session stays one agent.
 
 **`focus-queue-session register-event --provider codex|claude|kimi [--task <TASK-ID>]`**
 The hook-ingestion path; reads **one JSON `ExternalAgentEvent` from stdin** (≤1 MB, oversized → exit 1). This is how provider hooks (SessionStart, UserPromptSubmit, SubagentStart/Stop, ProcessDiscovery) register identity. Payload (snake_case):
@@ -126,6 +127,23 @@ The hook-ingestion path; reads **one JSON `ExternalAgentEvent` from stdin** (≤
 
 A non-UUID `session_id` is accepted but degrades the record to a non-provider identity. Malformed JSON → exit 1.
 
+**`focus-queue-session status-event --provider codex|claude|kimi`**
+The status-hook path; reads one provider hook payload from stdin (≤1 MB), prints nothing, and always exits 0, so a failure never reaches the agent. It finds the agent whose saved provider session equals `session_id`. The inherited `FOCUS_QUEUE_TASK_ID`/`FOCUS_QUEUE_SUBTASK_ID` are a fast path, used only when that agent's session matches, so a nested launch never updates its parent. The app reads the change on its next refresh (2 s while visible).
+
+| Hook event | Status |
+|---|---|
+| `UserPromptSubmit` | Working; clears the unread result; reopens a completed agent |
+| `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `TurnStarted` (not from a sub-agent, `agent_id` set) | Working |
+| `PermissionRequest`; `Notification` `permission_prompt` | Needs approval |
+| `Notification` `elicitation_dialog` | Question |
+| `Stop` | New result, summary `last_assistant_message` |
+| `StopFailure` | Failed, or quota exhausted for `rate_limit`/`billing_error` |
+| `Interrupt` (Codex, Kimi) | Interrupted |
+
+App-launched Claude agents receive these hooks through the launch's single `--settings` value (Claude reads only the last one), which also carries `disableAllHooks: false` so the agent reports status even when the user's settings turn hooks off. The user's settings files are not changed. Codex and Kimi keep transcript tracking: Codex hooks require a trust review this integration does not bypass, and Kimi's `wire.jsonl` already records turns, approvals, and interrupts. A live Codex pane whose tmux title starts with Codex's braille spinner counts as a running turn.
+
+While the latest status came from a hook and the pane is live, Working lasts until a turn end is reported (up to four hours), instead of the one-hour live-pane limit for transcript-only agents. Claude sends no hook for Esc or for answering an approval: the transcript's interrupt marker covers Esc, and an approval dialog that disappears from the pane returns the agent to Working.
+
 **`focus-queue-session identify <TASK-ID> <SUBTASK-ID> <title> <description>`**
 Sets/replaces the agent's display title and assignment description. Hook-independent fallback for naming an `Agent N` slot.
 
@@ -142,15 +160,22 @@ The Router agent, its `route inspect` / `route start` commands, the in-app compo
 
 ### 3.4 Task mutations
 
+**`task create <PROJECT-ID> <title> <summary>`** — creates a backlog task in the named active project through the locked dashboard repository. It chooses the next project ID, returns the existing open task for an exact title and summary replay, and initializes its task context.
+
+**`data place <user|project|task> <target-id> <fact>`** — appends one short fact to `user/data.md`, `projects/<id>/data.md`, or `tasks/<ID>/data.md`. The command verifies active project or open task identity, limits the fact to 200 characters and two sentences, rejects symlink destinations, and returns `{scope,targetID,path,added}`. An identical line returns `added: false`. Use `task create` for deferred work; the extractor calls these commands after validating the model proposal.
+
+**`data ensure`** — creates empty `user/data.md` and `projects/<id>/data.md` files for every active project. It preserves existing contents and returns `{created,existing}` path lists. Run it after adding a project or when provisioning an existing catalog. Append concise facts with `data place user user "<fact>"` or `data place project <id> "<fact>"`; this command only creates the files.
+
 **`task rename <TASK-ID> <title...>`** — revision-checked rename.
 **`task priority <TASK-ID> critical|high|medium|low`** — validated enum.
 **`task status <TASK-ID> <status>`** — ⚠ **accepts any string.** No enum validation. A typo (`complted`) writes successfully and the ticket just stays "open" forever. See §8.
+`resolved` and `cancelled` are final: the command then runs completion cleanup (below) and reports its summary as `cleanup`.
 
 **`task link <TASK-ID> <url> <label> [type]`** — appends an evidence link to the ticket under the dashboard lock with a revision check. A link whose URL is already present is left unchanged. Use this instead of hand-editing `links`.
 
-All three go through `JSONDashboardRepository` with optimistic-concurrency revision checks, duplicate-ID rejection, and type-safe re-encoding — this is what hand-editing `dashboard.json` bypasses.
+These mutations go through `JSONDashboardRepository` with optimistic-concurrency revision checks, duplicate-ID rejection, and type-safe re-encoding — this is what hand-editing `dashboard.json` bypasses.
 
-**There is no `task create`, no `task show`, no generic `task set <field>`.** See §8 — this is the single biggest gap.
+There is no `task show` or generic `task set <field>`.
 
 ### 3.5 Queue ordering
 
@@ -187,6 +212,9 @@ These manage the per-agent slots inside `tasks/<TICKET>/context.json`:
 | `runtime repair <TASK> <SUBTASK>` | Repair a broken runtime record |
 | `diagnose <TASK>` | Read-only WezTerm/socket inspection |
 | `reconcile <TASK> [--no-cleanup]` | Repair task documents, write a receipt |
+| `cleanup <TASK> [--dry-run]` | Completion cleanup for one task: kill its tmux sessions, archive unmerged or uncommitted work under `refs/focus-queue/archive/`, stage its worktrees in `.worktrees/.trash`, delete its local branches and merged remote branches, stage `archive/` and `maintenance-history/`. Writes `tasks/<TASK>/cleanup.json`. |
+| `cleanup --completed [--orphans] [--dry-run]` | Backfill: run completion cleanup for every resolved or cancelled ticket; `--orphans` also retires managed worktrees and `focus-queue/*` branches no open ticket owns (a worktree any process uses is kept). Every project dashboard must load. |
+| `cleanup --purge` | Delete staged items whose 7-day `purgeAfter` has passed. The app purges at most every 6 hours. |
 | `architecture <TASK> [repository-path]` | Generate/update architecture docs |
 
 ### 3.8 Projects

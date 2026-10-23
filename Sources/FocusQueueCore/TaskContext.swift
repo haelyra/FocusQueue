@@ -111,6 +111,8 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     public var resultAt: Date?
     public var observedEventID: String?
     public var observedEventAt: Date?
+    /// The latest provider hook event applied to this agent's status.
+    public var lastHookEventAt: Date?
     public var completionTerminalRetained: Bool?
     public var completedRuntimeOpenedAt: Date?
     public var launchConfiguration: AgentLaunchConfiguration?
@@ -123,6 +125,8 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         !isAssignmentOnly && (workspace?.managed == true || workspaceHistory.contains(where: \.managed))
     }
     public var isAgentVisible: Bool { agentRemovedAt == nil && (status != .completed || completedRuntimeOpenedAt != nil) }
+    /// Finished work stays a work item until the person has seen its result.
+    public var isCompletionSeen: Bool { status == .completed && !completionUnread }
     public var workDescription: String {
         for value in [assignmentDescription, initialPrompt, progressSummary] {
             let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -246,7 +250,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         case runtimeMode, terminalPaneID, terminalSocketPath, workspace, workspaceHistory, initialPrompt, agentRemovedAt, tracksCompletion, completionOverrideAt
         case completionTerminalRetained
         case isAssignmentOnly, parentSubtaskID, associatedSubtaskIDs, mergedIntoSubtaskID, attention, resultID, resultSummary, resultAt, observedEventID, observedEventAt, completedRuntimeOpenedAt
-        case launchConfiguration
+        case lastHookEventAt, launchConfiguration
     }
 
     public init(from decoder: any Decoder) throws {
@@ -285,16 +289,57 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         resultAt = try values.decodeIfPresent(Date.self, forKey: .resultAt)
         observedEventID = try values.decodeIfPresent(String.self, forKey: .observedEventID)
         observedEventAt = try values.decodeIfPresent(Date.self, forKey: .observedEventAt)
+        lastHookEventAt = try values.decodeIfPresent(Date.self, forKey: .lastHookEventAt)
         completionTerminalRetained = try values.decodeIfPresent(Bool.self, forKey: .completionTerminalRetained)
         completedRuntimeOpenedAt = try values.decodeIfPresent(Date.self, forKey: .completedRuntimeOpenedAt)
         launchConfiguration = try values.decodeIfPresent(AgentLaunchConfiguration.self, forKey: .launchConfiguration)
     }
 
     /// A live terminal is not proof of activity. Only a recent explicit heartbeat is.
-    public func effectiveStatus(now: Date = Date(), heartbeatLifetime: TimeInterval = 300) -> TaskSubtaskStatus {
+    /// Without fresh transcript records, Working decays to idle after five minutes.
+    public static let heartbeatLifetime: TimeInterval = 300
+    /// A confirmed live pane keeps Working through long silent tool calls, such
+    /// as builds, test runs, or foreground sub-agents, for up to an hour.
+    public static let liveRuntimeHeartbeatLifetime: TimeInterval = 3_600
+    /// A turn a provider hook reported as running ends only with a hook or
+    /// transcript turn end, so a live pane keeps it Working through long tools.
+    public static let hookedRuntimeHeartbeatLifetime: TimeInterval = 4 * 3_600
+
+    /// The current status came from a provider hook. Transcript records of the
+    /// same moment can land slightly later, so a two-minute overlap still counts.
+    public var statusFromHook: Bool {
+        guard let lastHookEventAt else { return false }
+        return lastHookEventAt >= (lastHeartbeatAt ?? .distantPast).addingTimeInterval(-120)
+    }
+
+    /// How long Working survives without a heartbeat. A live pane earns an hour;
+    /// a live pane whose turn a hook opened, or whose title shows a running
+    /// turn, keeps it until the turn's end is reported.
+    public func heartbeatLifetime(liveRuntime: Bool, runtimeShowsWork: Bool = false) -> TimeInterval {
+        guard liveRuntime else { return Self.heartbeatLifetime }
+        return statusFromHook || runtimeShowsWork ? Self.hookedRuntimeHeartbeatLifetime : Self.liveRuntimeHeartbeatLifetime
+    }
+
+    public func effectiveStatus(now: Date = Date(), heartbeatLifetime: TimeInterval = TaskSubtask.heartbeatLifetime) -> TaskSubtaskStatus {
         guard status == .working else { return status }
         guard let lastHeartbeatAt, now.timeIntervalSince(lastHeartbeatAt) <= heartbeatLifetime else { return .idle }
         return .working
+    }
+
+    /// A live pane clears an "ended" marker; only a known start changes the status.
+    mutating func recordRuntimeStart(status newStatus: TaskSubtaskStatus?, summary: String) {
+        guard status != .completed else { return }
+        guard let newStatus else {
+            if attention == .interrupted {
+                attention = nil
+                if status == .blocked { status = .idle }
+            }
+            return
+        }
+        status = newStatus
+        attention = nil
+        lastHeartbeatAt = Date()
+        progressSummary = summary
     }
 }
 
@@ -317,6 +362,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
     public var managedWorktree = false
     public var subtasks: [TaskSubtask] = []
     public var lastPromptAt: Date? = nil
+    public var pinnedAt: Date? = nil
     public var removedAgentSessionKeys: [String]?
     public var updatedAt: Date
 
@@ -326,6 +372,15 @@ public struct TaskContext: Codable, Equatable, Sendable {
 
     /// Cached task facts and test data, kept beside the plan so every task view and agent can find it.
     public var dataURL: URL { contextDirectory.appendingPathComponent("data.md") }
+    public var userDataURL: URL {
+        contextDirectory.deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("user/data.md")
+    }
+    public var projectDataURL: URL? {
+        guard let projectPlanPath, !projectPlanPath.isEmpty else { return nil }
+        return URL(fileURLWithPath: projectPlanPath).deletingLastPathComponent()
+            .appendingPathComponent("data.md")
+    }
 
     /// The task data file leads the evidence list even when the dashboard records no links.
     public func evidenceLinks(_ ticketLinks: [DashboardLink]) -> [DashboardLink] {
@@ -339,6 +394,12 @@ public struct TaskContext: Codable, Equatable, Sendable {
 
     public static func launchRemovalKey(_ launchID: String) -> String {
         "launch:" + launchID.lowercased()
+    }
+
+    /// An app-launched agent's intake receipt is keyed by its placement launch
+    /// ID, not its row ID, so both must be retired or the receipt recreates it.
+    static func launchRemovalKeys(for agent: TaskSubtask) -> [String] {
+        [agent.id, agent.launchConfiguration?.launchID].compactMap { $0 }.map(launchRemovalKey)
     }
 
     public func hasDismissedLaunch(_ launchID: String) -> Bool {
@@ -358,12 +419,18 @@ public struct TaskContext: Codable, Equatable, Sendable {
     /// The generated data.md body before any agent records a fact; briefs point to it instead of inlining it.
     static let dataTemplateBody = "Cached facts, inputs, and test data for this task. Agents read this before acting and add durable task facts here."
 
+    /// Data is a small memory layer, not a second plan or a progress report.
+    static let dataWritingRule = "Write only durable task-specific user facts or deferred requirements to task data, in one or two short sentences each. Keep current work in the plan; research, test results, and evidence in the agent log."
+
     /// Compact mode: identity and document pointers only. Document contents stay on disk.
     public func agentBootstrap(subtask: TaskSubtask) -> String {
         let prompt = subtask.initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return ([prompt.isEmpty ? "Prepare the task context, then wait for my instruction before implementing anything." : prompt, ""]
             + briefHeader(subtask: subtask, prompt: prompt)
             + ["Task plan: \(planPath) (read before acting). Task data: \(dataURL.path). Agent log: \(agentLogURL.path).",
+               Self.dataWritingRule]
+            + scopedDataLines()
+            + ["Read relevant saved facts before acting.",
                "Register with `focus-queue-session attach`, then report with `focus-queue-session progress|complete`. Rules: `focus-queue-session rules`."])
             .joined(separator: "\n")
     }
@@ -385,6 +452,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
         if let project = Self.inlineDocument(atPath: projectPlanPath, limit: 1_500) {
             lines.append("About the project: \(project)")
         }
+        lines += scopedDataLines(includeTask: false)
         if let plan = Self.inlineDocument(atPath: planPath, limit: 4_000, prompt: trimmed ?? "") {
             lines += ["Task plan (\(planPath)):", plan]
         } else {
@@ -394,15 +462,31 @@ public struct TaskContext: Codable, Equatable, Sendable {
            data != Self.dataTemplateBody {
             lines += ["Task data (\(dataURL.path)):", data]
         } else {
-            lines.append("Task data: \(dataURL.path) (record durable task facts and test data here).")
+            lines.append("Task data: \(dataURL.path).")
         }
         lines += [
+            Self.dataWritingRule,
             "Before anything else run `focus-queue-session attach`.",
             "Report with `focus-queue-session <verb>`; task and agent IDs come from the environment: progress working|idle|blocked \"summary\" · attention approval|question \"summary\" · result \"summary\" · complete \"what changed and how it was verified\".",
             "Before reporting result or complete, update the task plan: fill empty What/Why/How lines and tick or add Progress items. Log decisions and evidence with `focus-queue-session log \"entry\"`.",
             "More rules: `focus-queue-session rules`.",
         ]
         return lines.joined(separator: "\n")
+    }
+
+    private func scopedDataLines(includeTask: Bool = true) -> [String] {
+        var lines: [String] = []
+        if let data = Self.inlineDocument(atPath: userDataURL.path, limit: 2_000) {
+            lines += ["User data (\(userDataURL.path)):", data]
+        }
+        if let projectDataURL,
+           let data = Self.inlineDocument(atPath: projectDataURL.path, limit: 3_000) {
+            lines += ["Project data (\(projectDataURL.path)):", data]
+        }
+        if includeTask, let data = Self.inlineDocument(atPath: dataURL.path, limit: 2_000) {
+            lines += ["Task data (\(dataURL.path)):", data]
+        }
+        return lines
     }
 
     /// Identity lines shared by both prompt modes. Assignment text is repeated only when it says
@@ -473,6 +557,10 @@ public struct TaskContext: Codable, Equatable, Sendable {
         Task plan (tasks/<TASK-ID>/plan.md)
         - Keep it bare: What/Why/How (one sentence each), success criteria, a Progress checklist, and links to crucial context or evidence.
         - Tick Progress items as they finish and add the next ones. Re-read before editing and preserve other agents' concurrent edits.
+
+        Task data (tasks/<TASK-ID>/data.md)
+        - \(dataWritingRule)
+        - Record only information owned by this task. A project-wide preference belongs in project context; a separate deferred deliverable belongs in its own task.
 
         Workspace and scope
         - Your assigned workspace is immutable; a different checkout requires a new agent assignment. `workspace <TASK-ID> <AGENT-ID> <absolute-path>` only records the first assignment or refreshes metadata for the same path.
@@ -577,9 +665,10 @@ public actor TaskContextStore {
                 let context: TaskContext?
                 if ticket.isCompleted, version == nil { context = nil }
                 else { context = try ensureContext(ticket: ticket, project: contextProject) }
-                // An agent may edit the Markdown or JSON directly. Retain the
-                // changed source even when no dashboard fields require merging.
-                if context != nil { try archive(ticketID: ticket.id) }
+                // An agent may edit an open task's Markdown or JSON directly.
+                // Completed-task cleanup intentionally stages this archive, so
+                // background refreshes must not recreate it afterward.
+                if context != nil, ticket.isOpen { try archive(ticketID: ticket.id) }
                 let finalVersion = try fileVersion(at: url)
                 let finalPlanURL = context.map { URL(fileURLWithPath: $0.planPath) } ?? planURL
                 let finalPlanVersion = try fileVersion(at: finalPlanURL)
@@ -705,6 +794,7 @@ public actor TaskContextStore {
                 }
                 existing.summary = ticket.summary
                 existing.successCriteria = ticket.doneWhen ?? existing.successCriteria
+                if !ticket.isOpen { existing.pinnedAt = nil }
                 // A retained branch with no workspace records completed cleanup. Dashboard
                 // metadata may still mention the former workspace until its next refresh.
                 if existing.worktreePath == nil, existing.branch == nil { existing.worktreePath = worktreePath ?? ticket.worktree }
@@ -714,7 +804,10 @@ public actor TaskContextStore {
                     previousTitle: previous.title
                 )
                 if previous != existing { existing.updatedAt = Date(); try write(existing); try snapshot(existing) }
-                else if !files.fileExists(atPath: existing.contextDirectory.appendingPathComponent("archive").path) { try snapshot(existing) }
+                else if ticket.isOpen,
+                        !files.fileExists(atPath: existing.contextDirectory.appendingPathComponent("archive").path) {
+                    try snapshot(existing)
+                }
                 return existing
             }
             let directory = try directory(ticketID: ticket.id)
@@ -975,8 +1068,12 @@ public actor TaskContextStore {
         }
     }
 
+    /// `status` is what the new process is doing: `.working` when it was sent
+    /// a prompt, `.idle` when it waits for input (every resume). `nil` records a
+    /// re-found or retained pane without changing what the agent is doing.
     @discardableResult public func setManagedRuntime(ticketID: String, subtaskID: String,
-                                                      tmux: TmuxSessionReference) throws -> TaskContext {
+                                                      tmux: TmuxSessionReference,
+                                                      status: TaskSubtaskStatus? = nil) throws -> TaskContext {
         try mutate(ticketID: ticketID, archiveChanges: true) { context in
             guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else {
                 throw TaskContextError.missingSubtask(subtaskID)
@@ -985,18 +1082,15 @@ public actor TaskContextStore {
             context.subtasks[index].runtimeMode = .tmux
             context.subtasks[index].terminalPaneID = nil
             context.subtasks[index].terminalSocketPath = nil
-            if context.subtasks[index].status != .completed {
-                context.subtasks[index].status = .working
-                context.subtasks[index].attention = nil
-                context.subtasks[index].lastHeartbeatAt = Date()
-                context.subtasks[index].progressSummary =
-                    "Managed session started and remains available through tmux."
-            }
+            context.subtasks[index].recordRuntimeStart(status: status, summary: status == .idle
+                ? "Managed session is open in tmux and waiting for input."
+                : "Managed session started and remains available through tmux.")
         }
     }
 
     @discardableResult public func setDirectRuntime(
-        ticketID: String, subtaskID: String, paneID: Int, socketPath: String?
+        ticketID: String, subtaskID: String, paneID: Int, socketPath: String?,
+        status: TaskSubtaskStatus? = nil
     ) throws -> TaskContext {
         guard paneID >= 0 else { throw TaskContextError.commandFailed("Terminal returned an invalid pane identity.") }
         return try mutate(ticketID: ticketID, archiveChanges: true) { context in
@@ -1007,13 +1101,9 @@ public actor TaskContextStore {
             context.subtasks[index].runtimeMode = .terminal
             context.subtasks[index].terminalPaneID = paneID
             context.subtasks[index].terminalSocketPath = socketPath
-            if context.subtasks[index].status != .completed {
-                context.subtasks[index].status = .working
-                context.subtasks[index].attention = nil
-                context.subtasks[index].lastHeartbeatAt = Date()
-                context.subtasks[index].progressSummary =
-                    "Direct terminal session started. Closing its terminal ends the live process."
-            }
+            context.subtasks[index].recordRuntimeStart(status: status, summary: status == .idle
+                ? "Direct terminal session is open and waiting for input."
+                : "Direct terminal session started. Closing its terminal ends the live process.")
         }
     }
 
@@ -1022,8 +1112,8 @@ public actor TaskContextStore {
             ticketID: ticketID, archiveChanges: true, archiveBeforeChanges: true
         ) { context in
             let keys = context.subtasks.flatMap { subtask in
-                [subtask.sessionID.map { subtask.provider.rawValue + ":" + $0.lowercased() },
-                 subtask.hasAgent ? TaskContext.launchRemovalKey(subtask.id) : nil].compactMap { $0 }
+                [subtask.sessionID.map { subtask.provider.rawValue + ":" + $0.lowercased() }].compactMap { $0 }
+                    + (subtask.hasAgent ? TaskContext.launchRemovalKeys(for: subtask) : [])
             }
             context.removedAgentSessionKeys = Array(Set((context.removedAgentSessionKeys ?? []) + keys)).sorted()
             context.subtasks.removeAll()
@@ -1050,8 +1140,8 @@ public actor TaskContextStore {
             let removedSessionKeys = context.subtasks.filter { candidate in
                 candidate.id == removed.id || linkedAgentIDs.contains(candidate.id)
             }.flatMap { agent in
-                [agent.sessionID.map { agent.provider.rawValue + ":" + $0.lowercased() },
-                 agent.hasAgent ? TaskContext.launchRemovalKey(agent.id) : nil].compactMap { $0 }
+                [agent.sessionID.map { agent.provider.rawValue + ":" + $0.lowercased() }].compactMap { $0 }
+                    + (agent.hasAgent ? TaskContext.launchRemovalKeys(for: agent) : [])
             }
             context.removedAgentSessionKeys = Array(Set((context.removedAgentSessionKeys ?? []) + removedSessionKeys)).sorted()
             context.subtasks.removeAll { candidate in
@@ -1128,7 +1218,7 @@ public actor TaskContextStore {
             let session = context.subtasks[index].sessionID
             let provider = context.subtasks[index].provider
             context.removedAgentSessionKeys = Array(Set((context.removedAgentSessionKeys ?? [])
-                + [TaskContext.launchRemovalKey(context.subtasks[index].id)])).sorted()
+                + TaskContext.launchRemovalKeys(for: context.subtasks[index]))).sorted()
             for i in context.subtasks.indices where i == index || (session != nil && context.subtasks[i].provider == provider && context.subtasks[i].sessionID?.lowercased() == session?.lowercased()) {
                 context.subtasks[i].completionTerminalRetained = automatically && context.subtasks[i].status == .completed
                 context.subtasks[i].agentRemovedAt = Date()
@@ -1263,6 +1353,21 @@ public actor TaskContextStore {
         }
     }
 
+    /// The approval dialog closed while its pane stayed live, so the person
+    /// answered it. Claude sends no hook for an approval, so the approved step
+    /// reads as Working until the next hook. The heartbeat stays put: a denial
+    /// ends the turn with a later transcript marker, which must still apply.
+    @discardableResult public func resolveApproval(ticketID: String, subtaskID: String) throws -> TaskContext {
+        try mutate(ticketID: ticketID) { context in
+            guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
+            guard context.subtasks[index].status != .completed, context.subtasks[index].agentRemovedAt == nil,
+                  context.subtasks[index].attention == .approval else { return }
+            context.subtasks[index].attention = nil
+            context.subtasks[index].status = .working
+            context.subtasks[index].progressSummary = "Running the approved step."
+        }
+    }
+
     @discardableResult public func observeActivity(ticketID: String, subtaskID: String, event: AgentActivityEvent) throws -> TaskContext {
         try mutate(ticketID: ticketID) { context in
             guard let i = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
@@ -1271,8 +1376,31 @@ public actor TaskContextStore {
             if case .prompt = event.kind, event.date > (context.lastPromptAt ?? .distantPast) {
                 context.lastPromptAt = event.date
             }
-            guard context.subtasks[i].isAgentVisible, context.subtasks[i].status != .completed,
-                  context.subtasks[i].observedEventID != event.id else { return }
+            guard context.subtasks[i].observedEventID != event.id else { return }
+            if context.subtasks[i].status == .completed {
+                // A person's new prompt re-tasks a finished agent, including one
+                // auto-archived with its terminal kept open. It outranks a user
+                // completion override because it is the user's later action.
+                // The agent's own output after `complete` never reopens it.
+                let agent = context.subtasks[i]
+                guard case .prompt = event.kind,
+                      agent.agentRemovedAt == nil || agent.completionTerminalRetained == true,
+                      event.date > (agent.lastHeartbeatAt ?? .distantPast) else { return }
+                context.subtasks[i].status = .working
+                context.subtasks[i].agentRemovedAt = nil
+                context.subtasks[i].completionTerminalRetained = nil
+                context.subtasks[i].completedRuntimeOpenedAt = nil
+                context.subtasks[i].completionOverrideAt = nil
+                context.subtasks[i].completionUnread = false
+                context.subtasks[i].attention = nil
+                context.subtasks[i].lastHeartbeatAt = event.date
+                context.subtasks[i].observedEventID = event.id
+                context.subtasks[i].observedEventAt = event.date
+                if event.source == .hook { context.subtasks[i].lastHookEventAt = event.date }
+                context.subtasks[i].progressSummary = "Working on a new prompt after completing."
+                return
+            }
+            guard context.subtasks[i].isAgentVisible else { return }
             let isNewestObservedEvent = event.date >= (context.subtasks[i].observedEventAt ?? .distantPast)
             let isCurrentActivity = event.date >= (context.subtasks[i].lastHeartbeatAt ?? .distantPast)
             let isNewResult: Bool
@@ -1283,6 +1411,7 @@ public actor TaskContextStore {
                 isNewResult = false
             }
             guard (isNewestObservedEvent && isCurrentActivity) || isNewResult else { return }
+            if event.source == .hook, isCurrentActivity { context.subtasks[i].lastHookEventAt = event.date }
             if isNewestObservedEvent {
                 context.subtasks[i].observedEventID = event.id
                 context.subtasks[i].observedEventAt = event.date
@@ -1294,6 +1423,10 @@ public actor TaskContextStore {
                 if !event.summary.isEmpty { context.subtasks[i].progressSummary = event.summary }
                 context.subtasks[i].status = .working
                 context.subtasks[i].attention = nil
+                // Replying in the terminal means the person read the last result.
+                if case .prompt = event.kind, event.date >= (context.subtasks[i].resultAt ?? .distantPast) {
+                    context.subtasks[i].completionUnread = false
+                }
             case .result:
                 if isNewResult {
                     context.subtasks[i].completionUnread = true
@@ -1366,6 +1499,31 @@ public actor TaskContextStore {
         try mutate(ticketID: ticketID) { context in
             context.worktreePath = path; context.branch = branch; context.baseBranch = baseBranch; context.managedWorktree = managed
             if let repositoryPath { context.repositoryPath = repositoryPath }
+        }
+    }
+
+    /// After completion cleanup the task keeps its plan, log, and agent
+    /// records, but no longer claims a workspace or a tmux runtime.
+    @discardableResult public func recordCompletionCleanup(ticketID: String) throws -> TaskContext {
+        try mutate(ticketID: ticketID) { context in
+            if context.managedWorktree, let path = context.worktreePath, !files.fileExists(atPath: path) {
+                context.worktreePath = nil
+                context.managedWorktree = false
+            }
+            for index in context.subtasks.indices {
+                context.subtasks[index].tmux = nil
+                context.subtasks[index].completionTerminalRetained = nil
+            }
+        }
+    }
+
+    /// Pin state shares the task context lock so app and CLI changes cannot
+    /// overwrite concurrent context updates.
+    @discardableResult public func setPinned(
+        ticketID: String, at date: Date?
+    ) throws -> TaskContext {
+        try mutate(ticketID: ticketID) { context in
+            context.pinnedAt = date
         }
     }
 
@@ -1474,6 +1632,7 @@ extension TaskContext {
             context.subtasks[index].completionUnread = false
             context.subtasks[index].observedEventID = nil
             context.subtasks[index].observedEventAt = nil
+            context.subtasks[index].lastHookEventAt = nil
         }
         return context
     }

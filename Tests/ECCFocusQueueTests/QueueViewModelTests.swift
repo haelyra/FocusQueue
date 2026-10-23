@@ -33,16 +33,12 @@ struct QueueViewModelTests {
     #expect(model.visibleAgents(for: "ECC-101").map(\.id) == ["primed-worker"])
   }
 
-  @Test("Disabling auto-exit preserves completed agents through refresh and saves the setting")
-  func completedAgentOptOut() async throws {
+  @Test("A completed agent keeps running and is never archived through refresh")
+  func completedAgentKeepsRunning() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let launcher = DirectCreationRunner()
     let model = await fixture.model(agent: ControlledQueueAgent(), taskAgentLauncher: TaskAgentLauncher(runner: launcher))
-    model.setAutoExitCompletedAgents(false)
-    try await eventually {
-      try JSONDecoder().decode(AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile)).autoExitCompletedAgents == false
-    }
     let store = TaskContextStore(root: fixture.root)
     _ = try await store.ensureContext(ticket: fixture.tickets[0])
     let agent = TaskSubtask(id: "completed-worker", title: "Done", sessionID: UUID().uuidString, status: .completed)
@@ -52,11 +48,14 @@ struct QueueViewModelTests {
     await model.refresh()
     let retained = try #require(model.subtasks(for: "ECC-101").first { $0.id == agent.id })
     #expect(retained.agentRemovedAt == nil)
+    #expect(retained.completionTerminalRetained == nil)
     #expect(await launcher.commands.isEmpty)
-    model.setAutoExitCompletedAgents(true)
+    // Approving the subtask by hand is completion too; it must not retire the agent either.
+    model.overrideCompletion(retained, for: fixture.tickets[0])
     try await Task.sleep(for: .seconds(2.1))
     await model.refresh()
-    #expect(model.subtasks(for: "ECC-101").first { $0.id == agent.id }?.agentRemovedAt != nil)
+    #expect(model.subtasks(for: "ECC-101").first { $0.id == agent.id }?.agentRemovedAt == nil)
+    #expect(await launcher.commands.isEmpty)
   }
 
   @Test("A hidden panel skips external agent discovery, and reveal refreshes immediately")
@@ -82,25 +81,30 @@ struct QueueViewModelTests {
     try await eventually { dashboards.loads > loadBaseline }
   }
 
-  @Test("Discovered Codex subagent metadata supplies a readable title once")
-  func discoveredSubagentPromptHintNamesAgent() async throws {
+  @Test("Discovered Codex subagents never add a second agent for one Codex session")
+  func discoveredSubagentDoesNotAddAgent() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let store = TaskContextStore(root: fixture.root)
     _ = try await store.ensureContext(ticket: fixture.tickets[0])
     let parentID = UUID().uuidString.lowercased()
     let childID = UUID().uuidString.lowercased()
+    let laterID = UUID().uuidString.lowercased()
     let rootPath = fixture.root.path
     var parent = TaskSubtask(id: "parent-agent", title: "Parent agent", sessionID: parentID)
     parent.workspace = AgentWorkspace(path: rootPath, repositoryPath: rootPath)
     _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: parent)
 
+    // The root process is listed after the subagent, so its row proves the
+    // subagent was already processed.
     let model = await fixture.model(
       agent: ControlledQueueAgent(), terminalController: LabelRecorder(),
       discoverExternalAgents: {
       [KnownProviderProcess(
         provider: .codex, sessionID: childID, parentSessionID: parentID,
         isSubagent: true, promptHint: "registration fix", processID: 42,
+        tty: nil, cwd: rootPath),
+       KnownProviderProcess(provider: .codex, sessionID: laterID, processID: 43,
         tty: nil, cwd: rootPath)]
       })
     model.setPanelVisible(false)
@@ -108,12 +112,11 @@ struct QueueViewModelTests {
     await model.refresh()
 
     try await eventually {
-      let context = try await store.load(ticketID: "ECC-101")
-      return context?.subtasks.contains {
-        $0.sessionID == childID && $0.title == "Registration fix"
-          && $0.assignmentDescription == "registration fix"
-      } == true
+      try await store.load(ticketID: "ECC-101")?.subtasks.contains { $0.sessionID == laterID } == true
     }
+    let sessions = try await store.load(ticketID: "ECC-101")?.subtasks.compactMap(\.sessionID)
+    #expect(sessions?.contains(childID) == false)
+    #expect(sessions?.filter { $0 == parentID }.count == 1)
   }
 
   @Test("Transcript observer retains a result followed by newer working activity")
@@ -145,6 +148,38 @@ struct QueueViewModelTests {
     #expect(agent.completionUnread)
     #expect(agent.resultSummary == "Ready to review")
     #expect(agent.lastOutputAt == ISO8601DateFormatter().date(from: "2026-09-29T18:00:00Z"))
+  }
+
+  @Test("A prompt typed into a seen, completed agent returns it to work items")
+  func promptReopensSeenCompletedAgent() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let sessionID = UUID().uuidString
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: TaskSubtask(
+      id: "finished-worker", title: "Finished worker", provider: .codex, sessionID: sessionID))
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: TaskSubtask(id: "pending", title: "Pending"))
+    let completedAt = try #require(ISO8601DateFormatter().date(from: "2026-09-29T18:00:00Z"))
+    _ = try await store.updateProgress(ticketID: "ECC-101", subtaskID: "finished-worker",
+      status: .completed, summary: "Ready", now: completedAt)
+    let seen = try await store.acknowledgeCompletion(ticketID: "ECC-101", subtaskID: "finished-worker")
+    #expect(seen.isCompletionSeen(try #require(seen.subtasks.first { $0.id == "finished-worker" })))
+    let transcriptRoot = fixture.root.appendingPathComponent("activity")
+    let sessions = transcriptRoot.appendingPathComponent(".codex/sessions/2026/09/29")
+    try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+    let prompt = #"{"timestamp":"2026-09-29T18:05:00Z","type":"event_msg","payload":{"type":"user_message","thread_id":"\#(sessionID)","message":"One more change"}}"#
+    try Data("\(prompt)\n".utf8).write(to:
+      sessions.appendingPathComponent("rollout-reopen-\(sessionID).jsonl"))
+    let observer = AgentActivityObserver(
+      codexRoot: transcriptRoot.appendingPathComponent(".codex"),
+      claudeRoot: transcriptRoot.appendingPathComponent(".claude"))
+
+    let model = await fixture.model(agent: ControlledQueueAgent(), agentActivityObserver: observer)
+
+    let agent = try #require(model.subtasks(for: "ECC-101").first { $0.id == "finished-worker" })
+    #expect(agent.status == .working)
+    #expect(!model.isCompletionSeen(agent, ticketID: "ECC-101"))
   }
 
   @Test("Background polling reuses an unchanged dashboard and detects atomic updates")
@@ -763,6 +798,139 @@ struct QueueViewModelTests {
     #expect(try external.load() == [])
   }
 
+  @Test("Temporary moves preserve recency mode until the automatic baseline changes")
+  func temporaryMoveTracksDisplayedRecencyOrder() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let third = DashboardTicket(
+      id: "ECC-103", title: "Task ECC-103", status: "open",
+      summary: "Most recently active task")
+    let tickets = fixture.tickets + [third]
+    try JSONEncoder().encode(DashboardDocument(tickets: tickets)).write(
+      to: fixture.root.appendingPathComponent("dashboard.json"))
+    let orderStore = QueueOrderStore(
+      root: fixture.root, projectID: ProjectCatalog.allProjectsScopeID)
+    try orderStore.setOrder(tickets.map(\.id), tickets: tickets, fallbackIDs: [])
+    let contexts = TaskContextStore(root: fixture.root)
+    _ = try await contexts.ensureContext(ticket: third)
+    _ = try await contexts.recordPrompt(ticketID: third.id)
+
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(model.queueActivitySortMode == .recentActivity)
+    #expect(model.openTickets.map(\.id) == ["ECC-103", "ECC-101", "ECC-102"])
+
+    #expect(model.moveTicket("ECC-101", to: .after("ECC-102")))
+    #expect(model.queueActivitySortMode == .recentActivity)
+    #expect(model.openTickets.map(\.id) == ["ECC-103", "ECC-102", "ECC-101"])
+    let saved = try #require(try orderStore.loadOverride())
+    #expect(saved.automaticBaselineIDs == ["ECC-103", "ECC-101", "ECC-102"])
+    #expect(saved.orderedIDs == ["ECC-103", "ECC-102", "ECC-101"])
+
+    let restarted = await fixture.model(agent: ControlledQueueAgent())
+    #expect(restarted.openTickets.map(\.id) == ["ECC-103", "ECC-102", "ECC-101"])
+    _ = try await contexts.ensureContext(ticket: fixture.tickets[1])
+    _ = try await contexts.recordPrompt(
+      ticketID: fixture.tickets[1].id, at: Date().addingTimeInterval(60))
+    let changed = await fixture.model(agent: ControlledQueueAgent())
+    #expect(changed.openTickets.map(\.id) == ["ECC-102", "ECC-103", "ECC-101"])
+    #expect(try orderStore.loadOverride() == nil)
+  }
+
+  @Test("Moving up uses the task immediately above in the displayed recency order")
+  func manualMoveUpUsesDisplayedRecencyOrder() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let third = DashboardTicket(
+      id: "ECC-103", title: "Task ECC-103", status: "open",
+      summary: "Most recently active task")
+    let tickets = fixture.tickets + [third]
+    try JSONEncoder().encode(DashboardDocument(tickets: tickets)).write(
+      to: fixture.root.appendingPathComponent("dashboard.json"))
+    let orderStore = QueueOrderStore(
+      root: fixture.root, projectID: ProjectCatalog.allProjectsScopeID)
+    try orderStore.setOrder(tickets.map(\.id), tickets: tickets, fallbackIDs: [])
+    let contexts = TaskContextStore(root: fixture.root)
+    _ = try await contexts.ensureContext(ticket: third)
+    _ = try await contexts.recordPrompt(ticketID: third.id)
+
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(model.openTickets.map(\.id) == ["ECC-103", "ECC-101", "ECC-102"])
+
+    #expect(model.moveTicket("ECC-102", to: .before("ECC-101")))
+    #expect(model.queueActivitySortMode == .recentActivity)
+    #expect(model.openTickets.map(\.id) == ["ECC-103", "ECC-102", "ECC-101"])
+    #expect(try orderStore.load() == ["ECC-103", "ECC-102", "ECC-101"])
+  }
+
+  @Test("Moving to bottom uses the displayed recency order as its baseline")
+  func manualMoveToBottomUsesDisplayedRecencyOrder() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let third = DashboardTicket(
+      id: "ECC-103", title: "Task ECC-103", status: "open",
+      summary: "Most recently active task")
+    let tickets = fixture.tickets + [third]
+    try JSONEncoder().encode(DashboardDocument(tickets: tickets)).write(
+      to: fixture.root.appendingPathComponent("dashboard.json"))
+    let orderStore = QueueOrderStore(
+      root: fixture.root, projectID: ProjectCatalog.allProjectsScopeID)
+    try orderStore.setOrder(tickets.map(\.id), tickets: tickets, fallbackIDs: [])
+    let contexts = TaskContextStore(root: fixture.root)
+    _ = try await contexts.ensureContext(ticket: fixture.tickets[1])
+    _ = try await contexts.recordPrompt(
+      ticketID: fixture.tickets[1].id, at: Date().addingTimeInterval(-60))
+    _ = try await contexts.ensureContext(ticket: third)
+    _ = try await contexts.recordPrompt(ticketID: third.id)
+
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(model.openTickets.map(\.id) == ["ECC-103", "ECC-102", "ECC-101"])
+
+    #expect(model.moveTicket("ECC-102", to: .bottom))
+    #expect(model.queueActivitySortMode == .recentActivity)
+    #expect(model.openTickets.map(\.id) == ["ECC-103", "ECC-101", "ECC-102"])
+    #expect(try orderStore.load() == ["ECC-103", "ECC-101", "ECC-102"])
+  }
+
+  @Test("Pinned tasks form a newest-first tier and unpin returns to recency")
+  func pinningOverridesRecencyAcrossScopes() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let contexts = TaskContextStore(root: fixture.root)
+    for ticket in fixture.tickets { _ = try await contexts.ensureContext(ticket: ticket) }
+    _ = try await contexts.recordPrompt(ticketID: "ECC-101", at: Date())
+    _ = try await contexts.setPinned(
+      ticketID: "ECC-101", at: Date(timeIntervalSinceReferenceDate: 100))
+    _ = try await contexts.setPinned(
+      ticketID: "ECC-102", at: Date(timeIntervalSinceReferenceDate: 200))
+
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(model.openTickets.map(\.id) == ["ECC-102", "ECC-101"])
+    #expect(model.isTicketPinned("ECC-102"))
+    let projectID = try #require(model.config.selectedProjectID)
+    #expect(await model.selectProject(id: projectID))
+    #expect(model.openTickets.map(\.id) == ["ECC-102", "ECC-101"])
+    #expect(await model.setTicketPinned(fixture.tickets[1], pinned: false))
+    #expect(!model.isTicketPinned("ECC-102"))
+    #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
+  }
+
+  @Test("Temporary moves cannot displace the pinned tier or reorder pinned tasks")
+  func temporaryMovesStayBelowPinnedTier() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let contexts = TaskContextStore(root: fixture.root)
+    for ticket in fixture.tickets { _ = try await contexts.ensureContext(ticket: ticket) }
+    _ = try await contexts.setPinned(
+      ticketID: "ECC-101", at: Date(timeIntervalSinceReferenceDate: 200))
+
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
+    #expect(model.moveTicket("ECC-102", to: .top))
+    #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
+    #expect(model.moveTicket("ECC-101", to: .bottom))
+    #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
+  }
+
   @Test("Viewed tasks and activity sort preference survive restart")
   func viewedTasksAndSortPreference() async throws {
     let fixture = try await Fixture()
@@ -933,7 +1101,9 @@ struct QueueViewModelTests {
     try await eventually { await dashboards.heldLoads > 0 }
     // The agent saves through focus-queue-session, which writes this store.
     try QueueOrderStore(root: fixture.root, projectID: ProjectCatalog.allProjectsScopeID)
-      .setOrder(["ECC-102"], tickets: fixture.tickets, fallbackIDs: [])
+      .setOrder(["ECC-102"], tickets: fixture.tickets, fallbackIDs: [],
+        currentIDs: ["ECC-101", "ECC-102"],
+        automaticBaselineIDs: ["ECC-101", "ECC-102"], sortMode: .recentActivity)
     await agent.reply("ECC-102 is now first.")
 
     try await eventually { !model.isQueueAgentResponding }
@@ -954,7 +1124,9 @@ struct QueueViewModelTests {
     #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
 
     try QueueOrderStore(root: fixture.root, projectID: ProjectCatalog.allProjectsScopeID)
-      .move("ECC-102", to: .top, tickets: fixture.tickets, fallbackIDs: [])
+      .move("ECC-102", to: .top, tickets: fixture.tickets, fallbackIDs: [],
+        currentIDs: ["ECC-101", "ECC-102"],
+        automaticBaselineIDs: ["ECC-101", "ECC-102"], sortMode: .recentActivity)
     #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
     model.reloadQueueOrder()
     #expect(model.openTickets.map(\.id) == ["ECC-102", "ECC-101"])
@@ -1059,7 +1231,8 @@ struct QueueViewModelTests {
     let assignment = try #require(model.focusSubtasks(for: "ECC-101").first)
     #expect(!assignment.isAssignmentOnly)
     #expect(assignment.tracksCompletion)
-    #expect(assignment.status == .working)
+    // Launched without a prompt, the agent waits for input until its transcript shows one.
+    #expect(assignment.status == .idle)
     #expect(assignment.title == "New work")
     #expect(assignment.assignmentDescription == "Do the requested work")
     #expect(assignment.launchConfiguration?.model == "gpt-test")
@@ -1111,7 +1284,7 @@ struct QueueViewModelTests {
     let subtask = try #require(model.subtasks(for: "ECC-101").first)
     #expect(subtask.terminalPaneID == 42)
     #expect(subtask.runtimeMode == .terminal)
-    #expect(subtask.status == .working)
+    #expect(subtask.status == .idle)
     #expect(subtask.assignmentDescription == "Keep the exact pane identity")
     let message = try #require(model.actionMessages["ECC-101"])
     #expect(message.contains(failReveal ? "Click the subtask to retry" : "empty input"))
@@ -1884,6 +2057,7 @@ struct QueueViewModelTests {
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let store = TaskContextStore(root: fixture.paths.supportDirectory)
     _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    _ = try await store.setPinned(ticketID: fixture.tickets[0].id, at: Date())
     let model = await fixture.model(
       agent: ControlledQueueAgent(), verifier: AcceptedCompletionVerifier())
 
@@ -1902,6 +2076,7 @@ struct QueueViewModelTests {
     #expect(persisted.dashboardPath == fixture.root.appendingPathComponent("dashboard.json").path)
     #expect(persisted.workspacePath == fixture.root.path)
     #expect(persisted.taskTitle == "Task ECC-101")
+    #expect(try await store.load(ticketID: "ECC-101")?.pinnedAt == nil)
   }
 
   @Test("Marking a completed task incomplete returns it to Focus and resets its checkbox")
@@ -1917,6 +2092,9 @@ struct QueueViewModelTests {
         completedBy: "completion-review"))
     try JSONEncoder().encode(DashboardDocument(tickets: [completed, fixture.tickets[1]]))
       .write(to: fixture.root.appendingPathComponent("dashboard.json"))
+    let contexts = TaskContextStore(root: fixture.paths.supportDirectory)
+    _ = try await contexts.ensureContext(ticket: fixture.tickets[0])
+    _ = try await contexts.setPinned(ticketID: completed.id, at: Date())
     let model = await fixture.model(agent: ControlledQueueAgent())
     let displayed = try #require(model.completedTickets.first { $0.id == completed.id })
 
@@ -1938,12 +2116,46 @@ struct QueueViewModelTests {
     })
     let history = try #require(saved["completionHistory"] as? [[String: Any]])
     #expect(history.count == 1)
+    #expect(try await contexts.load(ticketID: completed.id)?.pinnedAt == nil)
+  }
+
+  @Test("A completed task whose cleanup needs attention stays in Completed, and old completions are not swept")
+  func completedTaskWithCleanupProblemStaysVisible() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let tickets = fixture.tickets.map {
+      DashboardTicket(id: $0.id, title: $0.title, status: "resolved", summary: $0.summary,
+        updatedAt: "2026-10-18T14:00:00Z", completedAt: "2026-10-18T14:00:00Z")
+    }
+    try JSONEncoder().encode(DashboardDocument(tickets: tickets))
+      .write(to: fixture.root.appendingPathComponent("dashboard.json"))
+    let store = TaskContextStore(root: fixture.root)
+    for ticket in tickets { _ = try await store.ensureContext(ticket: ticket) }
+    var report = TaskCleanupReport(ticketID: "ECC-101", dryRun: false, finishedAt: Date())
+    report.problems = ["Worktree /tmp/example: identity changed"]
+    let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+    try encoder.encode(report).write(to: fixture.root
+      .appendingPathComponent("tasks/ECC-101/\(TaskCompletionCleanup.reportName)"))
+
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    await model.refresh()
+
+    try await eventually { model.closureMessages["ECC-101"] != nil }
+    #expect(model.closureMessages["ECC-101"]?.contains("Needs attention") == true)
+    #expect(model.completedTickets.map(\.id).contains("ECC-101"))
+    #expect(!model.openTickets.map(\.id).contains("ECC-101"))
+    #expect(model.completedTickets.map(\.id).contains("ECC-102"))
+    // ECC-102 completed days ago: only the reviewed CLI sweep may clean it.
+    #expect(TaskCompletionCleanup.savedReport(ticketID: "ECC-102", root: fixture.root) == nil)
   }
 
   @Test("Archiving an open task skips review and does not record successful completion")
   func archiveTaskWithoutCompletion() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let contexts = TaskContextStore(root: fixture.paths.supportDirectory)
+    _ = try await contexts.ensureContext(ticket: fixture.tickets[0])
+    _ = try await contexts.setPinned(ticketID: fixture.tickets[0].id, at: Date())
     let model = await fixture.model(agent: ControlledQueueAgent())
 
     let archived = await model.archiveWithoutCompletion(fixture.tickets[0])
@@ -1956,6 +2168,7 @@ struct QueueViewModelTests {
     #expect(!model.openTickets.contains { $0.id == ticket.id })
     #expect(model.completedTickets.contains { $0.id == ticket.id })
     #expect(model.localState.completionRequests.isEmpty)
+    #expect(try await contexts.load(ticketID: ticket.id)?.pinnedAt == nil)
   }
 
   @Test("Disabling completion review makes the completion control an explicit user override")
@@ -2012,8 +2225,8 @@ struct QueueViewModelTests {
     #expect(model.dashboard.tickets.first?.isOpen == true)
   }
 
-  @Test("Restart retains closure review for a completed task with unfinished subtasks")
-  func completedTaskClosureWarningSurvivesRestart() async throws {
+  @Test("Restart keeps a completed task with unfinished subtasks in Completed with its records")
+  func completedTaskWithOpenSubtasksStaysCompleted() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let store = TaskContextStore(root: fixture.paths.supportDirectory)
@@ -2029,9 +2242,9 @@ struct QueueViewModelTests {
 
     for _ in 0..<2 {
       let restarted = await fixture.model(agent: ControlledQueueAgent())
-      #expect(restarted.closureMessages["ECC-101"]?.contains("subtasks remain open") == true)
-      #expect(restarted.openTickets.map(\.id).contains("ECC-101"))
-      #expect(!restarted.completedTickets.map(\.id).contains("ECC-101"))
+      // Completion is final; it no longer bounces back into the queue.
+      #expect(!restarted.openTickets.map(\.id).contains("ECC-101"))
+      #expect(restarted.completedTickets.map(\.id).contains("ECC-101"))
       #expect(restarted.subtasks(for: "ECC-101").first?.status == .working)
       #expect(restarted.taskContexts["ECC-999"] == nil)
       #expect(restarted.completedTickets.map(\.id).contains("ECC-999"))
@@ -2480,7 +2693,7 @@ struct QueueViewModelTests {
     #expect(model.localState.agentSessions.first?.paneID == 42)
   }
 
-  @Test("Override completes only the selected subtask and removes its agent without queuing parent review")
+  @Test("Override completes only the selected subtask and keeps its agent without queuing parent review")
   func manualOverride() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -2490,8 +2703,8 @@ struct QueueViewModelTests {
     _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: subtask)
     let model = await fixture.model(agent: ControlledQueueAgent())
     model.overrideCompletion(subtask, for: fixture.tickets[0])
-    try await eventually { model.subtasks(for: "ECC-101").first?.agentRemovedAt != nil }
-    #expect(model.subtasks(for: "ECC-101").first?.status == .completed)
+    try await eventually { model.subtasks(for: "ECC-101").first?.status == .completed }
+    #expect(model.subtasks(for: "ECC-101").first?.agentRemovedAt == nil)
     #expect(model.visibleAgents(for: "ECC-101").isEmpty)
     #expect(model.dashboard.tickets[0].isOpen)
     try await Task.sleep(for: .milliseconds(2100))
@@ -2519,7 +2732,8 @@ struct QueueViewModelTests {
     model.requestSubtaskCompletion(child, for: fixture.tickets[0])
     try await eventually { await verifier.hasPendingReply }
     model.overrideCompletion(assignment, for: fixture.tickets[0])
-    try await eventually { model.subtasks(for: "ECC-101").first(where: { $0.id == child.id })?.agentRemovedAt != nil }
+    try await eventually { model.subtasks(for: "ECC-101").first(where: { $0.id == child.id })?.status == .completed }
+    #expect(model.subtasks(for: "ECC-101").first(where: { $0.id == child.id })?.agentRemovedAt == nil)
     #expect(model.localState.completionRequests.first?.status == .accepted)
     await verifier.reply()
     try await eventually { model.localState.completionRequests.first?.logPath != nil }
@@ -2552,7 +2766,7 @@ struct QueueViewModelTests {
     }
   }
 
-  @Test("Completed agents disappear automatically while blank agents never drive parent completion")
+  @Test("Completed agents are never archived while blank agents never drive parent completion")
   func completedAndBlankAgents() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -2563,7 +2777,7 @@ struct QueueViewModelTests {
     _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: blank)
     let model = await fixture.model(agent: ControlledQueueAgent())
     #expect(model.visibleAgents(for: "ECC-101").isEmpty)
-    #expect(model.subtasks(for: "ECC-101").first?.agentRemovedAt != nil)
+    #expect(model.subtasks(for: "ECC-101").first?.agentRemovedAt == nil)
     #expect(model.localState.completionRequests.isEmpty)
     #expect(model.dashboard.tickets[0].isOpen)
   }
@@ -2958,6 +3172,36 @@ struct QueueViewModelTests {
     #expect(terminalContext.hasDismissedLaunch(blockedID))
     try await model.importProvisionalAgentIntakes([blocked])
     #expect(try await store.load(ticketID: "ECC-101")?.updatedAt == terminalContext.updatedAt)
+  }
+
+  @Test("Archiving an app-launched Codex agent does not resurrect it from its launch receipt")
+  func archivedAppLaunchStaysArchived() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let agentID = UUID().uuidString
+    let launchID = UUID().uuidString.lowercased()
+    var agent = TaskSubtask(id: agentID, title: "Codex agent", provider: .codex)
+    agent.launchConfiguration = AgentLaunchConfiguration(launchID: launchID)
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: agent)
+    let receipt = try JSONDecoder().decode(AgentIntakeReceipt.self,
+      from: JSONSerialization.data(withJSONObject: [
+        "launchID": launchID, "taskID": "ECC-101", "agentID": agentID,
+        "cwd": fixture.root.path, "phase": "ready", "title": "Codex agent",
+        "workspacePolicy": "assigned",
+      ]))
+    try await model.importProvisionalAgentIntakes([receipt])
+    let launched = try #require(model.visibleAgents(for: "ECC-101").first { $0.id == agentID })
+    #expect(model.visibleAgents(for: "ECC-101").count == 1)
+
+    model.removeAgent(launched, from: fixture.tickets[0])
+    try await eventually { model.visibleAgents(for: "ECC-101").isEmpty }
+    try await model.importProvisionalAgentIntakes([receipt])
+    #expect(model.visibleAgents(for: "ECC-101").isEmpty)
+    let saved = try #require(try await store.load(ticketID: "ECC-101"))
+    #expect(!saved.subtasks.contains { $0.id == launchID })
   }
 
   @Test("A launch initializes an existing task directory when its context is missing")

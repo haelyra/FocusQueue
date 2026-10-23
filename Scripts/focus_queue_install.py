@@ -296,6 +296,7 @@ AUTOMATION_FILES = (
     "Scripts/focus_queue_slack.py",
     "Scripts/focus_queue_connectors.py",
     "Scripts/focus_queue_triage.py",
+    "Scripts/focus_queue_extractor.py",
     "Scripts/focus-queue-mail.js",
     "Config/task-proposals.schema.json",
 )

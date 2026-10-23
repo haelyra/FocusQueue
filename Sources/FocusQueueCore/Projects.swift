@@ -270,4 +270,97 @@ public struct ProjectContextStore: Sendable {
         }
         return url
     }
+
+    /// Project documents: the known ones in reading order, then any other
+    /// readable file (PDF, Markdown, text) in the project folder by name. Only
+    /// files that exist are listed, so a new project shows just its plan.
+    public func documents(projectID: String) throws -> [ProjectDocument] {
+        let directory = try planURL(projectID: projectID).deletingLastPathComponent()
+        let known = ProjectDocument.Kind.allCases.compactMap { kind -> ProjectDocument? in
+            let url = directory.appendingPathComponent(kind.fileName)
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+                  !isDirectory.boolValue else { return nil }
+            return ProjectDocument(kind: kind, url: url)
+        }
+        let knownNames = Set(ProjectDocument.Kind.allCases.map(\.fileName))
+        let others = ((try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])) ?? [])
+            .filter { url in
+                !knownNames.contains(url.lastPathComponent)
+                    && ProjectDocument.readableExtensions.contains(url.pathExtension.lowercased())
+                    && (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+            .map { ProjectDocument(kind: nil, url: $0) }
+        return known + others
+    }
+
+    /// External links recorded in the project's context.json (repository, deployments, databases).
+    public func links(projectID: String) throws -> [DashboardLink] {
+        let url = try planURL(projectID: projectID).deletingLastPathComponent()
+            .appendingPathComponent(ProjectDocument.Kind.context.fileName)
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+        return ["links", "deployments", "databases"].flatMap { key in
+            (object[key] as? [[String: Any]] ?? []).compactMap { entry -> DashboardLink? in
+                guard let target = entry["url"] as? String, !target.isEmpty else { return nil }
+                let label = (entry["label"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? target
+                return DashboardLink(label: label, url: target, type: entry["kind"] as? String)
+            }
+        }
+    }
+}
+
+public struct ProjectDocument: Identifiable, Equatable, Sendable {
+    public enum Kind: String, CaseIterable, Sendable {
+        case plan, practices, prd, architecture, evidence, data, context
+
+        public var fileName: String { self == .context ? "context.json" : "\(rawValue).md" }
+
+        public var title: String {
+            switch self {
+            case .plan: "Project plan"
+            case .practices: "Practices"
+            case .prd: "Product requirements"
+            case .architecture: "Architecture"
+            case .evidence: "Evidence index"
+            case .data: "Project data"
+            case .context: "Project context"
+            }
+        }
+
+        public var systemImage: String {
+            switch self {
+            case .plan: "doc.text"
+            case .practices: "checklist"
+            case .prd: "list.bullet.rectangle"
+            case .architecture: "square.stack.3d.up"
+            case .evidence: "checkmark.seal"
+            case .data: "tablecells"
+            case .context: "curlybraces"
+            }
+        }
+    }
+
+    /// Extensions listed beyond the known documents. dashboard.json and its
+    /// backups are queue data, not documents, so JSON is not included.
+    public static let readableExtensions: Set<String> = ["pdf", "md", "markdown", "txt", "text", "log", "csv"]
+
+    public var id: String { url.path }
+    /// Nil for a file that is not one of the known project documents.
+    public let kind: Kind?
+    public let url: URL
+
+    public init(kind: Kind?, url: URL) {
+        self.kind = kind
+        self.url = url
+    }
+
+    public var title: String { kind?.title ?? url.deletingPathExtension().lastPathComponent }
+
+    public var systemImage: String {
+        if let kind { return kind.systemImage }
+        return url.pathExtension.lowercased() == "pdf" ? "doc.richtext" : "doc.plaintext"
+    }
 }

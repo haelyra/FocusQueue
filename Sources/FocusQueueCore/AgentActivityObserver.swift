@@ -6,10 +6,17 @@ public struct AgentActivityEvent: Sendable, Equatable {
     /// `prompt` is a person's message to the agent: working activity that also
     /// counts as the task's latest interaction.
     public enum Kind: Sendable, Equatable { case working, prompt, result, attention(AgentAttention) }
+    /// Transcripts are read after the fact; provider hooks report each turn edge as it happens.
+    public enum Source: Sendable, Equatable { case transcript, hook }
     public let id: String
     public let date: Date
     public let kind: Kind
     public let summary: String
+    public let source: Source
+
+    public init(id: String, date: Date, kind: Kind, summary: String, source: Source = .transcript) {
+        self.id = id; self.date = date; self.kind = kind; self.summary = summary; self.source = source
+    }
 
     private static let quotaMarkers = [
         "rate limit", "usage limit", "quota", "insufficient credits",
@@ -30,13 +37,23 @@ public struct AgentActivityEvent: Sendable, Equatable {
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let plain = ISO8601DateFormatter()
         var events: [(offset: Int, event: Self)] = []
+        // Kimi names a turn's reply only in its earlier assistant message records.
+        var kimiReply = ""
         for (offset, line) in data.split(separator: 10).enumerated() {
-            guard let record = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
-                  let timestamp = record["timestamp"] as? String,
-                  let date = fractional.date(from: timestamp) ?? plain.date(from: timestamp) else { continue }
+            guard let record = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
+            let timestamp: String
+            let date: Date
+            if let value = record["timestamp"] as? String,
+               let parsed = fractional.date(from: value) ?? plain.date(from: value) {
+                timestamp = value; date = parsed
+            } else if provider == .kimi, let milliseconds = record["time"] as? Double {
+                timestamp = String(Int64(milliseconds)); date = Date(timeIntervalSince1970: milliseconds / 1_000)
+            } else { continue }
             var kind: Kind?
             var summary = ""
-            if provider == .codex, let payload = record["payload"] as? [String: Any] {
+            if provider == .kimi {
+                (kind, summary) = Self.kimiKind(record, reply: &kimiReply)
+            } else if provider == .codex, let payload = record["payload"] as? [String: Any] {
                 if let thread = payload["thread_id"] as? String, thread.lowercased() != sessionID.lowercased() { continue }
                 let type = payload["type"] as? String
                 if record["type"] as? String == "event_msg" {
@@ -64,7 +81,8 @@ public struct AgentActivityEvent: Sendable, Equatable {
                     } else if ["function_call", "custom_tool_call"].contains(type ?? ""),
                               (payload["name"] as? String)?.contains("request_user_input") == true {
                         kind = .attention(.question); summary = "The agent has a question to answer."
-                    } else if ["function_call_output", "custom_tool_call_output"].contains(type ?? "") {
+                    } else if Self.codexWorkingItems.contains(type ?? "")
+                                || (type == "message" && payload["phase"] as? String == "commentary") {
                         kind = .working
                     }
                 }
@@ -78,7 +96,13 @@ public struct AgentActivityEvent: Sendable, Equatable {
                         ?? (message?["content"] as? [[String: Any]])?.first?["text"] as? String
                     if ["[Request interrupted by user]", "[Request interrupted by user for tool use]"].contains(text ?? "") {
                         kind = .attention(.interrupted); summary = "The agent turn was interrupted."
-                    } else { kind = Self.isClaudePrompt(record) ? .prompt : .working }
+                    } else if Self.isClaudePrompt(record) {
+                        kind = .prompt
+                    } else if Self.isClaudeToolResult(record) {
+                        kind = .working
+                    }
+                    // Compaction summaries (including idle compaction), meta notices,
+                    // and slash-command echoes are written without a running turn.
                 }
                 if type == "assistant", let message = record["message"] as? [String: Any] {
                     let content = message["content"] as? [[String: Any]] ?? []
@@ -89,16 +113,21 @@ public struct AgentActivityEvent: Sendable, Equatable {
                         kind = .attention(.question)
                     } else if message["stop_reason"] as? String == "max_tokens" {
                         kind = .attention(.incomplete)
-                    } else if ["end_turn", "stop_sequence"].contains(message["stop_reason"] as? String ?? ""),
-                              content.contains(where: { $0["type"] as? String == "text" }) {
-                        kind = .result
+                    } else if ["end_turn", "stop_sequence"].contains(message["stop_reason"] as? String ?? "") {
+                        if content.contains(where: { $0["type"] as? String == "text" }) { kind = .result }
+                    } else {
+                        // Thinking, tool calls, and interim text all arrive mid-turn.
+                        kind = .working
                     }
-                    summary = content.compactMap { $0["text"] as? String }.joined(separator: "\n")
+                    // Interim narration is not a status summary; only turn outcomes carry one.
+                    summary = kind == .working ? "" : content.compactMap { $0["text"] as? String }.joined(separator: "\n")
                     if summary.isEmpty, kind == .attention(.question) { summary = "The agent has a question to answer." }
                 }
             }
             guard let kind else { continue }
-            let id = (record["uuid"] as? String ?? record["id"] as? String ?? timestamp) + ":\(kind)"
+            let eventID = (record["event"] as? [String: Any])?["uuid"] as? String
+            let id = (record["uuid"] as? String ?? record["id"] as? String ?? eventID
+                ?? "\(record["type"] as? String ?? ""):\(timestamp)") + ":\(kind)"
             let event = Self(id: id, date: date, kind: kind, summary: String(summary.prefix(2_000)))
             events.append((offset, event))
         }
@@ -107,12 +136,60 @@ public struct AgentActivityEvent: Sendable, Equatable {
         }.map(\.event)
     }
 
+    /// Codex records written while a turn is running: tool calls, their output, and reasoning.
+    private static let codexWorkingItems: Set<String> = [
+        "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output", "reasoning",
+    ]
+
+    /// Kimi's `agents/main/wire.jsonl`: `turn.prompt` and `turn.ended` bound each
+    /// turn, and loop, model, and tool records arrive while it runs.
+    private static func kimiKind(_ record: [String: Any], reply: inout String) -> (Kind?, String) {
+        switch record["type"] as? String {
+        case "turn.prompt":
+            let origin = (record["origin"] as? [String: Any])?["kind"] as? String
+            reply = ""
+            return (origin == "user" ? .prompt : .working, "")
+        case "agent.turn.started", "context.append_loop_event", "llm.request", "interaction.resolved":
+            return (.working, "")
+        case "agent.message.appended":
+            let message = (record["message"] as? [String: Any])?["message"] as? [String: Any]
+            guard message?["role"] as? String == "assistant" else { return (nil, "") }
+            let text = (message?["content"] as? [[String: Any]] ?? []).compactMap { $0["text"] as? String }
+                .joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { reply = text }
+            return (.working, "")
+        case "interaction.request":
+            return record["kind"] as? String == "approval"
+                ? (.attention(.approval), "The agent is waiting for approval in its terminal.")
+                : (.attention(.question), "The agent has a question to answer.")
+        case "turn.ended":
+            switch record["reason"] as? String {
+            case "completed": return (.result, reply.isEmpty ? "New agent response" : reply)
+            case "cancelled": return (.attention(.interrupted), "The agent turn was interrupted.")
+            default:
+                let message = (record["error"] as? [String: Any])?["message"] as? String ?? ""
+                return (Self.isQuotaError(message) ? .attention(.quotaExhausted) : .attention(.failed),
+                    message.isEmpty ? "The agent reported a problem." : message)
+            }
+        default:
+            return (nil, "")
+        }
+    }
+
     /// Current Codex transcripts tag typed input `user.text`; injected AGENTS.md
     /// and environment context arrive as user-role messages with other kinds.
     private static func isCodexPrompt(_ payload: [String: Any]) -> Bool {
         let metadata = payload["internal_chat_message_metadata_passthrough"] as? [String: Any]
         let kinds = metadata?["content_item_kinds"] as? [String] ?? []
         return kinds.contains { $0.hasPrefix("user.") }
+    }
+
+    /// A tool's output, written while the turn that called it is still running.
+    private static func isClaudeToolResult(_ record: [String: Any]) -> Bool {
+        guard record["isMeta"] as? Bool != true, record["isCompactSummary"] as? Bool != true else { return false }
+        if record["toolUseResult"] != nil { return true }
+        let content = (record["message"] as? [String: Any])?["content"] as? [[String: Any]] ?? []
+        return content.contains { $0["type"] as? String == "tool_result" }
     }
 
     /// Tool results, compaction summaries, background-task notices, and local
@@ -147,6 +224,7 @@ public actor AgentActivityObserver {
 
     private let codexRoot: URL
     private let claudeRoot: URL
+    private let kimiRoot: URL
     private var locations: [String: URL] = [:]
     private var searchedAt: [String: Date] = [:]
     private var scans: [String: (stamp: String, files: [URL])] = [:]
@@ -157,17 +235,25 @@ public actor AgentActivityObserver {
             ?? home.appendingPathComponent(".codex")
         claudeRoot = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"].map { URL(fileURLWithPath: $0) }
             ?? home.appendingPathComponent(".claude")
+        kimiRoot = home.appendingPathComponent(".kimi-code")
     }
 
-    public init(codexRoot: URL, claudeRoot: URL) {
+    public init(codexRoot: URL, claudeRoot: URL, kimiRoot: URL? = nil) {
         self.codexRoot = codexRoot
         self.claudeRoot = claudeRoot
+        self.kimiRoot = kimiRoot ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".kimi-code")
     }
 
     public func events(for agent: TaskSubtask) throws -> [AgentActivityEvent] {
-        guard let sessionID = agent.sessionID, UUID(uuidString: sessionID) != nil else { return [] }
+        // Saved Kimi records may hold the bare UUID of a `session_<uuid>` directory.
+        guard let sessionID = agent.sessionID,
+              UUID(uuidString: sessionID) != nil || agent.provider.isValidSessionID(sessionID) else { return [] }
         let key = agent.provider.rawValue + ":" + sessionID.lowercased()
-        let root = agent.provider == .codex ? codexRoot.appendingPathComponent("sessions") : claudeRoot.appendingPathComponent("projects")
+        let root = switch agent.provider {
+        case .codex: codexRoot.appendingPathComponent("sessions")
+        case .claude: claudeRoot.appendingPathComponent("projects")
+        case .kimi: kimiRoot.appendingPathComponent("sessions")
+        }
         if let location = locations[key], !FileManager.default.fileExists(atPath: location.path) {
             locations[key] = nil
             searchedAt[key] = nil
@@ -176,8 +262,14 @@ public actor AgentActivityObserver {
         if locations[key] == nil, Date().timeIntervalSince(searchedAt[key] ?? .distantPast) >= 60 {
             searchedAt[key] = Date()
             let suffix = (sessionID + ".jsonl").lowercased()
+            // A Kimi session is a `session_<id>` directory; its main agent writes `agents/main/wire.jsonl`.
+            let kimiDirectories = Set([sessionID, "session_" + sessionID].map { $0.lowercased() })
             locations[key] = sessionFiles(root: root).first {
-                $0.lastPathComponent.lowercased().hasSuffix(suffix)
+                agent.provider == .kimi
+                    ? $0.path.hasSuffix("/agents/main/wire.jsonl")
+                        && kimiDirectories.contains($0.deletingLastPathComponent().deletingLastPathComponent()
+                            .deletingLastPathComponent().lastPathComponent.lowercased())
+                    : $0.lastPathComponent.lowercased().hasSuffix(suffix)
             }
         }
         guard let url = locations[key] else { return [] }

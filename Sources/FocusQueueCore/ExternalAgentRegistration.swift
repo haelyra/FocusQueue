@@ -184,6 +184,9 @@ public actor ExternalAgentRegistry {
 
     public init(root: URL) { self.root = root }
 
+    public static let codexSubagentReason =
+        "Codex sub-agent threads share their parent agent's registration and are not added as agents."
+
     public func registrations() throws -> [ExternalAgentRegistration] {
         guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
         return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
@@ -216,6 +219,20 @@ public actor ExternalAgentRegistry {
             .map { String(format: "%02x", $0) }.joined()
         let lock = try await TmuxOrganizerLock.acquire(name: "registration-" + lockID)
         defer { lock.release() }
+        if provider == .codex, event.isSubagent {
+            // A Codex sub-agent thread is part of its root agent's work, not
+            // another agent. Its writer lock and its own UUID would otherwise give
+            // one Codex agent a row per spawned explorer or reviewer. Receipts
+            // saved before this rule are removed so they stop listing as unassigned.
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent(id + ".json"))
+            let parent = ["SubagentStart", "SubagentStop"].contains(event.hookEventName)
+                ? event.sessionID : event.parentSessionID
+            return ExternalAgentRegistration(id: id, provider: provider,
+                sessionID: event.providerSessionID, agentID: event.agentID,
+                parentSessionID: parent?.lowercased(), cwd: cwd,
+                title: "Subagent · \((event.agentID ?? event.sessionID).suffix(6))",
+                reason: Self.codexSubagentReason, eventName: event.hookEventName, updatedAt: Date())
+        }
         let previous = try registrations().first { $0.id == id }
         let contexts = try await TaskContextStore(root: root).loadAvailableForDiscovery()
         let parent = event.isSubagent ? (event.parentSessionID ?? event.sessionID).lowercased() : nil

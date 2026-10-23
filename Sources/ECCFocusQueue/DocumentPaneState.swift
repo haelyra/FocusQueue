@@ -123,3 +123,29 @@ final class DocumentPaneState {
         centralChatCollapsed = false
     }
 }
+
+/// Which conversation a document viewer belongs to. Task documents discuss
+/// the task; project documents opened from settings discuss the project.
+enum DocumentScope: Hashable, Sendable {
+    case task(String)
+    case project(String)
+}
+
+/// Local files Focus Queue renders itself instead of handing to another app.
+enum InAppDocument {
+    static let pdfExtensions: Set<String> = ["pdf"]
+    static let markdownExtensions: Set<String> = ["md", "markdown"]
+    static let textExtensions: Set<String> = [
+        "txt", "text", "log", "json", "jsonl", "csv", "tsv", "yaml", "yml", "toml", "xml",
+    ]
+
+    /// The file to show for a link, or nil when the link should leave the app.
+    static func fileURL(for url: URL) -> URL? {
+        guard let location = DocumentPaneLocation.normalized(url), location.isFileURL else { return nil }
+        let ext = location.pathExtension.lowercased()
+        guard pdfExtensions.contains(ext) || markdownExtensions.contains(ext) || textExtensions.contains(ext) else {
+            return nil
+        }
+        return location
+    }
+}

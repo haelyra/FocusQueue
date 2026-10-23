@@ -83,7 +83,8 @@ final class QueueViewModel {
   private(set) var config: AppConfiguration
   private(set) var dashboard = DashboardDocument(tickets: [])
   private(set) var localState = LocalState()
-  private(set) var savedQueueOrder: [String]?
+  private(set) var savedQueueOverride: QueueOrderDocument?
+  var savedQueueOrder: [String]? { savedQueueOverride?.orderedIDs }
   private var queueOrderStore: QueueOrderStore {
     QueueOrderStore(
       root: paths.supportDirectory,
@@ -169,6 +170,9 @@ final class QueueViewModel {
   @ObservationIgnored private var lastMaintenanceAt: Date?
   @ObservationIgnored private let maintenanceEnabled: Bool
   private(set) var subtaskActivityRevision = 0
+  /// Agents whose tmux or WezTerm pane the last refresh confirmed alive.
+  @ObservationIgnored private var liveRuntimeSubtaskIDs: Set<String> = []
+  @ObservationIgnored private var spinningRuntimeSubtaskIDs: Set<String> = []
   private(set) var isQueueChatInspectorPresented = false
   private(set) var isNotificationsInspectorPresented = false
   /// Set while an update or report opened from the notifications list is shown,
@@ -176,6 +180,14 @@ final class QueueViewModel {
   @ObservationIgnored private var returnsToNotifications = false
   private(set) var presentedAgentUpdate: QueueAgentUpdate?
   private(set) var presentedPlanTicketID: String?
+  /// The in-app document viewer for files opened outside a task plan, such as
+  /// project files chosen in settings or evidence links with no task.
+  private(set) var isDocumentViewerPresented = false
+  private(set) var documentViewerScope: DocumentScope?
+  private(set) var documentViewer = DocumentPaneState()
+  /// Shared document cache: previews survive split-layout changes and follow
+  /// on-disk writes, so an open file never sticks on a transient read error.
+  let documentContentStore = DocumentContentStore()
   private(set) var presentedPlanURL: URL?
   private(set) var presentedPlanMarkdown = ""
   private(set) var isPlanLoading = false
@@ -259,6 +271,8 @@ final class QueueViewModel {
   @ObservationIgnored private var lastExternalRegistrationRefresh: Date?
   @ObservationIgnored private var reportStateSaveTask: Task<Void, Never>?
   @ObservationIgnored private var cleanupSignatures: [String: Date] = [:]
+  @ObservationIgnored private var cleaningTaskIDs: Set<String> = []
+  @ObservationIgnored private var lastStagingPurge: Date?
   @ObservationIgnored private var lastReportRefresh: Date?
   @ObservationIgnored private var refreshTask: Task<Void, Never>?
   @ObservationIgnored private var reviewTasks: [UUID: Task<Void, Never>] = [:]
@@ -399,12 +413,16 @@ final class QueueViewModel {
     allOpenTickets.filter { includesInProject($0) }
   }
 
-  private enum OpenTicketsKey: Equatable {
-    case saved(order: [String], tickets: [DashboardTicket], lastPromptAt: [String: Date],
-      lastOutputAt: [String: Date], mode: QueueActivitySortMode, activityHour: Int?)
-    case derived(tickets: [DashboardTicket], deferredIDs: [String], noBacklogIDs: Set<String>,
-      closureMessages: [String: String], lastPromptAt: [String: Date], lastOutputAt: [String: Date],
-      mode: QueueActivitySortMode, activityHour: Int?)
+  private struct OpenTicketsKey: Equatable {
+    var tickets: [DashboardTicket]
+    var deferredIDs: [String]
+    var noBacklogIDs: Set<String>
+    var lastPromptAt: [String: Date]
+    var lastOutputAt: [String: Date]
+    var pinnedAt: [String: Date]
+    var mode: QueueActivitySortMode
+    var override: QueueOrderDocument?
+    var activityHour: Int?
   }
 
   /// Ticket cards, tab labels, and headers each read these lists, so one render
@@ -416,49 +434,69 @@ final class QueueViewModel {
   @ObservationIgnored private var agentUpdatesMemo = ProjectionMemo<AgentUpdatesKey, AgentUpdateLists>()
 
   private var allOpenTickets: [DashboardTicket] {
+    projectedOpenTickets(override: savedQueueOverride)
+  }
+
+  private func projectedOpenTickets(override queueOverride: QueueOrderDocument?) -> [DashboardTicket] {
     let tickets = dashboard.tickets
     let lastPromptAt = taskContexts.compactMapValues(\.lastPromptAt)
     let lastOutputAt = taskContexts.compactMapValues { context in
       context.subtasks.compactMap { $0.lastOutputAt ?? $0.resultAt }.max()
     }
     let mode = localState.queueActivitySortMode ?? .recentActivity
+    let pinnedAt = taskContexts.compactMapValues(\.pinnedAt)
     // Tasks leave the recent-activity window with time alone, so the memo
     // re-sorts at least hourly in that mode.
     let activityHour = mode == .recentActivity ? Int(Date().timeIntervalSinceReferenceDate / 3600) : nil
-    let key: OpenTicketsKey
-    if let savedQueueOrder {
-      key = .saved(order: savedQueueOrder, tickets: tickets, lastPromptAt: lastPromptAt,
-        lastOutputAt: lastOutputAt, mode: mode, activityHour: activityHour)
-    } else {
-      key = .derived(tickets: tickets, deferredIDs: localState.deferredTicketIDs,
-        noBacklogIDs: Set(recurringPRProgressByTicketID.compactMap { ticketID, progress in
-          progress.openCount == 0 ? ticketID : nil
-        }),
-        closureMessages: closureMessages, lastPromptAt: lastPromptAt, lastOutputAt: lastOutputAt, mode: mode,
-        activityHour: activityHour)
-    }
+    let key = OpenTicketsKey(
+      tickets: tickets,
+      deferredIDs: localState.deferredTicketIDs,
+      noBacklogIDs: Set(recurringPRProgressByTicketID.compactMap { ticketID, progress in
+        progress.openCount == 0 ? ticketID : nil
+      }),
+      lastPromptAt: lastPromptAt,
+      lastOutputAt: lastOutputAt,
+      pinnedAt: pinnedAt,
+      mode: mode,
+      override: queueOverride,
+      activityHour: activityHour)
     return openTicketsMemo.value(for: key) {
-      let baseline: [DashboardTicket]
-      switch key {
-      case .saved(let order, let tickets, _, _, _, _):
-        baseline = QueueOrderStore.orderedTickets(tickets, savedIDs: order)
-      case .derived(let tickets, let deferredIDs, let noBacklogIDs, let closureMessages, _, _, _, _):
-        let ordered = DashboardOrdering.openTickets(in: tickets, deferredTicketIDs: deferredIDs)
-        let closurePending = tickets.filter { $0.isCompleted && closureMessages[$0.id] != nil }
-        baseline = closurePending + ordered.filter { !noBacklogIDs.contains($0.id) }
-          + ordered.filter { noBacklogIDs.contains($0.id) }
-      }
-      return QueueOrderStore.prioritizingActivity(
+      let ordered = DashboardOrdering.openTickets(in: tickets, deferredTicketIDs: key.deferredIDs)
+      let baseline = ordered.filter { !key.noBacklogIDs.contains($0.id) }
+        + ordered.filter { key.noBacklogIDs.contains($0.id) }
+      let activityOrdered = QueueOrderStore.prioritizingActivity(
         baseline,
-        mode: mode,
-        lastPromptAtByTicketID: lastPromptAt,
-        lastOutputAtByTicketID: lastOutputAt)
+        mode: key.mode,
+        lastPromptAtByTicketID: key.lastPromptAt,
+        lastOutputAtByTicketID: key.lastOutputAt)
+      let automatic = QueueOrderStore.prioritizingPins(
+        activityOrdered, pinnedAtByTicketID: key.pinnedAt)
+      let automaticOpenIDs = automatic.filter(\.isOpen).map(\.id)
+      guard let override = key.override,
+            override.applies(to: automaticOpenIDs, sortMode: key.mode)
+      else { return automatic }
+      var remaining = Dictionary(
+        automatic.filter(\.isOpen).map { ($0.id, $0) },
+        uniquingKeysWith: { first, _ in first })
+      let explicitlyOrdered = override.orderedIDs.compactMap { remaining.removeValue(forKey: $0) }
+      var reordered = (explicitlyOrdered + automatic.filter { remaining.removeValue(forKey: $0.id) != nil })
+        .makeIterator()
+      let manuallyOrdered = automatic.map { $0.isOpen ? reordered.next()! : $0 }
+      // Placement can reorder only the unpinned tier. A move targeting a
+      // pinned task is therefore a visible no-op and never changes pin order.
+      return QueueOrderStore.prioritizingPins(
+        manuallyOrdered, pinnedAtByTicketID: key.pinnedAt)
     }
+  }
+
+  /// Automatic presentation without a temporary manual adjustment. Moves
+  /// capture these IDs as the invalidation baseline.
+  private var automaticOpenTicketIDs: [String] {
+    projectedOpenTickets(override: nil).filter(\.isOpen).map(\.id)
   }
 
   private struct CompletedTicketsKey: Equatable {
     var tickets: [DashboardTicket]
-    var closureMessages: [String: String]
     var today: String
   }
 
@@ -469,11 +507,13 @@ final class QueueViewModel {
   }
 
   private var completedTicketLists: CompletedTicketLists {
-    let key = CompletedTicketsKey(tickets: projectTickets, closureMessages: closureMessages,
+    let key = CompletedTicketsKey(tickets: projectTickets,
       today: Self.dayFormatter.string(from: Date()))
     return completedTicketsMemo.value(for: key) {
+      // A completed task stays here even when its cleanup needs attention;
+      // the card shows the cleanup message and a retry.
       let all = key.tickets
-        .filter { $0.isCompleted && key.closureMessages[$0.id] == nil }
+        .filter(\.isCompleted)
         .sorted {
           if $0.completionTimestamp != $1.completionTimestamp {
             return ($0.completionTimestamp ?? "") > ($1.completionTimestamp ?? "")
@@ -585,6 +625,7 @@ final class QueueViewModel {
   }
 
   var configurationURL: URL { paths.configurationFile }
+  var projectContextStore: ProjectContextStore { ProjectContextStore(root: paths.supportDirectory) }
   var projects: [ProjectConfiguration] { config.projects }
   var selectedProject: ProjectConfiguration? { config.selectedProject }
   var windowSnapshot: WindowSnapshot? { localState.window }
@@ -648,8 +689,8 @@ final class QueueViewModel {
         dashboard = document
       }
     }
-    if let order = try? queueOrderStore.load() { savedQueueOrder = order }
     taskContexts = await availableTaskContexts()
+    try? reloadApplicableQueueOverride()
   }
 
   /// Distinct dashboard files for every unarchived project, Other included.
@@ -791,7 +832,7 @@ final class QueueViewModel {
         } else if let merged = try? await loadAllProjectsDashboard() {
           dashboard = merged
         }
-        savedQueueOrder = nil
+        savedQueueOverride = nil
         sourceModificationDate = nil
         lastDashboardStamp = nil
         lastDashboardRead = nil
@@ -869,7 +910,7 @@ final class QueueViewModel {
     closePlan()
     setQueueChatInspectorPresented(false)
     setDailyReportPresented(false)
-    savedQueueOrder = nil
+    savedQueueOverride = nil
     sourceModificationDate = nil
     lastDashboardStamp = nil
     lastDashboardRead = nil
@@ -914,7 +955,7 @@ final class QueueViewModel {
       setDailyReportPresented(false)
       dashboard = snapshot.document
       loadError = nil
-      savedQueueOrder = nil
+      savedQueueOverride = nil
       sourceModificationDate = nil
       lastDashboardStamp = nil
       lastDashboardRead = nil
@@ -1261,6 +1302,9 @@ final class QueueViewModel {
       }
       closureMessages[ticket.id] = nil
       cleanupSignatures[ticket.id] = nil
+      if try await taskContextStore.load(ticketID: ticket.id) != nil {
+        taskContexts[ticket.id] = try await taskContextStore.setPinned(ticketID: ticket.id, at: nil)
+      }
       actionMessages[ticket.id] = "Task marked incomplete and returned to Focus."
       loadError = nil
       return true
@@ -1285,6 +1329,9 @@ final class QueueViewModel {
         await captureDurableDashboard(updated.document)
       }
       closureMessages[ticket.id] = nil
+      if try await taskContextStore.load(ticketID: ticket.id) != nil {
+        taskContexts[ticket.id] = try await taskContextStore.setPinned(ticketID: ticket.id, at: nil)
+      }
       actionMessages[ticket.id] = "Task archived without completion review."
       loadError = nil
       return true
@@ -1405,8 +1452,8 @@ final class QueueViewModel {
         lastDashboardRead = now
       }
       guard projectID == config.selectedProjectID else { return }
-      let updatedOrder = try queueOrderStore.load()
-      if savedQueueOrder != updatedOrder { savedQueueOrder = updatedOrder }
+      let updatedOverride = try queueOrderStore.loadOverride()
+      if savedQueueOverride != updatedOverride { savedQueueOverride = updatedOverride }
       pruneDeferredTickets()
       if sourceModificationDate != stamp.modifiedAt { sourceModificationDate = stamp.modifiedAt }
       // The footer displays minute precision. Polling every two seconds does
@@ -1418,6 +1465,7 @@ final class QueueViewModel {
       resetDailyRoutinesIfNeeded()
       await importAgentRegistrations()
       await refreshTaskContexts()
+      try reloadApplicableQueueOverride()
       await consumeEscalationLaunchRequests()
       if panelVisible { await refreshExternalAgentRegistrations() }
       if maintenanceEnabled {
@@ -1497,9 +1545,35 @@ final class QueueViewModel {
     }
   }
 
+  func isTicketPinned(_ ticketID: String) -> Bool {
+    taskContexts[ticketID]?.pinnedAt != nil
+  }
+
+  @discardableResult
+  func setTicketPinned(_ ticket: DashboardTicket, pinned: Bool) async -> Bool {
+    guard !pinned || ticket.isOpen else { return false }
+    do {
+      if try await taskContextStore.load(ticketID: ticket.id) == nil {
+        _ = try await taskContextStore.ensureContext(
+          ticket: ticket, project: project(for: ticket))
+      }
+      taskContexts[ticket.id] = try await taskContextStore.setPinned(
+        ticketID: ticket.id, at: pinned ? Date() : nil)
+      try? reloadApplicableQueueOverride()
+      actionMessages[ticket.id] = pinned ? "Task pinned to the top of Focus." : "Task unpinned."
+      return true
+    } catch {
+      actionMessages[ticket.id] = "Could not update pin: \(error.localizedDescription)"
+      return false
+    }
+  }
+
   func setQueueActivitySortMode(_ mode: QueueActivitySortMode) {
-    guard queueActivitySortMode != mode else { return }
-    localState.queueActivitySortMode = mode
+    let normalized = mode == .manual ? QueueActivitySortMode.recentActivity : mode
+    guard queueActivitySortMode != normalized else { return }
+    localState.queueActivitySortMode = normalized
+    try? queueOrderStore.reset()
+    savedQueueOverride = nil
     persistLocalState()
   }
 
@@ -1554,11 +1628,15 @@ final class QueueViewModel {
   @discardableResult
   func moveTicket(_ ticketID: String, to placement: QueuePlacement) -> Bool {
     do {
-      savedQueueOrder = try queueOrderStore.move(ticketID, to: placement,
-        tickets: dashboard.tickets, fallbackIDs: allOpenTickets.filter(\.isOpen).map(\.id),
-        visibleIDs: selectedProjectID.map { _ in Set(projectTickets.map(\.id)) })
-      localState.queueActivitySortMode = .manual
-      persistLocalState()
+      let automaticIDs = automaticOpenTicketIDs
+      let currentIDs = allOpenTickets.filter(\.isOpen).map(\.id)
+      _ = try queueOrderStore.move(ticketID, to: placement,
+        tickets: dashboard.tickets, fallbackIDs: automaticIDs,
+        visibleIDs: selectedProjectID.map { _ in Set(projectTickets.map(\.id)) },
+        currentIDs: currentIDs,
+        automaticBaselineIDs: automaticIDs,
+        sortMode: queueActivitySortMode)
+      savedQueueOverride = try queueOrderStore.loadOverride()
       actionMessages[ticketID] = "Queue position saved on this Mac."
       return true
     } catch {
@@ -1570,9 +1648,7 @@ final class QueueViewModel {
   func resetQueueOrder() {
     do {
       try queueOrderStore.reset()
-      savedQueueOrder = []
-      localState.queueActivitySortMode = .recentActivity
-      persistLocalState()
+      savedQueueOverride = nil
     } catch { loadError = error.localizedDescription }
   }
 
@@ -1592,14 +1668,18 @@ final class QueueViewModel {
   /// full refresh, which also polls processes, contexts, and reports.
   func reloadQueueOrder() {
     do {
-      let updated = try queueOrderStore.load()
-      if savedQueueOrder != updated {
-        savedQueueOrder = updated
-        setQueueActivitySortMode(updated?.isEmpty == false ? .manual : .recentActivity)
-      }
+      try reloadApplicableQueueOverride()
     } catch {
       // The next full refresh reports a persistent read failure.
     }
+  }
+
+  private func reloadApplicableQueueOverride() throws {
+    _ = try queueOrderStore.applicableOrder(
+      automaticIDs: automaticOpenTicketIDs,
+      sortMode: queueActivitySortMode)
+    let updated = try queueOrderStore.loadOverride()
+    if savedQueueOverride != updated { savedQueueOverride = updated }
   }
 
   @discardableResult
@@ -1643,7 +1723,7 @@ final class QueueViewModel {
     let scopedTaskIDs = ticketID.map { [$0] } ?? projectTickets.map(\.id)
     let chatWorkspace = ticketID.flatMap { id in dashboard.tickets.first { $0.id == id }.map(defaultRepository) }
       ?? selectedProject?.repositoryPath ?? config.workspacePath
-    let deferredTicketIDs = savedQueueOrder == nil ? localState.deferredTicketIDs.filter { scopedTaskIDs.contains($0) } : []
+    let deferredTicketIDs = localState.deferredTicketIDs.filter { scopedTaskIDs.contains($0) }
     let scopedMessage: String
     let provider = defaultAgentProvider
     let chatModel = Self.normalizedChatOption(defaultAgentModel(for: provider))
@@ -1796,7 +1876,7 @@ final class QueueViewModel {
 
   var isInspectorPresented: Bool {
     isQueueChatInspectorPresented || isDailyReportPresented || presentedPlanTicketID != nil
-      || presentedAgentUpdate != nil || isNotificationsInspectorPresented
+      || presentedAgentUpdate != nil || isNotificationsInspectorPresented || isDocumentViewerPresented
   }
 
   var presentedPlanTicket: DashboardTicket? {
@@ -1957,14 +2037,31 @@ final class QueueViewModel {
   }
 
   func documentConversation(for url: URL, ticketID: String) -> DocumentConversation? {
-    guard let document = DocumentPaneLocation.normalized(url), let context = taskContexts[ticketID] else { return nil }
-    let key = DocumentConversation.key(document: document, taskID: ticketID)
+    documentConversation(for: url, scope: .task(ticketID))
+  }
+
+  func documentConversation(for url: URL, scope: DocumentScope) -> DocumentConversation? {
+    guard let document = DocumentPaneLocation.normalized(url) else { return nil }
+    let subject: DocumentConversationSubject
+    var dashboardPath = config.dashboardPath
+    switch scope {
+    case .task(let ticketID):
+      guard let context = taskContexts[ticketID] else { return nil }
+      subject = DocumentConversationSubject(kind: .task(context))
+    case .project(let projectID):
+      guard let project = config.projects.first(where: { $0.id == projectID }),
+            let plan = try? projectContextStore.ensurePlan(for: project) else { return nil }
+      subject = DocumentConversationSubject(
+        kind: .project(project, planPath: plan.path, directory: plan.deletingLastPathComponent()))
+      if !project.dashboardPath.isEmpty { dashboardPath = project.dashboardPath }
+    }
+    let key = DocumentConversation.key(document: document, taskID: subject.scopeID)
     if let existing = documentConversations[key] { return existing }
     let provider = defaultAgentProvider
     var documentConfiguration = config.verifier
     documentConfiguration.executable = config.chatExecutable(for: provider)
-    let conversation = DocumentConversation(document: document, context: context, support: paths.supportDirectory,
-      agent: queueAgent(for: provider), configuration: documentConfiguration, dashboardPath: config.dashboardPath, workspace: config.workspacePath,
+    let conversation = DocumentConversation(document: document, subject: subject, support: paths.supportDirectory,
+      agent: queueAgent(for: provider), configuration: documentConfiguration, dashboardPath: dashboardPath, workspace: config.workspacePath,
       model: Self.normalizedChatOption(defaultAgentModel(for: provider)),
       effort: Self.normalizedChatOption(defaultAgentEffort(for: provider)))
     documentConversations[key] = conversation
@@ -2027,10 +2124,10 @@ final class QueueViewModel {
       guard snapshot.errors[ticket.id] == nil, let context = taskContexts[ticket.id] else { continue }
       if ticket.isCompleted, cleanupSignatures[ticket.id] != context.updatedAt {
         cleanupSignatures[ticket.id] = context.updatedAt
-        await finalizeCompletedTask(ticket)
+        Task { await finalizeCompletedTask(ticket) }
       } else if config.completionReviewEnabled, ticket.isOpen,
                 ticket.queueTaskKind != .customerConcern,
-                !context.focusSubtasks.filter(\.tracksCompletion).isEmpty, context.focusSubtasks.filter(\.tracksCompletion).allSatisfy({ $0.status == .completed }),
+                !context.focusSubtasks.filter(\.tracksCompletion).isEmpty, context.focusSubtasks.filter(\.tracksCompletion).allSatisfy(context.isCompletionSeen),
                 !context.subtasks.contains(where: { $0.completionOverrideAt != nil }),
                 !localState.completionRequests.contains(where: {
                   $0.ticketID == ticket.id && [.pending, .running].contains($0.status)
@@ -2046,17 +2143,21 @@ final class QueueViewModel {
         }
       }
     }
-    for ticket in tickets {
-      for subtask in subtasks(for: ticket.id) where taskContexts[ticket.id]?.canAutomaticallyRetire(subtask) == true {
-        await retireAgent(subtask, for: ticket, automatically: true)
-      }
-    }
     if panelVisible, lastIdentityRefresh == nil || Date().timeIntervalSince(lastIdentityRefresh!) >= 15 {
       lastIdentityRefresh = Date()
       let observed = tickets.flatMap { ticket in
         visibleAgents(for: ticket.id).map { (ticketID: ticket.id, subtask: $0) }
       }
-      for entry in observed {
+      // A finished agent keeps running and can be prompted again; only its
+      // transcript shows that it went back to work. Older builds archived it
+      // with its terminal kept open.
+      let retained = tickets.filter(\.isOpen).flatMap { ticket in
+        subtasks(for: ticket.id).filter {
+          $0.status == .completed && $0.sessionID != nil && !$0.isAgentVisible
+            && ($0.agentRemovedAt == nil || $0.completionTerminalRetained == true)
+        }.map { (ticketID: ticket.id, subtask: $0) }
+      }
+      for entry in observed + retained {
         if let events = try? await agentActivityObserver.events(for: entry.subtask) {
           for event in events {
             do {
@@ -2072,12 +2173,24 @@ final class QueueViewModel {
       }
       let terminalSnapshot = await taskAgentLauncher.runtimeSnapshot(
         subtasks: observed.map(\.subtask), configuration: config.wezTerm)
+      liveRuntimeSubtaskIDs = TaskAgentLauncher.liveRuntimeSubtaskIDs(
+        subtasks: observed.map(\.subtask), configuration: config.wezTerm, snapshot: terminalSnapshot)
+      spinningRuntimeSubtaskIDs = TaskAgentLauncher.spinningRuntimeSubtaskIDs(
+        subtasks: observed.map(\.subtask), snapshot: terminalSnapshot)
       let attentions = await taskAgentLauncher.runtimeAttention(
         subtasks: observed.map(\.subtask), configuration: config.wezTerm, snapshot: terminalSnapshot)
       for entry in observed {
         guard let attention = attentions[entry.subtask.id],
              let latest = subtasks(for: entry.ticketID).first(where: { $0.id == entry.subtask.id }),
              latest.attention != attention else { continue }
+        if attention == nil, latest.attention == .approval {
+          // The probe recognizes approval dialogs, so one that is gone was answered.
+          do {
+            taskContexts[entry.ticketID] = try await taskContextStore.resolveApproval(
+              ticketID: entry.ticketID, subtaskID: entry.subtask.id)
+          } catch { actionMessages[entry.ticketID] = error.localizedDescription }
+          continue
+        }
         do {
           taskContexts[entry.ticketID] = try await taskContextStore.reportAttention(ticketID: entry.ticketID,
             subtaskID: entry.subtask.id, attention: attention,
@@ -2103,7 +2216,7 @@ final class QueueViewModel {
     for session in localState.agentSessions { await bindSubtask(to: session) }
     let now = Date()
     if taskContexts.values.contains(where: { context in
-      context.subtasks.contains { $0.effectiveStatus(now: lastActivityCheck) != $0.effectiveStatus(now: now) }
+      context.subtasks.contains { displayStatus($0, now: lastActivityCheck) != displayStatus($0, now: now) }
     }) { subtaskActivityRevision &+= 1 }
     lastActivityCheck = now
     await reloadPresentedPlan()
@@ -2123,6 +2236,7 @@ final class QueueViewModel {
     isQueueChatInspectorPresented = false
     presentedAgentUpdate = nil
     isDailyReportPresented = false
+    isDocumentViewerPresented = false
     presentedPlanTicketID = ticket.id
     presentedPlanURL = sourceURL
     presentedPlanMarkdown = ""
@@ -2242,6 +2356,7 @@ final class QueueViewModel {
       presentedPlanTicketID = nil
       presentedPlanURL = nil
       isDailyReportPresented = false
+      isDocumentViewerPresented = false
     }
     isNotificationsInspectorPresented = presented
     reportVisibilityHandler?(isInspectorPresented)
@@ -2265,6 +2380,7 @@ final class QueueViewModel {
     presentedPlanTicketID = nil
     presentedPlanURL = nil
     isDailyReportPresented = false
+    isDocumentViewerPresented = false
     presentedAgentUpdate = update
     reportVisibilityHandler?(true)
     Task {
@@ -2320,6 +2436,63 @@ final class QueueViewModel {
     reportVisibilityHandler?(isInspectorPresented)
   }
 
+  /// Shows a file in the side document viewer. A new scope starts a fresh set
+  /// of tabs; the same scope adds a tab and selects it.
+  func openDocumentViewer(_ url: URL, scope: DocumentScope?) {
+    guard let location = DocumentPaneLocation.normalized(url) else { return }
+    if documentViewerScope != scope || !isDocumentViewerPresented {
+      if documentViewerScope != scope { documentViewer = DocumentPaneState() }
+      documentViewerScope = scope
+    }
+    isNotificationsInspectorPresented = false
+    returnsToNotifications = false
+    isQueueChatInspectorPresented = false
+    presentedAgentUpdate = nil
+    presentedPlanTicketID = nil
+    presentedPlanURL = nil
+    isDailyReportPresented = false
+    documentViewer.open(location, in: .primary)
+    // The viewer pairs a document with its chat; links open the split view.
+    documentViewer.centralChatCollapsed = false
+    isDocumentViewerPresented = true
+    reportVisibilityHandler?(true)
+  }
+
+  func closeDocumentViewer() {
+    guard isDocumentViewerPresented else { return }
+    isDocumentViewerPresented = false
+    documentViewer.dismiss()
+    reportVisibilityHandler?(isInspectorPresented)
+  }
+
+  func closeDocumentViewerTab(_ url: URL) {
+    documentViewer.close(url)
+    if !documentViewer.isPresented { closeDocumentViewer() }
+  }
+
+  /// The task or project a link with no explicit owner belongs to: a file
+  /// inside a task's context folder opens with that task; anything else opens
+  /// under the project it lives in, or the selected project.
+  func documentScope(for url: URL) -> DocumentScope? {
+    let path = url.standardizedFileURL.path
+    let tasks = paths.supportDirectory.appendingPathComponent("tasks", isDirectory: true).standardizedFileURL.path + "/"
+    if path.hasPrefix(tasks),
+       let ticketID = path.dropFirst(tasks.count).split(separator: "/").first.map(String.init),
+       dashboard.tickets.contains(where: { $0.id == ticketID }) {
+      return .task(ticketID)
+    }
+    let projectsRoot = paths.supportDirectory.appendingPathComponent("projects", isDirectory: true).standardizedFileURL.path + "/"
+    if path.hasPrefix(projectsRoot),
+       let projectID = path.dropFirst(projectsRoot.count).split(separator: "/").first.map(String.init),
+       config.projects.contains(where: { $0.id == projectID }) {
+      return .project(projectID)
+    }
+    if let project = activeProjects.first(where: {
+      !$0.repositoryPath.isEmpty && path.hasPrefix(URL(fileURLWithPath: $0.repositoryPath).standardizedFileURL.path + "/")
+    }) { return .project(project.id) }
+    return (selectedProject ?? activeProjects.first).map { .project($0.id) }
+  }
+
   func setQueueChatInspectorPresented(_ presented: Bool) {
     if presented {
       isNotificationsInspectorPresented = false
@@ -2328,6 +2501,7 @@ final class QueueViewModel {
       presentedPlanTicketID = nil
       presentedPlanURL = nil
       isDailyReportPresented = false
+      isDocumentViewerPresented = false
     }
     isQueueChatInspectorPresented = presented
     reportVisibilityHandler?(isInspectorPresented)
@@ -2573,7 +2747,20 @@ final class QueueViewModel {
 
   func effectiveStatus(for subtask: TaskSubtask) -> TaskSubtaskStatus {
     _ = subtaskActivityRevision
-    return subtask.effectiveStatus()
+    return displayStatus(subtask)
+  }
+
+  /// A long tool call writes no transcript records, so a live pane keeps
+  /// Working longer before it reads as "No recent update".
+  private func displayStatus(_ subtask: TaskSubtask, now: Date = Date()) -> TaskSubtaskStatus {
+    subtask.effectiveStatus(now: now, heartbeatLifetime: subtask.heartbeatLifetime(
+      liveRuntime: liveRuntimeSubtaskIDs.contains(subtask.id),
+      runtimeShowsWork: spinningRuntimeSubtaskIDs.contains(subtask.id)))
+  }
+
+  /// Only a fresh conversation sent its initial prompt starts out Working.
+  private static func launchStatus(_ subtask: TaskSubtask, includePrompt: Bool) -> TaskSubtaskStatus {
+    subtask.sessionID == nil && includePrompt ? .working : .idle
   }
 
   func isOpening(_ subtask: TaskSubtask, ticketID: String) -> Bool {
@@ -2633,6 +2820,10 @@ final class QueueViewModel {
 
   func taskItems(for ticketID: String) -> [TaskSubtask] {
     taskContexts[ticketID]?.taskItems ?? []
+  }
+
+  func isCompletionSeen(_ subtask: TaskSubtask, ticketID: String) -> Bool {
+    taskContexts[ticketID]?.isCompletionSeen(subtask) ?? subtask.isCompletionSeen
   }
 
   func agents(for subtask: TaskSubtask, ticketID: String) -> [TaskSubtask] {
@@ -2772,8 +2963,10 @@ final class QueueViewModel {
           let runtime = try await taskAgentLauncher.startManagedSession(context: context, subtask: assignment,
             supportDirectory: paths.supportDirectory, tmuxExecutable: executable,
             usageBarEnabled: config.agentUsageBarEnabled)
+          // A resumed conversation is sent no prompt, so it waits for input.
           taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
-            ticketID: ticket.id, subtaskID: assignment.id, tmux: runtime)
+            ticketID: ticket.id, subtaskID: assignment.id, tmux: runtime,
+            status: assignment.sessionID == nil ? .working : .idle)
           assignment.tmux = runtime
           _ = try await terminalController.openAgentRuntime(assignment, taskID: ticket.id, taskTitle: ticket.title, configuration: config.wezTerm)
         } else {
@@ -2781,7 +2974,8 @@ final class QueueViewModel {
           let receipt = try await taskAgentLauncher.launchDirect(context: context, subtask: assignment,
             configuration: config.wezTerm, supportDirectory: paths.supportDirectory)
           taskContexts[ticket.id] = try await taskContextStore.setDirectRuntime(
-            ticketID: ticket.id, subtaskID: assignment.id, paneID: receipt.paneID, socketPath: receipt.socketPath)
+            ticketID: ticket.id, subtaskID: assignment.id, paneID: receipt.paneID, socketPath: receipt.socketPath,
+            status: assignment.sessionID == nil ? .working : .idle)
           assignment.tmux = nil
           assignment.terminalPaneID = receipt.paneID
           assignment.terminalSocketPath = receipt.socketPath
@@ -2960,7 +3154,8 @@ final class QueueViewModel {
           runtimeStarted = true
           phase = "saving the confirmed tmux process"
           taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
-            ticketID: ticket.id, subtaskID: subtask.id, tmux: tmux)
+            ticketID: ticket.id, subtaskID: subtask.id, tmux: tmux,
+            status: Self.launchStatus(subtask, includePrompt: includePrompt))
           if includePrompt {
             taskContexts[ticket.id] = try await taskContextStore.recordPrompt(ticketID: ticket.id)
           }
@@ -2989,7 +3184,8 @@ final class QueueViewModel {
           phase = "saving the direct WezTerm pane"
           taskContexts[ticket.id] = try await taskContextStore.setDirectRuntime(
             ticketID: ticket.id, subtaskID: subtask.id, paneID: receipt.paneID,
-            socketPath: receipt.socketPath)
+            socketPath: receipt.socketPath,
+            status: Self.launchStatus(subtask, includePrompt: includePrompt))
           if includePrompt {
             taskContexts[ticket.id] = try await taskContextStore.recordPrompt(ticketID: ticket.id)
           }
@@ -3075,7 +3271,8 @@ final class QueueViewModel {
             Self.subtaskKey(ticketID: ticket.id, subtaskID: assignment.id)
           ] = error.localizedDescription
           taskContexts[ticket.id] = try? await taskContextStore.updateProgress(ticketID: ticket.id,
-            subtaskID: assignment.id, status: runtimeStarted ? .working : .blocked,
+            subtaskID: assignment.id,
+            status: runtimeStarted ? Self.launchStatus(assignment, includePrompt: includePrompt) : .blocked,
             summary: !runtimeStarted
               ? "Agent did not start during \(phase): \(error.localizedDescription)"
               : "Agent is running; its terminal view did not open: \(error.localizedDescription)")
@@ -3394,40 +3591,47 @@ final class QueueViewModel {
     }
   }
 
-  private func finalizeCompletedTask(_ ticket: DashboardTicket) async {
-    do {
-      let lease = try await TaskMaintenance.lease(ticketID: ticket.id, root: paths.supportDirectory)
-      defer { lease.release() }
-      let maintenance = TaskMaintenance(root: paths.supportDirectory)
-      try await taskContextStore.archive(ticketID: ticket.id)
-      if focusSubtasks(for: ticket.id).contains(where: { $0.tracksCompletion && $0.status != .completed }) {
-        closureMessages[ticket.id] = "Completion needs review: some subtasks remain open."
+  /// Completion is final: tmux stops, worktrees move to a 7-day trash, and
+  /// branches are deleted once their work is merged or archived. Tasks that
+  /// were completed before this ran are left for an explicit, reviewed
+  /// `focus-queue-session cleanup --completed`, never swept on launch.
+  private func finalizeCompletedTask(_ ticket: DashboardTicket, force: Bool = false) async {
+    guard cleaningTaskIDs.insert(ticket.id).inserted else { return }
+    defer { cleaningTaskIDs.remove(ticket.id) }
+    let completedAt = ticket.completionTimestamp.flatMap(Self.parseCompletionDate)
+    if !force {
+      if let saved = TaskCompletionCleanup.savedReport(ticketID: ticket.id, root: paths.supportDirectory),
+         completedAt.map({ saved.finishedAt >= $0 }) ?? true {
+        closureMessages[ticket.id] = saved.isClean ? nil : saved.summary
         return
       }
-      for subtask in subtasks(for: ticket.id) where subtask.hasManagedWorkspaces {
-        guard subtask.status == .completed else {
-          closureMessages[ticket.id] = "Workspace retained: an agent assignment is still open."
-          return
-        }
-        try await maintenance.requireInactive(subtask)
-        let cleanup = try await taskWorktreeManager.cleanupAgent(ticketID: ticket.id, subtask: subtask, store: taskContextStore)
-        if !cleanup.removed { closureMessages[ticket.id] = cleanup.message; return }
-      }
-      let wasManaged = taskContexts[ticket.id]?.managedWorktree == true
-      if wasManaged, let context = taskContexts[ticket.id], let path = context.worktreePath {
-        var owner = TaskSubtask(id: "task-workspace", title: ticket.id)
-        owner.workspace = AgentWorkspace(path: path, repositoryPath: context.repositoryPath ?? path, managed: true)
-        try await maintenance.requireInactive(owner)
-      }
-      let result = try await taskWorktreeManager.cleanup(ticketID: ticket.id, store: taskContextStore)
-      closureMessages[ticket.id] = wasManaged && !result.removed ? result.message : nil
-      actionMessages[ticket.id] = result.message
-      taskContexts[ticket.id] = try await taskContextStore.load(ticketID: ticket.id)
-    } catch { closureMessages[ticket.id] = "Cleanup needs attention: \(error.localizedDescription)" }
+      guard let completedAt, Date().timeIntervalSince(completedAt) < 24 * 60 * 60 else { return }
+    }
+    let cleanup = TaskCompletionCleanup(root: paths.supportDirectory,
+      projectRepositories: config.projects.flatMap { [$0.repositoryPath, $0.workspacePath] },
+      tmuxExecutable: config.tmuxExecutable)
+    let report = await cleanup.run(ticketID: ticket.id)
+    closureMessages[ticket.id] = report.isClean ? nil : report.summary
+    actionMessages[ticket.id] = report.summary
+    if let context = try? await taskContextStore.load(ticketID: ticket.id) {
+      taskContexts[ticket.id] = context
+      cleanupSignatures[ticket.id] = context.updatedAt
+    }
+    if lastStagingPurge.map({ Date().timeIntervalSince($0) > 6 * 60 * 60 }) ?? true {
+      lastStagingPurge = Date()
+      _ = await cleanup.purgeExpiredStaging()
+    }
+  }
+
+  private static func parseCompletionDate(_ value: String) -> Date? {
+    let formatter = ISO8601DateFormatter()
+    if let date = formatter.date(from: value) { return date }
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.date(from: value)
   }
 
   func retryCleanup(for ticket: DashboardTicket) {
-    Task { await finalizeCompletedTask(ticket) }
+    Task { await finalizeCompletedTask(ticket, force: true) }
   }
 
   func routineIsComplete(_ id: String) -> Bool {
@@ -3784,7 +3988,7 @@ final class QueueViewModel {
       let shouldForceReferenceDiscovery = force && !unseenReferenceKeys.isEmpty
       if shouldForceReferenceDiscovery { forcedIntakeReferenceKeys.formUnion(unseenReferenceKeys) }
       let hasActiveVisibleAgents = dashboard.tickets.contains { ticket in
-        visibleAgents(for: ticket.id).contains { $0.effectiveStatus() == .working }
+        visibleAgents(for: ticket.id).contains { displayStatus($0) == .working }
       }
       // Idle polls recover half as often; active agents keep the fast cadence.
       let recoveryDue = lastExternalAgentDiscovery == nil
@@ -3981,27 +4185,13 @@ final class QueueViewModel {
     archiveAgent(subtask, from: ticket)
   }
 
-  private func retireAgent(_ subtask: TaskSubtask, for ticket: DashboardTicket, automatically: Bool = false) async {
-    if automatically && !config.autoExitCompletedAgents { return }
+  /// Only an explicit user action retires an agent. Completion never stops,
+  /// replaces, or archives the provider; it keeps running in its pane.
+  private func retireAgent(_ subtask: TaskSubtask, for ticket: DashboardTicket) async {
     do {
       let lease = try await TaskMaintenance.lease(ticketID: ticket.id, root: paths.supportDirectory)
       defer { lease.release() }
-      if automatically {
-        guard let context = taskContexts[ticket.id], context.canAutomaticallyRetire(subtask) else { return }
-        let terminal = try await taskAgentLauncher.finishRuntime(
-          context: context, subtask: subtask, taskCompleted: ticket.isCompleted,
-          configuration: config.wezTerm)
-        switch terminal {
-        case .managed(let reference):
-          taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
-            ticketID: ticket.id, subtaskID: subtask.id, tmux: reference)
-        case .direct(let receipt):
-          taskContexts[ticket.id] = try await taskContextStore.setDirectRuntime(
-            ticketID: ticket.id, subtaskID: subtask.id, paneID: receipt.paneID, socketPath: receipt.socketPath)
-        case .absent: break
-        }
-      }
-      taskContexts[ticket.id] = try await taskContextStore.archiveAgent(ticketID: ticket.id, subtaskID: subtask.id, automatically: automatically)
+      taskContexts[ticket.id] = try await taskContextStore.archiveAgent(ticketID: ticket.id, subtaskID: subtask.id)
       localState.agentSessions.removeAll {
         $0.ticketID == ticket.id && ($0.subtaskID == subtask.id ||
           ($0.provider == subtask.provider && $0.sessionID.caseInsensitiveCompare(subtask.sessionID ?? "") == .orderedSame))
@@ -4009,10 +4199,6 @@ final class QueueViewModel {
       agentSessionErrors[Self.subtaskKey(ticketID: ticket.id, subtaskID: subtask.id)] = nil
       persistLocalState()
       actionMessages[ticket.id] = "Agent archived. Its assignment, conversation, and workspace history are retained."
-      if automatically {
-        actionMessages[ticket.id] = "Agent exited. Its terminal and workspace remain available to continue the conversation."
-        return
-      }
       // List removal is independent of process cleanup and completion approval.
       do { try await taskAgentLauncher.closeRuntime(subtask: subtask, configuration: config.wezTerm) }
       catch { actionMessages[ticket.id] = "Agent archived. \(error.localizedDescription)" }
@@ -4090,10 +4276,6 @@ final class QueueViewModel {
         settleOverriddenReviews(ticketID: ticket.id)
         persistLocalState()
         closureMessages[ticket.id] = nil
-        let completedAgents = taskContexts[ticket.id]?.agents(for: subtask.id, includingRemoved: true) ?? []
-        for completed in completedAgents where completed.status == .completed {
-          await retireAgent(completed, for: ticket, automatically: true)
-        }
         actionMessages[ticket.id] = "Subtask marked complete. Review history saved."
         if presentedAgentUpdate?.ticketID == ticket.id { closeAgentUpdate() }
       } catch { actionMessages[ticket.id] = error.localizedDescription }
@@ -4183,23 +4365,19 @@ final class QueueViewModel {
     }
   }
 
-  func open(_ rawValue: String) {
+  /// Local PDFs, Markdown, and text files open in Focus Queue's own viewer:
+  /// beside the task plan when the link belongs to a task, otherwise in the
+  /// side document viewer. Everything else goes to its default app.
+  func open(_ rawValue: String, ticketID: String? = nil) {
     guard let url = ResourceLocator.url(for: rawValue) else { return }
-    if url.isFileURL {
-      switch url.pathExtension.lowercased() {
-      case "md", "markdown":
-        do {
-          try MarkdownBrowser.open(url)
-        } catch {
-          loadError = "Could not open Markdown file: \(error.localizedDescription)"
-        }
-        return
-      case "pdf":
-        Self.openPDF(url)
-        return
-      default:
-        break
+    if let document = InAppDocument.fileURL(for: url) {
+      let scope = ticketID.map { DocumentScope.task($0) } ?? documentScope(for: document)
+      if case .task(let id) = scope, let ticket = dashboard.tickets.first(where: { $0.id == id }) {
+        openPlan(for: ticket, sourceURL: document)
+      } else {
+        openDocumentViewer(document, scope: scope)
       }
+      return
     }
     NSWorkspace.shared.open(url)
   }
@@ -4216,6 +4394,7 @@ final class QueueViewModel {
       presentedAgentUpdate = nil
       presentedPlanTicketID = nil
       presentedPlanURL = nil
+      isDocumentViewerPresented = false
     } else if isDailyReportPresented {
       reopenNotificationsIfReturning()
     }
@@ -4887,6 +5066,9 @@ final class QueueViewModel {
       lastDashboardStamp = nil
       lastDashboardRead = nil
     }
+    if try await taskContextStore.load(ticketID: ticketID) != nil {
+      taskContexts[ticketID] = try await taskContextStore.setPinned(ticketID: ticketID, at: nil)
+    }
     return updated.document.tickets.first(where: { $0.id == ticketID })
   }
 
@@ -5056,11 +5238,6 @@ final class QueueViewModel {
     recordDurableError(warning, scope: "import-warnings")
   }
 
-  func setAutoExitCompletedAgents(_ enabled: Bool) {
-    config.autoExitCompletedAgents = enabled
-    persistConfiguration()
-  }
-
   func setCompletionReviewEnabled(_ enabled: Bool) {
     guard config.completionReviewEnabled != enabled else { return }
     config.completionReviewEnabled = enabled
@@ -5227,33 +5404,6 @@ final class QueueViewModel {
     }
     response += " Open the document button in the queue header for message and task links."
     return response
-  }
-
-  private static func openPDF(_ url: URL) {
-    let workspace = NSWorkspace.shared
-    guard let preview = workspace.urlForApplication(withBundleIdentifier: "com.apple.Preview")
-    else {
-      openPDFInBrowser(url)
-      return
-    }
-    workspace.open(
-      [url], withApplicationAt: preview, configuration: NSWorkspace.OpenConfiguration()
-    ) { _, error in
-      if error != nil {
-        DispatchQueue.main.async {
-          openPDFInBrowser(url)
-        }
-      }
-    }
-  }
-
-  private static func openPDFInBrowser(_ url: URL) {
-    let workspace = NSWorkspace.shared
-    guard let safari = workspace.urlForApplication(withBundleIdentifier: "com.apple.Safari") else {
-      workspace.open(url)
-      return
-    }
-    workspace.open([url], withApplicationAt: safari, configuration: NSWorkspace.OpenConfiguration())
   }
 
   private static let dayFormatter: DateFormatter = {

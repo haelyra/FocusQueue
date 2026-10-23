@@ -64,14 +64,13 @@ import Testing
         #expect(result.succeeded, "\(shell): \(result.standardError)")
         let captured = result.standardOutput.split(separator: "\0", omittingEmptySubsequences: false).dropLast().map(String.init)
         #expect(captured.first == (provider == .codex ? "alias" : "function"))
-        if provider == .codex {
-          #expect(captured.dropFirst().prefix(3) == ["--no-daemon", "--add-dir", context.contextDirectory.path])
-        } else {
-          #expect(captured.dropFirst().prefix(2) == ["--add-dir", context.contextDirectory.path])
-          #expect(!captured.contains("--no-daemon"))
-        }
+        // Claude's status hooks arrive as one `--settings` JSON value ahead of the shared flags.
+        let leading = provider == .codex ? ["--no-daemon"]
+          : provider == .claude ? ["--settings", AgentHookStatus.claudeSettings(pluginOverrides: [:], statusHooks: true)!] : []
+        #expect(Array(captured.dropFirst().prefix(leading.count + 2)) == leading + ["--add-dir", context.contextDirectory.path])
+        if provider != .codex { #expect(!captured.contains("--no-daemon")) }
         if includePrompt { #expect(captured.last?.contains(hostile) == true) }
-        else { #expect(captured.count == (provider == .codex ? 4 : 3)) }
+        else { #expect(captured.count == leading.count + 3) }
         #expect(!FileManager.default.fileExists(atPath: sentinel.path))
       }
     }
@@ -157,6 +156,35 @@ func exactCodexResumeRecipe() async throws {
   #expect(arguments == ["resume", sessionID, "--cd", root.path, "--no-daemon",
     "--model", "gpt-test", "-c", "model_reasoning_effort=high",
     "--add-dir", context.contextDirectory.path])
+}
+
+@Test("Only explicit Codex sub-agent metadata names a parent thread")
+func subagentParentRequiresSubagentMetadata() throws {
+  let fixture = FileManager.default.temporaryDirectory.appendingPathComponent(
+    "lineage-subagent-\(UUID().uuidString)", isDirectory: true)
+  let sessions = fixture.appendingPathComponent("sessions/2026/10/23", isDirectory: true)
+  try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: fixture) }
+  let rootID = "01a16a03-76d9-7c33-a528-a62d9dfecf67"
+  let childID = "01a16a03-fa2d-7553-8859-0219d4c23406"
+  let forkID = "01a16a0b-0000-7000-8000-000000000001"
+  for (id, payload) in [
+    (rootID, "\"session_id\":\"\(rootID)\",\"source\":\"cli\",\"thread_source\":\"user\""),
+    (childID, "\"session_id\":\"\(rootID)\",\"parent_thread_id\":\"\(rootID)\","
+      + "\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"\(rootID)\"}}},"
+      + "\"thread_source\":\"subagent\""),
+    // A user fork shares the session family but is its own agent.
+    (forkID, "\"session_id\":\"\(rootID)\",\"forked_from_id\":\"\(rootID)\",\"source\":\"cli\""),
+  ] {
+    try Data("{\"type\":\"session_meta\",\"payload\":{\"id\":\"\(id)\",\(payload)}}\n".utf8)
+      .write(to: sessions.appendingPathComponent("rollout-2026-10-23T14-26-14-\(id).jsonl"))
+  }
+  #expect(CodexSessionLineage.subagentParent(of: childID, codexRoot: fixture) == rootID)
+  #expect(CodexSessionLineage.subagentParent(of: childID.uppercased(), codexRoot: fixture) == rootID)
+  #expect(CodexSessionLineage.subagentParent(of: rootID, codexRoot: fixture) == nil)
+  #expect(CodexSessionLineage.subagentParent(of: forkID, codexRoot: fixture) == nil)
+  #expect(CodexSessionLineage.subagentParent(
+    of: "dddddddd-4444-4444-8444-dddddddddddd", codexRoot: fixture) == nil)
 }
 
 @Test("A Codex sub-agent resume targets the root of its conversation lineage")
@@ -475,6 +503,8 @@ func batchedRuntimeAttentionSharesListingAndSkipsFreshHeartbeats() async throws 
   #expect(!attentions.keys.contains(fresh.id))
   #expect(attentions[gone.id]! == .interrupted)
   let calls = await runner.specifications
-  #expect(calls.filter { $0.arguments.contains("list-panes") }.count == 1)
+  // One identity listing and one Codex title listing serve every subtask.
+  #expect(calls.filter { $0.arguments.contains("list-panes") && !$0.arguments.contains("#{pane_id} #{pane_title}") }.count == 1)
+  #expect(calls.filter { $0.arguments.contains("#{pane_id} #{pane_title}") }.count == 1)
   #expect(calls.filter { $0.arguments.contains("capture-pane") }.count == 1)
 }

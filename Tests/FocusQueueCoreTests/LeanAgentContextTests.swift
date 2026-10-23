@@ -128,7 +128,8 @@ func leanTaskDataInlining() async throws {
     let root = try leanFixture(); defer { try? FileManager.default.removeItem(at: root) }
     let context = try await TaskContextStore(root: root).ensureContext(ticket: leanTicket)
     let agent = TaskSubtask(title: "Fix chat markdown")
-    #expect(context.agentPrompt(subtask: agent).contains("Task data: \(context.dataURL.path) (record durable task facts"))
+    #expect(context.agentPrompt(subtask: agent).contains("Task data: \(context.dataURL.path)."))
+    #expect(context.agentPrompt(subtask: agent).contains("one or two short sentences"))
     #expect(!context.agentPrompt(subtask: agent).contains(TaskContext.dataTemplateBody))
     try Data("# ECC-950 task data\n\n- Chat view lives in ChatMarkdownView.swift.\n".utf8).write(to: context.dataURL)
     let prompt = context.agentPrompt(subtask: agent)

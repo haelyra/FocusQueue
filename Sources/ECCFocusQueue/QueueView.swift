@@ -154,6 +154,8 @@ struct QueueView: View {
       )).id(update.id)
     } else if model.isDailyReportPresented {
       DailyReportView(model: model)
+    } else if model.isDocumentViewerPresented {
+      DocumentViewerInspector(model: model)
     } else if let ticket = model.presentedPlanTicket {
       PlanCanvasView(model: model, ticket: ticket, chatDraft: Binding(
         get: { taskAgentDrafts[ticket.id] ?? "" },
@@ -403,7 +405,7 @@ struct QueueView: View {
       HStack {
         focusHeading(resultCount: search?.tickets.count)
         Menu {
-          ForEach(QueueActivitySortMode.allCases) { mode in
+          ForEach(QueueActivitySortMode.allCases.filter { $0 != .manual }) { mode in
             Button { model.setQueueActivitySortMode(mode) } label: {
               if model.queueActivitySortMode == mode {
                 Label(mode.displayName, systemImage: "checkmark")
@@ -495,7 +497,7 @@ struct QueueView: View {
           + " · code, status, priority",
         resultCount: resultCount, endEditing: endTaskSearchEditing, close: closeTaskSearch)
     } else if agentViewEnabled {
-      focusHeadingButton(title: "Today's focus", detail: "\(agentViewEntries(for: focusTickets).count) agents")
+      focusHeadingButton(title: "Today's focus", detail: "\(agentViewAgentCount(for: focusTickets)) agents")
     } else {
       focusHeadingButton(title: focusDropIsTargeted ? "Drop to Today's focus" : "Today's focus", detail: nil)
       .dropDestination(for: String.self) { ticketIDs, _ in
@@ -550,40 +552,38 @@ struct QueueView: View {
     isTaskSearchActive = false
   }
 
-  private struct AgentViewEntry: Identifiable {
+  private struct AgentViewGroup: Identifiable {
     let ticket: DashboardTicket
-    let agent: TaskSubtask
-    var id: String { ticket.id + ":" + agent.id }
+    let agents: [TaskSubtask]
+    var id: String { ticket.id }
   }
 
-  private func agentViewEntries(for tickets: [DashboardTicket]) -> [AgentViewEntry] {
-    var entries: [AgentViewEntry] = []
-    for ticket in tickets {
-      for agent in model.taskItems(for: ticket.id) where agent.hasAgent && agent.agentRemovedAt == nil {
-        entries.append(AgentViewEntry(ticket: ticket, agent: agent))
-      }
+  /// Tasks with their agents, most recent output or input request first.
+  private func agentViewGroups(for tickets: [DashboardTicket]) -> [AgentViewGroup] {
+    let groups = tickets.map { ticket in
+      (group: ticket, items: model.taskItems(for: ticket.id).filter { $0.hasAgent && $0.agentRemovedAt == nil })
     }
-    return AgentViewOrdering.ordered(entries) { entry in
-      AgentViewOrdering.rank(
-        status: model.effectiveStatus(for: entry.agent),
-        attention: entry.agent.attention,
-        completionUnread: entry.agent.completionUnread,
-        sessionError: model.agentSessionError(for: entry.agent, ticketID: entry.ticket.id))
-    } activity: { entry in
-      AgentOutputTimestamp.value(for: entry.agent)
-    }
+    return AgentViewOrdering.grouped(groups) { agent in
+      AgentViewOrdering.activityDate(
+        lastOutputAt: agent.lastOutputAt, resultAt: agent.resultAt,
+        attention: agent.attention, lastHeartbeatAt: agent.lastHeartbeatAt)
+    }.map { AgentViewGroup(ticket: $0.group, agents: $0.items) }
+  }
+
+  private func agentViewAgentCount(for tickets: [DashboardTicket]) -> Int {
+    agentViewGroups(for: tickets).reduce(0) { $0 + $1.agents.count }
   }
 
   @ViewBuilder
   private func agentViewList(for tickets: [DashboardTicket]) -> some View {
-    let entries = agentViewEntries(for: tickets)
-    if entries.isEmpty {
+    let groups = agentViewGroups(for: tickets)
+    if groups.isEmpty {
       Text("No agents yet")
         .font(.caption).foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, alignment: .leading)
     } else {
-      ForEach(entries) { entry in
-        AgentViewRow(ticket: entry.ticket, agent: entry.agent, model: model)
+      ForEach(groups) { group in
+        AgentTaskCard(ticket: group.ticket, agents: group.agents, model: model)
       }
     }
   }
@@ -694,13 +694,13 @@ struct QueueView: View {
 
   private var completedSubtaskTickets: [DashboardTicket] {
     model.projectTickets.filter { ticket in
-      model.focusSubtasks(for: ticket.id).contains { $0.status == .completed }
+      model.focusSubtasks(for: ticket.id).contains { model.isCompletionSeen($0, ticketID: ticket.id) }
     }
   }
 
   private var completedSubtaskCount: Int {
     completedSubtaskTickets.reduce(0) { count, ticket in
-      count + model.focusSubtasks(for: ticket.id).filter { $0.status == .completed }.count
+      count + model.focusSubtasks(for: ticket.id).filter { model.isCompletionSeen($0, ticketID: ticket.id) }.count
     }
   }
 
@@ -718,7 +718,7 @@ struct QueueView: View {
                   maximumLines: 2)
               }
               .foregroundStyle(.secondary)
-              ForEach(model.focusSubtasks(for: ticket.id).filter { $0.status == .completed }) {
+              ForEach(model.focusSubtasks(for: ticket.id).filter { model.isCompletionSeen($0, ticketID: ticket.id) }) {
                 subtask in
                 ArchivedSubtaskRow(ticket: ticket, subtask: subtask, model: model)
               }
@@ -1008,7 +1008,7 @@ struct QueueView: View {
           if agentViewEnabled {
             SectionHeading(
               title: "Rest of queue",
-              detail: "\(agentViewEntries(for: remainingTickets).count) agents"
+              detail: "\(agentViewAgentCount(for: remainingTickets)) agents"
             )
             agentViewList(for: remainingTickets)
           } else {
@@ -1939,6 +1939,12 @@ private struct QueueSettingsView: View {
         VStack(alignment: .leading, spacing: 14) {
           if focusedSection == .connectors { connectorDiagnosticsSection }
           settingsSection(
+            title: "Project files",
+            detail: "Plan, practices, requirements, evidence, and other files saved for a project. Choose one to open it beside settings with its project chat."
+          ) {
+            ProjectFilesSection(model: model)
+          }
+          settingsSection(
             title: "Projects",
             detail: "The selected project controls which dashboard and workspace Focus Queue uses."
           ) {
@@ -2013,14 +2019,6 @@ private struct QueueSettingsView: View {
             Toggle("Review tasks before completion", isOn: Binding(
               get: { model.config.completionReviewEnabled },
               set: { model.setCompletionReviewEnabled($0) }))
-          }
-          settingsSection(
-            title: "Agent completion",
-            detail: "After completion, leave the terminal open with a command to continue the same conversation. Turn this off to keep the agent running."
-          ) {
-            Toggle("Automatically exit completed agents", isOn: Binding(
-              get: { model.config.autoExitCompletedAgents },
-              set: { model.setAutoExitCompletedAgents($0) }))
           }
           settingsSection(
             title: "Stale agent cleanup",
@@ -2728,6 +2726,13 @@ private struct CompletedTicketCard: View {
           }
           .buttonStyle(.plain)
         }
+        if let message = model.closureMessages[ticket.id] {
+          Label(message, systemImage: "exclamationmark.triangle.fill")
+            .font(.system(size: 11)).foregroundStyle(.orange)
+            .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+          Button("Retry cleanup") { model.retryCleanup(for: ticket) }
+            .buttonStyle(.link).font(.system(size: 11))
+        }
         Button(action: toggleExpansion) {
           HStack(spacing: 7) {
             StatusPill(text: ticket.status, color: statusColor)
@@ -2771,7 +2776,7 @@ private struct CompletedTicketCard: View {
               VStack(alignment: .leading, spacing: 2) {
                 Text(step.label).font(.system(size: 13))
                 ForEach(step.evidence, id: \.self) { evidence in
-                  Button { model.open(evidence) } label: {
+                  Button { model.open(evidence, ticketID: ticket.id) } label: {
                     Text(evidenceName(evidence)).font(.system(size: 12)).lineLimit(1)
                   }
                   .buttonStyle(.link)
@@ -2807,7 +2812,7 @@ private struct CompletedTicketCard: View {
         VStack(alignment: .leading, spacing: 5) {
           DetailLabel(text: "Evidence and links")
           ForEach(evidenceLinks) { link in
-            Button { model.open(link.url) } label: {
+            Button { model.open(link.url, ticketID: ticket.id) } label: {
               Label(link.label, systemImage: linkIcon(link.type)).font(.system(size: 13)).lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }.buttonStyle(.plain).accessibilityLabel("Open \(link.label)")
@@ -2840,7 +2845,7 @@ private struct CompletedTicketCard: View {
         VStack(alignment: .leading, spacing: 3) {
           Text("Completion evidence").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
           ForEach(evidence, id: \.self) { item in
-            Button { model.open(item) } label: {
+            Button { model.open(item, ticketID: ticket.id) } label: {
               Text(evidenceName(item)).font(.system(size: 12)).lineLimit(1)
             }.buttonStyle(.link).accessibilityLabel("Open completion evidence \(evidenceName(item))")
           }
@@ -3097,8 +3102,6 @@ private struct TicketCard: View {
   @State private var editingSubtask: TaskSubtask?
   @State private var completingSubtask: TaskSubtask?
   @State private var deletingSubtask: TaskSubtask?
-  @State private var completingAgent: TaskSubtask?
-  @State private var archivingAgent: TaskSubtask?
   @State private var isCollapsedToTitle = false
   @State private var showsTaskDetails = false
   @AppStorage("newAgentProvider") private var storedNewAgentProvider: AgentProvider?
@@ -3215,34 +3218,6 @@ private struct TicketCard: View {
       } message: {
         Text("The archived task context remains available for recovery.")
       }
-      .confirmationDialog(
-        "Mark this agent complete?",
-        isPresented: Binding(
-          get: { completingAgent != nil }, set: { if !$0 { completingAgent = nil } }),
-        titleVisibility: .visible
-      ) {
-        Button("Mark agent complete") {
-          if let agent = completingAgent { model.overrideCompletion(agent, for: ticket) }
-          completingAgent = nil
-        }
-        Button("Cancel", role: .cancel) { completingAgent = nil }
-      } message: {
-        Text("This changes only the selected agent record.")
-      }
-      .confirmationDialog(
-        "Archive this agent?",
-        isPresented: Binding(
-          get: { archivingAgent != nil }, set: { if !$0 { archivingAgent = nil } }),
-        titleVisibility: .visible
-      ) {
-        Button("Archive agent") {
-          if let agent = archivingAgent { model.archiveAgent(agent, from: ticket) }
-          archivingAgent = nil
-        }
-        Button("Cancel", role: .cancel) { archivingAgent = nil }
-      } message: {
-        Text("The live pane will close. The work item, conversation, and workspace stay available under Archived agents.")
-      }
       .draggable(ticket.id)
       .background {
         GeometryReader { geometry in
@@ -3264,6 +3239,12 @@ private struct TicketCard: View {
       }
       .contextMenu {
         Button("View details", systemImage: "info.circle") { openTaskDetails() }
+        Button(
+          model.isTicketPinned(ticket.id) ? "Unpin" : "Pin",
+          systemImage: model.isTicketPinned(ticket.id) ? "pin.slash" : "pin"
+        ) {
+          Task { await model.setTicketPinned(ticket, pinned: !model.isTicketPinned(ticket.id)) }
+        }
         Divider()
         Button("Move to top") { model.moveTicket(ticket.id, to: .top) }
         Button("Move up") { moveOnePosition(up: true) }
@@ -3443,8 +3424,9 @@ private struct TicketCard: View {
   private var agentControls: some View {
     VStack(alignment: .leading, spacing: 7) {
       let items = model.taskItems(for: ticket.id)
-      let activeItems = items.filter { $0.status != .completed }
-      let completedItems = items.filter { $0.status == .completed }
+      // An unseen result stays a work item; seeing it moves the item to Completed.
+      let activeItems = items.filter { !model.isCompletionSeen($0, ticketID: ticket.id) }
+      let completedItems = items.filter { model.isCompletionSeen($0, ticketID: ticket.id) }
       let archivedAgents = model.archivedAgents(for: ticket.id)
 
       DisclosureGroup("Work items (\(activeItems.count))", isExpanded: $showsSubtasks) {
@@ -3539,7 +3521,8 @@ private struct TicketCard: View {
   @ViewBuilder
   private func taskItemRow(_ item: TaskSubtask) -> some View {
     if item.hasAgent {
-      agentRow(item).id("work-item-\(ticket.id)-\(item.id)")
+      TaskAgentRow(agent: item, ticket: ticket, model: model)
+        .id("work-item-\(ticket.id)-\(item.id)")
     } else {
       subtaskRow(item).id("work-item-\(ticket.id)-\(item.id)")
     }
@@ -3577,14 +3560,14 @@ private struct TicketCard: View {
         Spacer()
         let subtasks = model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion)
         if !subtasks.isEmpty {
-          Text("\(subtasks.filter { $0.status == .completed }.count)/\(subtasks.count) work items")
+          Text("\(subtasks.filter { model.isCompletionSeen($0, ticketID: ticket.id) }.count)/\(subtasks.count) work items")
         } else { Text(ticket.progressLabel) }
       }.font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
       if ticket.isRecurringPullRequestTask {
         RecurringPRProgressSummary(progress: recurringProgress, error: recurringProgressError)
       } else if !model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion).isEmpty {
         let subtasks = model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion)
-        ProgressView(value: Double(subtasks.filter { $0.status == .completed }.count), total: Double(subtasks.count))
+        ProgressView(value: Double(subtasks.filter { model.isCompletionSeen($0, ticketID: ticket.id) }.count), total: Double(subtasks.count))
           .accessibilityLabel("Work item completion")
       } else if !ticket.steps.isEmpty {
         ProgressView(value: Double(ticket.steps.filter(\.isDone).count), total: Double(ticket.steps.count))
@@ -3683,70 +3666,13 @@ private struct TicketCard: View {
     .padding(.vertical, 2)
   }
 
-  private func agentRow(_ agent: TaskSubtask) -> some View {
-    let isOpening = model.isOpening(agent, ticketID: ticket.id)
-    return HStack(spacing: 7) {
-      Button { model.openSubtask(agent, for: ticket) } label: {
-        AgentRowLabel(agent: agent, ticket: ticket, model: model, isOpening: isOpening)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .disabled(isOpening)
-      .accessibilityLabel(
-        isOpening
-          ? "Finding and opening \(agent.title)"
-          : "Open \(agent.title), \(agent.attention?.label ?? model.effectiveStatus(for: agent).rawValue)"
-      )
-      .help("Focus or resume this agent in its saved workspace")
-
-      Menu {
-        Button("Open agent", systemImage: "terminal") {
-          model.openSubtask(agent, for: ticket)
-        }
-        .disabled(isOpening)
-        Button("Edit title and description", systemImage: "pencil") {
-          editingSubtask = agent
-        }
-        if agent.status != .completed {
-          Button("Mark as complete…", systemImage: "checkmark.circle") {
-            completingAgent = agent
-          }
-        }
-        Button("View deployment logs", systemImage: "doc.text.magnifyingglass") {
-          model.openLaunchDiagnostics(for: agent)
-        }
-        .disabled(!model.hasLaunchDiagnostics(for: agent))
-        Divider()
-        Button("Archive agent…", systemImage: "archivebox") {
-          archivingAgent = agent
-        }
-      } label: {
-        VerticalOverflowIcon()
-      }
-      .menuStyle(.borderlessButton)
-      .menuIndicator(.hidden)
-      .fixedSize()
-      .minimumHitTarget()
-      .accessibilityLabel("More options for agent \(agent.title)")
-      .help("Open, edit, complete, inspect, or archive this agent")
-    }
-    .padding(9)
-    .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
-    .overlay {
-      RoundedRectangle(cornerRadius: 9)
-        .stroke(Color.primary.opacity(0.12), lineWidth: 1)
-    }
-    .padding(.vertical, 2)
-  }
-
   private var details: some View {
     VStack(alignment: .leading, spacing: 10) {
       if ticket.isRecurringPullRequestTask {
         RecurringPRResolutionDetails(
           progress: recurringProgress,
           error: recurringProgressError,
-          open: model.open
+          open: { model.open($0, ticketID: ticket.id) }
         )
       }
       if !ticket.summary.isEmpty {
@@ -3800,7 +3726,7 @@ private struct TicketCard: View {
                 Text(step.label).font(.system(size: 13))
                 ForEach(step.evidence, id: \.self) { evidence in
                   Button {
-                    model.open(evidence)
+                    model.open(evidence, ticketID: ticket.id)
                   } label: {
                     Text(URL(fileURLWithPath: evidence).lastPathComponent).font(.system(size: 12))
                       .lineLimit(1)
@@ -3839,7 +3765,7 @@ private struct TicketCard: View {
           DetailLabel(text: "Evidence and links")
           ForEach(evidenceLinks) { link in
             Button {
-              model.open(link.url)
+              model.open(link.url, ticketID: ticket.id)
             } label: {
               Label(link.label, systemImage: linkIcon(link.type)).font(.system(size: 13)).lineLimit(
                 2
@@ -3851,7 +3777,7 @@ private struct TicketCard: View {
       }
 
       if let review {
-        ReviewDetail(review: review, retry: { model.retryReview(for: ticket) }, open: model.open)
+        ReviewDetail(review: review, retry: { model.retryReview(for: ticket) }, open: { model.open($0, ticketID: ticket.id) })
       }
 
       if let message = model.actionMessages[ticket.id] {
@@ -3978,27 +3904,24 @@ private struct AgentRowLabel: View {
   }
 }
 
-/// Flat agent-list row for the queue's Agent view: the shared agent row plus a
-/// compact task chip with plan, context, and New Agent shortcuts.
-private struct AgentViewRow: View {
-  let ticket: DashboardTicket
+/// One agent in a task card: status, title, and progress, with an overflow
+/// menu. Shared by the task card and the Agent view's task cards.
+private struct TaskAgentRow: View {
   let agent: TaskSubtask
+  let ticket: DashboardTicket
   let model: QueueViewModel
-  @State private var showsLinks = false
-  @AppStorage("newAgentProvider") private var storedNewAgentProvider: AgentProvider?
-
-  private var newAgentProvider: AgentProvider {
-    model.preferredNewAgentProvider(stored: storedNewAgentProvider)
-  }
+  @State private var isEditing = false
+  @State private var isConfirmingCompletion = false
+  @State private var isConfirmingArchive = false
 
   private var isOpening: Bool { model.isOpening(agent, ticketID: ticket.id) }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 4) {
+    HStack(spacing: 7) {
       Button { model.openSubtask(agent, for: ticket) } label: {
         AgentRowLabel(agent: agent, ticket: ticket, model: model, isOpening: isOpening)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .contentShape(Rectangle())
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
       .disabled(isOpening)
@@ -4008,29 +3931,90 @@ private struct AgentViewRow: View {
           : "Open \(agent.title), \(agent.attention?.label ?? model.effectiveStatus(for: agent).rawValue)"
       )
       .help("Focus or resume this agent in its saved workspace")
-      .padding(9)
-      .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
-      .overlay {
-        RoundedRectangle(cornerRadius: 9)
-          .stroke(Color.primary.opacity(0.12), lineWidth: 1)
-      }
 
-      HStack(spacing: 6) {
-        Button { model.openSubtask(agent, for: ticket) } label: {
-          HStack(spacing: 5) {
-            Image(systemName: "checklist")
-            Text(ticket.title).lineLimit(1)
-          }
-          .font(.system(size: 10, weight: .semibold))
-          .foregroundStyle(.secondary)
-          .padding(.horizontal, 8).padding(.vertical, 4)
-          .background(Color.primary.opacity(0.05), in: Capsule())
-          .contentShape(Capsule())
+      Menu {
+        Button("Open agent", systemImage: "terminal") {
+          model.openSubtask(agent, for: ticket)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Open task \(ticket.id): \(ticket.title)")
-        .help("Open this agent in \(ticket.id)")
-        Spacer(minLength: 0)
+        .disabled(isOpening)
+        Button("Edit title and description", systemImage: "pencil") {
+          isEditing = true
+        }
+        if agent.status != .completed {
+          Button("Mark as complete…", systemImage: "checkmark.circle") {
+            isConfirmingCompletion = true
+          }
+        }
+        Button("View deployment logs", systemImage: "doc.text.magnifyingglass") {
+          model.openLaunchDiagnostics(for: agent)
+        }
+        .disabled(!model.hasLaunchDiagnostics(for: agent))
+        Divider()
+        Button("Archive agent…", systemImage: "archivebox") {
+          isConfirmingArchive = true
+        }
+      } label: {
+        VerticalOverflowIcon()
+      }
+      .menuStyle(.borderlessButton)
+      .menuIndicator(.hidden)
+      .fixedSize()
+      .minimumHitTarget()
+      .accessibilityLabel("More options for agent \(agent.title)")
+      .help("Open, edit, complete, inspect, or archive this agent")
+    }
+    .padding(9)
+    .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
+    .overlay {
+      RoundedRectangle(cornerRadius: 9)
+        .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+    }
+    .padding(.vertical, 2)
+    .sheet(isPresented: $isEditing) {
+      SubtaskEditorSheet(subtask: agent) { title, explanation in
+        model.updateSubtask(agent, for: ticket, title: title, explanation: explanation)
+      }
+    }
+    .confirmationDialog(
+      "Mark this agent complete?", isPresented: $isConfirmingCompletion, titleVisibility: .visible
+    ) {
+      Button("Mark agent complete") { model.overrideCompletion(agent, for: ticket) }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("This changes only the selected agent record.")
+    }
+    .confirmationDialog(
+      "Archive this agent?", isPresented: $isConfirmingArchive, titleVisibility: .visible
+    ) {
+      Button("Archive agent") { model.archiveAgent(agent, from: ticket) }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("The live pane will close. The work item, conversation, and workspace stay available under Archived agents.")
+    }
+  }
+}
+
+/// The Agent view's task card: the task card's frame holding only the task
+/// title and its agents.
+private struct AgentTaskCard: View {
+  let ticket: DashboardTicket
+  let agents: [TaskSubtask]
+  let model: QueueViewModel
+  @State private var showsLinks = false
+  @AppStorage("newAgentProvider") private var storedNewAgentProvider: AgentProvider?
+
+  private var newAgentProvider: AgentProvider {
+    model.preferredNewAgentProvider(stored: storedNewAgentProvider)
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      HStack(alignment: .top, spacing: 8) {
+        RenamableTaskTitle(
+          ticket: ticket, model: model, size: 16, weight: .semibold,
+          maximumLines: 3,
+          openAction: { model.openTaskAgents(for: ticket) },
+          openHint: "Click to open this task's terminal. Double-click to rename the task.")
         Menu {
           Button("View Central Plan", systemImage: "doc.text") { model.openPlan(for: ticket) }
           Button("Context, evidence & links", systemImage: "link") { showsLinks = true }
@@ -4046,10 +4030,18 @@ private struct AgentViewRow: View {
         .fixedSize()
         .minimumHitTarget()
         .accessibilityLabel("More options for task \(ticket.id)")
+        .help("Open the plan or context, or start a new agent")
       }
-      .padding(.leading, 33)
+      .padding(.horizontal, 13).padding(.top, 11).padding(.bottom, 7)
+
+      VStack(alignment: .leading, spacing: 0) {
+        ForEach(agents) { agent in
+          TaskAgentRow(agent: agent, ticket: ticket, model: model)
+        }
+      }
+      .padding(.horizontal, 14).padding(.bottom, 10)
     }
-    .padding(.vertical, 2)
+    .notificationSurface(radius: 18)
     .popover(isPresented: $showsLinks) {
       TaskContextLinksView(ticket: ticket, model: model)
         .padding(14).frame(minWidth: 260)
@@ -4090,10 +4082,12 @@ struct AgentStatusIndicator: View {
     if issue != nil { return "Problem" }
     if let attention { return attention.label }
     if status == .blocked { return "Problem" }
-    if hasUnreadCompletion && status != .completed { return "New result" }
+    // A busy agent reads as Working; an earlier unread result is only noted.
+    if status == .working { return hasUnreadCompletion ? "Working · New" : "Working" }
+    if hasUnreadCompletion { return "New result" }
     switch status {
     case .working: return "Working"
-    case .completed: return hasUnreadCompletion ? "Done · New" : "Done · Seen"
+    case .completed: return "Done"
     case .queued: return "Queued"
     case .idle: return "No recent update"
     case .blocked: return "Issue"
@@ -4104,9 +4098,10 @@ struct AgentStatusIndicator: View {
     if issue != nil { return "exclamationmark.circle.fill" }
     if let attention { return attention.icon }
     if status == .blocked { return "exclamationmark.circle.fill" }
+    if hasUnreadCompletion && status != .working { return "circle.fill" }
     switch status {
     case .working: return "circle.fill"
-    case .completed: return hasUnreadCompletion ? "checkmark.circle.fill" : "checkmark.circle"
+    case .completed: return "checkmark.circle"
     case .queued: return "clock"
     case .idle: return "minus.circle"
     case .blocked: return "exclamationmark.circle.fill"
@@ -4119,7 +4114,7 @@ struct AgentStatusIndicator: View {
       return QueueAccentPalette.color(.danger, style: accentStyle)
     }
     if attention != nil { return QueueAccentPalette.color(.warning, style: accentStyle) }
-    if hasUnreadCompletion { return QueueAccentPalette.color(.success, style: accentStyle) }
+    if hasUnreadCompletion && status != .working { return QueueAccentPalette.color(.success, style: accentStyle) }
     if status == .blocked { return QueueAccentPalette.color(.danger, style: accentStyle) }
     switch status {
     case .working: return QueueAccentPalette.color(.warning, style: accentStyle)
@@ -4134,13 +4129,16 @@ struct AgentStatusIndicator: View {
 
   private var helpText: String {
     switch status {
-    case .working: return "The agent sent a progress update within the last five minutes."
+    case .working:
+      return hasUnreadCompletion
+        ? "The agent is working again. Its earlier result has not been opened here."
+        : "The agent's transcript or progress reports show it is mid-turn."
     case .completed:
       return hasUnreadCompletion
-        ? "The agent finished and has a new update to review."
-        : "The agent finished and its update has been viewed."
+        ? "The agent finished and has output to review. Opening it moves it to Completed items."
+        : "The agent finished and its output has been viewed."
     case .queued: return "The agent is waiting to start."
-    case .idle: return "The agent has not sent a progress update within five minutes."
+    case .idle: return "The agent is waiting for input, or its transcript has gone quiet."
     case .blocked: return "The agent reported a blocker or session problem."
     }
   }

@@ -271,17 +271,29 @@ public struct ProjectContextStore: Sendable {
         return url
     }
 
-    /// Known project documents in reading order. Only files that exist are listed, so a
-    /// project that never received practices or a PRD shows just its plan.
+    /// Project documents: the known ones in reading order, then any other
+    /// readable file (PDF, Markdown, text) in the project folder by name. Only
+    /// files that exist are listed, so a new project shows just its plan.
     public func documents(projectID: String) throws -> [ProjectDocument] {
         let directory = try planURL(projectID: projectID).deletingLastPathComponent()
-        return ProjectDocument.Kind.allCases.compactMap { kind in
+        let known = ProjectDocument.Kind.allCases.compactMap { kind -> ProjectDocument? in
             let url = directory.appendingPathComponent(kind.fileName)
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
                   !isDirectory.boolValue else { return nil }
             return ProjectDocument(kind: kind, url: url)
         }
+        let knownNames = Set(ProjectDocument.Kind.allCases.map(\.fileName))
+        let others = ((try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])) ?? [])
+            .filter { url in
+                !knownNames.contains(url.lastPathComponent)
+                    && ProjectDocument.readableExtensions.contains(url.pathExtension.lowercased())
+                    && (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+            .map { ProjectDocument(kind: nil, url: $0) }
+        return known + others
     }
 
     /// External links recorded in the project's context.json (repository, deployments, databases).
@@ -331,7 +343,24 @@ public struct ProjectDocument: Identifiable, Equatable, Sendable {
         }
     }
 
-    public var id: String { kind.rawValue }
-    public let kind: Kind
+    /// Extensions listed beyond the known documents. dashboard.json and its
+    /// backups are queue data, not documents, so JSON is not included.
+    public static let readableExtensions: Set<String> = ["pdf", "md", "markdown", "txt", "text", "log", "csv"]
+
+    public var id: String { url.path }
+    /// Nil for a file that is not one of the known project documents.
+    public let kind: Kind?
     public let url: URL
+
+    public init(kind: Kind?, url: URL) {
+        self.kind = kind
+        self.url = url
+    }
+
+    public var title: String { kind?.title ?? url.deletingPathExtension().lastPathComponent }
+
+    public var systemImage: String {
+        if let kind { return kind.systemImage }
+        return url.pathExtension.lowercased() == "pdf" ? "doc.richtext" : "doc.plaintext"
+    }
 }

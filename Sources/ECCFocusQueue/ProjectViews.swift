@@ -204,153 +204,205 @@ private struct ProjectTaskEditor: View {
     }
 }
 
-struct ProjectFilesPanel: View {
+/// Settings section for project-level documents. Choosing a file opens it in
+/// the side document viewer with its project chat, like a central plan.
+struct ProjectFilesSection: View {
     let model: QueueViewModel
-    /// Offscreen snapshots cannot capture WebKit; tests render the list without the preview.
-    var rendersPreview = true
     @State private var projectID = ""
     @State private var documents: [ProjectDocument] = []
     @State private var links: [DashboardLink] = []
-    @State private var selection: URL?
-    @State private var content: SideDocumentContent?
     @State private var error: String?
-    @State private var revision = 0
-    private let loader = SideDocumentLoader()
 
     private var project: ProjectDefinition? { model.activeProjects.first { $0.id == projectID } }
 
     var body: some View {
-        HStack(spacing: 0) {
-            sidebar.frame(width: 210)
-            Divider()
-            if rendersPreview { preview.frame(maxWidth: .infinity, maxHeight: .infinity) }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Picker("Project", selection: $projectID) {
+                    ForEach(model.activeProjects) { Text($0.name).tag($0.id) }
+                }
+                .labelsHidden().fixedSize()
+                .accessibilityLabel("Project for files: \(project?.name ?? "none")")
+                Spacer()
+                if let directory = documents.first?.url.deletingLastPathComponent() {
+                    Button("Show in Finder", systemImage: "folder") { NSWorkspace.shared.open(directory) }
+                        .buttonStyle(.link).font(.caption)
+                }
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(documents) { document in
+                    let isOpen = model.isDocumentViewerPresented && model.documentViewer.selected == document.url
+                    Button {
+                        model.openDocumentViewer(document.url, scope: .project(projectID))
+                    } label: {
+                        HStack {
+                            Image(systemName: document.systemImage).frame(width: 16)
+                            Text(document.title)
+                            Spacer()
+                            Text(document.url.lastPathComponent).font(.caption).foregroundStyle(.secondary)
+                            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 6)
+                        .background(isOpen ? Color.accentColor.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 6))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(document.url.path)
+                    .accessibilityLabel("Open \(document.title)")
+                }
+            }
+            .font(.system(size: 12))
+            if !links.isEmpty {
+                Text("Links").font(.caption.bold()).foregroundStyle(.secondary).padding(.top, 4)
+                ForEach(links) { link in
+                    Button(link.label, systemImage: "link") { model.open(link.url) }
+                        .buttonStyle(.link).font(.system(size: 12)).multilineTextAlignment(.leading).help(link.url)
+                }
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.orange) }
         }
-        .frame(width: 780, height: 540)
         .onAppear {
             guard projectID.isEmpty else { return }
             let preferred = model.showsAllProjects ? nil : model.selectedProject?.id
             projectID = model.activeProjects.first { $0.id == preferred }?.id ?? model.activeProjects.first?.id ?? ""
         }
         .onChange(of: projectID, initial: true) { reloadDocuments() }
-        .task(id: "\(selection?.path ?? ""):\(revision)") {
-            content = nil
-            guard let selection else { return }
-            do {
-                let loaded = try await loader.load(selection)
-                guard !Task.isCancelled else { return }
-                content = loaded; error = nil
-            } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
-        }
-    }
-
-    private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Menu {
-                ForEach(model.activeProjects) { project in
-                    Button(project.name) { projectID = project.id }
-                }
-            } label: {
-                Label(project?.name ?? "Choose project", systemImage: "folder")
-                    .font(.system(size: 13, weight: .semibold)).lineLimit(1)
-            }
-            .menuStyle(.borderlessButton).fixedSize()
-            .accessibilityLabel("Project: \(project?.name ?? "none")")
-            ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(documents) { document in
-                        Button { selection = document.url } label: {
-                            Label {
-                                Text(document.kind.title)
-                            } icon: {
-                                Image(systemName: document.kind.systemImage).frame(width: 16)
-                            }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 8).padding(.vertical, 5)
-                                .background(selection == document.url ? Color.accentColor.opacity(0.16) : .clear,
-                                    in: RoundedRectangle(cornerRadius: 6))
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help(document.url.path)
-                    }
-                    if !links.isEmpty {
-                        Text("Links").font(.caption.bold()).foregroundStyle(.secondary).padding(.top, 10)
-                        ForEach(links) { link in
-                            Button(link.label, systemImage: "link") { model.open(link.url) }
-                                .buttonStyle(.link).multilineTextAlignment(.leading).help(link.url)
-                        }
-                    }
-                }.frame(maxWidth: .infinity, alignment: .leading)
-            }
-            Spacer(minLength: 0)
-            if let directory = documents.first?.url.deletingLastPathComponent() {
-                Button("Open project folder", systemImage: "folder") { NSWorkspace.shared.open(directory) }
-                    .buttonStyle(.link)
-            }
-        }
-        .font(.system(size: 12))
-        .padding(12)
-    }
-
-    @ViewBuilder private var preview: some View {
-        if let selection {
-            VStack(spacing: 8) {
-                HStack {
-                    Text(selection.lastPathComponent).font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                    Spacer()
-                    Button { revision += 1 } label: { Image(systemName: "arrow.clockwise") }.help("Reload document")
-                    Button { NSWorkspace.shared.open(selection) } label: { Image(systemName: "arrow.up.forward.app") }
-                        .help("Open in the default app to edit")
-                }
-                Group {
-                    if let error {
-                        ContentUnavailableView("Preview unavailable", systemImage: "doc", description: Text(error))
-                    } else if let content {
-                        switch content {
-                        case .markdown(let text):
-                            EmbeddedPlanDocument(markdown: text, sourceURL: selection, appearance: model.appearance,
-                                accentStyle: model.accentStyle, canvasSelection: nil, open: open, select: { _ in })
-                        case .text(let text):
-                            FindableTextDocument(text: text, query: "", request: 0, searchesBackwards: false)
-                        case .rendered(let resource):
-                            ReadOnlyResourceDocument(url: resource, open: open)
-                        }
-                    } else { ProgressView("Loading document…") }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: 9))
-            }.padding(12)
-        } else {
-            ContentUnavailableView(error == nil ? "No project files" : "Project files unavailable",
-                systemImage: "folder", description: Text(error ?? "Choose a project to see its documents."))
-        }
     }
 
     private func reloadDocuments() {
-        guard let project else { documents = []; links = []; selection = nil; return }
+        guard let project else { documents = []; links = []; return }
         do {
             let store = model.projectContextStore
             try store.ensurePlan(for: project)
             documents = try store.documents(projectID: project.id)
             links = try store.links(projectID: project.id)
             error = nil
-            if selection.map({ url in !documents.contains { $0.url == url } }) ?? true {
-                selection = documents.first?.url
-            }
         } catch {
-            documents = []; links = []; selection = nil
+            documents = []; links = []
             self.error = error.localizedDescription
         }
     }
+}
 
-    /// Links inside a project document stay in this viewer when they point at
-    /// another project document; everything else opens through the queue.
-    private func open(_ url: URL) {
-        let target = DocumentPaneLocation.normalized(url) ?? url
-        if let document = documents.first(where: { $0.url.standardizedFileURL == target.standardizedFileURL }) {
-            selection = document.url
-        } else {
-            model.open(target.absoluteString)
+/// The side document viewer: tabs, the selected document, and its chat. Links
+/// inside a document open beside it, matching the task plan's document panes.
+struct DocumentViewerInspector: View {
+    let model: QueueViewModel
+
+    private var panes: DocumentPaneState { model.documentViewer }
+
+    private var scopeLabel: String {
+        switch model.documentViewerScope {
+        case .task(let id): id
+        case .project(let id): model.config.projects.first { $0.id == id }?.name ?? id
+        case nil: "Document"
         }
+    }
+
+    var body: some View {
+        VStack(spacing: 10) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.system(size: 14, weight: .semibold)).foregroundStyle(.secondary)
+                    .frame(width: 34, height: 34)
+                    .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(panes.primaryDocument?.lastPathComponent ?? panes.selected?.lastPathComponent ?? "Document")
+                        .font(.system(size: 20, weight: .bold, design: .rounded)).lineLimit(1)
+                    Text(scopeLabel).font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { model.closeDocumentViewer() } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.plain).frame(width: 40, height: 40)
+                    .help("Close the document viewer").accessibilityLabel("Close document viewer")
+            }
+            .padding(12)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                .allowsHitTesting(false))
+            if let error = panes.error {
+                HStack {
+                    Text(error).font(.caption).foregroundStyle(.orange)
+                    Button("Dismiss") { panes.error = nil }.font(.caption)
+                }
+            }
+            tabBar
+            GeometryReader { geometry in
+                ScrollView(.horizontal) {
+                    if let secondary = panes.secondaryDocument, let primary = panes.primaryDocument {
+                        PlanPaneSplit(initialFraction: 0.5, minimumPrimary: 500, minimumSecondary: 460) {
+                            pane(primary)
+                        } secondary: {
+                            pane(secondary).padding(.horizontal, 4)
+                        }
+                        .frame(width: max(geometry.size.width, QueueInspectorLayout.documentPairMinimumWidth),
+                               height: geometry.size.height)
+                    } else if let document = panes.selected {
+                        PlanPaneSplit(initialFraction: 0.74, minimumPrimary: QueueInspectorLayout.documentMinimumWidth,
+                                      minimumSecondary: QueueInspectorLayout.chatMinimumWidth) {
+                            pane(document).padding(.horizontal, 4)
+                        } secondary: {
+                            DocumentConversationPane(queue: model, scope: model.documentViewerScope, document: document)
+                        }
+                        .frame(width: max(geometry.size.width, QueueInspectorLayout.inspectorMinimumWidth),
+                               height: geometry.size.height)
+                    }
+                }.scrollIndicators(.automatic)
+            }
+        }
+        .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func pane(_ document: URL) -> some View {
+        SideDocumentPane(
+            queue: model, scopeLabel: scopeLabel, document: document,
+            open: { panes.openLinkedDocument($0) },
+            close: { model.closeDocumentViewerTab(document) },
+            receiveDocument: { identifier in
+                guard let url = panes.tabs.first(where: { $0.absoluteString == identifier }) else { return false }
+                panes.moveToSecondary(url)
+                return true
+            },
+            discuss: { action in
+                guard let scope = model.documentViewerScope,
+                      let conversation = model.documentConversation(for: document, scope: scope) else { return }
+                if !conversation.draft.isEmpty { conversation.draft += "\n\n" }
+                conversation.draft += "Selected passage: \(action.selection.excerpt)\n\(action.initialText)"
+            })
+    }
+
+    private var tabBar: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 6) {
+                ForEach(panes.tabs, id: \.self) { url in
+                    let isSelected = panes.primaryDocument == url
+                    HStack(spacing: 4) {
+                        Button(url.isFileURL ? url.lastPathComponent : (url.host ?? url.absoluteString)) {
+                            panes.select(url)
+                        }.lineLimit(1)
+                        Button { model.closeDocumentViewerTab(url) } label: {
+                            Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                        }
+                        .accessibilityLabel("Close \(url.lastPathComponent)")
+                    }
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                    .padding(.horizontal, 8).padding(.vertical, 6)
+                    .background(Color(nsColor: .controlBackgroundColor).opacity(isSelected ? 0.98 : 0.94),
+                        in: RoundedRectangle(cornerRadius: 7))
+                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.18), lineWidth: 1)
+                        .allowsHitTesting(false))
+                    .draggable(url.absoluteString)
+                    .help(url.absoluteString)
+                }
+            }
+            .padding(.vertical, 2)
+            .dropDestination(for: String.self) { identifiers, _ in
+                guard let identifier = identifiers.last,
+                      let url = panes.tabs.first(where: { $0.absoluteString == identifier }) else { return false }
+                panes.select(url)
+                return true
+            }
+        }.accessibilityLabel("Open documents")
     }
 }

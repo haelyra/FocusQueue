@@ -167,6 +167,11 @@ final class QueueViewModel {
   @ObservationIgnored private var returnsToNotifications = false
   private(set) var presentedAgentUpdate: QueueAgentUpdate?
   private(set) var presentedPlanTicketID: String?
+  /// The in-app document viewer for files opened outside a task plan, such as
+  /// project files chosen in settings or evidence links with no task.
+  private(set) var isDocumentViewerPresented = false
+  private(set) var documentViewerScope: DocumentScope?
+  private(set) var documentViewer = DocumentPaneState()
   private(set) var presentedPlanURL: URL?
   private(set) var presentedPlanMarkdown = ""
   private(set) var isPlanLoading = false
@@ -1854,7 +1859,7 @@ final class QueueViewModel {
 
   var isInspectorPresented: Bool {
     isQueueChatInspectorPresented || isDailyReportPresented || presentedPlanTicketID != nil
-      || presentedAgentUpdate != nil || isNotificationsInspectorPresented
+      || presentedAgentUpdate != nil || isNotificationsInspectorPresented || isDocumentViewerPresented
   }
 
   var presentedPlanTicket: DashboardTicket? {
@@ -2015,14 +2020,31 @@ final class QueueViewModel {
   }
 
   func documentConversation(for url: URL, ticketID: String) -> DocumentConversation? {
-    guard let document = DocumentPaneLocation.normalized(url), let context = taskContexts[ticketID] else { return nil }
-    let key = DocumentConversation.key(document: document, taskID: ticketID)
+    documentConversation(for: url, scope: .task(ticketID))
+  }
+
+  func documentConversation(for url: URL, scope: DocumentScope) -> DocumentConversation? {
+    guard let document = DocumentPaneLocation.normalized(url) else { return nil }
+    let subject: DocumentConversationSubject
+    var dashboardPath = config.dashboardPath
+    switch scope {
+    case .task(let ticketID):
+      guard let context = taskContexts[ticketID] else { return nil }
+      subject = DocumentConversationSubject(kind: .task(context))
+    case .project(let projectID):
+      guard let project = config.projects.first(where: { $0.id == projectID }),
+            let plan = try? projectContextStore.ensurePlan(for: project) else { return nil }
+      subject = DocumentConversationSubject(
+        kind: .project(project, planPath: plan.path, directory: plan.deletingLastPathComponent()))
+      if !project.dashboardPath.isEmpty { dashboardPath = project.dashboardPath }
+    }
+    let key = DocumentConversation.key(document: document, taskID: subject.scopeID)
     if let existing = documentConversations[key] { return existing }
     let provider = defaultAgentProvider
     var documentConfiguration = config.verifier
     documentConfiguration.executable = config.chatExecutable(for: provider)
-    let conversation = DocumentConversation(document: document, context: context, support: paths.supportDirectory,
-      agent: queueAgent(for: provider), configuration: documentConfiguration, dashboardPath: config.dashboardPath, workspace: config.workspacePath,
+    let conversation = DocumentConversation(document: document, subject: subject, support: paths.supportDirectory,
+      agent: queueAgent(for: provider), configuration: documentConfiguration, dashboardPath: dashboardPath, workspace: config.workspacePath,
       model: Self.normalizedChatOption(defaultAgentModel(for: provider)),
       effort: Self.normalizedChatOption(defaultAgentEffort(for: provider)))
     documentConversations[key] = conversation
@@ -2186,6 +2208,7 @@ final class QueueViewModel {
     isQueueChatInspectorPresented = false
     presentedAgentUpdate = nil
     isDailyReportPresented = false
+    isDocumentViewerPresented = false
     presentedPlanTicketID = ticket.id
     presentedPlanURL = sourceURL
     presentedPlanMarkdown = ""
@@ -2305,6 +2328,7 @@ final class QueueViewModel {
       presentedPlanTicketID = nil
       presentedPlanURL = nil
       isDailyReportPresented = false
+      isDocumentViewerPresented = false
     }
     isNotificationsInspectorPresented = presented
     reportVisibilityHandler?(isInspectorPresented)
@@ -2328,6 +2352,7 @@ final class QueueViewModel {
     presentedPlanTicketID = nil
     presentedPlanURL = nil
     isDailyReportPresented = false
+    isDocumentViewerPresented = false
     presentedAgentUpdate = update
     reportVisibilityHandler?(true)
     Task {
@@ -2383,6 +2408,63 @@ final class QueueViewModel {
     reportVisibilityHandler?(isInspectorPresented)
   }
 
+  /// Shows a file in the side document viewer. A new scope starts a fresh set
+  /// of tabs; the same scope adds a tab and selects it.
+  func openDocumentViewer(_ url: URL, scope: DocumentScope?) {
+    guard let location = DocumentPaneLocation.normalized(url) else { return }
+    if documentViewerScope != scope || !isDocumentViewerPresented {
+      if documentViewerScope != scope { documentViewer = DocumentPaneState() }
+      documentViewerScope = scope
+    }
+    isNotificationsInspectorPresented = false
+    returnsToNotifications = false
+    isQueueChatInspectorPresented = false
+    presentedAgentUpdate = nil
+    presentedPlanTicketID = nil
+    presentedPlanURL = nil
+    isDailyReportPresented = false
+    documentViewer.open(location, in: .primary)
+    // The viewer pairs a document with its chat; links open the split view.
+    documentViewer.centralChatCollapsed = false
+    isDocumentViewerPresented = true
+    reportVisibilityHandler?(true)
+  }
+
+  func closeDocumentViewer() {
+    guard isDocumentViewerPresented else { return }
+    isDocumentViewerPresented = false
+    documentViewer.dismiss()
+    reportVisibilityHandler?(isInspectorPresented)
+  }
+
+  func closeDocumentViewerTab(_ url: URL) {
+    documentViewer.close(url)
+    if !documentViewer.isPresented { closeDocumentViewer() }
+  }
+
+  /// The task or project a link with no explicit owner belongs to: a file
+  /// inside a task's context folder opens with that task; anything else opens
+  /// under the project it lives in, or the selected project.
+  func documentScope(for url: URL) -> DocumentScope? {
+    let path = url.standardizedFileURL.path
+    let tasks = paths.supportDirectory.appendingPathComponent("tasks", isDirectory: true).standardizedFileURL.path + "/"
+    if path.hasPrefix(tasks),
+       let ticketID = path.dropFirst(tasks.count).split(separator: "/").first.map(String.init),
+       dashboard.tickets.contains(where: { $0.id == ticketID }) {
+      return .task(ticketID)
+    }
+    let projectsRoot = paths.supportDirectory.appendingPathComponent("projects", isDirectory: true).standardizedFileURL.path + "/"
+    if path.hasPrefix(projectsRoot),
+       let projectID = path.dropFirst(projectsRoot.count).split(separator: "/").first.map(String.init),
+       config.projects.contains(where: { $0.id == projectID }) {
+      return .project(projectID)
+    }
+    if let project = activeProjects.first(where: {
+      !$0.repositoryPath.isEmpty && path.hasPrefix(URL(fileURLWithPath: $0.repositoryPath).standardizedFileURL.path + "/")
+    }) { return .project(project.id) }
+    return (selectedProject ?? activeProjects.first).map { .project($0.id) }
+  }
+
   func setQueueChatInspectorPresented(_ presented: Bool) {
     if presented {
       isNotificationsInspectorPresented = false
@@ -2391,6 +2473,7 @@ final class QueueViewModel {
       presentedPlanTicketID = nil
       presentedPlanURL = nil
       isDailyReportPresented = false
+      isDocumentViewerPresented = false
     }
     isQueueChatInspectorPresented = presented
     reportVisibilityHandler?(isInspectorPresented)
@@ -4249,23 +4332,19 @@ final class QueueViewModel {
     }
   }
 
-  func open(_ rawValue: String) {
+  /// Local PDFs, Markdown, and text files open in Focus Queue's own viewer:
+  /// beside the task plan when the link belongs to a task, otherwise in the
+  /// side document viewer. Everything else goes to its default app.
+  func open(_ rawValue: String, ticketID: String? = nil) {
     guard let url = ResourceLocator.url(for: rawValue) else { return }
-    if url.isFileURL {
-      switch url.pathExtension.lowercased() {
-      case "md", "markdown":
-        do {
-          try MarkdownBrowser.open(url)
-        } catch {
-          loadError = "Could not open Markdown file: \(error.localizedDescription)"
-        }
-        return
-      case "pdf":
-        Self.openPDF(url)
-        return
-      default:
-        break
+    if let document = InAppDocument.fileURL(for: url) {
+      let scope = ticketID.map { DocumentScope.task($0) } ?? documentScope(for: document)
+      if case .task(let id) = scope, let ticket = dashboard.tickets.first(where: { $0.id == id }) {
+        openPlan(for: ticket, sourceURL: document)
+      } else {
+        openDocumentViewer(document, scope: scope)
       }
+      return
     }
     NSWorkspace.shared.open(url)
   }
@@ -4282,6 +4361,7 @@ final class QueueViewModel {
       presentedAgentUpdate = nil
       presentedPlanTicketID = nil
       presentedPlanURL = nil
+      isDocumentViewerPresented = false
     } else if isDailyReportPresented {
       reopenNotificationsIfReturning()
     }
@@ -5268,33 +5348,6 @@ final class QueueViewModel {
     }
     response += " Open the document button in the queue header for message and task links."
     return response
-  }
-
-  private static func openPDF(_ url: URL) {
-    let workspace = NSWorkspace.shared
-    guard let preview = workspace.urlForApplication(withBundleIdentifier: "com.apple.Preview")
-    else {
-      openPDFInBrowser(url)
-      return
-    }
-    workspace.open(
-      [url], withApplicationAt: preview, configuration: NSWorkspace.OpenConfiguration()
-    ) { _, error in
-      if error != nil {
-        DispatchQueue.main.async {
-          openPDFInBrowser(url)
-        }
-      }
-    }
-  }
-
-  private static func openPDFInBrowser(_ url: URL) {
-    let workspace = NSWorkspace.shared
-    guard let safari = workspace.urlForApplication(withBundleIdentifier: "com.apple.Safari") else {
-      workspace.open(url)
-      return
-    }
-    workspace.open([url], withApplicationAt: safari, configuration: NSWorkspace.OpenConfiguration())
   }
 
   private static let dayFormatter: DateFormatter = {

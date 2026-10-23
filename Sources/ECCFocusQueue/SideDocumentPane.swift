@@ -1,11 +1,12 @@
 import AppKit
 import Observation
+import PDFKit
 import SwiftUI
 import WebKit
 import FocusQueueCore
 
 enum SideDocumentContent: Sendable {
-    case markdown(String), text(String), rendered(URL)
+    case markdown(String), text(String), pdf(URL), rendered(URL)
 }
 
 actor SideDocumentLoader {
@@ -16,7 +17,8 @@ actor SideDocumentLoader {
         guard (values.fileSize ?? 0) <= 20_000_000 else {
             throw DocumentPreviewError.message("This document exceeds the 20 MB preview limit.")
         }
-        if ["pdf", "html", "htm", "png", "jpg", "jpeg", "gif", "svg"].contains(url.pathExtension.lowercased()) { return .rendered(url) }
+        if InAppDocument.pdfExtensions.contains(url.pathExtension.lowercased()) { return .pdf(url) }
+        if ["html", "htm", "png", "jpg", "jpeg", "gif", "svg"].contains(url.pathExtension.lowercased()) { return .rendered(url) }
         guard (values.fileSize ?? 0) <= 2_000_000 else { throw DocumentPreviewError.message("This text file exceeds the 2 MB preview limit.") }
         let text = try String(contentsOf: url, encoding: .utf8)
         guard !text.contains("\0") else { throw DocumentPreviewError.message("This binary file has no text preview.") }
@@ -160,9 +162,36 @@ struct FindableTextDocument: NSViewRepresentable {
     }
 }
 
+/// Saves an in-app edit only when the file still holds the text the editor
+/// started from, so an agent's concurrent write is never silently replaced.
+enum DocumentFileWriter {
+    enum SaveError: LocalizedError {
+        case changedOnDisk, invalidJSON(String)
+        var errorDescription: String? {
+            switch self {
+            case .changedOnDisk: "This file changed on disk after you started editing."
+            case .invalidJSON(let detail): "The JSON is not valid, so it was not saved: \(detail)"
+            }
+        }
+    }
+
+    static func save(_ text: String, to url: URL, expected: String?) throws {
+        if let expected, (try? String(contentsOf: url, encoding: .utf8)) != expected { throw SaveError.changedOnDisk }
+        if url.pathExtension.lowercased() == "json" {
+            do { _ = try JSONSerialization.jsonObject(with: Data(text.utf8)) }
+            catch { throw SaveError.invalidJSON(error.localizedDescription) }
+        }
+        // Atomic replacement creates a new file; keep the original's private permissions.
+        let permissions = try? FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions]
+        try Data(text.utf8).write(to: url, options: .atomic)
+        if let permissions { try? FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: url.path) }
+    }
+}
+
 struct SideDocumentPane: View {
     let queue: QueueViewModel
-    let ticket: DashboardTicket
+    /// The task ID or project name the document is viewed under.
+    let scopeLabel: String
     let document: URL
     let open: (URL) -> Void
     let close: () -> Void
@@ -172,49 +201,56 @@ struct SideDocumentPane: View {
     @State private var error: String?
     @State private var revision = 0
     @State private var find = DocumentFindState()
+    @State private var isEditing = false
+    @State private var editDraft = ""
+    @State private var editBaseline = ""
+    @State private var saveError: String?
+    @State private var changedOnDisk = false
     private let loader = SideDocumentLoader()
+
+    private var loadedText: String? {
+        switch content {
+        case .markdown(let text), .text(let text): text
+        default: nil
+        }
+    }
 
     var body: some View {
         VStack(spacing: 8) {
             HStack {
-                Label(document.isFileURL ? document.lastPathComponent : (document.host ?? "Document"), systemImage: "doc.text")
+                Label(document.isFileURL ? document.lastPathComponent : (document.host ?? "Document"),
+                      systemImage: document.pathExtension.lowercased() == "pdf" ? "doc.richtext" : "doc.text")
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
                     .draggable(document.absoluteString)
                 Spacer()
-                Button { revision += 1 } label: { Image(systemName: "arrow.clockwise") }.help("Reload document")
+                if InAppDocument.isEditable(document), let loadedText {
+                    Button {
+                        if isEditing { isEditing = false } else {
+                            editDraft = loadedText; editBaseline = loadedText
+                            saveError = nil; changedOnDisk = false; isEditing = true
+                        }
+                    } label: { Image(systemName: isEditing ? "eye" : "pencil") }
+                        .help(isEditing ? "Stop editing without saving" : "Edit this document")
+                        .accessibilityLabel(isEditing ? "Stop editing" : "Edit document")
+                }
+                Button { revision += 1 } label: { Image(systemName: "arrow.clockwise") }
+                    .help("Reload document").disabled(isEditing)
+                if document.isFileURL {
+                    Button { NSWorkspace.shared.open(document) } label: { Image(systemName: "arrow.up.forward.app") }
+                        .help("Open in the default app")
+                }
                 Button(action: close) { Image(systemName: "xmark") }
                     .help("Close this document viewer")
             }
-            DocumentMetadataStrip(url: document, taskID: ticket.id, revision: revision)
-            DocumentFindBar(state: find)
-            Group {
-                if let error { ContentUnavailableView("Preview unavailable", systemImage: "doc", description: Text(error)) }
-                else if let content {
-                    switch content {
-                    case .markdown(let text):
-                        EmbeddedPlanDocument(markdown: text, sourceURL: document, appearance: queue.appearance,
-                            accentStyle: queue.accentStyle, canvasSelection: nil, open: open, select: discuss,
-                            findQuery: find.query, findRequest: find.request,
-                            findSearchesBackwards: find.searchesBackwards)
-                    case .text(let text):
-                        FindableTextDocument(
-                            text: text, query: find.query, request: find.request,
-                            searchesBackwards: find.searchesBackwards)
-                    case .rendered(let resource):
-                        ReadOnlyResourceDocument(
-                            url: resource, open: open, findQuery: find.query,
-                            findRequest: find.request, findSearchesBackwards: find.searchesBackwards)
-                    }
-                } else { ProgressView("Loading document…") }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipShape(RoundedRectangle(cornerRadius: 9))
+            DocumentMetadataStrip(url: document, taskID: scopeLabel, revision: revision)
+            if isEditing { editor } else { viewer }
         }
         .dropDestination(for: String.self) { identifiers, _ in
             guard let identifier = identifiers.last else { return false }
             return receiveDocument(identifier)
         }
+        .onChange(of: document) { _, _ in isEditing = false }
         .task(id: "\(document.absoluteString):\(revision)") {
             content = nil; error = nil
             do {
@@ -224,11 +260,72 @@ struct SideDocumentPane: View {
             } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
         }
     }
+
+    @ViewBuilder private var viewer: some View {
+        DocumentFindBar(state: find)
+        Group {
+            if let error { ContentUnavailableView("Preview unavailable", systemImage: "doc", description: Text(error)) }
+            else if let content {
+                switch content {
+                case .markdown(let text):
+                    EmbeddedPlanDocument(markdown: text, sourceURL: document, appearance: queue.appearance,
+                        accentStyle: queue.accentStyle, canvasSelection: nil, open: open, select: discuss,
+                        findQuery: find.query, findRequest: find.request,
+                        findSearchesBackwards: find.searchesBackwards)
+                case .text(let text):
+                    FindableTextDocument(
+                        text: text, query: find.query, request: find.request,
+                        searchesBackwards: find.searchesBackwards)
+                case .pdf(let file):
+                    PDFDocumentView(
+                        url: file, open: open, findQuery: find.query,
+                        findRequest: find.request, findSearchesBackwards: find.searchesBackwards)
+                case .rendered(let resource):
+                    ReadOnlyResourceDocument(
+                        url: resource, open: open, findQuery: find.query,
+                        findRequest: find.request, findSearchesBackwards: find.searchesBackwards)
+                }
+            } else { ProgressView("Loading document…") }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipShape(RoundedRectangle(cornerRadius: 9))
+    }
+
+    @ViewBuilder private var editor: some View {
+        TextEditor(text: $editDraft).font(.system(size: 13, design: .monospaced))
+            .accessibilityLabel("\(document.lastPathComponent) source")
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipShape(RoundedRectangle(cornerRadius: 9))
+        if let saveError { Text(saveError).font(.caption).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading) }
+        HStack {
+            Text("Saves directly to this file.").font(.caption2).foregroundStyle(.secondary)
+            Spacer()
+            Button("Cancel") { isEditing = false }
+            if changedOnDisk {
+                Button("Overwrite") { save(expected: nil) }
+                    .help("Replace the newer file on disk with your draft")
+            }
+            Button("Save") { save(expected: editBaseline) }
+                .buttonStyle(.borderedProminent).disabled(editDraft == editBaseline)
+                .keyboardShortcut("s", modifiers: .command)
+        }
+    }
+
+    private func save(expected: String?) {
+        do {
+            try DocumentFileWriter.save(editDraft, to: document, expected: expected)
+            isEditing = false; saveError = nil; changedOnDisk = false
+            revision += 1
+        } catch {
+            saveError = error.localizedDescription
+            if case DocumentFileWriter.SaveError.changedOnDisk = error { changedOnDisk = true }
+        }
+    }
 }
 
 struct DocumentConversationPane: View {
     let queue: QueueViewModel
-    let ticket: DashboardTicket
+    let scope: DocumentScope?
     let document: URL
     @State private var conversation: DocumentConversation?
 
@@ -239,15 +336,17 @@ struct DocumentConversationPane: View {
             } else {
                 ContentUnavailableView(
                     "Document chat unavailable", systemImage: "text.bubble",
-                    description: Text("Document chat will be available when the task context loads."))
+                    description: Text(scope == nil
+                        ? "Open this document from a task or project to discuss it."
+                        : "Document chat will be available when the task context loads."))
             }
         }
         .padding(.horizontal, 4)
         .frame(
             minWidth: QueueInspectorLayout.chatMinimumWidth, idealWidth: 270,
             maxWidth: .infinity, minHeight: 200, maxHeight: .infinity)
-        .task(id: document) {
-            conversation = queue.documentConversation(for: document, ticketID: ticket.id)
+        .task(id: "\(document.absoluteString)|\(String(describing: scope))") {
+            conversation = scope.flatMap { queue.documentConversation(for: document, scope: $0) }
             if let conversation { await conversation.load() }
         }
     }
@@ -267,7 +366,7 @@ struct DocumentConversationView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
                         if model.messages.isEmpty {
-                            Text("Discuss this document with the central plan and applicable AGENTS.md context.").font(.caption).foregroundStyle(.secondary)
+                            Text("Discuss this document with the \(model.subject.planLabel) and applicable AGENTS.md context.").font(.caption).foregroundStyle(.secondary)
                         }
                         ForEach(model.messages) { message in
                             VStack(alignment: .leading, spacing: 3) {
@@ -366,6 +465,63 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
                       !(target.isFileURL && url?.isFileURL == false),
                       action.targetFrame?.isMainFrame != false { decisionHandler(.allow) }
             else { decisionHandler(.cancel) }
+        }
+    }
+}
+
+/// Focus Queue's PDF viewer. Internal links stay in PDFKit; web and file
+/// links route through the same document opener as every other viewer.
+struct PDFDocumentView: NSViewRepresentable {
+    let url: URL
+    let open: (URL) -> Void
+    var findQuery = ""
+    var findRequest = 0
+    var findSearchesBackwards = false
+
+    func makeCoordinator() -> Coordinator { Coordinator(open: open) }
+
+    func makeNSView(context: Context) -> PDFView {
+        let view = PDFView()
+        view.autoScales = true
+        view.displayMode = .singlePageContinuous
+        view.displaysPageBreaks = true
+        view.backgroundColor = .underPageBackgroundColor
+        view.delegate = context.coordinator
+        return view
+    }
+
+    func updateNSView(_ view: PDFView, context: Context) {
+        context.coordinator.open = open
+        if context.coordinator.url != url {
+            context.coordinator.url = url
+            view.document = PDFDocument(url: url)
+        }
+        context.coordinator.find(query: findQuery, request: findRequest, backwards: findSearchesBackwards, in: view)
+    }
+
+    static func dismantleNSView(_ view: PDFView, coordinator: Coordinator) { view.delegate = nil }
+
+    @MainActor final class Coordinator: NSObject, PDFViewDelegate {
+        var url: URL?
+        var open: (URL) -> Void
+        private var handledFindRequest = 0
+        init(open: @escaping (URL) -> Void) { self.open = open }
+
+        func find(query: String, request: Int, backwards: Bool, in view: PDFView) {
+            guard request > handledFindRequest else { return }
+            handledFindRequest = request
+            guard !query.isEmpty, let document = view.document else { return }
+            var options: NSString.CompareOptions = [.caseInsensitive]
+            if backwards { options.insert(.backwards) }
+            let match = document.findString(query, fromSelection: view.currentSelection, withOptions: options)
+                ?? document.findString(query, fromSelection: nil, withOptions: options)
+            guard let match else { return }
+            view.setCurrentSelection(match, animate: true)
+            view.go(to: match)
+        }
+
+        nonisolated func pdfViewWillClick(onLink sender: PDFView, with url: URL) {
+            MainActor.assumeIsolated { open(url) }
         }
     }
 }

@@ -134,7 +134,7 @@ struct PlanCanvasView: View {
               primaryViewer
             } secondary: {
               SideDocumentPane(
-                queue: model, ticket: ticket, document: secondaryDocument,
+                queue: model, scopeLabel: ticket.id, document: secondaryDocument,
                 open: openDocument, close: { sideDocuments.close(secondaryDocument) },
                 receiveDocument: moveDocumentToSecondary,
                 discuss: { discussDocument($0, for: secondaryDocument) })
@@ -147,7 +147,7 @@ struct PlanCanvasView: View {
               primaryViewer
             } secondary: {
               if sideDocuments.centralChatCollapsed {
-                DocumentConversationPane(queue: model, ticket: ticket, document: primaryDocument)
+                DocumentConversationPane(queue: model, scope: .task(ticket.id), document: primaryDocument)
               } else {
                 conversation
               }
@@ -178,7 +178,7 @@ struct PlanCanvasView: View {
       VStack(spacing: 8) {
         documentTabBar
         SideDocumentPane(
-          queue: model, ticket: ticket, document: primaryDocument,
+          queue: model, scopeLabel: ticket.id, document: primaryDocument,
           open: openDocument, close: { sideDocuments.close(primaryDocument) },
           receiveDocument: moveDocumentToSecondary,
           discuss: { discussDocument($0, for: primaryDocument) })

@@ -99,7 +99,13 @@ struct ProjectTests {
         {"links":[{"kind":"repository","label":"GitHub","url":"https://github.com/o/r"},{"label":"no url"}],
          "deployments":[{"url":"https://example.com"}]}
         """.utf8).write(to: directory.appendingPathComponent("context.json"))
-        #expect(try store.documents(projectID: "focus").map(\.kind) == [.plan, .practices, .evidence, .context])
+        try Data("%PDF-1.4".utf8).write(to: directory.appendingPathComponent("Brief.pdf"))
+        try Data("{}".utf8).write(to: directory.appendingPathComponent("dashboard.json"))
+        // Known documents come first; other readable files follow by name, and queue data is left out.
+        let documents = try store.documents(projectID: "focus")
+        #expect(documents.map(\.kind) == [.plan, .practices, .evidence, .context, nil, nil])
+        #expect(documents.map(\.url.lastPathComponent).suffix(2) == ["Brief.pdf", "notes.md"])
+        #expect(documents.map(\.title).suffix(2) == ["Brief", "notes"])
         #expect(try store.links(projectID: "focus") == [
             DashboardLink(label: "GitHub", url: "https://github.com/o/r", type: "repository"),
             DashboardLink(label: "https://example.com", url: "https://example.com"),

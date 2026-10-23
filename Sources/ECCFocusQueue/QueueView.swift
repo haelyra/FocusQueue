@@ -151,6 +151,8 @@ struct QueueView: View {
       )).id(update.id)
     } else if model.isDailyReportPresented {
       DailyReportView(model: model)
+    } else if model.isDocumentViewerPresented {
+      DocumentViewerInspector(model: model)
     } else if let ticket = model.presentedPlanTicket {
       PlanCanvasView(model: model, ticket: ticket, chatDraft: Binding(
         get: { taskAgentDrafts[ticket.id] ?? "" },
@@ -874,7 +876,6 @@ struct QueueView: View {
         syncLabel.font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
           .lineLimit(1).minimumScaleFactor(0.8)
         Spacer()
-        ProjectFilesButton(model: model)
         monitorButton
         Button {
           if model.dailyReport == nil {
@@ -1155,24 +1156,6 @@ struct QueueView: View {
     model.canSwitchMonitor
       ? "Move queue to next display" : "Connect another display to move the queue"
   }
-}
-
-/// Header entry point for project-level documents, the project counterpart of a
-/// task's "Context, evidence & links".
-struct ProjectFilesButton: View {
-    let model: QueueViewModel
-    @State private var isPresented = false
-
-    var body: some View {
-        Button { isPresented.toggle() } label: {
-            Image(systemName: "folder.badge.gearshape").font(.system(size: 13, weight: .semibold))
-        }
-        .buttonStyle(.plain).minimumHitTarget(width: 30, height: 34)
-        .disabled(model.activeProjects.isEmpty)
-        .accessibilityLabel("Show project files")
-        .help("Project plan, practices, context, evidence, and links")
-        .popover(isPresented: $isPresented, arrowEdge: .bottom) { ProjectFilesPanel(model: model) }
-    }
 }
 
 private enum QueueScreen {
@@ -1955,6 +1938,12 @@ private struct QueueSettingsView: View {
       ScrollView {
         VStack(alignment: .leading, spacing: 14) {
           if focusedSection == .connectors { connectorDiagnosticsSection }
+          settingsSection(
+            title: "Project files",
+            detail: "Plan, practices, requirements, evidence, and other files saved for a project. Choose one to open it beside settings with its project chat."
+          ) {
+            ProjectFilesSection(model: model)
+          }
           settingsSection(
             title: "Projects",
             detail: "The selected project controls which dashboard and workspace Focus Queue uses."
@@ -2779,7 +2768,7 @@ private struct CompletedTicketCard: View {
               VStack(alignment: .leading, spacing: 2) {
                 Text(step.label).font(.system(size: 13))
                 ForEach(step.evidence, id: \.self) { evidence in
-                  Button { model.open(evidence) } label: {
+                  Button { model.open(evidence, ticketID: ticket.id) } label: {
                     Text(evidenceName(evidence)).font(.system(size: 12)).lineLimit(1)
                   }
                   .buttonStyle(.link)
@@ -2815,7 +2804,7 @@ private struct CompletedTicketCard: View {
         VStack(alignment: .leading, spacing: 5) {
           DetailLabel(text: "Evidence and links")
           ForEach(evidenceLinks) { link in
-            Button { model.open(link.url) } label: {
+            Button { model.open(link.url, ticketID: ticket.id) } label: {
               Label(link.label, systemImage: linkIcon(link.type)).font(.system(size: 13)).lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }.buttonStyle(.plain).accessibilityLabel("Open \(link.label)")
@@ -2848,7 +2837,7 @@ private struct CompletedTicketCard: View {
         VStack(alignment: .leading, spacing: 3) {
           Text("Completion evidence").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
           ForEach(evidence, id: \.self) { item in
-            Button { model.open(item) } label: {
+            Button { model.open(item, ticketID: ticket.id) } label: {
               Text(evidenceName(item)).font(.system(size: 12)).lineLimit(1)
             }.buttonStyle(.link).accessibilityLabel("Open completion evidence \(evidenceName(item))")
           }
@@ -3760,7 +3749,7 @@ private struct TicketCard: View {
         RecurringPRResolutionDetails(
           progress: recurringProgress,
           error: recurringProgressError,
-          open: model.open
+          open: { model.open($0, ticketID: ticket.id) }
         )
       }
       if !ticket.summary.isEmpty {
@@ -3814,7 +3803,7 @@ private struct TicketCard: View {
                 Text(step.label).font(.system(size: 13))
                 ForEach(step.evidence, id: \.self) { evidence in
                   Button {
-                    model.open(evidence)
+                    model.open(evidence, ticketID: ticket.id)
                   } label: {
                     Text(URL(fileURLWithPath: evidence).lastPathComponent).font(.system(size: 12))
                       .lineLimit(1)
@@ -3853,7 +3842,7 @@ private struct TicketCard: View {
           DetailLabel(text: "Evidence and links")
           ForEach(evidenceLinks) { link in
             Button {
-              model.open(link.url)
+              model.open(link.url, ticketID: ticket.id)
             } label: {
               Label(link.label, systemImage: linkIcon(link.type)).font(.system(size: 13)).lineLimit(
                 2
@@ -3865,7 +3854,7 @@ private struct TicketCard: View {
       }
 
       if let review {
-        ReviewDetail(review: review, retry: { model.retryReview(for: ticket) }, open: model.open)
+        ReviewDetail(review: review, retry: { model.retryReview(for: ticket) }, open: { model.open($0, ticketID: ticket.id) })
       }
 
       if let message = model.actionMessages[ticket.id] {

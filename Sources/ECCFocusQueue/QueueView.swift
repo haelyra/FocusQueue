@@ -130,7 +130,8 @@ struct QueueView: View {
 
   @ViewBuilder private var inspector: some View {
     if model.isTokenAnalyticsPresented {
-      TokenAnalyticsView(supportDirectory: AppPaths.live().supportDirectory) {
+      TokenAnalyticsView(supportDirectory: AppPaths.live().supportDirectory,
+                         sessions: model.tokenAnalyticsSessions) {
         model.setTokenAnalyticsPresented(false)
       }
       .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)

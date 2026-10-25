@@ -3806,6 +3806,14 @@ final class QueueViewModel {
     }
   }
 
+  /// Every tracked agent session, for reading usage from provider transcripts.
+  var tokenAnalyticsSessions: [AgentTranscriptUsage.Session] {
+    localState.agentSessions.map {
+      AgentTranscriptUsage.Session(ticketID: $0.ticketID, provider: $0.provider.rawValue,
+                                   sessionID: $0.sessionID, label: $0.taskTitle ?? $0.ticketID)
+    }
+  }
+
   func agentSessions(for ticketID: String) -> [TaskAgentSession] {
     localState.agentSessions
       .filter { $0.ticketID == ticketID }

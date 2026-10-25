@@ -46,8 +46,7 @@ import UserNotifications
   private var statusItem: NSStatusItem?
   private var exitTerminalFocusItem: NSMenuItem?
   private var terminalFocusController: TerminalFocusModeController?
-  private var voiceHotkeyMonitor: VoiceTaskHotkeyMonitor?
-  private var voiceRecordingStateObserver: NSObjectProtocol?
+  private var newTaskHotkeyMonitor: NewTaskHotkeyMonitor?
   private var focusChromeRefreshTask: Task<Void, Never>?
   private var screenReconciliationTask: Task<Void, Never>?
   private var movePersistTask: Task<Void, Never>?
@@ -89,16 +88,6 @@ import UserNotifications
       name: Notification.Name(QueueOrderStore.changeNotificationName),
       object: nil
     )
-    voiceRecordingStateObserver = DistributedNotificationCenter.default().addObserver(
-      forName: SuperWhisperBridge.recordingStateNotification,
-      object: nil,
-      queue: nil
-    ) { notification in
-      let recording = notification.userInfo?["recording"] as? Bool ?? false
-      Task { @MainActor [weak self] in
-        self?.model.setVoiceRecordingActive(recording)
-      }
-    }
     model.placementHandler = { [weak self] placement in
       self?.positionPanelOnCurrentDisplay(placement, animated: true)
     }
@@ -142,8 +131,8 @@ import UserNotifications
         targetScreen: panel?.screen, requiresActivatedWindow: true)
     }
     model.quitHandler = { NSApplication.shared.terminate(nil) }
-    model.voiceHotkeyEnabledHandler = { [weak self] enabled in
-      if enabled { self?.startVoiceHotkeyMonitor() } else { self?.stopVoiceHotkeyMonitor() }
+    model.newTaskHotkeyEnabledHandler = { [weak self] enabled in
+      if enabled { self?.startNewTaskHotkeyMonitor() } else { self?.stopNewTaskHotkeyMonitor() }
     }
     model.setCanSwitchMonitor(NSScreen.screens.count > 1)
     configureDailyReportNotifications()
@@ -156,7 +145,7 @@ import UserNotifications
 
     createPanel()
     createStatusItem()
-    if model.voiceTaskHotkeyEnabled { startVoiceHotkeyMonitor() }
+    if model.newTaskHotkeyEnabled { startNewTaskHotkeyMonitor() }
     positionPanel(.upperLeft, on: defaultScreen(), animated: false, persist: false)
     panel?.orderFrontRegardless()
 
@@ -228,11 +217,7 @@ import UserNotifications
 
   func applicationWillTerminate(_ notification: Notification) {
     programLog.record("Focus Queue is terminating.", category: "Lifecycle")
-    voiceHotkeyMonitor?.stop()
-    if let voiceRecordingStateObserver {
-      DistributedNotificationCenter.default().removeObserver(voiceRecordingStateObserver)
-      self.voiceRecordingStateObserver = nil
-    }
+    newTaskHotkeyMonitor?.stop()
     morningReconciliationTask?.cancel()
     _ = try? DailyReportWorkerControl.requestCancellation(
       runtimeDirectory: paths.ingestionRuntimeDirectory)
@@ -347,22 +332,21 @@ import UserNotifications
     model.setPanelVisible(true)
   }
 
-  private func startVoiceHotkeyMonitor() {
-    let monitor = VoiceTaskHotkeyMonitor()
-    monitor.onTrigger = { [weak self] in self?.handleVoiceTaskHotkey() }
+  private func startNewTaskHotkeyMonitor() {
+    let monitor = NewTaskHotkeyMonitor()
+    monitor.onTrigger = { [weak self] in self?.handleNewTaskHotkey() }
     monitor.start()
-    voiceHotkeyMonitor = monitor
+    newTaskHotkeyMonitor = monitor
   }
 
-  private func stopVoiceHotkeyMonitor() {
-    voiceHotkeyMonitor?.stop()
-    voiceHotkeyMonitor = nil
+  private func stopNewTaskHotkeyMonitor() {
+    newTaskHotkeyMonitor?.stop()
+    newTaskHotkeyMonitor = nil
   }
 
-  private func handleVoiceTaskHotkey() {
+  private func handleNewTaskHotkey() {
     revealPanelOnPointerDisplay()
     model.requestNewTask(autofocusPrompt: true)
-    Task { await SuperWhisperBridge.prepareRecorder() }
   }
 
   @objc private func importAgentRegistration(_ notification: Notification) {

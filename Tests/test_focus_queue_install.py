@@ -42,14 +42,11 @@ class InstallerTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.home = self.root / "Another User"
-        self.system_applications = self.root / "SystemApplications"
-        self.system_applications.mkdir()
         self.bundle = self.root / "Built.app"
         self.live_revision = self.first_revision
         self.make_app(self.bundle, b"new executable")
         self.installer = MODULE.Installer(
-            self.bundle, self.home, start=False,
-            system_applications=self.system_applications,
+            self.bundle, self.home, start=False
         )
         self.calls = []
         def run(args, **kwargs):
@@ -170,8 +167,7 @@ class InstallerTests(unittest.TestCase):
         )
         self.live_revision = second_revision
 
-        MODULE.Installer(replacement_bundle, self.home, start=False,
-                         system_applications=self.system_applications).install()
+        MODULE.Installer(replacement_bundle, self.home, start=False).install()
 
         manifest = json.loads(self.installer.manifest.read_text())
         self.assertEqual(manifest["sourceProvenance"]["revision"], second_revision)
@@ -193,8 +189,7 @@ class InstallerTests(unittest.TestCase):
             reachable=[sibling_revision],
             integration_revision=sibling_revision,
         )
-        replacement = MODULE.Installer(replacement_bundle, self.home, start=True,
-                                       system_applications=self.system_applications)
+        replacement = MODULE.Installer(replacement_bundle, self.home, start=True)
 
         with mock.patch.object(replacement, "stop") as stop, self.assertRaisesRegex(
             ValueError, "does not contain the installed revision"
@@ -221,16 +216,14 @@ class InstallerTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ValueError, "canonical integration revision"):
-            MODULE.Installer(replacement_bundle, self.home, start=False,
-                         system_applications=self.system_applications).install()
+            MODULE.Installer(replacement_bundle, self.home, start=False).install()
 
     def test_artifact_is_rejected_if_remote_main_advanced_after_build(self):
         self.installer.install()
         before_app = (self.installer.app / "Contents/MacOS/ECCFocusQueue").read_bytes()
         before_manifest = self.installer.manifest.read_bytes()
         self.live_revision = "e" * 40
-        replacement = MODULE.Installer(self.bundle, self.home, start=True,
-                                       system_applications=self.system_applications)
+        replacement = MODULE.Installer(self.bundle, self.home, start=True)
 
         with mock.patch.object(replacement, "stop") as stop, self.assertRaisesRegex(
             ValueError, "no longer the live canonical integration revision"
@@ -268,8 +261,7 @@ class InstallerTests(unittest.TestCase):
                 home = root / "home"
                 installed = root / "Installed.app"
                 self.make_app(installed, b"installed")
-                first = MODULE.Installer(installed, home, start=False,
-                                         system_applications=self.system_applications)
+                first = MODULE.Installer(installed, home, start=False)
                 first.install()
 
                 expected = {
@@ -278,8 +270,7 @@ class InstallerTests(unittest.TestCase):
                     "repository": "repository identity is inconsistent",
                 }[scenario]
                 with self.assertRaisesRegex(ValueError, expected):
-                    MODULE.Installer(bundle, home, start=False,
-                                     system_applications=self.system_applications).install()
+                    MODULE.Installer(bundle, home, start=False).install()
 
     def test_foreign_repository_cannot_seed_the_first_receipt(self):
         self.write_provenance(
@@ -579,8 +570,7 @@ class InstallerTests(unittest.TestCase):
         for conflict in ["app", "helper", "parent"]:
             with self.subTest(conflict=conflict), tempfile.TemporaryDirectory() as temporary:
                 home = Path(temporary) / "home"
-                installer = MODULE.Installer(self.bundle, home, start=False,
-                                             system_applications=self.system_applications)
+                installer = MODULE.Installer(self.bundle, home, start=False)
                 if conflict == "parent":
                     home.mkdir()
                     (home / "Applications").symlink_to(self.root)
@@ -700,8 +690,7 @@ class InstallerTests(unittest.TestCase):
         self.installer.install()
         before = self.installer.manifest.read_bytes()
         self.make_app(self.root / "Next.app", b"next executable")
-        replacement = MODULE.Installer(self.root / "Next.app", self.home, start=True,
-                                       system_applications=self.system_applications)
+        replacement = MODULE.Installer(self.root / "Next.app", self.home, start=True)
         with mock.patch.object(replacement, "stop"), mock.patch.object(replacement, "start_app", side_effect=[RuntimeError("injected start failure"), None]) as start:
             with self.assertRaisesRegex(RuntimeError, "injected start failure"):
                 replacement.install()
@@ -844,22 +833,6 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(self.installer.app.exists())
         self.assertTrue(Path(result["backupDirectory"]).exists())
 
-    def test_install_reports_opensuperwhisper_skip_without_a_pinned_release(self):
-        with mock.patch.object(MODULE, "OSW_RELEASE_URL", ""):
-            result = self.installer.install()
-        self.assertEqual(
-            result["openSuperWhisper"], "skipped: no pinned release URL configured"
-        )
-        self.assertFalse(
-            (self.home / "Applications" / MODULE.OSW_APP_NAME).exists()
-        )
-
-    def test_install_reports_opensuperwhisper_failure_without_failing(self):
-        result = self.installer.install()
-        self.assertTrue(result["openSuperWhisper"].startswith("failed: "), result)
-        self.assertEqual(result["status"], "installed")
-        self.assertTrue(self.installer.app.exists())
-
     def test_uninstall_accepts_verified_manifest_owned_legacy_app(self):
         self.installer.install()
         self.installer.app.rename(self.installer.legacy_app)
@@ -876,183 +849,6 @@ class InstallerTests(unittest.TestCase):
 
         self.assertEqual(result["mode"], "uninstalled")
         self.assertFalse(self.installer.legacy_app.exists())
-
-
-class OpenSuperWhisperTests(unittest.TestCase):
-    release_url = "https://example.invalid/opensuperwhisper.zip"
-
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.home = Path(self.temp.name) / "home"
-        self.system_applications = Path(self.temp.name) / "SystemApplications"
-        self.system_applications.mkdir()
-        self.app = self.home / "Applications" / MODULE.OSW_APP_NAME
-        self.executable = self.app / "Contents/MacOS" / MODULE.OSW_EXECUTABLE_NAME
-        self.agent = (
-            self.home / "Library/LaunchAgents"
-            / f"{MODULE.OSW_LAUNCH_AGENT_LABEL}.plist"
-        )
-        self.messages = []
-
-    def ensure(self, **kwargs):
-        return MODULE.ensure_opensuperwhisper(
-            self.home,
-            log=self.messages.append,
-            system_applications=self.system_applications,
-            **kwargs,
-        )
-
-    def patched_download(self, payload):
-        download = mock.MagicMock()
-        download.return_value.__enter__.return_value.read.return_value = payload
-        return mock.patch.object(MODULE.urllib.request, "urlopen", download)
-
-    def patched_release(self, payload):
-        return (
-            mock.patch.object(MODULE, "OSW_RELEASE_URL", self.release_url),
-            mock.patch.object(MODULE, "OSW_SHA256", hashlib.sha256(payload).hexdigest()),
-            self.patched_download(payload),
-        )
-
-    def test_skips_when_app_already_installed(self):
-        self.app.mkdir(parents=True)
-        with mock.patch.object(MODULE, "OSW_RELEASE_URL", self.release_url), \
-                mock.patch.object(
-                    MODULE.urllib.request, "urlopen", side_effect=AssertionError("downloaded")
-                ):
-            result = self.ensure()
-        self.assertEqual(result, "already installed")
-        self.assertFalse(self.agent.exists())
-
-    def test_skips_when_app_exists_in_system_applications(self):
-        (self.system_applications / MODULE.OSW_APP_NAME).mkdir()
-        with mock.patch.object(MODULE, "OSW_RELEASE_URL", self.release_url), \
-                mock.patch.object(
-                    MODULE.urllib.request, "urlopen", side_effect=AssertionError("downloaded")
-                ) as download:
-            result = self.ensure()
-        self.assertEqual(result, "already installed")
-        download.assert_not_called()
-        self.assertFalse(self.app.exists())
-        self.assertFalse(self.agent.exists())
-
-    def test_skips_without_a_pinned_release_url(self):
-        with mock.patch.object(MODULE, "OSW_RELEASE_URL", ""):
-            result = self.ensure()
-        self.assertEqual(result, "skipped: no pinned release URL configured")
-        self.assertIn(
-            "OpenSuperWhisper auto-install skipped: no pinned release URL configured",
-            self.messages,
-        )
-        self.assertFalse(self.app.exists())
-        self.assertFalse(self.agent.exists())
-
-    def test_sha256_mismatch_aborts_without_touching_the_destination(self):
-        payload = b"release zip"
-        calls = []
-
-        def run(args, **kwargs):
-            calls.append(args)
-            return subprocess.CompletedProcess(args, 0, "", "")
-
-        with mock.patch.object(MODULE, "OSW_RELEASE_URL", self.release_url), \
-                mock.patch.object(MODULE, "OSW_SHA256", "0" * 64), \
-                self.patched_download(payload), mock.patch.object(
-                    MODULE.subprocess, "run", side_effect=run
-                ):
-            result = self.ensure()
-        self.assertTrue(result.startswith("failed: "), result)
-        self.assertTrue(any("sha256" in message for message in self.messages))
-        self.assertFalse(self.app.exists())
-        self.assertFalse(self.agent.exists())
-        self.assertFalse(any(call[0] == "/usr/bin/xattr" for call in calls), calls)
-        self.assertFalse(any(call[0] == "/usr/bin/ditto" for call in calls), calls)
-
-    def test_installs_launch_agent_and_prints_setup_note(self):
-        payload = b"release zip"
-        calls = []
-
-        def run(args, **kwargs):
-            calls.append(args)
-            if args[0] == "/usr/bin/ditto":
-                self.executable.parent.mkdir(parents=True)
-                self.executable.write_bytes(b"osw")
-                self.executable.chmod(0o755)
-            return subprocess.CompletedProcess(args, 0, "", "")
-
-        patches = self.patched_release(payload)
-        with patches[0], patches[1], patches[2], mock.patch.object(
-            MODULE.subprocess, "run", side_effect=run
-        ):
-            result = self.ensure()
-
-        self.assertEqual(result, "installed")
-        self.assertEqual(self.executable.read_bytes(), b"osw")
-        xattr_call = ["/usr/bin/xattr", "-dr", "com.apple.quarantine", str(self.app)]
-        self.assertIn(xattr_call, calls)
-        ditto_index = next(i for i, call in enumerate(calls) if call[0] == "/usr/bin/ditto")
-        xattr_index = calls.index(xattr_call)
-        self.assertLess(ditto_index, xattr_index)
-        bundle_sign = [
-            "/usr/bin/codesign", "--force", "--sign", "-",
-            "--requirements", MODULE.OSW_DESIGNATED_REQUIREMENT, str(self.app),
-        ]
-        self.assertIn(bundle_sign, calls)
-        self.assertLess(xattr_index, calls.index(bundle_sign))
-        agent = plistlib.loads(self.agent.read_bytes())
-        self.assertEqual(agent["Label"], MODULE.OSW_LAUNCH_AGENT_LABEL)
-        self.assertEqual(agent["ProgramArguments"], [str(self.executable)])
-        self.assertTrue(agent["RunAtLoad"])
-        self.assertFalse(agent["KeepAlive"])
-        self.assertIn(
-            ["/bin/launchctl", "bootstrap", f"gui/{os.getuid()}", str(self.agent)],
-            calls,
-        )
-        self.assertTrue(
-            any(
-                "Microphone" in message
-                and "Accessibility" in message
-                and "Input Monitoring" in message
-                and "Whisper model" in message
-                for message in self.messages
-            ),
-            self.messages,
-        )
-
-    def test_signature_signs_nested_dylibs_before_the_bundle(self):
-        dylibs = [
-            self.app / "Contents/Frameworks/libomp.dylib",
-            self.app / "Contents/MacOS/OpenSuperWhisper.debug.dylib",
-        ]
-        for dylib in dylibs:
-            dylib.parent.mkdir(parents=True, exist_ok=True)
-            dylib.write_bytes(b"dylib")
-        calls = []
-
-        def run(args, **kwargs):
-            calls.append(args)
-            return subprocess.CompletedProcess(args, 0, "", "")
-
-        with mock.patch.object(MODULE.subprocess, "run", side_effect=run):
-            MODULE.stabilize_opensuperwhisper_signature(self.app)
-
-        signed = [call[-1] for call in calls]
-        bundle_index = signed.index(str(self.app))
-        for dylib in dylibs:
-            self.assertLess(signed.index(str(dylib)), bundle_index)
-        self.assertIn("--requirements", calls[bundle_index])
-        self.assertEqual(calls[-1][:2], ["/usr/bin/codesign", "--verify"])
-
-    def test_failure_does_not_raise(self):
-        with mock.patch.object(MODULE, "OSW_RELEASE_URL", self.release_url), \
-                mock.patch.object(MODULE, "OSW_SHA256", "0" * 64), \
-                mock.patch.object(
-                    MODULE.urllib.request, "urlopen", side_effect=OSError("offline")
-                ):
-            result = self.ensure()
-        self.assertTrue(result.startswith("failed: "), result)
-        self.assertTrue(any("unaffected" in message for message in self.messages))
 
 
 if __name__ == "__main__":

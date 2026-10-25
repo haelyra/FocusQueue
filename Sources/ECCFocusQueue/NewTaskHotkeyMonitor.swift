@@ -4,7 +4,7 @@ import AppKit
 /// events arrive solely on modifier transitions, so idle cost is zero and the
 /// handler is a bitmask check.
 @MainActor
-final class VoiceTaskHotkeyMonitor {
+final class NewTaskHotkeyMonitor {
   var onTrigger: () -> Void = {}
 
   private var globalMonitor: Any?

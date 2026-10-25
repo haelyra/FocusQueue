@@ -2053,12 +2053,12 @@ private struct QueueSettingsView: View {
               set: { model.setAgentUsageBarEnabled($0) }))
           }
           settingsSection(
-            title: "Voice task hotkey",
-            detail: "Right Option + Shift reveals the queue, opens a new task with the prompt focused, and toggles OpenSuperWhisper recording."
+            title: "New task hotkey",
+            detail: "Right Option + Shift reveals the queue and opens a new task with the prompt focused."
           ) {
-            Toggle("Voice task hotkey (Right Option + Shift)", isOn: Binding(
-              get: { model.voiceTaskHotkeyEnabled },
-              set: { model.setVoiceTaskHotkeyEnabled($0) }))
+            Toggle("New task hotkey (Right Option + Shift)", isOn: Binding(
+              get: { model.newTaskHotkeyEnabled },
+              set: { model.setNewTaskHotkeyEnabled($0) }))
           }
           settingsSection(
             title: "Appearance", detail: "Dark uses your WezTerm #1A1D23 background color."

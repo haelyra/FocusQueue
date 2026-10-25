@@ -2479,14 +2479,20 @@ final class QueueViewModel {
     reportVisibilityHandler?(true)
   }
 
+  /// Closing saves every pending edit first. A refused save keeps the viewer
+  /// open on that document so its error and draft stay in view.
   func closeDocumentViewer() {
     guard isDocumentViewerPresented else { return }
+    for url in documentViewer.tabs {
+      guard documentContentStore.saveBeforeClose(url) else { documentViewer.select(url); return }
+    }
     isDocumentViewerPresented = false
     documentViewer.dismiss()
     reportVisibilityHandler?(isInspectorPresented)
   }
 
   func closeDocumentViewerTab(_ url: URL) {
+    guard documentContentStore.saveBeforeClose(url) else { return }
     documentViewer.close(url)
     if !documentViewer.isPresented { closeDocumentViewer() }
   }

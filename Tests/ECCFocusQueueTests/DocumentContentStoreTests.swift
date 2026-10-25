@@ -123,4 +123,65 @@ struct DocumentContentStoreTests {
         #expect(store.saveEdit(file, overwrite: true))
         #expect(try String(contentsOf: file, encoding: .utf8) == "mine")
     }
+
+    @Test("Saving publishes the new text synchronously, as Markdown for .md files")
+    func saveUpdatesContentImmediately() async throws {
+        let file = try tempFile("original")
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let store = DocumentContentStore()
+        store.ensureLoaded(file)
+        await waitFor { store.loadedText(for: file) == "original" }
+
+        store.beginEditing(file)
+        store.updateDraft(file, "# edited")
+        let revision = store.entry(for: file).revision
+        #expect(store.saveEdit(file))
+        // No awaiting: the preview must already hold the saved text, never stale text.
+        guard case .markdown(let text) = store.entry(for: file).content else {
+            Issue.record("Expected Markdown content after saving a .md file")
+            return
+        }
+        #expect(text == "# edited")
+        #expect(store.entry(for: file).revision > revision)
+    }
+
+    @Test("Closing saves a changed draft and discards an unchanged one")
+    func saveBeforeClose() async throws {
+        let file = try tempFile("original")
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let store = DocumentContentStore()
+        store.ensureLoaded(file)
+        await waitFor { store.loadedText(for: file) == "original" }
+
+        #expect(store.saveBeforeClose(file))
+
+        store.beginEditing(file)
+        #expect(!store.hasUnsavedEdit(file))
+        #expect(store.saveBeforeClose(file))
+        #expect(store.editSessions[file] == nil)
+
+        store.beginEditing(file)
+        store.updateDraft(file, "closed with edits")
+        #expect(store.hasUnsavedEdit(file))
+        #expect(store.saveBeforeClose(file))
+        #expect(store.editSessions[file] == nil)
+        #expect(try String(contentsOf: file, encoding: .utf8) == "closed with edits")
+    }
+
+    @Test("A refused save on close keeps the edit open with its error")
+    func refusedSaveBeforeClose() async throws {
+        let file = try tempFile("original")
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let store = DocumentContentStore()
+        store.ensureLoaded(file)
+        await waitFor { store.loadedText(for: file) == "original" }
+
+        store.beginEditing(file)
+        store.updateDraft(file, "mine")
+        try Data("theirs".utf8).write(to: file)
+        #expect(!store.saveBeforeClose(file))
+        #expect(store.editSessions[file]?.draft == "mine")
+        #expect(store.editSessions[file]?.saveError != nil)
+        #expect(try String(contentsOf: file, encoding: .utf8) == "theirs")
+    }
 }

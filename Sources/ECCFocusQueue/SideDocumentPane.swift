@@ -7,6 +7,11 @@ import FocusQueueCore
 
 enum SideDocumentContent: Sendable {
     case markdown(String), text(String), pdf(URL), rendered(URL)
+
+    /// Markdown files preview rendered; every other text file shows as source.
+    static func text(_ text: String, for url: URL) -> SideDocumentContent {
+        ["md", "markdown"].contains(url.pathExtension.lowercased()) ? .markdown(text) : .text(text)
+    }
 }
 
 actor SideDocumentLoader {
@@ -22,7 +27,7 @@ actor SideDocumentLoader {
         guard (values.fileSize ?? 0) <= 2_000_000 else { throw DocumentPreviewError.message("This text file exceeds the 2 MB preview limit.") }
         let text = try String(contentsOf: url, encoding: .utf8)
         guard !text.contains("\0") else { throw DocumentPreviewError.message("This binary file has no text preview.") }
-        return ["md", "markdown"].contains(url.pathExtension.lowercased()) ? .markdown(text) : .text(text)
+        return .text(text, for: url)
     }
 }
 
@@ -226,6 +231,13 @@ struct SideDocumentPane: View {
                     .lineLimit(1)
                     .documentDrag(document, started: dragStarted)
                 Spacer()
+                if let editSession {
+                    Button("Save") { _ = store.saveEdit(document) }
+                        .buttonStyle(.borderedProminent).controlSize(.small)
+                        .disabled(editSession.draft == editSession.baseline)
+                        .keyboardShortcut("s", modifiers: .command)
+                        .help("Save to this file and return to the preview")
+                }
                 if document.isFileURL, store.loadedText(for: document) != nil {
                     Button {
                         if editSession != nil { store.discardEdit(document) }
@@ -240,11 +252,22 @@ struct SideDocumentPane: View {
                     Button { NSWorkspace.shared.open(document) } label: { Image(systemName: "arrow.up.forward.app") }
                         .help("Open in the default app")
                 }
-                Button(action: close) { Image(systemName: "xmark") }
-                    .help("Close this document viewer")
+                Button {
+                    // Pending edits are saved on close; a refused save keeps the pane open with its error.
+                    if store.saveBeforeClose(document) { close() }
+                } label: { Image(systemName: "xmark") }
+                    .help(editSession == nil ? "Close this document viewer" : "Save and close this document viewer")
             }
             DocumentMetadataStrip(url: document, taskID: scopeLabel, revision: entry.revision)
-            if editSession != nil { editor } else { viewer }
+            // The viewer stays mounted under the editor, so saving reveals a rendered
+            // preview instead of building a new web view that paints white first.
+            ZStack {
+                VStack(spacing: 8) { viewer }
+                    .opacity(editSession == nil ? 1 : 0)
+                    .allowsHitTesting(editSession == nil)
+                    .accessibilityHidden(editSession != nil)
+                if editSession != nil { VStack(spacing: 8) { editor } }
+            }
         }
         .task(id: document.absoluteString) { store.ensureLoaded(document) }
     }
@@ -302,10 +325,6 @@ struct SideDocumentPane: View {
                 Button("Overwrite") { _ = store.saveEdit(document, overwrite: true) }
                     .help("Replace the newer file on disk with your draft")
             }
-            Button("Save") { _ = store.saveEdit(document) }
-                .buttonStyle(.borderedProminent)
-                .disabled(editSession.map { $0.draft == $0.baseline } ?? true)
-                .keyboardShortcut("s", modifiers: .command)
         }
     }
 }

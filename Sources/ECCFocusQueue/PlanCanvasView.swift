@@ -68,6 +68,14 @@ struct PlanCanvasView: View {
           .help(sideDocuments.hasSecondaryViewer ? "Close split view" : "Open this document in split view")
           .accessibilityLabel(sideDocuments.hasSecondaryViewer ? "Close split view" : "Open split view")
         }
+        if isEditing {
+          Button("Save") { Task { _ = await saveCentralPlanEdit() } }
+            .buttonStyle(.borderedProminent).disabled(isSaving || editDraft == editBaseline)
+            .keyboardShortcut("s", modifiers: .command)
+            .help(editBaseline == model.presentedPlanMarkdown
+              ? "Save the plan and return to the preview"
+              : "Save the reconciled draft and return to the preview")
+        }
         if model.presentedPlanURL == nil, sideDocuments.primaryDocument == nil, !showsWorkspaceMap {
           Button {
             showsWorkspaceMap = false
@@ -83,12 +91,12 @@ struct PlanCanvasView: View {
           .accessibilityLabel(isEditing ? "Preview plan" : "Edit central plan")
         }
         Button {
-          model.closePlan()
+          Task { await closePlanSavingEdits() }
         } label: {
           Image(systemName: "xmark")
         }
-        .buttonStyle(.plain).frame(width: 40, height: 40)
-        .help("Collapse the plan and return to the queue").accessibilityLabel("Close plan")
+        .buttonStyle(.plain).frame(width: 40, height: 40).disabled(isSaving)
+        .help("Save any edits and return to the queue").accessibilityLabel("Close plan")
       }
       .padding(12)
       .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -211,92 +219,89 @@ struct PlanCanvasView: View {
             canvasSelection = nil
             composerFocusRequest &+= 1
           })
-      } else if isEditing {
-        if editBaseline != model.presentedPlanMarkdown {
-          VStack(alignment: .leading, spacing: 6) {
-            Text(
-              "Another agent changed the plan. Merge the latest changes into your draft before saving."
-            )
-            .font(.caption).foregroundStyle(.orange)
-            DisclosureGroup("Latest saved version") {
-              ScrollView {
-                Text(model.presentedPlanMarkdown).font(.system(size: 11, design: .monospaced))
-                  .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-              }.frame(maxHeight: 150)
-            }.font(.caption)
-          }
-        }
-        modeIndicator
-        TextEditor(text: $editDraft).font(.system(size: 13, design: .monospaced))
-          .accessibilityLabel("Central plan Markdown")
-          .onChange(of: editDraft) { _, text in
-            model.updatePlanDraft(text, baseline: editBaseline, ticketID: ticket.id)
-          }
-        HStack {
-          Text("Saves an archive snapshot. Conflicting agent edits are preserved.")
-            .font(.caption2).foregroundStyle(.secondary)
-          Spacer()
-          Button("Keep draft") { isEditing = false }.disabled(isSaving)
-          Button(
-            editBaseline == model.presentedPlanMarkdown ? "Save plan" : "Save reconciled draft"
-          ) {
-            isSaving = true
-            let expected =
-              editBaseline == model.presentedPlanMarkdown
-              ? editBaseline : model.presentedPlanMarkdown
-            Task {
-              if await model.savePlan(editDraft, expectedMarkdown: expected, ticketID: ticket.id) {
-                isEditing = false
-              }
-              isSaving = false
-            }
-          }.buttonStyle(.borderedProminent).disabled(isSaving)
-        }
-      } else if model.isPlanLoading {
-        ProgressView("Loading central plan…").frame(maxWidth: .infinity, maxHeight: .infinity)
-      } else if let error = model.planError, model.presentedPlanMarkdown.isEmpty {
-        ContentUnavailableView {
-          Label("Could not load this plan", systemImage: "doc.badge.ellipsis")
-        } description: {
-          Text(error)
-        } actions: {
-          Button("Retry") { model.openPlan(for: ticket, sourceURL: model.presentedPlanURL) }
-        }
       } else {
-        if model.presentedPlanURL == nil, model.planEditDrafts[ticket.id] != nil {
-          HStack {
-            Text("Saved draft available").font(.caption).foregroundStyle(.secondary)
-            Spacer()
-            Button("Resume edit") {
-              editDraft = model.planEditDrafts[ticket.id]!.markdown
-              editBaseline = model.planEditDrafts[ticket.id]!.baseline
-              isEditing = true
+        ZStack(alignment: .topLeading) {
+          VStack(alignment: .leading, spacing: 8) {
+            if model.isPlanLoading {
+              ProgressView("Loading central plan…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let error = model.planError, model.presentedPlanMarkdown.isEmpty {
+              ContentUnavailableView {
+                Label("Could not load this plan", systemImage: "doc.badge.ellipsis")
+              } description: {
+                Text(error)
+              } actions: {
+                Button("Retry") { model.openPlan(for: ticket, sourceURL: model.presentedPlanURL) }
+              }
+            } else {
+              if model.presentedPlanURL == nil, model.planEditDrafts[ticket.id] != nil {
+                HStack {
+                  Text("Saved draft available").font(.caption).foregroundStyle(.secondary)
+                  Spacer()
+                  Button("Resume edit") {
+                    editDraft = model.planEditDrafts[ticket.id]!.markdown
+                    editBaseline = model.planEditDrafts[ticket.id]!.baseline
+                    isEditing = true
+                  }
+                  Button("Discard draft") { model.discardPlanDraft(ticketID: ticket.id) }
+                }
+              }
+              modeIndicator
+              EmbeddedPlanDocument(
+                markdown: model.presentedPlanMarkdown, sourceURL: sourceURL,
+                appearance: model.appearance, accentStyle: model.accentStyle,
+                canvasSelection: canvasSelection,
+                open: { url in
+                  openDocument(url)
+                },
+                select: { action in
+                  canvasSelection = action.selection
+                  if !action.initialText.isEmpty { chatDraft += action.initialText }
+                  composerFocusRequest &+= 1
+                },
+                findQuery: planFind.query,
+                findRequest: planFind.request,
+                findSearchesBackwards: planFind.searchesBackwards
+              )
+              .clipShape(RoundedRectangle(cornerRadius: 12))
+              .overlay(
+                RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                  .allowsHitTesting(false)
+              )
             }
-            Button("Discard draft") { model.discardPlanDraft(ticketID: ticket.id) }
+          }
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .opacity(isEditing ? 0 : 1).allowsHitTesting(!isEditing).accessibilityHidden(isEditing)
+          if isEditing {
+            VStack(alignment: .leading, spacing: 8) {
+              if editBaseline != model.presentedPlanMarkdown {
+                VStack(alignment: .leading, spacing: 6) {
+                  Text(
+                    "Another agent changed the plan. Merge the latest changes into your draft before saving."
+                  )
+                  .font(.caption).foregroundStyle(.orange)
+                  DisclosureGroup("Latest saved version") {
+                    ScrollView {
+                      Text(model.presentedPlanMarkdown).font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    }.frame(maxHeight: 150)
+                  }.font(.caption)
+                }
+              }
+              modeIndicator
+              TextEditor(text: $editDraft).font(.system(size: 13, design: .monospaced))
+                .accessibilityLabel("Central plan Markdown")
+                .onChange(of: editDraft) { _, text in
+                  model.updatePlanDraft(text, baseline: editBaseline, ticketID: ticket.id)
+                }
+              HStack {
+                Text("Save in the top bar writes an archive snapshot. Conflicting agent edits are preserved.")
+                  .font(.caption2).foregroundStyle(.secondary)
+                Spacer()
+                Button("Keep draft") { isEditing = false }.disabled(isSaving)
+              }
+            }
           }
         }
-        modeIndicator
-        EmbeddedPlanDocument(
-          markdown: model.presentedPlanMarkdown, sourceURL: sourceURL,
-          appearance: model.appearance, accentStyle: model.accentStyle,
-          canvasSelection: canvasSelection,
-          open: { url in
-            openDocument(url)
-          },
-          select: { action in
-            canvasSelection = action.selection
-            if !action.initialText.isEmpty { chatDraft += action.initialText }
-            composerFocusRequest &+= 1
-          },
-          findQuery: planFind.query,
-          findRequest: planFind.request,
-          findSearchesBackwards: planFind.searchesBackwards
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(
-          RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.08), lineWidth: 1)
-            .allowsHitTesting(false)
-        )
       }
     }.frame(
       minWidth: QueueInspectorLayout.documentMinimumWidth, idealWidth: 540,
@@ -333,7 +338,7 @@ struct PlanCanvasView: View {
                 .font(.system(size: 10)).foregroundStyle(.secondary)
                 .accessibilityLabel("Shown in split view")
             }
-            Button { sideDocuments.close(url) } label: {
+            Button { closeTab(url) } label: {
               Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
                 .foregroundStyle(.secondary)
             }
@@ -348,7 +353,7 @@ struct PlanCanvasView: View {
             } else if sideDocuments.canSplit(url) {
               Button("Open in Split View", systemImage: "rectangle.split.2x1") { toggleSplit(url) }
             }
-            Button("Close Tab", systemImage: "xmark") { sideDocuments.close(url) }
+            Button("Close Tab", systemImage: "xmark") { closeTab(url) }
           }
         }
       }
@@ -387,6 +392,42 @@ struct PlanCanvasView: View {
     .foregroundStyle(isEditing ? Color.orange : Color.secondary)
     .padding(.horizontal, 9).padding(.vertical, 6)
     .background(Color.secondary.opacity(0.09), in: Capsule())
+  }
+
+  /// Saves the central plan draft. A conflict with another agent's edit keeps
+  /// the editor open; the reconciled-draft save is a deliberate click only.
+  private func saveCentralPlanEdit() async -> Bool {
+    guard isEditing, !isSaving else { return !isEditing }
+    isSaving = true
+    defer { isSaving = false }
+    let expected = editBaseline == model.presentedPlanMarkdown ? editBaseline : model.presentedPlanMarkdown
+    guard await model.savePlan(editDraft, expectedMarkdown: expected, ticketID: ticket.id) else { return false }
+    isEditing = false
+    return true
+  }
+
+  /// Closing a document tab saves its pending edit first; a refused save keeps it open.
+  private func closeTab(_ url: URL) {
+    if model.documentContentStore.saveBeforeClose(url) { sideDocuments.close(url) }
+  }
+
+  /// Closing the plan saves every pending edit. If any save is refused, the
+  /// plan stays open so the error and the draft remain in view.
+  private func closePlanSavingEdits() async {
+    if isEditing {
+      if editDraft == editBaseline { isEditing = false }
+      else if editBaseline != model.presentedPlanMarkdown {
+        // The editor already warns about the newer plan; never overwrite it silently.
+        return
+      } else if !(await saveCentralPlanEdit()) { return }
+    }
+    for url in sideDocuments.tabs {
+      guard model.documentContentStore.saveBeforeClose(url) else {
+        sideDocuments.select(url)
+        return
+      }
+    }
+    model.closePlan()
   }
 
   private func rememberPresentedDocument() {
@@ -449,6 +490,13 @@ struct EmbeddedPlanDocument: NSViewRepresentable {
     return view
   }
 
+  /// Mirrors `--page` in `MarkdownHTMLRenderer`.
+  static func pageBackground(_ appearance: QueueAppearance) -> NSColor {
+    appearance == .dark
+      ? NSColor(srgbRed: 0x24 / 255, green: 0x24 / 255, blue: 0x24 / 255, alpha: 1)
+      : NSColor(srgbRed: 0xf3 / 255, green: 0xf3 / 255, blue: 0xf3 / 255, alpha: 1)
+  }
+
   static func webConfiguration(coordinator: Coordinator) -> WKWebViewConfiguration {
     let configuration = WKWebViewConfiguration()
     configuration.websiteDataStore = .nonPersistent()
@@ -475,6 +523,8 @@ struct EmbeddedPlanDocument: NSViewRepresentable {
       markdown: markdown, sourceURL: sourceURL,
       appearance: appearance, accentStyle: accentStyle)
     {
+      // Match the page background so a reload never flashes the default white.
+      view.underPageBackgroundColor = Self.pageBackground(appearance)
       view.appearance = NSAppearance(named: appearance == .dark ? .darkAqua : .aqua)
       context.coordinator.willLoadDocument()
       context.coordinator.pendingInitialLoad = true

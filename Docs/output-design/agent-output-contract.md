@@ -17,7 +17,7 @@ Produce these sections in this order. You may omit a section only by writing
 ```
 
 Stages: `backlog` → `idea` → `planning` → `implementation` → `testing` →
-`refinement` → `deployment` → `qa-in-progress` → `deployed-verification`.
+`refinement` → `deployment` → `qa` → `deployed-verification`.
 Derive the stage from artifacts that exist (spec, plan, diff, test results),
 never from what you intend to do.
 
@@ -28,8 +28,8 @@ changes:
 - `backlog` is the default. Do not run a status command before active work.
 - `idea` through `deployment` map to `in-progress`. Run
   `focus-queue-session task status "$FOCUS_QUEUE_TASK_ID" in-progress`.
-- `qa-in-progress` and `deployed-verification` map to `qa-in-progress`. Run
-  `focus-queue-session task status "$FOCUS_QUEUE_TASK_ID" qa-in-progress`.
+- `qa` and `deployed-verification` map to `qa`. Run
+  `focus-queue-session task status "$FOCUS_QUEUE_TASK_ID" qa`.
 - If the precise stage is unavailable, use `in-progress`. If a more specific
   update fails, retry once with `in-progress`; report a second failure instead
   of claiming the status changed.

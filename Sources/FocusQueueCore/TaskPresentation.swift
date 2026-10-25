@@ -65,7 +65,7 @@ public extension DashboardTicket {
 public enum TaskFieldChoices {
   public static let priorities = ["critical", "high", "medium", "low"]
   public static let openStatuses = [
-    "backlog", "in-progress", "testing", "review", "qa-in-progress", "qa", "blocked",
+    "backlog", "in-progress", "testing", "review", "qa", "blocked",
   ]
   public static let closedStatuses = ["resolved", "cancelled"]
 
@@ -80,14 +80,14 @@ public enum TaskFieldChoices {
   }
 
   public static func normalizedStatus(_ rawValue: String) -> String {
-    rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return normalized == "qa-in-progress" ? "qa" : normalized
   }
 
   public static func statusLabel(_ status: String) -> String {
     switch normalizedStatus(status) {
     case "in-progress": "In progress"
     case "qa": "QA"
-    case "qa-in-progress": "QA in progress"
     case "draft-pr": "Draft PR"
     case let other: other.replacingOccurrences(of: "-", with: " ").capitalized
     }

@@ -3390,7 +3390,7 @@ private struct TicketCard: View {
                 }
               }
             } label: {
-              StatusPill(text: ticket.status, color: statusColor)
+              StatusPill(text: TaskFieldChoices.statusLabel(ticket.status), color: statusColor)
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)

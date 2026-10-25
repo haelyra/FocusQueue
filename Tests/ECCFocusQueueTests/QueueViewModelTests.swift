@@ -291,6 +291,35 @@ struct QueueViewModelTests {
     try await eventually { !model.isQueueAgentResponding }
   }
 
+  @Test("Central QChat falls back to the project workspace when no repository is bound")
+  func centralChatSkipsEmptyRepositoryPath() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let eccWorkspace = fixture.root.appendingPathComponent("ecc-workspace")
+    let eccDashboard = eccWorkspace.appendingPathComponent("dashboard.json")
+    try FileManager.default.createDirectory(at: eccWorkspace, withIntermediateDirectories: true)
+    try JSONEncoder().encode(DashboardDocument(tickets: [])).write(to: eccDashboard)
+    var config = try JSONDecoder().decode(AppConfiguration.self,
+      from: Data(contentsOf: fixture.paths.configurationFile))
+    let eccIndex = try #require(config.projects.firstIndex { $0.id == "ecc" })
+    config.projects[eccIndex].dashboardPath = eccDashboard.path
+    config.projects[eccIndex].workspacePath = eccWorkspace.path
+    config.projects[eccIndex].repositoryPath = ""
+    config.selectedProjectID = "ecc"
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(config)
+    let agent = ControlledQueueAgent()
+    let model = await fixture.model(agent: agent)
+
+    #expect(model.selectedProjectID == "ecc")
+    #expect(model.sendQueueAgentMessage("Summarize ECC work."))
+    try await eventually { await agent.hasPendingReply }
+
+    // An empty repositoryPath must never reach the harness as the working directory.
+    #expect(await agent.sentWorkspaces == [eccWorkspace.path])
+    await agent.reply("Done.")
+    try await eventually { !model.isQueueAgentResponding }
+  }
+
   @Test("Queue chat follows the configured default provider, model, and effort at send time")
   func queueChatFollowsProviderSettings() async throws {
     let fixture = try await Fixture()
@@ -1466,6 +1495,30 @@ struct QueueViewModelTests {
     #expect(model.actionMessages["ECC-101"]?.contains("document icon") == false)
     #expect(await launcher.spawnCount == 0)
     #expect(model.subtasks(for: "ECC-101").isEmpty)
+  }
+
+  @Test("New Agent runs directly in a folder without a Git repository")
+  func launchRunsInPlaceForPlainDirectory() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let plain = externalWorkspace(for: fixture.root, suffix: "plain")
+    defer { try? FileManager.default.removeItem(at: plain) }
+    try FileManager.default.createDirectory(at: plain, withIntermediateDirectories: true)
+    let launcher = DirectCreationRunner()
+    let recorder = DirectViewRecorder(root: fixture.root, failReveal: false)
+    let model = await fixture.model(agent: ControlledQueueAgent(), terminalController: recorder,
+      taskAgentLauncher: TaskAgentLauncher(runner: launcher, candidateSockets: []))
+    model.launchAgent(for: fixture.tickets[0], title: "Plain folder", provider: .codex,
+      repositoryPath: plain.path, includePrompt: false, useTmux: false)
+    try await eventually { model.launchingTaskIDs.isEmpty }
+    // Git is suggested, not required: no worktree, no branch, same folder.
+    #expect(await recorder.opened == true)
+    #expect(await launcher.spawnCount == 1)
+    let subtask = try #require(model.subtasks(for: "ECC-101").first)
+    #expect(subtask.workspace?.path == plain.path)
+    #expect(subtask.workspace?.repositoryPath == plain.path)
+    #expect(subtask.workspace?.managed == false)
+    #expect(subtask.workspace?.branch == nil)
   }
 
   @Test("Queue chat can open beside the task list and remains mutually exclusive with other inspectors")
@@ -4378,6 +4431,7 @@ private actor ControlledQueueAgent: QueueAgentChatting {
   private(set) var sentModels: [String?] = []
   private(set) var sentEfforts: [String?] = []
   private(set) var sentExecutables: [String] = []
+  private(set) var sentWorkspaces: [String] = []
   private(set) var resetSessionNames: [String] = []
   private var pending: CheckedContinuation<QueueAgentReply, any Error>?
   var hasPendingReply: Bool { pending != nil }
@@ -4390,6 +4444,7 @@ private actor ControlledQueueAgent: QueueAgentChatting {
     sentModels.append(model)
     sentEfforts.append(effort)
     sentExecutables.append(configuration.executable)
+    sentWorkspaces.append(workspace)
     return try await withCheckedThrowingContinuation { pending = $0 }
   }
 

@@ -727,8 +727,15 @@ struct NewTaskAgentView: View {
     return context.agentPrompt(subtask: subtask)
   }
 
+  /// A directory without a Git repository hosts the agent directly: isolation
+  /// is suggested, not required.
+  private var sourceIsPlainDirectory: Bool {
+    sourceWorkspace != nil && sourceWorkspace?.baseCommit == nil
+  }
+
   private var proposedWorkspace: AgentWorkspace {
     var workspace = sourceWorkspace ?? AgentWorkspace(path: repository, repositoryPath: repository)
+    guard !sourceIsPlainDirectory else { return workspace }
     workspace.path = model.proposedAgentWorktreePath(repositoryPath: workspace.repositoryPath,
       ticketID: ticket.id, subtaskID: assignmentID)
     workspace.branch = "focus-queue/\(ticket.id.lowercased())-\(assignmentID.lowercased())"
@@ -783,7 +790,9 @@ struct NewTaskAgentView: View {
               Toggle("Use this repository for this agent", isOn: $allowsOtherRepository)
             }
           }
-          Text("Each new agent gets its own worktree and branch from this checkout's current commit. Reopening an agent reuses its workspace.")
+          Text(sourceIsPlainDirectory
+            ? "No Git repository here, so this agent runs directly in the folder. Git is suggested for worktree isolation, not required."
+            : "Each new agent gets its own worktree and branch from this checkout's current commit. Reopening an agent reuses its workspace.")
             .font(.caption).foregroundStyle(.secondary)
           if let workspaceBlockReason {
             Text(workspaceBlockReason).font(.caption)
@@ -795,9 +804,9 @@ struct NewTaskAgentView: View {
           }
           Text("Agent workspace: \(proposedWorkspace.path)")
             .font(.caption).textSelection(.enabled)
-          Text("Branch: \(proposedWorkspace.branch ?? (sourceWorkspace == nil ? "checking…" : "detached at \(String((sourceWorkspace?.baseCommit ?? "").prefix(8)))"))")
+          Text("Branch: \(proposedWorkspace.branch ?? (sourceIsPlainDirectory ? "none (no Git repository)" : (sourceWorkspace == nil ? "checking…" : "detached at \(String((sourceWorkspace?.baseCommit ?? "").prefix(8)))")))")
             .font(.caption).textSelection(.enabled)
-          if let sourceWorkspace {
+          if let sourceWorkspace, !sourceIsPlainDirectory {
             Text("Source: \(sourceWorkspace.branch ?? "unknown") at \(String((sourceWorkspace.baseCommit ?? "").prefix(8)))")
               .font(.caption).foregroundStyle(.secondary)
           }
@@ -857,7 +866,9 @@ struct NewTaskAgentView: View {
             || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || model.launchingTaskIDs.contains(ticket.id) || workspaceBlockReason != nil
             || (requiresTmux && !tmuxAvailable)
-            || (model.project(for: ticket) != nil && repositoryMatchesProject != true && !allowsOtherRepository))
+            // Only a project with a bound repository can reject a mismatched checkout.
+            || (model.project(for: ticket).map { !$0.repositoryPath.isEmpty } == true
+              && repositoryMatchesProject != true && !allowsOtherRepository))
       }
     }.padding(24).frame(width: 540, height: 660)
       .interactiveDismissDisabled(isStarting)
@@ -865,7 +876,7 @@ struct NewTaskAgentView: View {
         allowsOtherRepository = false
         repositoryMatchesProject = nil
         await workspacePreview.load(path: repository)
-        if let project = model.project(for: ticket) {
+        if let project = model.project(for: ticket), !project.repositoryPath.isEmpty {
           let matches = (try? await ProjectRepositoryResolver().matches(path: repository, project: project)) ?? false
           if !Task.isCancelled { repositoryMatchesProject = matches }
         }

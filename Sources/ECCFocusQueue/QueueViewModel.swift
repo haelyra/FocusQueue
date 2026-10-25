@@ -2983,7 +2983,12 @@ final class QueueViewModel {
         if assignment.workspace == nil {
           let path = Self.firstConfiguredPath(session(for: subtask, ticketID: ticket.id)?.workingDirectory,
             context.worktreePath, context.repositoryPath, context.projectRepositoryPath) ?? config.workspacePath
-          assignment.workspace = try await taskWorktreeManager.workspace(at: path)
+          // Git is suggested, not required: recover plain directories as in-place workspaces.
+          if let checkout = try await taskWorktreeManager.gitWorkspace(at: path) {
+            assignment.workspace = checkout
+          } else {
+            assignment.workspace = try await taskWorktreeManager.plainWorkspace(at: path)
+          }
           if let branch = context.branch, context.worktreePath == path { assignment.workspace?.branch = branch }
         }
         try await taskWorktreeManager.restoreIfNeeded(assignment.workspace!, ticketID: ticket.id,
@@ -3107,13 +3112,6 @@ final class QueueViewModel {
            !allowProjectRepositoryMismatch,
            try await !ProjectRepositoryResolver().matches(path: repositoryPath, project: project) {
           throw TaskContextError.commandFailed("This checkout could not be matched to \(project.name). Confirm the repository choice in New Agent before starting it.")
-        }
-        // Every workspace policy needs Git: existing checkouts are verified and
-        // isolated policies fork a worktree. Fail before any record is saved, or
-        // the launch vanishes behind a raw git error.
-        guard (try? await taskWorktreeManager.primaryRepositoryPath(of: repositoryPath)) != nil else {
-          throw TaskContextError.unsafeWorktree(
-            "The selected workspace is not a Git repository: \(repositoryPath). Focus Queue starts agents from a repository checkout. Choose one in New Agent or set the Repository folder for \(project(for: ticket)?.name ?? "the task's project") in Settings.")
         }
         let previous = context.subtasks.first(where: { $0.id == subtaskID })
         let workspaceLease = try await TaskMaintenance.lease(ticketID: ticket.id, root: paths.supportDirectory)
@@ -4159,7 +4157,12 @@ final class QueueViewModel {
             provider: session.provider, sessionID: session.sessionID, includeInitializationPrompt: false,
             runtimeMode: .terminal, terminalPaneID: session.paneID)
           agent.tracksCompletion = false
-          agent.workspace = try await taskWorktreeManager.workspace(at: session.workingDirectory)
+          // Git is suggested, not required: adopt plain directories in place.
+          if let checkout = try await taskWorktreeManager.gitWorkspace(at: session.workingDirectory) {
+            agent.workspace = checkout
+          } else {
+            agent.workspace = try await taskWorktreeManager.plainWorkspace(at: session.workingDirectory)
+          }
           taskContexts[ticket.id] = try await taskContextStore.upsertSubtask(ticketID: ticket.id, subtask: agent)
           openSubtask(agent, for: ticket)
         } catch { actionMessages[ticket.id] = error.localizedDescription }

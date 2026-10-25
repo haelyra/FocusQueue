@@ -158,6 +158,25 @@ struct AgentLifecycleTests {
         #expect(FileManager.default.fileExists(atPath: second.path))
     }
 
+    @Test("A plain directory hosts the agent directly; Git isolation is suggested, not required")
+    func plainDirectoryWorkspace() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let plain = root.appendingPathComponent("plain")
+        try FileManager.default.createDirectory(at: plain, withIntermediateDirectories: true)
+        let store = TaskContextStore(root: root.appendingPathComponent("support"))
+        _ = try await store.ensureContext(ticket: DashboardTicket(id: "ECC-778", title: "Plain", status: "open", summary: ""))
+        let manager = TaskWorktreeManager()
+        #expect(try await manager.gitWorkspace(at: plain.path) == nil)
+        #expect(try await manager.hasUncommittedChanges(at: plain.path) == false)
+        let workspace = try await manager.provisionAgent(ticketID: "ECC-778", subtaskID: UUID().uuidString,
+            path: plain.path, createWorktree: true, store: store)
+        #expect(workspace.path == plain.path)
+        #expect(workspace.repositoryPath == plain.path)
+        #expect(!workspace.managed)
+        #expect(workspace.branch == nil && workspace.baseCommit == nil)
+    }
+
     @Test("Managed cleanup refuses a workspace replaced after validation")
     func workspaceReplacementSafety() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

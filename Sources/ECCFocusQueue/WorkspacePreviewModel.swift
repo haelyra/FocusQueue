@@ -33,7 +33,10 @@ final class WorkspacePreviewModel {
       try await TaskWorktreeManager().hasUncommittedChanges(at: $0)
     },
     lookup: @Sendable (String) async throws -> AgentWorkspace = {
-      try await TaskWorktreeManager().workspace(at: $0)
+      // Git is suggested, not required: plain directories preview as in-place workspaces.
+      let manager = TaskWorktreeManager()
+      if let workspace = try await manager.gitWorkspace(at: $0) { return workspace }
+      return try await manager.plainWorkspace(at: $0)
     }
   ) async {
     let id = UUID()

@@ -2,6 +2,8 @@ import Foundation
 import Darwin
 
 /// Raw values are the persisted spelling of each choice, shared by saved launch presets and `fq`.
+/// Git is suggested, not required: the isolated policies fork a worktree when the
+/// source is a Git checkout and otherwise run the agent directly in the folder.
 public enum AgentWorkspacePolicy: String, Codable, CaseIterable, Sendable {
     case existingCheckout = "existing"
     case isolatedCleanCheckout = "isolated-clean"
@@ -121,7 +123,9 @@ public actor TaskWorktreeManager {
             .appendingPathComponent("task", isDirectory: true)
     }
 
-    public func workspace(at path: String) async throws -> AgentWorkspace {
+    /// Existence and location safety shared by Git checkouts and plain directories.
+    @discardableResult
+    private func requireSafeAgentDirectory(at path: String) throws -> URL {
         var isDirectory: ObjCBool = false
         guard path.hasPrefix("/"), FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
               isDirectory.boolValue else {
@@ -132,6 +136,28 @@ public actor TaskWorktreeManager {
         guard !canonicalPath.pathComponents.contains(where: { $0.lowercased().hasSuffix(".app") }) else {
             throw TaskContextError.unsafeWorktree("Choose a source checkout. An application bundle cannot be an agent workspace.")
         }
+        return canonicalPath
+    }
+
+    /// Git checkout metadata, or nil for a plain directory. Git isolation is
+    /// suggested, not required: a directory without a repository still hosts an
+    /// agent directly.
+    public func gitWorkspace(at path: String) async throws -> AgentWorkspace? {
+        try requireSafeAgentDirectory(at: path)
+        let probe = try await runner.run(.init(executable: "/usr/bin/git",
+            arguments: ["rev-parse", "--show-toplevel"], workingDirectory: path))
+        guard probe.succeeded else { return nil }
+        return try await workspace(at: path)
+    }
+
+    /// A plain directory workspace: no branch, no commit, never managed.
+    public func plainWorkspace(at path: String) async throws -> AgentWorkspace {
+        try requireSafeAgentDirectory(at: path)
+        return AgentWorkspace(path: path, repositoryPath: path)
+    }
+
+    public func workspace(at path: String) async throws -> AgentWorkspace {
+        try requireSafeAgentDirectory(at: path)
         let root = try await git(["rev-parse", "--show-toplevel"], in: path).trimmingCharacters(in: .whitespacesAndNewlines)
         try rejectApplicationSupport(root)
         let branchResult = try await runner.run(.init(executable: "/usr/bin/git",
@@ -152,6 +178,10 @@ public actor TaskWorktreeManager {
     }
 
     public func hasUncommittedChanges(at path: String) async throws -> Bool {
+        // A plain directory has no checkout state to protect.
+        let probe = try await runner.run(.init(executable: "/usr/bin/git",
+            arguments: ["rev-parse", "--show-toplevel"], workingDirectory: path))
+        guard probe.succeeded else { return false }
         let status = try await git(["status", "--porcelain", "--untracked-files=all"], in: path)
         return !status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -166,7 +196,13 @@ public actor TaskWorktreeManager {
                                policy: AgentWorkspacePolicy, store: TaskContextStore) async throws -> AgentWorkspace {
         let createWorktree = policy.createsWorktree
         try rejectApplicationSupport(path, storeRoot: store.root)
-        let source = try await workspace(at: path)
+        // Git is suggested, not required: without a repository no worktree can
+        // be forked, so the agent runs directly in the selected directory.
+        // This mirrors the shell entries' "non-git" policy, which keeps tracking
+        // active while isolation is unavailable.
+        guard let source = try await gitWorkspace(at: path) else {
+            return try await plainWorkspace(at: path)
+        }
         let repository = try await primaryRepository(at: path)
         try rejectApplicationSupport(repository.path, storeRoot: store.root)
         let destination = Self.agentDestination(repositoryPath: repository.path,
@@ -215,6 +251,9 @@ public actor TaskWorktreeManager {
     public func validate(_ saved: AgentWorkspace) async throws {
         try rejectApplicationSupport(saved.path)
         try rejectApplicationSupport(saved.repositoryPath)
+        // A plain directory workspace carries no Git identity; only its location
+        // is verified. Git metadata, when present, keeps the full identity check.
+        guard let actual = try await gitWorkspace(at: saved.path) else { return }
         if saved.managed {
             let managedRoot = try await prepareManagedRoot(
                 repositoryPath: saved.repositoryPath, containing: saved.path,
@@ -222,7 +261,6 @@ public actor TaskWorktreeManager {
             try ensureManagedAncestors(root: managedRoot,
                 through: URL(fileURLWithPath: saved.path), createMissing: false)
         }
-        let actual = try await workspace(at: saved.path)
         let expectedRepository = try await repositoryIdentity(in: saved.repositoryPath)
         guard Self.sameRepositoryIdentity(actual.repositoryIdentity, expectedRepository),
               saved.repositoryIdentity.map({ Self.sameRepositoryIdentity(actual.repositoryIdentity, $0) }) ?? true,

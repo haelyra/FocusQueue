@@ -1497,27 +1497,28 @@ struct QueueViewModelTests {
     #expect(model.subtasks(for: "ECC-101").isEmpty)
   }
 
-  @Test("New Agent rejects a workspace without a Git repository before saving anything")
-  func launchPreflightRejectsNonGitWorkspace() async throws {
+  @Test("New Agent runs directly in a folder without a Git repository")
+  func launchRunsInPlaceForPlainDirectory() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let plain = externalWorkspace(for: fixture.root, suffix: "plain")
+    defer { try? FileManager.default.removeItem(at: plain) }
     try FileManager.default.createDirectory(at: plain, withIntermediateDirectories: true)
     let launcher = DirectCreationRunner()
-    let model = await fixture.model(agent: ControlledQueueAgent(),
+    let recorder = DirectViewRecorder(root: fixture.root, failReveal: false)
+    let model = await fixture.model(agent: ControlledQueueAgent(), terminalController: recorder,
       taskAgentLauncher: TaskAgentLauncher(runner: launcher, candidateSockets: []))
-    var completed = false
     model.launchAgent(for: fixture.tickets[0], title: "Plain folder", provider: .codex,
-      repositoryPath: plain.path) { started in
-        #expect(!started)
-        completed = true
-      }
-    try await eventually { completed }
-    #expect(model.launchingTaskIDs.isEmpty)
-    #expect(model.actionMessages["ECC-101"]?.contains("not a Git repository") == true)
-    #expect(model.actionMessages["ECC-101"]?.contains("document icon") == false)
-    #expect(await launcher.spawnCount == 0)
-    #expect(model.subtasks(for: "ECC-101").isEmpty)
+      repositoryPath: plain.path, includePrompt: false, useTmux: false)
+    try await eventually { model.launchingTaskIDs.isEmpty }
+    // Git is suggested, not required: no worktree, no branch, same folder.
+    #expect(await recorder.opened == true)
+    #expect(await launcher.spawnCount == 1)
+    let subtask = try #require(model.subtasks(for: "ECC-101").first)
+    #expect(subtask.workspace?.path == plain.path)
+    #expect(subtask.workspace?.repositoryPath == plain.path)
+    #expect(subtask.workspace?.managed == false)
+    #expect(subtask.workspace?.branch == nil)
   }
 
   @Test("Queue chat can open beside the task list and remains mutually exclusive with other inspectors")

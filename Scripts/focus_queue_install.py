@@ -35,6 +35,7 @@ OSW_EXECUTABLE_NAME = "OpenSuperWhisper"
 OSW_RELEASE_URL = "https://github.com/haelyra/OpenSuperWhisper/releases/download/v0.1.0-foc047.2/OpenSuperWhisper-foc047.zip"
 OSW_SHA256 = "59918d177c8902ee6891f63e97889c5404ea4ad28a6f248882412e96b7d625ae"
 OSW_LAUNCH_AGENT_LABEL = "com.haelyra.ecc-focus-queue.opensuperwhisper"
+OSW_DESIGNATED_REQUIREMENT = '=designated => identifier "ru.starmel.OpenSuperWhisper"'
 PROVENANCE_FIELDS = {
     "schemaVersion",
     "repositoryIdentity",
@@ -434,6 +435,39 @@ def verify_installed_app(path, description):
         ) from error
 
 
+def stabilize_opensuperwhisper_signature(app):
+    """Re-sign OpenSuperWhisper ad hoc with an identifier-only requirement.
+
+    An ad-hoc signature's default designated requirement is its cdhash, so
+    every rebuild silently invalidates the Microphone, Accessibility and
+    Input Monitoring grants. Nested dylibs are signed first so the outer
+    seal covers their final bytes.
+    """
+    nested = sorted(
+        path
+        for folder in ("Contents/Frameworks", "Contents/MacOS")
+        for path in (app / folder).glob("*.dylib")
+        if path.is_file() and not path.is_symlink()
+    )
+    for path in nested:
+        subprocess.run(
+            ["/usr/bin/codesign", "--force", "--sign", "-", str(path)],
+            check=True,
+            capture_output=True,
+        )
+    subprocess.run(
+        ["/usr/bin/codesign", "--force", "--sign", "-",
+         "--requirements", OSW_DESIGNATED_REQUIREMENT, str(app)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)],
+        check=True,
+        capture_output=True,
+    )
+
+
 def ensure_opensuperwhisper(home, *, start=True, log=None,
                             system_applications=Path("/Applications")):
     """Best-effort OpenSuperWhisper companion install; never fails the app install."""
@@ -479,6 +513,7 @@ def ensure_opensuperwhisper(home, *, start=True, log=None,
             check=True,
             capture_output=True,
         )
+        stabilize_opensuperwhisper_signature(app)
         agent = home / "Library/LaunchAgents" / f"{OSW_LAUNCH_AGENT_LABEL}.plist"
         safe_destination(agent, home)
         agent.parent.mkdir(parents=True, exist_ok=True)

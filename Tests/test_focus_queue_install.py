@@ -964,6 +964,12 @@ class OpenSuperWhisperTests(unittest.TestCase):
         ditto_index = next(i for i, call in enumerate(calls) if call[0] == "/usr/bin/ditto")
         xattr_index = calls.index(xattr_call)
         self.assertLess(ditto_index, xattr_index)
+        bundle_sign = [
+            "/usr/bin/codesign", "--force", "--sign", "-",
+            "--requirements", MODULE.OSW_DESIGNATED_REQUIREMENT, str(self.app),
+        ]
+        self.assertIn(bundle_sign, calls)
+        self.assertLess(xattr_index, calls.index(bundle_sign))
         agent = plistlib.loads(self.agent.read_bytes())
         self.assertEqual(agent["Label"], MODULE.OSW_LAUNCH_AGENT_LABEL)
         self.assertEqual(agent["ProgramArguments"], [str(self.executable)])
@@ -983,6 +989,30 @@ class OpenSuperWhisperTests(unittest.TestCase):
             ),
             self.messages,
         )
+
+    def test_signature_signs_nested_dylibs_before_the_bundle(self):
+        dylibs = [
+            self.app / "Contents/Frameworks/libomp.dylib",
+            self.app / "Contents/MacOS/OpenSuperWhisper.debug.dylib",
+        ]
+        for dylib in dylibs:
+            dylib.parent.mkdir(parents=True, exist_ok=True)
+            dylib.write_bytes(b"dylib")
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with mock.patch.object(MODULE.subprocess, "run", side_effect=run):
+            MODULE.stabilize_opensuperwhisper_signature(self.app)
+
+        signed = [call[-1] for call in calls]
+        bundle_index = signed.index(str(self.app))
+        for dylib in dylibs:
+            self.assertLess(signed.index(str(dylib)), bundle_index)
+        self.assertIn("--requirements", calls[bundle_index])
+        self.assertEqual(calls[-1][:2], ["/usr/bin/codesign", "--verify"])
 
     def test_failure_does_not_raise(self):
         with mock.patch.object(MODULE, "OSW_RELEASE_URL", self.release_url), \

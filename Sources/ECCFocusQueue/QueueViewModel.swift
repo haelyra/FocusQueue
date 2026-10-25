@@ -189,6 +189,13 @@ final class QueueViewModel {
   /// on-disk writes, so an open file never sticks on a transient read error.
   let documentContentStore = DocumentContentStore()
   private(set) var presentedPlanURL: URL?
+  /// Native UI Canvas sessions per task, read from tasks/<TASK-ID>/canvas.
+  private(set) var uiCanvasSessions: [String: [UICanvasSession]] = [:]
+  /// A canvas an agent just opened; the plan viewer selects its tab once.
+  private(set) var requestedUICanvas: UICanvasRequest?
+  /// Canvas tabs the human closed; an agent's next `canvas open` shows them again.
+  private(set) var dismissedUICanvasKeys: Set<String> = []
+  @ObservationIgnored private var uiCanvasModels: [String: UICanvasModel] = [:]
   private(set) var presentedPlanMarkdown = ""
   private(set) var isPlanLoading = false
   private(set) var planError: String? {
@@ -2476,6 +2483,56 @@ final class QueueViewModel {
 
   func focusTerminalPane(_ pane: WezTermPane) async throws {
     try await terminalController.focusPane(pane, configuration: config.wezTerm)
+  }
+
+  var uiCanvasStore: UICanvasStore { UICanvasStore(root: paths.supportDirectory) }
+
+  /// Canvas tabs for a task: every open session, plus ended ones from the last
+  /// day so a finished design stays reviewable until its tab is closed.
+  func visibleUICanvases(ticketID: String) -> [UICanvasSession] {
+    let cutoff = UICanvasStore.timestamp(Date().addingTimeInterval(-86_400))
+    return (uiCanvasSessions[ticketID] ?? []).filter {
+      !dismissedUICanvasKeys.contains($0.key) && (!$0.isEnded || $0.updatedAt > cutoff)
+    }
+  }
+
+  func refreshUICanvases(ticketID: String) {
+    let sessions = uiCanvasStore.sessions(taskID: ticketID)
+    if uiCanvasSessions[ticketID] != sessions { uiCanvasSessions[ticketID] = sessions }
+  }
+
+  /// One model per session so stage state survives tab switches.
+  func uiCanvasModel(ticketID: String, key: String) -> UICanvasModel {
+    let id = "\(ticketID.uppercased())/\(key)"
+    if let model = uiCanvasModels[id] { return model }
+    let model = UICanvasModel(store: uiCanvasStore, taskID: ticketID.uppercased(), key: key)
+    uiCanvasModels[id] = model
+    return model
+  }
+
+  func dismissUICanvas(ticketID: String, key: String) {
+    dismissedUICanvasKeys.insert(key)
+    uiCanvasModels["\(ticketID.uppercased())/\(key)"]?.stop()
+  }
+
+  /// The CLI changed a session. An `open` shows the task's plan viewer on that
+  /// canvas, expanding the panel the way ECC's canvas opens a browser tab.
+  /// Notifications from another support directory, such as a test clone, are ignored.
+  func handleUICanvasChange(ticketID: String, key: String, event: String?, root: String?) {
+    if let root, URL(fileURLWithPath: root).standardizedFileURL.path
+      != paths.supportDirectory.standardizedFileURL.path { return }
+    let ticketID = ticketID.uppercased()
+    refreshUICanvases(ticketID: ticketID)
+    uiCanvasModels["\(ticketID)/\(key)"]?.refresh()
+    guard event == "open", let ticket = dashboard.tickets.first(where: { $0.id == ticketID }) else { return }
+    dismissedUICanvasKeys.remove(key)
+    if panelMode != .expanded { setPanelMode(.expanded) }
+    if presentedPlanTicketID != ticketID { openPlan(for: ticket) }
+    requestedUICanvas = UICanvasRequest(ticketID: ticketID, key: key)
+  }
+
+  func consumeUICanvasRequest(_ request: UICanvasRequest) {
+    if requestedUICanvas == request { requestedUICanvas = nil }
   }
 
   func closePlan() {
@@ -5514,4 +5571,10 @@ private extension WezTermPane {
     }
     return "WezTerm pane \(paneID)"
   }
+}
+
+struct UICanvasRequest: Equatable {
+  let id = UUID()
+  let ticketID: String
+  let key: String
 }

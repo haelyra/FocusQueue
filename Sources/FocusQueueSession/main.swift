@@ -42,6 +42,7 @@ enum SessionRegistrationError: Error, LocalizedError {
                 print("Launch brief preview: brief <TASK-ID> <SUBTASK-ID> (the exact prompt a fresh launch of that agent receives)")
                 print("Maintenance: reconcile <TASK-ID> [--no-cleanup] (repair documents and save a receipt; optional workspace cleanup)")
                 print("Status hooks: status-event --provider claude|codex|kimi (reads one provider hook payload on stdin; exits 0 silently)")
+                print("UI Canvas: canvas open <file.html> [--viewport mobile|desktop|custom|WxH] [--title <text>] | canvas await <file.html> [--reply <msg>] | canvas typing <file.html> [--state thinking|typing|idle] | canvas end <file.html> | canvas list|pending (native ecc-ui-canvas; same JSON)")
                 print("Data placement: data-placement status|on|off (automatic native prompt capture; off by default)")
                 print("Scoped data: data ensure | data place <user|project|task> <target-id> <one-or-two-sentence fact>")
                 print("Completion cleanup: cleanup <TASK-ID> | cleanup --completed | cleanup --orphans | cleanup --purge, each with optional --dry-run (stops tmux, stages worktrees in .worktrees/.trash for 7 days, archives unmerged work under refs/focus-queue/archive/, deletes merged local and remote branches)")
@@ -62,6 +63,11 @@ enum SessionRegistrationError: Error, LocalizedError {
             else if arguments.first == "status-event" { await statusEvent(arguments: arguments) }
             else if arguments.first == "data-placement" { try await dataPlacement(arguments: arguments) }
             else if arguments.first == "data" { try await dataCommand(arguments: arguments) }
+            else if arguments.first == "canvas" {
+                let environment = ProcessInfo.processInfo.environment
+                try await UICanvasCommand.run(arguments: arguments,
+                    root: supportDirectory(environment: environment), environment: environment)
+            }
             else if arguments == ["intake-changed"] {
                 notifyContextChanged()
                 try emit(["status": "notified"])

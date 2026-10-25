@@ -84,6 +84,12 @@ import UserNotifications
     )
     DistributedNotificationCenter.default().addObserver(
       self,
+      selector: #selector(uiCanvasChanged(_:)),
+      name: Notification.Name(UICanvasStore.notificationName),
+      object: nil
+    )
+    DistributedNotificationCenter.default().addObserver(
+      self,
       selector: #selector(reloadQueueOrder(_:)),
       name: Notification.Name(QueueOrderStore.changeNotificationName),
       object: nil
@@ -351,6 +357,13 @@ import UserNotifications
 
   @objc private func importAgentRegistration(_ notification: Notification) {
     Task { await model.refreshExternalAgentRegistrations(force: true) }
+  }
+
+  @objc private func uiCanvasChanged(_ notification: Notification) {
+    guard let ticketID = notification.userInfo?["task"] as? String,
+          let key = notification.userInfo?["key"] as? String else { return }
+    model.handleUICanvasChange(ticketID: ticketID, key: key, event: notification.userInfo?["event"] as? String,
+                               root: notification.userInfo?["root"] as? String)
   }
 
   @objc private func reloadQueueOrder(_ notification: Notification) {

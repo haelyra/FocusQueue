@@ -58,6 +58,38 @@ struct KimiLaunchTests {
       """))
   }
 
+  @Test("Kimi's new-task brief contains the central artifact route")
+  func kimiArtifactBrief() throws {
+    let brief = try #require(TaskAgentLauncher.initialPrompt(
+      context: context, subtask: TaskSubtask(title: "Kimi agent", provider: .kimi), includePrompt: true))
+    #expect(brief.contains("/tmp/support/tasks/ECC-1/evidence"))
+    #expect(brief.contains("focus-queue-session task link ECC-1"))
+    #expect(brief.contains("not the worktree Docs folder"))
+  }
+
+  @Test("Kimi receives the actual Documents instructions in its first prompt")
+  func kimiDocumentsInstructions() throws {
+    let home = FileManager.default.temporaryDirectory.appendingPathComponent("fq-kimi-home-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: home) }
+    let documents = home.appendingPathComponent("Documents")
+    try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
+    try Data("# Current output contract\nUse the central task evidence folder.\n".utf8)
+      .write(to: documents.appendingPathComponent("AGENTS.md"))
+    let loaded = try #require(TaskAgentLauncher.kimiDocumentsInstructions(
+      workspace: documents.appendingPathComponent("project/.worktrees/agent").path, home: home))
+    #expect(loaded.path == documents.appendingPathComponent("AGENTS.md").path)
+    #expect(loaded.text.contains("Current output contract"))
+    #expect(TaskAgentLauncher.kimiDocumentsInstructions(workspace: "/tmp/other", home: home) == nil)
+    let task = TaskContext(ticketID: "FOC-901", title: "Task", summary: "", successCriteria: "Done",
+      planPath: "/tmp/support/tasks/FOC-901/plan.md", worktreePath: documents.path + "/project/agent",
+      updatedAt: Date())
+    let prompt = try #require(TaskAgentLauncher.initialPrompt(
+      context: task, subtask: TaskSubtask(title: "Kimi", provider: .kimi), includePrompt: true,
+      home: home))
+    #expect(prompt.contains("Developer instructions from \(loaded.path):"))
+    #expect(prompt.contains("Current output contract"))
+  }
+
   @Test("Each provider keeps its own last launch while the newest one stays the overall default")
   func perProviderMemory() throws {
     var state = LocalState(routineDate: "2026-10-20")
@@ -118,18 +150,19 @@ struct KimiLaunchTests {
     }
     let output = root.appendingPathComponent("received.txt")
     // The fake TUI shows its input box after a delay, then records two lines.
-    let script = "sleep 1; printf '│ >\\n'; head -n 2 > \"$1\"; sleep 30"
+    let script = "sleep 1; stty -icanon -echo min 1 time 0; printf '│ >\\n'; head -n 2 > \"$1\"; sleep 30"
     let controller = TmuxController(serverName: serverName)
     let reference = try await controller.start(
       name: "fq-kimi-paste", directory: root.path,
       command: ["/bin/sh", "-c", script, "fake-kimi", output.path], executable: executable)
+    let prompt = "first line; $(not run)" + String(repeating: "x", count: 15_000) + "\nsecond line"
     let submitted = try await controller.submitPrompt(
-      "first line; $(not run)\nsecond line", to: reference,
+      prompt, to: reference,
       ready: TaskAgentLauncher.kimiInputIsReady, timeout: .seconds(10))
     #expect(submitted)
     for _ in 0..<40 where (try? String(contentsOf: output, encoding: .utf8))?.hasSuffix("\n") != true {
       try await Task.sleep(for: .milliseconds(100))
     }
-    #expect(try String(contentsOf: output, encoding: .utf8) == "first line; $(not run)\nsecond line\n")
+    #expect(try String(contentsOf: output, encoding: .utf8) == prompt + "\n")
   }
 }

@@ -199,10 +199,26 @@ public actor TaskAgentLauncher {
   }
 
   /// The text a fresh launch starts with; a resumed conversation gets none.
-  static func initialPrompt(context: TaskContext, subtask: TaskSubtask, includePrompt: Bool) -> String? {
+  static func initialPrompt(context: TaskContext, subtask: TaskSubtask, includePrompt: Bool,
+                            home: URL = FileManager.default.homeDirectoryForCurrentUser) -> String? {
     guard subtask.sessionID == nil, includePrompt else { return nil }
-    return subtask.includeInitializationPrompt
+    let brief = subtask.includeInitializationPrompt
       ? context.agentPrompt(subtask: subtask) : context.agentBootstrap(subtask: subtask)
+    guard subtask.provider == .kimi,
+          let workspace = subtask.workspace?.path ?? context.worktreePath,
+          let instructions = kimiDocumentsInstructions(workspace: workspace, home: home) else { return brief }
+    return brief + "\n\nDeveloper instructions from \(instructions.path):\n" + instructions.text
+  }
+
+  static func kimiDocumentsInstructions(workspace: String, home: URL = FileManager.default.homeDirectoryForCurrentUser)
+    -> (path: String, text: String)? {
+    let documents = home.appendingPathComponent("Documents", isDirectory: true).standardizedFileURL.path
+    let assigned = URL(fileURLWithPath: workspace).standardizedFileURL.path
+    guard assigned.hasPrefix(documents + "/") else { return nil }
+    let file = URL(fileURLWithPath: documents).appendingPathComponent("AGENTS.md")
+    guard let data = try? Data(contentsOf: file), data.count <= 100_000,
+          let text = String(data: data, encoding: .utf8), !text.isEmpty else { return nil }
+    return (file.path, text)
   }
 
   /// Kimi's prompt-mode screen is plain text: the input box is the sign that

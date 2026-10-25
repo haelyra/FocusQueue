@@ -428,14 +428,15 @@ public struct TaskContext: Codable, Equatable, Sendable {
     /// Compact mode: identity and document pointers only. Document contents stay on disk.
     public func agentBootstrap(subtask: TaskSubtask) -> String {
         let prompt = subtask.initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return ([prompt.isEmpty ? "Prepare the task context, then wait for my instruction before implementing anything." : prompt, ""]
-            + briefHeader(subtask: subtask, prompt: prompt)
-            + ["Task plan: \(planPath) (read before acting). Task data: \(dataURL.path). Agent log: \(agentLogURL.path).",
-               Self.dataWritingRule]
-            + scopedDataLines()
-            + ["Read relevant saved facts before acting.",
-               "Register with `focus-queue-session attach`, then report with `focus-queue-session progress|complete`. Rules: `focus-queue-session rules`."])
-            .joined(separator: "\n")
+        var lines = [prompt.isEmpty ? "Prepare the task context, then wait for my instruction before implementing anything." : prompt, ""]
+        lines += briefHeader(subtask: subtask, prompt: prompt)
+        lines += ["Task plan: \(planPath) (read before acting). Task data: \(dataURL.path). Agent log: \(agentLogURL.path).",
+                  Self.dataWritingRule]
+        lines += scopedDataLines()
+        lines.append("Read relevant saved facts before acting.")
+        if subtask.provider == .kimi { lines.append(artifactInstruction) }
+        lines.append("Register with `focus-queue-session attach`, then report with `focus-queue-session progress|complete`. Rules: `focus-queue-session rules`.")
+        return lines.joined(separator: "\n")
     }
 
     /// Detailed mode: the project description and task plan are inlined so the agent starts grounded
@@ -467,14 +468,19 @@ public struct TaskContext: Codable, Equatable, Sendable {
         } else {
             lines.append("Task data: \(dataURL.path).")
         }
+        lines += [Self.dataWritingRule]
+        if subtask.provider == .kimi { lines.append(artifactInstruction) }
         lines += [
-            Self.dataWritingRule,
             "Before anything else run `focus-queue-session attach`.",
             "Report with `focus-queue-session <verb>`; task and agent IDs come from the environment: progress working|idle|blocked \"summary\" · attention approval|question \"summary\" · result \"summary\" · complete \"what changed and how it was verified\".",
             "Before reporting result or complete, update the task plan: fill empty What/Why/How lines and tick or add Progress items. Log decisions and evidence with `focus-queue-session log \"entry\"`.",
             "More rules: `focus-queue-session rules`.",
         ]
         return lines.joined(separator: "\n")
+    }
+
+    private var artifactInstruction: String {
+        "Save requested reports and output files under \(contextDirectory.path)/evidence, not the worktree Docs folder. Add each file to Context, evidence & links with `focus-queue-session task link \(ticketID) <absolute-file-path> <short-label> evidence`; verify the command succeeds. Keep decisions and test evidence in \(agentLogURL.path) via `focus-queue-session log`."
     }
 
     private func scopedDataLines(includeTask: Bool = true) -> [String] {

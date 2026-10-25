@@ -46,14 +46,6 @@ struct TaskCreatorSheet: View {
 
       Form {
         Section {
-          if autofocusPrompt {
-            if model.voiceRecordingActive {
-              Text("● Recording").font(.callout).foregroundStyle(.red)
-            } else {
-              Text("Not recording — check OpenSuperWhisper")
-                .font(.callout).foregroundStyle(.secondary)
-            }
-          }
           ZStack(alignment: .topLeading) {
             if description.isEmpty {
               Text("Enter prompt").foregroundStyle(.tertiary)

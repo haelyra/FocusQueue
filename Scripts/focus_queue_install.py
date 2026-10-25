@@ -30,12 +30,6 @@ PROVENANCE_SCHEMA_VERSION = 1
 MANIFEST_VERSION = 2
 DEFAULT_INTEGRATION_REF = "origin/main"
 OFFICIAL_REPOSITORY_IDENTITY = "github.com/haelyra/eccfocusqueue"
-OSW_APP_NAME = "OpenSuperWhisper.app"
-OSW_EXECUTABLE_NAME = "OpenSuperWhisper"
-OSW_RELEASE_URL = "https://github.com/haelyra/OpenSuperWhisper/releases/download/v0.1.0-foc047.2/OpenSuperWhisper-foc047.zip"
-OSW_SHA256 = "59918d177c8902ee6891f63e97889c5404ea4ad28a6f248882412e96b7d625ae"
-OSW_LAUNCH_AGENT_LABEL = "com.haelyra.ecc-focus-queue.opensuperwhisper"
-OSW_DESIGNATED_REQUIREMENT = '=designated => identifier "ru.starmel.OpenSuperWhisper"'
 PROVENANCE_FIELDS = {
     "schemaVersion",
     "repositoryIdentity",
@@ -435,119 +429,10 @@ def verify_installed_app(path, description):
         ) from error
 
 
-def stabilize_opensuperwhisper_signature(app):
-    """Re-sign OpenSuperWhisper ad hoc with an identifier-only requirement.
-
-    An ad-hoc signature's default designated requirement is its cdhash, so
-    every rebuild silently invalidates the Microphone, Accessibility and
-    Input Monitoring grants. Nested dylibs are signed first so the outer
-    seal covers their final bytes.
-    """
-    nested = sorted(
-        path
-        for folder in ("Contents/Frameworks", "Contents/MacOS")
-        for path in (app / folder).glob("*.dylib")
-        if path.is_file() and not path.is_symlink()
-    )
-    for path in nested:
-        subprocess.run(
-            ["/usr/bin/codesign", "--force", "--sign", "-", str(path)],
-            check=True,
-            capture_output=True,
-        )
-    subprocess.run(
-        ["/usr/bin/codesign", "--force", "--sign", "-",
-         "--requirements", OSW_DESIGNATED_REQUIREMENT, str(app)],
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)],
-        check=True,
-        capture_output=True,
-    )
-
-
-def ensure_opensuperwhisper(home, *, start=True, log=None,
-                            system_applications=Path("/Applications")):
-    """Best-effort OpenSuperWhisper companion install; never fails the app install."""
-    if log is None:
-        def log(message):
-            print(message, file=sys.stderr)
-    try:
-        app = home / "Applications" / OSW_APP_NAME
-        system_app = system_applications / OSW_APP_NAME
-        for existing in (app, system_app):
-            if existing.exists():
-                log(f"OpenSuperWhisper already installed at {existing}; skipping.")
-                return "already installed"
-        if not OSW_RELEASE_URL:
-            log("OpenSuperWhisper auto-install skipped: no pinned release URL configured")
-            return "skipped: no pinned release URL configured"
-        safe_destination(app, home)
-        handle, name = tempfile.mkstemp(prefix="opensuperwhisper-", suffix=".zip")
-        os.close(handle)
-        archive = Path(name)
-        try:
-            with urllib.request.urlopen(OSW_RELEASE_URL, timeout=120) as response:
-                archive.write_bytes(response.read())
-            if digest(archive) != OSW_SHA256:
-                raise ValueError("OpenSuperWhisper release archive sha256 mismatch.")
-            subprocess.run(
-                ["/usr/bin/ditto", "-x", "-k", str(archive), str(app.parent)],
-                check=True,
-                capture_output=True,
-            )
-        finally:
-            archive.unlink(missing_ok=True)
-        executable = app / "Contents/MacOS" / OSW_EXECUTABLE_NAME
-        if not executable.is_file():
-            shutil.rmtree(app, ignore_errors=True)
-            raise ValueError(
-                f"OpenSuperWhisper release archive lacks the {OSW_EXECUTABLE_NAME} executable."
-            )
-        # The pinned build is ad-hoc signed, so Gatekeeper would block the
-        # quarantined download; the sha256 pin above is the trust anchor.
-        subprocess.run(
-            ["/usr/bin/xattr", "-dr", "com.apple.quarantine", str(app)],
-            check=True,
-            capture_output=True,
-        )
-        stabilize_opensuperwhisper_signature(app)
-        agent = home / "Library/LaunchAgents" / f"{OSW_LAUNCH_AGENT_LABEL}.plist"
-        safe_destination(agent, home)
-        agent.parent.mkdir(parents=True, exist_ok=True)
-        agent.write_bytes(plistlib.dumps({
-            "Label": OSW_LAUNCH_AGENT_LABEL,
-            "ProgramArguments": [str(executable)],
-            "RunAtLoad": True,
-            "KeepAlive": False,
-        }))
-        if start:
-            result = subprocess.run(
-                ["/bin/launchctl", "bootstrap", f"gui/{os.getuid()}", str(agent)],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode:
-                log(f"Warning: OpenSuperWhisper login service did not start: {result.stderr.strip()}")
-        log(
-            "OpenSuperWhisper installed. One-time manual setup on first launch:\n"
-            "  - grant the Microphone, Accessibility and Input Monitoring prompts\n"
-            "  - download a Whisper model in OpenSuperWhisper Settings"
-        )
-        return "installed"
-    except Exception as error:
-        log(f"Warning: OpenSuperWhisper install failed; the Focus Queue install is unaffected: {error}")
-        return f"failed: {error}"
-
-
 class Installer:
-    def __init__(self, bundle, home, *, login=False, desktop=False, start=True,
-                 system_applications=Path("/Applications")):
+    def __init__(self, bundle, home, *, login=False, desktop=False, start=True):
         self.bundle = bundle.absolute()
         self.home = home.absolute()
-        self.system_applications = system_applications
         self.support = self.home / "Library/Application Support" / LEGACY_PRODUCT
         self.automation = self.support / "automation"
         self.app = self.home / "Applications" / f"{PRODUCT}.app"
@@ -808,9 +693,6 @@ class Installer:
         self.preflight()
         with installation_lock(self.support, self.home):
             result = self._install_locked()
-        result["openSuperWhisper"] = ensure_opensuperwhisper(
-            self.home, start=self.start, system_applications=self.system_applications
-        )
         return result
 
     def _install_locked(self):

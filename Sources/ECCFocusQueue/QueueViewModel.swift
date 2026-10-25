@@ -128,8 +128,7 @@ final class QueueViewModel {
   private(set) var pendingDailyReportApproval: DailyReportApprovalRequest?
   private(set) var requestedReportTaskID: String?
   private(set) var newTaskRequest: NewTaskRequest?
-  private(set) var voiceRecordingActive = false
-  private(set) var voiceTaskHotkeyEnabled =
+  private(set) var newTaskHotkeyEnabled =
     UserDefaults.standard.bool(forKey: "voiceTaskHotkeyEnabled")
   private(set) var panelMode: QueuePanelMode = .expanded
   private(set) var canSwitchMonitor = false
@@ -325,7 +324,7 @@ final class QueueViewModel {
     @MainActor (String, String?) async throws -> Void
   )?
   @ObservationIgnored var quitHandler: (() -> Void)?
-  @ObservationIgnored var voiceHotkeyEnabledHandler: ((Bool) -> Void)?
+  @ObservationIgnored var newTaskHotkeyEnabledHandler: ((Bool) -> Void)?
 
   init(
     paths: AppPaths = .live(),
@@ -4550,18 +4549,13 @@ final class QueueViewModel {
 
   func clearNewTaskRequest() {
     newTaskRequest = nil
-    voiceRecordingActive = false
   }
 
-  func setVoiceRecordingActive(_ active: Bool) {
-    voiceRecordingActive = active
-  }
-
-  func setVoiceTaskHotkeyEnabled(_ enabled: Bool) {
-    guard voiceTaskHotkeyEnabled != enabled else { return }
-    voiceTaskHotkeyEnabled = enabled
+  func setNewTaskHotkeyEnabled(_ enabled: Bool) {
+    guard newTaskHotkeyEnabled != enabled else { return }
+    newTaskHotkeyEnabled = enabled
     UserDefaults.standard.set(enabled, forKey: "voiceTaskHotkeyEnabled")
-    voiceHotkeyEnabledHandler?(enabled)
+    newTaskHotkeyEnabledHandler?(enabled)
   }
 
   func setDailyReportSchedule(hour: Int, minute: Int) {

@@ -616,6 +616,9 @@ public struct TaskContext: Codable, Equatable, Sendable {
         - Your assigned workspace is immutable; a different checkout requires a new agent assignment. `workspace <TASK-ID> <AGENT-ID> <absolute-path>` only records the first assignment or refreshes metadata for the same path.
         - Complete only your assigned subtask and preserve other agents' changes. Update the plan within the agreed scope without an extra approval loop; ask before materially changing scope, ownership, branch strategy, or external delivery.
         - Push only when the user authorizes remote delivery, never directly to main unless explicitly requested. Never force-remove a worktree or merge a branch without the task's approval terms. Task closure requires verification and safe cleanup.
+
+        UI Canvas
+        - To preview a UI mockup, use `canvas open|await|typing|end <file.html>` in place of `ecc-ui-canvas`: same arguments and JSON, and it opens as a tab in this task's plan viewer instead of a browser.
         """
         if let mapHelper {
             rules += """

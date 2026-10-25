@@ -562,6 +562,38 @@ struct QueueViewModelTests {
     #expect(saved.tickets.first?.title == "Renamed app task")
   }
 
+  @Test("An agent's canvas open expands the panel and requests its tab; other support dirs are ignored")
+  func uiCanvasOpenRouting() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let ticket = try #require(model.openTickets.first)
+    let mockup = fixture.root.appendingPathComponent("card.html")
+    try Data("<!doctype html><body><p id=\"x\">Hi</p></body>".utf8).write(to: mockup)
+    guard case .opened(let session) = try model.uiCanvasStore.open(
+      file: mockup.path, taskID: ticket.id, title: "Card", viewport: nil, reopen: false, agentName: "Codex")
+    else { Issue.record("open refused"); return }
+
+    model.setPanelMode(.collapsed)
+    model.handleUICanvasChange(ticketID: ticket.id, key: session.key, event: "open", root: "/tmp/another-clone")
+    #expect(model.presentedPlanTicketID == nil)
+    #expect(model.requestedUICanvas == nil)
+
+    model.handleUICanvasChange(ticketID: ticket.id.lowercased(), key: session.key, event: "open", root: fixture.root.path)
+    #expect(model.panelMode == .expanded)
+    #expect(model.presentedPlanTicketID == ticket.id)
+    #expect(model.requestedUICanvas?.key == session.key)
+    #expect(model.visibleUICanvases(ticketID: ticket.id).map(\.key) == [session.key])
+
+    model.dismissUICanvas(ticketID: ticket.id, key: session.key)
+    #expect(model.visibleUICanvases(ticketID: ticket.id).isEmpty)
+    model.handleUICanvasChange(ticketID: ticket.id, key: session.key, event: "change", root: nil)
+    #expect(model.visibleUICanvases(ticketID: ticket.id).isEmpty, "Only a fresh open brings a closed tab back")
+    let canvas = model.uiCanvasModel(ticketID: ticket.id, key: session.key)
+    #expect(canvas === model.uiCanvasModel(ticketID: ticket.id, key: session.key))
+    #expect(canvas.title == "Card")
+  }
+
   @Test("Task rename updates a loaded context and rejects an empty replacement")
   func taskRenamePropagation() async throws {
     let fixture = try await Fixture()

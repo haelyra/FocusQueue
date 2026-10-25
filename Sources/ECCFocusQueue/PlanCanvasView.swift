@@ -19,6 +19,8 @@ struct PlanCanvasView: View {
   @State private var planFind = DocumentFindState()
   @State private var draggedTab: URL?
   @State private var isSplitTargeted = false
+  /// The native UI Canvas tab in front, if any.
+  @State private var selectedCanvasKey: String?
 
   private var sourceURL: URL {
     model.presentedPlanURL ?? URL(fileURLWithPath: model.taskContexts[ticket.id]?.planPath ?? "/")
@@ -26,7 +28,14 @@ struct PlanCanvasView: View {
 
   /// The central plan is in the primary viewer, so header Find searches it.
   private var isCentralPlanVisible: Bool {
-    sideDocuments.primaryDocument == nil && !showsWorkspaceMap
+    sideDocuments.primaryDocument == nil && !showsWorkspaceMap && selectedCanvasKey == nil
+  }
+
+  /// The selected canvas while it fills the viewer in place of the plan.
+  private var presentedCanvas: UICanvasSession? {
+    guard let selectedCanvasKey, sideDocuments.primaryDocument == nil, sideDocuments.secondaryDocument == nil
+    else { return nil }
+    return model.visibleUICanvases(ticketID: ticket.id).first { $0.key == selectedCanvasKey }
   }
 
   /// The tab a split would act on: the right-hand document, or the one in front.
@@ -57,7 +66,7 @@ struct PlanCanvasView: View {
         if isCentralPlanVisible, !isEditing {
           DocumentFindBar(state: planFind, placesFieldFirst: true)
         }
-        if let candidate = splitCandidate,
+        if presentedCanvas == nil, let candidate = splitCandidate,
            sideDocuments.hasSecondaryViewer || sideDocuments.canSplit(candidate) {
           Button {
             toggleSplit(candidate)
@@ -76,7 +85,8 @@ struct PlanCanvasView: View {
               ? "Save the plan and return to the preview"
               : "Save the reconciled draft and return to the preview")
         }
-        if model.presentedPlanURL == nil, sideDocuments.primaryDocument == nil, !showsWorkspaceMap {
+        if model.presentedPlanURL == nil, sideDocuments.primaryDocument == nil, !showsWorkspaceMap,
+           presentedCanvas == nil {
           Button {
             showsWorkspaceMap = false
             editDraft = model.planEditDrafts[ticket.id]?.markdown ?? model.presentedPlanMarkdown
@@ -132,6 +142,10 @@ struct PlanCanvasView: View {
         }
       }
       GeometryReader { geometry in
+        if let canvas = presentedCanvas {
+          UICanvasView(model: model.uiCanvasModel(ticketID: ticket.id, key: canvas.key)).id(canvas.key)
+            .frame(width: geometry.size.width, height: geometry.size.height)
+        } else {
         ScrollView(.horizontal) {
           if let secondaryDocument = sideDocuments.secondaryDocument {
             PlanPaneSplit(initialFraction: 0.5, minimumPrimary: 500, minimumSecondary: 460) {
@@ -165,13 +179,19 @@ struct PlanCanvasView: View {
           }
         }.scrollIndicators(.automatic)
           .animation(.snappy(duration: 0.22), value: previewsSplit)
+        }
       }
       .splitDropTarget(
         tabs: sideDocuments.tabs, dragged: $draggedTab, isTargeted: $isSplitTargeted
       ) { sideDocuments.split($0) }
 
     }.frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
-      .onAppear { rememberPresentedDocument() }
+      .onAppear {
+        rememberPresentedDocument()
+        model.refreshUICanvases(ticketID: ticket.id)
+        showRequestedCanvas()
+      }
+      .onChange(of: model.requestedUICanvas) { _, _ in showRequestedCanvas() }
       .onChange(of: model.presentedPlanURL) { _, _ in
         isEditing = false
         canvasSelection = nil
@@ -316,14 +336,34 @@ struct PlanCanvasView: View {
         documentTab("Central plan", isSelected: isCentralPlanVisible) {
           sideDocuments.showCentralContent()
           showsWorkspaceMap = false
+          selectedCanvasKey = nil
           model.openPlan(for: ticket)
         }
-        documentTab("Map", isSelected: sideDocuments.primaryDocument == nil && showsWorkspaceMap) {
+        documentTab("Map", isSelected: sideDocuments.primaryDocument == nil && showsWorkspaceMap && selectedCanvasKey == nil) {
           sideDocuments.showCentralContent()
           showsWorkspaceMap = true
+          selectedCanvasKey = nil
           canvasSelection = nil
         }
           .help("See this task’s workspaces, agents, and files")
+        ForEach(model.visibleUICanvases(ticketID: ticket.id)) { canvas in
+          HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Image(systemName: "paintbrush.pointed").font(.system(size: 11)).foregroundStyle(.secondary)
+            documentTab(canvas.displayTitle, isSelected: presentedCanvas?.key == canvas.key) {
+              selectCanvas(canvas.key)
+            }
+            if canvas.isEnded {
+              Image(systemName: "checkmark.circle").font(.system(size: 10)).foregroundStyle(.secondary)
+                .accessibilityLabel("Canvas session ended")
+            }
+            Button { closeCanvasTab(canvas.key) } label: {
+              Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close \(canvas.displayTitle) canvas")
+          }
+          .help("UI Canvas · \(canvas.file)")
+        }
         ForEach(sideDocuments.tabs, id: \.self) { url in
           HStack(alignment: .firstTextBaseline, spacing: 5) {
             documentTab(
@@ -331,6 +371,7 @@ struct PlanCanvasView: View {
               isSelected: sideDocuments.primaryDocument == url || sideDocuments.secondaryDocument == url
             ) {
               showsWorkspaceMap = false
+              selectedCanvasKey = nil
               sideDocuments.select(url)
             }
             if sideDocuments.secondaryDocument == url {
@@ -438,7 +479,34 @@ struct PlanCanvasView: View {
   }
 
   private func openDocument(_ url: URL) {
+    if presentedCanvas != nil {
+      selectedCanvasKey = nil
+      sideDocuments.open(url, in: .primary)
+      return
+    }
     sideDocuments.openLinkedDocument(url, besideCentralContent: showsWorkspaceMap)
+  }
+
+  private func selectCanvas(_ key: String) {
+    if isEditing { isEditing = false }
+    // Clear both panes but keep the document tabs, so the canvas fills the viewer.
+    sideDocuments.dismiss()
+    showsWorkspaceMap = false
+    canvasSelection = nil
+    selectedCanvasKey = key
+  }
+
+  private func closeCanvasTab(_ key: String) {
+    model.dismissUICanvas(ticketID: ticket.id, key: key)
+    if selectedCanvasKey == key { selectedCanvasKey = nil }
+  }
+
+  /// An agent opened a canvas for this task: bring its tab to the front.
+  private func showRequestedCanvas() {
+    guard let request = model.requestedUICanvas, request.ticketID == ticket.id else { return }
+    model.refreshUICanvases(ticketID: ticket.id)
+    selectCanvas(request.key)
+    model.consumeUICanvasRequest(request)
   }
 
   private func discussDocument(_ action: PlanCanvasSelectionAction, for document: URL) {

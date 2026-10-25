@@ -162,6 +162,8 @@ import Testing
   #expect(TaskFieldChoices.openStatuses.allSatisfy {
     DashboardTicket(id: "ECC-1", title: "T", status: $0, summary: "").isOpen
   })
+  #expect(TaskFieldChoices.openStatuses.contains("qa-in-progress"))
   #expect(TaskFieldChoices.statusLabel("in-progress") == "In progress")
   #expect(TaskFieldChoices.statusLabel("qa") == "QA")
+  #expect(TaskFieldChoices.statusLabel("qa-in-progress") == "QA in progress")
 }

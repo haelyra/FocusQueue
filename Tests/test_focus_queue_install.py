@@ -310,13 +310,14 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("bypass repository push guards", payload)
         self.assertIn("verify the remote integration ref equals the local commit", payload)
 
-    def test_global_contract_maps_report_stages_to_task_statuses(self):
+    def test_global_contract_maps_report_stages_to_existing_task_statuses(self):
         repository = Path(__file__).parents[1]
         output_contract = (
             repository / "Docs/output-design/agent-output-contract.md"
         ).read_text()
         self.assertIn("`backlog` → `idea`", output_contract)
-        self.assertIn("`qa-in-progress` → `deployed-verification`", output_contract)
+        self.assertIn("`qa` → `deployed-verification`", output_contract)
+        self.assertNotIn("qa-in-progress", output_contract)
 
         for name in (
             "Config/CODEX_GLOBAL_INSTRUCTIONS.md",
@@ -331,9 +332,10 @@ class InstallerTests(unittest.TestCase):
                     payload,
                 )
                 self.assertIn(
-                    'focus-queue-session task status "$FOCUS_QUEUE_TASK_ID" qa-in-progress',
+                    'focus-queue-session task status "$FOCUS_QUEUE_TASK_ID" qa',
                     payload,
                 )
+                self.assertNotIn("qa-in-progress", payload)
 
     def test_provenance_rejects_a_symlinked_resources_parent(self):
         resources = self.bundle / "Contents/Resources"

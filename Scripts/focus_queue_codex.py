@@ -685,8 +685,12 @@ def run_codex(
         )
         if usage_file is not None:
             write_token_usage(usage_file, stdout)
-        prompt_usage.record_provider_usage("codex", model, parse_token_usage(stdout),
-            support=Path(os.environ["FOCUS_QUEUE_SUPPORT_DIR"]) if os.environ.get("FOCUS_QUEUE_SUPPORT_DIR") else runtime.parent)
+        if usage_file is None:
+            # A caller that asks for a usage file records its own attributed event.
+            prompt_usage.record_provider_usage("codex", model, parse_token_usage(stdout),
+                source=os.environ.get("FOCUS_QUEUE_MODEL_USAGE_SOURCE") or "provider_usage",
+                run_id=os.environ.get("FOCUS_QUEUE_MODEL_USAGE_RUN_ID"),
+                support=Path(os.environ["FOCUS_QUEUE_SUPPORT_DIR"]) if os.environ.get("FOCUS_QUEUE_SUPPORT_DIR") else runtime.parent)
 
         if process.returncode != 0:
             detail = (stderr or stdout).strip()

@@ -337,14 +337,23 @@ struct SubtaskFocusTests {
         let prompted = try await store.observeActivity(ticketID: "ECC-700", subtaskID: agent.id,
             event: .init(id: "prompt", date: promptAt, kind: .prompt, summary: ""))
         #expect(prompted.lastPromptAt == promptAt)
+        #expect(prompted.subtasks.first?.lastPromptAt == promptAt)
         #expect(prompted.subtasks.first?.status == .working)
 
         let older = try await store.observeActivity(ticketID: "ECC-700", subtaskID: agent.id,
             event: .init(id: "older", date: promptAt.addingTimeInterval(-60), kind: .prompt, summary: ""))
         #expect(older.lastPromptAt == promptAt)
+        #expect(older.subtasks.first?.lastPromptAt == promptAt)
         let toolOutput = try await store.observeActivity(ticketID: "ECC-700", subtaskID: agent.id,
             event: .init(id: "tool", date: promptAt.addingTimeInterval(30), kind: .working, summary: ""))
         #expect(toolOutput.lastPromptAt == promptAt)
+        #expect(toolOutput.subtasks.first?.lastPromptAt == promptAt)
+
+        let launchedAt = promptAt.addingTimeInterval(120)
+        let launched = try await store.recordPrompt(ticketID: "ECC-700", subtaskID: agent.id, at: launchedAt)
+        #expect(launched.subtasks.first?.lastPromptAt == launchedAt)
+        let reloaded = try await TaskContextStore(root: root).load(ticketID: "ECC-700")
+        #expect(reloaded?.subtasks.first?.lastPromptAt == launchedAt)
     }
 
     @Test("An older transcript result survives a newer registration heartbeat")

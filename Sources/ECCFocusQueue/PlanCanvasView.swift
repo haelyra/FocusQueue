@@ -17,6 +17,8 @@ struct PlanCanvasView: View {
   @State private var showsWorkspaceMap = false
   @State private var workspaceMap = WorkspaceMapModel()
   @State private var planFind = DocumentFindState()
+  @State private var draggedTab: URL?
+  @State private var isSplitTargeted = false
 
   private var sourceURL: URL {
     model.presentedPlanURL ?? URL(fileURLWithPath: model.taskContexts[ticket.id]?.planPath ?? "/")
@@ -25,6 +27,17 @@ struct PlanCanvasView: View {
   /// The central plan is in the primary viewer, so header Find searches it.
   private var isCentralPlanVisible: Bool {
     sideDocuments.primaryDocument == nil && !showsWorkspaceMap
+  }
+
+  /// The tab a split would act on: the right-hand document, or the one in front.
+  private var splitCandidate: URL? {
+    sideDocuments.secondaryDocument ?? sideDocuments.primaryDocument
+  }
+
+  /// A dragged tab is over the viewer and could open beside what is showing.
+  private var previewsSplit: Bool {
+    guard isSplitTargeted, sideDocuments.secondaryDocument == nil, let draggedTab else { return false }
+    return sideDocuments.canSplit(draggedTab)
   }
 
   var body: some View {
@@ -43,6 +56,17 @@ struct PlanCanvasView: View {
         Spacer()
         if isCentralPlanVisible, !isEditing {
           DocumentFindBar(state: planFind, placesFieldFirst: true)
+        }
+        if let candidate = splitCandidate,
+           sideDocuments.hasSecondaryViewer || sideDocuments.canSplit(candidate) {
+          Button {
+            toggleSplit(candidate)
+          } label: {
+            Image(systemName: sideDocuments.hasSecondaryViewer ? "rectangle" : "rectangle.split.2x1")
+          }
+          .buttonStyle(.plain).frame(width: 40, height: 40).disabled(isEditing || isSaving)
+          .help(sideDocuments.hasSecondaryViewer ? "Close split view" : "Open this document in split view")
+          .accessibilityLabel(sideDocuments.hasSecondaryViewer ? "Close split view" : "Open split view")
         }
         if model.presentedPlanURL == nil, sideDocuments.primaryDocument == nil, !showsWorkspaceMap {
           Button {
@@ -105,35 +129,38 @@ struct PlanCanvasView: View {
             PlanPaneSplit(initialFraction: 0.5, minimumPrimary: 500, minimumSecondary: 460) {
               primaryViewer
             } secondary: {
-              SideDocumentPane(
-                queue: model, scopeLabel: ticket.id, document: secondaryDocument,
-                open: openDocument, close: { sideDocuments.close(secondaryDocument) },
-                receiveDocument: moveDocumentToSecondary,
-                discuss: { discussDocument($0, for: secondaryDocument) })
-                .padding(.horizontal, 4)
+              documentPane(secondaryDocument).padding(.horizontal, 4)
             }
             .frame(width: max(geometry.size.width, QueueInspectorLayout.documentPairMinimumWidth), height: geometry.size.height)
-          } else if let primaryDocument = sideDocuments.primaryDocument {
-            PlanPaneSplit(initialFraction: 0.74, minimumPrimary: QueueInspectorLayout.documentMinimumWidth,
-                          minimumSecondary: QueueInspectorLayout.chatMinimumWidth) {
-              primaryViewer
+          } else {
+            // One layout for the resting and drag-preview states, so the open
+            // document slides left to make room instead of being replaced.
+            let previewing = previewsSplit
+            PlanPaneSplit(
+              initialFraction: previewing ? 0.5 : 0.74, minimumPrimary: QueueInspectorLayout.documentMinimumWidth,
+              minimumSecondary: previewing ? 460 : QueueInspectorLayout.chatMinimumWidth
+            ) {
+              leftViewer(previewing ? draggedTab.flatMap { sideDocuments.splitCompanion(for: $0) } : nil)
             } secondary: {
-              if sideDocuments.centralChatCollapsed {
+              if previewing {
+                SplitDropPlaceholder()
+              } else if let primaryDocument = sideDocuments.primaryDocument, sideDocuments.centralChatCollapsed {
                 DocumentConversationPane(queue: model, scope: .task(ticket.id), document: primaryDocument)
               } else {
                 conversation
               }
             }
-            .frame(width: max(geometry.size.width, QueueInspectorLayout.inspectorMinimumWidth), height: geometry.size.height)
-          } else {
-            PlanPaneSplit(initialFraction: 0.74, minimumPrimary: QueueInspectorLayout.documentMinimumWidth,
-                          minimumSecondary: QueueInspectorLayout.chatMinimumWidth) {
-              document
-            } secondary: { conversation }
-            .frame(width: max(geometry.size.width, QueueInspectorLayout.inspectorMinimumWidth), height: geometry.size.height)
+            .frame(
+              width: max(geometry.size.width, previewing
+                ? QueueInspectorLayout.documentPairMinimumWidth : QueueInspectorLayout.inspectorMinimumWidth),
+              height: geometry.size.height)
           }
         }.scrollIndicators(.automatic)
+          .animation(.snappy(duration: 0.22), value: previewsSplit)
       }
+      .splitDropTarget(
+        tabs: sideDocuments.tabs, dragged: $draggedTab, isTargeted: $isSplitTargeted
+      ) { sideDocuments.split($0) }
 
     }.frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
       .onAppear { rememberPresentedDocument() }
@@ -146,14 +173,27 @@ struct PlanCanvasView: View {
 
   @ViewBuilder private var primaryViewer: some View {
     if let primaryDocument = sideDocuments.primaryDocument {
-      SideDocumentPane(
-        queue: model, scopeLabel: ticket.id, document: primaryDocument,
-        open: openDocument, close: { sideDocuments.close(primaryDocument) },
-        receiveDocument: moveDocumentToSecondary,
-        discuss: { discussDocument($0, for: primaryDocument) })
+      documentPane(primaryDocument)
     } else {
       document
     }
+  }
+
+  /// The left pane, or what it will hold once a dragged tab splits off to the right.
+  @ViewBuilder private func leftViewer(_ companion: DocumentSplitCompanion?) -> some View {
+    switch companion {
+    case .document(let url) where url != sideDocuments.primaryDocument: documentPane(url)
+    case .centralContent where sideDocuments.primaryDocument != nil: document
+    default: primaryViewer
+    }
+  }
+
+  private func documentPane(_ url: URL) -> some View {
+    SideDocumentPane(
+      queue: model, scopeLabel: ticket.id, document: url,
+      open: openDocument, close: { sideDocuments.close(url) },
+      discuss: { discussDocument($0, for: url) },
+      dragStarted: { draggedTab = $0 })
   }
 
   private var document: some View {
@@ -283,10 +323,15 @@ struct PlanCanvasView: View {
           HStack(alignment: .firstTextBaseline, spacing: 5) {
             documentTab(
               url.isFileURL ? url.lastPathComponent : (url.host ?? url.absoluteString),
-              isSelected: sideDocuments.primaryDocument == url
+              isSelected: sideDocuments.primaryDocument == url || sideDocuments.secondaryDocument == url
             ) {
               showsWorkspaceMap = false
               sideDocuments.select(url)
+            }
+            if sideDocuments.secondaryDocument == url {
+              Image(systemName: "rectangle.righthalf.inset.filled")
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+                .accessibilityLabel("Shown in split view")
             }
             Button { sideDocuments.close(url) } label: {
               Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
@@ -295,12 +340,21 @@ struct PlanCanvasView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Close \(url.lastPathComponent)")
           }
-          .draggable(url.absoluteString)
+          .documentDrag(url) { draggedTab = $0 }
           .help(url.absoluteString)
+          .contextMenu {
+            if sideDocuments.secondaryDocument == url {
+              Button("Close Split View", systemImage: "rectangle") { sideDocuments.endSplit() }
+            } else if sideDocuments.canSplit(url) {
+              Button("Open in Split View", systemImage: "rectangle.split.2x1") { toggleSplit(url) }
+            }
+            Button("Close Tab", systemImage: "xmark") { sideDocuments.close(url) }
+          }
         }
       }
       .padding(.vertical, 2)
       .dropDestination(for: String.self) { identifiers, _ in
+        draggedTab = nil
         guard let identifier = identifiers.last,
               let url = sideDocuments.tabs.first(where: { $0.absoluteString == identifier }) else { return false }
         showsWorkspaceMap = false
@@ -352,10 +406,13 @@ struct PlanCanvasView: View {
     documentConversation.draft += "Selected passage: \(action.selection.excerpt)\n\(action.initialText)"
   }
 
-  private func moveDocumentToSecondary(_ identifier: String) -> Bool {
-    guard let url = sideDocuments.tabs.first(where: { $0.absoluteString == identifier }) else { return false }
-    sideDocuments.moveToSecondary(url)
-    return true
+  /// Open `url` beside the document that was open before it, or leave the split.
+  private func toggleSplit(_ url: URL) {
+    if sideDocuments.hasSecondaryViewer {
+      sideDocuments.endSplit()
+    } else {
+      sideDocuments.split(url)
+    }
   }
 
   private var conversation: some View {

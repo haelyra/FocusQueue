@@ -55,8 +55,9 @@ struct DocumentPaneTests {
         #expect(pane.primaryDocument == second)
         #expect(pane.secondaryDocument == nil)
 
-        pane.moveToSecondary(second)
-        #expect(pane.primaryDocument == nil)
+        // The tab clicked before `second` stays on the left.
+        pane.split(second)
+        #expect(pane.primaryDocument == first)
         #expect(pane.secondaryDocument == second)
     }
 
@@ -67,13 +68,69 @@ struct DocumentPaneTests {
         let second = URL(fileURLWithPath: "/tmp/implementation.swift")
 
         pane.open(first, in: .primary)
-        pane.moveToSecondary(first)
+        pane.split(first)
         #expect(pane.primaryDocument == nil && pane.secondaryDocument == first)
 
         pane.open(second, in: .secondary)
         #expect(pane.primaryDocument == first)
         #expect(pane.secondaryDocument == second)
         #expect(pane.hasSecondaryViewer)
+    }
+
+    @Test("Splitting a tab keeps the document that was open before it on the left")
+    func splitRestoresPreviousTab() {
+        let pane = DocumentPaneState()
+        let a = URL(fileURLWithPath: "/tmp/a.md"), b = URL(fileURLWithPath: "/tmp/b.md"), c = URL(fileURLWithPath: "/tmp/c.md")
+        pane.open(a); pane.open(b); pane.open(c)
+        pane.select(a); pane.select(b)
+
+        // b is current, a was clicked before it.
+        #expect(pane.splitCompanion(for: b) == .document(a))
+        #expect(pane.split(b))
+        #expect(pane.primaryDocument == a && pane.secondaryDocument == b)
+
+        // Dragging another tab while a split is open keeps the visible left document.
+        #expect(pane.splitCompanion(for: c) == .document(a))
+        pane.split(c)
+        #expect(pane.primaryDocument == a && pane.secondaryDocument == c)
+
+        pane.endSplit()
+        #expect(pane.primaryDocument == c && pane.secondaryDocument == nil)
+    }
+
+    @Test("Splitting the first tab sits beside the central plan, or the previous tab if it was the last viewed")
+    func splitBesideCentralContent() {
+        let pane = DocumentPaneState()
+        let a = URL(fileURLWithPath: "/tmp/a.md"), b = URL(fileURLWithPath: "/tmp/b.md")
+        pane.open(a); pane.open(b)
+        pane.showCentralContent()
+        pane.select(b)
+
+        // Central content was in front before b, so it stays on the left.
+        #expect(pane.splitCompanion(for: b) == .centralContent)
+        pane.split(b)
+        #expect(pane.primaryDocument == nil && pane.secondaryDocument == b)
+
+        // A viewer with no central content needs a second tab to split against.
+        let viewer = DocumentPaneState()
+        viewer.open(a)
+        #expect(!viewer.canSplit(a, hasCentralContent: false))
+        viewer.open(b)
+        viewer.select(b)
+        #expect(viewer.splitCompanion(for: b, hasCentralContent: false) == .document(a))
+        viewer.split(b, hasCentralContent: false)
+        #expect(viewer.primaryDocument == a && viewer.secondaryDocument == b)
+        #expect(!viewer.canSplit(URL(fileURLWithPath: "/tmp/unknown.md")))
+    }
+
+    @Test("Closing the split tab drops it from history so it cannot return on the left")
+    func closedTabLeavesHistory() {
+        let pane = DocumentPaneState()
+        let a = URL(fileURLWithPath: "/tmp/a.md"), b = URL(fileURLWithPath: "/tmp/b.md")
+        pane.open(a); pane.open(b); pane.select(a); pane.select(b)
+        pane.close(a)
+        #expect(pane.splitCompanion(for: b, hasCentralContent: false) == nil)
+        #expect(pane.splitCompanion(for: b) == .centralContent)
     }
 
     @Test("External evidence links share the split routing used by canvas links")

@@ -289,7 +289,16 @@ struct ProjectFilesSection: View {
 struct DocumentViewerInspector: View {
     let model: QueueViewModel
 
+    @State private var draggedTab: URL?
+    @State private var isSplitTargeted = false
+
     private var panes: DocumentPaneState { model.documentViewer }
+
+    /// A dragged tab is over the viewer and could open beside the document in front.
+    private var previewsSplit: Bool {
+        guard isSplitTargeted, !panes.hasSecondaryViewer, let draggedTab else { return false }
+        return panes.canSplit(draggedTab, hasCentralContent: false)
+    }
 
     private var scopeLabel: String {
         switch model.documentViewerScope {
@@ -338,16 +347,35 @@ struct DocumentViewerInspector: View {
                         .frame(width: max(geometry.size.width, QueueInspectorLayout.documentPairMinimumWidth),
                                height: geometry.size.height)
                     } else if let document = panes.selected {
-                        PlanPaneSplit(initialFraction: 0.74, minimumPrimary: QueueInspectorLayout.documentMinimumWidth,
-                                      minimumSecondary: QueueInspectorLayout.chatMinimumWidth) {
-                            pane(document).padding(.horizontal, 4)
+                        // One layout for resting and drag-preview, so the open
+                        // document slides left to make room for the dragged tab.
+                        let previewing = previewsSplit
+                        let companion = previewing
+                            ? draggedTab.flatMap { panes.splitCompanion(for: $0, hasCentralContent: false) } : nil
+                        PlanPaneSplit(initialFraction: previewing ? 0.5 : 0.74,
+                                      minimumPrimary: QueueInspectorLayout.documentMinimumWidth,
+                                      minimumSecondary: previewing ? 460 : QueueInspectorLayout.chatMinimumWidth) {
+                            if case .document(let leftDocument) = companion, leftDocument != document {
+                                pane(leftDocument).padding(.horizontal, 4)
+                            } else {
+                                pane(document).padding(.horizontal, 4)
+                            }
                         } secondary: {
-                            DocumentConversationPane(queue: model, scope: model.documentViewerScope, document: document)
+                            if previewing {
+                                SplitDropPlaceholder()
+                            } else {
+                                DocumentConversationPane(queue: model, scope: model.documentViewerScope, document: document)
+                            }
                         }
-                        .frame(width: max(geometry.size.width, QueueInspectorLayout.inspectorMinimumWidth),
+                        .frame(width: max(geometry.size.width, previewing
+                                ? QueueInspectorLayout.documentPairMinimumWidth : QueueInspectorLayout.inspectorMinimumWidth),
                                height: geometry.size.height)
                     }
                 }.scrollIndicators(.automatic)
+                    .animation(.snappy(duration: 0.22), value: previewsSplit)
+            }
+            .splitDropTarget(tabs: panes.tabs, dragged: $draggedTab, isTargeted: $isSplitTargeted) {
+                panes.split($0, hasCentralContent: false)
             }
         }
         .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
@@ -358,24 +386,20 @@ struct DocumentViewerInspector: View {
             queue: model, scopeLabel: scopeLabel, document: document,
             open: { panes.openLinkedDocument($0) },
             close: { model.closeDocumentViewerTab(document) },
-            receiveDocument: { identifier in
-                guard let url = panes.tabs.first(where: { $0.absoluteString == identifier }) else { return false }
-                panes.moveToSecondary(url)
-                return true
-            },
             discuss: { action in
                 guard let scope = model.documentViewerScope,
                       let conversation = model.documentConversation(for: document, scope: scope) else { return }
                 if !conversation.draft.isEmpty { conversation.draft += "\n\n" }
                 conversation.draft += "Selected passage: \(action.selection.excerpt)\n\(action.initialText)"
-            })
+            },
+            dragStarted: { draggedTab = $0 })
     }
 
     private var tabBar: some View {
         ScrollView(.horizontal) {
             HStack(spacing: 6) {
                 ForEach(panes.tabs, id: \.self) { url in
-                    let isSelected = panes.primaryDocument == url
+                    let isSelected = panes.primaryDocument == url || panes.secondaryDocument == url
                     HStack(spacing: 4) {
                         Button(url.isFileURL ? url.lastPathComponent : (url.host ?? url.absoluteString)) {
                             panes.select(url)
@@ -392,12 +416,23 @@ struct DocumentViewerInspector: View {
                         in: RoundedRectangle(cornerRadius: 7))
                     .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.18), lineWidth: 1)
                         .allowsHitTesting(false))
-                    .draggable(url.absoluteString)
+                    .documentDrag(url) { draggedTab = $0 }
                     .help(url.absoluteString)
+                    .contextMenu {
+                        if panes.secondaryDocument == url {
+                            Button("Close Split View", systemImage: "rectangle") { panes.endSplit() }
+                        } else if panes.canSplit(url, hasCentralContent: false) {
+                            Button("Open in Split View", systemImage: "rectangle.split.2x1") {
+                                panes.split(url, hasCentralContent: false)
+                            }
+                        }
+                        Button("Close Tab", systemImage: "xmark") { model.closeDocumentViewerTab(url) }
+                    }
                 }
             }
             .padding(.vertical, 2)
             .dropDestination(for: String.self) { identifiers, _ in
+                draggedTab = nil
                 guard let identifier = identifiers.last,
                       let url = panes.tabs.first(where: { $0.absoluteString == identifier }) else { return false }
                 panes.select(url)

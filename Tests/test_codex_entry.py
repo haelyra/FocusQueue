@@ -908,7 +908,7 @@ with open({str(record)!r}, "a") as stream: stream.write(json.dumps(sys.argv[1:])
         home.mkdir()
         self.install_session_helper(home)
         preview = INSTALL.install(home, self.wrapper, ["--yolo"], check=True)
-        self.assertEqual(len(preview["paths"]), 10)  # includes the other provider's fq entry
+        self.assertEqual(len(preview["paths"]), 11)  # includes the other provider's fq entry and analytics module
         self.assertFalse((home / ".codex").exists())
         INSTALL.install(home, self.wrapper, ["--yolo"])
         self.assertFalse((home / ".codex").exists())
@@ -935,6 +935,7 @@ with open({str(record)!r}, "a") as stream: stream.write(json.dumps(sys.argv[1:])
         self.assertTrue(content.endswith('"$@"\n'))
         self.assertTrue(dispatcher.is_file())
         self.assertTrue((support / "shell/focus_queue_placement.py").is_file())
+        self.assertTrue((support / "shell/focus_queue_prompt_usage.py").is_file())
         self.assertTrue((support / "shell/focus_queue_claude_entry.py").is_file(),
                         "fq dispatches claude without its shell function installed")
         self.assertEqual(INSTALL.install(home, self.wrapper, ["--yolo"])["paths"], [])

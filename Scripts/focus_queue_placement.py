@@ -454,6 +454,11 @@ def model_placement(prompt, cwd, projects, launch_project, settings, environment
     if announce is not None:
         announce(f"placing with {label} against {len(candidates)} open tasks…")
     message = placement_message(prompt, cwd, launch_project, candidates)
+    import focus_queue_prompt_usage as prompt_usage
+    prompt_usage.record("placement", "app_context",
+                        characters=len(message) + len(SYSTEM_PROMPT) - len(prompt[:PROMPT_LIMIT]),
+                        provider=settings["provider"], model=settings["model"],
+                        support=support_directory(environment))
     child = {key: value for key, value in environment.items()
              if key not in SESSION_VARIABLES and not key.startswith("FOCUS_QUEUE_")}
     with tempfile.TemporaryDirectory(prefix="fq-placement-") as directory:

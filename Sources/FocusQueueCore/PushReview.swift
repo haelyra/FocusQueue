@@ -38,6 +38,9 @@ public actor PushReviewer {
         Start the final response with exactly ACCEPT or REJECT on its own line, followed by a concise explanation and specific corrections. ACCEPT only after actually inspecting the diff. On REJECT, tell the calling agent precisely what to fix and ask it to run review-push again before pushing.
         """
         try Data(prompt.utf8).write(to: promptURL, options: .atomic)
+        PromptUsageMetrics.record(PromptUsageEvent(source: "push_review", component: "app_context",
+            provider: subtask.provider.rawValue, taskID: context.ticketID,
+            characters: max(0, prompt.count - (subtask.initialPrompt?.count ?? 0))), in: supportDirectory)
         var environment = CodexCompletionVerifier.agentEnvironment(configuration)
         environment["FOCUS_QUEUE_SUPPORT_DIR"] = supportDirectory.path
         let result = try await runner.run(.init(executable: configuration.executable,

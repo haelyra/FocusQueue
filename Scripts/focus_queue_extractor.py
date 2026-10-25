@@ -572,6 +572,11 @@ def extract(prompt, catalog, *, current_task_id=None, settings=None, environment
               "promptExcerpt": (prompt or "") if trace else None}
     try:
         message = catalog_message(catalog, current_task_id, prompt)
+        import focus_queue_prompt_usage as prompt_usage
+        prompt_usage.record("extraction", "app_context",
+                            characters=len(message) + len(SYSTEM_PROMPT) - len(prompt[:PROMPT_LIMIT]),
+                            provider=settings["provider"], model=settings["model"],
+                            task_id=current_task_id, support=support)
         child = {key: value for key, value in environment.items()
                  if key not in SESSION_VARIABLES and not key.startswith("FOCUS_QUEUE_")}
         # Nested provider CLIs can run hooks too; this marker prevents recursive extraction.

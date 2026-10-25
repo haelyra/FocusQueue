@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from focus_queue_lock import acquire_exclusive_file_lock
+import focus_queue_prompt_usage as prompt_usage
 import focus_queue_triage
 
 
@@ -2434,6 +2435,8 @@ def classification_schema_path(config: dict[str, Any], runtime: Path) -> Path:
 
 def classify(config: dict[str, Any], bundle: dict[str, Any], runtime: Path) -> dict[str, Any]:
     prompt = proposal_prompt(bundle, int(config["maxNewTasksPerRun"]))
+    prompt_usage.record("daily_report", "full_prompt", prompt=prompt,
+                        provider=agent_provider(config), model=str(config.get("agentModel") or ""))
     runtime.mkdir(parents=True, exist_ok=True)
     prompt_path: Path | None = None
     usage_path = runtime / "latest-classification-usage.json"
@@ -2601,6 +2604,8 @@ def run_deep_pass(
     *,
     model: str | None,
 ) -> dict[str, Any]:
+    prompt_usage.record("daily_report_deep_pass", "full_prompt", prompt=prompt,
+                        provider=agent_provider(config), model=model)
     runtime.mkdir(parents=True, exist_ok=True)
     prompt_path: Path | None = None
     classifier_workspace = runtime / "classifier-workspace"

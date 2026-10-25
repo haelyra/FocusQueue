@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import focus_queue_morning as morning
+import focus_queue_prompt_usage as prompt_usage
 from focus_queue_lock import acquire_exclusive_file_lock
 
 
@@ -381,6 +382,7 @@ def run_claude(
         )
         if usage_file is not None:
             write_token_usage(usage_file, stdout)
+        prompt_usage.record_provider_usage("claude", model, parse_token_usage(stdout))
 
         if process.returncode != 0:
             detail = (stderr or stdout).strip()

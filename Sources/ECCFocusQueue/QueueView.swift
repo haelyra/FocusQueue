@@ -3096,9 +3096,7 @@ private struct TicketCard: View {
   @State private var showsSubtasks = true
   @State private var showsCompletedSubtasks = false
   @State private var subtaskDisclosure = SubtaskDisclosureState()
-  @State private var showsNewSubtask = false
-  @State private var newSubtaskTitle = ""
-  @State private var newSubtaskExplanation = ""
+  @State private var showsAgentCreator = false
   @State private var editingSubtask: TaskSubtask?
   @State private var completingSubtask: TaskSubtask?
   @State private var deletingSubtask: TaskSubtask?
@@ -3171,18 +3169,8 @@ private struct TicketCard: View {
       .sheet(isPresented: $showsNewAgent) {
         NewTaskAgentView(ticket: ticket, model: model, targetSubtask: agentTargetSubtask)
       }
-      .alert("New work item", isPresented: $showsNewSubtask) {
-        TextField("Work item title", text: $newSubtaskTitle)
-        TextField("Brief work description", text: $newSubtaskExplanation)
-        Button("Add work item") {
-          model.createSubtask(
-            for: ticket, title: newSubtaskTitle, explanation: newSubtaskExplanation)
-          newSubtaskTitle = ""
-          newSubtaskExplanation = ""
-        }
-        Button("Cancel", role: .cancel) {}
-      } message: {
-        Text("Every work item needs a short title and a brief description. You can start its agent afterward.")
+      .sheet(isPresented: $showsAgentCreator) {
+        TaskAgentCreatorSheet(model: model, ticket: ticket)
       }
       .sheet(item: $editingSubtask) { subtask in
         SubtaskEditorSheet(subtask: subtask) { title, explanation in
@@ -3237,26 +3225,45 @@ private struct TicketCard: View {
       .popover(isPresented: $showsTaskDetails, arrowEdge: .trailing) {
         TaskDetailsView(ticket: ticket, model: model) { showsTaskDetails = false }
       }
-      .contextMenu {
-        Button("View details", systemImage: "info.circle") { openTaskDetails() }
-        Button(
-          model.isTicketPinned(ticket.id) ? "Unpin" : "Pin",
-          systemImage: model.isTicketPinned(ticket.id) ? "pin.slash" : "pin"
-        ) {
-          Task { await model.setTicketPinned(ticket, pinned: !model.isTicketPinned(ticket.id)) }
-        }
-        Divider()
-        Button("Move to top") { model.moveTicket(ticket.id, to: .top) }
-        Button("Move up") { moveOnePosition(up: true) }
-          .disabled(model.openTickets.first?.id == ticket.id)
-        Button("Move down") { moveOnePosition(up: false) }
-          .disabled(model.openTickets.last?.id == ticket.id)
-        Button("Move to bottom") { model.moveTicket(ticket.id, to: .bottom) }
-      }
+      .contextMenu { moreOptionsMenuContent }
       .accessibilityAction(named: "View details", openTaskDetails)
       .accessibilityAction(named: "Move up") { moveOnePosition(up: true) }
       .accessibilityAction(named: "Move down") { moveOnePosition(up: false) }
       .accessibilityHint("Drag to reorder. Drop on the upper half of a task to place it before, or the lower half to place it after.")
+  }
+
+  /// The ••• menu and the card's right-click menu share these actions.
+  @ViewBuilder
+  private var moreOptionsMenuContent: some View {
+    Button("View details", systemImage: "info.circle") { openTaskDetails() }
+    Button(
+      model.isTicketPinned(ticket.id) ? "Unpin" : "Pin",
+      systemImage: model.isTicketPinned(ticket.id) ? "pin.slash" : "pin"
+    ) {
+      Task { await model.setTicketPinned(ticket, pinned: !model.isTicketPinned(ticket.id)) }
+    }
+    Divider()
+    if model.config.completionReviewEnabled {
+      Button("Request completion review", systemImage: "checkmark.seal") {
+        model.requestCompletion(for: ticket)
+      }
+      .disabled(!ticket.isOpen || isChecked)
+    }
+    Button("Mark as complete (skip review)", systemImage: "checkmark.circle") {
+      model.skipReviewAndComplete(ticket)
+    }
+    .disabled(!ticket.isOpen)
+    Button("Archive without completion", systemImage: "archivebox") {
+      Task { _ = await model.archiveWithoutCompletion(ticket) }
+    }
+    .disabled(!ticket.isOpen)
+    Divider()
+    Button("Move to top") { model.moveTicket(ticket.id, to: .top) }
+    Button("Move up") { moveOnePosition(up: true) }
+      .disabled(model.openTickets.first?.id == ticket.id)
+    Button("Move down") { moveOnePosition(up: false) }
+      .disabled(model.openTickets.last?.id == ticket.id)
+    Button("Move to bottom") { model.moveTicket(ticket.id, to: .bottom) }
   }
 
   private func moveOnePosition(up: Bool) {
@@ -3327,10 +3334,19 @@ private struct TicketCard: View {
               detailsAction: openTaskDetails)
             if model.isNewTicket(ticket.id) { NewTaskBadge() }
           }
-          VStack(alignment: .trailing, spacing: 3) {
-            Text(summaryProgressLabel).font(
-              .system(size: 12, weight: .semibold).monospacedDigit()
-            ).foregroundStyle(.secondary).fixedSize()
+          VStack(alignment: .trailing, spacing: 1) {
+            Menu { moreOptionsMenuContent } label: {
+              Image(systemName: "ellipsis")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(.secondary)
+                .frame(width: 28, height: 20)
+                .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel("More options for \(ticket.id)")
+            .help("View details, complete, archive, pin, or move this task")
             Text(ticket.id).font(.system(size: 12, weight: .bold, design: .monospaced))
               .foregroundStyle(priorityColor).fixedSize()
           }
@@ -3403,7 +3419,6 @@ private struct TicketCard: View {
         .accessibilityLabel([
           ticket.title,
           model.isNewTicket(ticket.id) ? "New unviewed task" : nil,
-          summaryProgressLabel,
           ticket.id,
           TaskTriagePolicy.hasHardDeadline(ticket) ? "Hard due date \(ticket.dueDate ?? "")" : nil,
         ].compactMap { $0 }.joined(separator: ", "))
@@ -3429,14 +3444,15 @@ private struct TicketCard: View {
       let completedItems = items.filter { model.isCompletionSeen($0, ticketID: ticket.id) }
       let archivedAgents = model.archivedAgents(for: ticket.id)
 
-      DisclosureGroup("Work items (\(activeItems.count))", isExpanded: $showsSubtasks) {
+      DisclosureGroup(isExpanded: $showsSubtasks) {
         ForEach(activeItems) { item in taskItemRow(item) }
         if activeItems.isEmpty {
-          Text("No active work items").font(.caption).foregroundStyle(.secondary)
+          Text("No active agents").font(.caption).foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         if !completedItems.isEmpty {
           DisclosureGroup(
-            "Completed items (\(completedItems.count))",
+            "Completed agents (\(completedItems.count))",
             isExpanded: $showsCompletedSubtasks
           ) {
             ForEach(completedItems) { item in taskItemRow(item) }
@@ -3445,16 +3461,6 @@ private struct TicketCard: View {
           .foregroundStyle(.secondary)
           .padding(.top, 4)
         }
-        Button("New work item", systemImage: "plus") {
-          newSubtaskTitle = ""
-          newSubtaskExplanation = ""
-          showsNewSubtask = true
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .disabled(ticket.isCompleted)
-        .help("Create one titled, described item for this task")
-        .padding(.top, 3)
         HStack(spacing: 4) {
           Button("New Agent", systemImage: "person.badge.plus") {
             model.launchDefaultAgent(for: ticket, provider: newAgentProvider)
@@ -3463,21 +3469,29 @@ private struct TicketCard: View {
           .controlSize(.small)
           .disabled(ticket.isCompleted || model.launchingTaskIDs.contains(ticket.id))
           .help("Start \(newAgentProvider.displayName) now in a new isolated worktree and this task's shared tmux session")
-          Menu {
-            newAgentModelMenuContent
-          } label: {
+          Button { showsAgentCreator = true } label: {
             Image(systemName: "chevron.down")
               .font(.system(size: 10, weight: .bold))
           }
-          .menuStyle(.borderlessButton)
-          .menuIndicator(.hidden)
-          .fixedSize()
-          .frame(width: 22)
+          .buttonStyle(.borderedProminent)
+          .controlSize(.small)
           .disabled(ticket.isCompleted || model.launchingTaskIDs.contains(ticket.id))
-          .accessibilityLabel("Agent provider and model choices")
-          .help("Choose the provider and model for the new agent")
+          .accessibilityLabel("New agent options")
+          .help("Write a prompt and choose the provider, model, and workspace for the new agent")
         }
+        .padding(.top, 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .contextMenu { newAgentModelMenuContent }
+      } label: {
+        HStack {
+          Text("Agents (\(activeItems.count))")
+          Spacer()
+          let tracked = items.filter(\.tracksCompletion)
+          if !tracked.isEmpty {
+            Text("\(completedItems.filter(\.tracksCompletion).count)/\(tracked.count) done")
+              .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+          }
+        }
       }
       .font(.system(size: 12, weight: .semibold))
       .contextMenu {
@@ -3530,50 +3544,28 @@ private struct TicketCard: View {
 
   private var taskOverview: some View {
     VStack(alignment: .leading, spacing: 9) {
-      Button { model.openPlan(for: ticket) } label: {
-        HStack {
+      HStack(spacing: 6) {
+        Button { model.openPlan(for: ticket) } label: {
           Label("View Central Plan", systemImage: "doc.text")
-          Spacer()
-          Image(systemName: "arrow.up.left.and.arrow.down.right")
-        }.font(.system(size: 12, weight: .semibold))
-      }.buttonStyle(.bordered).controlSize(.regular)
+            .frame(maxWidth: .infinity)
+        }
         .help("Read or edit the central plan alongside the task orchestrator")
-      DisclosureGroup(isExpanded: $showsContext) {
-        TaskContextLinksView(ticket: ticket, model: model)
-          .padding(.top, 6)
-      } label: {
-        Label("Context, evidence & links", systemImage: "folder")
-          .font(.system(size: 12, weight: .semibold))
+        Button { showsContext.toggle() } label: {
+          Label("View Context", systemImage: "folder")
+            .frame(maxWidth: .infinity)
+        }
+        .help("Preview this task's files, evidence, and links")
+        .popover(isPresented: $showsContext, arrowEdge: .trailing) {
+          TaskContextGridView(ticket: ticket, model: model) { showsContext = false }
+            .frame(width: 360, height: 460)
+        }
       }
-      HStack {
-        Menu {
-          ForEach(QueueTaskKind.allCases) { kind in
-            Button { model.changeTaskKind(kind, for: ticket) } label: {
-              if kind == ticket.queueTaskKind { Label(kind.title, systemImage: "checkmark") }
-              else { Text(kind.title) }
-            }.disabled(kind == ticket.queueTaskKind)
-          }
-        } label: { Label("Type: \(ticket.queueTaskKind.title)", systemImage: ticket.queueTaskKind.icon) }
-          .menuStyle(.borderlessButton).fixedSize()
-          .disabled(model.isQueueAgentResponding || model.reportIsRunning)
-          .help("Change the task type. Opens the agent response so you can follow the result.")
-        Spacer()
-        let subtasks = model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion)
-        if !subtasks.isEmpty {
-          Text("\(subtasks.filter { model.isCompletionSeen($0, ticketID: ticket.id) }.count)/\(subtasks.count) work items")
-        } else { Text(ticket.progressLabel) }
-      }.font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+      .buttonStyle(.bordered).controlSize(.regular)
+      .font(.system(size: 12, weight: .semibold))
       if ticket.isRecurringPullRequestTask {
         RecurringPRProgressSummary(progress: recurringProgress, error: recurringProgressError)
-      } else if !model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion).isEmpty {
-        let subtasks = model.focusSubtasks(for: ticket.id).filter(\.tracksCompletion)
-        ProgressView(value: Double(subtasks.filter { model.isCompletionSeen($0, ticketID: ticket.id) }.count), total: Double(subtasks.count))
-          .accessibilityLabel("Work item completion")
-      } else if !ticket.steps.isEmpty {
-        ProgressView(value: Double(ticket.steps.filter(\.isDone).count), total: Double(ticket.steps.count))
-          .accessibilityLabel("Task step completion")
       }
-    }.padding(.horizontal, 14).padding(.bottom, 12)
+    }.padding(.horizontal, 14).padding(.bottom, 10)
   }
 
   private func subtaskRow(_ subtask: TaskSubtask) -> some View {
@@ -3802,13 +3794,6 @@ private struct TicketCard: View {
     }
   }
 
-  private var summaryProgressLabel: String {
-    guard ticket.isRecurringPullRequestTask else { return ticket.progressLabel }
-    guard let recurringProgress else { return "Loading PRs" }
-    guard recurringProgress.dailyTarget > 0 else { return "0 today" }
-    return "\(recurringProgress.resolvedToday.count)/\(recurringProgress.dailyTarget) today"
-  }
-
   private var statusColor: Color {
     switch ticket.status.lowercased() {
     case "blocked": QueueAccentPalette.color(.danger, style: accentStyle)
@@ -4017,7 +4002,7 @@ private struct AgentTaskCard: View {
           openHint: "Click to open this task's terminal. Double-click to rename the task.")
         Menu {
           Button("View Central Plan", systemImage: "doc.text") { model.openPlan(for: ticket) }
-          Button("Context, evidence & links", systemImage: "link") { showsLinks = true }
+          Button("View Context", systemImage: "folder") { showsLinks = true }
           Button("New Agent", systemImage: "person.badge.plus") {
             model.launchDefaultAgent(for: ticket, provider: newAgentProvider)
           }
@@ -4042,9 +4027,9 @@ private struct AgentTaskCard: View {
       .padding(.horizontal, 14).padding(.bottom, 10)
     }
     .notificationSurface(radius: 18)
-    .popover(isPresented: $showsLinks) {
-      TaskContextLinksView(ticket: ticket, model: model)
-        .padding(14).frame(minWidth: 260)
+    .popover(isPresented: $showsLinks, arrowEdge: .trailing) {
+      TaskContextGridView(ticket: ticket, model: model) { showsLinks = false }
+        .frame(width: 360, height: 460)
     }
   }
 }

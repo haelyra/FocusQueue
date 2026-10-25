@@ -113,7 +113,9 @@ struct AgentUpdateView: View {
                 model.isOpening(session) ? "Opening agent session" : "Open agent session"
               )
             }
-            DisclosureGroup("Context, evidence & links") { TaskContextLinksView(ticket: ticket, model: model) }
+            DisclosureGroup("View Context") {
+              TaskContextGridView(ticket: ticket, model: model).frame(height: 320)
+            }
           }
           if !model.chatMessages(ticketID: update.ticketID).isEmpty {
             Text("Task conversation").font(.headline)
@@ -170,35 +172,4 @@ struct AgentUpdateView: View {
     model.sendQueueAgentMessage("Regarding the update \"\(update.title)\": \(update.summary)\n\n\(draft)", ticketID: update.ticketID)
     draft = ""
   }
-}
-
-struct TaskContextLinksView: View {
-  let ticket: DashboardTicket
-  let model: QueueViewModel
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 9) {
-      Button("View Central Plan", systemImage: "doc.text") { model.openPlan(for: ticket) }
-      if let context = model.taskContexts[ticket.id] {
-        Button("View task data (data.md)", systemImage: "tablecells") { open(context.dataURL.path) }
-        Button("Open context folder", systemImage: "folder") { model.open(context.contextDirectory.path) }
-      }
-      ForEach(ticket.links) { link in
-        Button(link.label, systemImage: "link") { open(link.url) }.multilineTextAlignment(.leading)
-      }
-      ForEach(Array(Set(ticket.steps.flatMap(\.evidence))).sorted(), id: \.self) { evidence in
-        Button(ResourceLocator.url(for: evidence)?.lastPathComponent ?? evidence, systemImage: "doc") { open(evidence) }
-          .multilineTextAlignment(.leading)
-      }
-      ForEach(ticket.prs) { pr in
-        Button("PR #\(pr.number): \(pr.title)", systemImage: "arrow.triangle.branch") { model.open(pr.url) }
-          .multilineTextAlignment(.leading)
-      }
-      if ticket.links.isEmpty && ticket.steps.allSatisfy({ $0.evidence.isEmpty }) && ticket.prs.isEmpty {
-        Text("No additional evidence or links have been attached.").font(.caption).foregroundStyle(.secondary)
-      }
-    }.buttonStyle(.link).font(.system(size: 12)).frame(maxWidth: .infinity, alignment: .leading)
-  }
-
-  private func open(_ value: String) { model.open(value, ticketID: ticket.id) }
 }

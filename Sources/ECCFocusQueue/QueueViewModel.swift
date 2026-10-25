@@ -1137,15 +1137,27 @@ final class QueueViewModel {
   }
 
   private func launchDraftAgent(_ draft: TaskDraft, on ticket: DashboardTicket, description: String) {
-    let agent = draft.agent
+    launchPromptedAgent(for: ticket, prompt: description, title: ticket.title, preset: draft.agent)
+  }
+
+  /// Starts one agent on an existing task from a prompt and launch preset, as
+  /// the card's New Agent sheet does. A blank title is derived from the prompt.
+  func launchPromptedAgent(
+    for ticket: DashboardTicket, prompt: String, title: String = "", preset: AgentLaunchPreset
+  ) {
+    let prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+    let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !prompt.isEmpty else { return }
     launchAgent(
-      for: ticket, title: ticket.title, provider: agent.provider,
-      repositoryPath: defaultRepository(for: ticket), assignmentDescription: description,
-      includePrompt: agent.includePrompt ?? true, useTmux: agent.useTmux ?? true,
-      initialPrompt: description, modelName: agent.model, effort: agent.effort,
-      workspacePolicy: agent.workspacePolicy ?? .isolatedCommittedSnapshot,
-      pluginOverrides: agent.pluginOverrides ?? [:])
-    rememberAgentLaunch(agent)
+      for: ticket,
+      title: title.isEmpty ? TaskSubtask.agentName(prompt: prompt, provider: preset.provider) : title,
+      provider: preset.provider,
+      repositoryPath: defaultRepository(for: ticket), assignmentDescription: prompt,
+      includePrompt: preset.includePrompt ?? true, useTmux: preset.useTmux ?? true,
+      initialPrompt: prompt, modelName: preset.model, effort: preset.effort,
+      workspacePolicy: preset.workspacePolicy ?? .isolatedCommittedSnapshot,
+      pluginOverrides: preset.pluginOverrides ?? [:])
+    rememberAgentLaunch(preset)
   }
 
   /// A placement match can name a task in any configured project.

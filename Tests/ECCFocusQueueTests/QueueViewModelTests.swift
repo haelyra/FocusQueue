@@ -3420,6 +3420,41 @@ struct QueueViewModelTests {
     #expect(await suggester.queries.count == 1, "Creating anyway reuses the first suggestion")
   }
 
+  @Test("The card's New Agent sheet adds a prompted agent to its task without placement")
+  func cardAgentSheetLaunchesPromptedAgent() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let repository = try await creatorRepository(for: fixture)
+    defer { try? FileManager.default.removeItem(at: repository) }
+    let suggester = RecordingPlacementSuggester(.unavailable("not used"))
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(),
+      terminalController: DirectViewRecorder(root: fixture.root, failReveal: false),
+      taskAgentLauncher: TaskAgentLauncher(runner: DirectCreationRunner(), candidateSockets: []),
+      taskPlacementSuggester: suggester)
+    let ticket = try #require(model.projectTickets.first { $0.id == "ECC-101" })
+    let preset = AgentLaunchPreset(
+      provider: .claude, model: "haiku", effort: "low", workspacePolicy: .existingCheckout,
+      useTmux: false, includePrompt: true)
+    let ticketCount = model.projectTickets.count
+
+    model.launchPromptedAgent(for: ticket, prompt: "  Audit the card spacing.\nThen report.  ", preset: preset)
+    try await eventually { model.launchingTaskIDs.isEmpty }
+    model.launchPromptedAgent(for: ticket, prompt: "Port the drawer", title: "Context drawer", preset: preset)
+    try await eventually { model.launchingTaskIDs.isEmpty }
+    model.launchPromptedAgent(for: ticket, prompt: "   ", preset: preset)
+
+    let agents = model.subtasks(for: "ECC-101")
+    let derived = try #require(agents.first { $0.initialPrompt == "Audit the card spacing.\nThen report." })
+    #expect(derived.title == TaskSubtask.agentName(prompt: "Audit the card spacing.", provider: .claude))
+    #expect(derived.launchConfiguration?.model == "haiku")
+    #expect(agents.contains { $0.title == "Context drawer" && $0.initialPrompt == "Port the drawer" })
+    #expect(agents.count == 2, "A blank prompt launches nothing")
+    #expect(model.projectTickets.count == ticketCount, "The sheet never creates a task")
+    #expect(await suggester.queries.isEmpty, "The task is already known, so placement is skipped")
+    #expect(model.taskCreatorLaunchDefaults == preset)
+  }
+
   @Test("Without a model suggestion the creator asks for a priority instead of defaulting one")
   func taskCreatorRequiresPriorityWithoutModel() async throws {
     let fixture = try await Fixture()

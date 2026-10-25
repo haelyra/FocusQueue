@@ -21,6 +21,21 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
 
 
+# Agent shells export the live support directory; keep provider usage events
+# from these fixtures out of its token analytics (FOC-061).
+_SUPPORT = tempfile.TemporaryDirectory()
+_SUPPORT_ENV = mock.patch.dict(os.environ, {"FOCUS_QUEUE_SUPPORT_DIR": _SUPPORT.name})
+
+
+def setUpModule():
+    _SUPPORT_ENV.start()
+
+
+def tearDownModule():
+    _SUPPORT_ENV.stop()
+    _SUPPORT.cleanup()
+
+
 class FocusQueueCodexTests(unittest.TestCase):
     @staticmethod
     def feature_listing(*names):

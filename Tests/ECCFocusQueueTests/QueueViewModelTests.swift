@@ -3875,6 +3875,8 @@ private struct Fixture {
     config.workspacePath = root.path
     config.refreshIntervalSeconds = 300
     config.dailyRoutines = []
+    // Scheduled reports default to off; these fixtures model a user who opted in.
+    config.dailyReport.enabled = true
     try await JSONConfigurationRepository(url: paths.configurationFile).save(config)
   }
 

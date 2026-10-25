@@ -54,6 +54,21 @@ def fake_process(captured, stdout: str, returncode: int = 0, stderr: str = ""):
     return FakeProcess
 
 
+# Agent shells export the live support directory; keep provider usage events
+# from these fixtures out of its token analytics (FOC-061).
+_SUPPORT = tempfile.TemporaryDirectory()
+_SUPPORT_ENV = mock.patch.dict(os.environ, {"FOCUS_QUEUE_SUPPORT_DIR": _SUPPORT.name})
+
+
+def setUpModule():
+    _SUPPORT_ENV.start()
+
+
+def tearDownModule():
+    _SUPPORT_ENV.stop()
+    _SUPPORT.cleanup()
+
+
 class FocusQueueClaudeTests(unittest.TestCase):
     def test_chat_command_uses_print_json_mode_with_full_parity_tools(self):
         captured = {}

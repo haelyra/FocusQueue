@@ -2594,6 +2594,25 @@ except module.TerminationRequested:
         self.assertNotIn("--model", command)
         self.assertEqual(command[command.index("--effort") + 1], "low")
 
+    def test_usage_metrics_follow_the_runtime_not_the_exported_support_dir(self):
+        # Agent shells export the live support directory; fixture runs must not
+        # appear as daily reports in its token analytics (FOC-061).
+        with tempfile.TemporaryDirectory() as temporary:
+            support = Path(temporary) / "support"
+            exported = Path(temporary) / "live"
+            config = {"agentExecutable": "/x/bin/focus-queue-codex", "maxNewTasksPerRun": 3}
+            completed = subprocess.CompletedProcess(
+                [], 0, '{"summary": "x", "newTasks": [], "updates": []}', "")
+            with mock.patch.dict(os.environ, {"FOCUS_QUEUE_SUPPORT_DIR": str(exported)}), \
+                    mock.patch.object(MODULE, "run_command", return_value=completed):
+                MODULE.classify(config, {}, support / "ingestion")
+                MODULE.run_deep_pass(config, "prompt", support / "ingestion", model=None)
+
+            sources = [json.loads(line)["source"] for line in
+                       (support / "analytics/prompt-usage.jsonl").read_text().splitlines()]
+            self.assertEqual(sources, ["daily_report", "daily_report_deep_pass"])
+            self.assertFalse((exported / "analytics").exists())
+
     def test_deep_pass_keeps_the_codex_pinned_default_model(self):
         with tempfile.TemporaryDirectory() as temporary:
             config = {"agentExecutable": "/x/bin/focus-queue-codex"}

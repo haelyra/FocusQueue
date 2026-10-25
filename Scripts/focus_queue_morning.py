@@ -2436,7 +2436,9 @@ def classification_schema_path(config: dict[str, Any], runtime: Path) -> Path:
 def classify(config: dict[str, Any], bundle: dict[str, Any], runtime: Path) -> dict[str, Any]:
     prompt = proposal_prompt(bundle, int(config["maxNewTasksPerRun"]))
     run_id = str(uuid.uuid4())
-    metrics_support = Path(os.environ["FOCUS_QUEUE_SUPPORT_DIR"]) if os.environ.get("FOCUS_QUEUE_SUPPORT_DIR") else runtime.parent
+    # The runtime always lives in <support>/ingestion. Agent shells export the live
+    # FOCUS_QUEUE_SUPPORT_DIR, so honoring it let fixture runs count as real reports.
+    metrics_support = runtime.parent
     prompt_usage.record("daily_report", "full_prompt", prompt=prompt,
                         provider=agent_provider(config), model=str(config.get("agentModel") or ""),
                         run_id=run_id, support=metrics_support)
@@ -2615,7 +2617,9 @@ def run_deep_pass(
     model: str | None,
 ) -> dict[str, Any]:
     run_id = str(uuid.uuid4())
-    metrics_support = Path(os.environ["FOCUS_QUEUE_SUPPORT_DIR"]) if os.environ.get("FOCUS_QUEUE_SUPPORT_DIR") else runtime.parent
+    # The runtime always lives in <support>/ingestion. Agent shells export the live
+    # FOCUS_QUEUE_SUPPORT_DIR, so honoring it let fixture runs count as real reports.
+    metrics_support = runtime.parent
     prompt_usage.record("daily_report_deep_pass", "full_prompt", prompt=prompt,
                         provider=agent_provider(config), model=model, run_id=run_id,
                         support=metrics_support)

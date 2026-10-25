@@ -144,7 +144,8 @@ public struct DailyReportConfiguration: Codable, Equatable, Sendable {
   public var agentEffort: String?
 
   public init(
-    enabled: Bool = true,
+    // Scheduled reports are paused by default (FOC-061); users opt in from Settings.
+    enabled: Bool = false,
     scheduleHour: Int = 8,
     scheduleMinute: Int = 0,
     maximumTokens: Int = 75_000,
@@ -170,7 +171,7 @@ public struct DailyReportConfiguration: Codable, Equatable, Sendable {
 
   public init(from decoder: any Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
-    enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+    enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
     scheduleHour = try container.decodeIfPresent(Int.self, forKey: .scheduleHour) ?? 8
     scheduleMinute = try container.decodeIfPresent(Int.self, forKey: .scheduleMinute) ?? 0
     maximumTokens = try container.decodeIfPresent(Int.self, forKey: .maximumTokens) ?? 75_000

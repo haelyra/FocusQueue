@@ -464,18 +464,21 @@ public actor WezTermController: WezTermControlling {
     private let labelAttempts: Int
     private let claudeRootOverride: URL?
     private let codexRootOverride: URL?
+    private let kimiRootOverride: URL?
     private static let processSnapshotTTL: TimeInterval = 3
     private var processSnapshots: [String: (fetchedAt: Date, result: ProcessResult)] = [:]
     private var processSnapshotTasks: [String: Task<ProcessResult, Error>] = [:]
     private var resolvedSockets: [String: String] = [:]
 
     public init(runner: any ProcessRunning = FoundationProcessRunner(), candidateSockets: [String]? = nil,
-                verificationAttempts: Int = 10, claudeRoot: URL? = nil, codexRoot: URL? = nil) {
+                verificationAttempts: Int = 10, claudeRoot: URL? = nil, codexRoot: URL? = nil,
+                kimiRoot: URL? = nil) {
         self.runner = runner
         self.candidateSockets = candidateSockets
         self.labelAttempts = max(1, min(verificationAttempts, 10))
         self.claudeRootOverride = claudeRoot
         self.codexRootOverride = codexRoot
+        self.kimiRootOverride = kimiRoot
     }
 
     private var claudeRoot: URL {
@@ -488,6 +491,12 @@ public actor WezTermController: WezTermControlling {
         codexRootOverride
             ?? ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex", isDirectory: true)
+    }
+
+    private var kimiRoot: URL {
+        kimiRootOverride
+            ?? ProcessInfo.processInfo.environment["KIMI_CODE_HOME"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".kimi-code", isDirectory: true)
     }
 
     /// Reuses a socket that already answered this controller so refresh passes
@@ -1272,8 +1281,52 @@ public actor WezTermController: WezTermControlling {
             let processPath = Self.standardizedPath(cwd, resolvingSymlinks: true)
             return recorded.contains { Self.standardizedPath($0, resolvingSymlinks: true) == processPath }
         case .kimi:
-            return true
+            guard let recorded = kimiWorkingDirectory(sessionID: sessionID) else { return true }
+            return Self.standardizedPath(cwd, resolvingSymlinks: true)
+                == Self.standardizedPath(recorded, resolvingSymlinks: true)
         }
+    }
+
+    /// Kimi Code closes its session files between turns. Its index maps a
+    /// session to a work directory, but cannot distinguish two sessions in one
+    /// directory, so those remain unresolved.
+    private func kimiSessions(in cwd: String) -> [String] {
+        guard let data = try? Data(contentsOf: kimiRoot.appendingPathComponent("session_index.jsonl")),
+              data.count <= 4_000_000, let text = String(data: data, encoding: .utf8) else { return [] }
+        let normalized = Self.standardizedPath(cwd, resolvingSymlinks: true)
+        let sessionsRoot = kimiRoot.appendingPathComponent("sessions", isDirectory: true)
+            .resolvingSymlinksInPath().standardizedFileURL.path + "/"
+        var ids = Set<String>()
+        for line in text.split(whereSeparator: \.isNewline) {
+            guard let value = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  let id = value["sessionId"] as? String, AgentProvider.kimi.isValidSessionID(id),
+                  let workDir = value["workDir"] as? String,
+                  Self.standardizedPath(workDir, resolvingSymlinks: true) == normalized,
+                  let directory = value["sessionDir"] as? String else { continue }
+            let session = URL(fileURLWithPath: directory).resolvingSymlinksInPath().standardizedFileURL
+            guard session.path.hasPrefix(sessionsRoot), session.lastPathComponent == id,
+                  let state = try? Data(contentsOf: session.appendingPathComponent("state.json")),
+                  let record = try? JSONSerialization.jsonObject(with: state) as? [String: Any],
+                  record["id"] as? String == id,
+                  let stateCWD = record["cwd"] as? String,
+                  Self.standardizedPath(stateCWD, resolvingSymlinks: true) == normalized,
+                  record["archived"] as? Bool != true else { continue }
+            ids.insert(id)
+        }
+        return ids.sorted()
+    }
+
+    private func kimiWorkingDirectory(sessionID: String) -> String? {
+        guard let data = try? Data(contentsOf: kimiRoot.appendingPathComponent("session_index.jsonl")),
+              data.count <= 4_000_000, let text = String(data: data, encoding: .utf8) else { return nil }
+        for line in text.split(whereSeparator: \.isNewline) {
+            guard let value = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  value["sessionId"] as? String == sessionID,
+                  let cwd = value["workDir"] as? String,
+                  kimiSessions(in: cwd).contains(sessionID) else { continue }
+            return cwd
+        }
+        return nil
     }
 
     /// Every working directory a Codex conversation has used, from its saved
@@ -1346,6 +1399,7 @@ public actor WezTermController: WezTermControlling {
         var unresolved: [UnresolvedProviderProcess] = []
         var seen = Set<String>()
         var claudeDiskFallback: [(process: AgentProcess, cwd: String)] = []
+        var kimiDiskFallback: [(process: AgentProcess, cwd: String)] = []
         for process in providers {
             let tty = process.tty == "??" ? nil : "/dev/" + process.tty
             guard let cwd = directories[process.pid], cwd.hasPrefix("/") else {
@@ -1369,6 +1423,8 @@ public actor WezTermController: WezTermControlling {
                 // directory on disk when it is the only candidate there.
                 if process.provider == .claude, candidates.isEmpty {
                     claudeDiskFallback.append((process, cwd))
+                } else if process.provider == .kimi, candidates.isEmpty {
+                    kimiDiskFallback.append((process, cwd))
                 } else {
                     unresolved.append(UnresolvedProviderProcess(
                         provider: process.provider, processID: process.pid, tty: tty, cwd: cwd))
@@ -1405,6 +1461,23 @@ public actor WezTermController: WezTermControlling {
             }
             if seen.insert(AgentProvider.claude.rawValue + ":" + sessionID).inserted {
                 result.append(KnownProviderProcess(provider: .claude, sessionID: sessionID,
+                    processID: entry.process.pid,
+                    tty: entry.process.tty == "??" ? nil : "/dev/" + entry.process.tty,
+                    cwd: entry.cwd))
+            }
+        }
+        for (cwd, group) in Dictionary(grouping: kimiDiskFallback, by: { $0.cwd }) {
+            let sessions = kimiSessions(in: cwd)
+            guard group.count == 1, sessions.count == 1,
+                  let entry = group.first, let sessionID = sessions.first else {
+                unresolved += group.map { UnresolvedProviderProcess(provider: .kimi,
+                    processID: $0.process.pid,
+                    tty: $0.process.tty == "??" ? nil : "/dev/" + $0.process.tty,
+                    cwd: $0.cwd) }
+                continue
+            }
+            if seen.insert("kimi:" + sessionID).inserted {
+                result.append(KnownProviderProcess(provider: .kimi, sessionID: sessionID,
                     processID: entry.process.pid,
                     tty: entry.process.tty == "??" ? nil : "/dev/" + entry.process.tty,
                     cwd: entry.cwd))
@@ -1575,19 +1648,21 @@ public actor WezTermController: WezTermControlling {
         // session candidate for it. Recover the disk identity the resume
         // guard uses, restricted to processes in this pane listing; the
         // shared scan keeps multi-process projects ambiguous.
-        let unidentifiedClaude = paneProcesses.filter {
-            $0.provider == .claude && (sessionsByPID[$0.pid] ?? []).isEmpty
+        let unidentified = paneProcesses.filter {
+            ($0.provider == .claude || $0.provider == .kimi)
+                && (sessionsByPID[$0.pid] ?? []).isEmpty
         }
-        if !unidentifiedClaude.isEmpty,
-           let scan = try? await knownProviderProcesses(provider: .claude) {
+        for provider in [AgentProvider.claude, .kimi]
+        where unidentified.contains(where: { $0.provider == provider }) {
+            guard let scan = try? await knownProviderProcesses(provider: provider) else { continue }
             let diskIdentityByPID = Dictionary(
                 uniqueKeysWithValues: scan.resolved.map { ($0.processID, $0.sessionID) })
-            for process in unidentifiedClaude {
+            for process in unidentified where process.provider == provider {
                 guard let pane = panesByTTY[process.tty],
                       let sessionID = diskIdentityByPID[process.pid],
-                      seenSessions.insert("claude:\(sessionID)").inserted else { continue }
+                      seenSessions.insert("\(process.provider.rawValue):\(sessionID)").inserted else { continue }
                 discovered.append(RunningAgentSession(
-                    provider: .claude,
+                    provider: process.provider,
                     sessionID: sessionID,
                     workingDirectory: Self.pathFromWezTermCWD(pane.cwd),
                     tabTitle: Self.displayTitle(for: pane),
@@ -1614,7 +1689,7 @@ public actor WezTermController: WezTermControlling {
             switch command {
             case "codex": provider = .codex
             case "claude": provider = .claude
-            case "kimi": provider = .kimi
+            case "kimi", "kimi-code": provider = .kimi
             default: return nil
             }
             let arguments = invocation.dropFirst().map(String.init)

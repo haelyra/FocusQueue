@@ -294,6 +294,79 @@ struct ProviderProcessDiscoveryTests {
         #expect(await runner.outputs.isEmpty)
     }
 
+    private func kimiIndex(_ sessions: [(String, String)]) throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("fq-kimi-index-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        var lines: [String] = []
+        for (id, cwd) in sessions {
+            let directory = root.appendingPathComponent("sessions/workspace/\(id)")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let state = try JSONSerialization.data(withJSONObject: ["id": id, "cwd": cwd, "archived": false])
+            try state.write(to: directory.appendingPathComponent("state.json"))
+            let entry = try JSONSerialization.data(withJSONObject: [
+                "sessionId": id, "sessionDir": directory.path, "workDir": cwd])
+            lines.append(String(decoding: entry, as: UTF8.self))
+        }
+        try Data((lines.joined(separator: "\n") + "\n").utf8)
+            .write(to: root.appendingPathComponent("session_index.jsonl"))
+        return root
+    }
+
+    @Test("Kimi Code processes resolve through their unique indexed workspace session")
+    func kimiCodeDiskIdentity() async throws {
+        let id = "session_55555555-5555-4555-8555-555555555555"
+        let root = try kimiIndex([(id, "/tmp/kimi-worktree")])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runner = ProviderDiscoveryRunner([
+            "40 ttys040 kimi-code\n", "p40\nfcwd\nn/tmp/kimi-worktree\n",
+        ])
+        let scan = try await WezTermController(runner: runner, kimiRoot: root)
+            .knownProviderProcesses(requireComplete: true)
+        #expect(scan.resolved.map(\.sessionID) == [id])
+        #expect(scan.unresolved.isEmpty)
+    }
+
+    @Test("Kimi's saved tmux TTY identifies the same indexed session")
+    func kimiCodePaneIdentity() async throws {
+        let id = "session_55555555-5555-4555-8555-555555555555"
+        let root = try kimiIndex([(id, "/tmp/kimi-worktree")])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runner = ProviderDiscoveryRunner([
+            "40 ttys040 kimi-code\n", "p40\nfcwd\nn/tmp/kimi-worktree\n",
+            "p40\nfcwd\nn/tmp/kimi-worktree\n",
+        ])
+        let agents = try await WezTermController(runner: runner, kimiRoot: root).agents(onTTY: "/dev/ttys040")
+        #expect(agents.map(\.sessionID) == [id])
+        #expect(agents.first?.provider == .kimi)
+    }
+
+    @Test("An unrelated Kimi workspace cannot block a saved session")
+    func unrelatedKimiWorkspace() async throws {
+        let id = "session_55555555-5555-4555-8555-555555555555"
+        let root = try kimiIndex([(id, "/tmp/kimi-worktree")])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runner = ProviderDiscoveryRunner([
+            "40 ttys040 kimi-code\n", "p40\nfcwd\nn/tmp/other-worktree\n",
+        ])
+        #expect(try await WezTermController(runner: runner, kimiRoot: root).locateProviderProcess(
+            provider: .kimi, sessionID: id, retryDelay: .zero) == nil)
+    }
+
+    @Test("Kimi Code keeps sessions in a shared workspace ambiguous")
+    func ambiguousKimiCodeSessions() async throws {
+        let first = "session_55555555-5555-4555-8555-555555555555"
+        let second = "session_66666666-6666-4666-8666-666666666666"
+        let root = try kimiIndex([(first, "/tmp/kimi-worktree"), (second, "/tmp/kimi-worktree")])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runner = ProviderDiscoveryRunner([
+            "40 ttys040 kimi-code\n", "p40\nfcwd\nn/tmp/kimi-worktree\n",
+        ])
+        let scan = try await WezTermController(runner: runner, kimiRoot: root)
+            .knownProviderProcesses(requireComplete: true)
+        #expect(scan.resolved.isEmpty)
+        #expect(scan.unresolved.map(\.processID) == [40])
+    }
+
     private func makeCodexRoot(directories: [String]) throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "focus-queue-codex-scope-\(UUID())", isDirectory: true)

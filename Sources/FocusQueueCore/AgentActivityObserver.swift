@@ -235,7 +235,8 @@ public actor AgentActivityObserver {
             ?? home.appendingPathComponent(".codex")
         claudeRoot = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"].map { URL(fileURLWithPath: $0) }
             ?? home.appendingPathComponent(".claude")
-        kimiRoot = home.appendingPathComponent(".kimi-code")
+        kimiRoot = ProcessInfo.processInfo.environment["KIMI_CODE_HOME"].map { URL(fileURLWithPath: $0) }
+            ?? home.appendingPathComponent(".kimi-code")
     }
 
     public init(codexRoot: URL, claudeRoot: URL, kimiRoot: URL? = nil) {

@@ -3798,7 +3798,8 @@ private struct TicketCard: View {
     switch ticket.status.lowercased() {
     case "blocked": QueueAccentPalette.color(.danger, style: accentStyle)
     case "in-progress": QueueAccentPalette.color(.info, style: accentStyle)
-    case "testing", "review", "qa", "draft-pr": QueueAccentPalette.color(.warning, style: accentStyle)
+    case "testing", "review", "qa-in-progress", "qa", "draft-pr":
+      QueueAccentPalette.color(.warning, style: accentStyle)
     case "backlog": .secondary
     default: QueueAccentPalette.color(.success, style: accentStyle)
     }

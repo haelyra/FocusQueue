@@ -64,7 +64,9 @@ public extension DashboardTicket {
 /// archive own those transitions.
 public enum TaskFieldChoices {
   public static let priorities = ["critical", "high", "medium", "low"]
-  public static let openStatuses = ["backlog", "in-progress", "testing", "review", "qa", "blocked"]
+  public static let openStatuses = [
+    "backlog", "in-progress", "testing", "review", "qa-in-progress", "qa", "blocked",
+  ]
   public static let closedStatuses = ["resolved", "cancelled"]
 
   /// Menu entries for a ticket, keeping a nonstandard current status (for
@@ -85,6 +87,7 @@ public enum TaskFieldChoices {
     switch normalizedStatus(status) {
     case "in-progress": "In progress"
     case "qa": "QA"
+    case "qa-in-progress": "QA in progress"
     case "draft-pr": "Draft PR"
     case let other: other.replacingOccurrences(of: "-", with: " ").capitalized
     }

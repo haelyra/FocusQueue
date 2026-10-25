@@ -57,10 +57,13 @@ final class DocumentFindState {
 
 struct DocumentFindBar: View {
     @Bindable var state: DocumentFindState
+    /// Header placement opens the field to the left so the Find button stays put.
+    var placesFieldFirst = false
     @FocusState private var queryIsFocused: Bool
 
     var body: some View {
         HStack(spacing: 6) {
+            if placesFieldFirst { queryControls }
             Button("Find", systemImage: "magnifyingglass") { state.activate() }
                 .buttonStyle(.bordered)
                 .keyboardShortcut("f", modifiers: .command)
@@ -72,24 +75,29 @@ struct DocumentFindBar: View {
                 .frame(width: 0, height: 0)
                 .opacity(0)
                 .accessibilityHidden(true)
-            if state.isPresented {
-                TextField("Find in document", text: $state.query)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($queryIsFocused)
-                    .onChange(of: state.query) { _, _ in state.find() }
-                    .onSubmit { state.find() }
-                Button { state.find(backwards: true) } label: { Image(systemName: "chevron.up") }
-                    .help("Find previous")
-                Button { state.find() } label: { Image(systemName: "chevron.down") }
-                    .help("Find next")
-                Button { state.dismiss() } label: { Image(systemName: "xmark") }
-                    .help("Close find")
-            }
+            if !placesFieldFirst { queryControls }
         }
         .font(.caption.weight(.medium))
         .onChange(of: state.request) { _, _ in
             guard state.isPresented else { return }
             DispatchQueue.main.async { queryIsFocused = true }
+        }
+    }
+
+    @ViewBuilder private var queryControls: some View {
+        if state.isPresented {
+            TextField("Find in document", text: $state.query)
+                .textFieldStyle(.roundedBorder)
+                .frame(minWidth: 140, idealWidth: 180, maxWidth: 220)
+                .focused($queryIsFocused)
+                .onChange(of: state.query) { _, _ in state.find() }
+                .onSubmit { state.find() }
+            Button { state.find(backwards: true) } label: { Image(systemName: "chevron.up") }
+                .help("Find previous")
+            Button { state.find() } label: { Image(systemName: "chevron.down") }
+                .help("Find next")
+            Button { state.dismiss() } label: { Image(systemName: "xmark") }
+                .help("Close find")
         }
     }
 }

@@ -1873,19 +1873,6 @@ final class QueueViewModel {
     }
   }
 
-  /// Caption for the chat header, e.g. "Codex · gpt-5.5 · high".
-  var queueChatAgentSummary: String {
-    let provider = defaultAgentProvider
-    var parts = [provider.displayName]
-    if let model = Self.normalizedChatOption(defaultAgentModel(for: provider)) {
-      parts.append(agentModelChoices(for: provider).first { $0.model == model }?.label ?? model)
-    }
-    if let effort = Self.normalizedChatOption(defaultAgentEffort(for: provider)) {
-      parts.append(effort)
-    }
-    return parts.joined(separator: " · ")
-  }
-
   var isInspectorPresented: Bool {
     isQueueChatInspectorPresented || isDailyReportPresented || presentedPlanTicketID != nil
       || presentedAgentUpdate != nil || isNotificationsInspectorPresented || isDocumentViewerPresented

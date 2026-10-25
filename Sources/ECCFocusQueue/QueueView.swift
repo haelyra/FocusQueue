@@ -1180,6 +1180,7 @@ private enum QueueTab: Hashable {
 struct QueueAgentChatView: View {
   let model: QueueViewModel
   @Binding var draft: String
+  var title: String? = nil
   var ticketID: String? = nil
   var canvasSelection: Binding<PlanCanvasSelection?>? = nil
   var focusRequest = 0
@@ -1318,33 +1319,28 @@ struct QueueAgentChatView: View {
 
   private var chatSettingsBar: some View {
     VStack(alignment: .leading, spacing: 6) {
-      HStack(spacing: 8) {
-        Image(systemName: model.defaultAgentProvider.symbolName)
-          .font(.system(size: 11, weight: .semibold))
-          .foregroundStyle(.secondary)
-        Text(model.queueChatAgentSummary)
-          .font(.caption).foregroundStyle(.secondary)
-        Spacer()
+      if let title {
+        Label(title, systemImage: "terminal")
+          .font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
       }
       HStack(spacing: 8) {
         chatProviderMenu
         chatModelMenu
         chatEffortMenu
         Spacer(minLength: 0)
-        Button {
-          showsClearConfirmation = true
-        } label: {
-          Image(systemName: "trash")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .frame(width: 24, height: 24)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.borderless)
-        .accessibilityLabel("Clear conversation")
-        .help("Erase this conversation and start a fresh session")
+        Button("Clear Chat") { showsClearConfirmation = true }
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .buttonStyle(.plain)
+          .help("Erase this conversation and start a fresh session")
       }
     }
+    .padding(.horizontal, 8).padding(.vertical, 7)
+    .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+    .overlay(
+      RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        .allowsHitTesting(false)
+    )
     .confirmationDialog(
       "Clear this conversation?",
       isPresented: $showsClearConfirmation,
@@ -1377,7 +1373,8 @@ struct QueueAgentChatView: View {
     } label: {
       chatToolbarMenuLabel(model.defaultAgentProvider.displayName)
     }
-    .menuStyle(.borderlessButton)
+    .menuStyle(.button)
+    .buttonStyle(.plain)
     .menuIndicator(.hidden)
     .fixedSize()
     .accessibilityLabel("Chat provider: \(model.defaultAgentProvider.displayName)")
@@ -1405,7 +1402,8 @@ struct QueueAgentChatView: View {
     } label: {
       chatToolbarMenuLabel(currentLabel)
     }
-    .menuStyle(.borderlessButton)
+    .menuStyle(.button)
+    .buttonStyle(.plain)
     .menuIndicator(.hidden)
     .fixedSize()
     .accessibilityLabel("Chat model: \(currentLabel)")
@@ -1439,7 +1437,8 @@ struct QueueAgentChatView: View {
     } label: {
       chatToolbarMenuLabel(current.isEmpty ? "Default" : current)
     }
-    .menuStyle(.borderlessButton)
+    .menuStyle(.button)
+    .buttonStyle(.plain)
     .menuIndicator(.hidden)
     .fixedSize()
     .accessibilityLabel("Chat effort: \(current.isEmpty ? "Default" : current)")
@@ -1448,11 +1447,11 @@ struct QueueAgentChatView: View {
 
   private func chatToolbarMenuLabel(_ text: String) -> some View {
     HStack(spacing: 3) {
-      Text(text).font(.caption).lineLimit(1)
+      Text(text).font(.caption).lineLimit(1).foregroundStyle(.primary)
       Image(systemName: "chevron.down")
         .font(.system(size: 7, weight: .bold))
+        .foregroundStyle(.secondary)
     }
-    .foregroundStyle(.secondary)
   }
 
   private func send() {

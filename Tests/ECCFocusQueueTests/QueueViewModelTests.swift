@@ -314,7 +314,6 @@ struct QueueViewModelTests {
     #expect(await claudeAgent.sentEfforts.first == "high")
     let executable = try #require(await claudeAgent.sentExecutables.first)
     #expect(executable.hasSuffix("/.local/bin/focus-queue-claude"))
-    #expect(model.queueChatAgentSummary == "Claude · sonnet-5 · high")
 
     await claudeAgent.reply("ECC-101 outranks ECC-102.")
     try await eventually { !model.isQueueAgentResponding }

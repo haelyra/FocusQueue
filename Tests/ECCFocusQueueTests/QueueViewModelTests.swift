@@ -291,6 +291,35 @@ struct QueueViewModelTests {
     try await eventually { !model.isQueueAgentResponding }
   }
 
+  @Test("Central QChat falls back to the project workspace when no repository is bound")
+  func centralChatSkipsEmptyRepositoryPath() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let eccWorkspace = fixture.root.appendingPathComponent("ecc-workspace")
+    let eccDashboard = eccWorkspace.appendingPathComponent("dashboard.json")
+    try FileManager.default.createDirectory(at: eccWorkspace, withIntermediateDirectories: true)
+    try JSONEncoder().encode(DashboardDocument(tickets: [])).write(to: eccDashboard)
+    var config = try JSONDecoder().decode(AppConfiguration.self,
+      from: Data(contentsOf: fixture.paths.configurationFile))
+    let eccIndex = try #require(config.projects.firstIndex { $0.id == "ecc" })
+    config.projects[eccIndex].dashboardPath = eccDashboard.path
+    config.projects[eccIndex].workspacePath = eccWorkspace.path
+    config.projects[eccIndex].repositoryPath = ""
+    config.selectedProjectID = "ecc"
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(config)
+    let agent = ControlledQueueAgent()
+    let model = await fixture.model(agent: agent)
+
+    #expect(model.selectedProjectID == "ecc")
+    #expect(model.sendQueueAgentMessage("Summarize ECC work."))
+    try await eventually { await agent.hasPendingReply }
+
+    // An empty repositoryPath must never reach the harness as the working directory.
+    #expect(await agent.sentWorkspaces == [eccWorkspace.path])
+    await agent.reply("Done.")
+    try await eventually { !model.isQueueAgentResponding }
+  }
+
   @Test("Queue chat follows the configured default provider, model, and effort at send time")
   func queueChatFollowsProviderSettings() async throws {
     let fixture = try await Fixture()
@@ -1463,6 +1492,29 @@ struct QueueViewModelTests {
     try await eventually { completed }
     #expect(model.launchingTaskIDs.isEmpty)
     #expect(model.actionMessages["ECC-101"]?.contains("workspace is missing") == true)
+    #expect(model.actionMessages["ECC-101"]?.contains("document icon") == false)
+    #expect(await launcher.spawnCount == 0)
+    #expect(model.subtasks(for: "ECC-101").isEmpty)
+  }
+
+  @Test("New Agent rejects a workspace without a Git repository before saving anything")
+  func launchPreflightRejectsNonGitWorkspace() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let plain = externalWorkspace(for: fixture.root, suffix: "plain")
+    try FileManager.default.createDirectory(at: plain, withIntermediateDirectories: true)
+    let launcher = DirectCreationRunner()
+    let model = await fixture.model(agent: ControlledQueueAgent(),
+      taskAgentLauncher: TaskAgentLauncher(runner: launcher, candidateSockets: []))
+    var completed = false
+    model.launchAgent(for: fixture.tickets[0], title: "Plain folder", provider: .codex,
+      repositoryPath: plain.path) { started in
+        #expect(!started)
+        completed = true
+      }
+    try await eventually { completed }
+    #expect(model.launchingTaskIDs.isEmpty)
+    #expect(model.actionMessages["ECC-101"]?.contains("not a Git repository") == true)
     #expect(model.actionMessages["ECC-101"]?.contains("document icon") == false)
     #expect(await launcher.spawnCount == 0)
     #expect(model.subtasks(for: "ECC-101").isEmpty)
@@ -4325,6 +4377,7 @@ private actor ControlledQueueAgent: QueueAgentChatting {
   private(set) var sentModels: [String?] = []
   private(set) var sentEfforts: [String?] = []
   private(set) var sentExecutables: [String] = []
+  private(set) var sentWorkspaces: [String] = []
   private(set) var resetSessionNames: [String] = []
   private var pending: CheckedContinuation<QueueAgentReply, any Error>?
   var hasPendingReply: Bool { pending != nil }
@@ -4337,6 +4390,7 @@ private actor ControlledQueueAgent: QueueAgentChatting {
     sentModels.append(model)
     sentEfforts.append(effort)
     sentExecutables.append(configuration.executable)
+    sentWorkspaces.append(workspace)
     return try await withCheckedThrowingContinuation { pending = $0 }
   }
 

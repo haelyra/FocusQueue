@@ -573,6 +573,10 @@ final class QueueViewModel {
   }
   func includesInProject(_ ticket: DashboardTicket) -> Bool { true }
   func revealProject(for ticketID: String) {}
+  /// Empty repository fields mean "not configured"; skip them like a missing value.
+  private static func firstConfiguredPath(_ candidates: String?...) -> String? {
+    candidates.lazy.compactMap { $0 }.first { !$0.isEmpty }
+  }
   func defaultRepository(for ticket: DashboardTicket) -> String {
     let context = taskContexts[ticket.id]
     let ticketProject = project(for: ticket)
@@ -1734,8 +1738,11 @@ final class QueueViewModel {
     }
     let visibleOrder = openTickets.map(\.id)
     let scopedTaskIDs = ticketID.map { [$0] } ?? projectTickets.map(\.id)
+    // A project without a repository binding stores an empty repositoryPath.
+    // Skip it like nil or the chat harness launches with no working directory.
     let chatWorkspace = ticketID.flatMap { id in dashboard.tickets.first { $0.id == id }.map(defaultRepository) }
-      ?? selectedProject?.repositoryPath ?? config.workspacePath
+      ?? Self.firstConfiguredPath(selectedProject?.repositoryPath, selectedProject?.workspacePath)
+      ?? config.workspacePath
     let deferredTicketIDs = localState.deferredTicketIDs.filter { scopedTaskIDs.contains($0) }
     let scopedMessage: String
     let provider = defaultAgentProvider
@@ -2820,7 +2827,8 @@ final class QueueViewModel {
             && $0.sessionID?.caseInsensitiveCompare(sessionID) == .orderedSame }) else { return nil }
     return TaskAgentSession(id: uuid, ticketID: ticketID, provider: subtask.provider,
       sessionID: sessionID, tabTitle: subtask.title,
-      workingDirectory: subtask.workspace?.path ?? context.worktreePath ?? context.repositoryPath ?? context.projectRepositoryPath ?? config.workspacePath,
+      workingDirectory: Self.firstConfiguredPath(subtask.workspace?.path, context.worktreePath,
+        context.repositoryPath, context.projectRepositoryPath) ?? config.workspacePath,
       subtaskID: subtask.id, tmux: subtask.tmux)
       .withContext(context, subtask: subtask, supportDirectory: paths.supportDirectory)
   }
@@ -2973,8 +2981,8 @@ final class QueueViewModel {
         }
         // Old records recover their original launch directory before inheriting a task default.
         if assignment.workspace == nil {
-          let path = session(for: subtask, ticketID: ticket.id)?.workingDirectory
-            ?? context.worktreePath ?? context.repositoryPath ?? context.projectRepositoryPath ?? config.workspacePath
+          let path = Self.firstConfiguredPath(session(for: subtask, ticketID: ticket.id)?.workingDirectory,
+            context.worktreePath, context.repositoryPath, context.projectRepositoryPath) ?? config.workspacePath
           assignment.workspace = try await taskWorktreeManager.workspace(at: path)
           if let branch = context.branch, context.worktreePath == path { assignment.workspace?.branch = branch }
         }
@@ -3099,6 +3107,13 @@ final class QueueViewModel {
            !allowProjectRepositoryMismatch,
            try await !ProjectRepositoryResolver().matches(path: repositoryPath, project: project) {
           throw TaskContextError.commandFailed("This checkout could not be matched to \(project.name). Confirm the repository choice in New Agent before starting it.")
+        }
+        // Every workspace policy needs Git: existing checkouts are verified and
+        // isolated policies fork a worktree. Fail before any record is saved, or
+        // the launch vanishes behind a raw git error.
+        guard (try? await taskWorktreeManager.primaryRepositoryPath(of: repositoryPath)) != nil else {
+          throw TaskContextError.unsafeWorktree(
+            "The selected workspace is not a Git repository: \(repositoryPath). Focus Queue starts agents from a repository checkout. Choose one in New Agent or set the Repository folder for \(project(for: ticket)?.name ?? "the task's project") in Settings.")
         }
         let previous = context.subtasks.first(where: { $0.id == subtaskID })
         let workspaceLease = try await TaskMaintenance.lease(ticketID: ticket.id, root: paths.supportDirectory)
@@ -4951,7 +4966,8 @@ final class QueueViewModel {
         requestFile: URL(fileURLWithPath: request.requestFilePath),
         workspace: request.workspacePath
           ?? request.subtaskID.flatMap { id in subtasks(for: request.ticketID).first(where: { $0.id == id })?.workspace?.path }
-          ?? taskContexts[request.ticketID]?.worktreePath ?? taskContexts[request.ticketID]?.projectRepositoryPath ?? config.workspacePath,
+          ?? Self.firstConfiguredPath(taskContexts[request.ticketID]?.worktreePath,
+            taskContexts[request.ticketID]?.projectRepositoryPath) ?? config.workspacePath,
         configuration: reviewConfiguration
       )
       let logURL = try await reviewArtifacts.writeLog(result.log, for: request.id)

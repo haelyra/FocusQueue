@@ -14,7 +14,7 @@
       "id": "ecc",
       "name": "ECC",
       "taskPrefix": "ECC",
-      "repositoryPath": "/Users/hira/Documents/ECC",
+      "repositoryPath": "",
       "remote": "https://github.com/affaan-m/ECC",
       "remoteAliases": ["https://github.com/haelyra/ECC"]
     },

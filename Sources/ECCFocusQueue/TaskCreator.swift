@@ -2,7 +2,7 @@ import FocusQueueCore
 import Foundation
 
 /// Everything the + task creator collects. Blank optional fields are filled by
-/// the placement model; `agent` is ignored when `launchesAgent` is false.
+/// the placement model; `agent` is ignored when `startsAgent` is false.
 struct TaskDraft: Equatable, Sendable {
   var description: String
   var title = ""
@@ -14,6 +14,10 @@ struct TaskDraft: Equatable, Sendable {
   var projectID: String?
   var launchesAgent = true
   var agent: AgentLaunchPreset
+
+  /// An agent starts only when it would start with this prompt. Otherwise the
+  /// task is created and the prompt is saved for the first agent launched later.
+  var startsAgent: Bool { launchesAgent && (agent.includePrompt ?? true) }
 }
 
 /// What the placement model said about a draft's description.

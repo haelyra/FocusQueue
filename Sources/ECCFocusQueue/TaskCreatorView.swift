@@ -35,6 +35,7 @@ struct TaskCreatorSheet: View {
 
   private var project: ProjectConfiguration? { model.projects.first { $0.id == projectID } }
   private var trimmedDescription: String { description.trimmingCharacters(in: .whitespacesAndNewlines) }
+  private var startsAgent: Bool { launchesAgent && (agent.includePrompt ?? true) }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
@@ -83,9 +84,9 @@ struct TaskCreatorSheet: View {
           Toggle("Launch an agent now", isOn: $launchesAgent)
           if launchesAgent { AgentLaunchOptions(model: model, agent: $agent) }
         } footer: {
-          Text(launchesAgent
+          Text(startsAgent
             ? "Each provider remembers the model and effort you last launched it with. The agent gets its own placement capsule, worktree, and tmux pane."
-            : "The task is created without an agent. Start one later from its card.")
+            : "The task is created without an agent, and the prompt is saved with it. New Agent on its card starts with that prompt.")
             .font(.caption).foregroundStyle(.secondary)
         }
 
@@ -95,7 +96,8 @@ struct TaskCreatorSheet: View {
       }
       .formStyle(.grouped)
 
-      if let match { matchBanner(match.ticket, match.suggestion) }
+      // A match only redirects a launch; without one the button creates a task.
+      if startsAgent, let match { matchBanner(match.ticket, match.suggestion) }
       if let message {
         Text(message).font(.caption).foregroundStyle(.orange)
           .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
@@ -104,12 +106,12 @@ struct TaskCreatorSheet: View {
       HStack {
         Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
         Spacer()
-        Button(isSubmitting ? "Placing…" : launchesAgent ? "Create and launch" : "Create task") {
+        Button(isSubmitting ? "Placing…" : startsAgent ? "Create and launch" : "Create task") {
           submit(.checkForMatch)
         }
         .buttonStyle(.borderedProminent)
         .keyboardShortcut(.defaultAction)
-        .disabled(isSubmitting || trimmedDescription.isEmpty || project == nil || match != nil)
+        .disabled(isSubmitting || trimmedDescription.isEmpty || project == nil || (startsAgent && match != nil))
       }
     }
     .padding(22)
@@ -126,7 +128,7 @@ struct TaskCreatorSheet: View {
   @ViewBuilder private var advancedOptions: some View {
     VStack(alignment: .leading, spacing: 10) {
       Text("Plugins for this launch").font(.system(size: 12, weight: .semibold))
-      if launchesAgent {
+      if startsAgent {
         AgentPluginOptions(agent: $agent, plugins: plugins)
       } else {
         Text("Plugins apply when an agent launches.").font(.caption).foregroundStyle(.secondary)
@@ -151,7 +153,7 @@ struct TaskCreatorSheet: View {
           .font(.caption).foregroundStyle(.secondary)
       }
       HStack {
-        Button(launchesAgent ? "Add agent to \(ticket.id)" : "Use \(ticket.id)") { submit(.join(ticket.id)) }
+        Button(startsAgent ? "Add agent to \(ticket.id)" : "Use \(ticket.id)") { submit(.join(ticket.id)) }
           .buttonStyle(.borderedProminent)
         Button("Create a new task anyway") { submit(.createNew) }.buttonStyle(.bordered)
       }.disabled(isSubmitting)
@@ -266,7 +268,14 @@ struct TaskAgentCreatorSheet: View {
     .padding(22)
     .frame(width: 560, height: 600)
     .task(id: agent.provider) { plugins = ProviderPluginCatalog.installed(for: agent.provider) }
-    .onAppear { promptFocused = true }
+    .onAppear {
+      // A task created without an agent hands its saved prompt to the first one.
+      if prompt.isEmpty, let saved = model.savedInitialPrompt(for: ticket) {
+        prompt = saved
+        agent.includePrompt = true
+      }
+      promptFocused = true
+    }
   }
 }
 

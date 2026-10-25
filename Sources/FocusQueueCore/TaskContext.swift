@@ -375,6 +375,20 @@ public struct TaskContext: Codable, Equatable, Sendable {
 
     /// Cached task facts and test data, kept beside the plan so every task view and agent can find it.
     public var dataURL: URL { contextDirectory.appendingPathComponent("data.md") }
+
+    /// The prompt a task was created from when no agent started with it.
+    public var initialPromptURL: URL { contextDirectory.appendingPathComponent(Self.initialPromptFileName) }
+
+    static let initialPromptFileName = "initial-prompt.md"
+    static let initialPromptDivider = "\n---\n\n"
+
+    /// The saved prompt text, or nil when the task was never saved without an agent.
+    public var savedInitialPrompt: String? {
+        guard let markdown = try? String(contentsOf: initialPromptURL, encoding: .utf8),
+              let divider = markdown.range(of: Self.initialPromptDivider) else { return nil }
+        let prompt = markdown[divider.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        return prompt.isEmpty ? nil : prompt
+    }
     public var userDataURL: URL {
         contextDirectory.deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("user/data.md")
@@ -1231,6 +1245,45 @@ public actor TaskContextStore {
                     }
                 }
             }
+        }
+    }
+
+    /// Saves the prompt a task was created from when no agent starts with it,
+    /// and links it from the plan so the first agent launched later finds it.
+    /// An existing prompt file is evidence and is never overwritten.
+    @discardableResult public func saveInitialPrompt(
+        _ prompt: String, ticket: DashboardTicket, project: ProjectDefinition? = nil, at savedAt: Date = Date()
+    ) throws -> URL {
+        let prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else { throw TaskContextError.commandFailed("The initial prompt is empty.") }
+        let context = try ensureContext(ticket: ticket, project: project)
+        return try locked(ticketID: ticket.id) {
+            let url = context.initialPromptURL
+            guard !files.fileExists(atPath: url.path) else { return url }
+            let markdown = """
+            # \(context.ticketID): initial prompt
+
+            Saved \(ISO8601DateFormatter().string(from: savedAt)) when the task was created without starting an agent. Start the first agent with this prompt.
+            \(TaskContext.initialPromptDivider)\(prompt)
+
+            """
+            try Data(markdown.utf8).write(to: url, options: .atomic)
+            let planURL = URL(fileURLWithPath: context.planPath)
+            if (try? planURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
+               var plan = try? String(contentsOf: planURL, encoding: .utf8),
+               !plan.contains("(\(TaskContext.initialPromptFileName))") {
+                let link = "- [Initial prompt](\(TaskContext.initialPromptFileName)): the user's prompt; no agent has started with it yet.\n"
+                // Join the generated Context list; an authored plan gets the link at its end.
+                if let data = plan.range(of: "- [Task data](data.md)"),
+                   let lineEnd = plan[data.upperBound...].firstIndex(of: "\n") {
+                    plan.insert(contentsOf: link, at: plan.index(after: lineEnd))
+                } else {
+                    while plan.hasSuffix("\n") { plan.removeLast() }
+                    plan += "\n" + link
+                }
+                try Data(plan.utf8).write(to: planURL, options: .atomic)
+            }
+            return url
         }
     }
 

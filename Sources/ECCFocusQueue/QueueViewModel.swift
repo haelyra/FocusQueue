@@ -1097,16 +1097,19 @@ final class QueueViewModel {
       guard let ticket = await findTicket(id: ticketID) else {
         return .failed("\(ticketID) is no longer in any dashboard.")
       }
-      if draft.launchesAgent { launchDraftAgent(draft, on: ticket, description: description) }
-      return .joined(ticketID: ticket.id, launchedAgent: draft.launchesAgent)
+      if draft.startsAgent { launchDraftAgent(draft, on: ticket, description: description) }
+      return .joined(ticketID: ticket.id, launchedAgent: draft.startsAgent)
     }
     guard let project = config.projects.first(where: { $0.id == (draft.projectID ?? config.selectedProjectID) })
     else { return .failed("The selected project is no longer configured.") }
     let title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
     let displayDescription = draft.displayDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+    // Without an agent the New Task button always creates a task: there is
+    // no launch to redirect, so a matching open task is never offered.
+    let checksForMatch = choice == .checkForMatch && draft.startsAgent
     var suggestion = cached
     if suggestion == nil,
-       choice == .checkForMatch || title.isEmpty || displayDescription.isEmpty || draft.priority == nil {
+       checksForMatch || title.isEmpty || displayDescription.isEmpty || draft.priority == nil {
       suggestion = placementModelEnabled
         ? await taskPlacementSuggester.suggest(TaskPlacementQuery(
             description: description, provider: draft.agent.provider,
@@ -1114,7 +1117,7 @@ final class QueueViewModel {
             timeoutSeconds: placementTimeoutSeconds))
         : .unavailable("Task placement is off in Settings.")
     }
-    if choice == .checkForMatch, let matchID = suggestion?.matchedTaskID,
+    if checksForMatch, let matchID = suggestion?.matchedTaskID,
        let match = await findTicket(id: matchID), let suggestion {
       return .matched(match, suggestion)
     }
@@ -1133,8 +1136,30 @@ final class QueueViewModel {
       title: ticketTitle, summary: summary, doneWhen: draft.doneWhen, priority: priority,
       dueDate: draft.dueDate, projectID: project.id, next: summary == description ? nil : description)
     else { return .failed(loadError ?? "Could not create the task.") }
-    if draft.launchesAgent { launchDraftAgent(draft, on: ticket, description: description) }
-    return .created(ticketID: ticket.id, launchedAgent: draft.launchesAgent)
+    if draft.startsAgent {
+      launchDraftAgent(draft, on: ticket, description: description)
+    } else {
+      await saveInitialPrompt(description, for: ticket)
+    }
+    return .created(ticketID: ticket.id, launchedAgent: draft.startsAgent)
+  }
+
+  /// The task already exists, so a failed save is reported on its card
+  /// instead of failing the draft and inviting a duplicate task.
+  private func saveInitialPrompt(_ prompt: String, for ticket: DashboardTicket) async {
+    do {
+      let url = try await taskContextStore.saveInitialPrompt(prompt, ticket: ticket, project: project(for: ticket))
+      taskContexts[ticket.id] = try await taskContextStore.load(ticketID: ticket.id)
+      programLog.record("Saved the initial prompt for \(ticket.id) at \(url.path)", category: "Tasks")
+    } catch {
+      actionMessages[ticket.id] = "Task added, but its prompt was not saved: \(error.localizedDescription)"
+    }
+  }
+
+  /// The prompt a task was created with, offered to its first agent.
+  func savedInitialPrompt(for ticket: DashboardTicket) -> String? {
+    guard subtasks(for: ticket.id).isEmpty else { return nil }
+    return taskContexts[ticket.id]?.savedInitialPrompt
   }
 
   private func launchDraftAgent(_ draft: TaskDraft, on ticket: DashboardTicket, description: String) {

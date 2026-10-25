@@ -3447,6 +3447,59 @@ struct QueueViewModelTests {
     #expect(await suggester.queries.count == 1, "Creating anyway reuses the first suggestion")
   }
 
+  @Test("Without a prompted agent the creator always creates a task and saves the prompt for the first agent")
+  func taskCreatorWithoutAgentSavesPrompt() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let repository = try await creatorRepository(for: fixture)
+    defer { try? FileManager.default.removeItem(at: repository) }
+    // The model names an open task; without a launch to redirect, it must not stop creation.
+    let suggester = RecordingPlacementSuggester(TaskPlacementSuggestion(
+      status: "task", taskID: "ECC-101", title: "Plan the export",
+      summary: "Plan the Obsidian export.", priority: "low", confidence: 0.97, model: "claude/haiku"))
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(),
+      terminalController: DirectViewRecorder(root: fixture.root, failReveal: false),
+      taskAgentLauncher: TaskAgentLauncher(runner: DirectCreationRunner(), candidateSockets: []),
+      taskPlacementSuggester: suggester)
+    let unprompted = AgentLaunchPreset(provider: .claude, workspacePolicy: .existingCheckout,
+      useTmux: false, includePrompt: false)
+    let drafts = [
+      TaskDraft(description: "  Plan the Obsidian export.\nKeep it markdown.  ", agent: unprompted),
+      TaskDraft(description: "Sketch the export settings pane.", launchesAgent: false,
+        agent: AgentLaunchPreset(provider: .claude)),
+    ]
+    let ticketCount = model.projectTickets.count
+
+    for draft in drafts {
+      let result = await model.submitTaskDraft(draft)
+      guard case .created(let ticketID, false) = result else {
+        Issue.record("Unexpected result \(result)")
+        continue
+      }
+      #expect(ticketID != "ECC-101")
+      let ticket = try #require(model.projectTickets.first { $0.id == ticketID })
+      #expect(ticket.title == "Plan the export")
+      #expect(model.subtasks(for: ticketID).isEmpty, "No agent starts")
+      let prompt = draft.description.trimmingCharacters(in: .whitespacesAndNewlines)
+      #expect(model.savedInitialPrompt(for: ticket) == prompt)
+      let loaded = try await TaskContextStore(root: fixture.paths.supportDirectory).load(ticketID: ticketID)
+      let context = try #require(loaded)
+      let plan = try String(contentsOf: URL(fileURLWithPath: context.planPath), encoding: .utf8)
+      #expect(plan.contains("- [Task data](data.md): durable task facts and test data.\n- [Initial prompt](initial-prompt.md)"))
+    }
+    #expect(model.projectTickets.count == ticketCount + 2)
+    #expect(model.subtasks(for: "ECC-101").isEmpty, "The matched task gains no agent")
+
+    let ticket = try #require(model.projectTickets.first { $0.summary == "Plan the Obsidian export." })
+    let saved = try #require(model.savedInitialPrompt(for: ticket))
+    model.launchPromptedAgent(for: ticket, prompt: saved,
+      preset: AgentLaunchPreset(provider: .claude, workspacePolicy: .existingCheckout, useTmux: false))
+    try await eventually { model.launchingTaskIDs.isEmpty }
+    #expect(model.subtasks(for: ticket.id).first?.initialPrompt == saved)
+    #expect(model.savedInitialPrompt(for: ticket) == nil, "Only the first agent is offered the saved prompt")
+  }
+
   @Test("The card's New Agent sheet adds a prompted agent to its task without placement")
   func cardAgentSheetLaunchesPromptedAgent() async throws {
     let fixture = try await Fixture()

@@ -69,6 +69,26 @@ func taskContextPlanPreservation() async throws {
     #expect(savedPlans.contains("# Updated by agent\n"))
 }
 
+@Test("A saved initial prompt is linked from an authored plan once and never overwritten")
+func taskContextInitialPrompt() async throws {
+    let root = try contextFixture(); defer { try? FileManager.default.removeItem(at: root) }
+    let store = TaskContextStore(root: root)
+    let context = try await store.ensureContext(ticket: contextTicket())
+    #expect(context.savedInitialPrompt == nil)
+    let original = try await store.readPlan(ticketID: context.ticketID)
+    try await store.savePlan(ticketID: context.ticketID, markdown: "# Authored\n\n", expectedMarkdown: original)
+
+    let url = try await store.saveInitialPrompt("  Line one.\n\n---\n\nLine two.  ", ticket: contextTicket())
+    #expect(url == context.initialPromptURL)
+    #expect(context.savedInitialPrompt == "Line one.\n\n---\n\nLine two.", "A divider inside the prompt survives")
+    _ = try await store.saveInitialPrompt("Replacement", ticket: contextTicket())
+    #expect(context.savedInitialPrompt == "Line one.\n\n---\n\nLine two.")
+    #expect(try await store.readPlan(ticketID: context.ticketID)
+        == "# Authored\n- [Initial prompt](initial-prompt.md): the user's prompt; no agent has started with it yet.\n")
+    do { _ = try await store.saveInitialPrompt(" \n ", ticket: contextTicket()); Issue.record("An empty prompt was saved") }
+    catch TaskContextError.commandFailed {}
+}
+
 @Test("Task context rejects path traversal and supports case-insensitive task IDs")
 func taskContextIdentifierValidation() async throws {
     let root = try contextFixture(); defer { try? FileManager.default.removeItem(at: root) }

@@ -205,6 +205,25 @@ public actor TaskAgentLauncher {
       ? context.agentPrompt(subtask: subtask) : context.agentBootstrap(subtask: subtask)
   }
 
+  private static func recordInitialPrompt(context: TaskContext, subtask: TaskSubtask,
+                                          includePrompt: Bool, supportDirectory: URL) {
+    guard let prompt = initialPrompt(context: context, subtask: subtask, includePrompt: includePrompt) else { return }
+    let userCharacters = subtask.status == .completed ? 0 :
+      (subtask.initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines).count ?? 0)
+    let total = max(0, prompt.count - userCharacters)
+    let documents = context.inlinedAgentContextCharacters(subtask: subtask)
+    for (component, characters) in documents {
+      PromptUsageMetrics.record(PromptUsageEvent(
+        source: "agent_launch", component: component, provider: subtask.provider.rawValue,
+        model: subtask.launchConfiguration?.model, taskID: context.ticketID,
+        characters: characters), in: supportDirectory)
+    }
+    PromptUsageMetrics.record(PromptUsageEvent(
+      source: "agent_launch", component: "brief_and_rules", provider: subtask.provider.rawValue,
+      model: subtask.launchConfiguration?.model, taskID: context.ticketID,
+      characters: max(0, total - documents.values.reduce(0, +))), in: supportDirectory)
+  }
+
   /// Kimi's prompt-mode screen is plain text: the input box is the sign that
   /// its interactive TUI is ready for typed input.
   static func kimiInputIsReady(_ screen: String) -> Bool {
@@ -559,6 +578,8 @@ public actor TaskAgentLauncher {
       agentTitle: "\(subtask.provider.displayName): \(subtask.title)",
       directory: (subtask.workspace?.path ?? context.worktreePath)!, command: command,
       executable: tmuxExecutable)
+    Self.recordInitialPrompt(context: context, subtask: subtask,
+                             includePrompt: includePrompt, supportDirectory: supportDirectory)
     if let pastedPrompt {
       // Callers persist the reference as soon as this returns; the TUI's
       // startup must not hold that up.
@@ -677,6 +698,8 @@ public actor TaskAgentLauncher {
       paneID >= 0 else {
       throw WezTermError.actionFailed("WezTerm did not return a valid pane identity.")
     }
+    Self.recordInitialPrompt(context: context, subtask: subtask,
+                             includePrompt: includePrompt, supportDirectory: supportDirectory)
     return DirectAgentLaunchReceipt(paneID: paneID, socketPath: pinned.socketPath)
   }
 }

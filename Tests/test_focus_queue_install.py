@@ -32,6 +32,7 @@ class InstallerTests(unittest.TestCase):
         "Scripts/focus_queue_connectors.py",
         "Scripts/focus_queue_triage.py",
         "Scripts/focus_queue_extractor.py",
+        "Scripts/focus_queue_prompt_usage.py",
         "Scripts/focus-queue-mail.js",
         "Config/task-proposals.schema.json",
     )
@@ -87,6 +88,7 @@ class InstallerTests(unittest.TestCase):
         (shell / "AgentUsageBar-LICENSE.txt").write_bytes(b"license:" + content)
         (shell / "focus_queue_fq.py").write_bytes(b"fq:" + content)
         (shell / "focus_queue_placement.py").write_bytes(b"placement:" + content)
+        (shell / "focus_queue_prompt_usage.py").write_bytes(b"usage:" + content)
         automation = path / "Contents/Resources/automation"
         for relative in self.automation_files:
             destination = automation / relative
@@ -484,13 +486,14 @@ class InstallerTests(unittest.TestCase):
 
     def test_installed_fq_refreshes_with_the_claude_entry_it_dispatches(self):
         self.make_app(self.installer.app, b"previous")
-        dispatcher, placement, claude_entry = self.installer.fq_files
+        dispatcher, placement, analytics, claude_entry = self.installer.fq_files
         dispatcher.parent.mkdir(parents=True)
         dispatcher.write_bytes(b"fq:previous")
         placement.write_bytes(b"placement:previous")
         self.installer.install()
         self.assertEqual(dispatcher.read_bytes(), b"fq:new executable")
         self.assertEqual(placement.read_bytes(), b"placement:new executable")
+        self.assertEqual(analytics.read_bytes(), b"usage:new executable")
         self.assertEqual(claude_entry.read_bytes(), b"claude-entry:new executable")
         manifest = json.loads(self.installer.manifest.read_text())
         self.assertNotIn(str(dispatcher), [artifact["path"] for artifact in manifest["artifacts"]],
@@ -505,7 +508,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_locally_changed_fq_stops_install_without_clobbering(self):
         self.make_app(self.installer.app, b"previous")
-        dispatcher, placement, _ = self.installer.fq_files
+        dispatcher, placement = self.installer.fq_files[:2]
         dispatcher.parent.mkdir(parents=True)
         dispatcher.write_bytes(b"fq:previous")
         placement.write_bytes(b"my local placement tweak")

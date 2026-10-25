@@ -284,7 +284,7 @@ def merge_agent_prompt(original, payload, *, label):
 # fq and its placement classifier come from the shell-entry installers. Once fq
 # is installed, every app install refreshes them, plus the Claude entry fq
 # dispatches, under the same local-change rules as the configured Codex entry.
-FQ_SHELL_FILES = ("focus_queue_fq.py", "focus_queue_placement.py", "focus_queue_claude_entry.py")
+FQ_SHELL_FILES = ("focus_queue_fq.py", "focus_queue_placement.py", "focus_queue_prompt_usage.py", "focus_queue_claude_entry.py")
 AUTOMATION_FILES = (
     "Scripts/focus_queue_morning.py",
     "Scripts/focus_queue_codex.py",
@@ -298,6 +298,7 @@ AUTOMATION_FILES = (
     "Scripts/focus_queue_connectors.py",
     "Scripts/focus_queue_triage.py",
     "Scripts/focus_queue_extractor.py",
+    "Scripts/focus_queue_prompt_usage.py",
     "Scripts/focus-queue-mail.js",
     "Config/task-proposals.schema.json",
 )
@@ -614,6 +615,7 @@ class Installer:
             "Contents/Resources/shell/AgentUsageBar-LICENSE.txt",
             "Contents/Resources/shell/focus_queue_fq.py",
             "Contents/Resources/shell/focus_queue_placement.py",
+            "Contents/Resources/shell/focus_queue_prompt_usage.py",
         ):
             validate_bundle_member(self.bundle, self.bundle / relative)
         if self.codex_entry.exists():
@@ -848,6 +850,7 @@ class Installer:
                 "Contents/Resources/shell/AgentUsageBar-LICENSE.txt",
                 "Contents/Resources/shell/focus_queue_fq.py",
                 "Contents/Resources/shell/focus_queue_placement.py",
+                "Contents/Resources/shell/focus_queue_prompt_usage.py",
                 "Contents/Resources/automation",
             ):
                 validate_bundle_member(staged_app, staged_app / relative)

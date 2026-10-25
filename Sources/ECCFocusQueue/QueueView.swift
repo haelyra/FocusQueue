@@ -174,8 +174,11 @@ struct QueueView: View {
         QueueSettingsView(
           model: model,
           focusedSection: settingsTarget,
-          openTerminals: { showsTerminals = true }
+          openTerminals: { showsTerminals = true },
+          openAnalytics: { screen = .analytics }
         ) { withAnimation(.easeInOut(duration: 0.18)) { screen = .queue } }
+      } else if screen == .analytics {
+        TokenAnalyticsView(supportDirectory: AppPaths.live().supportDirectory) { screen = .settings }
       } else {
         queueContent
       }
@@ -1161,6 +1164,7 @@ struct QueueView: View {
 private enum QueueScreen {
   case queue
   case settings
+  case analytics
 }
 
 private enum QueueSettingsTarget: Hashable {
@@ -1920,6 +1924,7 @@ private struct QueueSettingsView: View {
   let model: QueueViewModel
   let focusedSection: QueueSettingsTarget?
   let openTerminals: () -> Void
+  let openAnalytics: () -> Void
   let close: () -> Void
 
   var body: some View {
@@ -1937,6 +1942,12 @@ private struct QueueSettingsView: View {
 
       ScrollView {
         VStack(alignment: .leading, spacing: 14) {
+          Button(action: openAnalytics) {
+            Label("Token analytics", systemImage: "chart.bar.xaxis")
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+          .buttonStyle(.bordered)
+          .help("Local prompt and agent token measurements")
           if focusedSection == .connectors { connectorDiagnosticsSection }
           settingsSection(
             title: "Project files",

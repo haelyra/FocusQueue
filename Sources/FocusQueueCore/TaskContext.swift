@@ -477,6 +477,33 @@ public struct TaskContext: Codable, Equatable, Sendable {
         return lines.joined(separator: "\n")
     }
 
+    /// Character counts for the documents actually inlined by the detailed launch brief.
+    public func inlinedAgentContextCharacters(subtask: TaskSubtask) -> [String: Int] {
+        guard subtask.status != .completed else { return [:] }
+        let userPrompt = subtask.initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var parts: [String: Int] = [:]
+        if subtask.includeInitializationPrompt,
+           let value = Self.inlineDocument(atPath: projectPlanPath, limit: 1_500) {
+            parts["project_plan"] = value.count
+        }
+        if subtask.includeInitializationPrompt,
+           let value = Self.inlineDocument(atPath: planPath, limit: 4_000, prompt: userPrompt) {
+            parts["task_plan"] = value.count
+        }
+        if let value = Self.inlineDocument(atPath: dataURL.path, limit: 2_000),
+           (!subtask.includeInitializationPrompt || value != Self.dataTemplateBody) {
+            parts["task_data"] = value.count
+        }
+        if let value = Self.inlineDocument(atPath: userDataURL.path, limit: 2_000) {
+            parts["user_data"] = value.count
+        }
+        if let projectDataURL,
+           let value = Self.inlineDocument(atPath: projectDataURL.path, limit: 3_000) {
+            parts["project_data"] = value.count
+        }
+        return parts
+    }
+
     private func scopedDataLines(includeTask: Bool = true) -> [String] {
         var lines: [String] = []
         if let data = Self.inlineDocument(atPath: userDataURL.path, limit: 2_000) {

@@ -145,7 +145,8 @@ public actor TaskAgentLauncher {
   public static func command(context: TaskContext, subtask: TaskSubtask, supportDirectory: URL,
                              includePrompt: Bool = true, shellPath: String? = nil,
                              usageBarEnabled: Bool = true, codexRoot: URL? = nil,
-                             pastesPrompt: Bool = false, statusHooks: Bool = true) throws -> [String] {
+                             pastesPrompt: Bool = false, statusHooks: Bool = true,
+                             usageRunID: String? = nil) throws -> [String] {
     guard let directory = (subtask.workspace?.path ?? context.worktreePath), directory.hasPrefix("/") else {
       throw TaskContextError.unsafeWorktree("Choose a task worktree before launching an agent.")
     }
@@ -178,6 +179,7 @@ public actor TaskAgentLauncher {
             "FOCUS_QUEUE_USAGE_BAR=\(usageBarEnabled ? "on" : "off")",
             "FOCUS_QUEUE_PROVIDER=\(subtask.provider.rawValue)",
             "FOCUS_QUEUE_SUBTASK_ID=\(subtask.id)", "FOCUS_QUEUE_TASK_ID=\(context.ticketID)"]
+    if let usageRunID { focusEnvironment.append("FOCUS_QUEUE_USAGE_RUN_ID=\(usageRunID)") }
     focusEnvironment.append("FOCUS_QUEUE_RUNTIME_MODE=\(subtask.runtimeMode?.rawValue ?? "legacy")")
     if subtask.provider == .kimi {
       // Each managed worktree is a new folder to Kimi; its trust dialog would
@@ -206,7 +208,8 @@ public actor TaskAgentLauncher {
   }
 
   private static func recordInitialPrompt(context: TaskContext, subtask: TaskSubtask,
-                                          includePrompt: Bool, supportDirectory: URL) {
+                                          includePrompt: Bool, supportDirectory: URL,
+                                          runID: String) {
     guard let prompt = initialPrompt(context: context, subtask: subtask, includePrompt: includePrompt) else { return }
     let userCharacters = subtask.status == .completed ? 0 :
       (subtask.initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines).count ?? 0)
@@ -216,12 +219,12 @@ public actor TaskAgentLauncher {
       PromptUsageMetrics.record(PromptUsageEvent(
         source: "agent_launch", component: component, provider: subtask.provider.rawValue,
         model: subtask.launchConfiguration?.model, taskID: context.ticketID,
-        characters: characters), in: supportDirectory)
+        characters: characters, runID: runID), in: supportDirectory)
     }
     PromptUsageMetrics.record(PromptUsageEvent(
       source: "agent_launch", component: "brief_and_rules", provider: subtask.provider.rawValue,
       model: subtask.launchConfiguration?.model, taskID: context.ticketID,
-      characters: max(0, total - documents.values.reduce(0, +))), in: supportDirectory)
+      characters: max(0, total - documents.values.reduce(0, +)), runID: runID), in: supportDirectory)
   }
 
   /// Kimi's prompt-mode screen is plain text: the input box is the sign that
@@ -564,10 +567,11 @@ public actor TaskAgentLauncher {
     // Kimi pane starts interactive and receives its prompt by paste.
     let pastedPrompt = subtask.provider == .kimi
       ? Self.initialPrompt(context: context, subtask: subtask, includePrompt: includePrompt) : nil
+    let usageRunID = UUID().uuidString
     let command = try Self.command(
       context: context, subtask: subtask, supportDirectory: supportDirectory,
       includePrompt: includePrompt, usageBarEnabled: usageBarEnabled,
-      pastesPrompt: pastedPrompt != nil)
+      pastesPrompt: pastedPrompt != nil, usageRunID: usageRunID)
     let persistence = FileManager.default.isExecutableFile(atPath: tmuxExecutable)
       ? try TmuxPersistence.prepare(executable: tmuxExecutable, serverName: tmuxServerName,
           supportDirectory: supportDirectory) : nil
@@ -579,7 +583,8 @@ public actor TaskAgentLauncher {
       directory: (subtask.workspace?.path ?? context.worktreePath)!, command: command,
       executable: tmuxExecutable)
     Self.recordInitialPrompt(context: context, subtask: subtask,
-                             includePrompt: includePrompt, supportDirectory: supportDirectory)
+                             includePrompt: includePrompt, supportDirectory: supportDirectory,
+                             runID: usageRunID)
     if let pastedPrompt {
       // Callers persist the reference as soon as this returns; the TUI's
       // startup must not hold that up.
@@ -653,9 +658,10 @@ public actor TaskAgentLauncher {
     if let workspace = subtask.workspace {
       try await TaskWorktreeManager().validate(workspace)
     }
+    let usageRunID = UUID().uuidString
     let command = try Self.command(
       context: context, subtask: subtask, supportDirectory: supportDirectory,
-      includePrompt: includePrompt)
+      includePrompt: includePrompt, usageRunID: usageRunID)
     var connection = try await processController.resolveConnection(
       configuration: configuration)
     guard !connection.result.timedOut else {
@@ -699,7 +705,8 @@ public actor TaskAgentLauncher {
       throw WezTermError.actionFailed("WezTerm did not return a valid pane identity.")
     }
     Self.recordInitialPrompt(context: context, subtask: subtask,
-                             includePrompt: includePrompt, supportDirectory: supportDirectory)
+                             includePrompt: includePrompt, supportDirectory: supportDirectory,
+                             runID: usageRunID)
     return DirectAgentLaunchReceipt(paneID: paneID, socketPath: pinned.socketPath)
   }
 }

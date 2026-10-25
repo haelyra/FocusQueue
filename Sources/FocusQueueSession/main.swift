@@ -66,7 +66,11 @@ enum SessionRegistrationError: Error, LocalizedError {
                 notifyContextChanged()
                 try emit(["status": "notified"])
             }
-            else if arguments == ["rules"] { print(TaskContext.agentRules(), terminator: "") }
+            else if arguments == ["rules"] {
+                let output = TaskContext.agentRules()
+                recordAgentCommand("rules", output: output)
+                print(output, terminator: "")
+            }
             else if arguments.first == "attach" { try await register(arguments: arguments) }
             else if arguments.first == "reconcile", (2...3).contains(arguments.count) {
                 guard arguments.count == 2 || arguments[2] == "--no-cleanup" else { throw SessionRegistrationError.usage }
@@ -760,8 +764,21 @@ enum SessionRegistrationError: Error, LocalizedError {
     private static func emit<T: Encodable>(_ value: T) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        FileHandle.standardOutput.write(try encoder.encode(value))
+        let data = try encoder.encode(value)
+        recordAgentCommand(CommandLine.arguments.dropFirst().first ?? "command",
+                           output: String(decoding: data, as: UTF8.self))
+        FileHandle.standardOutput.write(data)
         FileHandle.standardOutput.write(Data("\n".utf8))
+    }
+
+    private static func recordAgentCommand(_ command: String, output: String) {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["FOCUS_QUEUE_PROVIDER"] != nil else { return }
+        PromptUsageMetrics.record(PromptUsageEvent(
+            source: "agent_command", component: command,
+            provider: environment["FOCUS_QUEUE_PROVIDER"], taskID: environment["FOCUS_QUEUE_TASK_ID"],
+            characters: output.count, runID: UUID().uuidString, scope: "tool_output_estimate"),
+            in: supportDirectory(environment: environment))
     }
 
     private static func mirrorContext(_ context: TaskContext, root: URL) async {
@@ -1125,12 +1142,16 @@ enum SessionRegistrationError: Error, LocalizedError {
                   let subtask = context.subtasks.first(where: { $0.id == arguments[2] }) else {
                 throw TaskContextError.missingSubtask(arguments[2])
             }
-            print(subtask.includeInitializationPrompt
-                ? context.agentPrompt(subtask: subtask) : context.agentBootstrap(subtask: subtask))
+            let output = subtask.includeInitializationPrompt
+                ? context.agentPrompt(subtask: subtask) : context.agentBootstrap(subtask: subtask)
+            recordAgentCommand("brief", output: output)
+            print(output)
             return
         }
         if command == "plan", arguments.count == 2 {
-            FileHandle.standardOutput.write(Data(try await store.readPlan(ticketID: arguments[1]).utf8))
+            let output = try await store.readPlan(ticketID: arguments[1])
+            recordAgentCommand("plan", output: output)
+            FileHandle.standardOutput.write(Data(output.utf8))
             return
         }
         if command == "add", arguments.count == 5, let provider = AgentProvider(rawValue: arguments[2]) {
@@ -1208,7 +1229,9 @@ enum SessionRegistrationError: Error, LocalizedError {
             }
             object["agentLogPath"] = context.agentLogURL.path
             object["dataPath"] = context.dataURL.path
-            FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]))
+            let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+            recordAgentCommand("context", output: String(decoding: data, as: UTF8.self))
+            FileHandle.standardOutput.write(data)
             FileHandle.standardOutput.write(Data("\n".utf8))
             return
         }

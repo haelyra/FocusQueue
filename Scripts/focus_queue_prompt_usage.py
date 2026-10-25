@@ -19,7 +19,9 @@ def record(source: str, component: str, *, prompt: str = "", provider: str | Non
            model: str | None = None, task_id: str | None = None,
            actual_input_tokens: int | None = None,
            actual_output_tokens: int | None = None,
-           support: Path | None = None, characters: int | None = None) -> None:
+           actual_total_tokens: int | None = None, cached_input_tokens: int | None = None,
+           support: Path | None = None, characters: int | None = None,
+           run_id: str | None = None, scope: str = "app") -> None:
     """Append one metadata event; failure never interrupts the measured operation."""
     chars = len(prompt) if characters is None else characters
     event = {
@@ -29,6 +31,8 @@ def record(source: str, component: str, *, prompt: str = "", provider: str | Non
         "taskID": task_id, "characters": chars,
         "estimatedInputTokens": (chars + 2) // 4,
         "actualInputTokens": actual_input_tokens, "actualOutputTokens": actual_output_tokens,
+        "actualTotalTokens": actual_total_tokens, "cachedInputTokens": cached_input_tokens,
+        "runID": run_id, "scope": scope,
     }
     try:
         path = (support or support_directory()) / "analytics/prompt-usage.jsonl"
@@ -45,8 +49,54 @@ def record(source: str, component: str, *, prompt: str = "", provider: str | Non
         pass
 
 
-def record_provider_usage(provider: str, model: str | None, usage: dict | None) -> None:
+def record_provider_usage(provider: str, model: str | None, usage: dict | None,
+                          *, source: str = "provider_usage", run_id: str | None = None,
+                          support: Path | None = None) -> None:
     if usage:
-        record("provider_usage", "actual", provider=provider, model=model,
-               actual_input_tokens=int(usage.get("inputTokens", 0)),
-               actual_output_tokens=int(usage.get("outputTokens", 0)))
+        input_tokens = usage.get("inputTokens")
+        output_tokens = usage.get("outputTokens")
+        total_tokens = usage.get("totalTokens")
+        record(source, "provider_usage", provider=provider, model=model,
+               actual_input_tokens=int(input_tokens) if input_tokens is not None else None,
+               actual_output_tokens=int(output_tokens) if output_tokens is not None else None,
+               actual_total_tokens=int(total_tokens) if total_tokens is not None else None,
+               cached_input_tokens=int(usage.get("cachedInputTokens") or 0),
+               run_id=run_id, scope="provider", support=support)
+
+
+def record_instruction_files(cwd: Path, provider: str, *, run_id: str,
+                             task_id: str | None = None, support: Path | None = None) -> None:
+    """Estimate provider-loaded instruction files in the Documents ancestor chain."""
+    name = {"codex": "AGENTS.md", "claude": "CLAUDE.md"}.get(provider)
+    if not name:
+        return
+    documents = Path.home() / "Documents"
+    try:
+        relative = cwd.resolve().relative_to(documents.resolve())
+    except (OSError, ValueError):
+        return
+    directories = [documents]
+    for part in relative.parts:
+        directories.append(directories[-1] / part)
+    start_marker = "<!-- BEGIN AGENT OUTPUT CONTRACT v1 -->"
+    end_marker = "<!-- END AGENT OUTPUT CONTRACT v1 -->"
+    for directory in directories:
+        path = directory / name
+        try:
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > 256_000:
+                continue
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        label = str(path.relative_to(documents))
+        start, end = content.find(start_marker), content.find(end_marker)
+        contract = content[start:end + len(end_marker)] if start >= 0 and end >= start else ""
+        if contract:
+            record("agent_launch", f"{label} · output_contract", characters=len(contract),
+                   provider=provider, task_id=task_id, run_id=run_id,
+                   scope="provider_file_estimate", support=support)
+        other = len(content) - len(contract)
+        if other:
+            record("agent_launch", f"{label} · other_instructions", characters=other,
+                   provider=provider, task_id=task_id, run_id=run_id,
+                   scope="provider_file_estimate", support=support)

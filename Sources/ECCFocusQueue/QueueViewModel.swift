@@ -175,6 +175,7 @@ final class QueueViewModel {
   @ObservationIgnored private var spinningRuntimeSubtaskIDs: Set<String> = []
   private(set) var isQueueChatInspectorPresented = false
   private(set) var isNotificationsInspectorPresented = false
+  private(set) var isTokenAnalyticsPresented = false
   /// Set while an update or report opened from the notifications list is shown,
   /// so closing it returns to the list instead of collapsing the side panel.
   @ObservationIgnored private var returnsToNotifications = false
@@ -1889,6 +1890,23 @@ final class QueueViewModel {
   var isInspectorPresented: Bool {
     isQueueChatInspectorPresented || isDailyReportPresented || presentedPlanTicketID != nil
       || presentedAgentUpdate != nil || isNotificationsInspectorPresented || isDocumentViewerPresented
+      || isTokenAnalyticsPresented
+  }
+
+  func setTokenAnalyticsPresented(_ presented: Bool) {
+    guard presented != isTokenAnalyticsPresented else { return }
+    if presented {
+      isQueueChatInspectorPresented = false
+      isNotificationsInspectorPresented = false
+      returnsToNotifications = false
+      presentedAgentUpdate = nil
+      presentedPlanTicketID = nil
+      presentedPlanURL = nil
+      isDailyReportPresented = false
+      isDocumentViewerPresented = false
+    }
+    isTokenAnalyticsPresented = presented
+    reportVisibilityHandler?(isInspectorPresented)
   }
 
   var presentedPlanTicket: DashboardTicket? {
@@ -2241,6 +2259,7 @@ final class QueueViewModel {
   }
 
   func openPlan(for ticket: DashboardTicket, sourceURL: URL? = nil) {
+    isTokenAnalyticsPresented = false
     revealProject(for: ticket.id)
     markTicketViewed(ticket.id)
     isNotificationsInspectorPresented = false
@@ -2363,6 +2382,7 @@ final class QueueViewModel {
     returnsToNotifications = false
     guard presented || isNotificationsInspectorPresented else { return }
     if presented {
+      isTokenAnalyticsPresented = false
       isQueueChatInspectorPresented = false
       presentedAgentUpdate = nil
       presentedPlanTicketID = nil
@@ -2385,6 +2405,7 @@ final class QueueViewModel {
   }
 
   func openAgentUpdate(_ update: QueueAgentUpdate) {
+    isTokenAnalyticsPresented = false
     revealProject(for: update.ticketID)
     if isNotificationsInspectorPresented { returnsToNotifications = true }
     isNotificationsInspectorPresented = false
@@ -2452,6 +2473,7 @@ final class QueueViewModel {
   /// of tabs; the same scope adds a tab and selects it.
   func openDocumentViewer(_ url: URL, scope: DocumentScope?) {
     guard let location = DocumentPaneLocation.normalized(url) else { return }
+    isTokenAnalyticsPresented = false
     if documentViewerScope != scope || !isDocumentViewerPresented {
       if documentViewerScope != scope { documentViewer = DocumentPaneState() }
       documentViewerScope = scope
@@ -2507,6 +2529,7 @@ final class QueueViewModel {
 
   func setQueueChatInspectorPresented(_ presented: Bool) {
     if presented {
+      isTokenAnalyticsPresented = false
       isNotificationsInspectorPresented = false
       returnsToNotifications = false
       presentedAgentUpdate = nil
@@ -4402,6 +4425,7 @@ final class QueueViewModel {
 
   func setDailyReportPresented(_ presented: Bool) {
     if presented {
+      isTokenAnalyticsPresented = false
       if isNotificationsInspectorPresented { returnsToNotifications = true }
       isNotificationsInspectorPresented = false
       isQueueChatInspectorPresented = false
@@ -4758,6 +4782,7 @@ final class QueueViewModel {
     guard panelMode != mode else { return }
     if mode != .expanded {
       // First, so a detail opened from the list does not reopen it while closing.
+      setTokenAnalyticsPresented(false)
       setNotificationsInspectorPresented(false)
       closeAgentUpdate()
       closePlan()

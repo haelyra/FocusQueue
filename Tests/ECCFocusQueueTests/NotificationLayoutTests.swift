@@ -24,6 +24,14 @@ struct NotificationLayoutTests {
     #expect(layout.minimumWidth > QueueInspectorLayout.closed.maximumWidth)
   }
 
+  @Test("Token analytics opens beside Settings with enough room for its breakdown columns")
+  func tokenAnalyticsInspectorWidth() {
+    let layout = QueueInspectorLayout.analytics
+    #expect(layout.preferredWidth(compactWidth: 440) == 1_240)
+    #expect(layout.minimumWidth - 440 - 49 >= 600)
+    #expect(layout.maximumWidth > QueueInspectorLayout.closed.maximumWidth)
+  }
+
   @Test("Swipe affordance does not stretch a notification into the available panel height",
     arguments: [CGFloat(380), CGFloat(600)])
   func contentDeterminesHeight(width: CGFloat) throws {

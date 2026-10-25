@@ -104,6 +104,34 @@ import Testing
     lastOutputAt: nil, resultAt: nil, attention: .approval, lastHeartbeatAt: later) == later)
   #expect(AgentViewOrdering.activityDate(
     lastOutputAt: nil, resultAt: nil, attention: nil, lastHeartbeatAt: later) == nil)
+  // A person's prompt counts even before the agent answers.
+  #expect(AgentViewOrdering.activityDate(
+    lastOutputAt: nil, resultAt: nil, lastPromptAt: output, attention: nil, lastHeartbeatAt: later) == output)
+  #expect(AgentViewOrdering.activityDate(
+    lastOutputAt: output, resultAt: nil, lastPromptAt: later, attention: nil, lastHeartbeatAt: later) == later)
+  #expect(AgentViewOrdering.activityDate(
+    lastOutputAt: later, resultAt: nil, lastPromptAt: output, attention: nil, lastHeartbeatAt: later) == later)
+}
+
+@Test func agentViewPlacesJustPromptedAgentsAboveOlderResults() {
+  struct Agent { let name: String; let output: Date?; let prompt: Date? }
+  let now = Date()
+  let groups: [(group: String, items: [Agent])] = [
+    ("reviewed", [Agent(name: "done", output: now.addingTimeInterval(-3600), prompt: nil)]),
+    ("prompted", [
+      Agent(name: "old", output: now.addingTimeInterval(-7200), prompt: nil),
+      Agent(name: "fresh", output: nil, prompt: now.addingTimeInterval(-60)),
+    ]),
+    ("task-only", [Agent(name: "legacy", output: nil, prompt: nil)]),
+  ]
+  let taskPrompts = ["task-only": now.addingTimeInterval(-30)]
+  let ordered = AgentViewOrdering.grouped(groups, groupActivity: { taskPrompts[$0] }) {
+    AgentViewOrdering.activityDate(lastOutputAt: $0.output, resultAt: nil, lastPromptAt: $0.prompt,
+      attention: nil, lastHeartbeatAt: now)
+  }
+  // A task prompt not yet tied to an agent still ranks its card.
+  #expect(ordered.map(\.group) == ["task-only", "prompted", "reviewed"])
+  #expect(ordered[1].items.map(\.name) == ["fresh", "old"])
 }
 
 @Test func agentViewGroupsTasksAndAgentsByMostRecentActivity() {

@@ -3157,7 +3157,8 @@ final class QueueViewModel {
             ticketID: ticket.id, subtaskID: subtask.id, tmux: tmux,
             status: Self.launchStatus(subtask, includePrompt: includePrompt))
           if includePrompt {
-            taskContexts[ticket.id] = try await taskContextStore.recordPrompt(ticketID: ticket.id)
+            taskContexts[ticket.id] = try await taskContextStore.recordPrompt(
+              ticketID: ticket.id, subtaskID: subtask.id)
           }
           subtask.tmux = tmux
           await recordAgentLaunch(
@@ -3187,7 +3188,8 @@ final class QueueViewModel {
             socketPath: receipt.socketPath,
             status: Self.launchStatus(subtask, includePrompt: includePrompt))
           if includePrompt {
-            taskContexts[ticket.id] = try await taskContextStore.recordPrompt(ticketID: ticket.id)
+            taskContexts[ticket.id] = try await taskContextStore.recordPrompt(
+              ticketID: ticket.id, subtaskID: subtask.id)
           }
           await recordAgentLaunch(
             subtask, ticketID: ticket.id, phase: "direct-confirm", outcome: "succeeded",

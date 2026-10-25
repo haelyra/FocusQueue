@@ -88,6 +88,8 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     public var progressSummary: String
     public var lastHeartbeatAt: Date?
     public var lastOutputAt: Date?
+    /// When the person last sent this agent a prompt.
+    public var lastPromptAt: Date?
     public var completionUnread: Bool
     public var includeInitializationPrompt: Bool
     public var tmux: TmuxSessionReference?
@@ -246,7 +248,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, assignmentDescription, provider, sessionID, status, progressSummary, lastHeartbeatAt, lastOutputAt, completionUnread, includeInitializationPrompt, tmux
+        case id, title, assignmentDescription, provider, sessionID, status, progressSummary, lastHeartbeatAt, lastOutputAt, lastPromptAt, completionUnread, includeInitializationPrompt, tmux
         case runtimeMode, terminalPaneID, terminalSocketPath, workspace, workspaceHistory, initialPrompt, agentRemovedAt, tracksCompletion, completionOverrideAt
         case completionTerminalRetained
         case isAssignmentOnly, parentSubtaskID, associatedSubtaskIDs, mergedIntoSubtaskID, attention, resultID, resultSummary, resultAt, observedEventID, observedEventAt, completedRuntimeOpenedAt
@@ -267,6 +269,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         progressSummary = try values.decodeIfPresent(String.self, forKey: .progressSummary) ?? ""
         lastHeartbeatAt = try values.decodeIfPresent(Date.self, forKey: .lastHeartbeatAt)
         lastOutputAt = try values.decodeIfPresent(Date.self, forKey: .lastOutputAt)
+        lastPromptAt = try values.decodeIfPresent(Date.self, forKey: .lastPromptAt)
         completionUnread = try values.decodeIfPresent(Bool.self, forKey: .completionUnread) ?? false
         includeInitializationPrompt = try values.decodeIfPresent(Bool.self, forKey: .includeInitializationPrompt) ?? true
         tmux = try values.decodeIfPresent(TmuxSessionReference.self, forKey: .tmux)
@@ -1038,6 +1041,7 @@ public actor TaskContextStore {
             else if ["Stop", "SubagentStop", "SessionEnd"].contains(eventName) { context.subtasks[index].status = .idle }
             if eventName == "UserPromptSubmit" {
                 context.lastPromptAt = max(context.lastPromptAt ?? .distantPast, now)
+                context.subtasks[index].lastPromptAt = max(context.subtasks[index].lastPromptAt ?? .distantPast, now)
             }
             if eventName != "ProcessDiscovery" || context.subtasks[index].lastHeartbeatAt == nil {
                 context.subtasks[index].lastHeartbeatAt = now
@@ -1204,10 +1208,13 @@ public actor TaskContextStore {
     }
 
     @discardableResult public func recordPrompt(
-        ticketID: String, at promptAt: Date = Date()
+        ticketID: String, subtaskID: String? = nil, at promptAt: Date = Date()
     ) throws -> TaskContext {
         try mutate(ticketID: ticketID) { context in
             context.lastPromptAt = max(context.lastPromptAt ?? .distantPast, promptAt)
+            if let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) {
+                context.subtasks[index].lastPromptAt = max(context.subtasks[index].lastPromptAt ?? .distantPast, promptAt)
+            }
         }
     }
 
@@ -1375,6 +1382,9 @@ public actor TaskContextStore {
             // interaction, even when the agent's own status is already final.
             if case .prompt = event.kind, event.date > (context.lastPromptAt ?? .distantPast) {
                 context.lastPromptAt = event.date
+            }
+            if case .prompt = event.kind, event.date > (context.subtasks[i].lastPromptAt ?? .distantPast) {
+                context.subtasks[i].lastPromptAt = event.date
             }
             guard context.subtasks[i].observedEventID != event.id else { return }
             if context.subtasks[i].status == .completed {

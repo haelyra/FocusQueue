@@ -558,14 +558,14 @@ struct QueueView: View {
     var id: String { ticket.id }
   }
 
-  /// Tasks with their agents, most recent output or input request first.
+  /// Tasks with their agents, most recent output, input request, or prompt first.
   private func agentViewGroups(for tickets: [DashboardTicket]) -> [AgentViewGroup] {
     let groups = tickets.map { ticket in
       (group: ticket, items: model.taskItems(for: ticket.id).filter { $0.hasAgent && $0.agentRemovedAt == nil })
     }
-    return AgentViewOrdering.grouped(groups) { agent in
+    return AgentViewOrdering.grouped(groups, groupActivity: { model.taskContexts[$0.id]?.lastPromptAt }) { agent in
       AgentViewOrdering.activityDate(
-        lastOutputAt: agent.lastOutputAt, resultAt: agent.resultAt,
+        lastOutputAt: agent.lastOutputAt, resultAt: agent.resultAt, lastPromptAt: agent.lastPromptAt,
         attention: agent.attention, lastHeartbeatAt: agent.lastHeartbeatAt)
     }.map { AgentViewGroup(ticket: $0.group, agents: $0.items) }
   }

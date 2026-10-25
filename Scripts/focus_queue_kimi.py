@@ -314,7 +314,8 @@ def run_kimi(
         )
         if usage_file is not None:
             write_token_usage(usage_file, stdout)
-        prompt_usage.record_provider_usage("kimi", model, parse_token_usage(stdout))
+        prompt_usage.record_provider_usage("kimi", model, parse_token_usage(stdout),
+            support=Path(os.environ["FOCUS_QUEUE_SUPPORT_DIR"]) if os.environ.get("FOCUS_QUEUE_SUPPORT_DIR") else runtime.parent)
 
         if process.returncode != 0:
             detail = (stderr or stdout).strip()
@@ -382,6 +383,7 @@ def chat(arguments: argparse.Namespace) -> int:
                 sandbox="workspace-write",
                 session_id=prior_session,
                 output_schema=None,
+                usage_file=getattr(arguments, "usage_file", None),
                 expose_evidence_directories=True,
                 expose_queue_order=True,
                 model=getattr(arguments, "model", None),
@@ -406,6 +408,7 @@ def chat(arguments: argparse.Namespace) -> int:
                 sandbox="workspace-write",
                 session_id=None,
                 output_schema=None,
+                usage_file=getattr(arguments, "usage_file", None),
                 expose_evidence_directories=True,
                 expose_queue_order=True,
                 model=getattr(arguments, "model", None),
@@ -468,6 +471,7 @@ def main() -> int:
         help="Extra directory the chat sandbox may write (repeatable)",
     )
     chat_parser.add_argument("--prompt-file", type=Path, required=True)
+    chat_parser.add_argument("--usage-file", type=Path)
     chat_parser.add_argument("--timeout", type=int, default=120)
     chat_parser.add_argument("--model", help="Override the chat model alias")
     chat_parser.add_argument(

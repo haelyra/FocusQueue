@@ -18,6 +18,10 @@ import uuid
 import re
 import stat as stat_module
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
 
 USAGE_ADAPTER = Path(__file__).with_name("focus_queue_usage_wrapper.sh")
 # A launch typed inside another agent's shell inherits that agent's session.
@@ -1059,6 +1063,10 @@ def main(argv=None):
         raise
     if placement.get("taskID"):
         label_placement_tab(placement, intake)
+    import focus_queue_prompt_usage as prompt_usage
+    prompt_usage.record_instruction_files(Path(intake["cwd"]), "codex",
+        run_id=os.environ.get("FOCUS_QUEUE_USAGE_RUN_ID") or intake["launchID"],
+        task_id=placement.get("taskID"), support=support)
     command = usage_command(options.usage_wrapper,
                             daemon_default_flags(options.default_flag, mode, os.environ), arguments)
     os.chdir(intake["cwd"])

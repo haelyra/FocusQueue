@@ -33,12 +33,22 @@ enum DocumentPanePlacement {
     case secondary
 }
 
+/// What stays on the left when a tab is split to the right.
+enum DocumentSplitCompanion: Equatable {
+    /// The central plan (or map), which is not a document tab.
+    case centralContent
+    case document(URL)
+}
+
 @MainActor
 @Observable
 final class DocumentPaneState {
     private(set) var tabs: [URL] = []
     private(set) var primaryDocument: URL?
     private(set) var secondaryDocument: URL?
+    /// Earlier left-hand selections, newest last; nil is the central content.
+    /// A split puts the current tab on the right and restores the one clicked before it.
+    @ObservationIgnored private var primaryHistory: [URL?] = []
     /// The document in the foreground. In a split viewer, the right-hand
     /// document is the newest one and is treated as the selected document.
     var selected: URL? { secondaryDocument ?? primaryDocument }
@@ -66,14 +76,14 @@ final class DocumentPaneState {
         if !tabs.contains(location) { tabs.append(location) }
         switch placement {
         case .primary:
-            primaryDocument = location
+            setPrimary(location)
             secondaryDocument = nil
         case .secondary:
             // A document can be left in the secondary viewer after a drag. Keep
             // that visible document when the next link opens by promoting it to
             // the central viewer, then put the new document on the right.
             if primaryDocument == nil, secondaryDocument != location {
-                primaryDocument = secondaryDocument
+                setPrimary(secondaryDocument)
             }
             // Reopening the central document selects it instead of rendering the
             // same document in both panes.
@@ -91,27 +101,73 @@ final class DocumentPaneState {
     /// becomes a central tab without removing it from the document history.
     func select(_ url: URL) {
         guard tabs.contains(url) else { return }
-        primaryDocument = url
+        setPrimary(url)
         if secondaryDocument == url { secondaryDocument = nil }
     }
 
-    func moveToSecondary(_ url: URL) {
-        guard tabs.contains(url) else { return }
+    /// The left-hand content a split of `url` would leave in place: the visible
+    /// left document, or, when `url` is that document, the tab or central
+    /// content selected before it. Nil when there is nothing to put beside it.
+    /// `hasCentralContent` is false for viewers with no central plan behind the tabs.
+    func splitCompanion(for url: URL, hasCentralContent: Bool = true) -> DocumentSplitCompanion? {
+        guard tabs.contains(url) else { return nil }
+        if let primaryDocument, primaryDocument != url { return .document(primaryDocument) }
+        if primaryDocument == nil, hasCentralContent { return .centralContent }
+        for entry in primaryHistory.reversed() {
+            if let entry {
+                if entry != url, tabs.contains(entry) { return .document(entry) }
+            } else if hasCentralContent {
+                return .centralContent
+            }
+        }
+        if hasCentralContent { return .centralContent }
+        let index = tabs.firstIndex(of: url) ?? 0
+        return tabs.indices.reversed().lazy.filter { $0 != index }
+            .min { abs($0 - index) < abs($1 - index) }
+            .map { .document(tabs[$0]) }
+    }
+
+    func canSplit(_ url: URL, hasCentralContent: Bool = true) -> Bool {
+        splitCompanion(for: url, hasCentralContent: hasCentralContent) != nil
+    }
+
+    /// Show `url` on the right, next to the document that was open before it.
+    @discardableResult
+    func split(_ url: URL, hasCentralContent: Bool = true) -> Bool {
+        guard let companion = splitCompanion(for: url, hasCentralContent: hasCentralContent) else { return false }
+        switch companion {
+        case .centralContent: setPrimary(nil)
+        case .document(let document): setPrimary(document)
+        }
         secondaryDocument = url
-        if primaryDocument == url { primaryDocument = nil }
         centralChatCollapsed = true
+        return true
+    }
+
+    /// Leave the split viewer, keeping the right-hand document as the only one shown.
+    func endSplit() {
+        guard let secondaryDocument else { return }
+        select(secondaryDocument)
     }
 
     func showCentralContent() {
-        primaryDocument = nil
+        setPrimary(nil)
+    }
+
+    private func setPrimary(_ url: URL?) {
+        guard primaryDocument != url else { return }
+        primaryHistory.append(primaryDocument)
+        if primaryHistory.count > 16 { primaryHistory.removeFirst() }
+        primaryDocument = url
     }
 
     func close(_ url: URL) {
         let index = tabs.firstIndex(of: url) ?? 0
         tabs.removeAll { $0 == url }
+        primaryHistory.removeAll { $0 == url }
         if primaryDocument == url {
-            primaryDocument = secondaryDocument == nil && !tabs.isEmpty
-                ? tabs[min(index, tabs.count - 1)] : nil
+            setPrimary(secondaryDocument == nil && !tabs.isEmpty
+                ? tabs[min(index, tabs.count - 1)] : nil)
         }
         if secondaryDocument == url { secondaryDocument = nil }
         if tabs.isEmpty { dismiss() }
@@ -120,6 +176,7 @@ final class DocumentPaneState {
     func dismiss() {
         primaryDocument = nil
         secondaryDocument = nil
+        primaryHistory = []
         centralChatCollapsed = false
     }
 }

@@ -203,8 +203,9 @@ struct SideDocumentPane: View {
     let document: URL
     let open: (URL) -> Void
     let close: () -> Void
-    let receiveDocument: (String) -> Bool
     let discuss: (PlanCanvasSelectionAction) -> Void
+    /// Called when the header title starts a drag, so the container can preview a split.
+    var dragStarted: (URL) -> Void = { _ in }
     @State private var find = DocumentFindState()
 
     private var store: DocumentContentStore { queue.documentContentStore }
@@ -223,7 +224,7 @@ struct SideDocumentPane: View {
                       systemImage: document.pathExtension.lowercased() == "pdf" ? "doc.richtext" : "doc.text")
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
-                    .draggable(document.absoluteString)
+                    .documentDrag(document, started: dragStarted)
                 Spacer()
                 if document.isFileURL, store.loadedText(for: document) != nil {
                     Button {
@@ -244,10 +245,6 @@ struct SideDocumentPane: View {
             }
             DocumentMetadataStrip(url: document, taskID: scopeLabel, revision: entry.revision)
             if editSession != nil { editor } else { viewer }
-        }
-        .dropDestination(for: String.self) { identifiers, _ in
-            guard let identifier = identifiers.last else { return false }
-            return receiveDocument(identifier)
         }
         .task(id: document.absoluteString) { store.ensureLoaded(document) }
     }
@@ -544,5 +541,59 @@ struct PlanPaneSplit<Primary: View, Secondary: View>: View {
                 secondary().frame(width: max(1, available - width))
             }
         }
+    }
+}
+
+extension View {
+    /// Makes a document draggable by URL string and reports the drag start, so the
+    /// viewer can preview where the document would land before it is dropped.
+    func documentDrag(_ url: URL, started: @escaping (URL) -> Void) -> some View {
+        onDrag {
+            started(url)
+            return NSItemProvider(object: url.absoluteString as NSString)
+        }
+    }
+
+    /// Accepts a dragged document tab anywhere over the viewer area. While a tab
+    /// is being dragged the content below stops taking hits, so web and PDF views
+    /// cannot swallow the drop. A cancelled drag never reports its end, so the
+    /// next pointer movement over the idle area clears the stale drag.
+    func splitDropTarget(
+        tabs: [URL], dragged: Binding<URL?>, isTargeted: Binding<Bool>,
+        drop: @escaping (URL) -> Bool
+    ) -> some View {
+        allowsHitTesting(dragged.wrappedValue == nil)
+            .background(
+                Color.clear.contentShape(Rectangle()).onContinuousHover { phase in
+                    guard case .active = phase, dragged.wrappedValue != nil,
+                          !isTargeted.wrappedValue else { return }
+                    dragged.wrappedValue = nil
+                })
+            .dropDestination(for: String.self) { identifiers, _ in
+                defer { dragged.wrappedValue = nil; isTargeted.wrappedValue = false }
+                guard let identifier = identifiers.last,
+                      let url = tabs.first(where: { $0.absoluteString == identifier }) else { return false }
+                return drop(url)
+            } isTargeted: { isTargeted.wrappedValue = $0 }
+    }
+}
+
+/// The empty slot shown on the right while a tab is dragged over the viewer: the
+/// open document slides left to make room, signalling that the tab can split.
+struct SplitDropPlaceholder: View {
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "rectangle.split.2x1").font(.system(size: 26, weight: .regular))
+            Text("Drop to open side by side").font(.system(size: 13, weight: .semibold))
+        }
+        .foregroundStyle(Color.accentColor)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color.accentColor.opacity(0.7), style: StrokeStyle(lineWidth: 1.5, dash: [7, 5])))
+        .padding(.horizontal, 4)
+        .transition(.opacity)
+        .accessibilityLabel("Drop to open side by side")
     }
 }

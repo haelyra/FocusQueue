@@ -34,7 +34,7 @@ func legacyConfigurationCreatesEffectiveProject() throws {
   #expect(project.name == "ECC")
   #expect(project.dashboardPath == "/tmp/ECC/dashboard.json")
   #expect(project.workspacePath == "/tmp/ECC")
-  #expect(configuration.dailyReport.enabled)
+  #expect(!configuration.dailyReport.enabled)
   #expect(configuration.completionReviewEnabled)
   #expect(configuration.appName == "ECC Focus Queue")
 }

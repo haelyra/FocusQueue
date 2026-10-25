@@ -1512,6 +1512,31 @@ struct QueueViewModelTests {
     #expect(model.panelMode == .expanded)
     #expect(panelModes == [.topTask, .expanded])
   }
+
+  @Test("Token analytics occupies the side inspector and closes with the panel")
+  func tokenAnalyticsSideInspector() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    var visibility: [Bool] = []
+    model.reportVisibilityHandler = { visibility.append($0) }
+
+    model.setTokenAnalyticsPresented(true)
+    #expect(model.isTokenAnalyticsPresented)
+    #expect(model.isInspectorPresented)
+    #expect(visibility.last == true)
+
+    model.setQueueChatInspectorPresented(true)
+    #expect(!model.isTokenAnalyticsPresented)
+    #expect(model.isQueueChatInspectorPresented)
+
+    model.setTokenAnalyticsPresented(true)
+    #expect(!model.isQueueChatInspectorPresented)
+    model.setPanelCollapsed(true)
+    #expect(!model.isTokenAnalyticsPresented)
+    #expect(!model.isInspectorPresented)
+    #expect(visibility.last == false)
+  }
   @Test("Launch diagnostics open inside Focus Queue without a JSONL file association")
   func inlineLaunchDiagnostics() async throws {
     let fixture = try await Fixture()
@@ -3874,6 +3899,8 @@ private struct Fixture {
     config.workspacePath = root.path
     config.refreshIntervalSeconds = 300
     config.dailyRoutines = []
+    // Scheduled reports default to off; these fixtures model a user who opted in.
+    config.dailyReport.enabled = true
     try await JSONConfigurationRepository(url: paths.configurationFile).save(config)
   }
 

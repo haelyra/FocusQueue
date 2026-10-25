@@ -129,7 +129,12 @@ struct QueueView: View {
   }
 
   @ViewBuilder private var inspector: some View {
-    if model.isQueueChatInspectorPresented {
+    if model.isTokenAnalyticsPresented {
+      TokenAnalyticsView(supportDirectory: AppPaths.live().supportDirectory) {
+        model.setTokenAnalyticsPresented(false)
+      }
+      .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
+    } else if model.isQueueChatInspectorPresented {
       VStack(alignment: .leading, spacing: 10) {
         HStack {
           Label("Queue chat", systemImage: "bubble.left.and.bubble.right")
@@ -175,10 +180,11 @@ struct QueueView: View {
           model: model,
           focusedSection: settingsTarget,
           openTerminals: { showsTerminals = true },
-          openAnalytics: { screen = .analytics }
-        ) { withAnimation(.easeInOut(duration: 0.18)) { screen = .queue } }
-      } else if screen == .analytics {
-        TokenAnalyticsView(supportDirectory: AppPaths.live().supportDirectory) { screen = .settings }
+          openAnalytics: { model.setTokenAnalyticsPresented(true) }
+        ) {
+          model.setTokenAnalyticsPresented(false)
+          withAnimation(.easeInOut(duration: 0.18)) { screen = .queue }
+        }
       } else {
         queueContent
       }
@@ -1164,7 +1170,6 @@ struct QueueView: View {
 private enum QueueScreen {
   case queue
   case settings
-  case analytics
 }
 
 private enum QueueSettingsTarget: Hashable {

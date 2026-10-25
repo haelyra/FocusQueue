@@ -2127,10 +2127,14 @@ public actor CodexCompletionVerifier: CompletionVerifying {
         Your first non-empty output line must be exactly ACCEPT or NEEDS_WORK. Use ACCEPT only when the available evidence demonstrates the applicable requested outcome and checks. Use NEEDS_WORK for a real evidence or implementation gap. After that marker, lead with one short sentence stating the accepted result or the specific missing evidence, then concise details. Do not use a generic verdict sentence.
         """
         try files.write(Data(prompt.utf8), to: promptURL)
+        let usageRunID = UUID().uuidString
         if let support = configuration.supportDirectory {
             PromptUsageMetrics.record(PromptUsageEvent(source: "completion_review", component: "app_prompt",
-                taskID: ticketID, characters: prompt.count), in: URL(fileURLWithPath: support))
+                taskID: ticketID, characters: prompt.count, runID: usageRunID), in: URL(fileURLWithPath: support))
         }
+        var reviewEnvironment = Self.agentEnvironment(configuration)
+        reviewEnvironment["FOCUS_QUEUE_MODEL_USAGE_SOURCE"] = "completion_review"
+        reviewEnvironment["FOCUS_QUEUE_MODEL_USAGE_RUN_ID"] = usageRunID
 
         let result = try await runner.run(ProcessSpecification(
             executable: configuration.executable,
@@ -2143,7 +2147,7 @@ public actor CodexCompletionVerifier: CompletionVerifying {
                 "--label", configuration.sessionName,
             ] + (configuration.contextDirectory.map { ["--context-dir", $0] } ?? []),
             workingDirectory: workspace,
-            environment: Self.agentEnvironment(configuration),
+            environment: reviewEnvironment,
             timeoutSeconds: configuration.timeoutSeconds + 15
         ))
 

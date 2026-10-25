@@ -71,6 +71,13 @@ final class DocumentContentStore {
         guard let session = editSessions[url] else { return false }
         do {
             try DocumentFileWriter.save(session.draft, to: url, expected: overwrite ? nil : session.baseline)
+            // Publish the saved text now so the preview renders it directly,
+            // instead of showing stale text or a blank page until the reload lands.
+            var saved = entries[url] ?? Entry()
+            saved.content = SideDocumentContent.text(session.draft, for: url)
+            saved.error = nil
+            saved.revision += 1
+            entries[url] = saved
             editSessions[url] = nil
             reload(url)
             return true
@@ -85,6 +92,19 @@ final class DocumentContentStore {
 
     func discardEdit(_ url: URL) {
         editSessions[url] = nil
+    }
+
+    /// Whether the open edit holds changes the file does not have yet.
+    func hasUnsavedEdit(_ url: URL) -> Bool {
+        editSessions[url].map { $0.draft != $0.baseline } ?? false
+    }
+
+    /// Saves a pending edit before its document closes. Returns false when the
+    /// save is refused, so the caller keeps the document open with the error showing.
+    func saveBeforeClose(_ url: URL) -> Bool {
+        guard editSessions[url] != nil else { return true }
+        guard hasUnsavedEdit(url) else { discardEdit(url); return true }
+        return saveEdit(url)
     }
 
     /// Text the pane may edit, or nil for non-text content and failed loads.

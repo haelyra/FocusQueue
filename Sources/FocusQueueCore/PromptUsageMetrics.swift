@@ -34,6 +34,23 @@ public struct PromptUsageEvent: Codable, Sendable, Identifiable {
     }
 }
 
+public extension PromptUsageEvent {
+    /// The whole prompt the provider processed. Claude reports cache reads and
+    /// writes outside `input_tokens`, so its recorders store them in
+    /// `cachedInputTokens`; Codex and Kimi already count cached tokens as input.
+    var reportedInputTokens: Int? {
+        guard let input = actualInputTokens else { return nil }
+        return provider == "claude" ? input + (cachedInputTokens ?? 0) : input
+    }
+
+    /// Input plus output. Older Claude records stored a total without cached input,
+    /// so the total is rebuilt from its parts whenever they exist.
+    var reportedTotalTokens: Int? {
+        guard reportedInputTokens != nil || actualOutputTokens != nil else { return actualTotalTokens }
+        return (reportedInputTokens ?? 0) + (actualOutputTokens ?? 0)
+    }
+}
+
 public struct PromptUsageSummary: Sendable {
     public let runs: Int
     public let estimatedTokens: Int
@@ -50,14 +67,12 @@ public struct PromptUsageSummary: Sendable {
         estimatedTokens = events.filter { $0.scope != "provider" }
             .reduce(0) { $0 + $1.estimatedInputTokens }
         estimatedAverage = runs > 0 ? estimatedTokens / runs : 0
-        let reports = events.filter { $0.scope == "provider" }.compactMap { event -> Int? in
-            event.actualTotalTokens ?? ((event.actualInputTokens != nil || event.actualOutputTokens != nil)
-                ? (event.actualInputTokens ?? 0) + (event.actualOutputTokens ?? 0) : nil)
-        }
+        let providerEvents = events.filter { $0.scope == "provider" }
+        let reports = providerEvents.compactMap(\.reportedTotalTokens)
         reportedRuns = reports.count
         actualTokens = reports.isEmpty ? nil : reports.reduce(0, +)
         actualAverage = reports.isEmpty ? nil : reports.reduce(0, +) / reports.count
-        reportedInputTokens = events.compactMap(\.actualInputTokens).reduce(0, +)
+        reportedInputTokens = providerEvents.compactMap(\.reportedInputTokens).reduce(0, +)
         reportedOutputTokens = events.compactMap(\.actualOutputTokens).reduce(0, +)
         cachedInputTokens = events.compactMap(\.cachedInputTokens).reduce(0, +)
     }

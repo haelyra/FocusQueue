@@ -40,9 +40,11 @@ public actor PushReviewer {
         try Data(prompt.utf8).write(to: promptURL, options: .atomic)
         PromptUsageMetrics.record(PromptUsageEvent(source: "push_review", component: "app_context",
             provider: subtask.provider.rawValue, taskID: context.ticketID,
-            characters: max(0, prompt.count - (subtask.initialPrompt?.count ?? 0))), in: supportDirectory)
+            characters: max(0, prompt.count - (subtask.initialPrompt?.count ?? 0)), runID: id), in: supportDirectory)
         var environment = CodexCompletionVerifier.agentEnvironment(configuration)
         environment["FOCUS_QUEUE_SUPPORT_DIR"] = supportDirectory.path
+        environment["FOCUS_QUEUE_MODEL_USAGE_SOURCE"] = "push_review"
+        environment["FOCUS_QUEUE_MODEL_USAGE_RUN_ID"] = id
         let result = try await runner.run(.init(executable: configuration.executable,
             arguments: ["run", "--workspace", workspace.path, "--prompt-file", promptURL.path,
                         "--timeout", String(configuration.timeoutSeconds), "--sandbox", "read-only",

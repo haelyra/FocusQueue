@@ -1873,19 +1873,6 @@ final class QueueViewModel {
     }
   }
 
-  /// Caption for the chat header, e.g. "Codex · gpt-5.5 · high".
-  var queueChatAgentSummary: String {
-    let provider = defaultAgentProvider
-    var parts = [provider.displayName]
-    if let model = Self.normalizedChatOption(defaultAgentModel(for: provider)) {
-      parts.append(agentModelChoices(for: provider).first { $0.model == model }?.label ?? model)
-    }
-    if let effort = Self.normalizedChatOption(defaultAgentEffort(for: provider)) {
-      parts.append(effort)
-    }
-    return parts.joined(separator: " · ")
-  }
-
   var isInspectorPresented: Bool {
     isQueueChatInspectorPresented || isDailyReportPresented || presentedPlanTicketID != nil
       || presentedAgentUpdate != nil || isNotificationsInspectorPresented || isDocumentViewerPresented
@@ -2491,14 +2478,20 @@ final class QueueViewModel {
     reportVisibilityHandler?(true)
   }
 
+  /// Closing saves every pending edit first. A refused save keeps the viewer
+  /// open on that document so its error and draft stay in view.
   func closeDocumentViewer() {
     guard isDocumentViewerPresented else { return }
+    for url in documentViewer.tabs {
+      guard documentContentStore.saveBeforeClose(url) else { documentViewer.select(url); return }
+    }
     isDocumentViewerPresented = false
     documentViewer.dismiss()
     reportVisibilityHandler?(isInspectorPresented)
   }
 
   func closeDocumentViewerTab(_ url: URL) {
+    guard documentContentStore.saveBeforeClose(url) else { return }
     documentViewer.close(url)
     if !documentViewer.isPresented { closeDocumentViewer() }
   }
@@ -3815,6 +3808,14 @@ final class QueueViewModel {
       } catch {
         actionMessages[ticket.id] = error.localizedDescription
       }
+    }
+  }
+
+  /// Every tracked agent session, for reading usage from provider transcripts.
+  var tokenAnalyticsSessions: [AgentTranscriptUsage.Session] {
+    localState.agentSessions.map {
+      AgentTranscriptUsage.Session(ticketID: $0.ticketID, provider: $0.provider.rawValue,
+                                   sessionID: $0.sessionID, label: $0.taskTitle ?? $0.ticketID)
     }
   }
 

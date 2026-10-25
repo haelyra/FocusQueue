@@ -7,6 +7,11 @@ import FocusQueueCore
 
 enum SideDocumentContent: Sendable {
     case markdown(String), text(String), pdf(URL), rendered(URL)
+
+    /// Markdown files preview rendered; every other text file shows as source.
+    static func text(_ text: String, for url: URL) -> SideDocumentContent {
+        ["md", "markdown"].contains(url.pathExtension.lowercased()) ? .markdown(text) : .text(text)
+    }
 }
 
 actor SideDocumentLoader {
@@ -22,7 +27,7 @@ actor SideDocumentLoader {
         guard (values.fileSize ?? 0) <= 2_000_000 else { throw DocumentPreviewError.message("This text file exceeds the 2 MB preview limit.") }
         let text = try String(contentsOf: url, encoding: .utf8)
         guard !text.contains("\0") else { throw DocumentPreviewError.message("This binary file has no text preview.") }
-        return ["md", "markdown"].contains(url.pathExtension.lowercased()) ? .markdown(text) : .text(text)
+        return .text(text, for: url)
     }
 }
 
@@ -57,10 +62,13 @@ final class DocumentFindState {
 
 struct DocumentFindBar: View {
     @Bindable var state: DocumentFindState
+    /// Header placement opens the field to the left so the Find button stays put.
+    var placesFieldFirst = false
     @FocusState private var queryIsFocused: Bool
 
     var body: some View {
         HStack(spacing: 6) {
+            if placesFieldFirst { queryControls }
             Button("Find", systemImage: "magnifyingglass") { state.activate() }
                 .buttonStyle(.bordered)
                 .keyboardShortcut("f", modifiers: .command)
@@ -72,24 +80,29 @@ struct DocumentFindBar: View {
                 .frame(width: 0, height: 0)
                 .opacity(0)
                 .accessibilityHidden(true)
-            if state.isPresented {
-                TextField("Find in document", text: $state.query)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($queryIsFocused)
-                    .onChange(of: state.query) { _, _ in state.find() }
-                    .onSubmit { state.find() }
-                Button { state.find(backwards: true) } label: { Image(systemName: "chevron.up") }
-                    .help("Find previous")
-                Button { state.find() } label: { Image(systemName: "chevron.down") }
-                    .help("Find next")
-                Button { state.dismiss() } label: { Image(systemName: "xmark") }
-                    .help("Close find")
-            }
+            if !placesFieldFirst { queryControls }
         }
         .font(.caption.weight(.medium))
         .onChange(of: state.request) { _, _ in
             guard state.isPresented else { return }
             DispatchQueue.main.async { queryIsFocused = true }
+        }
+    }
+
+    @ViewBuilder private var queryControls: some View {
+        if state.isPresented {
+            TextField("Find in document", text: $state.query)
+                .textFieldStyle(.roundedBorder)
+                .frame(minWidth: 140, idealWidth: 180, maxWidth: 220)
+                .focused($queryIsFocused)
+                .onChange(of: state.query) { _, _ in state.find() }
+                .onSubmit { state.find() }
+            Button { state.find(backwards: true) } label: { Image(systemName: "chevron.up") }
+                .help("Find previous")
+            Button { state.find() } label: { Image(systemName: "chevron.down") }
+                .help("Find next")
+            Button { state.dismiss() } label: { Image(systemName: "xmark") }
+                .help("Close find")
         }
     }
 }
@@ -195,8 +208,9 @@ struct SideDocumentPane: View {
     let document: URL
     let open: (URL) -> Void
     let close: () -> Void
-    let receiveDocument: (String) -> Bool
     let discuss: (PlanCanvasSelectionAction) -> Void
+    /// Called when the header title starts a drag, so the container can preview a split.
+    var dragStarted: (URL) -> Void = { _ in }
     @State private var find = DocumentFindState()
 
     private var store: DocumentContentStore { queue.documentContentStore }
@@ -215,8 +229,15 @@ struct SideDocumentPane: View {
                       systemImage: document.pathExtension.lowercased() == "pdf" ? "doc.richtext" : "doc.text")
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
-                    .draggable(document.absoluteString)
+                    .documentDrag(document, started: dragStarted)
                 Spacer()
+                if let editSession {
+                    Button("Save") { _ = store.saveEdit(document) }
+                        .buttonStyle(.borderedProminent).controlSize(.small)
+                        .disabled(editSession.draft == editSession.baseline)
+                        .keyboardShortcut("s", modifiers: .command)
+                        .help("Save to this file and return to the preview")
+                }
                 if document.isFileURL, store.loadedText(for: document) != nil {
                     Button {
                         if editSession != nil { store.discardEdit(document) }
@@ -231,15 +252,22 @@ struct SideDocumentPane: View {
                     Button { NSWorkspace.shared.open(document) } label: { Image(systemName: "arrow.up.forward.app") }
                         .help("Open in the default app")
                 }
-                Button(action: close) { Image(systemName: "xmark") }
-                    .help("Close this document viewer")
+                Button {
+                    // Pending edits are saved on close; a refused save keeps the pane open with its error.
+                    if store.saveBeforeClose(document) { close() }
+                } label: { Image(systemName: "xmark") }
+                    .help(editSession == nil ? "Close this document viewer" : "Save and close this document viewer")
             }
             DocumentMetadataStrip(url: document, taskID: scopeLabel, revision: entry.revision)
-            if editSession != nil { editor } else { viewer }
-        }
-        .dropDestination(for: String.self) { identifiers, _ in
-            guard let identifier = identifiers.last else { return false }
-            return receiveDocument(identifier)
+            // The viewer stays mounted under the editor, so saving reveals a rendered
+            // preview instead of building a new web view that paints white first.
+            ZStack {
+                VStack(spacing: 8) { viewer }
+                    .opacity(editSession == nil ? 1 : 0)
+                    .allowsHitTesting(editSession == nil)
+                    .accessibilityHidden(editSession != nil)
+                if editSession != nil { VStack(spacing: 8) { editor } }
+            }
         }
         .task(id: document.absoluteString) { store.ensureLoaded(document) }
     }
@@ -297,10 +325,6 @@ struct SideDocumentPane: View {
                 Button("Overwrite") { _ = store.saveEdit(document, overwrite: true) }
                     .help("Replace the newer file on disk with your draft")
             }
-            Button("Save") { _ = store.saveEdit(document) }
-                .buttonStyle(.borderedProminent)
-                .disabled(editSession.map { $0.draft == $0.baseline } ?? true)
-                .keyboardShortcut("s", modifiers: .command)
         }
     }
 }
@@ -536,5 +560,59 @@ struct PlanPaneSplit<Primary: View, Secondary: View>: View {
                 secondary().frame(width: max(1, available - width))
             }
         }
+    }
+}
+
+extension View {
+    /// Makes a document draggable by URL string and reports the drag start, so the
+    /// viewer can preview where the document would land before it is dropped.
+    func documentDrag(_ url: URL, started: @escaping (URL) -> Void) -> some View {
+        onDrag {
+            started(url)
+            return NSItemProvider(object: url.absoluteString as NSString)
+        }
+    }
+
+    /// Accepts a dragged document tab anywhere over the viewer area. While a tab
+    /// is being dragged the content below stops taking hits, so web and PDF views
+    /// cannot swallow the drop. A cancelled drag never reports its end, so the
+    /// next pointer movement over the idle area clears the stale drag.
+    func splitDropTarget(
+        tabs: [URL], dragged: Binding<URL?>, isTargeted: Binding<Bool>,
+        drop: @escaping (URL) -> Bool
+    ) -> some View {
+        allowsHitTesting(dragged.wrappedValue == nil)
+            .background(
+                Color.clear.contentShape(Rectangle()).onContinuousHover { phase in
+                    guard case .active = phase, dragged.wrappedValue != nil,
+                          !isTargeted.wrappedValue else { return }
+                    dragged.wrappedValue = nil
+                })
+            .dropDestination(for: String.self) { identifiers, _ in
+                defer { dragged.wrappedValue = nil; isTargeted.wrappedValue = false }
+                guard let identifier = identifiers.last,
+                      let url = tabs.first(where: { $0.absoluteString == identifier }) else { return false }
+                return drop(url)
+            } isTargeted: { isTargeted.wrappedValue = $0 }
+    }
+}
+
+/// The empty slot shown on the right while a tab is dragged over the viewer: the
+/// open document slides left to make room, signalling that the tab can split.
+struct SplitDropPlaceholder: View {
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "rectangle.split.2x1").font(.system(size: 26, weight: .regular))
+            Text("Drop to open side by side").font(.system(size: 13, weight: .semibold))
+        }
+        .foregroundStyle(Color.accentColor)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color.accentColor.opacity(0.7), style: StrokeStyle(lineWidth: 1.5, dash: [7, 5])))
+        .padding(.horizontal, 4)
+        .transition(.opacity)
+        .accessibilityLabel("Drop to open side by side")
     }
 }

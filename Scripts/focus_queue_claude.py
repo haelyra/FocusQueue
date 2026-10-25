@@ -103,7 +103,9 @@ def parse_token_usage(stdout: str) -> dict[str, int] | None:
     output_tokens = int(usage.get("output_tokens", 0) or 0)
     return {
         "inputTokens": input_tokens,
-        "cachedInputTokens": int(usage.get("cache_read_input_tokens", 0) or 0),
+        # Claude's input_tokens excludes cache reads and writes; analytics adds them back.
+        "cachedInputTokens": int(usage.get("cache_read_input_tokens", 0) or 0)
+        + int(usage.get("cache_creation_input_tokens", 0) or 0),
         "outputTokens": output_tokens,
         "reasoningOutputTokens": 0,
         "totalTokens": input_tokens + output_tokens,
@@ -382,8 +384,12 @@ def run_claude(
         )
         if usage_file is not None:
             write_token_usage(usage_file, stdout)
-        prompt_usage.record_provider_usage("claude", model, parse_token_usage(stdout),
-            support=Path(os.environ["FOCUS_QUEUE_SUPPORT_DIR"]) if os.environ.get("FOCUS_QUEUE_SUPPORT_DIR") else runtime.parent)
+        if usage_file is None:
+            # A caller that asks for a usage file records its own attributed event.
+            prompt_usage.record_provider_usage("claude", model, parse_token_usage(stdout),
+                source=os.environ.get("FOCUS_QUEUE_MODEL_USAGE_SOURCE") or "provider_usage",
+                run_id=os.environ.get("FOCUS_QUEUE_MODEL_USAGE_RUN_ID"),
+                support=Path(os.environ["FOCUS_QUEUE_SUPPORT_DIR"]) if os.environ.get("FOCUS_QUEUE_SUPPORT_DIR") else runtime.parent)
 
         if process.returncode != 0:
             detail = (stderr or stdout).strip()

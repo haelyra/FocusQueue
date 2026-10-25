@@ -16,27 +16,35 @@ struct PlanCanvasView: View {
   @State private var composerFocusRequest = 0
   @State private var showsWorkspaceMap = false
   @State private var workspaceMap = WorkspaceMapModel()
-  @State private var showsTaskSessions = false
   @State private var planFind = DocumentFindState()
+  @State private var draggedTab: URL?
+  @State private var isSplitTargeted = false
 
   private var sourceURL: URL {
     model.presentedPlanURL ?? URL(fileURLWithPath: model.taskContexts[ticket.id]?.planPath ?? "/")
   }
 
+  /// The central plan is in the primary viewer, so header Find searches it.
+  private var isCentralPlanVisible: Bool {
+    sideDocuments.primaryDocument == nil && !showsWorkspaceMap
+  }
+
+  /// The tab a split would act on: the right-hand document, or the one in front.
+  private var splitCandidate: URL? {
+    sideDocuments.secondaryDocument ?? sideDocuments.primaryDocument
+  }
+
+  /// A dragged tab is over the viewer and could open beside what is showing.
+  private var previewsSplit: Bool {
+    guard isSplitTargeted, sideDocuments.secondaryDocument == nil, let draggedTab else { return false }
+    return sideDocuments.canSplit(draggedTab)
+  }
+
   var body: some View {
     VStack(spacing: 10) {
-      HStack(alignment: .top, spacing: 8) {
-        Image(systemName: "square.grid.2x2.fill")
-          .font(.system(size: 14, weight: .semibold))
-          .foregroundStyle(.secondary)
-          .frame(width: 34, height: 34)
-          .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+      HStack(alignment: .center, spacing: 8) {
         VStack(alignment: .leading, spacing: 3) {
-          Text(
-            showsWorkspaceMap ? "Workspace map"
-              : (sideDocuments.primaryDocument?.lastPathComponent ?? (model.presentedPlanURL == nil ? "Central plan" : "Supporting document"))
-          )
-            .font(.system(size: 20, weight: .bold, design: .rounded))
+          documentTabBar
           HStack(spacing: 4) {
             Text("\(ticket.id) ·")
             RenamableTaskTitle(
@@ -46,33 +54,29 @@ struct PlanCanvasView: View {
           .foregroundStyle(.secondary)
         }
         Spacer()
-        Button("Sessions", systemImage: "rectangle.split.2x2") { showsTaskSessions = true }
-          .help("Open this task's tmux panes and layout")
-        Label(
-          isEditing ? "Edit source" : "View · select to discuss",
-          systemImage: isEditing ? "pencil.line" : "cursorarrow.click.2"
-        )
-        .font(.system(size: 10.5, weight: .medium))
-        .foregroundStyle(isEditing ? Color.orange : Color.secondary)
-        .padding(.horizontal, 9).padding(.vertical, 6)
-        .background(Color.secondary.opacity(0.09), in: Capsule())
-        Menu {
-          Button("Central plan") {
-            sideDocuments.showCentralContent()
-            showsWorkspaceMap = false
-            model.openPlan(for: ticket)
-          }
-          ForEach(ticket.planLinks) { link in
-            Button(link.label) {
-              if let url = ResourceLocator.url(for: link.url) { openDocument(url) }
-            }
-          }
-        } label: {
-          Image(systemName: "doc.on.doc").frame(width: 40, height: 40)
+        if isCentralPlanVisible, !isEditing {
+          DocumentFindBar(state: planFind, placesFieldFirst: true)
         }
-        .menuStyle(.borderlessButton).fixedSize().disabled(isEditing)
-        .help("Choose the central plan or a supporting document").accessibilityLabel("Choose plan")
-        if model.presentedPlanURL == nil, sideDocuments.primaryDocument == nil {
+        if let candidate = splitCandidate,
+           sideDocuments.hasSecondaryViewer || sideDocuments.canSplit(candidate) {
+          Button {
+            toggleSplit(candidate)
+          } label: {
+            Image(systemName: sideDocuments.hasSecondaryViewer ? "rectangle" : "rectangle.split.2x1")
+          }
+          .buttonStyle(.plain).frame(width: 40, height: 40).disabled(isEditing || isSaving)
+          .help(sideDocuments.hasSecondaryViewer ? "Close split view" : "Open this document in split view")
+          .accessibilityLabel(sideDocuments.hasSecondaryViewer ? "Close split view" : "Open split view")
+        }
+        if isEditing {
+          Button("Save") { Task { _ = await saveCentralPlanEdit() } }
+            .buttonStyle(.borderedProminent).disabled(isSaving || editDraft == editBaseline)
+            .keyboardShortcut("s", modifiers: .command)
+            .help(editBaseline == model.presentedPlanMarkdown
+              ? "Save the plan and return to the preview"
+              : "Save the reconciled draft and return to the preview")
+        }
+        if model.presentedPlanURL == nil, sideDocuments.primaryDocument == nil, !showsWorkspaceMap {
           Button {
             showsWorkspaceMap = false
             editDraft = model.planEditDrafts[ticket.id]?.markdown ?? model.presentedPlanMarkdown
@@ -87,12 +91,12 @@ struct PlanCanvasView: View {
           .accessibilityLabel(isEditing ? "Preview plan" : "Edit central plan")
         }
         Button {
-          model.closePlan()
+          Task { await closePlanSavingEdits() }
         } label: {
           Image(systemName: "xmark")
         }
-        .buttonStyle(.plain).frame(width: 40, height: 40)
-        .help("Collapse the plan and return to the queue").accessibilityLabel("Close plan")
+        .buttonStyle(.plain).frame(width: 40, height: 40).disabled(isSaving)
+        .help("Save any edits and return to the queue").accessibilityLabel("Close plan")
       }
       .padding(12)
       .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -133,38 +137,40 @@ struct PlanCanvasView: View {
             PlanPaneSplit(initialFraction: 0.5, minimumPrimary: 500, minimumSecondary: 460) {
               primaryViewer
             } secondary: {
-              SideDocumentPane(
-                queue: model, scopeLabel: ticket.id, document: secondaryDocument,
-                open: openDocument, close: { sideDocuments.close(secondaryDocument) },
-                receiveDocument: moveDocumentToSecondary,
-                discuss: { discussDocument($0, for: secondaryDocument) })
-                .padding(.horizontal, 4)
+              documentPane(secondaryDocument).padding(.horizontal, 4)
             }
             .frame(width: max(geometry.size.width, QueueInspectorLayout.documentPairMinimumWidth), height: geometry.size.height)
-          } else if let primaryDocument = sideDocuments.primaryDocument {
-            PlanPaneSplit(initialFraction: 0.74, minimumPrimary: QueueInspectorLayout.documentMinimumWidth,
-                          minimumSecondary: QueueInspectorLayout.chatMinimumWidth) {
-              primaryViewer
+          } else {
+            // One layout for the resting and drag-preview states, so the open
+            // document slides left to make room instead of being replaced.
+            let previewing = previewsSplit
+            PlanPaneSplit(
+              initialFraction: previewing ? 0.5 : 0.74, minimumPrimary: QueueInspectorLayout.documentMinimumWidth,
+              minimumSecondary: previewing ? 460 : QueueInspectorLayout.chatMinimumWidth
+            ) {
+              leftViewer(previewing ? draggedTab.flatMap { sideDocuments.splitCompanion(for: $0) } : nil)
             } secondary: {
-              if sideDocuments.centralChatCollapsed {
+              if previewing {
+                SplitDropPlaceholder()
+              } else if let primaryDocument = sideDocuments.primaryDocument, sideDocuments.centralChatCollapsed {
                 DocumentConversationPane(queue: model, scope: .task(ticket.id), document: primaryDocument)
               } else {
                 conversation
               }
             }
-            .frame(width: max(geometry.size.width, QueueInspectorLayout.inspectorMinimumWidth), height: geometry.size.height)
-          } else {
-            PlanPaneSplit(initialFraction: 0.74, minimumPrimary: QueueInspectorLayout.documentMinimumWidth,
-                          minimumSecondary: QueueInspectorLayout.chatMinimumWidth) {
-              document
-            } secondary: { conversation }
-            .frame(width: max(geometry.size.width, QueueInspectorLayout.inspectorMinimumWidth), height: geometry.size.height)
+            .frame(
+              width: max(geometry.size.width, previewing
+                ? QueueInspectorLayout.documentPairMinimumWidth : QueueInspectorLayout.inspectorMinimumWidth),
+              height: geometry.size.height)
           }
         }.scrollIndicators(.automatic)
+          .animation(.snappy(duration: 0.22), value: previewsSplit)
       }
+      .splitDropTarget(
+        tabs: sideDocuments.tabs, dragged: $draggedTab, isTargeted: $isSplitTargeted
+      ) { sideDocuments.split($0) }
 
     }.frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
-      .sheet(isPresented: $showsTaskSessions) { TaskSessionsView(model: model, initialTaskID: ticket.id) }
       .onAppear { rememberPresentedDocument() }
       .onChange(of: model.presentedPlanURL) { _, _ in
         isEditing = false
@@ -175,27 +181,33 @@ struct PlanCanvasView: View {
 
   @ViewBuilder private var primaryViewer: some View {
     if let primaryDocument = sideDocuments.primaryDocument {
-      VStack(spacing: 8) {
-        documentTabBar
-        SideDocumentPane(
-          queue: model, scopeLabel: ticket.id, document: primaryDocument,
-          open: openDocument, close: { sideDocuments.close(primaryDocument) },
-          receiveDocument: moveDocumentToSecondary,
-          discuss: { discussDocument($0, for: primaryDocument) })
-      }
+      documentPane(primaryDocument)
     } else {
       document
     }
   }
 
+  /// The left pane, or what it will hold once a dragged tab splits off to the right.
+  @ViewBuilder private func leftViewer(_ companion: DocumentSplitCompanion?) -> some View {
+    switch companion {
+    case .document(let url) where url != sideDocuments.primaryDocument: documentPane(url)
+    case .centralContent where sideDocuments.primaryDocument != nil: document
+    default: primaryViewer
+    }
+  }
+
+  private func documentPane(_ url: URL) -> some View {
+    SideDocumentPane(
+      queue: model, scopeLabel: ticket.id, document: url,
+      open: openDocument, close: { sideDocuments.close(url) },
+      discuss: { discussDocument($0, for: url) },
+      dragStarted: { draggedTab = $0 })
+  }
+
   private var document: some View {
-    VStack(spacing: 8) {
-      documentTabBar
+    VStack(alignment: .leading, spacing: 8) {
       if !showsWorkspaceMap, let context = model.taskContexts[ticket.id] {
         DocumentMetadataStrip(url: URL(fileURLWithPath: context.planPath), taskID: ticket.id)
-      }
-      if !showsWorkspaceMap, !isEditing {
-        DocumentFindBar(state: planFind)
       }
       if showsWorkspaceMap {
         WorkspaceMapView(queue: model, ticket: ticket, model: workspaceMap,
@@ -207,90 +219,89 @@ struct PlanCanvasView: View {
             canvasSelection = nil
             composerFocusRequest &+= 1
           })
-      } else if isEditing {
-        if editBaseline != model.presentedPlanMarkdown {
-          VStack(alignment: .leading, spacing: 6) {
-            Text(
-              "Another agent changed the plan. Merge the latest changes into your draft before saving."
-            )
-            .font(.caption).foregroundStyle(.orange)
-            DisclosureGroup("Latest saved version") {
-              ScrollView {
-                Text(model.presentedPlanMarkdown).font(.system(size: 11, design: .monospaced))
-                  .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-              }.frame(maxHeight: 150)
-            }.font(.caption)
-          }
-        }
-        TextEditor(text: $editDraft).font(.system(size: 13, design: .monospaced))
-          .accessibilityLabel("Central plan Markdown")
-          .onChange(of: editDraft) { _, text in
-            model.updatePlanDraft(text, baseline: editBaseline, ticketID: ticket.id)
-          }
-        HStack {
-          Text("Saves an archive snapshot. Conflicting agent edits are preserved.")
-            .font(.caption2).foregroundStyle(.secondary)
-          Spacer()
-          Button("Keep draft") { isEditing = false }.disabled(isSaving)
-          Button(
-            editBaseline == model.presentedPlanMarkdown ? "Save plan" : "Save reconciled draft"
-          ) {
-            isSaving = true
-            let expected =
-              editBaseline == model.presentedPlanMarkdown
-              ? editBaseline : model.presentedPlanMarkdown
-            Task {
-              if await model.savePlan(editDraft, expectedMarkdown: expected, ticketID: ticket.id) {
-                isEditing = false
-              }
-              isSaving = false
-            }
-          }.buttonStyle(.borderedProminent).disabled(isSaving)
-        }
-      } else if model.isPlanLoading {
-        ProgressView("Loading central plan…").frame(maxWidth: .infinity, maxHeight: .infinity)
-      } else if let error = model.planError, model.presentedPlanMarkdown.isEmpty {
-        ContentUnavailableView {
-          Label("Could not load this plan", systemImage: "doc.badge.ellipsis")
-        } description: {
-          Text(error)
-        } actions: {
-          Button("Retry") { model.openPlan(for: ticket, sourceURL: model.presentedPlanURL) }
-        }
       } else {
-        if model.presentedPlanURL == nil, model.planEditDrafts[ticket.id] != nil {
-          HStack {
-            Text("Saved draft available").font(.caption).foregroundStyle(.secondary)
-            Spacer()
-            Button("Resume edit") {
-              editDraft = model.planEditDrafts[ticket.id]!.markdown
-              editBaseline = model.planEditDrafts[ticket.id]!.baseline
-              isEditing = true
+        ZStack(alignment: .topLeading) {
+          VStack(alignment: .leading, spacing: 8) {
+            if model.isPlanLoading {
+              ProgressView("Loading central plan…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let error = model.planError, model.presentedPlanMarkdown.isEmpty {
+              ContentUnavailableView {
+                Label("Could not load this plan", systemImage: "doc.badge.ellipsis")
+              } description: {
+                Text(error)
+              } actions: {
+                Button("Retry") { model.openPlan(for: ticket, sourceURL: model.presentedPlanURL) }
+              }
+            } else {
+              if model.presentedPlanURL == nil, model.planEditDrafts[ticket.id] != nil {
+                HStack {
+                  Text("Saved draft available").font(.caption).foregroundStyle(.secondary)
+                  Spacer()
+                  Button("Resume edit") {
+                    editDraft = model.planEditDrafts[ticket.id]!.markdown
+                    editBaseline = model.planEditDrafts[ticket.id]!.baseline
+                    isEditing = true
+                  }
+                  Button("Discard draft") { model.discardPlanDraft(ticketID: ticket.id) }
+                }
+              }
+              modeIndicator
+              EmbeddedPlanDocument(
+                markdown: model.presentedPlanMarkdown, sourceURL: sourceURL,
+                appearance: model.appearance, accentStyle: model.accentStyle,
+                canvasSelection: canvasSelection,
+                open: { url in
+                  openDocument(url)
+                },
+                select: { action in
+                  canvasSelection = action.selection
+                  if !action.initialText.isEmpty { chatDraft += action.initialText }
+                  composerFocusRequest &+= 1
+                },
+                findQuery: planFind.query,
+                findRequest: planFind.request,
+                findSearchesBackwards: planFind.searchesBackwards
+              )
+              .clipShape(RoundedRectangle(cornerRadius: 12))
+              .overlay(
+                RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                  .allowsHitTesting(false)
+              )
             }
-            Button("Discard draft") { model.discardPlanDraft(ticketID: ticket.id) }
+          }
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .opacity(isEditing ? 0 : 1).allowsHitTesting(!isEditing).accessibilityHidden(isEditing)
+          if isEditing {
+            VStack(alignment: .leading, spacing: 8) {
+              if editBaseline != model.presentedPlanMarkdown {
+                VStack(alignment: .leading, spacing: 6) {
+                  Text(
+                    "Another agent changed the plan. Merge the latest changes into your draft before saving."
+                  )
+                  .font(.caption).foregroundStyle(.orange)
+                  DisclosureGroup("Latest saved version") {
+                    ScrollView {
+                      Text(model.presentedPlanMarkdown).font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    }.frame(maxHeight: 150)
+                  }.font(.caption)
+                }
+              }
+              modeIndicator
+              TextEditor(text: $editDraft).font(.system(size: 13, design: .monospaced))
+                .accessibilityLabel("Central plan Markdown")
+                .onChange(of: editDraft) { _, text in
+                  model.updatePlanDraft(text, baseline: editBaseline, ticketID: ticket.id)
+                }
+              HStack {
+                Text("Save in the top bar writes an archive snapshot. Conflicting agent edits are preserved.")
+                  .font(.caption2).foregroundStyle(.secondary)
+                Spacer()
+                Button("Keep draft") { isEditing = false }.disabled(isSaving)
+              }
+            }
           }
         }
-        EmbeddedPlanDocument(
-          markdown: model.presentedPlanMarkdown, sourceURL: sourceURL,
-          appearance: model.appearance, accentStyle: model.accentStyle,
-          canvasSelection: canvasSelection,
-          open: { url in
-            openDocument(url)
-          },
-          select: { action in
-            canvasSelection = action.selection
-            if !action.initialText.isEmpty { chatDraft += action.initialText }
-            composerFocusRequest &+= 1
-          },
-          findQuery: planFind.query,
-          findRequest: planFind.request,
-          findSearchesBackwards: planFind.searchesBackwards
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(
-          RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.08), lineWidth: 1)
-            .allowsHitTesting(false)
-        )
       }
     }.frame(
       minWidth: QueueInspectorLayout.documentMinimumWidth, idealWidth: 540,
@@ -301,61 +312,122 @@ struct PlanCanvasView: View {
 
   private var documentTabBar: some View {
     ScrollView(.horizontal) {
-      HStack(spacing: 6) {
-        Button("Central plan") {
+      HStack(alignment: .firstTextBaseline, spacing: 18) {
+        documentTab("Central plan", isSelected: isCentralPlanVisible) {
           sideDocuments.showCentralContent()
           showsWorkspaceMap = false
           model.openPlan(for: ticket)
         }
-          .buttonStyle(.bordered)
-          .tint(model.presentedPlanURL == nil && !showsWorkspaceMap ? .accentColor : .secondary)
-          .background(Color(nsColor: .controlBackgroundColor).opacity(0.96), in: Capsule())
-          .overlay(Capsule().stroke(Color.primary.opacity(0.16), lineWidth: 1).allowsHitTesting(false))
-        Button("Map") {
+        documentTab("Map", isSelected: sideDocuments.primaryDocument == nil && showsWorkspaceMap) {
           sideDocuments.showCentralContent()
           showsWorkspaceMap = true
           canvasSelection = nil
         }
-          .buttonStyle(.bordered).tint(showsWorkspaceMap ? .accentColor : .secondary)
-          .background(Color(nsColor: .controlBackgroundColor).opacity(0.96), in: Capsule())
-          .overlay(Capsule().stroke(Color.primary.opacity(0.16), lineWidth: 1).allowsHitTesting(false))
           .help("See this task’s workspaces, agents, and files")
         ForEach(sideDocuments.tabs, id: \.self) { url in
-          HStack(spacing: 4) {
-            Button(url.isFileURL ? url.lastPathComponent : (url.host ?? url.absoluteString)) {
+          HStack(alignment: .firstTextBaseline, spacing: 5) {
+            documentTab(
+              url.isFileURL ? url.lastPathComponent : (url.host ?? url.absoluteString),
+              isSelected: sideDocuments.primaryDocument == url || sideDocuments.secondaryDocument == url
+            ) {
               showsWorkspaceMap = false
               sideDocuments.select(url)
             }
-            .lineLimit(1)
-            Button { sideDocuments.close(url) } label: {
-              Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+            if sideDocuments.secondaryDocument == url {
+              Image(systemName: "rectangle.righthalf.inset.filled")
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+                .accessibilityLabel("Shown in split view")
             }
+            Button { closeTab(url) } label: {
+              Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
             .accessibilityLabel("Close \(url.lastPathComponent)")
           }
-          .font(.caption.weight(.medium))
-          .foregroundStyle(sideDocuments.primaryDocument == url ? Color.accentColor : Color.primary)
-          .padding(.horizontal, 8).padding(.vertical, 6)
-          .background(
-            Color(nsColor: .controlBackgroundColor).opacity(sideDocuments.primaryDocument == url ? 0.98 : 0.94),
-            in: RoundedRectangle(cornerRadius: 7))
-          .overlay(
-            RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.18), lineWidth: 1)
-              .allowsHitTesting(false)
-          )
-          .draggable(url.absoluteString)
+          .documentDrag(url) { draggedTab = $0 }
           .help(url.absoluteString)
+          .contextMenu {
+            if sideDocuments.secondaryDocument == url {
+              Button("Close Split View", systemImage: "rectangle") { sideDocuments.endSplit() }
+            } else if sideDocuments.canSplit(url) {
+              Button("Open in Split View", systemImage: "rectangle.split.2x1") { toggleSplit(url) }
+            }
+            Button("Close Tab", systemImage: "xmark") { closeTab(url) }
+          }
         }
       }
       .padding(.vertical, 2)
       .dropDestination(for: String.self) { identifiers, _ in
+        draggedTab = nil
         guard let identifier = identifiers.last,
               let url = sideDocuments.tabs.first(where: { $0.absoluteString == identifier }) else { return false }
         showsWorkspaceMap = false
         sideDocuments.select(url)
         return true
       }
-    }.disabled(isEditing || isSaving)
+    }.scrollIndicators(.never)
+      .disabled(isEditing || isSaving)
       .accessibilityLabel("Open documents")
+  }
+
+  /// Text tab: the selected document is bold primary, others stay readable gray.
+  private func documentTab(_ title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+      Text(title)
+        .font(.system(size: isSelected ? 17 : 15, weight: isSelected ? .bold : .medium))
+        .foregroundStyle(isSelected ? Color.primary : Color.primary.opacity(0.62))
+        .lineLimit(1)
+    }
+    .buttonStyle(.plain)
+    .accessibilityAddTraits(isSelected ? .isSelected : [])
+  }
+
+  private var modeIndicator: some View {
+    Label(
+      isEditing ? "Edit source" : "View · select to discuss",
+      systemImage: isEditing ? "pencil.line" : "cursorarrow.click.2"
+    )
+    .font(.system(size: 10.5, weight: .medium))
+    .foregroundStyle(isEditing ? Color.orange : Color.secondary)
+    .padding(.horizontal, 9).padding(.vertical, 6)
+    .background(Color.secondary.opacity(0.09), in: Capsule())
+  }
+
+  /// Saves the central plan draft. A conflict with another agent's edit keeps
+  /// the editor open; the reconciled-draft save is a deliberate click only.
+  private func saveCentralPlanEdit() async -> Bool {
+    guard isEditing, !isSaving else { return !isEditing }
+    isSaving = true
+    defer { isSaving = false }
+    let expected = editBaseline == model.presentedPlanMarkdown ? editBaseline : model.presentedPlanMarkdown
+    guard await model.savePlan(editDraft, expectedMarkdown: expected, ticketID: ticket.id) else { return false }
+    isEditing = false
+    return true
+  }
+
+  /// Closing a document tab saves its pending edit first; a refused save keeps it open.
+  private func closeTab(_ url: URL) {
+    if model.documentContentStore.saveBeforeClose(url) { sideDocuments.close(url) }
+  }
+
+  /// Closing the plan saves every pending edit. If any save is refused, the
+  /// plan stays open so the error and the draft remain in view.
+  private func closePlanSavingEdits() async {
+    if isEditing {
+      if editDraft == editBaseline { isEditing = false }
+      else if editBaseline != model.presentedPlanMarkdown {
+        // The editor already warns about the newer plan; never overwrite it silently.
+        return
+      } else if !(await saveCentralPlanEdit()) { return }
+    }
+    for url in sideDocuments.tabs {
+      guard model.documentContentStore.saveBeforeClose(url) else {
+        sideDocuments.select(url)
+        return
+      }
+    }
+    model.closePlan()
   }
 
   private func rememberPresentedDocument() {
@@ -375,18 +447,19 @@ struct PlanCanvasView: View {
     documentConversation.draft += "Selected passage: \(action.selection.excerpt)\n\(action.initialText)"
   }
 
-  private func moveDocumentToSecondary(_ identifier: String) -> Bool {
-    guard let url = sideDocuments.tabs.first(where: { $0.absoluteString == identifier }) else { return false }
-    sideDocuments.moveToSecondary(url)
-    return true
+  /// Open `url` beside the document that was open before it, or leave the split.
+  private func toggleSplit(_ url: URL) {
+    if sideDocuments.hasSecondaryViewer {
+      sideDocuments.endSplit()
+    } else {
+      sideDocuments.split(url)
+    }
   }
 
   private var conversation: some View {
     VStack(alignment: .leading, spacing: 8) {
-      Label("Task orchestrator", systemImage: "terminal")
-        .font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
       QueueAgentChatView(
-        model: model, draft: $chatDraft, ticketID: ticket.id,
+        model: model, draft: $chatDraft, title: "Task Chat", ticketID: ticket.id,
         canvasSelection: $canvasSelection, focusRequest: composerFocusRequest)
     }.padding(.horizontal, 4)
       .frame(
@@ -417,6 +490,13 @@ struct EmbeddedPlanDocument: NSViewRepresentable {
     return view
   }
 
+  /// Mirrors `--page` in `MarkdownHTMLRenderer`.
+  static func pageBackground(_ appearance: QueueAppearance) -> NSColor {
+    appearance == .dark
+      ? NSColor(srgbRed: 0x24 / 255, green: 0x24 / 255, blue: 0x24 / 255, alpha: 1)
+      : NSColor(srgbRed: 0xf3 / 255, green: 0xf3 / 255, blue: 0xf3 / 255, alpha: 1)
+  }
+
   static func webConfiguration(coordinator: Coordinator) -> WKWebViewConfiguration {
     let configuration = WKWebViewConfiguration()
     configuration.websiteDataStore = .nonPersistent()
@@ -443,6 +523,8 @@ struct EmbeddedPlanDocument: NSViewRepresentable {
       markdown: markdown, sourceURL: sourceURL,
       appearance: appearance, accentStyle: accentStyle)
     {
+      // Match the page background so a reload never flashes the default white.
+      view.underPageBackgroundColor = Self.pageBackground(appearance)
       view.appearance = NSAppearance(named: appearance == .dark ? .darkAqua : .aqua)
       context.coordinator.willLoadDocument()
       context.coordinator.pendingInitialLoad = true

@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from focus_queue_lock import acquire_exclusive_file_lock
+import focus_queue_prompt_usage as prompt_usage
 import focus_queue_triage
 
 
@@ -2434,6 +2435,13 @@ def classification_schema_path(config: dict[str, Any], runtime: Path) -> Path:
 
 def classify(config: dict[str, Any], bundle: dict[str, Any], runtime: Path) -> dict[str, Any]:
     prompt = proposal_prompt(bundle, int(config["maxNewTasksPerRun"]))
+    run_id = str(uuid.uuid4())
+    # The runtime always lives in <support>/ingestion. Agent shells export the live
+    # FOCUS_QUEUE_SUPPORT_DIR, so honoring it let fixture runs count as real reports.
+    metrics_support = runtime.parent
+    prompt_usage.record("daily_report", "full_prompt", prompt=prompt,
+                        provider=agent_provider(config), model=str(config.get("agentModel") or ""),
+                        run_id=run_id, support=metrics_support)
     runtime.mkdir(parents=True, exist_ok=True)
     prompt_path: Path | None = None
     usage_path = runtime / "latest-classification-usage.json"
@@ -2479,6 +2487,13 @@ def classify(config: dict[str, Any], bundle: dict[str, Any], runtime: Path) -> d
             cwd=classifier_workspace,
             timeout=150,
         )
+        if usage_path.is_file():
+            try:
+                prompt_usage.record_provider_usage(agent_provider(config), classification_model,
+                    json.loads(usage_path.read_text()), source="daily_report", run_id=run_id,
+                    support=metrics_support)
+            except (OSError, ValueError):
+                pass
         return extract_json(result.stdout)
     finally:
         if prompt_path is not None:
@@ -2601,6 +2616,13 @@ def run_deep_pass(
     *,
     model: str | None,
 ) -> dict[str, Any]:
+    run_id = str(uuid.uuid4())
+    # The runtime always lives in <support>/ingestion. Agent shells export the live
+    # FOCUS_QUEUE_SUPPORT_DIR, so honoring it let fixture runs count as real reports.
+    metrics_support = runtime.parent
+    prompt_usage.record("daily_report_deep_pass", "full_prompt", prompt=prompt,
+                        provider=agent_provider(config), model=model, run_id=run_id,
+                        support=metrics_support)
     runtime.mkdir(parents=True, exist_ok=True)
     prompt_path: Path | None = None
     classifier_workspace = runtime / "classifier-workspace"
@@ -2642,6 +2664,13 @@ def run_deep_pass(
             cwd=classifier_workspace,
             timeout=280,
         )
+        if usage_path.is_file():
+            try:
+                prompt_usage.record_provider_usage(agent_provider(config), model,
+                    json.loads(usage_path.read_text()), source="daily_report_deep_pass",
+                    run_id=run_id, support=metrics_support)
+            except (OSError, ValueError):
+                pass
         return extract_json(result.stdout)
     finally:
         if prompt_path is not None:

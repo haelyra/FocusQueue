@@ -73,7 +73,7 @@ struct TaskCreatorSheet: View {
 
         Section {
           Toggle("Launch an agent now", isOn: $launchesAgent)
-          if launchesAgent { agentOptions }
+          if launchesAgent { AgentLaunchOptions(model: model, agent: $agent) }
         } footer: {
           Text(launchesAgent
             ? "Each provider remembers the model and effort you last launched it with. The agent gets its own placement capsule, worktree, and tmux pane."
@@ -115,81 +115,13 @@ struct TaskCreatorSheet: View {
     .onAppear { if autofocusPrompt { promptFocused = true } }
   }
 
-  @ViewBuilder private var agentOptions: some View {
-    Picker("Provider", selection: Binding(
-      get: { agent.provider },
-      set: { provider in
-        guard provider != agent.provider else { return }
-        // Models, efforts, and plugin IDs belong to one provider; restore the
-        // ones it last launched with.
-        let last = model.lastAgentLaunch(for: provider)
-        agent.provider = provider
-        agent.model = last.model
-        agent.effort = last.effort
-        agent.pluginOverrides = last.pluginOverrides
-      }
-    )) {
-      ForEach(AgentProvider.allCases, id: \.self) { provider in
-        Label(provider.displayName, systemImage: provider.symbolName).tag(provider)
-      }
-    }.pickerStyle(.segmented)
-    Picker("Model", selection: Binding(
-      get: { agent.model ?? "" },
-      set: { agent.model = $0.isEmpty ? nil : $0 }
-    )) {
-      ForEach(model.agentModelChoices(for: agent.provider)) { choice in
-        Text(choice.label).tag(choice.model ?? "")
-      }
-      if let current = agent.model,
-         !model.agentModelChoices(for: agent.provider).contains(where: { $0.model == current }) {
-        Text(current).tag(current)
-      }
-    }
-    Picker("Effort", selection: Binding(
-      get: { agent.effort ?? "" },
-      set: { agent.effort = $0.isEmpty ? nil : $0 }
-    )) {
-      Text("Default").tag("")
-      ForEach(AppConfiguration.agentEffortLevels(for: agent.provider), id: \.self) { Text($0).tag($0) }
-      if let current = agent.effort,
-         !AppConfiguration.agentEffortLevels(for: agent.provider).contains(current) {
-        Text(current).tag(current)
-      }
-    }
-    Picker("Workspace", selection: Binding(
-      get: { agent.workspacePolicy ?? .isolatedCommittedSnapshot },
-      set: { agent.workspacePolicy = $0 }
-    )) {
-      Text("Isolated snapshot of the project").tag(AgentWorkspacePolicy.isolatedCommittedSnapshot)
-      Text("Isolated clean checkout").tag(AgentWorkspacePolicy.isolatedCleanCheckout)
-      Text("Existing checkout").tag(AgentWorkspacePolicy.existingCheckout)
-    }
-    Toggle("Open in tmux", isOn: Binding(
-      get: { agent.useTmux ?? true }, set: { agent.useTmux = $0 }))
-    Toggle("Start the agent with this prompt", isOn: Binding(
-      get: { agent.includePrompt ?? true }, set: { agent.includePrompt = $0 }))
-  }
-
   @ViewBuilder private var advancedOptions: some View {
     VStack(alignment: .leading, spacing: 10) {
       Text("Plugins for this launch").font(.system(size: 12, weight: .semibold))
-      if !launchesAgent {
-        Text("Plugins apply when an agent launches.").font(.caption).foregroundStyle(.secondary)
-      } else if agent.provider == .kimi {
-        Text("Kimi has no plugin system.").font(.caption).foregroundStyle(.secondary)
-      } else if plugins.isEmpty {
-        Text("No \(agent.provider.displayName) plugins are installed.").font(.caption).foregroundStyle(.secondary)
+      if launchesAgent {
+        AgentPluginOptions(agent: $agent, plugins: plugins)
       } else {
-        ForEach(plugins) { plugin in
-          Toggle(isOn: pluginBinding(plugin)) {
-            HStack(spacing: 6) {
-              Text(plugin.isECC ? "ECC" : plugin.name)
-              Text(plugin.id).font(.caption).foregroundStyle(.secondary)
-            }
-          }
-        }
-        Text("Changes apply to this agent only; your saved \(agent.provider.displayName) settings stay as they are.")
-          .font(.caption).foregroundStyle(.secondary)
+        Text("Plugins apply when an agent launches.").font(.caption).foregroundStyle(.secondary)
       }
       Divider()
       TextField("Done when", text: $doneWhen, axis: .vertical).lineLimit(1...3)
@@ -198,17 +130,6 @@ struct TaskCreatorSheet: View {
         DatePicker("Hard due date", selection: $dueDate, displayedComponents: .date)
       }
     }.padding(.top, 6)
-  }
-
-  /// An override is stored only when it differs from the saved enablement.
-  private func pluginBinding(_ plugin: ProviderPlugin) -> Binding<Bool> {
-    Binding(
-      get: { agent.pluginOverrides?[plugin.id] ?? plugin.enabled },
-      set: { enabled in
-        var overrides = agent.pluginOverrides ?? [:]
-        overrides[plugin.id] = enabled == plugin.enabled ? nil : enabled
-        agent.pluginOverrides = overrides.isEmpty ? nil : overrides
-      })
   }
 
   private func matchBanner(_ ticket: DashboardTicket, _ suggestion: TaskPlacementSuggestion) -> some View {
@@ -255,5 +176,196 @@ struct TaskCreatorSheet: View {
         message = reason
       }
     }
+  }
+}
+
+/// The card's New Agent sheet: the + task creator's prompt and launch options
+/// for one agent on a task that already exists, so placement is skipped.
+struct TaskAgentCreatorSheet: View {
+  let model: QueueViewModel
+  let ticket: DashboardTicket
+  @Environment(\.dismiss) private var dismiss
+  @FocusState private var promptFocused: Bool
+  @State private var prompt = ""
+  @State private var title = ""
+  @State private var agent: AgentLaunchPreset
+  @State private var plugins: [ProviderPlugin] = []
+  @State private var showsAdvanced = false
+
+  init(model: QueueViewModel, ticket: DashboardTicket) {
+    self.model = model
+    self.ticket = ticket
+    _agent = State(initialValue: model.taskCreatorLaunchDefaults)
+  }
+
+  private var trimmedPrompt: String { prompt.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      VStack(alignment: .leading, spacing: 3) {
+        Text("New agent").font(.title2.bold())
+        Text("Add to \(ticket.id) · \(ticket.title)")
+          .font(.callout).foregroundStyle(.secondary).lineLimit(1)
+      }
+
+      Form {
+        Section {
+          ZStack(alignment: .topLeading) {
+            if prompt.isEmpty {
+              Text("Enter prompt").foregroundStyle(.tertiary)
+                .padding(.top, 8).padding(.leading, 5).allowsHitTesting(false)
+            }
+            TextEditor(text: $prompt)
+              .font(.body).frame(minHeight: 130)
+              .scrollContentBackground(.hidden)
+              .focused($promptFocused)
+              .accessibilityLabel("Agent prompt")
+          }
+          TextField("Title (optional)", text: $title,
+                    prompt: Text("Leave blank for a prompt-derived title"))
+        }
+
+        Section {
+          AgentLaunchOptions(model: model, agent: $agent)
+        } footer: {
+          Text("Each provider remembers the model and effort you last launched it with. The agent gets its own worktree and a pane in this task's tmux session.")
+            .font(.caption).foregroundStyle(.secondary)
+        }
+
+        Section {
+          DisclosureGroup("Advanced", isExpanded: $showsAdvanced) {
+            VStack(alignment: .leading, spacing: 10) {
+              Text("Plugins for this launch").font(.system(size: 12, weight: .semibold))
+              AgentPluginOptions(agent: $agent, plugins: plugins)
+            }.padding(.top, 6)
+          }
+        }
+      }
+      .formStyle(.grouped)
+
+      HStack {
+        Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+        Spacer()
+        Button("Launch agent") {
+          model.launchPromptedAgent(for: ticket, prompt: prompt, title: title, preset: agent)
+          dismiss()
+        }
+        .buttonStyle(.borderedProminent)
+        .keyboardShortcut(.defaultAction)
+        .disabled(trimmedPrompt.isEmpty || ticket.isCompleted || model.launchingTaskIDs.contains(ticket.id))
+      }
+    }
+    .padding(22)
+    .frame(width: 560, height: 600)
+    .task(id: agent.provider) { plugins = ProviderPluginCatalog.installed(for: agent.provider) }
+    .onAppear { promptFocused = true }
+  }
+}
+
+/// Provider, model, effort, workspace, and launch toggles for one agent.
+/// Shared by the + task creator and the card's New Agent sheet.
+struct AgentLaunchOptions: View {
+  let model: QueueViewModel
+  @Binding var agent: AgentLaunchPreset
+
+  static func preset(
+    selecting provider: AgentProvider, from current: AgentLaunchPreset,
+    lastLaunch: AgentLaunchPreset
+  ) -> AgentLaunchPreset {
+    guard provider != current.provider else { return current }
+    var selected = current
+    selected.provider = provider
+    selected.model = lastLaunch.model
+    selected.effort = lastLaunch.effort
+    selected.pluginOverrides = lastLaunch.pluginOverrides
+    return selected
+  }
+
+  var body: some View {
+    Picker("Provider", selection: Binding(
+      get: { agent.provider },
+      set: { provider in
+        guard provider != agent.provider else { return }
+        // Replace the preset once so a picker refresh cannot observe a new
+        // provider with the previous provider's model and effort.
+        agent = Self.preset(
+          selecting: provider, from: agent, lastLaunch: model.lastAgentLaunch(for: provider))
+      }
+    )) {
+      ForEach(AgentProvider.allCases, id: \.self) { provider in
+        Label(provider.displayName, systemImage: provider.symbolName).tag(provider)
+      }
+    }.pickerStyle(.segmented)
+    Picker("Model", selection: Binding(
+      get: { agent.model ?? "" },
+      set: { agent.model = $0.isEmpty ? nil : $0 }
+    )) {
+      ForEach(model.agentModelChoices(for: agent.provider)) { choice in
+        Text(choice.label).tag(choice.model ?? "")
+      }
+      if let current = agent.model,
+         !model.agentModelChoices(for: agent.provider).contains(where: { $0.model == current }) {
+        Text(current).tag(current)
+      }
+    }
+    Picker("Effort", selection: Binding(
+      get: { agent.effort ?? "" },
+      set: { agent.effort = $0.isEmpty ? nil : $0 }
+    )) {
+      Text("Default").tag("")
+      ForEach(AppConfiguration.agentEffortLevels(for: agent.provider), id: \.self) { Text($0).tag($0) }
+      if let current = agent.effort,
+         !AppConfiguration.agentEffortLevels(for: agent.provider).contains(current) {
+        Text(current).tag(current)
+      }
+    }
+    Picker("Workspace", selection: Binding(
+      get: { agent.workspacePolicy ?? .isolatedCommittedSnapshot },
+      set: { agent.workspacePolicy = $0 }
+    )) {
+      Text("Isolated snapshot of the project").tag(AgentWorkspacePolicy.isolatedCommittedSnapshot)
+      Text("Isolated clean checkout").tag(AgentWorkspacePolicy.isolatedCleanCheckout)
+      Text("Existing checkout").tag(AgentWorkspacePolicy.existingCheckout)
+    }
+    Toggle("Open in tmux", isOn: Binding(
+      get: { agent.useTmux ?? true }, set: { agent.useTmux = $0 }))
+    Toggle("Start the agent with this prompt", isOn: Binding(
+      get: { agent.includePrompt ?? true }, set: { agent.includePrompt = $0 }))
+  }
+}
+
+/// Per-launch plugin toggles for the chosen provider.
+struct AgentPluginOptions: View {
+  @Binding var agent: AgentLaunchPreset
+  let plugins: [ProviderPlugin]
+
+  var body: some View {
+    if agent.provider == .kimi {
+      Text("Kimi has no plugin system.").font(.caption).foregroundStyle(.secondary)
+    } else if plugins.isEmpty {
+      Text("No \(agent.provider.displayName) plugins are installed.").font(.caption).foregroundStyle(.secondary)
+    } else {
+      ForEach(plugins) { plugin in
+        Toggle(isOn: pluginBinding(plugin)) {
+          HStack(spacing: 6) {
+            Text(plugin.isECC ? "ECC" : plugin.name)
+            Text(plugin.id).font(.caption).foregroundStyle(.secondary)
+          }
+        }
+      }
+      Text("Changes apply to this agent only; your saved \(agent.provider.displayName) settings stay as they are.")
+        .font(.caption).foregroundStyle(.secondary)
+    }
+  }
+
+  /// An override is stored only when it differs from the saved enablement.
+  private func pluginBinding(_ plugin: ProviderPlugin) -> Binding<Bool> {
+    Binding(
+      get: { agent.pluginOverrides?[plugin.id] ?? plugin.enabled },
+      set: { enabled in
+        var overrides = agent.pluginOverrides ?? [:]
+        overrides[plugin.id] = enabled == plugin.enabled ? nil : enabled
+        agent.pluginOverrides = overrides.isEmpty ? nil : overrides
+      })
   }
 }

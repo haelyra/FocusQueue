@@ -75,6 +75,7 @@
     "maxTurns": 24
   },
   "dailyReport": {
+    "enabled": false,
     "scheduleHour": 8,
     "scheduleMinute": 0,
     "maximumTokens": 75000,

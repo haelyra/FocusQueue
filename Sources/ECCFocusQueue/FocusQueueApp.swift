@@ -1163,6 +1163,7 @@ import UserNotifications
     if model.presentedPlanTicketID != nil || model.isDocumentViewerPresented { return .plan }
     if model.isQueueChatInspectorPresented { return .chat }
     if model.isNotificationsInspectorPresented { return .notifications }
+    if model.isTokenAnalyticsPresented { return .analytics }
     return model.isDailyReportPresented || model.presentedAgentUpdate != nil ? .report : .closed
   }
 

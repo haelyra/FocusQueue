@@ -2127,6 +2127,10 @@ public actor CodexCompletionVerifier: CompletionVerifying {
         Your first non-empty output line must be exactly ACCEPT or NEEDS_WORK. Use ACCEPT only when the available evidence demonstrates the applicable requested outcome and checks. Use NEEDS_WORK for a real evidence or implementation gap. After that marker, lead with one short sentence stating the accepted result or the specific missing evidence, then concise details. Do not use a generic verdict sentence.
         """
         try files.write(Data(prompt.utf8), to: promptURL)
+        if let support = configuration.supportDirectory {
+            PromptUsageMetrics.record(PromptUsageEvent(source: "completion_review", component: "app_prompt",
+                taskID: ticketID, characters: prompt.count), in: URL(fileURLWithPath: support))
+        }
 
         let result = try await runner.run(ProcessSpecification(
             executable: configuration.executable,
@@ -2689,6 +2693,11 @@ public actor HarnessQueueAgent: QueueAgentChatting {
         let promptURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("focus-queue-chat-\(UUID().uuidString).txt")
         defer { try? FileManager.default.removeItem(at: promptURL) }
+        let usageURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("focus-queue-chat-usage-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: usageURL) }
+        let runID = UUID().uuidString
+        let source = Self.documentRuntimeArguments(configuration).isEmpty ? "queue_chat" : "document_chat"
         let prompt = QueueAgentPrompt.build(
             provider: provider,
             message: message,
@@ -2698,6 +2707,19 @@ public actor HarnessQueueAgent: QueueAgentChatting {
             deferredTicketIDs: deferredTicketIDs
         )
         try files.write(Data(prompt.utf8), to: promptURL)
+        if let support = configuration.supportDirectory {
+            PromptUsageMetrics.record(PromptUsageEvent(source: source, component: "app_context",
+                provider: provider.rawValue, model: model,
+                characters: max(0, prompt.count - message.count), runID: runID), in: URL(fileURLWithPath: support))
+            if source == "document_chat",
+               let marker = message.range(of: "\n\nUser request:\n", options: .backwards) {
+                let requestCharacters = message[marker.upperBound...].count
+                PromptUsageMetrics.record(PromptUsageEvent(source: source,
+                    component: "document_sources_plan_and_history", provider: provider.rawValue,
+                    model: model, characters: max(0, message.count - requestCharacters),
+                    runID: runID), in: URL(fileURLWithPath: support))
+            }
+        }
 
         let requestStartedAt = Date()
         let runTimeoutSeconds = Self.runTimeoutSeconds(
@@ -2711,6 +2733,7 @@ public actor HarnessQueueAgent: QueueAgentChatting {
             "--session", Self.resolvedSessionName(for: configuration, provider: provider),
             "--workspace", workspace,
             "--prompt-file", promptURL.path,
+            "--usage-file", usageURL.path,
             "--timeout", String(runTimeoutSeconds),
         ]
         if let contextDirectory = configuration.contextDirectory {
@@ -2732,6 +2755,15 @@ public actor HarnessQueueAgent: QueueAgentChatting {
             environment: CodexCompletionVerifier.agentEnvironment(configuration),
             timeoutSeconds: runTimeoutSeconds + 15
         ))
+        if let support = configuration.supportDirectory,
+           let data = try? Data(contentsOf: usageURL),
+           let usage = try? JSONSerialization.jsonObject(with: data) as? [String: Int] {
+            PromptUsageMetrics.record(PromptUsageEvent(
+                source: source, component: "provider_usage", provider: provider.rawValue, model: model,
+                actualInputTokens: usage["inputTokens"], actualOutputTokens: usage["outputTokens"],
+                actualTotalTokens: usage["totalTokens"], cachedInputTokens: usage["cachedInputTokens"],
+                runID: runID, scope: "provider"), in: URL(fileURLWithPath: support))
+        }
 
         let output = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
         let log = [result.standardOutput, result.standardError]

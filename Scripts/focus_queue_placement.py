@@ -383,7 +383,9 @@ def run_model(command, stdin, cwd, environment, timeout):
         detail = one_line(stderr or stdout, 200)
         raise PlacementModelError(f"{Path(command[0]).name} exited {process.returncode}"
                                   + (f": {detail}" if detail else ""))
-    return stdout
+    # Codex reports its token total on stderr in some CLI versions. Its answer
+    # is read from answer.json, so including stderr cannot change parsing.
+    return stdout + ("\n" + stderr if "--skip-git-repo-check" in command else "")
 
 
 def last_json_object(text):
@@ -454,6 +456,17 @@ def model_placement(prompt, cwd, projects, launch_project, settings, environment
     if announce is not None:
         announce(f"placing with {label} against {len(candidates)} open tasks…")
     message = placement_message(prompt, cwd, launch_project, candidates)
+    import focus_queue_prompt_usage as prompt_usage
+    import uuid
+    run_id = str(uuid.uuid4())
+    metrics_support = support_directory(environment)
+    prompt_usage.record("placement", "system_instructions", characters=len(SYSTEM_PROMPT),
+                        provider=settings["provider"], model=settings["model"],
+                        support=metrics_support, run_id=run_id)
+    prompt_usage.record("placement", "candidate_tasks_and_wrapper",
+                        characters=max(0, len(message) - len(prompt[:PROMPT_LIMIT])),
+                        provider=settings["provider"], model=settings["model"],
+                        support=metrics_support, run_id=run_id)
     child = {key: value for key, value in environment.items()
              if key not in SESSION_VARIABLES and not key.startswith("FOCUS_QUEUE_")}
     with tempfile.TemporaryDirectory(prefix="fq-placement-") as directory:
@@ -461,6 +474,26 @@ def model_placement(prompt, cwd, projects, launch_project, settings, environment
         command, stdin = model_command(settings, model_executable(settings["provider"], environment),
                                        workdir, message)
         stdout = (runner or run_model)(command, stdin, str(workdir), child, settings["timeout"])
+        if settings["provider"] == "claude":
+            try:
+                raw_usage = json.loads(stdout).get("usage") or {}
+                if raw_usage:
+                    prompt_usage.record("placement", "provider_usage", run_id=run_id,
+                        provider=settings["provider"], model=settings["model"],
+                        actual_input_tokens=raw_usage.get("input_tokens"),
+                        actual_output_tokens=raw_usage.get("output_tokens"),
+                        cached_input_tokens=(raw_usage.get("cache_read_input_tokens") or 0) +
+                            (raw_usage.get("cache_creation_input_tokens") or 0),
+                        scope="provider", support=metrics_support)
+            except (ValueError, AttributeError):
+                pass
+        elif settings["provider"] == "codex":
+            match = re.search(r"tokens used[:\s]+([\d,]+)", stdout, re.IGNORECASE)
+            if match:
+                prompt_usage.record("placement", "provider_usage", run_id=run_id,
+                    provider=settings["provider"], model=settings["model"],
+                    actual_total_tokens=int(match.group(1).replace(",", "")),
+                    scope="provider", support=metrics_support)
         row, confidence, title, reason, extras = validated_reply(
             parse_reply(settings["provider"], stdout, workdir), candidates)
     result = {"confidence": confidence, "title": title, "reason": reason, "model": label,

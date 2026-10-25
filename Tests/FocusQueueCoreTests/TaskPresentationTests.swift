@@ -157,11 +157,15 @@ import Testing
 
 @Test func statusMenuOffersOpenWorkflowStatusesAndKeepsACustomCurrentValue() {
   #expect(TaskFieldChoices.statusOptions(current: "In-Progress") == TaskFieldChoices.openStatuses)
+  #expect(TaskFieldChoices.statusOptions(current: "qa-in-progress") == TaskFieldChoices.openStatuses)
   #expect(TaskFieldChoices.statusOptions(current: "draft-pr").last == "draft-pr")
   #expect(!TaskFieldChoices.statusOptions(current: "resolved").contains("resolved"))
   #expect(TaskFieldChoices.openStatuses.allSatisfy {
     DashboardTicket(id: "ECC-1", title: "T", status: $0, summary: "").isOpen
   })
+  #expect(!TaskFieldChoices.openStatuses.contains("qa-in-progress"))
   #expect(TaskFieldChoices.statusLabel("in-progress") == "In progress")
   #expect(TaskFieldChoices.statusLabel("qa") == "QA")
+  #expect(TaskFieldChoices.normalizedStatus("qa-in-progress") == "qa")
+  #expect(TaskFieldChoices.statusLabel("qa-in-progress") == "QA")
 }

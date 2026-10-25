@@ -32,6 +32,7 @@ class InstallerTests(unittest.TestCase):
         "Scripts/focus_queue_connectors.py",
         "Scripts/focus_queue_triage.py",
         "Scripts/focus_queue_extractor.py",
+        "Scripts/focus_queue_prompt_usage.py",
         "Scripts/focus-queue-mail.js",
         "Config/task-proposals.schema.json",
     )
@@ -84,6 +85,7 @@ class InstallerTests(unittest.TestCase):
         (shell / "AgentUsageBar-LICENSE.txt").write_bytes(b"license:" + content)
         (shell / "focus_queue_fq.py").write_bytes(b"fq:" + content)
         (shell / "focus_queue_placement.py").write_bytes(b"placement:" + content)
+        (shell / "focus_queue_prompt_usage.py").write_bytes(b"usage:" + content)
         automation = path / "Contents/Resources/automation"
         for relative in self.automation_files:
             destination = automation / relative
@@ -301,6 +303,33 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("bypass repository push guards", payload)
         self.assertIn("verify the remote integration ref equals the local commit", payload)
 
+    def test_global_contract_maps_report_stages_to_existing_task_statuses(self):
+        repository = Path(__file__).parents[1]
+        output_contract = (
+            repository / "Docs/output-design/agent-output-contract.md"
+        ).read_text()
+        self.assertIn("`backlog` → `idea`", output_contract)
+        self.assertIn("`qa` → `deployed-verification`", output_contract)
+        self.assertNotIn("qa-in-progress", output_contract)
+
+        for name in (
+            "Config/CODEX_GLOBAL_INSTRUCTIONS.md",
+            "Config/CLAUDE_GLOBAL_INSTRUCTIONS.md",
+        ):
+            with self.subTest(name=name):
+                payload = (repository / name).read_text()
+                self.assertIn("Task status follows report stage", payload)
+                self.assertIn("`backlog` is the default", payload)
+                self.assertIn(
+                    'focus-queue-session task status "$FOCUS_QUEUE_TASK_ID" in-progress',
+                    payload,
+                )
+                self.assertIn(
+                    'focus-queue-session task status "$FOCUS_QUEUE_TASK_ID" qa',
+                    payload,
+                )
+                self.assertNotIn("qa-in-progress", payload)
+
     def test_provenance_rejects_a_symlinked_resources_parent(self):
         resources = self.bundle / "Contents/Resources"
         external = self.root / "ExternalResources"
@@ -475,13 +504,14 @@ class InstallerTests(unittest.TestCase):
 
     def test_installed_fq_refreshes_with_the_claude_entry_it_dispatches(self):
         self.make_app(self.installer.app, b"previous")
-        dispatcher, placement, claude_entry = self.installer.fq_files
+        dispatcher, placement, analytics, claude_entry = self.installer.fq_files
         dispatcher.parent.mkdir(parents=True)
         dispatcher.write_bytes(b"fq:previous")
         placement.write_bytes(b"placement:previous")
         self.installer.install()
         self.assertEqual(dispatcher.read_bytes(), b"fq:new executable")
         self.assertEqual(placement.read_bytes(), b"placement:new executable")
+        self.assertEqual(analytics.read_bytes(), b"usage:new executable")
         self.assertEqual(claude_entry.read_bytes(), b"claude-entry:new executable")
         manifest = json.loads(self.installer.manifest.read_text())
         self.assertNotIn(str(dispatcher), [artifact["path"] for artifact in manifest["artifacts"]],
@@ -496,7 +526,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_locally_changed_fq_stops_install_without_clobbering(self):
         self.make_app(self.installer.app, b"previous")
-        dispatcher, placement, _ = self.installer.fq_files
+        dispatcher, placement = self.installer.fq_files[:2]
         dispatcher.parent.mkdir(parents=True)
         dispatcher.write_bytes(b"fq:previous")
         placement.write_bytes(b"my local placement tweak")

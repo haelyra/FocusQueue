@@ -8,6 +8,37 @@ import Testing
 @Suite("Subtask presentation")
 @MainActor
 struct SubtaskPresentationTests {
+  @Test("Shared creator provider selection restores each provider's settings")
+  func providerSelectionRestoresProviderSettings() {
+    let codex = AgentLaunchPreset(
+      provider: .codex, model: "gpt-6", effort: "high",
+      workspacePolicy: .existingCheckout, useTmux: false, includePrompt: false,
+      pluginOverrides: ["codex-plugin": true])
+    let claude = AgentLaunchPreset(
+      provider: .claude, model: "sonnet", effort: "medium",
+      pluginOverrides: ["claude-plugin": false])
+    let kimi = AgentLaunchPreset(provider: .kimi, model: "kimi-code/k3", effort: "high")
+
+    let selectedClaude = AgentLaunchOptions.preset(
+      selecting: .claude, from: codex, lastLaunch: claude)
+    #expect(selectedClaude.provider == .claude)
+    #expect(selectedClaude.model == "sonnet")
+    #expect(selectedClaude.effort == "medium")
+    #expect(selectedClaude.pluginOverrides == ["claude-plugin": false])
+
+    let selectedKimi = AgentLaunchOptions.preset(
+      selecting: .kimi, from: selectedClaude, lastLaunch: kimi)
+    #expect(selectedKimi.provider == .kimi)
+    #expect(selectedKimi.model == "kimi-code/k3")
+    #expect(selectedKimi.effort == "high")
+    #expect(selectedKimi.pluginOverrides == nil)
+    #expect(selectedKimi.workspacePolicy == .existingCheckout)
+    #expect(selectedKimi.useTmux == false)
+    #expect(selectedKimi.includePrompt == false)
+    #expect(AgentLaunchOptions.preset(
+      selecting: .kimi, from: selectedKimi, lastLaunch: claude) == selectedKimi)
+  }
+
   @Test("Agent providers use distinct available icons")
   func providerIcons() {
     #expect(AgentProvider.codex.symbolName != AgentProvider.claude.symbolName)

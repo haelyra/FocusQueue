@@ -1513,6 +1513,31 @@ struct QueueViewModelTests {
     #expect(model.panelMode == .expanded)
     #expect(panelModes == [.topTask, .expanded])
   }
+
+  @Test("Token analytics occupies the side inspector and closes with the panel")
+  func tokenAnalyticsSideInspector() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    var visibility: [Bool] = []
+    model.reportVisibilityHandler = { visibility.append($0) }
+
+    model.setTokenAnalyticsPresented(true)
+    #expect(model.isTokenAnalyticsPresented)
+    #expect(model.isInspectorPresented)
+    #expect(visibility.last == true)
+
+    model.setQueueChatInspectorPresented(true)
+    #expect(!model.isTokenAnalyticsPresented)
+    #expect(model.isQueueChatInspectorPresented)
+
+    model.setTokenAnalyticsPresented(true)
+    #expect(!model.isQueueChatInspectorPresented)
+    model.setPanelCollapsed(true)
+    #expect(!model.isTokenAnalyticsPresented)
+    #expect(!model.isInspectorPresented)
+    #expect(visibility.last == false)
+  }
   @Test("Launch diagnostics open inside Focus Queue without a JSONL file association")
   func inlineLaunchDiagnostics() async throws {
     let fixture = try await Fixture()
@@ -3334,9 +3359,12 @@ struct QueueViewModelTests {
       taskAgentLauncher: TaskAgentLauncher(runner: DirectCreationRunner(), candidateSockets: []),
       taskPlacementSuggester: suggester)
     let description = "Every evening, export the daily report as markdown into my Obsidian vault."
-    let preset = AgentLaunchPreset(
-      provider: .claude, model: "haiku", effort: "low", workspacePolicy: .existingCheckout,
-      useTmux: false, includePrompt: true, pluginOverrides: ["ecc@ecc": true])
+    let preset = AgentLaunchOptions.preset(
+      selecting: .claude,
+      from: AgentLaunchPreset(provider: .codex, workspacePolicy: .existingCheckout,
+        useTmux: false, includePrompt: true),
+      lastLaunch: AgentLaunchPreset(
+        provider: .claude, model: "haiku", effort: "low", pluginOverrides: ["ecc@ecc": true]))
 
     let result = await model.submitTaskDraft(TaskDraft(description: description, agent: preset))
     guard case .created(let ticketID, true) = result else {
@@ -3418,6 +3446,45 @@ struct QueueViewModelTests {
     #expect(model.projectTickets.first { $0.id == newID }?.priority == "medium", "The user's priority wins")
     #expect(model.subtasks(for: newID).isEmpty)
     #expect(await suggester.queries.count == 1, "Creating anyway reuses the first suggestion")
+  }
+
+  @Test("The card's New Agent sheet adds a prompted agent to its task without placement")
+  func cardAgentSheetLaunchesPromptedAgent() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let repository = try await creatorRepository(for: fixture)
+    defer { try? FileManager.default.removeItem(at: repository) }
+    let suggester = RecordingPlacementSuggester(.unavailable("not used"))
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(),
+      terminalController: DirectViewRecorder(root: fixture.root, failReveal: false),
+      taskAgentLauncher: TaskAgentLauncher(runner: DirectCreationRunner(), candidateSockets: []),
+      taskPlacementSuggester: suggester)
+    let ticket = try #require(model.projectTickets.first { $0.id == "ECC-101" })
+    let preset = AgentLaunchOptions.preset(
+      selecting: .kimi,
+      from: AgentLaunchPreset(provider: .codex, workspacePolicy: .existingCheckout,
+        useTmux: false, includePrompt: true),
+      lastLaunch: AgentLaunchPreset(provider: .kimi, model: "kimi-code/k3", effort: "high"))
+    let ticketCount = model.projectTickets.count
+
+    model.launchPromptedAgent(for: ticket, prompt: "  Audit the card spacing.\nThen report.  ", preset: preset)
+    try await eventually { model.launchingTaskIDs.isEmpty }
+    model.launchPromptedAgent(for: ticket, prompt: "Port the drawer", title: "Context drawer", preset: preset)
+    try await eventually { model.launchingTaskIDs.isEmpty }
+    model.launchPromptedAgent(for: ticket, prompt: "   ", preset: preset)
+
+    let agents = model.subtasks(for: "ECC-101")
+    let derived = try #require(agents.first { $0.initialPrompt == "Audit the card spacing.\nThen report." })
+    #expect(derived.title == TaskSubtask.agentName(prompt: "Audit the card spacing.", provider: .kimi))
+    #expect(derived.provider == .kimi)
+    #expect(derived.launchConfiguration?.model == "kimi-code/k3")
+    #expect(derived.launchConfiguration?.effort == "high")
+    #expect(agents.contains { $0.title == "Context drawer" && $0.initialPrompt == "Port the drawer" })
+    #expect(agents.count == 2, "A blank prompt launches nothing")
+    #expect(model.projectTickets.count == ticketCount, "The sheet never creates a task")
+    #expect(await suggester.queries.isEmpty, "The task is already known, so placement is skipped")
+    #expect(model.taskCreatorLaunchDefaults == preset)
   }
 
   @Test("Without a model suggestion the creator asks for a priority instead of defaulting one")
@@ -3833,6 +3900,8 @@ private struct Fixture {
     config.workspacePath = root.path
     config.refreshIntervalSeconds = 300
     config.dailyRoutines = []
+    // Scheduled reports default to off; these fixtures model a user who opted in.
+    config.dailyReport.enabled = true
     try await JSONConfigurationRepository(url: paths.configurationFile).save(config)
   }
 

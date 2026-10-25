@@ -572,6 +572,16 @@ def extract(prompt, catalog, *, current_task_id=None, settings=None, environment
               "promptExcerpt": (prompt or "") if trace else None}
     try:
         message = catalog_message(catalog, current_task_id, prompt)
+        import focus_queue_prompt_usage as prompt_usage
+        import uuid
+        run_id = str(uuid.uuid4())
+        prompt_usage.record("extraction", "system_instructions", characters=len(SYSTEM_PROMPT),
+                            provider=settings["provider"], model=settings["model"],
+                            task_id=current_task_id, support=support, run_id=run_id)
+        prompt_usage.record("extraction", "catalog_and_wrapper",
+                            characters=max(0, len(message) - len(prompt[:PROMPT_LIMIT])),
+                            provider=settings["provider"], model=settings["model"],
+                            task_id=current_task_id, support=support, run_id=run_id)
         child = {key: value for key, value in environment.items()
                  if key not in SESSION_VARIABLES and not key.startswith("FOCUS_QUEUE_")}
         # Nested provider CLIs can run hooks too; this marker prevents recursive extraction.
@@ -584,6 +594,13 @@ def extract(prompt, catalog, *, current_task_id=None, settings=None, environment
                                                    settings["timeout"])
             raw_atoms, usage = parse_reply(settings["provider"], stdout, stderr, workdir)
         record["usage"] = usage
+        if usage:
+            prompt_usage.record("extraction", "provider_usage", run_id=run_id,
+                provider=settings["provider"], model=settings["model"],
+                task_id=current_task_id, support=support, scope="provider",
+                actual_input_tokens=usage.get("input"),
+                actual_output_tokens=usage.get("output"), actual_total_tokens=usage.get("total"),
+                cached_input_tokens=(usage.get("cache_read") or 0) + (usage.get("cache_created") or 0))
         accepted, inboxed = [], []
         for atom in raw_atoms:
             clean, reason = validate_atom(atom, catalog, prompt, threshold)

@@ -160,6 +160,7 @@ def plan(home, usage_wrapper, flags, *, source_directory=None, install_hooks=Fal
     hook_file = home / ".codex/hooks.json"
     fq_dispatcher = directory / "focus_queue_fq.py"
     fq_placement = directory / "focus_queue_placement.py"
+    fq_prompt_usage = directory / "focus_queue_prompt_usage.py"
     # fq dispatches both providers, so it needs the other entry script beside it
     # even when that provider's shell function is not installed.
     fq_claude_entry = directory / "focus_queue_claude_entry.py"
@@ -170,7 +171,7 @@ def plan(home, usage_wrapper, flags, *, source_directory=None, install_hooks=Fal
         raise ValueError("This integration uses native /hooks review and cannot bypass hook trust.")
     require_task_session_helper(helper, home)
     destinations = (entry, managed_usage_wrapper, managed_usage_renderer,
-                    managed_usage_license, shell, zshrc, fq_dispatcher, fq_placement, fq_claude_entry,
+                    managed_usage_license, shell, zshrc, fq_dispatcher, fq_placement, fq_prompt_usage, fq_claude_entry,
                     fq_shim)
     if install_hooks:
         destinations = destinations + (hook_file,)
@@ -193,6 +194,7 @@ def plan(home, usage_wrapper, flags, *, source_directory=None, install_hooks=Fal
         zshrc: merge_shell(zshrc.read_text() if zshrc.exists() else "", shell).encode(),
         fq_dispatcher: (source_directory / "focus_queue_fq.py").read_bytes(),
         fq_placement: (source_directory / "focus_queue_placement.py").read_bytes(),
+        fq_prompt_usage: (source_directory / "focus_queue_prompt_usage.py").read_bytes(),
         fq_claude_entry: (source_directory / "focus_queue_claude_entry.py").read_bytes(),
         fq_shim: ("#!/bin/sh\nexec /usr/bin/python3 " + shlex.quote(str(fq_dispatcher))
                   + ' "$@"\n').encode(),

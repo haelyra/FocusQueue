@@ -709,7 +709,7 @@ with open({str(record)!r}, "a") as stream: stream.write(json.dumps(sys.argv[1:])
         home.mkdir()
         self.install_session_helper(home)
         preview = INSTALL.install(home, self.wrapper, [], check=True)
-        self.assertEqual(len(preview["paths"]), 10)  # includes the other provider's fq entry
+        self.assertEqual(len(preview["paths"]), 11)  # includes the other provider's fq entry and analytics module
         self.assertFalse((home / ".claude").exists())
         INSTALL.install(home, self.wrapper, [])
         self.assertFalse((home / ".claude").exists())

@@ -16,9 +16,26 @@ Produce these sections in this order. You may omit a section only by writing
 [Stage: <stage>] [Task: <ticket-id or short name>] [Artifact: <what proves the stage>]
 ```
 
-Stages: `idea` → `planning` → `implementation` → `testing` → `refinement` →
-`deployment` → `deployed-verification`. Derive the stage from artifacts that
-exist (spec, plan, diff, test results), never from what you intend to do.
+Stages: `backlog` → `idea` → `planning` → `implementation` → `testing` →
+`refinement` → `deployment` → `qa` → `deployed-verification`.
+Derive the stage from artifacts that exist (spec, plan, diff, test results),
+never from what you intend to do.
+
+**Task status follows report stage.** For a registered Focus Queue task, update
+the canonical task status immediately before a report when its status bucket
+changes:
+
+- `backlog` is the default. Do not run a status command before active work.
+- `idea` through `deployment` map to `in-progress`. Run
+  `focus-queue-session task status "$FOCUS_QUEUE_TASK_ID" in-progress`.
+- `qa` and `deployed-verification` map to `qa`. Run
+  `focus-queue-session task status "$FOCUS_QUEUE_TASK_ID" qa`.
+- If the precise stage is unavailable, use `in-progress`. If a more specific
+  update fails, retry once with `in-progress`; report a second failure instead
+  of claiming the status changed.
+
+Skip the command when no task ID exists or the mapped status has not changed.
+The stage badge remains evidence-derived even if the status update fails.
 
 **1. BLUF** — 1–2 sentences. The result, plus the one thing the user must know
 or do. Written for someone reopening this session cold: no assumed context.

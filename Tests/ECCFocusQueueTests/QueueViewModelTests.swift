@@ -3334,9 +3334,12 @@ struct QueueViewModelTests {
       taskAgentLauncher: TaskAgentLauncher(runner: DirectCreationRunner(), candidateSockets: []),
       taskPlacementSuggester: suggester)
     let description = "Every evening, export the daily report as markdown into my Obsidian vault."
-    let preset = AgentLaunchPreset(
-      provider: .claude, model: "haiku", effort: "low", workspacePolicy: .existingCheckout,
-      useTmux: false, includePrompt: true, pluginOverrides: ["ecc@ecc": true])
+    let preset = AgentLaunchOptions.preset(
+      selecting: .claude,
+      from: AgentLaunchPreset(provider: .codex, workspacePolicy: .existingCheckout,
+        useTmux: false, includePrompt: true),
+      lastLaunch: AgentLaunchPreset(
+        provider: .claude, model: "haiku", effort: "low", pluginOverrides: ["ecc@ecc": true]))
 
     let result = await model.submitTaskDraft(TaskDraft(description: description, agent: preset))
     guard case .created(let ticketID, true) = result else {
@@ -3433,9 +3436,11 @@ struct QueueViewModelTests {
       taskAgentLauncher: TaskAgentLauncher(runner: DirectCreationRunner(), candidateSockets: []),
       taskPlacementSuggester: suggester)
     let ticket = try #require(model.projectTickets.first { $0.id == "ECC-101" })
-    let preset = AgentLaunchPreset(
-      provider: .claude, model: "haiku", effort: "low", workspacePolicy: .existingCheckout,
-      useTmux: false, includePrompt: true)
+    let preset = AgentLaunchOptions.preset(
+      selecting: .kimi,
+      from: AgentLaunchPreset(provider: .codex, workspacePolicy: .existingCheckout,
+        useTmux: false, includePrompt: true),
+      lastLaunch: AgentLaunchPreset(provider: .kimi, model: "kimi-code/k3", effort: "high"))
     let ticketCount = model.projectTickets.count
 
     model.launchPromptedAgent(for: ticket, prompt: "  Audit the card spacing.\nThen report.  ", preset: preset)
@@ -3446,8 +3451,10 @@ struct QueueViewModelTests {
 
     let agents = model.subtasks(for: "ECC-101")
     let derived = try #require(agents.first { $0.initialPrompt == "Audit the card spacing.\nThen report." })
-    #expect(derived.title == TaskSubtask.agentName(prompt: "Audit the card spacing.", provider: .claude))
-    #expect(derived.launchConfiguration?.model == "haiku")
+    #expect(derived.title == TaskSubtask.agentName(prompt: "Audit the card spacing.", provider: .kimi))
+    #expect(derived.provider == .kimi)
+    #expect(derived.launchConfiguration?.model == "kimi-code/k3")
+    #expect(derived.launchConfiguration?.effort == "high")
     #expect(agents.contains { $0.title == "Context drawer" && $0.initialPrompt == "Port the drawer" })
     #expect(agents.count == 2, "A blank prompt launches nothing")
     #expect(model.projectTickets.count == ticketCount, "The sheet never creates a task")

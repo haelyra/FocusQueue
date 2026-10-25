@@ -15,4 +15,22 @@ final class PromptUsageMetricsTests: XCTestCase {
         let raw = try String(contentsOf: PromptUsageMetrics.file(in: support), encoding: .utf8)
         XCTAssertFalse(raw.contains("promptBody"))
     }
+
+    func testSummaryUsesDistinctRunsAndOnlyReportedActualUsage() {
+        let events = [
+            PromptUsageEvent(source: "placement", component: "system", characters: 400, runID: "a"),
+            PromptUsageEvent(source: "placement", component: "tasks", characters: 200, runID: "a"),
+            PromptUsageEvent(source: "placement", component: "provider_usage", actualTotalTokens: 360,
+                runID: "a", scope: "provider"),
+            PromptUsageEvent(source: "placement", component: "system", characters: 400, runID: "b")
+        ]
+        let summary = PromptUsageSummary(events: events)
+        XCTAssertEqual(summary.runs, 2)
+        XCTAssertEqual(summary.estimatedTokens, 250)
+        XCTAssertEqual(summary.estimatedAverage, 125)
+        XCTAssertEqual(summary.reportedRuns, 1)
+        XCTAssertEqual(summary.actualTokens, 360)
+        XCTAssertEqual(summary.actualAverage, 360)
+        XCTAssertEqual(summary.reportedInputTokens, 0)
+    }
 }

@@ -22,6 +22,28 @@ class PromptUsageTests(unittest.TestCase):
             self.assertEqual(rows[1]["actualInputTokens"], 21)
             self.assertNotIn("private prompt body", raw)
 
+    def test_instruction_files_split_contract_and_share_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            documents = root / "Documents"
+            task = documents / "project" / "task"
+            task.mkdir(parents=True)
+            (documents / "AGENTS.md").write_text(
+                "global\n<!-- BEGIN AGENT OUTPUT CONTRACT v1 -->contract"
+                "<!-- END AGENT OUTPUT CONTRACT v1 -->\n")
+            (task.parent / "AGENTS.md").write_text("project rules")
+            (documents / "CLAUDE.md").write_text("claude rules")
+            with patch.object(usage.Path, "home", return_value=root):
+                usage.record_instruction_files(task, "codex", run_id="run-1", support=root)
+            rows = [json.loads(line) for line in
+                    (root / "analytics/prompt-usage.jsonl").read_text().splitlines()]
+            self.assertEqual({row["runID"] for row in rows}, {"run-1"})
+            self.assertEqual({row["component"] for row in rows},
+                             {"AGENTS.md · output_contract", "AGENTS.md · other_instructions",
+                              "project/AGENTS.md · other_instructions"})
+            self.assertEqual(sum(row["characters"] for row in rows),
+                             len((documents / "AGENTS.md").read_text()) + len("project rules"))
+
 
 if __name__ == "__main__":
     unittest.main()

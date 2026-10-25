@@ -14,15 +14,52 @@ public struct PromptUsageEvent: Codable, Sendable, Identifiable {
     public let estimatedInputTokens: Int
     public let actualInputTokens: Int?
     public let actualOutputTokens: Int?
+    public let actualTotalTokens: Int?
+    public let cachedInputTokens: Int?
+    public let runID: String?
+    public let scope: String?
 
     public init(source: String, component: String, provider: String? = nil, model: String? = nil,
                 taskID: String? = nil, characters: Int = 0, actualInputTokens: Int? = nil,
-                actualOutputTokens: Int? = nil, timestamp: Date = Date(), id: String = UUID().uuidString) {
+                actualOutputTokens: Int? = nil, actualTotalTokens: Int? = nil,
+                cachedInputTokens: Int? = nil, runID: String? = nil, scope: String? = "app",
+                timestamp: Date = Date(), id: String = UUID().uuidString) {
         self.id = id; self.timestamp = timestamp; self.source = source; self.component = component
         self.provider = provider; self.model = model; self.taskID = taskID
         self.characters = characters
         self.estimatedInputTokens = Int((Double(characters) / 4.0).rounded())
         self.actualInputTokens = actualInputTokens; self.actualOutputTokens = actualOutputTokens
+        self.actualTotalTokens = actualTotalTokens; self.cachedInputTokens = cachedInputTokens
+        self.runID = runID; self.scope = scope
+    }
+}
+
+public struct PromptUsageSummary: Sendable {
+    public let runs: Int
+    public let estimatedTokens: Int
+    public let estimatedAverage: Int
+    public let actualTokens: Int?
+    public let actualAverage: Int?
+    public let reportedRuns: Int
+    public let reportedInputTokens: Int
+    public let reportedOutputTokens: Int
+    public let cachedInputTokens: Int
+
+    public init(events: [PromptUsageEvent]) {
+        runs = Set(events.compactMap(\.runID)).count
+        estimatedTokens = events.filter { $0.scope != "provider" }
+            .reduce(0) { $0 + $1.estimatedInputTokens }
+        estimatedAverage = runs > 0 ? estimatedTokens / runs : 0
+        let reports = events.filter { $0.scope == "provider" }.compactMap { event -> Int? in
+            event.actualTotalTokens ?? ((event.actualInputTokens != nil || event.actualOutputTokens != nil)
+                ? (event.actualInputTokens ?? 0) + (event.actualOutputTokens ?? 0) : nil)
+        }
+        reportedRuns = reports.count
+        actualTokens = reports.isEmpty ? nil : reports.reduce(0, +)
+        actualAverage = reports.isEmpty ? nil : reports.reduce(0, +) / reports.count
+        reportedInputTokens = events.compactMap(\.actualInputTokens).reduce(0, +)
+        reportedOutputTokens = events.compactMap(\.actualOutputTokens).reduce(0, +)
+        cachedInputTokens = events.compactMap(\.cachedInputTokens).reduce(0, +)
     }
 }
 

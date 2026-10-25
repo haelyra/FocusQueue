@@ -276,24 +276,34 @@ struct AgentLaunchOptions: View {
   let model: QueueViewModel
   @Binding var agent: AgentLaunchPreset
 
+  static func preset(
+    selecting provider: AgentProvider, from current: AgentLaunchPreset,
+    lastLaunch: AgentLaunchPreset
+  ) -> AgentLaunchPreset {
+    guard provider != current.provider else { return current }
+    var selected = current
+    selected.provider = provider
+    selected.model = lastLaunch.model
+    selected.effort = lastLaunch.effort
+    selected.pluginOverrides = lastLaunch.pluginOverrides
+    return selected
+  }
+
   var body: some View {
     Picker("Provider", selection: Binding(
       get: { agent.provider },
       set: { provider in
         guard provider != agent.provider else { return }
-        // Models, efforts, and plugin IDs belong to one provider; restore the
-        // ones it last launched with.
-        let last = model.lastAgentLaunch(for: provider)
-        agent.provider = provider
-        agent.model = last.model
-        agent.effort = last.effort
-        agent.pluginOverrides = last.pluginOverrides
+        // Replace the preset once so a picker refresh cannot observe a new
+        // provider with the previous provider's model and effort.
+        agent = Self.preset(
+          selecting: provider, from: agent, lastLaunch: model.lastAgentLaunch(for: provider))
       }
     )) {
       ForEach(AgentProvider.allCases, id: \.self) { provider in
-        Label(provider.displayName, systemImage: provider.symbolName).tag(provider)
+        Text(provider.displayName).tag(provider)
       }
-    }.pickerStyle(.segmented)
+    }.pickerStyle(.menu)
     Picker("Model", selection: Binding(
       get: { agent.model ?? "" },
       set: { agent.model = $0.isEmpty ? nil : $0 }

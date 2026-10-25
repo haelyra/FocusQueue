@@ -173,9 +173,9 @@ func agentModelChoiceConfiguration() throws {
     AppConfiguration.self, from: JSONEncoder().encode(config))
   #expect(roundTripped.agentModelChoices == config.agentModelChoices)
   #expect(AppConfiguration.defaultAgentModelChoices.map(\.provider)
-    == Array(repeating: .codex, count: 11)
-      + Array(repeating: .claude, count: 9)
-      + Array(repeating: .kimi, count: 5))
+    == Array(repeating: .codex, count: 8)
+      + Array(repeating: .claude, count: 13)
+      + Array(repeating: .kimi, count: 7))
   #expect(AppConfiguration.defaultAgentModelChoices.first(where: { $0.model == nil && $0.provider == .claude })?.label == "Default")
   #expect(AppConfiguration.defaultAgentModelChoices.first(where: { $0.model == nil && $0.provider == .kimi })?.label == "Default")
 }

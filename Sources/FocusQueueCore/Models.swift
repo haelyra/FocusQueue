@@ -337,34 +337,48 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var kimiChatExecutable: String?
 
   /// Newest models first within each provider group. Mirrors the current
-  /// Codex, Claude Code, and Kimi Code lineups (Kimi aliases match the managed
-  /// `kimi provider list` entries).
+  /// Codex catalog (`~/.codex/models_cache.json` entries with `list`
+  /// visibility), the Claude Code model lineup and aliases, and the Kimi Code
+  /// aliases from the managed `kimi provider list --json` entries.
   public static let defaultAgentModelChoices: [AgentModelChoice] = [
     AgentModelChoice(provider: .codex, label: "Default"),
+    AgentModelChoice(provider: .codex, label: "gpt-6.1-sol", model: "gpt-6.1-sol"),
     AgentModelChoice(provider: .codex, label: "gpt-6-astra", model: "gpt-6-astra"),
     AgentModelChoice(provider: .codex, label: "gpt-6-sol", model: "gpt-6-sol"),
     AgentModelChoice(provider: .codex, label: "gpt-6-luna", model: "gpt-6-luna"),
     AgentModelChoice(provider: .codex, label: "gpt-5.6-sol", model: "gpt-5.6-sol"),
     AgentModelChoice(provider: .codex, label: "gpt-5.6-terra", model: "gpt-5.6-terra"),
     AgentModelChoice(provider: .codex, label: "gpt-5.6-luna", model: "gpt-5.6-luna"),
-    AgentModelChoice(provider: .codex, label: "gpt-5.5-pro", model: "gpt-5.5-pro"),
-    AgentModelChoice(provider: .codex, label: "gpt-5.5", model: "gpt-5.5"),
-    AgentModelChoice(provider: .codex, label: "gpt-5.4", model: "gpt-5.4"),
-    AgentModelChoice(provider: .codex, label: "gpt-5.2", model: "gpt-5.2"),
     AgentModelChoice(provider: .claude, label: "Default"),
+    AgentModelChoice(provider: .claude, label: "fable-5.1", model: "claude-fable-5-1"),
     AgentModelChoice(provider: .claude, label: "opus-5.5", model: "claude-opus-5-5"),
     AgentModelChoice(provider: .claude, label: "sonnet-5.5", model: "claude-sonnet-5-5"),
+    AgentModelChoice(provider: .claude, label: "haiku-5.5", model: "claude-haiku-5-5"),
+    AgentModelChoice(provider: .claude, label: "fable-5", model: "claude-fable-5"),
     AgentModelChoice(provider: .claude, label: "opus-5", model: "claude-opus-5"),
     AgentModelChoice(provider: .claude, label: "sonnet-5", model: "claude-sonnet-5"),
     AgentModelChoice(provider: .claude, label: "haiku-4.5", model: "claude-haiku-4-5"),
+    AgentModelChoice(provider: .claude, label: "fable", model: "fable"),
     AgentModelChoice(provider: .claude, label: "opus", model: "opus"),
     AgentModelChoice(provider: .claude, label: "sonnet", model: "sonnet"),
     AgentModelChoice(provider: .claude, label: "haiku", model: "haiku"),
     AgentModelChoice(provider: .kimi, label: "Default"),
+    AgentModelChoice(provider: .kimi, label: "K3.1 Pro", model: "kimi-code/k3.1-pro"),
+    AgentModelChoice(provider: .kimi, label: "K3.1 Pro Highspeed", model: "kimi-code/k3.1-pro-highspeed"),
     AgentModelChoice(provider: .kimi, label: "K3", model: "kimi-code/k3"),
     AgentModelChoice(provider: .kimi, label: "K3-256k", model: "kimi-code/k3-256k"),
     AgentModelChoice(provider: .kimi, label: "K2.8 Preview", model: "kimi-code/kimi-for-coding"),
     AgentModelChoice(provider: .kimi, label: "K2.7 Code Highspeed", model: "kimi-code/kimi-for-coding-highspeed"),
+  ]
+
+  /// Former built-in choices the provider no longer lists. Older configs saved
+  /// them verbatim, so the merge drops exact matches instead of keeping them
+  /// as custom entries; an edited label or model still survives.
+  public static let retiredAgentModelChoices: [AgentModelChoice] = [
+    AgentModelChoice(provider: .codex, label: "gpt-5.5-pro", model: "gpt-5.5-pro"),
+    AgentModelChoice(provider: .codex, label: "gpt-5.5", model: "gpt-5.5"),
+    AgentModelChoice(provider: .codex, label: "gpt-5.4", model: "gpt-5.4"),
+    AgentModelChoice(provider: .codex, label: "gpt-5.2", model: "gpt-5.2"),
   ]
 
   /// Built-in choices lead in newest-first order; configured entries whose
@@ -373,7 +387,9 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public static func mergedAgentModelChoices(_ configured: [AgentModelChoice]) -> [AgentModelChoice] {
     let defaults = Self.defaultAgentModelChoices
     let builtInIDs = Set(defaults.map(\.id))
-    return defaults + configured.filter { !builtInIDs.contains($0.id) }
+    return defaults + configured.filter {
+      !builtInIDs.contains($0.id) && !Self.retiredAgentModelChoices.contains($0)
+    }
   }
 
   /// Effort levels accepted by agent launches (Codex `model_reasoning_effort`,

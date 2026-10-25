@@ -42,6 +42,30 @@ struct AgentLaunchSettingsTests {
             provider: .codex, label: "Custom build", model: "custom-model"))
     }
 
+    @Test("Saved configs gain current models and drop retired built-in entries")
+    func retiredModelChoicesDropOnDecode() throws {
+        let starter = SetupEnvironment.starter(
+            supportDirectory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        var object = try #require(
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(starter)) as? [String: Any])
+        object["agentModelChoices"] = [
+            ["provider": "codex", "label": "gpt-5.5", "model": "gpt-5.5"],
+            ["provider": "codex", "label": "gpt-5.2", "model": "gpt-5.2"],
+            ["provider": "codex", "label": "gpt-5.4", "model": "gpt-5.4-custom"],
+        ]
+        let decoded = try JSONDecoder().decode(
+            AppConfiguration.self, from: JSONSerialization.data(withJSONObject: object))
+        let models = decoded.agentModelChoices.compactMap(\.model)
+
+        #expect(!models.contains("gpt-5.5"))
+        #expect(!models.contains("gpt-5.2"))
+        #expect(models.contains("gpt-5.4-custom"))
+        for model in ["gpt-6.1-sol", "claude-fable-5-1", "claude-haiku-5-5", "fable",
+                      "kimi-code/k3.1-pro", "kimi-code/k3.1-pro-highspeed"] {
+            #expect(models.contains(model))
+        }
+    }
+
     @Test("Default agent efforts survive a configuration round-trip")
     func defaultAgentEffortRoundTrip() throws {
         var configuration = AppConfiguration.eccDefault()

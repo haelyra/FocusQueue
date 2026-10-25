@@ -301,9 +301,9 @@ struct AgentLaunchOptions: View {
       }
     )) {
       ForEach(AgentProvider.allCases, id: \.self) { provider in
-        Text(provider.displayName).tag(provider)
+        Label(provider.displayName, systemImage: provider.symbolName).tag(provider)
       }
-    }.pickerStyle(.menu)
+    }.pickerStyle(.segmented)
     Picker("Model", selection: Binding(
       get: { agent.model ?? "" },
       set: { agent.model = $0.isEmpty ? nil : $0 }

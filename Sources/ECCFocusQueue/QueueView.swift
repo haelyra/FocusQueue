@@ -3388,6 +3388,9 @@ private struct TicketCard: View {
               openHint: "Click to open this task's terminal. Double-click to rename the task.",
               detailsAction: openTaskDetails)
             if model.isNewTicket(ticket.id) { NewTaskBadge() }
+            if isCollapsedToTitle, !model.newOutputs(for: ticket.id).isEmpty {
+              NewOutputsBadge(count: model.newOutputs(for: ticket.id).count)
+            }
           }
           VStack(alignment: .trailing, spacing: 1) {
             Menu { moreOptionsMenuContent } label: {
@@ -3617,6 +3620,10 @@ private struct TicketCard: View {
       }
       .buttonStyle(.bordered).controlSize(.regular)
       .font(.system(size: 12, weight: .semibold))
+      let newOutputs = model.newOutputs(for: ticket.id)
+      if !newOutputs.isEmpty {
+        NewOutputsPanel(ticketID: ticket.id, outputs: newOutputs, model: model) { showsContext = true }
+      }
       if ticket.isRecurringPullRequestTask {
         RecurringPRProgressSummary(progress: recurringProgress, error: recurringProgressError)
       }

@@ -160,7 +160,7 @@ public enum MarkdownHTMLRenderer {
             border-color: var(--accent);
           }
           figure[data-plan-canvas-diagram].is-selected::after {
-            content: "Selected for discussion";
+            content: "Diagram selected for discussion";
             position: absolute;
             top: 10px;
             right: 10px;
@@ -172,9 +172,38 @@ public enum MarkdownHTMLRenderer {
             font-weight: 650;
             letter-spacing: 0.02em;
           }
+          figure[data-plan-canvas-diagram].is-component-selected::after {
+            content: "Component selected for discussion";
+          }
           pre.mermaid { margin: 0; white-space: pre-wrap; }
-          figure.is-rendered pre.mermaid { padding: 4px; border: 0; background: transparent; text-align: center; }
-          figure.is-rendered pre.mermaid svg { max-width: 100%; height: auto; }
+          figure.is-rendered pre.mermaid {
+            display: flex;
+            align-items: flex-start;
+            max-height: min(72vh, 900px);
+            padding: 10px;
+            overflow: auto;
+            border: 0;
+            background: transparent;
+          }
+          figure.is-rendered pre.mermaid svg {
+            flex: 0 0 auto;
+            width: var(--diagram-readable-width, auto);
+            max-width: none;
+            height: auto;
+            margin: 0 auto;
+          }
+          figure.is-rendered [data-plan-canvas-component] { cursor: pointer; }
+          figure.is-rendered [data-plan-canvas-component]:focus-visible {
+            outline: 3px solid var(--accent);
+            outline-offset: 4px;
+          }
+          .diagram-selection-outline {
+            fill: var(--accent-glow-strong);
+            stroke: var(--accent);
+            stroke-width: 2px;
+            vector-effect: non-scaling-stroke;
+            pointer-events: none;
+          }
           .plan-diagram-source { display: none; }
           figure[data-plan-canvas-diagram] figcaption {
             display: flex;
@@ -194,7 +223,7 @@ public enum MarkdownHTMLRenderer {
           }
           figure.is-loading .diagram-state::before { content: "Rendering diagram"; }
           figure.is-unrendered .diagram-state::before { content: "Diagram source · renderer unavailable"; }
-          figure:not(.is-loading):not(.is-unrendered) .diagram-state::before { content: "Click diagram to discuss"; }
+          figure:not(.is-loading):not(.is-unrendered) .diagram-state::before { content: "Select a component · scroll to explore"; }
           ::-webkit-scrollbar { width: 9px; height: 9px; }
           ::-webkit-scrollbar-track { background: transparent; }
           ::-webkit-scrollbar-thumb { background: var(--border-strong); border: 2px solid transparent; border-radius: 99px; background-clip: padding-box; }

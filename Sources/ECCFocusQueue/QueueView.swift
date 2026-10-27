@@ -2085,7 +2085,7 @@ private struct QueueSettingsView: View {
           }
           settingsSection(
             title: "New task hotkey",
-            detail: "Right Option + Shift or a Right Command + Shift tap opens a new task with the prompt focused. Press again to cancel it."
+            detail: "Right Option + Shift or a Right Command + Shift tap opens a new task with the prompt focused. Either one cancels an open new task."
           ) {
             Toggle("New task hotkey (Right Option or Right Command + Shift)", isOn: Binding(
               get: { model.newTaskHotkeyEnabled },

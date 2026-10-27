@@ -652,6 +652,12 @@ struct EmbeddedPlanDocument: NSViewRepresentable {
       return EmbeddedDocumentLink.routeLocalLinks(
         in: render(markdown, sourceURL, accentStyle), sourceURL: sourceURL
       )
+      .replacingOccurrences(
+        of: "default-src 'none';",
+        with: PlanCanvasWebRuntime.mermaidScriptSource().map {
+          "default-src 'none'; script-src \($0);"
+        } ?? "default-src 'none';"
+      )
       .replacingOccurrences(of: "img-src file: data: https: http:", with: "img-src file: data:")
       .replacingOccurrences(
         of: "media-src file: data: https: http:", with: "media-src file: data:"
@@ -666,7 +672,8 @@ struct EmbeddedPlanDocument: NSViewRepresentable {
       renderedCanvasSelection = selection
       guard shouldClear else { return }
       webView.evaluateJavaScript(
-        "document.querySelectorAll('figure[data-plan-canvas-diagram].is-selected').forEach(function(element) { element.classList.remove('is-selected'); element.setAttribute('aria-pressed', 'false'); });",
+        "window.__eccFocusQueuePlanCanvas?.clearSelection();",
+        in: nil, in: .defaultClient,
         completionHandler: nil)
     }
 

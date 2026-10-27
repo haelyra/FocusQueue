@@ -605,9 +605,16 @@ public actor TaskAgentLauncher {
       // Callers persist the reference as soon as this returns; the TUI's
       // startup must not hold that up.
       Task {
-        let submitted = (try? await runtime.submitPrompt(
-          pastedPrompt, to: reference, ready: Self.kimiInputIsReady)) ?? false
-        if !submitted { NSLog("Focus Queue could not deliver the Kimi prompt to %@", reference.paneID) }
+        do {
+          let submitted = try await runtime.submitPrompt(
+            pastedPrompt, to: reference, ready: Self.kimiInputIsReady)
+          if !submitted {
+            NSLog("Focus Queue could not deliver the Kimi prompt to %@ before its input timeout", reference.paneID)
+          }
+        } catch {
+          NSLog("Focus Queue could not deliver the Kimi prompt to %@: %@",
+                reference.paneID, error.localizedDescription)
+        }
       }
     }
     // Give process discovery the same prompt source the shell entry points

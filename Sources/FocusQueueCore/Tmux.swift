@@ -259,11 +259,28 @@ public actor TmuxController {
   ) async throws -> Bool {
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: timeout)
+    var lastInspectionError: (any Error)?
     while true {
-      _ = try await verify(reference)
-      let screen = try await run(reference.executable, ["capture-pane", "-p", "-t", reference.paneID])
-      if screen.succeeded, ready(screen.standardOutput) { break }
-      guard clock.now < deadline else { return false }
+      do {
+        _ = try await verify(reference)
+        let screen = try await run(reference.executable, ["capture-pane", "-p", "-t", reference.paneID])
+        if screen.succeeded {
+          lastInspectionError = nil
+          if ready(screen.standardOutput) { break }
+        } else {
+          lastInspectionError = TmuxError.unavailable(
+            String(screen.standardError.prefix(800)))
+        }
+      } catch {
+        // A task-session reflow or another tmux client can briefly make the
+        // launch receipt unreadable. Keep requiring the exact saved identity,
+        // but retry that inspection instead of abandoning Kimi's only prompt.
+        lastInspectionError = error
+      }
+      guard clock.now < deadline else {
+        if let lastInspectionError { throw lastInspectionError }
+        return false
+      }
       try await Task.sleep(for: .milliseconds(300))
     }
     let buffer = "focus-queue-prompt-\(reference.paneID.dropFirst())"

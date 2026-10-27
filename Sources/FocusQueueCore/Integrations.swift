@@ -2702,7 +2702,9 @@ public actor HarnessQueueAgent: QueueAgentChatting {
         defer { try? FileManager.default.removeItem(at: usageURL) }
         let runID = UUID().uuidString
         let source = Self.documentRuntimeArguments(configuration).isEmpty ? "queue_chat" : "document_chat"
-        let prompt = QueueAgentPrompt.build(
+        let forkSource = configuration.forkSourceSessionID.flatMap { $0.isEmpty ? nil : $0 }
+        // A forked agent keeps its own identity and instructions; only the queue agent gets the queue prompt.
+        let prompt = forkSource != nil ? message : QueueAgentPrompt.build(
             provider: provider,
             message: message,
             dashboardPath: dashboardPath,
@@ -2752,6 +2754,7 @@ public actor HarnessQueueAgent: QueueAgentChatting {
         if let requestedEffort, !requestedEffort.isEmpty {
             arguments.append(contentsOf: ["--effort", requestedEffort])
         }
+        if let forkSource { arguments.append(contentsOf: ["--fork-from", forkSource]) }
         let result = try await runner.run(ProcessSpecification(
             executable: configuration.executable,
             arguments: arguments,

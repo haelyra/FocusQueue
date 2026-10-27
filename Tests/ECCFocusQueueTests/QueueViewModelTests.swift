@@ -440,8 +440,8 @@ struct QueueViewModelTests {
       text: "**Done** with the update.\n\n```swift\nlet ready = true\n```")
     for scheme in [ColorScheme.light, .dark] {
       let view = VStack(spacing: 0) {
-        QueueChatMessageRow(message: user, ticketID: nil)
-        QueueChatMessageRow(message: agent, ticketID: nil)
+        QueueChatMessageRow(message: user, agentLabel: "QCHAT")
+        QueueChatMessageRow(message: agent, agentLabel: "QCHAT")
       }
       .frame(width: 420, height: 480, alignment: .top)
       .background(QueueChatMessageRow.surface(for: .agent, colorScheme: scheme))

@@ -2160,14 +2160,60 @@ final class QueueViewModel {
     let key = DocumentConversation.key(document: document, taskID: subject.scopeID)
     if let existing = documentConversations[key] { return existing }
     let provider = defaultAgentProvider
-    var documentConfiguration = config.verifier
-    documentConfiguration.executable = config.chatExecutable(for: provider)
+    let ticketID: String? = if case .task(let id) = scope { id } else { nil }
+    let services = DocumentChatServices(
+      agent: { [weak self] provider in self?.queueAgent(for: provider) ?? HarnessQueueAgent(provider: provider) },
+      executable: { [weak self, fallback = config] provider in
+        (self?.config ?? fallback).chatExecutable(for: provider)
+      },
+      resolveCreator: { [weak self] known in
+        guard let self, let ticketID, document.isFileURL else { return nil }
+        return await self.documentCreator(path: document.path, ticketID: ticketID, known: known)
+      },
+      modelChoices: { [weak self] provider in self?.agentModelChoices(for: provider) ?? [] })
     let conversation = DocumentConversation(document: document, subject: subject, support: paths.supportDirectory,
-      agent: queueAgent(for: provider), configuration: documentConfiguration, dashboardPath: dashboardPath, workspace: config.workspacePath,
+      services: services, configuration: config.verifier, dashboardPath: dashboardPath,
+      workspace: config.workspacePath, provider: provider,
       model: Self.normalizedChatOption(defaultAgentModel(for: provider)),
       effort: Self.normalizedChatOption(defaultAgentEffort(for: provider)))
     documentConversations[key] = conversation
     return conversation
+  }
+
+  /// The task agent whose transcript wrote `path`, and whether its provider
+  /// process still runs. Transcripts are read once; later calls pass `known`.
+  private func documentCreator(path: String, ticketID: String, known: DocumentAuthor?) async -> DocumentChatCreator? {
+    guard let context = taskContexts[ticketID] else { return nil }
+    let author: DocumentAuthor
+    if let known {
+      author = known
+    } else {
+      var candidates: [(agent: TaskSubtask, transcript: URL)] = []
+      for agent in context.subtasks where agent.sessionID != nil && !agent.isAssignmentOnly {
+        if let transcript = await agentActivityObserver.transcriptURL(for: agent) {
+          candidates.append((agent, transcript))
+        }
+      }
+      let scanned = candidates
+      let createdAt = (try? FileManager.default.attributesOfItem(atPath: path))?[.creationDate] as? Date
+      guard let found = await Task.detached(priority: .utility, operation: {
+        DocumentAuthorship.author(of: path, agents: scanned, createdAt: createdAt)
+      }).value else { return nil }
+      author = found
+    }
+    let agent = context.subtasks.first { $0.id == author.subtaskID }
+    let running = agent?.agentRemovedAt == nil
+      ? try? await locateExistingAgent(author.provider, author.sessionID) : nil
+    // Kimi records may keep the bare UUID of a `session_<uuid>` session; a
+    // Codex sub-agent thread forks through its lineage root, as it resumes.
+    let forkSessionID = switch author.provider {
+    case .kimi where UUID(uuidString: author.sessionID) != nil: "session_" + author.sessionID
+    case .codex: CodexSessionLineage.root(of: author.sessionID)
+    default: author.sessionID
+    }
+    return DocumentChatCreator(author: author, forkSessionID: forkSessionID, liveWorkspace: running?.cwd,
+      model: Self.normalizedChatOption(agent?.launchConfiguration?.model),
+      effort: Self.normalizedChatOption(agent?.launchConfiguration?.effort))
   }
 
   func chatMessages(ticketID: String?) -> [QueueChatMessage] {

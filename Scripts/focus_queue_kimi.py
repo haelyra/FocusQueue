@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -365,6 +366,27 @@ def run_kimi(
         return reply, observed_session
 
 
+def fork_session(source: str, workspace: Path) -> str:
+    """`kimi fork <id> -y` copies a session and exits, printing the new ID."""
+    try:
+        result = subprocess.run(
+            [resolve_kimi(), "fork", source, "-y"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+            cwd=str(workspace),
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise KimiHarnessError(f"Kimi could not fork session {source}: {error}") from error
+    match = re.search(r"Forked to (session_[A-Za-z0-9-]+)", result.stdout)
+    if result.returncode != 0 or match is None:
+        detail = (result.stderr or result.stdout).strip()
+        raise KimiHarnessError(f"Kimi could not fork session {source}: {detail[:600]}")
+    return match.group(1)
+
+
 def chat(arguments: argparse.Namespace) -> int:
     runtime = arguments.runtime.expanduser()
     state_path = runtime / "sessions.json"
@@ -377,6 +399,12 @@ def chat(arguments: argparse.Namespace) -> int:
         state = load_state(state_path)
         sessions = state.setdefault("sessions", {})
         prior_session = str(sessions.get(arguments.session, "")) or None
+        fork_from = getattr(arguments, "fork_from", None)
+        if prior_session is None and fork_from:
+            # Save the fork before the first turn so a failed turn never forks twice.
+            prior_session = fork_session(fork_from, arguments.workspace)
+            sessions[arguments.session] = prior_session
+            morning.write_private_json(state_path, state)
         prompt = arguments.prompt_file.read_text(encoding="utf-8")
         try:
             reply, observed_session = run_kimi(
@@ -481,6 +509,10 @@ def main() -> int:
     chat_parser.add_argument(
         "--effort",
         help="Accepted for contract parity; Kimi has no effort flag and drops it",
+    )
+    chat_parser.add_argument(
+        "--fork-from",
+        help="Start a session with no saved conversation as a fork of this provider session",
     )
 
     run_parser = subparsers.add_parser("run")

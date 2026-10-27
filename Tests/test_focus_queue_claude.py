@@ -170,6 +170,57 @@ class FocusQueueClaudeTests(unittest.TestCase):
             self.assertEqual(json.loads(state.read_text())["sessions"]["queue"], "session-123")
             self.assertEqual(state.stat().st_mode & 0o777, 0o600)
 
+    def test_chat_forks_the_source_session_only_on_the_first_turn(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prompt = root / "prompt.txt"
+            prompt.write_text("Discuss the document")
+            arguments = argparse.Namespace(
+                runtime=root / "runtime", session="doc", workspace=root, prompt_file=prompt,
+                timeout=60, context_dir=None, model=None, effort=None, fork_from="source-1",
+            )
+            with mock.patch.object(MODULE, "run_claude", side_effect=[
+                ("First", "fork-1"), ("Second", "fork-1"),
+            ]) as run, contextlib.redirect_stdout(io.StringIO()):
+                MODULE.chat(arguments)
+                MODULE.chat(arguments)
+            self.assertEqual(
+                [(call.kwargs["session_id"], call.kwargs["fork_session"]) for call in run.call_args_list],
+                [("source-1", True), ("fork-1", False)],
+            )
+            state = json.loads((root / "runtime/sessions.json").read_text())
+            self.assertEqual(state["sessions"]["doc"], "fork-1")
+
+    def test_a_missing_fork_source_fails_instead_of_starting_fresh(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prompt = root / "prompt.txt"
+            prompt.write_text("Discuss the document")
+            arguments = argparse.Namespace(
+                runtime=root / "runtime", session="doc", workspace=root, prompt_file=prompt,
+                timeout=60, context_dir=None, model=None, effort=None, fork_from="gone",
+            )
+            with mock.patch.object(MODULE, "run_claude", side_effect=MODULE.ClaudeHarnessError(
+                "No conversation found with session ID: gone"
+            )) as run, self.assertRaises(MODULE.ClaudeHarnessError):
+                MODULE.chat(arguments)
+            self.assertEqual(run.call_count, 1)
+
+    def test_fork_session_resumes_the_source_with_the_fork_flag(self):
+        captured = {}
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            MODULE, "resolve_claude", return_value="/usr/bin/claude"
+        ), mock.patch.object(MODULE.subprocess, "Popen", fake_process(captured, envelope("ok", "fork-2"))):
+            reply, session = MODULE.run_claude(
+                prompt="Discuss", workspace=Path(temporary), runtime=Path(temporary) / "runtime",
+                timeout=10, sandbox="workspace-write", session_id="source-2", output_schema=None,
+                fork_session=True,
+            )
+        command = captured["command"]
+        index = command.index("--resume")
+        self.assertEqual(command[index:index + 3], ["--resume", "source-2", "--fork-session"])
+        self.assertEqual((reply, session), ("ok", "fork-2"))
+
     def test_chat_recovers_from_a_missing_conversation_by_retrying_fresh(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -245,10 +245,11 @@ public actor AgentActivityObserver {
         self.kimiRoot = kimiRoot ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".kimi-code")
     }
 
-    public func events(for agent: TaskSubtask) throws -> [AgentActivityEvent] {
+    /// The provider transcript that records this agent's saved conversation.
+    public func transcriptURL(for agent: TaskSubtask) -> URL? {
         // Saved Kimi records may hold the bare UUID of a `session_<uuid>` directory.
         guard let sessionID = agent.sessionID,
-              UUID(uuidString: sessionID) != nil || agent.provider.isValidSessionID(sessionID) else { return [] }
+              UUID(uuidString: sessionID) != nil || agent.provider.isValidSessionID(sessionID) else { return nil }
         let key = agent.provider.rawValue + ":" + sessionID.lowercased()
         let root = switch agent.provider {
         case .codex: codexRoot.appendingPathComponent("sessions")
@@ -273,7 +274,12 @@ public actor AgentActivityObserver {
                     : $0.lastPathComponent.lowercased().hasSuffix(suffix)
             }
         }
-        guard let url = locations[key] else { return [] }
+        return locations[key]
+    }
+
+    public func events(for agent: TaskSubtask) throws -> [AgentActivityEvent] {
+        guard let sessionID = agent.sessionID, let url = transcriptURL(for: agent) else { return [] }
+        let key = agent.provider.rawValue + ":" + sessionID.lowercased()
         let identity = try fileIdentity(at: url)
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }

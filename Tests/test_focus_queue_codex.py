@@ -559,6 +559,53 @@ class FocusQueueCodexTests(unittest.TestCase):
                     )
             launch.assert_not_called()
 
+    def test_chat_forks_the_source_thread_only_on_the_first_turn(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prompt = root / "prompt.txt"
+            prompt.write_text("Discuss the document")
+            arguments = argparse.Namespace(
+                runtime=root / "runtime", session="doc", workspace=root, prompt_file=prompt,
+                timeout=60, context_dir=None, fork_from="source-1",
+            )
+            with mock.patch.object(MODULE, "run_codex", side_effect=[
+                ("First", "fork-1"), ("Second", "fork-1"),
+            ]) as run, contextlib.redirect_stdout(io.StringIO()):
+                MODULE.chat(arguments)
+                MODULE.chat(arguments)
+            self.assertEqual(
+                [(call.kwargs["thread_id"], call.kwargs["fork_thread"]) for call in run.call_args_list],
+                [("source-1", True), ("fork-1", False)],
+            )
+
+    def test_fork_thread_uses_exec_fork_with_the_prompt_on_stdin(self):
+        captured = {}
+
+        class FakeProcess:
+            returncode = 0
+            pid = 123
+
+            def __init__(self, command, **_kwargs):
+                captured["command"] = command
+                Path(command[command.index("--output-last-message") + 1]).write_text("ok", encoding="utf-8")
+
+            def communicate(self, **_kwargs):
+                return ('{"type":"thread.started","thread_id":"fork-2"}\n', "")
+
+            def poll(self):
+                return 0
+
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            MODULE, "resolve_codex", return_value="/usr/bin/codex"
+        ), mock.patch.object(MODULE.subprocess, "Popen", FakeProcess):
+            reply, thread = MODULE.run_codex(
+                prompt="Discuss", workspace=Path(temporary), runtime=Path(temporary) / "runtime",
+                timeout=10, sandbox="workspace-write", thread_id="source-2", output_schema=None,
+                fork_thread=True,
+            )
+        self.assertEqual(captured["command"][-3:], ["fork", "source-2", "-"])
+        self.assertEqual((reply, thread), ("ok", "fork-2"))
+
     def test_chat_forwards_context_to_initial_resume_and_missing_thread_retry(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

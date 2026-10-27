@@ -2085,17 +2085,17 @@ private struct QueueSettingsView: View {
           }
           settingsSection(
             title: "New task hotkey",
-            detail: "Right Option + Shift reveals the queue and opens a new task with the prompt focused."
+            detail: "Right Option + Shift or a Right Command + Shift tap opens a new task with the prompt focused. Press again to cancel it."
           ) {
-            Toggle("New task hotkey (Right Option + Shift)", isOn: Binding(
+            Toggle("New task hotkey (Right Option or Right Command + Shift)", isOn: Binding(
               get: { model.newTaskHotkeyEnabled },
               set: { model.setNewTaskHotkeyEnabled($0) }))
           }
           settingsSection(
             title: "QChat hotkey",
-            detail: "Right Option + / reveals the queue and opens QChat with the message box focused for voice typing. Needs Accessibility access."
+            detail: "Right Option + / or Right Command + / opens QChat beside the queue with the message box focused for voice typing. Press again to close it. Needs Accessibility access."
           ) {
-            Toggle("QChat hotkey (Right Option + /)", isOn: Binding(
+            Toggle("QChat hotkey (Right Option or Right Command + /)", isOn: Binding(
               get: { model.qchatHotkeyEnabled },
               set: { model.setQChatHotkeyEnabled($0) }))
           }

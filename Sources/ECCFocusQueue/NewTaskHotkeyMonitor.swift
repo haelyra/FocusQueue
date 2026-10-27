@@ -1,8 +1,8 @@
 import AppKit
 
-/// Fires once per Right Option + Shift press. Uses flagsChanged monitors only:
-/// events arrive solely on modifier transitions, so idle cost is zero and the
-/// handler is a bitmask check.
+/// Fires on Right Option + Shift (as soon as both are down) and on a Right
+/// Command + Shift tap (on release, when no other key was pressed meanwhile).
+/// Modifier events cost a bitmask check; key-downs only cancel a pending tap.
 @MainActor
 final class NewTaskHotkeyMonitor {
   var onTrigger: () -> Void = {}
@@ -13,10 +13,10 @@ final class NewTaskHotkeyMonitor {
 
   func start() {
     guard globalMonitor == nil else { return }
-    globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) {
+    globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged, .keyDown]) {
       [weak self] event in Task { @MainActor in self?.handle(event) }
     }
-    localMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) {
+    localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown]) {
       [weak self] event in
       Task { @MainActor in self?.handle(event) }
       return event
@@ -31,29 +31,59 @@ final class NewTaskHotkeyMonitor {
   }
 
   private func handle(_ event: NSEvent) {
-    if state.update(keyCode: event.keyCode, flags: event.modifierFlags) {
+    guard event.type == .flagsChanged else {
+      state.noteKeyDown()
+      return
+    }
+    if state.update(keyCode: event.keyCode, flags: event.modifierFlags) != nil {
       onTrigger()
     }
   }
 }
 
-/// Testable Right Option + Shift edge detector, independent of NSEvent.
-/// keyCode 61 = right Option, 56/60 = left/right Shift.
+/// Testable new-task combo detector, independent of NSEvent.
+/// keyCode 61 = right Option, 54 = right Command, 56/60 = left/right Shift.
 final class HotkeyComboState {
+  enum Trigger: Equatable {
+    case optionShift
+    case commandShift
+  }
+
   private(set) var rightOptionDown = false
+  private(set) var rightCommandDown = false
   private(set) var shiftDown = false
   private var fired = false
+  /// Right Command + Shift is common in shortcuts (⌘⇧Z, ⌘⇧4), so it fires on
+  /// release and only when nothing else was typed while it was held.
+  private var commandTapPending = false
 
-  /// Returns true exactly once per full combo press; re-arms on full release.
-  func update(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> Bool {
+  /// Option + Shift fires once per full press and re-arms on full release.
+  func update(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> Trigger? {
     switch keyCode {
     case 61: rightOptionDown = flags.contains(.option)
+    case 54: rightCommandDown = flags.contains(.command)
     case 56, 60: shiftDown = flags.contains(.shift)
     default: break
     }
-    let combo = rightOptionDown && shiftDown
-    if combo && !fired { fired = true; return true }
-    if !rightOptionDown && !shiftDown { fired = false }
-    return false
+    defer { if !rightOptionDown && !rightCommandDown && !shiftDown { fired = false } }
+    if rightOptionDown && shiftDown {
+      commandTapPending = false
+      if fired { return nil }
+      fired = true
+      return .optionShift
+    }
+    if rightCommandDown && shiftDown {
+      // Any other modifier joining turns the tap into some other shortcut.
+      commandTapPending = !fired && flags.intersection([.option, .control]).isEmpty
+      return nil
+    }
+    guard commandTapPending else { return nil }
+    commandTapPending = false
+    fired = true
+    return .commandShift
+  }
+
+  func noteKeyDown() {
+    commandTapPending = false
   }
 }

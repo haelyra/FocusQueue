@@ -58,13 +58,13 @@ struct KimiLaunchTests {
       """))
   }
 
-  @Test("Kimi's new-task brief contains the central artifact route")
-  func kimiArtifactBrief() throws {
+  @Test("Every provider's new-task brief contains the central artifact route", arguments: AgentProvider.allCases)
+  func artifactBrief(provider: AgentProvider) throws {
     let brief = try #require(TaskAgentLauncher.initialPrompt(
-      context: context, subtask: TaskSubtask(title: "Kimi agent", provider: .kimi), includePrompt: true))
+      context: context, subtask: TaskSubtask(title: "Agent", provider: provider), includePrompt: true))
     #expect(brief.contains("/tmp/support/tasks/ECC-1/evidence"))
-    #expect(brief.contains("focus-queue-session task link ECC-1"))
     #expect(brief.contains("not the worktree Docs folder"))
+    #expect(brief.contains("the task card announces each new file"))
   }
 
   @Test("Kimi receives the actual Documents instructions in its first prompt")

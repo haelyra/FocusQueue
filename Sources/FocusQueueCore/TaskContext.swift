@@ -366,6 +366,9 @@ public struct TaskContext: Codable, Equatable, Sendable {
     public var subtasks: [TaskSubtask] = []
     public var lastPromptAt: Date? = nil
     public var pinnedAt: Date? = nil
+    /// Context-folder outputs the user opened or dismissed, keyed by relative
+    /// path, with the modification date seen. A later edit marks one new again.
+    public var reviewedOutputs: [String: Date]? = nil
     public var removedAgentSessionKeys: [String]?
     public var updatedAt: Date
 
@@ -448,7 +451,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
                   Self.dataWritingRule]
         lines += scopedDataLines()
         lines.append("Read relevant saved facts before acting.")
-        if subtask.provider == .kimi { lines.append(artifactInstruction) }
+        lines.append(artifactInstruction)
         lines.append("Register with `focus-queue-session attach`, then report with `focus-queue-session progress|complete`. Rules: `focus-queue-session rules`.")
         return lines.joined(separator: "\n")
     }
@@ -482,8 +485,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
         } else {
             lines.append("Task data: \(dataURL.path).")
         }
-        lines += [Self.dataWritingRule]
-        if subtask.provider == .kimi { lines.append(artifactInstruction) }
+        lines += [Self.dataWritingRule, artifactInstruction]
         lines += [
             "Before anything else run `focus-queue-session attach`.",
             "Report with `focus-queue-session <verb>`; task and agent IDs come from the environment: progress working|idle|blocked \"summary\" · attention approval|question \"summary\" · result \"summary\" · complete \"what changed and how it was verified\".",
@@ -493,8 +495,10 @@ public struct TaskContext: Codable, Equatable, Sendable {
         return lines.joined(separator: "\n")
     }
 
+    /// Every provider gets this line: the task card shows new files from the
+    /// context folder, so a file saved only in the worktree never reaches the user.
     private var artifactInstruction: String {
-        "Save requested reports and output files under \(contextDirectory.path)/evidence, not the worktree Docs folder. Add each file to Context, evidence & links with `focus-queue-session task link \(ticketID) <absolute-file-path> <short-label> evidence`; verify the command succeeds. Keep decisions and test evidence in \(agentLogURL.path) via `focus-queue-session log`."
+        "Save every file meant for the user under \(contextDirectory.path)/evidence, not the worktree Docs folder; the task card announces each new file there."
     }
 
     /// Character counts for the documents actually inlined by the detailed launch brief.
@@ -1623,6 +1627,19 @@ public actor TaskContextStore {
     ) throws -> TaskContext {
         try mutate(ticketID: ticketID) { context in
             context.pinnedAt = date
+        }
+    }
+
+    /// Records outputs as seen at their current dates and forgets deleted files.
+    @discardableResult public func markOutputsReviewed(
+        ticketID: String, outputs: [TaskOutputFile]
+    ) throws -> TaskContext {
+        try mutate(ticketID: ticketID) { context in
+            var reviewed = context.reviewedOutputs ?? [:]
+            for output in outputs { reviewed[output.relativePath] = output.modifiedAt }
+            context.reviewedOutputs = reviewed.filter {
+                files.fileExists(atPath: context.contextDirectory.appendingPathComponent($0.key).path)
+            }
         }
     }
 

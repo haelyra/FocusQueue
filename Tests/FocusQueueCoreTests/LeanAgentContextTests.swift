@@ -68,13 +68,16 @@ func leanDetailedBrief() async throws {
     for retired in ["Assignment details", "context.json", "FOCUS_QUEUE_SUPPORT_DIR", "review-push", "focus-queue-map", "Briefly state"] {
         #expect(!prompt.contains(retired), "Retired launch text: \(retired)")
     }
-    // Procedure, excluding the request and inlined documents, stays within a fixed budget.
+    // Procedure, excluding the request, inlined documents, and paths, stays within a fixed
+    // budget. It grew past 1,000 bytes for the one rule that routes user-facing files to the
+    // context folder, which every provider needs and no global contract carries for Kimi.
     let plan = TaskContext.inlineDocument(atPath: context.planPath, limit: 4_000)!
     let projectBody = TaskContext.inlineDocument(atPath: context.projectPlanPath, limit: 1_500)!
     let procedure = prompt.replacingOccurrences(of: agent.initialPrompt!, with: "")
         .replacingOccurrences(of: plan, with: "").replacingOccurrences(of: projectBody, with: "")
         .replacingOccurrences(of: context.planPath, with: "").replacingOccurrences(of: context.dataURL.path, with: "")
-    #expect(procedure.utf8.count < 1_000, "Procedure is \(procedure.utf8.count) bytes")
+        .replacingOccurrences(of: context.contextDirectory.path, with: "")
+    #expect(procedure.utf8.count < 1_150, "Procedure is \(procedure.utf8.count) bytes")
 }
 
 @Test("A plan What line that restates the request points back to it")

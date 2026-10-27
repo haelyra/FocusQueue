@@ -154,6 +154,8 @@ final class QueueViewModel {
   private(set) var respondingTicketID: String?
   private(set) var taskChatMessages: [String: [QueueChatMessage]] = [:]
   private(set) var taskContexts: [String: TaskContext] = [:]
+  /// Files agents saved in each open task's context folder, newest first.
+  private(set) var taskOutputs: [String: [TaskOutputFile]] = [:]
   private(set) var unassignedAgentRegistrations: [ExternalAgentRegistration] = []
   private(set) var externalAgentRegistrationError: String? {
     didSet {
@@ -272,6 +274,7 @@ final class QueueViewModel {
   static let durableVolatileFlushInterval: TimeInterval = 10 * 60
   @ObservationIgnored private var durableDocumentStamps: [String: DurableDocumentStamp] = [:]
   @ObservationIgnored private var lastContextRefresh: Date?
+  @ObservationIgnored private var lastOutputScan: Date?
   @ObservationIgnored private var lastDashboardRead: Date?
   @ObservationIgnored private var lastDashboardStamp: DashboardFileStamp?
   @ObservationIgnored private var lastDurableContextScan: Date?
@@ -1510,6 +1513,7 @@ final class QueueViewModel {
       resetDailyRoutinesIfNeeded()
       await importAgentRegistrations()
       await refreshTaskContexts()
+      await refreshTaskOutputs()
       try reloadApplicableQueueOverride()
       await consumeEscalationLaunchRequests()
       if panelVisible { await refreshExternalAgentRegistrations() }
@@ -1587,6 +1591,42 @@ final class QueueViewModel {
     case .recentOutput: "Latest agent output first · deadlines cycle the rest"
     case .triage: "Hard due dates and rough triage targets"
     case .manual: "Your saved task order"
+    }
+  }
+
+  /// Walks open tasks' context folders off the main actor. Each walk is
+  /// bounded, so polling every few seconds keeps new outputs prompt and cheap.
+  private func refreshTaskOutputs() async {
+    guard lastOutputScan == nil || Date().timeIntervalSince(lastOutputScan!) >= 4 else { return }
+    lastOutputScan = Date()
+    let folders = dashboard.tickets.filter(\.isOpen).compactMap { ticket in
+      taskContexts[ticket.id].map { (ticket.id, $0.contextDirectory) }
+    }
+    let scanned = await Task.detached(priority: .utility) {
+      Dictionary(folders.map { ($0.0, TaskOutputs.scan($0.1)) }, uniquingKeysWith: { first, _ in first })
+    }.value
+    if taskOutputs != scanned { taskOutputs = scanned }
+  }
+
+  func outputs(for ticketID: String) -> [TaskOutputFile] { taskOutputs[ticketID] ?? [] }
+
+  /// Outputs to announce on the task card until the user opens or dismisses them.
+  func newOutputs(for ticketID: String) -> [TaskOutputFile] {
+    taskContexts[ticketID]?.newOutputs(taskOutputs[ticketID] ?? []) ?? []
+  }
+
+  /// Opens an output and stops announcing it; the file stays in the context folder.
+  func openOutput(_ output: TaskOutputFile, ticketID: String) {
+    open(output.url.path, ticketID: ticketID)
+    Task { await markOutputsReviewed([output], ticketID: ticketID) }
+  }
+
+  func markOutputsReviewed(_ outputs: [TaskOutputFile], ticketID: String) async {
+    guard !outputs.isEmpty else { return }
+    do {
+      taskContexts[ticketID] = try await taskContextStore.markOutputsReviewed(ticketID: ticketID, outputs: outputs)
+    } catch {
+      actionMessages[ticketID] = "Could not update new outputs: \(error.localizedDescription)"
     }
   }
 

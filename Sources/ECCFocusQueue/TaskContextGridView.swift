@@ -3,8 +3,8 @@ import FocusQueueCore
 import QuickLookThumbnailing
 import SwiftUI
 
-/// A task's context, evidence, and links as a Finder-style icon grid: one
-/// click selects an item, a double click opens it the usual way.
+/// A task's context, outputs, evidence, and links as a Finder-style icon grid:
+/// one click selects an item, a double click opens it the usual way.
 struct TaskContextGridView: View {
   let ticket: DashboardTicket
   let model: QueueViewModel
@@ -45,7 +45,7 @@ struct TaskContextGridView: View {
             }
           }
           if groups.allSatisfy({ $0.title == "Task files" }) {
-            Text("No evidence or links have been attached yet.")
+            Text("No outputs, evidence, or links yet.")
               .font(.caption).foregroundStyle(.secondary)
               .padding(.horizontal, 4).padding(.top, 8)
           }
@@ -70,6 +70,12 @@ struct TaskContextGridView: View {
     let isSelected = selection == item.id
     return VStack(spacing: 4) {
       TaskContextThumbnail(item: item).frame(width: 52, height: 52)
+        .overlay(alignment: .topTrailing) {
+          if item.isNew {
+            Circle().fill(Color.accentColor).frame(width: 10, height: 10)
+              .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
+          }
+        }
       Text(item.title)
         .font(.system(size: 11))
         .lineLimit(2)
@@ -96,7 +102,7 @@ struct TaskContextGridView: View {
     }
     .help(item.help)
     .accessibilityElement(children: .ignore)
-    .accessibilityLabel(item.title)
+    .accessibilityLabel(item.isNew ? "\(item.title), new from agent" : item.title)
     .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     .accessibilityAction { open(item) }
     .accessibilityHint("Double-click to open.")
@@ -107,6 +113,7 @@ struct TaskContextGridView: View {
     switch item.target {
     case .plan: model.openPlan(for: ticket)
     case .resource(let value): model.open(value, ticketID: ticket.id)
+    case .output(let output): model.openOutput(output, ticketID: ticket.id)
     case .folder(let url): model.open(url.path)
     case .web(let url): model.open(url)
     }
@@ -128,14 +135,26 @@ struct TaskContextGridView: View {
         id: "folder", title: "Context folder", target: .folder(context.contextDirectory),
         fileURL: context.contextDirectory, help: context.contextDirectory.path))
     }
-    let evidence = Array(Set(ticket.steps.flatMap(\.evidence))).sorted().map { value in
+    // Every file in the context folder shows here, whether or not an agent linked it.
+    let outputs = model.outputs(for: ticket.id)
+    let newIDs = Set(model.newOutputs(for: ticket.id).map(\.id))
+    let outputItems = outputs.map { output in
+      TaskContextItem(
+        id: "output:\(output.relativePath)", title: output.url.lastPathComponent, target: .output(output),
+        fileURL: output.url, help: output.relativePath, isNew: newIDs.contains(output.id))
+    }
+    let outputPaths = Set(outputs.map(\.url.path))
+    func isOutput(_ value: String) -> Bool {
+      ResourceLocator.url(for: value).map { $0.isFileURL && outputPaths.contains($0.standardizedFileURL.path) } ?? false
+    }
+    let evidence = Array(Set(ticket.steps.flatMap(\.evidence))).sorted().filter { !isOutput($0) }.map { value in
       let url = ResourceLocator.url(for: value)
       return TaskContextItem(
         id: "evidence:\(value)", title: url?.lastPathComponent ?? value, target: .resource(value),
         fileURL: url?.isFileURL == true ? url : nil, symbol: url?.isFileURL == true ? nil : "globe",
         help: value)
     }
-    let links = ticket.links.map { link in
+    let links = ticket.links.filter { !isOutput($0.url) }.map { link in
       let url = ResourceLocator.url(for: link.url)
       return TaskContextItem(
         id: "link:\(link.id)", title: link.label, target: .resource(link.url),
@@ -146,7 +165,7 @@ struct TaskContextGridView: View {
         id: "pr:\(pr.number)", title: "PR #\(pr.number): \(pr.title)", target: .web(pr.url),
         symbol: "arrow.triangle.branch", help: pr.url)
     }
-    return [("Task files", files), ("Evidence", evidence), ("Links & PRs", links)]
+    return [("Task files", files), ("Outputs", outputItems), ("Evidence", evidence), ("Links & PRs", links)]
       .filter { !$0.items.isEmpty }
   }
 }
@@ -157,6 +176,7 @@ struct TaskContextItem: Identifiable {
     case resource(String)
     case folder(URL)
     case web(String)
+    case output(TaskOutputFile)
   }
 
   let id: String
@@ -165,6 +185,7 @@ struct TaskContextItem: Identifiable {
   var fileURL: URL?
   var symbol: String?
   var help: String
+  var isNew = false
 }
 
 /// Quick Look's thumbnail for a local file, over its Finder icon while it

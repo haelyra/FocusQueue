@@ -65,6 +65,10 @@ struct QueueView: View {
     .onChange(of: notificationCount) { _, count in
       if count == 0 { model.setNotificationsInspectorPresented(false) }
     }
+    .onChange(of: model.queueChatFocusRequest) { _, _ in
+      screen = .queue
+      if !model.isQueueChatInspectorPresented { selectedTab = .agent }
+    }
     .sheet(isPresented: $showsTerminals) { TerminalBrowserView(model: model) }
     .sheet(item: Binding(
       get: { model.newTaskRequest },
@@ -149,7 +153,8 @@ struct QueueView: View {
           .accessibilityLabel("Close Queue chat side panel")
           .help("Close Queue chat side panel")
         }
-        QueueAgentChatView(model: model, draft: $queueAgentDraft)
+        QueueAgentChatView(
+          model: model, draft: $queueAgentDraft, focusRequest: model.queueChatFocusRequest)
       }
       .frame(minWidth: 320, idealWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
     } else if model.isNotificationsInspectorPresented {
@@ -205,7 +210,8 @@ struct QueueView: View {
       case .completed:
         completedQueueContent
       case .agent:
-        QueueAgentChatView(model: model, draft: $queueAgentDraft)
+        QueueAgentChatView(
+          model: model, draft: $queueAgentDraft, focusRequest: model.queueChatFocusRequest)
       }
     }
   }
@@ -2059,6 +2065,14 @@ private struct QueueSettingsView: View {
             Toggle("New task hotkey (Right Option + Shift)", isOn: Binding(
               get: { model.newTaskHotkeyEnabled },
               set: { model.setNewTaskHotkeyEnabled($0) }))
+          }
+          settingsSection(
+            title: "QChat hotkey",
+            detail: "Right Option + / reveals the queue and opens QChat with the message box focused for voice typing. Needs Accessibility access."
+          ) {
+            Toggle("QChat hotkey (Right Option + /)", isOn: Binding(
+              get: { model.qchatHotkeyEnabled },
+              set: { model.setQChatHotkeyEnabled($0) }))
           }
           settingsSection(
             title: "Appearance", detail: "Dark uses your WezTerm #1A1D23 background color."

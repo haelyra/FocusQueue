@@ -562,6 +562,23 @@ struct QueueViewModelTests {
     #expect(saved.tickets.first?.title == "Renamed app task")
   }
 
+  @Test("The QChat hotkey expands the panel and keeps a side-by-side QChat open")
+  func qchatHotkeyFocusRequest() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+
+    model.setPanelMode(.collapsed)
+    model.requestQueueChatFocus()
+    #expect(model.panelMode == .expanded)
+    #expect(model.queueChatFocusRequest == 1)
+
+    model.setQueueChatInspectorPresented(true)
+    model.requestQueueChatFocus()
+    #expect(model.isQueueChatInspectorPresented)
+    #expect(model.queueChatFocusRequest == 2)
+  }
+
   @Test("An agent's canvas open expands the panel and requests its tab; other support dirs are ignored")
   func uiCanvasOpenRouting() async throws {
     let fixture = try await Fixture()

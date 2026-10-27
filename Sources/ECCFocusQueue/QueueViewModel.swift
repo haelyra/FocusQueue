@@ -4705,10 +4705,11 @@ final class QueueViewModel {
     qchatHotkeyEnabledHandler?(enabled)
   }
 
-  /// Opens the central QChat conversation with its composer focused. A side-by-side
-  /// QChat stays where it is; otherwise the queue switches to its QChat tab.
+  /// Opens the central QChat conversation beside the queue, like the side-panel
+  /// button, with its composer focused.
   func requestQueueChatFocus() {
     setPanelMode(.expanded)
+    setQueueChatInspectorPresented(true)
     queueChatFocusRequest += 1
   }
 

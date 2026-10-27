@@ -172,9 +172,6 @@ public enum MarkdownHTMLRenderer {
             font-weight: 650;
             letter-spacing: 0.02em;
           }
-          figure[data-plan-canvas-diagram].is-component-selected::after {
-            content: "Component selected for discussion";
-          }
           pre.mermaid { margin: 0; white-space: pre-wrap; }
           figure.is-rendered pre.mermaid {
             display: flex;

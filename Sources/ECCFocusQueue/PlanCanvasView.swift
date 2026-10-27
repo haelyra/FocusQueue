@@ -511,8 +511,9 @@ struct PlanCanvasView: View {
 
   private func discussDocument(_ action: PlanCanvasSelectionAction, for document: URL) {
     guard let documentConversation = model.documentConversation(for: document, ticketID: ticket.id) else { return }
-    if !documentConversation.draft.isEmpty { documentConversation.draft += "\n\n" }
-    documentConversation.draft += "Selected passage: \(action.selection.excerpt)\n\(action.initialText)"
+    // The document chat replaces the central chat only beside the primary document.
+    if document == sideDocuments.primaryDocument { sideDocuments.centralChatCollapsed = true }
+    documentConversation.discuss(action)
   }
 
   /// Open `url` beside the document that was open before it, or leave the split.

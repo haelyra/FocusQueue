@@ -1537,7 +1537,7 @@ struct QueueAgentChatView: View {
 
 /// NSTextView-backed composer: Return sends, Shift/Option+Return inserts a
 /// newline, and the view grows with its content up to the cap before scrolling.
-private struct QueueChatComposerTextView: NSViewRepresentable {
+struct QueueChatComposerTextView: NSViewRepresentable {
   @Binding var text: String
   var isFocused: FocusState<Bool>.Binding
   /// Each new value makes the text view first responder directly. The FocusState

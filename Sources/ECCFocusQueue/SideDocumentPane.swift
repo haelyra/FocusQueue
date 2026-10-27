@@ -296,7 +296,7 @@ struct SideDocumentPane: View {
                         searchesBackwards: find.searchesBackwards)
                 case .pdf(let file):
                     PDFDocumentView(
-                        url: file, open: open, findQuery: find.query,
+                        url: file, open: open, discuss: discuss, findQuery: find.query,
                         findRequest: find.request, findSearchesBackwards: find.searchesBackwards)
                 case .rendered(let resource):
                     ReadOnlyResourceDocument(
@@ -360,6 +360,7 @@ struct DocumentConversationPane: View {
 
 struct DocumentConversationView: View {
     @Bindable var model: DocumentConversation
+    @FocusState private var composerIsFocused: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -372,11 +373,15 @@ struct DocumentConversationView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
                         if model.messages.isEmpty {
-                            Text("Discuss this document with the \(model.subject.planLabel) and applicable AGENTS.md context.").font(.caption).foregroundStyle(.secondary)
+                            Text("Discuss this document with the \(model.subject.planLabel) and applicable AGENTS.md context. Select text and start typing to ask about it.").font(.caption).foregroundStyle(.secondary)
                         }
                         ForEach(model.messages) { message in
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(message.role == .user ? "YOU" : "DOCUMENT AGENT").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                                if let selection = message.canvasSelection {
+                                    Label("\(selection.selector): \(selection.compactExcerpt)", systemImage: selection.kind.systemImage)
+                                        .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(2)
+                                }
                                 Text(message.text).font(.system(size: 12)).textSelection(.enabled)
                             }.id(message.id)
                         }
@@ -384,14 +389,45 @@ struct DocumentConversationView: View {
                 }.onChange(of: model.messages.count) { _, _ in if let last = model.messages.last { proxy.scrollTo(last.id, anchor: .bottom) } }
             }
             if let error = model.error { Text(error).font(.caption2).foregroundStyle(.orange) }
+            if let selection = model.selection { selectionContext(selection) }
             HStack(alignment: .bottom) {
-                TextField("Ask about this document", text: $model.draft, axis: .vertical)
-                    .textFieldStyle(.roundedBorder).lineLimit(1...4)
+                QueueChatComposerTextView(
+                    text: $model.draft, isFocused: $composerIsFocused, focusRequest: model.focusRequest,
+                    maxHeight: 90, onSend: { model.send() })
+                    .fixedSize(horizontal: false, vertical: true)
+                    .overlay(alignment: .topLeading) {
+                        if model.draft.isEmpty {
+                            Text("Ask about this document").font(.system(size: 13)).foregroundStyle(.secondary)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 7).fill(Color(nsColor: .textBackgroundColor)))
+                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.secondary.opacity(0.3), lineWidth: 1))
+                    .accessibilityLabel("Ask about this document")
                 Button { model.send() } label: { Image(systemName: "arrow.up.circle.fill").font(.system(size: 23)) }
                     .buttonStyle(.plain).disabled(!model.isLoaded || model.isResponding || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityLabel("Send to document agent")
             }
         }
+    }
+
+    private func selectionContext(_ selection: PlanCanvasSelection) -> some View {
+        HStack(alignment: .top, spacing: 7) {
+            Image(systemName: selection.kind.systemImage).font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(selection.kind.title) · \(selection.selector)").font(.system(size: 10.5, weight: .semibold))
+                Text(selection.compactExcerpt).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(2)
+            }
+            Spacer(minLength: 2)
+            Button { model.selection = nil } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear selected passage")
+                .help("Remove the selected passage from this message")
+        }
+        .padding(8)
+        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
     }
 }
 
@@ -477,14 +513,16 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
 
 /// Focus Queue's PDF viewer. Internal links stay in PDFKit; web and file
 /// links route through the same document opener as every other viewer.
+/// Typing with text selected starts a document-chat message about that passage.
 struct PDFDocumentView: NSViewRepresentable {
     let url: URL
     let open: (URL) -> Void
+    var discuss: (PlanCanvasSelectionAction) -> Void = { _ in }
     var findQuery = ""
     var findRequest = 0
     var findSearchesBackwards = false
 
-    func makeCoordinator() -> Coordinator { Coordinator(open: open) }
+    func makeCoordinator() -> Coordinator { Coordinator(open: open, discuss: discuss) }
 
     func makeNSView(context: Context) -> PDFView {
         let view = PDFView()
@@ -493,11 +531,13 @@ struct PDFDocumentView: NSViewRepresentable {
         view.displaysPageBreaks = true
         view.backgroundColor = .underPageBackgroundColor
         view.delegate = context.coordinator
+        context.coordinator.watchTyping(in: view)
         return view
     }
 
     func updateNSView(_ view: PDFView, context: Context) {
         context.coordinator.open = open
+        context.coordinator.discuss = discuss
         if context.coordinator.url != url {
             context.coordinator.url = url
             view.document = PDFDocument(url: url)
@@ -505,13 +545,52 @@ struct PDFDocumentView: NSViewRepresentable {
         context.coordinator.find(query: findQuery, request: findRequest, backwards: findSearchesBackwards, in: view)
     }
 
-    static func dismantleNSView(_ view: PDFView, coordinator: Coordinator) { view.delegate = nil }
+    static func dismantleNSView(_ view: PDFView, coordinator: Coordinator) {
+        view.delegate = nil
+        coordinator.stopWatchingTyping()
+    }
 
     @MainActor final class Coordinator: NSObject, PDFViewDelegate {
         var url: URL?
         var open: (URL) -> Void
+        var discuss: (PlanCanvasSelectionAction) -> Void
         private var handledFindRequest = 0
-        init(open: @escaping (URL) -> Void) { self.open = open }
+        private var keyMonitor: Any?
+        init(open: @escaping (URL) -> Void, discuss: @escaping (PlanCanvasSelectionAction) -> Void) {
+            self.open = open
+            self.discuss = discuss
+        }
+
+        /// PDFKit hands key presses to private subviews, so a local monitor
+        /// catches them while focus is anywhere inside this viewer.
+        func watchTyping(in view: PDFView) {
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak view] event in
+                let handled = MainActor.assumeIsolated {
+                    guard let self, let view else { return false }
+                    return self.discussSelection(in: view, typing: event)
+                }
+                return handled ? nil : event
+            }
+        }
+
+        func stopWatchingTyping() {
+            if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+            keyMonitor = nil
+        }
+
+        /// Returns true when the key press became a discussion of the selected passage.
+        func discussSelection(in view: PDFView, typing event: NSEvent) -> Bool {
+            guard event.window === view.window,
+                  let responder = view.window?.firstResponder as? NSView, responder.isDescendant(of: view),
+                  let character = PDFSelectionContext.typedCharacter(event),
+                  let selection = view.currentSelection, let document = view.document,
+                  let action = PDFSelectionContext.action(
+                    for: selection, in: document, sourceURL: url ?? document.documentURL ?? URL(fileURLWithPath: "/"),
+                    initialText: character)
+            else { return false }
+            discuss(action)
+            return true
+        }
 
         func find(query: String, request: Int, backwards: Bool, in view: PDFView) {
             guard request > handledFindRequest else { return }

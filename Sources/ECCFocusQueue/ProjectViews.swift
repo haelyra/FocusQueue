@@ -389,8 +389,7 @@ struct DocumentViewerInspector: View {
             discuss: { action in
                 guard let scope = model.documentViewerScope,
                       let conversation = model.documentConversation(for: document, scope: scope) else { return }
-                if !conversation.draft.isEmpty { conversation.draft += "\n\n" }
-                conversation.draft += "Selected passage: \(action.selection.excerpt)\n\(action.initialText)"
+                conversation.discuss(action)
             },
             dragStarted: { draggedTab = $0 })
     }

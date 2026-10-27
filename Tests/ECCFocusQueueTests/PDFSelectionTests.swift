@@ -2,6 +2,7 @@ import AppKit
 import CoreText
 import Foundation
 import PDFKit
+import SwiftUI
 import Testing
 import FocusQueueCore
 @testable import ECCFocusQueue
@@ -223,8 +224,8 @@ struct PDFSelectionTests {
         #expect(conversation.messages.last?.text == "Reply")
     }
 
-    @Test("Markdown selections still quote the passage into the draft")
-    func markdownDiscussUnchanged() async throws {
+    @Test("Markdown selections attach once; later keys over the same passage only type")
+    func markdownSelectionAttachesOnce() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("md-chat-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         let context = try await TaskContextStore(root: root).ensureContext(
@@ -233,11 +234,63 @@ struct PDFSelectionTests {
         let conversation = DocumentConversation(document: file, context: context, support: root, agent: PDFTestAgent(),
             configuration: SetupEnvironment.starter(supportDirectory: root).verifier, dashboardPath: "/dashboard",
             workspace: root.path)
+        // The web view posts a fresh selection object for every key while the passage stays selected.
+        func key(_ character: String, excerpt: String = "Ship it") {
+            conversation.discuss(PlanCanvasSelectionAction(
+                selection: PlanCanvasSelection(kind: .text, documentPath: file.path, selector: "#scope > p", tag: "p", excerpt: excerpt),
+                initialText: character))
+        }
+        key("W"); key("h"); key("y")
+        #expect(conversation.draft == "Why")
+        #expect(conversation.selection?.excerpt == "Ship it")
+        #expect(conversation.selection?.readableLocation == nil)
+        #expect(conversation.focusRequest == 3)
+        key("A", excerpt: "Hold it")
+        #expect(conversation.draft == "Why\n\nA")
+        #expect(conversation.selection?.excerpt == "Hold it")
+    }
+
+    @Test("The document chat composer takes focus on discuss and grows with its text")
+    func composerFocusAndGrowth() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("composer-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = try await TaskContextStore(root: root).ensureContext(
+            ticket: .init(id: "ECC-904", title: "Composer", status: "open", summary: "Composer"))
+        let conversation = DocumentConversation(document: root.appendingPathComponent("notes.md"), context: context,
+            support: root, agent: PDFTestAgent(), configuration: SetupEnvironment.starter(supportDirectory: root).verifier,
+            dashboardPath: "/dashboard", workspace: root.path)
+        await conversation.load()
+        let window = KeyTestWindow(contentRect: CGRect(x: -10_000, y: -10_000, width: 420, height: 800),
+                                   styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: DocumentConversationView(model: conversation).frame(width: 420, height: 800))
+        window.orderFrontRegardless()
+        window.makeKey()
+        defer { window.close() }
+        func settle() async throws {
+            for _ in 0..<5 { window.contentView?.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(30)) }
+        }
+        func composer() throws -> QueueChatComposerNSTextView {
+            func find(_ view: NSView) -> QueueChatComposerNSTextView? {
+                (view as? QueueChatComposerNSTextView) ?? view.subviews.lazy.compactMap(find).first
+            }
+            return try #require(window.contentView.flatMap(find))
+        }
+        try await settle()
+        let shortHeight = try #require(try composer().enclosingScrollView).frame.height
+
         conversation.discuss(PlanCanvasSelectionAction(
-            selection: PlanCanvasSelection(kind: .text, documentPath: file.path, selector: "p", tag: "p", excerpt: "Ship it"),
-            initialText: "Q"))
-        #expect(conversation.draft == "Selected passage: Ship it\nQ")
-        #expect(conversation.selection == nil)
-        #expect(conversation.focusRequest == 1)
+            selection: PlanCanvasSelection(kind: .text, documentPath: "/notes.md", selector: "p", tag: "p", excerpt: "Ship it"),
+            initialText: "W"))
+        try await settle()
+        #expect(window.firstResponder === (try composer()))
+        #expect(try composer().string == "W")
+        #expect(try composer().selectedRange() == NSRange(location: 1, length: 0))
+
+        conversation.draft = (1...40).map { "Line \($0)" }.joined(separator: "\n")
+        try await settle()
+        let tallHeight = try #require(try composer().enclosingScrollView).frame.height
+        #expect(tallHeight > shortHeight * 10)
+        #expect(tallHeight <= 800 * 0.7 + 1)
     }
 }

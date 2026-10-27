@@ -371,6 +371,11 @@ struct DocumentConversationView: View {
     @Bindable var model: DocumentConversation
     @FocusState private var composerIsFocused: Bool
     var body: some View {
+        GeometryReader { geometry in content(composerMaxHeight: max(120, geometry.size.height * 0.7)) }
+    }
+
+    /// The composer grows with its text up to most of the pane, like the task chat.
+    private func content(composerMaxHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Label("Document chat", systemImage: "text.bubble").font(.system(size: 11, weight: .semibold))
@@ -388,7 +393,9 @@ struct DocumentConversationView: View {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(message.role == .user ? "YOU" : "DOCUMENT AGENT").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
                                 if let selection = message.canvasSelection {
-                                    Label("\(selection.selector): \(selection.compactExcerpt)", systemImage: selection.kind.systemImage)
+                                    Label(
+                                        [selection.readableLocation, selection.compactExcerpt].compactMap { $0 }.joined(separator: ": "),
+                                        systemImage: selection.kind.systemImage)
                                         .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(2)
                                 }
                                 Text(message.text).font(.system(size: 12)).textSelection(.enabled)
@@ -402,7 +409,7 @@ struct DocumentConversationView: View {
             HStack(alignment: .bottom) {
                 QueueChatComposerTextView(
                     text: $model.draft, isFocused: $composerIsFocused, focusRequest: model.focusRequest,
-                    maxHeight: 90, onSend: { model.send() })
+                    maxHeight: composerMaxHeight, onSend: { model.send() })
                     .fixedSize(horizontal: false, vertical: true)
                     .overlay(alignment: .topLeading) {
                         if model.draft.isEmpty {
@@ -426,7 +433,8 @@ struct DocumentConversationView: View {
             Image(systemName: selection.kind.systemImage).font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(Color.accentColor)
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(selection.kind.title) · \(selection.selector)").font(.system(size: 10.5, weight: .semibold))
+                Text([selection.kind.title, selection.readableLocation].compactMap { $0 }.joined(separator: " · "))
+                    .font(.system(size: 10.5, weight: .semibold))
                 Text(selection.compactExcerpt).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(2)
             }
             Spacer(minLength: 2)

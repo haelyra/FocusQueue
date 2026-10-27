@@ -241,16 +241,15 @@ final class DocumentConversation {
         catch { self.error = "Could not read this document's conversation: \(error.localizedDescription)" }
     }
 
-    /// Starts a message about a passage selected in the viewer. Markdown quotes
-    /// the passage into the draft; a PDF attaches its page and position as context.
+    /// Starts a message about a passage selected in the viewer. The passage
+    /// attaches as context instead of being pasted into the draft; a key that
+    /// reaches the viewer again over the same passage only adds its letter.
     func discuss(_ action: PlanCanvasSelectionAction) {
-        if !draft.isEmpty { draft += "\n\n" }
-        if action.selection.kind == .pdf {
+        if selection?.isSamePassage(as: action.selection) != true {
+            if !draft.isEmpty { draft += "\n\n" }
             selection = action.selection
-            draft += action.initialText
-        } else {
-            draft += "Selected passage: \(action.selection.excerpt)\n\(action.initialText)"
         }
+        draft += action.initialText
         focusRequest &+= 1
     }
 

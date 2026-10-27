@@ -50,6 +50,16 @@ struct PlanCanvasSelection: Identifiable, Codable, Equatable, Sendable {
     self.pageNumber = pageNumber
   }
 
+  /// Two selections of the same text in the same place, regardless of identity.
+  func isSamePassage(as other: PlanCanvasSelection) -> Bool {
+    kind == other.kind && documentPath == other.documentPath && selector == other.selector
+      && excerpt == other.excerpt
+  }
+
+  /// Where a reader would look for the passage. CSS selectors mean nothing to
+  /// a person, so only PDF page locations are shown.
+  var readableLocation: String? { kind == .pdf ? selector : nil }
+
   var compactExcerpt: String {
     excerpt.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
       .trimmingCharacters(in: .whitespacesAndNewlines)

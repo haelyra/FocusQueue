@@ -174,6 +174,41 @@ class FocusQueueKimiTests(unittest.TestCase):
 
         self.assertIsNone(session_id)
 
+    def test_lean_turn_uses_the_chat_profile_and_records_wire_usage(self):
+        captured = {}
+        stdout = stream_lines(assistant_event("done", session_id=SESSION_ID))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            session_dir = root / "store" / "session_new"
+            (session_dir / "agents" / "main").mkdir(parents=True)
+            (session_dir / "agents" / "main" / "wire.jsonl").write_text("\n".join(json.dumps(e) for e in [
+                {"type": "usage.record", "usage": {"inputOther": 100, "inputCacheRead": 900, "output": 20}},
+                {"type": "usage.record", "usage": {"inputOther": 50, "inputCacheRead": 1000, "output": 30}},
+                {"type": "turn.ended"},
+            ]))
+            listings = [None, {"id": "session_new", "updatedAt": 2, "sessionDir": str(session_dir)}]
+            with mock.patch.object(MODULE, "resolve_kimi", return_value="/usr/bin/kimi"), \
+                    mock.patch.object(MODULE, "newest_workspace_session", side_effect=listings) as newest, \
+                    mock.patch.object(MODULE.subprocess, "Popen", fake_process(captured, stdout)):
+                MODULE.run_kimi(
+                    prompt="hi", workspace=root, runtime=root / "runtime", timeout=10,
+                    sandbox="workspace-write", session_id=None, output_schema=None,
+                    usage_file=root / "usage.json", lean=True,
+                )
+
+            command = captured["command"]
+            lean_directory = root / "runtime" / "lean-chat"
+            self.assertEqual(captured["kwargs"]["cwd"], str(lean_directory))
+            self.assertEqual(newest.call_args_list[0].args[1], lean_directory)
+            agent_file = Path(command[command.index("--agent-file") + 1])
+            self.assertIn("tools: Bash, Read, Edit, Write, Grep, Glob", agent_file.read_text())
+            self.assertEqual(command[command.index("--skills-dir") + 1], str(root / "runtime" / "lean-chat-skills"))
+            self.assertIn(str(root), [command[i + 1] for i, v in enumerate(command) if v == "--add-dir"])
+            usage = json.loads((root / "usage.json").read_text())
+            self.assertEqual(usage["inputTokens"], 2050)
+            self.assertEqual(usage["cachedInputTokens"], 1900)
+            self.assertEqual(usage["outputTokens"], 50)
+
     def test_chat_persists_a_named_session_in_private_state(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

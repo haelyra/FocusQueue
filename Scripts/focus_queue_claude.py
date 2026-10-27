@@ -290,7 +290,10 @@ def run_claude(
     if usage_file is not None:
         usage_file = usage_file.expanduser()
         usage_file.unlink(missing_ok=True)
-    with tempfile.TemporaryDirectory(prefix="turn-", dir=runtime) as turn_directory:
+    lean_directory = runtime / "lean-chat"
+    if lean:
+        lean_directory.mkdir(mode=0o700, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="turn-", dir=runtime):
         executable = resolve_claude()
         command = [
             executable,
@@ -331,9 +334,10 @@ def run_claude(
                 if resolved.is_dir():
                     command.extend(["--add-dir", str(resolved.resolve())])
         if lean:
-            # A lean turn runs from its empty turn directory so Claude does not
-            # auto-load CLAUDE.md files above the workspace (~5.7k tokens);
-            # the workspace stays reachable as an added directory.
+            # A lean turn runs from one stable empty directory so Claude does
+            # not auto-load CLAUDE.md files above the workspace (~5.7k tokens)
+            # and keeps a single project folder instead of one per turn; the
+            # workspace stays reachable as an added directory.
             command.extend(["--add-dir", str(workspace)])
         if model is not None:
             command.extend(["--model", model])
@@ -351,7 +355,7 @@ def run_claude(
             stderr=subprocess.PIPE,
             text=True,
             start_new_session=True,
-            cwd=turn_directory if lean else str(workspace),
+            cwd=str(lean_directory) if lean else str(workspace),
             env={
                 **os.environ,
                 "FOCUS_QUEUE_CONNECTOR_PROOF_DIR": str(DEFAULT_PROOF_DIRECTORY),

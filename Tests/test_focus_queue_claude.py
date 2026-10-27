@@ -438,8 +438,7 @@ class FocusQueueClaudeTests(unittest.TestCase):
         self.assertIn("--no-session-persistence", command)
         self.assertNotIn("--resume", command)
         self.assertIn(str(root), [command[i + 1] for i, v in enumerate(command) if v == "--add-dir"])
-        self.assertNotEqual(captured["kwargs"]["cwd"], str(root))
-        self.assertTrue(captured["kwargs"]["cwd"].startswith(str(root / "runtime")))
+        self.assertEqual(captured["kwargs"]["cwd"], str(root / "runtime" / "lean-chat"))
 
     def test_fresh_chat_neither_resumes_nor_saves_a_session(self):
         with tempfile.TemporaryDirectory() as temporary:

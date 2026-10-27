@@ -437,10 +437,29 @@ struct QueueViewModelTests {
     let model = await fixture.model(agent: agent)
 
     model.clearQueueChat(ticketID: "ECC-101")
-    try await eventually { await !agent.resetSessionNames.isEmpty }
+    // One mock serves every provider here, so each provider's reset lands on it.
+    try await eventually { await agent.resetSessionNames.count == AgentProvider.allCases.count }
 
-    #expect(await agent.resetSessionNames == ["ecc-focus-queue-task-ecc-101"])
+    #expect(Set(await agent.resetSessionNames) == ["ecc-focus-queue-task-ecc-101"])
     #expect(model.chatMessages(ticketID: "ECC-101").isEmpty)
+    #expect(model.loadError == nil)
+  }
+
+  @Test("Clearing chat resets every provider's session, not only the active one")
+  func clearQueueChatResetsEveryProvider() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let agents = Dictionary(uniqueKeysWithValues: AgentProvider.allCases.map { ($0, ControlledQueueAgent()) })
+    let model = await fixture.model(agent: agents[.codex]!, queueAgentFactory: { agents[$0]! })
+    model.setDefaultAgentProvider(.kimi)
+
+    model.clearQueueChat(ticketID: nil)
+    for provider in AgentProvider.allCases {
+      let agent = agents[provider]!
+      try await eventually { await !agent.resetSessionNames.isEmpty }
+      let executable = try #require(await agent.resetExecutables.first)
+      #expect(executable == model.config.chatExecutable(for: provider))
+    }
     #expect(model.loadError == nil)
   }
 
@@ -4168,7 +4187,10 @@ private struct Fixture {
     let model = QueueViewModel(paths: paths, programLog: programLog,
       dashboardRepository: dashboardRepository,
       terminalController: terminalController ?? boundary,
-      verifier: verifier ?? boundary, queueAgent: agent, queueAgentFactory: queueAgentFactory,
+      verifier: verifier ?? boundary, queueAgent: agent,
+      // Every provider must reach the mock: a real harness would reset the
+      // user's live chat sessions and delete their transcripts.
+      queueAgentFactory: queueAgentFactory ?? { _ in agent },
       pullRequestQueueLoader: boundary,
       taskAgentLauncher: taskAgentLauncher,
       taskPlacementSuggester: taskPlacementSuggester,
@@ -4573,6 +4595,7 @@ private actor ControlledQueueAgent: QueueAgentChatting {
   private(set) var sentExecutables: [String] = []
   private(set) var sentWorkspaces: [String] = []
   private(set) var resetSessionNames: [String] = []
+  private(set) var resetExecutables: [String] = []
   private var pending: CheckedContinuation<QueueAgentReply, any Error>?
   var hasPendingReply: Bool { pending != nil }
 
@@ -4590,6 +4613,7 @@ private actor ControlledQueueAgent: QueueAgentChatting {
 
   func reset(configuration: VerifierConfiguration) async throws {
     resetSessionNames.append(configuration.sessionName)
+    resetExecutables.append(configuration.executable)
   }
 
   func reply(_ message: String) {

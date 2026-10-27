@@ -64,6 +64,12 @@ OPTIONAL_NO_TOOLS_CONFIG_OVERRIDES = (
 FEATURE_LIST_ROW = re.compile(
     r"^([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*)\s+(.+?)\s+(true|false)$"
 )
+# Chat turns need the shell and file edits only. These optional features add
+# tool schemas and instructions to every chat call (FOC-075).
+LEAN_CHAT_DISABLED_FEATURES = (
+    "multi_agent", "plugins", "apps", "remote_plugin", "browser_use", "browser_use_external",
+    "in_app_browser", "computer_use", "image_generation", "skill_search", "goals", "tool_suggest",
+)
 
 
 class CodexHarnessError(RuntimeError):
@@ -328,6 +334,22 @@ def no_tools_config_probe_command(
     return command
 
 
+def lean_chat_disabled_features(executable: str) -> tuple[str, ...]:
+    """Lean chat feature switches this Codex build still offers. A probe failure
+    only costs tokens, so it falls back to the full feature set."""
+    result = run_codex_capability_probe(
+        [executable, "features", "list"], operation="list Codex features for a lean chat turn"
+    )
+    if result.returncode != 0:
+        return ()
+    offered = {
+        match.group(1)
+        for line in result.stdout.splitlines()
+        if (match := FEATURE_LIST_ROW.fullmatch(line.strip())) and match.group(2).strip() != "removed"
+    }
+    return tuple(feature for feature in LEAN_CHAT_DISABLED_FEATURES if feature in offered)
+
+
 def discover_no_tools_codex_capabilities(
     executable: str,
     *,
@@ -541,6 +563,8 @@ def run_codex(
     disable_tools: bool = False,
     context_directory: Path | None = None,
     writable_directories: list[Path] | None = None,
+    lean: bool = False,
+    persist_session: bool = True,
 ) -> tuple[str, str | None]:
     if context_directory is not None:
         if not context_directory.is_absolute() or not context_directory.is_dir():
@@ -572,6 +596,9 @@ def run_codex(
         if disable_tools:
             for feature in tool_features:
                 command.extend(["--disable", feature])
+        elif lean:
+            for feature in lean_chat_disabled_features(executable):
+                command.extend(["--disable", feature])
         if sandbox == "workspace-write":
             command.extend(["-c", "sandbox_workspace_write.network_access=true"])
         command.append("exec")
@@ -579,6 +606,14 @@ def run_codex(
             command.extend(["--ephemeral", "--strict-config"])
             for override in no_tools_config_overrides:
                 command.extend(["-c", override])
+        elif not persist_session:
+            command.append("--ephemeral")
+        # A lean turn runs from one stable empty directory so Codex does not
+        # load AGENTS.md files from the workspace and its ancestors; the
+        # workspace stays reachable as an added directory.
+        lean_directory = runtime / "lean-chat"
+        if lean:
+            lean_directory.mkdir(mode=0o700, exist_ok=True)
         command.extend(
             [
                 "--ignore-user-config",
@@ -593,10 +628,12 @@ def run_codex(
                 "--thread-source",
                 "app",
                 "-C",
-                str(workspace),
+                str(lean_directory if lean else workspace),
             ]
         )
         allow_extra_writes = sandbox == "workspace-write" and not disable_tools
+        if lean and allow_extra_writes:
+            command.extend(["--add-dir", str(workspace)])
         if expose_evidence_directories and allow_extra_writes:
             command.extend(
                 [
@@ -734,6 +771,8 @@ def chat(arguments: argparse.Namespace) -> int:
                 effort=getattr(arguments, "effort", None),
                 context_directory=getattr(arguments, "context_dir", None),
                 writable_directories=getattr(arguments, "writable_dirs", None),
+                lean=True,
+                persist_session=False,
             )
             print(reply)
             return 0

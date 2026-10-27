@@ -392,6 +392,69 @@ class FocusQueueCodexTests(unittest.TestCase):
             index = command.index(feature)
             self.assertEqual(command[index - 1], "--disable")
 
+    def test_lean_chat_turn_trims_features_and_runs_outside_the_workspace(self):
+        captured = {}
+
+        class FakeProcess:
+            returncode = 0
+            pid = 123
+
+            def __init__(self, command, **_kwargs):
+                captured["command"] = command
+                reply = Path(command[command.index("--output-last-message") + 1])
+                reply.write_text("done", encoding="utf-8")
+
+            def communicate(self, **_kwargs):
+                return ('{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}\n', "")
+
+            def poll(self):
+                return 0
+
+        listing = subprocess.CompletedProcess([], 0, stdout=(
+            "multi_agent                stable    true\n"
+            "plugins                    stable    true\n"
+            "apply_patch_freeform       removed   false\n"
+            "shell_tool                 stable    true\n"
+        ), stderr="")
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            MODULE, "resolve_codex", return_value="/usr/bin/codex"
+        ), mock.patch.object(
+            MODULE, "run_codex_capability_probe", return_value=listing
+        ), mock.patch.object(MODULE.subprocess, "Popen", FakeProcess):
+            root = Path(temporary)
+            MODULE.run_codex(
+                prompt="hi", workspace=root, runtime=root / "runtime", timeout=10,
+                sandbox="workspace-write", thread_id="thread-1", output_schema=None,
+                lean=True, persist_session=False,
+            )
+
+        command = captured["command"]
+        disabled = [command[i + 1] for i, value in enumerate(command) if value == "--disable"]
+        self.assertEqual(disabled, ["multi_agent", "plugins"])
+        self.assertIn("--ephemeral", command)
+        self.assertEqual(command[command.index("-C") + 1], str(root / "runtime" / "lean-chat"))
+        self.assertIn(str(root), [command[i + 1] for i, v in enumerate(command) if v == "--add-dir"])
+        self.assertIn("resume", command)
+
+    def test_fresh_chat_runs_lean_without_saving_a_thread(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prompt = root / "prompt.txt"
+            prompt.write_text("Reply safely.", encoding="utf-8")
+            arguments = argparse.Namespace(
+                runtime=root / "runtime", session="queue", workspace=root,
+                prompt_file=prompt, timeout=60, fresh=True,
+            )
+            with mock.patch.object(
+                MODULE, "run_codex", return_value=("Fresh reply", "thread-9")
+            ) as run, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(MODULE.chat(arguments), 0)
+
+            self.assertIsNone(run.call_args.kwargs["thread_id"])
+            self.assertTrue(run.call_args.kwargs["lean"])
+            self.assertFalse(run.call_args.kwargs["persist_session"])
+            self.assertFalse((root / "runtime" / "sessions.json").exists())
+
     def test_chat_exposes_mail_commands_but_not_mail_receipts(self):
         captured = {}
 

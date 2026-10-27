@@ -155,11 +155,81 @@ def parse_token_usage(stdout: str) -> dict[str, int] | None:
     }
 
 
-def write_token_usage(path: Path, stdout: str) -> dict[str, int] | None:
-    usage = parse_token_usage(stdout)
+def write_token_usage(
+    path: Path, stdout: str, fallback: dict[str, int] | None = None
+) -> dict[str, int] | None:
+    usage = parse_token_usage(stdout) or fallback
     if usage is not None:
         morning.write_private_json(path.expanduser(), usage)
     return usage
+
+
+def wire_token_usage(session: dict[str, Any] | None) -> dict[str, int] | None:
+    """Kimi print mode omits usage from stream-json, so read the per-call
+    `usage.record` events from the session's wire log instead."""
+    directory = (session or {}).get("sessionDir")
+    if not directory:
+        return None
+    input_tokens = cached = output_tokens = 0
+    found = False
+    try:
+        for wire in Path(directory).glob("agents/*/wire.jsonl"):
+            for line in wire.read_text(encoding="utf-8").splitlines():
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                usage = event.get("usage") if event.get("type") == "usage.record" else None
+                if not isinstance(usage, dict):
+                    continue
+                found = True
+                cached += int(usage.get("inputCacheRead", 0) or 0)
+                input_tokens += int(usage.get("inputOther", 0) or 0) + int(
+                    usage.get("inputCacheRead", 0) or 0
+                ) + int(usage.get("inputCacheCreation", 0) or 0)
+                output_tokens += int(usage.get("output", 0) or 0)
+    except OSError:
+        return None
+    if not found:
+        return None
+    return {
+        "inputTokens": input_tokens,
+        "cachedInputTokens": cached,
+        "outputTokens": output_tokens,
+        "reasoningOutputTokens": 0,
+        "totalTokens": input_tokens + output_tokens,
+    }
+
+
+# A lean chat profile keeps only the tools a chat turn needs and replaces
+# Kimi's default system prompt; the default profile sent ~21k tokens of
+# prompt and 27 tool schemas on every call (FOC-075).
+LEAN_CHAT_AGENT = """---
+name: focus-queue-chat
+description: Focus Queue chat turn with shell and file tools only.
+tools: Bash, Read, Edit, Write, Grep, Glob
+---
+You are a concise assistant running one Focus Queue chat turn on the user's Mac. Follow the instructions in the user message, reading the request by its intent rather than its literal wording. Use tools only when the message does not already answer the request, use absolute paths in shell commands, and reply briefly.
+"""
+
+
+def lean_chat_arguments(runtime: Path, workspace: Path) -> tuple[Path, list[str]]:
+    """Working directory and flags for a lean turn: an empty directory keeps
+    workspace AGENTS.md files out, an empty skills directory drops the skill
+    listing, and the workspace stays reachable as an added directory."""
+    lean_directory = runtime / "lean-chat"
+    skills_directory = runtime / "lean-chat-skills"
+    for directory in (lean_directory, skills_directory):
+        directory.mkdir(mode=0o700, exist_ok=True)
+    agent_file = runtime / "lean-chat-agent.md"
+    if not agent_file.exists() or agent_file.read_text(encoding="utf-8") != LEAN_CHAT_AGENT:
+        agent_file.write_text(LEAN_CHAT_AGENT, encoding="utf-8")
+        agent_file.chmod(0o600)
+    return lean_directory, [
+        "--agent-file", str(agent_file),
+        "--skills-dir", str(skills_directory),
+        "--add-dir", str(workspace),
+    ]
 
 
 def write_run_diagnostic(
@@ -208,6 +278,7 @@ def run_kimi(
     disable_tools: bool = False,
     context_directory: Path | None = None,
     writable_directories: list[Path] | None = None,
+    lean: bool = False,
     _retried_schema: bool = False,
 ) -> tuple[str, str | None]:
     if context_directory is not None:
@@ -222,13 +293,17 @@ def run_kimi(
         usage_file.unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(prefix="turn-", dir=runtime):
         executable = resolve_kimi()
-        prior_marker = session_marker(newest_workspace_session(executable, workspace))
+        work_directory, lean_arguments = (
+            lean_chat_arguments(runtime, workspace) if lean else (workspace, [])
+        )
+        prior_marker = session_marker(newest_workspace_session(executable, work_directory))
         command = [
             executable,
             "--prompt",
             prompt,
             "--output-format",
             "stream-json",
+            *lean_arguments,
         ]
         allow_extra_directories = sandbox == "workspace-write" and not disable_tools
         if expose_evidence_directories and allow_extra_directories:
@@ -264,7 +339,7 @@ def run_kimi(
             stderr=subprocess.PIPE,
             text=True,
             start_new_session=True,
-            cwd=str(workspace),
+            cwd=str(work_directory),
             env={
                 **os.environ,
                 "FOCUS_QUEUE_CONNECTOR_PROOF_DIR": str(DEFAULT_PROOF_DIRECTORY),
@@ -312,11 +387,15 @@ def run_kimi(
             return_code=process.returncode,
             timed_out=False,
         )
+        latest_session = newest_workspace_session(executable, work_directory)
+        turn_usage = parse_token_usage(stdout)
+        if turn_usage is None and session_marker(latest_session) != prior_marker:
+            turn_usage = wire_token_usage(latest_session)
         if usage_file is not None:
-            write_token_usage(usage_file, stdout)
+            write_token_usage(usage_file, stdout, turn_usage)
         if usage_file is None:
             # A caller that asks for a usage file records its own attributed event.
-            prompt_usage.record_provider_usage("kimi", model, parse_token_usage(stdout),
+            prompt_usage.record_provider_usage("kimi", model, turn_usage,
                 source=os.environ.get("FOCUS_QUEUE_MODEL_USAGE_SOURCE") or "provider_usage",
                 run_id=os.environ.get("FOCUS_QUEUE_MODEL_USAGE_RUN_ID"),
                 support=Path(os.environ["FOCUS_QUEUE_SUPPORT_DIR"]) if os.environ.get("FOCUS_QUEUE_SUPPORT_DIR") else runtime.parent)
@@ -326,7 +405,7 @@ def run_kimi(
             raise KimiHarnessError(f"Kimi exited with code {process.returncode}: {detail[:1200]}")
         texts, observed_session, _ = parse_stream_events(stdout)
         if observed_session is None:
-            latest = session_marker(newest_workspace_session(executable, workspace))
+            latest = session_marker(latest_session)
             if latest is not None and latest != prior_marker:
                 observed_session = latest[0]
             elif session_id:
@@ -359,6 +438,7 @@ def run_kimi(
                     model=model,
                     disable_tools=disable_tools,
                     context_directory=context_directory,
+                    lean=lean,
                     _retried_schema=True,
                 )
             reply = json.dumps(payload, ensure_ascii=False)
@@ -395,6 +475,7 @@ def chat(arguments: argparse.Namespace) -> int:
                 model=getattr(arguments, "model", None),
                 context_directory=getattr(arguments, "context_dir", None),
                 writable_directories=getattr(arguments, "writable_dirs", None),
+                lean=True,
             )
             print(reply)
             return 0

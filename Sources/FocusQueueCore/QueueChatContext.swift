@@ -46,6 +46,8 @@ public enum QueueChatContext {
         if let session = agent.sessionID, !session.isEmpty { line += " session \(session)" }
         if let tmux = agent.tmux { line += " tmux \(tmux.name) \(tmux.paneID)" }
         if let workspace = agent.workspace { line += " workspace \(workspace.path)" }
+        let purpose = clipped(agent.assignmentDescription, 160)
+        if !purpose.isEmpty { line += " · purpose: \(purpose)" }
         let summary = clipped(agent.resultSummary ?? agent.progressSummary, 200)
         if !summary.isEmpty { line += " — \(summary)" }
         if let attention = agent.attention { line += " [attention: \(attention.rawValue)]" }

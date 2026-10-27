@@ -16,14 +16,16 @@ struct EmbeddedPlanTests {
     let render: (String, URL, QueueAccentStyle) -> String = { markdown, _, _ in
       renders += 1
       return
-        "\(markdown) color-scheme: light dark; img-src file: data: https: http:; media-src file: data: https: http:"
+        "\(markdown) default-src 'none'; color-scheme: light dark; img-src file: data: https: http:; media-src file: data: https: http:"
     }
     let first = try #require(
       coordinator.htmlIfChanged(
         markdown: "# Plan", sourceURL: source,
         appearance: .light, accentStyle: .vibrant, render: render))
     #expect(first.contains("color-scheme: light;"))
-    #expect(!first.contains("https:"))
+    #expect(first.contains("script-src https://cdn.jsdelivr.net;"))
+    #expect(!first.contains("img-src file: data: https: http:"))
+    #expect(!first.contains("media-src file: data: https: http:"))
     for _ in 0..<1_000 {
       #expect(
         coordinator.htmlIfChanged(
@@ -138,6 +140,19 @@ struct EmbeddedPlanTests {
       PlanCanvasWebRuntime.mermaidURL(environment: [
         "ECC_PLAN_CANVAS_MERMAID_URL": "http://example.com/mermaid.mjs"
       ]) == PlanCanvasWebRuntime.defaultMermaidURL)
+    #expect(
+      PlanCanvasWebRuntime.mermaidScriptSource(mermaidURL: mirror)
+        == "https://assets.example.com")
+    #expect(
+      PlanCanvasWebRuntime.mermaidScriptSource(mermaidURL: localMirror)
+        == "http://127.0.0.1:4517")
+    #expect(
+      PlanCanvasWebRuntime.mermaidScriptSource(
+        mermaidURL: try #require(URL(string: "http://[::1]:4517/mermaid.mjs")))
+        == "http://[::1]:4517")
+    #expect(
+      PlanCanvasWebRuntime.mermaidScriptSource(
+        mermaidURL: try #require(URL(string: "javascript:alert(1)"))) == nil)
     let script = PlanCanvasWebRuntime.script(mermaidURL: mirror)
     #expect(script.contains("import(\"https://assets.example.com/mermaid.mjs\")"))
     #expect(script.contains("renderer timed out"))
@@ -231,6 +246,45 @@ struct EmbeddedPlanTests {
     let routedURL = try #require(URL(string: href))
     #expect(routedURL.scheme == EmbeddedDocumentLink.scheme)
     #expect(EmbeddedDocumentLink.documentURL(routedURL)?.path == "/tmp/evidence/reply.md")
+  }
+
+  @Test(
+    "Native document viewer renders Mermaid through the pinned isolated runtime",
+    .enabled(if: ProcessInfo.processInfo.environment["ECC_FOCUS_QUEUE_NETWORK_TESTS"] == "1"))
+  func headlessNativeMermaidRenders() async throws {
+    let source = URL(fileURLWithPath: "/tmp/native-mermaid.md")
+    let coordinator = EmbeddedPlanDocument.Coordinator(
+      open: { _ in Issue.record("Rendering Mermaid unexpectedly opened a link") })
+    coordinator.sourceURL = source
+    let configuration = EmbeddedPlanDocument.webConfiguration(coordinator: coordinator)
+    let view = WKWebView(
+      frame: CGRect(x: 0, y: 0, width: 800, height: 600), configuration: configuration)
+    view.navigationDelegate = coordinator
+    defer { EmbeddedPlanDocument.dismantleNSView(view, coordinator: coordinator) }
+    let html = try #require(
+      coordinator.htmlIfChanged(
+        markdown: """
+          # Native preview
+
+          ```mermaid
+          flowchart LR
+            Source --> Rendered
+          ```
+          """, sourceURL: source, appearance: .light, accentStyle: .vibrant))
+    coordinator.pendingInitialLoad = true
+    view.loadHTMLString(html, baseURL: source.deletingLastPathComponent())
+    try await eventuallyWebKit(timeout: .seconds(15)) {
+      (try? await view.evaluateJavaScript(
+        "document.querySelector('figure')?.classList.contains('is-rendered')")) as? Bool == true
+    }
+    #expect(!configuration.defaultWebpagePreferences.allowsContentJavaScript)
+    #expect(
+      try await view.evaluateJavaScript("document.querySelectorAll('figure svg').length") as? Int
+        == 1)
+    #expect(
+      try await view.evaluateJavaScript(
+        "document.querySelector('figure')?.classList.contains('is-unrendered')") as? Bool
+        == false)
   }
 
   @Test(

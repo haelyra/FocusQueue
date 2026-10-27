@@ -652,6 +652,12 @@ struct EmbeddedPlanDocument: NSViewRepresentable {
       return EmbeddedDocumentLink.routeLocalLinks(
         in: render(markdown, sourceURL, accentStyle), sourceURL: sourceURL
       )
+      .replacingOccurrences(
+        of: "default-src 'none';",
+        with: PlanCanvasWebRuntime.mermaidScriptSource().map {
+          "default-src 'none'; script-src \($0);"
+        } ?? "default-src 'none';"
+      )
       .replacingOccurrences(of: "img-src file: data: https: http:", with: "img-src file: data:")
       .replacingOccurrences(
         of: "media-src file: data: https: http:", with: "media-src file: data:"

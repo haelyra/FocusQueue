@@ -125,6 +125,19 @@ enum PlanCanvasWebRuntime {
     return defaultMermaidURL
   }
 
+  /// Allows the pinned Mermaid module and its same-origin chunks through the
+  /// rendered document's otherwise locked-down content security policy.
+  static func mermaidScriptSource(mermaidURL: URL = mermaidURL()) -> String? {
+    guard let scheme = mermaidURL.scheme?.lowercased(),
+      let host = mermaidURL.host?.lowercased(),
+      scheme == "https"
+        || (scheme == "http" && ["localhost", "127.0.0.1", "::1"].contains(host))
+    else { return nil }
+    let renderedHost = host.contains(":") ? "[\(host)]" : host
+    let port = mermaidURL.port.map { ":\($0)" } ?? ""
+    return "\(scheme)://\(renderedHost)\(port)"
+  }
+
   static func selectionAction(from body: Any, sourceURL: URL) -> PlanCanvasSelectionAction? {
     guard let payload = body as? [String: Any],
       payload["type"] as? String == "plan-canvas-selection",

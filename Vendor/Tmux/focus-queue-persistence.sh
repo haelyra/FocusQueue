@@ -82,13 +82,28 @@ unlock() {
   fi
 }
 trap unlock EXIT
+boot_time=$(/usr/sbin/sysctl -n kern.boottime 2>/dev/null | /usr/bin/sed -nE 's/^\{ sec = ([0-9]+),.*/\1/p' || true)
+lock_is_stale() {
+  local owner="" modified=""
+  modified=$(/usr/bin/stat -f %m "$lock" 2>/dev/null) || return 1
+  # A shutdown can kill a save between mkdir and cleanup. No owner survives a
+  # restart, and a PID read after one may belong to an unrelated process.
+  if [[ "$boot_time" =~ ^[0-9]+$ && "$modified" -lt "$boot_time" ]]; then return 0; fi
+  owner=$(cat "$lock/pid" 2>/dev/null || true)
+  if [[ "$owner" =~ ^[0-9]+$ ]]; then
+    ! kill -0 "$owner" 2>/dev/null
+    return
+  fi
+  # The owner is written right after mkdir. An ownerless lock older than a
+  # few seconds belongs to a process that died before writing or while unlocking.
+  [[ $(( $(date +%s) - modified )) -gt 5 ]]
+}
 acquire_lock() {
-  local attempt=0 owner=""
+  local attempt=0
   until mkdir "$lock" 2>/dev/null; do
-    owner=$(cat "$lock/pid" 2>/dev/null || true)
-    if [[ "$owner" =~ ^[0-9]+$ ]] && ! kill -0 "$owner" 2>/dev/null; then
+    if lock_is_stale; then
       /bin/rm -f "$lock/pid"
-      /bin/rmdir "$lock" 2>/dev/null || true
+      /bin/rmdir "$lock" 2>/dev/null && continue
     fi
     attempt=$((attempt + 1))
     if [[ $attempt -gt 100 ]]; then printf '%s\n' 'A tmux save or restore is already in progress. Retry shortly.' >&2; exit 1; fi
@@ -98,11 +113,17 @@ acquire_lock() {
   printf '%s\n' "$$" > "$lock/pid"
 }
 
+pane_count() {
+  /usr/bin/awk 'BEGIN { FS="\t" } $1 == "pane" { n++ } END { print n + 0 }' "$1"
+}
+
 configure() {
   if [[ -z "$(tmux show-option -gqv @focus-queue-persistence-initialized)" ]]; then
     # Preserve recovery across autosaves made by a newly started server.
-    # An unresolved recovery copy survives another empty bootstrap/restart.
-    if [[ -s "$snapshots/last" && ! -s "$snapshots/recovery/last" ]]; then
+    # An unresolved recovery copy survives a smaller bootstrap/restart, but a
+    # layout at least as large replaces it so a restart never restores an old one.
+    if [[ -s "$snapshots/last" ]] && { [[ ! -s "$snapshots/recovery/last" ]] ||
+      [[ $(pane_count "$snapshots/last") -ge $(pane_count "$snapshots/recovery/last") ]]; }; then
       mkdir -p "$snapshots/recovery"
       /bin/cp -p "$snapshots/last" "$snapshots/recovery/last"
     fi

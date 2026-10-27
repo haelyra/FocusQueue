@@ -5,6 +5,7 @@ import Foundation
 /// Finds an existing local mux without launching a GUI or changing its windows.
 public enum WezTermConnection {
   static let paneArguments = ["cli", "list", "--format", "json"]
+  private static let pinnedPaneArguments = ["cli", "--no-auto-start", "list", "--format", "json"]
   private static let maximumCandidates = 12
   static let probeTimeoutSeconds = 2
 
@@ -25,7 +26,7 @@ public enum WezTermConnection {
       }
     }
     let direct = try await runner.run(ProcessSpecification(
-      executable: requested.executable, arguments: paneArguments,
+      executable: requested.executable, arguments: paneArguments(for: requested),
       environment: requested.cliEnvironment, timeoutSeconds: probeTimeoutSeconds))
     if hasValidPanes(direct) || direct.timedOut {
       // The CLI may have created its default mux during the initial probe.
@@ -50,7 +51,7 @@ public enum WezTermConnection {
       var candidate = configuration
       candidate.socketPath = path
       let result = try await runner.run(ProcessSpecification(
-        executable: candidate.executable, arguments: paneArguments,
+        executable: candidate.executable, arguments: paneArguments(for: candidate),
         environment: candidate.cliEnvironment, timeoutSeconds: 2))
       if hasValidPanes(result) { return (candidate, result) }
       encounteredTimeout = encounteredTimeout || result.timedOut
@@ -65,6 +66,12 @@ public enum WezTermConnection {
       exitCode: direct.exitCode == 0 ? 1 : direct.exitCode,
       standardOutput: direct.standardOutput, standardError: detail,
       timedOut: encounteredTimeout))
+  }
+
+  /// A socket left by a quit GUI makes the CLI spawn a headless mux server and
+  /// wait for it, which outlasts the probe deadline. A pinned probe must fail fast.
+  static func paneArguments(for configuration: WezTermConfiguration) -> [String] {
+    configuration.socketPath == nil ? paneArguments : pinnedPaneArguments
   }
 
   public static func defaultCandidateSockets() -> [String] {

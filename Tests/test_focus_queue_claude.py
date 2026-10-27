@@ -388,9 +388,84 @@ class FocusQueueClaudeTests(unittest.TestCase):
 
             self.assertEqual(result, 0)
             status = json.loads(output.getvalue())
-            self.assertEqual(status, {"status": "ok", "session": "queue", "reset": True})
+            self.assertEqual(status, {"status": "ok", "session": "queue", "reset": True,
+                                      "transcriptsRemoved": 0})
             state = json.loads((runtime / "sessions.json").read_text())
             self.assertEqual(state["sessions"], {})
+
+    def test_reset_deletes_the_saved_claude_transcript(self):
+        session = "0c90356c-b454-43c4-97ac-dc6f2f225ce3"
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
+            os.environ, {"CLAUDE_CONFIG_DIR": str(Path(temporary) / "claude")}
+        ):
+            root = Path(temporary)
+            project = root / "claude/projects/-Users-x-repo"
+            (project / session).mkdir(parents=True)
+            (project / f"{session}.jsonl").write_text("{}\n")
+            (project / "other.jsonl").write_text("{}\n")
+            runtime = root / "runtime"
+            runtime.mkdir()
+            MODULE.morning.write_private_json(
+                runtime / "sessions.json", {"version": 1, "sessions": {"queue": session}}
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                MODULE.reset(argparse.Namespace(runtime=runtime, session="queue"))
+
+            self.assertEqual(json.loads(output.getvalue())["transcriptsRemoved"], 1)
+            self.assertFalse((project / f"{session}.jsonl").exists())
+            self.assertFalse((project / session).exists())
+            self.assertTrue((project / "other.jsonl").exists())
+
+    def test_lean_turn_trims_tools_and_runs_outside_the_workspace(self):
+        captured = {}
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            MODULE, "resolve_claude", return_value="/usr/bin/claude"
+        ), mock.patch.object(
+            MODULE.subprocess, "Popen", fake_process(captured, envelope("done"))
+        ):
+            root = Path(temporary)
+            MODULE.run_claude(
+                prompt="hi", workspace=root, runtime=root / "runtime", timeout=10,
+                sandbox="workspace-write", session_id="99999999-8888-7777-6666-555555555555",
+                output_schema=None, lean=True, persist_session=False,
+            )
+
+        command = captured["command"]
+        self.assertEqual(command[command.index("--tools") + 1], MODULE.LEAN_CHAT_TOOLS)
+        self.assertIn("--strict-mcp-config", command)
+        self.assertIn("--disable-slash-commands", command)
+        self.assertIn("--no-session-persistence", command)
+        self.assertNotIn("--resume", command)
+        self.assertIn(str(root), [command[i + 1] for i, v in enumerate(command) if v == "--add-dir"])
+        self.assertNotEqual(captured["kwargs"]["cwd"], str(root))
+        self.assertTrue(captured["kwargs"]["cwd"].startswith(str(root / "runtime")))
+
+    def test_fresh_chat_neither_resumes_nor_saves_a_session(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prompt = root / "prompt.txt"
+            prompt.write_text("Reply safely.", encoding="utf-8")
+            runtime = root / "runtime"
+            runtime.mkdir()
+            MODULE.morning.write_private_json(
+                runtime / "sessions.json", {"version": 1, "sessions": {"queue": "old"}}
+            )
+            arguments = argparse.Namespace(
+                runtime=runtime, session="queue", workspace=root,
+                prompt_file=prompt, timeout=60, fresh=True,
+            )
+            with mock.patch.object(
+                MODULE, "run_claude", return_value=("Fresh reply", "new-session")
+            ) as run, contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(MODULE.chat(arguments), 0)
+
+            self.assertEqual(output.getvalue().strip(), "Fresh reply")
+            self.assertIsNone(run.call_args.kwargs["session_id"])
+            self.assertTrue(run.call_args.kwargs["lean"])
+            self.assertFalse(run.call_args.kwargs["persist_session"])
+            state = json.loads((runtime / "sessions.json").read_text())
+            self.assertEqual(state["sessions"], {"queue": "old"})
 
     def test_schema_validator_enforces_the_supported_subset(self):
         definitions = {

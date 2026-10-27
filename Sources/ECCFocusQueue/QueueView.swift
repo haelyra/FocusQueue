@@ -1397,14 +1397,14 @@ struct QueueAgentChatView: View {
 
   private var chatModelMenu: some View {
     let provider = model.defaultAgentProvider
-    let current = model.config.defaultAgentModels[provider] ?? ""
+    let current = model.config.chatModel(for: provider) ?? ""
     let choices = model.agentModelChoices(for: provider)
     let currentLabel = choices.first { ($0.model ?? "") == current }?.label
       ?? (current.isEmpty ? "Default" : current)
     return Menu {
       ForEach(choices) { choice in
         Button {
-          model.setDefaultAgentModel(choice.model, for: provider)
+          model.setChatModel(choice.model, for: provider)
         } label: {
           if (choice.model ?? "") == current {
             Label(choice.label, systemImage: "checkmark")
@@ -1426,10 +1426,10 @@ struct QueueAgentChatView: View {
 
   private var chatEffortMenu: some View {
     let provider = model.defaultAgentProvider
-    let current = model.config.defaultAgentEfforts[provider] ?? ""
+    let current = model.config.chatEffort(for: provider) ?? ""
     return Menu {
       Button {
-        model.setDefaultAgentEffort(nil, for: provider)
+        model.setChatEffort(nil, for: provider)
       } label: {
         if current.isEmpty {
           Label("Default", systemImage: "checkmark")
@@ -1439,7 +1439,7 @@ struct QueueAgentChatView: View {
       }
       ForEach(AppConfiguration.agentEffortLevels(for: provider), id: \.self) { effort in
         Button {
-          model.setDefaultAgentEffort(effort, for: provider)
+          model.setChatEffort(effort, for: provider)
         } label: {
           if current == effort {
             Label(effort, systemImage: "checkmark")

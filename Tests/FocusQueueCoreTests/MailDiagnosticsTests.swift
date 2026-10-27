@@ -79,3 +79,22 @@ func dailyReportPartialPresentationIncludesKnownCause() {
             == "Daily report completed with partial platform coverage: the protected Mail reader timed out. Confirm the configured mail provider is available, then retry. It will retry automatically."
     )
 }
+
+@Test("Queue chat reports a harness-enforced run budget as a timeout, not a bare exit code")
+func queueChatHarnessRunBudgetIsTimeout() {
+    for provider in ["Claude", "Codex", "Kimi"] {
+        let result = ProcessResult(
+            exitCode: 1, standardOutput: "",
+            standardError: "\(provider) Queue harness failed: \(provider) exceeded the 120-second run budget",
+            timedOut: false)
+        let chat = CodexQueueAgent.safeFailureDetail(
+            from: result, message: "Create a new project called Kairos", runTimeoutSeconds: 120)
+        #expect(chat.hasPrefix("the request timed out after 120 seconds"))
+        #expect(!chat.contains("exited with code"))
+    }
+    let mail = ProcessResult(
+        exitCode: 1, standardOutput: "",
+        standardError: "Claude Queue harness failed: Claude exceeded the 180-second run budget", timedOut: false)
+    #expect(CodexQueueAgent.safeFailureDetail(from: mail, message: "Search my inbox", runTimeoutSeconds: 180)
+        .hasPrefix("Mail check timed out after 180 seconds"))
+}

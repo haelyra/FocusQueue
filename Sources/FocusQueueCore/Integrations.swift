@@ -2867,11 +2867,15 @@ public actor HarnessQueueAgent: QueueAgentChatting {
         message: String,
         runTimeoutSeconds: Int
     ) -> String {
-        if result.timedOut {
+        // The harness enforces the run budget itself and exits 1 before the
+        // host's longer process timeout fires, so its message also means timeout.
+        let harnessTimedOut = [result.standardError, result.standardOutput]
+            .contains { $0.contains("-second run budget") }
+        if result.timedOut || harnessTimedOut {
             if QueueAgentEvidenceVerifier.requiresMailEvidence(message) {
                 return "Mail check timed out after \(runTimeoutSeconds) seconds. Confirm the Mail helper is available, then retry."
             }
-            return "the request timed out after \(runTimeoutSeconds) seconds; retry the request"
+            return "the request timed out after \(runTimeoutSeconds) seconds. Queue chat suits short queue and task edits; ask for one step at a time or start an agent for multi-step setup work"
         }
         return WorkerFailureDiagnostics.detail(from: result)
     }

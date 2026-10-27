@@ -33,6 +33,24 @@ struct QueueViewModelTests {
     #expect(model.visibleAgents(for: "ECC-101").map(\.id) == ["primed-worker"])
   }
 
+  @Test("PDF dark mode follows the app appearance until the viewer toggle overrides it")
+  func pdfDarkModeDefaultsToAppearance() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    model.setAppearance(.light)
+    #expect(!model.isPDFDarkMode)
+    model.setAppearance(.dark)
+    #expect(model.isPDFDarkMode)
+    model.togglePDFDarkMode()
+    #expect(!model.isPDFDarkMode)
+    model.togglePDFDarkMode()
+    #expect(model.isPDFDarkMode)
+    model.togglePDFDarkMode()
+    model.setAppearance(.dark)
+    #expect(model.isPDFDarkMode, "Changing the app appearance returns PDFs to the default")
+  }
+
   @Test("A completed agent keeps running and is never archived through refresh")
   func completedAgentKeepsRunning() async throws {
     let fixture = try await Fixture()

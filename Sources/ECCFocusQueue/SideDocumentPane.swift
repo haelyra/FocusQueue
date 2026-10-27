@@ -231,6 +231,14 @@ struct SideDocumentPane: View {
                     .lineLimit(1)
                     .documentDrag(document, started: dragStarted)
                 Spacer()
+                if case .pdf = entry.content {
+                    Button { queue.togglePDFDarkMode() } label: {
+                        Image(systemName: queue.isPDFDarkMode ? "moon.fill" : "moon")
+                    }
+                        .help(queue.isPDFDarkMode ? "Show the PDF with its own colors" : "Show the PDF in dark mode")
+                        .accessibilityLabel("PDF dark mode")
+                        .accessibilityValue(queue.isPDFDarkMode ? "On" : "Off")
+                }
                 if let editSession {
                     Button("Save") { _ = store.saveEdit(document) }
                         .buttonStyle(.borderedProminent).controlSize(.small)
@@ -296,7 +304,7 @@ struct SideDocumentPane: View {
                         searchesBackwards: find.searchesBackwards)
                 case .pdf(let file):
                     PDFDocumentView(
-                        url: file, open: open, findQuery: find.query,
+                        url: file, open: open, darkMode: queue.isPDFDarkMode, findQuery: find.query,
                         findRequest: find.request, findSearchesBackwards: find.searchesBackwards)
                 case .rendered(let resource):
                     ReadOnlyResourceDocument(
@@ -480,6 +488,7 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
 struct PDFDocumentView: NSViewRepresentable {
     let url: URL
     let open: (URL) -> Void
+    var darkMode = false
     var findQuery = ""
     var findRequest = 0
     var findSearchesBackwards = false
@@ -492,12 +501,18 @@ struct PDFDocumentView: NSViewRepresentable {
         view.displayMode = .singlePageContinuous
         view.displaysPageBreaks = true
         view.backgroundColor = .underPageBackgroundColor
+        view.wantsLayer = true
+        view.layerUsesCoreImageFilters = true
         view.delegate = context.coordinator
         return view
     }
 
     func updateNSView(_ view: PDFView, context: Context) {
         context.coordinator.open = open
+        if context.coordinator.darkMode != darkMode {
+            context.coordinator.darkMode = darkMode
+            PDFDarkMode.apply(darkMode, to: view)
+        }
         if context.coordinator.url != url {
             context.coordinator.url = url
             view.document = PDFDocument(url: url)
@@ -509,6 +524,7 @@ struct PDFDocumentView: NSViewRepresentable {
 
     @MainActor final class Coordinator: NSObject, PDFViewDelegate {
         var url: URL?
+        var darkMode = false
         var open: (URL) -> Void
         private var handledFindRequest = 0
         init(open: @escaping (URL) -> Void) { self.open = open }
@@ -529,6 +545,33 @@ struct PDFDocumentView: NSViewRepresentable {
         nonisolated func pdfViewWillClick(onLink sender: PDFView, with url: URL) {
             MainActor.assumeIsolated { open(url) }
         }
+    }
+}
+
+/// Dark mode for PDFs: brightness flips (white paper to dark gray, black ink to
+/// near white) while each color keeps its distance from gray, so links and charts
+/// stay recognizable. The flip runs on sRGB values so midtones stay midtones.
+enum PDFDarkMode {
+    /// Where white paper and black ink land after the flip.
+    static let paper = 0.11, ink = 0.92
+
+    static func filters() -> [CIFilter] {
+        // Rec. 709 luma; every channel moves by the same amount, which keeps chroma.
+        let luma = (r: 0.2126, g: 0.7152, b: 0.0722), k = 1 + (ink - paper)
+        let matrix = CIFilter(name: "CIColorMatrix")!
+        matrix.setValue(CIVector(x: 1 - k * luma.r, y: -k * luma.g, z: -k * luma.b, w: 0), forKey: "inputRVector")
+        matrix.setValue(CIVector(x: -k * luma.r, y: 1 - k * luma.g, z: -k * luma.b, w: 0), forKey: "inputGVector")
+        matrix.setValue(CIVector(x: -k * luma.r, y: -k * luma.g, z: 1 - k * luma.b, w: 0), forKey: "inputBVector")
+        matrix.setValue(CIVector(x: ink, y: ink, z: ink, w: 0), forKey: "inputBiasVector")
+        return [CIFilter(name: "CILinearToSRGBToneCurve")!, matrix, CIFilter(name: "CISRGBToneCurveToLinear")!]
+    }
+
+    /// The flip turns this light gray into a gray a step lighter than the pages, so their edges show.
+    static let invertedBackground = NSColor(srgbRed: 0.9, green: 0.9, blue: 0.9, alpha: 1)
+
+    @MainActor static func apply(_ enabled: Bool, to view: PDFView) {
+        view.contentFilters = enabled ? filters() : []
+        view.backgroundColor = enabled ? invertedBackground : .underPageBackgroundColor
     }
 }
 

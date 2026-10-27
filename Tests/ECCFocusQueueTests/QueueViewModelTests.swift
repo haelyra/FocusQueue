@@ -580,6 +580,37 @@ struct QueueViewModelTests {
     #expect(model.queueChatFocusRequest == 2)
   }
 
+  @Test("A Right Command + Shift tap opens the new task sheet and the next tap cancels it")
+  func newTaskHotkeyTogglesSheet() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let monitor = NewTaskHotkeyMonitor()
+    monitor.onTrigger = { model.toggleNewTaskRequest() }
+    func send(_ type: NSEvent.EventType, _ keyCode: UInt16, _ flags: NSEvent.ModifierFlags) {
+      let characters = type == .keyDown ? "A" : ""
+      monitor.handle(try! #require(NSEvent.keyEvent(
+        with: type, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0,
+        context: nil, characters: characters, charactersIgnoringModifiers: characters,
+        isARepeat: false, keyCode: keyCode)))
+    }
+    func commandShiftTap() {
+      send(.flagsChanged, 54, [.command])
+      send(.flagsChanged, 56, [.command, .shift])
+      send(.flagsChanged, 56, [.command])
+      send(.flagsChanged, 54, [])
+    }
+
+    commandShiftTap()
+    #expect(model.newTaskRequest?.autofocusPrompt == true)
+    // Typing a capital letter in the prompt between taps must not block the cancel.
+    send(.flagsChanged, 56, [.shift])
+    send(.keyDown, 0, [.shift])
+    send(.flagsChanged, 56, [])
+    commandShiftTap()
+    #expect(model.newTaskRequest == nil)
+  }
+
   @Test("A QChat focus request puts the cursor in the composer, again after focus moves away")
   func qchatFocusRequestFocusesComposer() async throws {
     let fixture = try await Fixture()

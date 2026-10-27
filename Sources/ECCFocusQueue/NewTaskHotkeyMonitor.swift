@@ -30,7 +30,7 @@ final class NewTaskHotkeyMonitor {
     localMonitor = nil
   }
 
-  private func handle(_ event: NSEvent) {
+  func handle(_ event: NSEvent) {
     guard event.type == .flagsChanged else {
       state.noteKeyDown()
       return

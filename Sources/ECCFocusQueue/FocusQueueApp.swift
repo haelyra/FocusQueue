@@ -361,25 +361,15 @@ import UserNotifications
     newTaskHotkeyMonitor = nil
   }
 
-  /// True while the panel, or a sheet on it, takes typing.
-  private var panelHasKeyboardFocus: Bool {
-    guard let panel else { return false }
-    return panel.isKeyWindow || panel.attachedSheet?.isKeyWindow == true
-  }
-
-  /// Toggles: opens the new task sheet, refocuses it when another app has the
-  /// keyboard, and cancels it when it already has focus.
+  /// Plain toggle. Gating the cancel on key-window state failed: a sheet on the
+  /// non-activating panel did not report key while it was open.
   private func handleNewTaskHotkey() {
-    if model.newTaskRequest != nil, panelHasKeyboardFocus {
-      model.clearNewTaskRequest()
-      return
-    }
-    revealPanelOnPointerDisplay()
-    if model.newTaskRequest == nil {
-      model.requestNewTask(autofocusPrompt: true)
-    } else if let panel {
-      (panel.attachedSheet ?? panel).makeKey()
-    }
+    let isOpen = model.newTaskRequest != nil
+    NSLog("New task hotkey: %@, panel key=%d, sheet key=%d, app active=%d",
+      isOpen ? "cancel" : "open", panel?.isKeyWindow == true,
+      panel?.attachedSheet?.isKeyWindow == true, NSApp.isActive)
+    if !isOpen { revealPanelOnPointerDisplay() }
+    model.toggleNewTaskRequest()
   }
 
   private func startQChatHotkeyMonitor(promptForAccess: Bool) {

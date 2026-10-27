@@ -2641,7 +2641,7 @@ public enum QueueAgentPrompt {
 
         The host app owns terminal labels and progress UI. Do not call `tabname`, inspect unrelated configuration, or run setup commands. Call only the narrow source command needed for the user's request, plus workspace reads or explicitly requested dashboard edits.
 
-        Keep each turn cheap. Answer directly from the task snapshot and recent conversation in the message when they cover the request. Otherwise make the fewest tool calls that answer it, combining related reads into one shell command. Use absolute paths in shell commands; the shell may not start in the workspace.
+        Keep each turn cheap. The task snapshot in the message is current app state the host read for this turn, so it counts as verified for task, agent, status, and session facts; answer from it directly when it covers the request, and name it as the source. Recent conversation is history, not verification. Otherwise make the fewest tool calls that answer it, combining related reads into one shell command. Use absolute paths in shell commands; the shell may not start in the workspace.
         \(mailContract)\(discordContract)
         User message follows between literal delimiters:
         <queue-user-message>

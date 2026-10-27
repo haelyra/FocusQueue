@@ -64,7 +64,7 @@ struct TaskCreatorSheet: View {
                     prompt: Text("Leave blank for an agent-written summary"), axis: .vertical)
             .lineLimit(1...3)
           Picker("Priority", selection: $priority) {
-            Text("Agent decides").tag(String?.none)
+            Text("Automatic (Medium if unsure)").tag(String?.none)
             Text("Low").tag(String?.some("low"))
             Text("Medium").tag(String?.some("medium"))
             Text("High").tag(String?.some("high"))
@@ -171,9 +171,6 @@ struct TaskCreatorSheet: View {
       case .matched(let ticket, let suggestion):
         cachedSuggestion = suggestion
         match = (ticket, suggestion)
-      case .needsPriority(let reason, let suggestion):
-        cachedSuggestion = suggestion
-        message = reason
       case .failed(let reason):
         message = reason
       }

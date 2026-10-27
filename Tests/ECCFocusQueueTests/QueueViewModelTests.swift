@@ -3624,26 +3624,17 @@ struct QueueViewModelTests {
     #expect(model.taskCreatorLaunchDefaults == preset)
   }
 
-  @Test("Without a model suggestion the creator asks for a priority instead of defaulting one")
-  func taskCreatorRequiresPriorityWithoutModel() async throws {
+  @Test("Without a model suggestion the creator defaults the priority to medium")
+  func taskCreatorDefaultsPriorityWithoutModel() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let suggester = RecordingPlacementSuggester(.unavailable("the claude CLI is not on PATH"))
     let model = await fixture.model(agent: ControlledQueueAgent(), taskPlacementSuggester: suggester)
     let description = "Add a keyboard shortcut that jumps to the next blocked agent."
-    var draft = TaskDraft(description: description, launchesAgent: false,
+    let draft = TaskDraft(description: description, launchesAgent: false,
       agent: AgentLaunchPreset(provider: .claude))
 
-    let first = await model.submitTaskDraft(draft)
-    guard case .needsPriority(let message, let suggestion) = first else {
-      Issue.record("Unexpected result \(first)")
-      return
-    }
-    #expect(message.contains("not on PATH"))
-    #expect(model.projectTickets.allSatisfy { $0.summary != description })
-
-    draft.priority = "high"
-    let created = await model.submitTaskDraft(draft, suggestion: suggestion)
+    let created = await model.submitTaskDraft(draft)
     guard case .created(let ticketID, false) = created else {
       Issue.record("Unexpected result \(created)")
       return
@@ -3651,7 +3642,7 @@ struct QueueViewModelTests {
     let ticket = try #require(model.projectTickets.first { $0.id == ticketID })
     #expect(ticket.title == TaskSubtask.agentName(prompt: description, provider: .claude))
     #expect(ticket.summary == description)
-    #expect(ticket.priority == "high")
+    #expect(ticket.priority == "medium")
     #expect(await suggester.queries.count == 1)
 
     model.setPlacementModelEnabled(false)

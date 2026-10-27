@@ -53,8 +53,6 @@ enum TaskDraftResult: Equatable, Sendable {
   case created(ticketID: String, launchedAgent: Bool)
   case joined(ticketID: String, launchedAgent: Bool)
   case matched(DashboardTicket, TaskPlacementSuggestion)
-  /// Carries the suggestion so a resubmission with a chosen priority skips the model.
-  case needsPriority(String, TaskPlacementSuggestion?)
   case failed(String)
 }
 

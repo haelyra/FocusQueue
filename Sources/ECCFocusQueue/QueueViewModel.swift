@@ -1131,12 +1131,9 @@ final class QueueViewModel {
        let match = await findTicket(id: matchID), let suggestion {
       return .matched(match, suggestion)
     }
-    // No silent default: the user or the placement model sets the priority.
-    guard let priority = draft.priority ?? suggestion?.priority else {
-      return .needsPriority(
-        "Choose a priority. \(suggestion?.modelError ?? "The placement model did not suggest one.")",
-        suggestion)
-    }
+    // The user's choice wins, then the placement model's; otherwise medium,
+    // so declining to pick never blocks creating a task.
+    let priority = draft.priority ?? suggestion?.priority ?? "medium"
     let ticketTitle = title.isEmpty
       ? (suggestion?.title ?? TaskSubtask.agentName(prompt: description, provider: draft.agent.provider))
       : title

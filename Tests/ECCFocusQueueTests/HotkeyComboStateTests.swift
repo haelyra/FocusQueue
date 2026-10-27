@@ -116,4 +116,42 @@ struct HotkeyComboStateTests {
     #expect(state.update(keyCode: leftOption, flags: [.command, .shift, .option]) == nil)
     #expect(state.update(keyCode: leftShift, flags: [.command, .option]) == nil)
   }
+
+  @Test("A Command key-up lost while the sheet opens does not block the next tap")
+  func lostCommandReleaseHeals() {
+    let state = HotkeyComboState()
+    // Tap 1 fires on the Shift release; the app activates right then and the Command key-up never arrives.
+    #expect(state.update(keyCode: rightCommand, flags: [.command]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.command, .shift]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.command]) == .commandShift)
+
+    // Tap 2 must still fire.
+    #expect(state.update(keyCode: rightCommand, flags: [.command]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.command, .shift]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.command]) == .commandShift)
+    #expect(state.update(keyCode: rightCommand, flags: []) == nil)
+  }
+
+  @Test("Lost Shift and Command key-ups both heal on the next tap")
+  func lostBothReleasesHeal() {
+    let state = HotkeyComboState()
+    #expect(state.update(keyCode: rightCommand, flags: [.command]) == nil)
+    #expect(state.update(keyCode: rightShift, flags: [.command, .shift]) == nil)
+    #expect(state.update(keyCode: rightShift, flags: [.command]) == .commandShift)
+    // Neither key-up arrives; the next tap starts from a fresh Command press.
+    #expect(state.update(keyCode: rightCommand, flags: [.command]) == nil)
+    #expect(state.update(keyCode: rightShift, flags: [.command, .shift]) == nil)
+    #expect(state.update(keyCode: rightShift, flags: [.command]) == .commandShift)
+  }
+
+  @Test("A Command tap after a lost Option release still fires")
+  func lostOptionReleaseDoesNotBlockCommand() {
+    let state = HotkeyComboState()
+    #expect(state.update(keyCode: rightOption, flags: [.option]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.option, .shift]) == .optionShift)
+    // Both key-ups lost; the next event already shows Command alone.
+    #expect(state.update(keyCode: rightCommand, flags: [.command]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.command, .shift]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.command]) == .commandShift)
+  }
 }

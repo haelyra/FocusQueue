@@ -173,6 +173,12 @@ enum PlanCanvasWebRuntime {
 
         const bridge = window.webkit?.messageHandlers?.focusQueuePlanCanvas;
         const diagramSelector = 'figure[data-plan-canvas-diagram]';
+        const componentSelector = [
+          'g.node', 'g.cluster', 'g.edgeLabel', 'g.actor', 'g.note',
+          'g.statediagram-state', 'g[class*="entity"]', 'g[class*="relationshipLabel"]',
+          'g[class*="task"]', 'g[class*="section"]', 'g[class*="slice"]',
+          'text.messageText', 'text.loopText', 'text.noteText', 'text.pieTitleText'
+        ].join(',');
         const interactiveTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'SUMMARY']);
 
         function bounded(value, limit) {
@@ -225,19 +231,81 @@ enum PlanCanvasWebRuntime {
         }
 
         function clearDiagramSelection() {
-          document.querySelectorAll(diagramSelector + '.is-selected').forEach(element => {
+          document.querySelectorAll(diagramSelector + '.is-selected, [data-plan-canvas-component].is-selected').forEach(element => {
             element.classList.remove('is-selected');
             element.setAttribute('aria-pressed', 'false');
           });
+          document.querySelectorAll(diagramSelector + '.is-component-selected').forEach(element => {
+            element.classList.remove('is-component-selected');
+          });
+          document.querySelectorAll('.diagram-selection-outline').forEach(element => element.remove());
+        }
+
+        function diagramSource(figure) {
+          return figure.querySelector('.plan-diagram-source')?.textContent ||
+            figure.querySelector('.mermaid')?.textContent || 'Mermaid diagram';
         }
 
         function selectDiagram(figure) {
           clearDiagramSelection();
           figure.classList.add('is-selected');
-          figure.setAttribute('aria-pressed', 'true');
-          const source = figure.querySelector('.plan-diagram-source')?.textContent ||
-            figure.querySelector('.mermaid')?.textContent || 'Mermaid diagram';
-          postSelection('diagram', figure, bounded(source, 4000), '');
+          if (figure.getAttribute('role') === 'button') figure.setAttribute('aria-pressed', 'true');
+          postSelection('diagram', figure, bounded(diagramSource(figure), 4000), '');
+        }
+
+        function selectDiagramComponent(component, figure) {
+          clearDiagramSelection();
+          figure.classList.add('is-selected', 'is-component-selected');
+          component.classList.add('is-selected');
+          component.setAttribute('aria-pressed', 'true');
+          const label = clean(component.textContent || component.getAttribute('aria-label'), 500) ||
+            'Unlabelled diagram component';
+          const source = bounded(diagramSource(figure), 3400);
+          let bounds;
+          try { bounds = component.getBBox(); } catch (_) { bounds = null; }
+          const svg = component.closest('svg');
+          if (svg && bounds && bounds.width > 0 && bounds.height > 0) {
+            const outline = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+            outline.setAttribute('class', 'diagram-selection-outline');
+            outline.setAttribute('x', String(bounds.x - 6));
+            outline.setAttribute('y', String(bounds.y - 6));
+            outline.setAttribute('width', String(bounds.width + 12));
+            outline.setAttribute('height', String(bounds.height + 12));
+            outline.setAttribute('rx', '6');
+            svg.insertBefore(outline, svg.firstChild);
+          }
+          postSelection('diagram', component, bounded('Diagram component: ' + label +
+            '\nDiagram source:\n' + source, 4000), '');
+        }
+
+        function prepareDiagram(element) {
+          const figure = element.closest(diagramSelector);
+          const svg = element.querySelector('svg');
+          if (!figure || !svg) return;
+          const viewBox = svg.viewBox?.baseVal;
+          const intrinsicWidth = viewBox?.width || svg.getBoundingClientRect().width || 640;
+          const readableWidth = Math.min(1600, Math.max(320, Math.ceil(intrinsicWidth)));
+          element.style.setProperty('--diagram-readable-width', readableWidth + 'px');
+          svg.setAttribute('preserveAspectRatio', 'xMidYMin meet');
+          svg.removeAttribute('height');
+          svg.style.width = readableWidth + 'px';
+          svg.style.maxWidth = 'none';
+          svg.style.height = 'auto';
+          figure.setAttribute('role', 'group');
+          figure.setAttribute('aria-label', 'Interactive Mermaid diagram. Select a component for discussion.');
+          figure.removeAttribute('tabindex');
+          figure.removeAttribute('aria-pressed');
+          Array.from(svg.querySelectorAll(componentSelector)).forEach(match => {
+            const component = match.tagName.toLowerCase() === 'text' && match.parentElement?.tagName.toLowerCase() === 'g'
+              ? match.parentElement : match;
+            if (component.closest('[data-plan-canvas-component]')) return;
+            const label = clean(component.textContent, 160) || 'Unlabelled diagram component';
+            component.setAttribute('data-plan-canvas-component', '');
+            component.setAttribute('role', 'button');
+            component.setAttribute('tabindex', '0');
+            component.setAttribute('aria-label', 'Select diagram component: ' + label);
+            component.setAttribute('aria-pressed', 'false');
+          });
         }
 
         document.addEventListener('click', event => {
@@ -258,7 +326,12 @@ enum PlanCanvasWebRuntime {
           const figure = target.closest(diagramSelector);
           if (!figure || interactiveTags.has(target.tagName)) return;
           event.preventDefault();
-          selectDiagram(figure);
+          const component = target.closest('[data-plan-canvas-component]');
+          if (component) {
+            selectDiagramComponent(component, figure);
+          } else {
+            selectDiagram(figure);
+          }
         }, true);
 
         document.addEventListener('keydown', event => {
@@ -266,7 +339,12 @@ enum PlanCanvasWebRuntime {
           const figure = target?.closest(diagramSelector);
           if (figure && (event.key === 'Enter' || event.key === ' ')) {
             event.preventDefault();
-            selectDiagram(figure);
+            const component = target.closest('[data-plan-canvas-component]');
+            if (component) {
+              selectDiagramComponent(component, figure);
+            } else {
+              selectDiagram(figure);
+            }
             return;
           }
           if (event.defaultPrevented || event.isComposing || event.metaKey || event.ctrlKey ||
@@ -303,6 +381,11 @@ enum PlanCanvasWebRuntime {
               securityLevel: 'strict',
               theme: dark ? 'dark' : 'base',
               fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+              flowchart: {
+                htmlLabels: false, useMaxWidth: false, nodeSpacing: 50, rankSpacing: 60,
+                padding: 20
+              },
+              sequence: { useMaxWidth: false, wrap: false, actorMargin: 60, messageMargin: 45 },
               themeVariables: dark ? {
                 primaryColor: '#303030', primaryBorderColor: '#929292', primaryTextColor: '#eeeeee',
                 lineColor: '#a8a8a8', secondaryColor: '#383838', tertiaryColor: '#282828',
@@ -315,6 +398,7 @@ enum PlanCanvasWebRuntime {
             });
             await mermaid.run({ nodes: diagrams });
             diagrams.forEach(element => {
+              prepareDiagram(element);
               const figure = element.closest(diagramSelector);
               figure?.classList.remove('is-loading', 'is-unrendered');
               figure?.classList.add('is-rendered');

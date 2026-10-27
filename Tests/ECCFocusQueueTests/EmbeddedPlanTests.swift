@@ -158,6 +158,9 @@ struct EmbeddedPlanTests {
     #expect(script.contains("renderer timed out"))
     #expect(script.contains("securityLevel: 'strict'"))
     #expect(script.contains("plan-canvas-selection"))
+    #expect(script.contains("data-plan-canvas-component"))
+    #expect(script.contains("htmlLabels: false"))
+    #expect(script.contains("Math.min(1600"))
   }
 
   @Test("Older persisted chat remains decodable without selection context")
@@ -252,9 +255,11 @@ struct EmbeddedPlanTests {
     "Native document viewer renders Mermaid through the pinned isolated runtime",
     .enabled(if: ProcessInfo.processInfo.environment["ECC_FOCUS_QUEUE_NETWORK_TESTS"] == "1"))
   func headlessNativeMermaidRenders() async throws {
+    var actions: [PlanCanvasSelectionAction] = []
     let source = URL(fileURLWithPath: "/tmp/native-mermaid.md")
     let coordinator = EmbeddedPlanDocument.Coordinator(
-      open: { _ in Issue.record("Rendering Mermaid unexpectedly opened a link") })
+      open: { _ in Issue.record("Rendering Mermaid unexpectedly opened a link") },
+      select: { actions.append($0) })
     coordinator.sourceURL = source
     let configuration = EmbeddedPlanDocument.webConfiguration(coordinator: coordinator)
     let view = WKWebView(
@@ -270,21 +275,70 @@ struct EmbeddedPlanTests {
           flowchart LR
             Source --> Rendered
           ```
+
+          ```mermaid
+          sequenceDiagram
+            Author->>Viewer: Open diagram document
+            Viewer-->>Author: Render readable components
+          ```
           """, sourceURL: source, appearance: .light, accentStyle: .vibrant))
     coordinator.pendingInitialLoad = true
     view.loadHTMLString(html, baseURL: source.deletingLastPathComponent())
     try await eventuallyWebKit(timeout: .seconds(15)) {
       (try? await view.evaluateJavaScript(
-        "document.querySelector('figure')?.classList.contains('is-rendered')")) as? Bool == true
+        "document.querySelectorAll('figure.is-rendered').length")) as? Int == 2
     }
     #expect(!configuration.defaultWebpagePreferences.allowsContentJavaScript)
     #expect(
       try await view.evaluateJavaScript("document.querySelectorAll('figure svg').length") as? Int
-        == 1)
+        == 2)
     #expect(
       try await view.evaluateJavaScript(
         "document.querySelector('figure')?.classList.contains('is-unrendered')") as? Bool
         == false)
+    let componentState =
+      try await view.evaluateJavaScript(
+        """
+        const svg = document.querySelector('figure svg');
+        const components = document.querySelectorAll('[data-plan-canvas-component]');
+        const labelContainmentFailures = Array.from(svg.querySelectorAll('g.node')).filter(node => {
+          const shape = node.querySelector('rect, polygon, circle, ellipse');
+          const label = node.querySelector('.label');
+          if (!shape || !label) return false;
+          const box = shape.getBBox();
+          const text = label.getBBox();
+          return text.x < box.x - 1 || text.y < box.y - 1 ||
+            text.x + text.width > box.x + box.width + 1 ||
+            text.y + text.height > box.y + box.height + 1;
+        }).length;
+        [components.length, document.querySelector('figure')?.getAttribute('role'),
+         components[0]?.getAttribute('role'),
+         components[0]?.getAttribute('tabindex'), svg?.style.width,
+         getComputedStyle(document.querySelector('pre.mermaid')).overflow,
+         labelContainmentFailures,
+         document.querySelectorAll('text.messageText').length].join('|');
+        """, in: nil, contentWorld: .defaultClient) as? String
+    let componentFields = try #require(componentState?.split(separator: "|", omittingEmptySubsequences: false))
+    #expect((Int(componentFields[0]) ?? 0) >= 2)
+    #expect(componentFields[1] == "group")
+    #expect(componentFields[2] == "button")
+    #expect(componentFields[3] == "0")
+    let renderedWidth = Double(componentFields[4].replacingOccurrences(of: "px", with: "")) ?? 0
+    #expect(renderedWidth >= 320 && renderedWidth <= 1_600)
+    #expect(componentFields[5] == "auto")
+    #expect(componentFields[6] == "0")
+    #expect((Int(componentFields[7]) ?? 0) >= 2)
+    _ = try await view.evaluateJavaScript(
+      "document.querySelector('g.node[data-plan-canvas-component]').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));",
+      in: nil, contentWorld: .defaultClient)
+    try await eventuallyWebKit { actions.count == 1 }
+    #expect(actions[0].selection.kind == .diagram)
+    #expect(actions[0].selection.excerpt.contains("Diagram component:"))
+    #expect(actions[0].selection.excerpt.contains("Diagram source:"))
+    #expect(
+      try await view.evaluateJavaScript(
+        "document.querySelectorAll('.diagram-selection-outline').length",
+        in: nil, contentWorld: .defaultClient) as? Int == 1)
   }
 
   @Test(

@@ -672,7 +672,8 @@ struct EmbeddedPlanDocument: NSViewRepresentable {
       renderedCanvasSelection = selection
       guard shouldClear else { return }
       webView.evaluateJavaScript(
-        "document.querySelectorAll('figure[data-plan-canvas-diagram].is-selected').forEach(function(element) { element.classList.remove('is-selected'); element.setAttribute('aria-pressed', 'false'); });",
+        "window.__eccFocusQueuePlanCanvas?.clearSelection();",
+        in: nil, in: .defaultClient,
         completionHandler: nil)
     }
 

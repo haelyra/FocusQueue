@@ -948,6 +948,8 @@ func markdownHTMLRendering() {
   #expect(html.contains("A[Plan] --&gt; B[Build]"))
   #expect(html.contains("--accent: light-dark(#607bc7, #91adff)"))
   #expect(html.contains("color-scheme: light dark"))
+  #expect(html.contains("max-height: min(72vh, 900px)"))
+  #expect(html.contains("data-plan-canvas-component"))
 }
 
 @Test("WezTerm matching prefers an exact task directory")

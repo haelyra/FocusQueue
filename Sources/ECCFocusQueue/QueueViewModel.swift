@@ -648,6 +648,10 @@ final class QueueViewModel {
   var windowSnapshot: WindowSnapshot? { localState.window }
   var appearance: QueueAppearance { localState.appearance ?? .light }
   var accentStyle: QueueAccentStyle { localState.accentStyle ?? .vibrant }
+  /// PDFs follow the app's appearance until the viewer's toggle picks a side for this run.
+  private(set) var pdfDarkModeOverride: Bool?
+  var isPDFDarkMode: Bool { pdfDarkModeOverride ?? (appearance == .dark) }
+  func togglePDFDarkMode() { pdfDarkModeOverride = !isPDFDarkMode }
   var windowPlacement: QueueWindowPlacement {
     localState.window?.placement ?? config.defaultPlacement
   }
@@ -4839,6 +4843,7 @@ final class QueueViewModel {
 
   func setAppearance(_ appearance: QueueAppearance) {
     localState.appearance = appearance
+    pdfDarkModeOverride = nil
     persistLocalState()
   }
 

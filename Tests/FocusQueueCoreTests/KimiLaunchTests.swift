@@ -165,4 +165,56 @@ struct KimiLaunchTests {
     }
     #expect(try String(contentsOf: output, encoding: .utf8) == prompt + "\n")
   }
+
+  @Test("A transient tmux inspection failure does not drop Kimi's initial prompt",
+    .enabled(if: SetupEnvironment.executable("tmux") != nil))
+  func submitPromptRetriesTransientInspection() async throws {
+    let executable = try #require(SetupEnvironment.executable("tmux"))
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "fq-kimi-paste-retry-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let serverName = "fq-kimi-retry-\(UUID().uuidString.prefix(8))"
+    defer {
+      let cleanup = Process()
+      cleanup.executableURL = URL(fileURLWithPath: executable)
+      cleanup.arguments = ["-L", serverName, "kill-server"]
+      cleanup.environment = ["TMUX_TMPDIR": "/tmp", "PATH": "/usr/bin:/bin"]
+      cleanup.standardError = FileHandle.nullDevice
+      try? cleanup.run(); cleanup.waitUntilExit()
+      try? FileManager.default.removeItem(at: root)
+    }
+    let output = root.appendingPathComponent("received.txt")
+    let script = "stty -icanon -echo min 1 time 0; printf '│ >\\n'; head -n 1 > \"$1\"; sleep 30"
+    let runner = TransientTmuxInspectionRunner()
+    let controller = TmuxController(runner: runner, serverName: serverName)
+    let reference = try await controller.start(
+      name: "fq-kimi-retry", directory: root.path,
+      command: ["/bin/sh", "-c", script, "fake-kimi", output.path], executable: executable)
+    await runner.failNextInspection()
+
+    #expect(try await controller.submitPrompt(
+      "retry survived", to: reference,
+      ready: TaskAgentLauncher.kimiInputIsReady, timeout: .seconds(10)))
+    for _ in 0..<40 where (try? String(contentsOf: output, encoding: .utf8))?.hasSuffix("\n") != true {
+      try await Task.sleep(for: .milliseconds(100))
+    }
+    #expect(try String(contentsOf: output, encoding: .utf8) == "retry survived\n")
+  }
+}
+
+private actor TransientTmuxInspectionRunner: ProcessRunning {
+  private let base = FoundationProcessRunner()
+  private var shouldFailInspection = false
+
+  func failNextInspection() { shouldFailInspection = true }
+
+  func run(_ specification: ProcessSpecification) async throws -> ProcessResult {
+    if shouldFailInspection, specification.arguments.contains("display-message") {
+      shouldFailInspection = false
+      return ProcessResult(
+        exitCode: 1, standardOutput: "", standardError: "temporary tmux inspection failure",
+        timedOut: false)
+    }
+    return try await base.run(specification)
+  }
 }

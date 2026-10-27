@@ -179,6 +179,65 @@ func liveManagedProviderSanity() async throws {
   print("LIVE_AGENT_SANITY complete: 4 New Agent variants, 4 unique provider UUIDs, 4 exact detach/reopen checks, 4 stopped-conversation resumes, 4 isolated persistence saves, legacy sibling retained")
 }
 
+/// Exercises the in-task New Agent launch with the real Kimi TUI. Kimi does
+/// not create a native session until its first prompt arrives, so this catches
+/// prompt-paste failures that otherwise leave a visible pane unregistered.
+@Test("Live Kimi New Agent submits its prompt and persists its exact native session",
+  .enabled(if: ProcessInfo.processInfo.environment["ECC_FOCUS_QUEUE_LIVE_AGENT_TESTS"] == "1"))
+@MainActor
+func liveKimiNewAgentRegistration() async throws {
+  let fixture = try LiveAgentFixture()
+  defer { fixture.cleanup() }
+  try await fixture.prepare()
+  let launcher = TaskAgentLauncher(tmuxServerName: fixture.server)
+  let terminal = LiveHeadlessTerminal(fixture: fixture)
+  let model = QueueViewModel(paths: fixture.paths, terminalController: terminal, taskAgentLauncher: launcher)
+  let ticket = DashboardTicket(id: fixture.taskID, title: "Kimi launch sanity", status: "open",
+    summary: "Verify a prompted Kimi agent registers after launch.")
+  let subtaskID = UUID().uuidString
+  let marker = "KIMI_NEW_AGENT_SANITY_OK"
+  var launched: Bool?
+
+  model.launchAgent(
+    for: ticket, title: "Kimi registration sanity", provider: .kimi,
+    repositoryPath: fixture.source.path,
+    assignmentDescription: "Follow the Focus Queue launch instructions, then reply with KIMI_NEW_AGENT_SANITY_OK.",
+    includePrompt: true, useTmux: true, createWorktree: false,
+    initialPrompt: "Follow the Focus Queue launch instructions, then reply with KIMI_NEW_AGENT_SANITY_OK.",
+    subtaskID: subtaskID, modelName: "kimi-code/k3", effort: "high",
+    workspacePolicy: .existingCheckout
+  ) { launched = $0 }
+
+  try await liveEventually("Kimi New Agent did not finish launching", seconds: 60) { launched != nil }
+  try #require(launched == true, "\(model.actionMessages[fixture.taskID] ?? "No launch result")")
+  var subtask = try #require(model.subtasks(for: fixture.taskID).first { $0.id == subtaskID })
+  let reference = try #require(subtask.tmux)
+  var capture = ""
+  var sessionID: String?
+  do {
+    try await liveEventually("Kimi did not create its first native session", seconds: 60) {
+      capture = try await fixture.tmux(["capture-pane", "-p", "-S", "-240", "-t", reference.paneID])
+      sessionID = try await launcher.identify(subtask: subtask, configuration: model.config.wezTerm)
+      return capture.contains(marker) && sessionID?.hasPrefix("session_") == true
+    }
+  } catch {
+    throw LiveAgentFailure("Kimi New Agent: \(error.localizedDescription)\nPane output:\n\(capture.suffix(4_000))")
+  }
+  let nativeID = try #require(sessionID)
+  let persisted = try await TaskContextStore(root: fixture.support).recordAgentIdentity(
+    ticketID: fixture.taskID, subtaskID: subtaskID, sessionID: nativeID)
+  subtask = try #require(persisted.subtasks.first { $0.id == subtaskID })
+  #expect(subtask.provider == .kimi)
+  #expect(subtask.sessionID == nativeID)
+  #expect(subtask.tmux == reference)
+  #expect(try await launcher.identify(subtask: subtask, configuration: model.config.wezTerm)
+    == subtask.sessionID)
+  #expect(await terminal.opened.last == reference)
+  print("LIVE_KIMI_NEW_AGENT passed session=\(nativeID), pane=\(reference.paneID), prompt=\(marker)")
+  await terminal.detachAll()
+  try await launcher.closeRuntime(subtask: subtask, configuration: model.config.wezTerm)
+}
+
 @MainActor
 private func liveEventually(_ description: String, seconds: Int,
   condition: @MainActor () async throws -> Bool) async throws {

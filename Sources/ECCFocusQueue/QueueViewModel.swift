@@ -4735,6 +4735,11 @@ final class QueueViewModel {
     newTaskRequest = nil
   }
 
+  /// New task hotkey: cancels an open new task sheet, like its Cancel button, or opens one.
+  func toggleNewTaskRequest() {
+    if newTaskRequest != nil { clearNewTaskRequest() } else { requestNewTask(autofocusPrompt: true) }
+  }
+
   func setNewTaskHotkeyEnabled(_ enabled: Bool) {
     guard newTaskHotkeyEnabled != enabled else { return }
     newTaskHotkeyEnabled = enabled

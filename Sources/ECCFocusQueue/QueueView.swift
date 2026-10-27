@@ -1180,7 +1180,7 @@ private enum QueueScreen {
   case settings
 }
 
-private enum QueueSettingsTarget: Hashable {
+enum QueueSettingsTarget: Hashable {
   case connectors
 }
 
@@ -1712,7 +1712,7 @@ private struct DailyReportView: View {
   }
 }
 
-private struct QueueSettingsView: View {
+struct QueueSettingsView: View {
   let model: QueueViewModel
   let focusedSection: QueueSettingsTarget?
   let openTerminals: () -> Void
@@ -1734,49 +1734,30 @@ private struct QueueSettingsView: View {
 
       ScrollView {
         VStack(alignment: .leading, spacing: 14) {
-          Button(action: openAnalytics) {
-            Label("Token analytics", systemImage: "chart.bar.xaxis")
-              .frame(maxWidth: .infinity, alignment: .leading)
-          }
-          .buttonStyle(.bordered)
-          .help("Local prompt and agent token measurements")
           if focusedSection == .connectors { connectorDiagnosticsSection }
-          settingsSection(
-            title: "Project files",
-            detail: "Plan, practices, requirements, evidence, and other files saved for a project. Choose one to open it beside settings with its project chat."
-          ) {
-            ProjectFilesSection(model: model)
-          }
+
+          groupHeading("Projects")
           settingsSection(
             title: "Projects",
-            detail: "The selected project controls which dashboard and workspace Focus Queue uses."
+            detail: "The selected project sets the dashboard and workspace Focus Queue uses. Edit a project to change its task prefix, folders, or repository."
           ) {
             VStack(alignment: .leading, spacing: 10) {
-              ForEach(model.projects) { project in
-                HStack {
-                  Image(systemName: project.id == model.selectedProject?.id ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(project.id == model.selectedProject?.id ? Color.accentColor : .secondary)
-                  VStack(alignment: .leading, spacing: 2) {
-                    Text(project.name).font(.system(size: 13, weight: .semibold))
-                    Text(project.workspacePath).font(.caption).foregroundStyle(.secondary)
-                      .lineLimit(1).textSelection(.enabled)
-                  }
-                  Spacer()
-                  if project.id != model.selectedProject?.id {
-                    Button("Select") { Task { _ = await model.selectProject(id: project.id) } }
-                      .buttonStyle(.bordered).controlSize(.small)
-                  }
-                }
-              }
-              Divider()
               ProjectSettingsView(model: model)
               Button("Open setup wizard", systemImage: "wand.and.stars") {
                 model.isSetupPresented = true
-              }.buttonStyle(.borderedProminent)
+              }.buttonStyle(.bordered)
             }
           }
           settingsSection(
-            title: "Default agent provider",
+            title: "Project files",
+            detail: "Plan, requirements, architecture, evidence, and other files saved for a project. Choose one to open it beside settings with its project chat."
+          ) {
+            ProjectFilesSection(model: model)
+          }
+
+          groupHeading("Agents")
+          settingsSection(
+            title: "Default agent",
             detail: "New agents and quick launches start with this provider and its default model unless you pick another one. The + task creator uses it when no agent has been launched yet."
           ) {
             VStack(alignment: .leading, spacing: 10) {
@@ -1813,67 +1794,92 @@ private struct QueueSettingsView: View {
             title: "Task placement",
             detail: "fq places each new agent with one small model call through your own subscription CLI: it joins a matching open task or creates a titled one. A ticket ID in the prompt skips the call."
           ) {
-            PlacementSettingsView(model: model)
+            VStack(alignment: .leading, spacing: 12) {
+              PlacementSettingsView(model: model)
+              Divider()
+              settingToggle(
+                "Save durable facts from prompts",
+                detail: "After each agent prompt, a background model call saves lasting preferences and deferred requirements to project or task data.",
+                isOn: Binding(
+                  get: { model.dataPlacementEnabled },
+                  set: { model.setDataPlacementEnabled($0) }))
+            }
           }
           settingsSection(
-            title: "Completion review",
-            detail: "When enabled, a read-only Codex reviewer gathers task evidence before the app closes a task. When disabled, the completion control records an explicit user override instead."
+            title: "Agent lifecycle",
+            detail: "Automatic steps Focus Queue takes as agents start, go stale, and finish."
           ) {
-            Toggle("Review tasks before completion", isOn: Binding(
-              get: { model.config.completionReviewEnabled },
-              set: { model.setCompletionReviewEnabled($0) }))
+            VStack(alignment: .leading, spacing: 12) {
+              settingToggle(
+                "Review tasks before completion",
+                detail: "A read-only Codex reviewer gathers task evidence before the app closes a task. When off, the completion control records an explicit user override instead.",
+                isOn: Binding(
+                  get: { model.config.completionReviewEnabled },
+                  set: { model.setCompletionReviewEnabled($0) }))
+              settingToggle(
+                "Automatically archive stale agents",
+                detail: "Once a day, archive interrupted or idle agents with no live process, no unseen output, and no activity in 5 days. They stay recallable under Archived agents.",
+                isOn: Binding(
+                  get: { model.config.autoArchiveStaleAgents },
+                  set: { model.setAutoArchiveStaleAgents($0) }))
+              settingToggle(
+                "Launch agents for escalated messages",
+                detail: "When message ingestion escalates a task with no live agent, start one automatically. When off, requests wait until this is turned back on.",
+                isOn: Binding(
+                  get: { model.config.agentEscalationAutoLaunch },
+                  set: { model.setAgentEscalationAutoLaunch($0) }))
+            }
           }
           settingsSection(
-            title: "Stale agent cleanup",
-            detail: "Once a day, archive interrupted or idle agents that have no live process, no unseen output, and no activity in 5 days. Archived agents stay recallable under Archived agents."
+            title: "Agent terminals",
+            detail: "Each task runs its agents as panes in one shared tmux session."
           ) {
-            Toggle("Automatically archive stale agents", isOn: Binding(
-              get: { model.config.autoArchiveStaleAgents },
-              set: { model.setAutoArchiveStaleAgents($0) }))
-          }
-          settingsSection(
-            title: "Agent terminal usage",
-            detail: "Show three live Codex quota and context rows below each managed task window. The values follow the active agent pane."
-          ) {
-            Toggle("Show agent usage bar", isOn: Binding(
-              get: { model.config.agentUsageBarEnabled },
-              set: { model.setAgentUsageBarEnabled($0) }))
-          }
-          settingsSection(
-            title: "New task hotkey",
-            detail: "Right Option + Shift or a Right Command + Shift tap opens a new task with the prompt focused. Either one cancels an open new task."
-          ) {
-            Toggle("New task hotkey (Right Option or Right Command + Shift)", isOn: Binding(
-              get: { model.newTaskHotkeyEnabled },
-              set: { model.setNewTaskHotkeyEnabled($0) }))
-          }
-          settingsSection(
-            title: "QChat hotkey",
-            detail: "Right Option + / or Right Command + / opens QChat beside the queue with the message box focused for voice typing. Press again to close it. Needs Accessibility access."
-          ) {
-            Toggle("QChat hotkey (Right Option or Right Command + /)", isOn: Binding(
-              get: { model.qchatHotkeyEnabled },
-              set: { model.setQChatHotkeyEnabled($0) }))
-          }
-          settingsSection(
-            title: "Appearance", detail: "Dark uses your WezTerm #1A1D23 background color."
-          ) {
-            Picker("Appearance", selection: appearanceBinding) {
-              Label("Light", systemImage: "sun.max.fill").tag(QueueAppearance.light)
-              Label("Dark", systemImage: "moon.stars.fill").tag(QueueAppearance.dark)
-            }.pickerStyle(.segmented).labelsHidden()
-          }
-
-          settingsSection(
-            title: "Accent colors", detail: "Changes status, priority, sync, and review colors."
-          ) {
-            Picker("Accent colors", selection: accentStyleBinding) {
-              ForEach(QueueAccentStyle.allCases) { style in
-                Text(style.displayName).tag(style)
+            VStack(alignment: .leading, spacing: 12) {
+              Stepper(value: Binding(
+                get: { model.agentsPerWindow },
+                set: { model.setAgentsPerWindow($0) }
+              ), in: 1...12) {
+                HStack {
+                  Text("Agent panes per window tab")
+                  Spacer()
+                  Text("\(model.agentsPerWindow)").monospacedDigit().foregroundStyle(.secondary)
+                }
               }
-            }.pickerStyle(.segmented).labelsHidden()
+              settingToggle(
+                "Show agent usage bar",
+                detail: "Three live Codex quota and context rows below each managed task window. The values follow the active agent pane.",
+                isOn: Binding(
+                  get: { model.config.agentUsageBarEnabled },
+                  set: { model.setAgentUsageBarEnabled($0) }))
+              Button(action: openTerminals) {
+                Label("Browse terminals (\(model.terminalCount))", systemImage: "terminal")
+              }
+              .buttonStyle(.bordered)
+              .help("Review tracked task sessions, agents waiting for placement, and other open terminals")
+              if !model.unassignedAgentRegistrations.isEmpty {
+                Text("\(model.unassignedAgentRegistrations.count) tracked agent(s) still need a task.")
+                  .font(.caption).foregroundStyle(.orange)
+              }
+            }
           }
 
+          groupHeading("Window and shortcuts")
+          settingsSection(
+            title: "Appearance",
+            detail: "Dark uses your WezTerm #1A1D23 background color. Accent colors change status, priority, sync, and review colors."
+          ) {
+            VStack(alignment: .leading, spacing: 10) {
+              Picker("Appearance", selection: appearanceBinding) {
+                Label("Light", systemImage: "sun.max.fill").tag(QueueAppearance.light)
+                Label("Dark", systemImage: "moon.stars.fill").tag(QueueAppearance.dark)
+              }.pickerStyle(.segmented).labelsHidden()
+              Picker("Accent colors", selection: accentStyleBinding) {
+                ForEach(QueueAccentStyle.allCases) { style in
+                  Text(style.displayName).tag(style)
+                }
+              }.pickerStyle(.segmented).labelsHidden()
+            }
+          }
           settingsSection(
             title: "Screen location",
             detail: "Choose the queue's horizontal position or move it to the next display."
@@ -1895,9 +1901,27 @@ private struct QueueSettingsView: View {
                 )
             }
           }
+          settingsSection(
+            title: "Keyboard shortcuts",
+            detail: "Global hotkeys that work from any app."
+          ) {
+            VStack(alignment: .leading, spacing: 12) {
+              settingToggle(
+                "New task: Right Option or Right Command + Shift",
+                detail: "A tap opens a new task with the prompt focused. Either one cancels an open new task.",
+                isOn: Binding(
+                  get: { model.newTaskHotkeyEnabled },
+                  set: { model.setNewTaskHotkeyEnabled($0) }))
+              settingToggle(
+                "QChat: Right Option or Right Command + /",
+                detail: "Opens QChat beside the queue with the message box focused for voice typing. Press again to close it. Needs Accessibility access.",
+                isOn: Binding(
+                  get: { model.qchatHotkeyEnabled },
+                  set: { model.setQChatHotkeyEnabled($0) }))
+            }
+          }
 
-          if focusedSection != .connectors { connectorDiagnosticsSection }
-
+          groupHeading("Daily reports")
           settingsSection(
             title: "Daily message report",
             detail:
@@ -1905,7 +1929,7 @@ private struct QueueSettingsView: View {
           ) {
             VStack(alignment: .leading, spacing: 12) {
               Toggle(
-                "Enable Daily Reports",
+                "Run a report every day",
                 isOn: Binding(
                   get: { model.config.dailyReport.enabled },
                   set: { model.setDailyReportsEnabled($0) }
@@ -1955,7 +1979,7 @@ private struct QueueSettingsView: View {
                   set: { model.setDailyReportAgentEffort($0) }
                 )) {
                   Text("Default").tag("")
-                  ForEach(AppConfiguration.agentEffortLevels, id: \.self) { effort in
+                  ForEach(AppConfiguration.agentEffortLevels(for: sweepProvider), id: \.self) { effort in
                     Text(effort).tag(effort)
                   }
                 }
@@ -2004,41 +2028,29 @@ private struct QueueSettingsView: View {
             }
           }
 
-          settingsSection(
-            title: "Terminals",
-            detail: "Review tracked task sessions, agents waiting for placement, and other open terminals."
-          ) {
-            Button(action: openTerminals) {
-              Label("Browse terminals (\(model.terminalCount))", systemImage: "terminal")
-            }
-            .buttonStyle(.bordered)
-            if !model.unassignedAgentRegistrations.isEmpty {
-              Text("\(model.unassignedAgentRegistrations.count) tracked agent(s) still need a task.")
-                .font(.caption).foregroundStyle(.orange)
-            }
-          }
+          if focusedSection != .connectors { connectorDiagnosticsSection }
 
+          groupHeading("Tools")
           settingsSection(
-            title: "Program log",
-            detail:
-              "Show a separate live debugging window. Its contents start fresh each time Focus Queue launches."
+            title: "Diagnostics",
+            detail: "Inspect token use and live app activity, or open the configuration file for options that have no control here."
           ) {
-            Toggle(
-              "Show Program Log window",
-              isOn: Binding(
-                get: { model.isProgramLogWindowVisible },
-                set: { model.setProgramLogWindowVisible($0) }
-              )
-            )
-          }
-
-          settingsSection(
-            title: "Management",
-            detail: "The Desktop launcher and menu-bar checklist remain available."
-          ) {
-            Button("Open advanced configuration", systemImage: "doc.badge.gearshape") {
-              model.openConfiguration()
-            }.buttonStyle(.bordered)
+            VStack(alignment: .leading, spacing: 12) {
+              Button(action: openAnalytics) {
+                Label("Token analytics", systemImage: "chart.bar.xaxis")
+              }
+              .buttonStyle(.bordered)
+              .help("Local prompt and agent token measurements")
+              settingToggle(
+                "Show Program Log window",
+                detail: "A separate live debugging window. Its contents start fresh each time Focus Queue launches.",
+                isOn: Binding(
+                  get: { model.isProgramLogWindowVisible },
+                  set: { model.setProgramLogWindowVisible($0) }))
+              Button("Open advanced configuration", systemImage: "doc.badge.gearshape") {
+                model.openConfiguration()
+              }.buttonStyle(.bordered)
+            }
           }
         }.padding(.horizontal, 2).padding(.vertical, 2)
       }.scrollIndicators(.automatic)
@@ -2090,7 +2102,7 @@ private struct QueueSettingsView: View {
     settingsSection(
       title: "Connector diagnostics",
       detail:
-        "Check local Mail, Telegram, Discord, and GitHub setup without reading messages. Authentication and live access are not tested."
+        "Check each report platform's local setup without reading messages. Authentication and live access are not tested."
     ) {
       VStack(alignment: .leading, spacing: 10) {
         if model.reportHasFailure {
@@ -2149,6 +2161,20 @@ private struct QueueSettingsView: View {
       }
     }
     .id(QueueSettingsTarget.connectors)
+  }
+
+  private func groupHeading(_ title: String) -> some View {
+    Text(title.uppercased()).font(.system(size: 11, weight: .bold)).tracking(0.7)
+      .foregroundStyle(.secondary).padding(.horizontal, 4).padding(.top, 6)
+      .accessibilityAddTraits(.isHeader)
+  }
+
+  /// A toggle with its explanation underneath, for cards that hold several toggles.
+  private func settingToggle(_ title: String, detail: String, isOn: Binding<Bool>) -> some View {
+    VStack(alignment: .leading, spacing: 3) {
+      Toggle(title, isOn: isOn)
+      Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    }
   }
 
   private func settingsSection<Content: View>(

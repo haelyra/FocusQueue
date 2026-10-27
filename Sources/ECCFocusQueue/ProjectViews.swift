@@ -57,18 +57,26 @@ struct ProjectSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(model.config.projects) { project in
+                let isSelected = project.id == model.selectedProject?.id
                 HStack(alignment: .top) {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                        .accessibilityLabel(isSelected ? "Selected project" : "Not selected")
                     VStack(alignment: .leading, spacing: 4) {
                         Text(project.name).font(.headline)
                         Text("Task IDs: \(project.taskPrefix)-###").font(.caption).foregroundStyle(.secondary)
                         Text(project.repositoryPath.isEmpty ? "No repository binding" : project.repositoryPath)
                             .font(.caption).foregroundStyle(.secondary)
                             .lineLimit(2).truncationMode(.middle).textSelection(.enabled)
-                        if project.archivedAt != nil { Text("Archived · available in project settings").font(.caption) }
+                        if project.archivedAt != nil { Text("Archived · edit to restore").font(.caption) }
                     }
                     Spacer()
+                    if !isSelected, project.archivedAt == nil {
+                        Button("Select") { Task { _ = await model.selectProject(id: project.id) } }
+                            .help("Use this project's dashboard and workspace")
+                    }
                     Button("Edit") { editor = project }
-                }
+                }.controlSize(.small)
             }
             if model.config.projects.isEmpty { Text("Add a project to organize tasks by repository.").foregroundStyle(.secondary) }
             Button("Add project", systemImage: "folder.badge.plus") {

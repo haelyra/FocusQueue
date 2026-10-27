@@ -34,24 +34,24 @@ struct ProjectFilesSectionTests {
     defer { try? FileManager.default.removeItem(at: root) }
     let project = try #require(model.activeProjects.first)
     let directory = try model.projectContextStore.ensurePlan(for: project).deletingLastPathComponent()
-    let practices = directory.appendingPathComponent("practices.md")
-    try Data("# Practices\n\n- Verify before handoff.\n".utf8).write(to: practices)
+    let architecture = directory.appendingPathComponent("architecture.md")
+    try Data("# Architecture\n\n- One shared tmux session per task.\n".utf8).write(to: architecture)
     try Data("Plain notes for the project.\n".utf8).write(to: directory.appendingPathComponent("notes.txt"))
 
     let section = render(ProjectFilesSection(model: model), size: NSSize(width: 420, height: 320), name: "settings-project-files")
     #expect(section.fittingSize.width > 0)
 
-    model.openDocumentViewer(practices, scope: .project(project.id))
+    model.openDocumentViewer(architecture, scope: .project(project.id))
     #expect(model.isDocumentViewerPresented && model.isInspectorPresented)
     #expect(model.documentViewerScope == .project(project.id))
-    #expect(model.documentViewer.selected == practices.standardizedFileURL)
+    #expect(model.documentViewer.selected == architecture.standardizedFileURL)
 
     // Another inspector replaces the viewer, and the viewer closes with its last tab.
     model.setQueueChatInspectorPresented(true)
     #expect(!model.isDocumentViewerPresented)
-    model.openDocumentViewer(practices, scope: .project(project.id))
+    model.openDocumentViewer(architecture, scope: .project(project.id))
     #expect(!model.isQueueChatInspectorPresented)
-    model.closeDocumentViewerTab(practices.standardizedFileURL)
+    model.closeDocumentViewerTab(architecture.standardizedFileURL)
     #expect(!model.isDocumentViewerPresented && !model.isInspectorPresented)
 
     let text = directory.appendingPathComponent("notes.txt")
@@ -144,6 +144,16 @@ struct ProjectFilesSectionTests {
     #expect(try String(contentsOf: json, encoding: .utf8) == "{}")
   }
 
+  @Test("The settings page lays out every group with one project list")
+  func settingsPageRenders() async throws {
+    let (model, root) = try await bootstrappedModel()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let page = render(
+      QueueSettingsView(model: model, focusedSection: nil, openTerminals: {}, openAnalytics: {}, close: {}),
+      size: NSSize(width: 460, height: 4200), name: "settings-page")
+    #expect(page.fittingSize.width > 0)
+  }
+
   @Test("Project document chat uses its own session, project context, and storage")
   func projectConversation() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("project-chat-\(UUID().uuidString)")
@@ -151,8 +161,8 @@ struct ProjectFilesSectionTests {
     let project = ProjectDefinition(id: "focus-queue", name: "Focus Queue", dashboardPath: "/tmp/d.json",
       workspacePath: root.path, taskPrefix: "FOC")
     let plan = try ProjectContextStore(root: root).ensurePlan(for: project)
-    let document = plan.deletingLastPathComponent().appendingPathComponent("practices.md")
-    try Data("Practice sentinel".utf8).write(to: document)
+    let document = plan.deletingLastPathComponent().appendingPathComponent("architecture.md")
+    try Data("Architecture sentinel".utf8).write(to: document)
     let agent = RecordingDocumentAgent()
     let subject = DocumentConversationSubject(
       kind: .project(project, planPath: plan.path, directory: plan.deletingLastPathComponent()))
@@ -174,7 +184,7 @@ struct ProjectFilesSectionTests {
     #expect(!HarnessQueueAgent.documentRuntimeArguments(configuration).isEmpty)
     let prompt = try #require(await agent.messages.first)
     #expect(prompt.contains("Document conversation for project Focus Queue"))
-    #expect(prompt.contains(plan.path) && prompt.contains("Practice sentinel"))
+    #expect(prompt.contains(plan.path) && prompt.contains("Architecture sentinel"))
     let stored = plan.deletingLastPathComponent().appendingPathComponent("documents")
     #expect(FileManager.default.fileExists(atPath: stored.path))
   }

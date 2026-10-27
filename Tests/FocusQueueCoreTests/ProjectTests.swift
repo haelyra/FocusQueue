@@ -90,7 +90,7 @@ struct ProjectTests {
         let directory = try store.ensurePlan(for: project).deletingLastPathComponent()
         #expect(try store.documents(projectID: "focus").map(\.kind) == [.plan])
         #expect(try store.links(projectID: "focus").isEmpty)
-        for name in ["evidence.md", "practices.md", "notes.md"] {
+        for name in ["evidence.md", "architecture.md", "notes.md"] {
             try Data("# \(name)\n".utf8).write(to: directory.appendingPathComponent(name))
         }
         try FileManager.default.createDirectory(at: directory.appendingPathComponent("prd.md"),
@@ -103,7 +103,7 @@ struct ProjectTests {
         try Data("{}".utf8).write(to: directory.appendingPathComponent("dashboard.json"))
         // Known documents come first; other readable files follow by name, and queue data is left out.
         let documents = try store.documents(projectID: "focus")
-        #expect(documents.map(\.kind) == [.plan, .practices, .evidence, .context, nil, nil])
+        #expect(documents.map(\.kind) == [.plan, .architecture, .evidence, .context, nil, nil])
         #expect(documents.map(\.url.lastPathComponent).suffix(2) == ["Brief.pdf", "notes.md"])
         #expect(documents.map(\.title).suffix(2) == ["Brief", "notes"])
         #expect(try store.links(projectID: "focus") == [

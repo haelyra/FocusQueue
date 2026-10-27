@@ -5546,6 +5546,33 @@ final class QueueViewModel {
     persistConfiguration()
   }
 
+  /// Off leaves escalation launch requests queued on disk until it is turned back on.
+  func setAgentEscalationAutoLaunch(_ enabled: Bool) {
+    guard config.agentEscalationAutoLaunch != enabled else { return }
+    config.agentEscalationAutoLaunch = enabled
+    persistConfiguration()
+  }
+
+  /// Active agent panes per tmux window tab; tmux layout reads it from config.json.
+  var agentsPerWindow: Int { config.agentsPerWindow ?? TmuxPaneLayout.defaultMaximumPanes }
+
+  func setAgentsPerWindow(_ count: Int) {
+    let clamped = min(max(count, 1), 12)
+    guard agentsPerWindow != clamped else { return }
+    // Always explicit: a nil key would keep the previous value on disk.
+    config.agentsPerWindow = clamped
+    persistConfiguration()
+  }
+
+  /// Native prompt hooks extract durable project and task facts only when this is on.
+  var dataPlacementEnabled: Bool { config.dataPlacementEnabled == true }
+
+  func setDataPlacementEnabled(_ enabled: Bool) {
+    guard dataPlacementEnabled != enabled else { return }
+    config.dataPlacementEnabled = enabled
+    persistConfiguration()
+  }
+
   func setAgentUsageBarEnabled(_ enabled: Bool) {
     guard config.agentUsageBarEnabled != enabled else { return }
     config.agentUsageBarEnabled = enabled

@@ -259,7 +259,7 @@ public struct ProjectContextStore: Sendable {
         if !FileManager.default.fileExists(atPath: url.path) {
             let repository = project.repositoryPath.isEmpty ? "not configured" : project.repositoryPath
             // A project plan is a one-to-three-line description inlined into every agent brief.
-            // Durable practices and architecture live in separate on-demand documents.
+            // Requirements and architecture live in separate on-demand documents.
             let markdown = """
             # \(project.name)
 
@@ -314,14 +314,13 @@ public struct ProjectContextStore: Sendable {
 
 public struct ProjectDocument: Identifiable, Equatable, Sendable {
     public enum Kind: String, CaseIterable, Sendable {
-        case plan, practices, prd, architecture, evidence, data, context
+        case plan, prd, architecture, evidence, data, context
 
         public var fileName: String { self == .context ? "context.json" : "\(rawValue).md" }
 
         public var title: String {
             switch self {
             case .plan: "Project plan"
-            case .practices: "Practices"
             case .prd: "Product requirements"
             case .architecture: "Architecture"
             case .evidence: "Evidence index"
@@ -333,7 +332,6 @@ public struct ProjectDocument: Identifiable, Equatable, Sendable {
         public var systemImage: String {
             switch self {
             case .plan: "doc.text"
-            case .practices: "checklist"
             case .prd: "list.bullet.rectangle"
             case .architecture: "square.stack.3d.up"
             case .evidence: "checkmark.seal"

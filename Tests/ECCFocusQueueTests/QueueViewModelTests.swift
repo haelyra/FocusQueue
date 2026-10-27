@@ -3563,6 +3563,34 @@ struct QueueViewModelTests {
     }
   }
 
+  @Test("Agent settings for pane capacity, prompt data, and escalation launches persist where their readers look")
+  func agentBehaviorSettings() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+
+    #expect(model.agentsPerWindow == TmuxPaneLayout.defaultMaximumPanes)
+    #expect(!model.dataPlacementEnabled)
+    #expect(model.config.agentEscalationAutoLaunch)
+
+    model.setAgentsPerWindow(40)
+    #expect(model.agentsPerWindow == 12)
+    model.setDataPlacementEnabled(true)
+    model.setAgentEscalationAutoLaunch(false)
+    try await eventually {
+      TmuxPaneLayout.maximumPanes(supportDirectory: fixture.paths.supportDirectory) == 12
+    }
+
+    // Returning to the default must overwrite the saved value, not drop the key.
+    model.setAgentsPerWindow(4)
+    try await eventually {
+      let saved = try JSONDecoder().decode(
+        AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+      return TmuxPaneLayout.maximumPanes(supportDirectory: fixture.paths.supportDirectory) == 4
+        && saved.dataPlacementEnabled == true && saved.agentEscalationAutoLaunch == false
+    }
+  }
+
   @Test("The task creator fills blanks from placement, keeps the description, and launches one placed agent")
   func taskCreatorCreatesAndLaunches() async throws {
     let fixture = try await Fixture()

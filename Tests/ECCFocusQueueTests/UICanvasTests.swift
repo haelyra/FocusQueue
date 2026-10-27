@@ -42,6 +42,49 @@ struct UICanvasTests {
     #expect(UICanvasFields.borderParts("none").width == 0)
   }
 
+  @Test("Shadows parse into per-layer controls and format back to CSS")
+  func shadows() throws {
+    let computed = try #require(UICanvasFields.parseShadows("rgba(0, 0, 0, 0.08) 0px 8px 28px 0px"))
+    #expect(computed == [UICanvasShadow(x: 0, y: 8, blur: 28, spread: 0, color: "rgba(0, 0, 0, 0.08)", inset: false)])
+    let layered = try #require(UICanvasFields.parseShadows("inset 0 1px 2px #fff, 2px 4px rgba(10, 20, 30, .5)"))
+    #expect(layered.count == 2 && layered[0].inset && layered[0].color == "#ffffff")
+    #expect(layered[1].blur == 0 && layered[1].color == "rgba(10, 20, 30, 0.5)")
+    #expect(UICanvasFields.formatShadows(layered) == "inset 0 1px 2px 0 #ffffff, 2px 4px 0 0 rgba(10, 20, 30, 0.5)")
+    #expect(UICanvasFields.parseShadows("none") == [])
+    #expect(UICanvasFields.formatShadows([]) == "none")
+    #expect(UICanvasFields.parseShadows("0 1em 2em black") == nil, "em lengths stay as text")
+    #expect(UICanvasFields.parseShadows("var(--shadow)") == nil)
+  }
+
+  @Test("Linear gradients parse into an angle and stops; other images stay text")
+  func gradients() throws {
+    let computed = try #require(UICanvasFields.parseGradient("linear-gradient(135deg, rgb(255, 0, 0), rgb(0, 0, 255) 80%)"))
+    #expect(computed.angle == 135)
+    #expect(computed.stops == [.init(color: "#ff0000", position: nil), .init(color: "#0000ff", position: "80%")])
+    #expect(UICanvasFields.formatGradient(computed) == "linear-gradient(135deg, #ff0000, #0000ff 80%)")
+    #expect(UICanvasFields.parseGradient("linear-gradient(to right, #fff, #000)")?.angle == 90)
+    #expect(UICanvasFields.parseGradient("linear-gradient(0.5turn, #fff, #000)")?.angle == 180)
+    #expect(UICanvasFields.parseGradient("linear-gradient(#fff, #000)")?.angle == 180)
+    #expect(UICanvasFields.parseGradient("url(\"a.png\")") == nil)
+    #expect(UICanvasFields.parseGradient("radial-gradient(#fff, #000)") == nil)
+    #expect(UICanvasFields.parseGradient("linear-gradient(#fff, #000), url(a.png)") == nil)
+    #expect(UICanvasFields.parseGradient("linear-gradient(90deg, #fff)") == nil)
+  }
+
+  @Test("Box shorthands expand per side and compose back to the shortest form")
+  func boxSides() {
+    #expect(UICanvasFields.boxSides("8px", count: 4) == ["8px", "8px", "8px", "8px"])
+    #expect(UICanvasFields.boxSides("8px 16px", count: 4) == ["8px", "16px", "8px", "16px"])
+    #expect(UICanvasFields.boxSides("1px 2px 3px", count: 4) == ["1px", "2px", "3px", "2px"])
+    #expect(UICanvasFields.boxSides("4px 8px", count: 2) == ["4px", "8px"])
+    #expect(UICanvasFields.boxSides("1px 2px 3px", count: 2) == nil)
+    #expect(UICanvasFields.composeBox(["8px", "8px", "8px", "8px"]) == "8px")
+    #expect(UICanvasFields.composeBox(["8px", "16px", "8px", "16px"]) == "8px 16px")
+    #expect(UICanvasFields.composeBox(["1px", "2px", "3px", "2px"]) == "1px 2px 3px")
+    #expect(UICanvasFields.composeBox(["1px", "2px", "3px", "4px"]) == "1px 2px 3px 4px")
+    #expect(UICanvasFields.composeBox(["4px", "8px"]) == "4px 8px")
+  }
+
   @Test("Fixed viewports keep CSS size and only scale down; desktop fills the stage")
   func stageLayout() {
     let desktop = UICanvasStageLayout(available: CGSize(width: 900, height: 600), viewport: nil, isMobile: false)
@@ -118,6 +161,22 @@ struct UICanvasTests {
     try await eventually { model.edits.count == 1 && model.selection?.style("background-color")?.value == "rgb(255, 0, 0)" }
     #expect(model.canUndo)
 
+    // CSS from the structured controls is what WebKit computes back.
+    model.setStyle("box-shadow", UICanvasFields.formatShadows([UICanvasShadow(x: 2, y: 6, blur: 18, spread: -2, color: "rgba(0, 0, 0, 0.25)")]))
+    try await eventually { model.selection?.style("box-shadow")?.value == "rgba(0, 0, 0, 0.25) 2px 6px 18px -2px" }
+    let shadowCSS = try #require(model.selection?.style("box-shadow")?.value)
+    let shadows = try #require(UICanvasFields.parseShadows(shadowCSS))
+    #expect(shadows.first?.blur == 18 && shadows.first?.spread == -2)
+    model.setStyle("background-image", UICanvasFields.formatGradient(UICanvasGradient(
+      angle: 45, stops: [.init(color: "#ffffff", position: nil), .init(color: "#e0457b", position: "90%")])))
+    try await eventually {
+      UICanvasFields.parseGradient(model.selection?.style("background-image")?.value ?? "")
+        == UICanvasGradient(angle: 45, stops: [.init(color: "#ffffff", position: nil), .init(color: "#e0457b", position: "90%")])
+    }
+    model.setStyle("padding", UICanvasFields.composeBox(["4px", "12px", "4px", "12px"]))
+    try await eventually { model.selection?.style("padding")?.value == "4px 12px" }
+    let editsBeforeReload = model.edits.count
+
     // The agent rewrites the file; the reload re-applies the human's pending edit.
     try write("Start free trial")
     model.reloadArtifact()
@@ -127,6 +186,7 @@ struct UICanvasTests {
         "getComputedStyle(document.getElementById('cta')).backgroundColor") as? String
       return text == "Start free trial" && background == "rgb(255, 0, 0)"
     }
+    #expect(model.edits.count == editsBeforeReload)
 
     model.draft = "Make the button friendlier"
     model.sendChat()

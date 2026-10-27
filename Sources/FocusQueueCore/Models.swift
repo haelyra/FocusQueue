@@ -335,6 +335,10 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var defaultAgentModels: [AgentProvider: String]
   /// Per-provider default efforts; a missing or empty value launches without an effort flag.
   public var defaultAgentEfforts: [AgentProvider: String]
+  /// Per-provider QChat models, separate from agent launches; a missing value uses `defaultChatModels`.
+  public var chatModels: [AgentProvider: String]
+  /// Per-provider QChat efforts; a missing value uses `defaultChatEfforts`.
+  public var chatEfforts: [AgentProvider: String]
   /// Chat harness executable overrides; Codex chat keeps using `verifier.executable`.
   public var claudeChatExecutable: String?
   public var kimiChatExecutable: String?
@@ -411,6 +415,10 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     .claude: "haiku", .codex: "gpt-6-luna", .kimi: "kimi-code/kimi-for-coding-highspeed",
   ]
   public static let defaultPlacementEfforts: [AgentProvider: String] = [.claude: "low", .codex: "low"]
+  /// QChat answers short queue questions, so it defaults to a mid-size model at
+  /// low effort instead of inheriting the agent-launch model (FOC-075).
+  public static let defaultChatModels: [AgentProvider: String] = [.claude: "claude-sonnet-5"]
+  public static let defaultChatEfforts: [AgentProvider: String] = [.claude: "low"]
   public static let defaultPlacementConfidenceThreshold = 0.85
   public static let defaultPlacementTimeoutSeconds = 20
 
@@ -422,6 +430,16 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public func placementEffort(for provider: AgentProvider) -> String? {
     guard provider != .kimi else { return nil }
     return placementEfforts[provider] ?? Self.defaultPlacementEfforts[provider]
+  }
+
+  public func chatModel(for provider: AgentProvider) -> String? {
+    chatModels[provider] ?? Self.defaultChatModels[provider]
+  }
+
+  /// Kimi has no effort flag, so it never reports one.
+  public func chatEffort(for provider: AgentProvider) -> String? {
+    guard provider != .kimi else { return nil }
+    return chatEfforts[provider] ?? Self.defaultChatEfforts[provider]
   }
 
   /// The chat harness for a provider. Codex reuses the verifier harness;
@@ -474,6 +492,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.defaultAgentProvider = nil
     self.defaultAgentModels = [:]
     self.defaultAgentEfforts = [:]
+    self.chatModels = [:]
+    self.chatEfforts = [:]
     self.claudeChatExecutable = nil
     self.kimiChatExecutable = nil
     let effectiveProjects = projects ?? [Self.legacyProject(
@@ -500,6 +520,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case agentModelChoices
     case autoArchiveStaleAgents
     case defaultAgentProvider, defaultAgentModels, defaultAgentEfforts
+    case chatModels, chatEfforts
     case claudeChatExecutable, kimiChatExecutable
     case focusQueueProjects, focusQueueSelectedProjectID, projects, selectedProjectID
   }
@@ -549,6 +570,10 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
       try container.decodeIfPresent([String: String].self, forKey: .defaultAgentModels))
     defaultAgentEfforts = Self.providerValues(
       try container.decodeIfPresent([String: String].self, forKey: .defaultAgentEfforts))
+    chatModels = Self.providerValues(
+      try container.decodeIfPresent([String: String].self, forKey: .chatModels))
+    chatEfforts = Self.providerValues(
+      try container.decodeIfPresent([String: String].self, forKey: .chatEfforts))
     claudeChatExecutable = try container.decodeIfPresent(String.self, forKey: .claudeChatExecutable)
     kimiChatExecutable = try container.decodeIfPresent(String.self, forKey: .kimiChatExecutable)
     dailyReport =
@@ -629,6 +654,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encodeIfPresent(defaultAgentProvider, forKey: .defaultAgentProvider)
     try container.encode(Self.rawProviderValues(defaultAgentModels), forKey: .defaultAgentModels)
     try container.encode(Self.rawProviderValues(defaultAgentEfforts), forKey: .defaultAgentEfforts)
+    try container.encode(Self.rawProviderValues(chatModels), forKey: .chatModels)
+    try container.encode(Self.rawProviderValues(chatEfforts), forKey: .chatEfforts)
     try container.encodeIfPresent(claudeChatExecutable, forKey: .claudeChatExecutable)
     try container.encodeIfPresent(kimiChatExecutable, forKey: .kimiChatExecutable)
   }

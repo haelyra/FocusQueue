@@ -2591,6 +2591,15 @@ struct QueueAgentEvidenceVerifier {
 /// The queue-chat system prompt is provider-neutral except for its identity
 /// line, so every provider enforces the same queue, project, and evidence rules.
 public enum QueueAgentPrompt {
+    /// Separates app-built context (snapshot, recap, document sources) from the
+    /// user's own words, so evidence rules and timeouts react only to the request.
+    public static let userRequestMarker = "\n\nUser request:\n"
+
+    public static func userRequest(in message: String) -> String {
+        guard let marker = message.range(of: userRequestMarker, options: .backwards) else { return message }
+        return String(message[marker.upperBound...])
+    }
+
     public static func build(
         provider: AgentProvider,
         message: String,
@@ -2603,6 +2612,10 @@ public enum QueueAgentPrompt {
         let deferred = deferredTicketIDs.isEmpty
             ? "none"
             : deferredTicketIDs.joined(separator: ", ")
+        // Connector contracts ride along only when the request needs them.
+        let request = userRequest(in: message)
+        let mailContract = QueueAgentEvidenceVerifier.requiresMailEvidence(request) ? Self.mailContract : ""
+        let discordContract = QueueAgentEvidenceVerifier.requiresDiscordEvidence(request) ? Self.discordContract : ""
         return """
         You are the \(provider.displayName) Queue agent for Focus Queue.
 
@@ -2628,22 +2641,30 @@ public enum QueueAgentPrompt {
 
         The host app owns terminal labels and progress UI. Do not call `tabname`, inspect unrelated configuration, or run setup commands. Call only the narrow source command needed for the user's request, plus workspace reads or explicitly requested dashboard edits.
 
-        <mail-evidence-contract>
-        For every question involving email, mail, an inbox, a sender, a customer message, or a message link, load the `ecc-focus-mail` skill and use `/Users/hira/.local/bin/focus-mail`. Use the provider selected in ingestion settings and do not use Himalaya. Search results are excerpts only: call `focus-mail read` before describing or quoting a message body. Call `focus-mail open` only when the user explicitly asks and the selected provider supports it. A mail claim is verified only when the current-turn result contains `status: ok`, `verified: true`, `connector: ecc-focus-mail-reader`, a nonempty `account`, and `retrievedAt`; read/open claims also require the stable message `id` and `messageId`, and open requires `opened: true`. Include account, mailbox, received time, and message ID when reporting a message as read.
-        On every successful mail-related request, copy the exact `nonce` from the final successful `focus-mail` result into a standalone final line formatted exactly as `MAIL_PROOF: <nonce>`. Never invent or reuse a nonce. The app will withhold the entire mail answer unless that nonce matches a fresh local proof receipt. If the user asks what a message said, to read it, for its contents, response, reply, or a quote, the final operation must be `read`. If the user asks to open it, the final operation must be `open` with `opened: true`. If the user asks whether the connector is available or working, the final operation must be `status`. Every other mail or inbox check must end with `search`.
-        </mail-evidence-contract>
-
-        <discord-evidence-contract>
-        For every question involving Discord or a discord.com message link, use `/Users/hira/.local/bin/focus-discord`. Never read the bot token or call the Discord API directly. Use `focus-discord status` to verify the bot and server coverage, `focus-discord channels` to list channels, `focus-discord search "query" --days 7 --limit 20` to find messages, and `focus-discord read "https://discord.com/channels/..."` before describing or quoting a full message. Search results are excerpts only. Discord writes, replies, reactions, moderation, and role changes are unavailable. Report inaccessible channels explicitly.
-        On every successful Discord-related request, copy the exact `nonce` from the final successful `focus-discord` result into a standalone final line formatted exactly as `DISCORD_PROOF: <nonce>`. Never invent or reuse a nonce. The app will withhold the entire Discord answer unless the nonce matches a fresh local proof receipt. If the user asks what a message said, to read it, for its content, or for a quote, the final operation must be `read`.
-        </discord-evidence-contract>
-
+        Keep each turn cheap. Answer directly from the task snapshot and recent conversation in the message when they cover the request. Otherwise make the fewest tool calls that answer it, combining related reads into one shell command. Use absolute paths in shell commands; the shell may not start in the workspace.
+        \(mailContract)\(discordContract)
         User message follows between literal delimiters:
         <queue-user-message>
         \(message)
         </queue-user-message>
         """
     }
+
+    static let mailContract = """
+
+        <mail-evidence-contract>
+        For every question involving email, mail, an inbox, a sender, a customer message, or a message link, load the `ecc-focus-mail` skill and use `/Users/hira/.local/bin/focus-mail`. Use the provider selected in ingestion settings and do not use Himalaya. Search results are excerpts only: call `focus-mail read` before describing or quoting a message body. Call `focus-mail open` only when the user explicitly asks and the selected provider supports it. A mail claim is verified only when the current-turn result contains `status: ok`, `verified: true`, `connector: ecc-focus-mail-reader`, a nonempty `account`, and `retrievedAt`; read/open claims also require the stable message `id` and `messageId`, and open requires `opened: true`. Include account, mailbox, received time, and message ID when reporting a message as read.
+        On every successful mail-related request, copy the exact `nonce` from the final successful `focus-mail` result into a standalone final line formatted exactly as `MAIL_PROOF: <nonce>`. Never invent or reuse a nonce. The app will withhold the entire mail answer unless that nonce matches a fresh local proof receipt. If the user asks what a message said, to read it, for its contents, response, reply, or a quote, the final operation must be `read`. If the user asks to open it, the final operation must be `open` with `opened: true`. If the user asks whether the connector is available or working, the final operation must be `status`. Every other mail or inbox check must end with `search`.
+        </mail-evidence-contract>
+        """
+
+    static let discordContract = """
+
+        <discord-evidence-contract>
+        For every question involving Discord or a discord.com message link, use `/Users/hira/.local/bin/focus-discord`. Never read the bot token or call the Discord API directly. Use `focus-discord status` to verify the bot and server coverage, `focus-discord channels` to list channels, `focus-discord search "query" --days 7 --limit 20` to find messages, and `focus-discord read "https://discord.com/channels/..."` before describing or quoting a full message. Search results are excerpts only. Discord writes, replies, reactions, moderation, and role changes are unavailable. Report inaccessible channels explicitly.
+        On every successful Discord-related request, copy the exact `nonce` from the final successful `focus-discord` result into a standalone final line formatted exactly as `DISCORD_PROOF: <nonce>`. Never invent or reuse a nonce. The app will withhold the entire Discord answer unless the nonce matches a fresh local proof receipt. If the user asks what a message said, to read it, for its content, or for a quote, the final operation must be `read`.
+        </discord-evidence-contract>
+        """
 }
 
 /// One implementation drives every provider's chat harness; the providers differ
@@ -2718,7 +2739,7 @@ public actor HarnessQueueAgent: QueueAgentChatting {
                 provider: provider.rawValue, model: model,
                 characters: max(0, prompt.count - message.count), runID: runID), in: URL(fileURLWithPath: support))
             if source == "document_chat",
-               let marker = message.range(of: "\n\nUser request:\n", options: .backwards) {
+               let marker = message.range(of: QueueAgentPrompt.userRequestMarker, options: .backwards) {
                 let requestCharacters = message[marker.upperBound...].count
                 PromptUsageMetrics.record(PromptUsageEvent(source: source,
                     component: "document_sources_plan_and_history", provider: provider.rawValue,
@@ -2728,14 +2749,19 @@ public actor HarnessQueueAgent: QueueAgentChatting {
         }
 
         let requestStartedAt = Date()
+        let request = QueueAgentPrompt.userRequest(in: message)
         let runTimeoutSeconds = Self.runTimeoutSeconds(
-            for: message,
+            for: request,
             configuredTimeoutSeconds: configuration.timeoutSeconds
         )
         let requestedModel = model?.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestedEffort = effort?.trimmingCharacters(in: .whitespacesAndNewlines)
-        var arguments = Self.documentRuntimeArguments(configuration) + [
-            "chat",
+        var arguments = Self.documentRuntimeArguments(configuration) + ["chat"]
+        // Callers send their own bounded recap, so no provider session is
+        // resumed and history cannot grow across turns. A fork is the
+        // exception: its value is the source conversation it continues.
+        if forkSource == nil { arguments.append("--fresh") }
+        arguments += [
             "--session", Self.resolvedSessionName(for: configuration, provider: provider),
             "--workspace", workspace,
             "--prompt-file", promptURL.path,
@@ -2781,31 +2807,31 @@ public actor HarnessQueueAgent: QueueAgentChatting {
             preservePrivateFailureLog(log)
             throw QueueAgentError.failed(provider, Self.safeFailureDetail(
                 from: result,
-                message: message,
+                message: request,
                 runTimeoutSeconds: runTimeoutSeconds
             ))
         }
         let evidence = QueueAgentEvidenceVerifier(files: files, provider: provider)
         var verifiedOutput = output
-        if QueueAgentEvidenceVerifier.requiresMailEvidence(message) {
+        if QueueAgentEvidenceVerifier.requiresMailEvidence(request) {
             if QueueAgentEvidenceVerifier.isBlockedMailResponse(verifiedOutput) {
                 preservePrivateFailureLog(log)
                 throw QueueAgentError.failed(provider, Self.safeFailureDetail(
                     from: result,
-                    message: message,
+                    message: request,
                     runTimeoutSeconds: runTimeoutSeconds
                 ))
             }
             verifiedOutput = try evidence.verifyMailEvidence(
                 in: verifiedOutput,
-                for: message,
+                for: request,
                 requestStartedAt: requestStartedAt
             )
         }
-        if QueueAgentEvidenceVerifier.requiresDiscordEvidence(message) {
+        if QueueAgentEvidenceVerifier.requiresDiscordEvidence(request) {
             verifiedOutput = try evidence.verifyDiscordEvidence(
                 in: verifiedOutput,
-                for: message,
+                for: request,
                 requestStartedAt: requestStartedAt
             )
         }

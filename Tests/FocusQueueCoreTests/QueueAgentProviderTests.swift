@@ -130,8 +130,69 @@ func claudeKimiQueueAgentArguments() async throws {
     #expect(invocation.arguments.contains("--timeout"))
     #expect(invocation.arguments.contains("--model"))
     #expect(invocation.arguments.contains("--effort"))
+    #expect(invocation.arguments.contains("--fresh"))
     #expect(sessionName.hasPrefix("ecc-focus-queue-"))
   }
+}
+
+@Test("Queue agent prompt carries mail and Discord contracts only when the request needs them")
+func queueAgentPromptConditionalContracts() {
+  func prompt(_ message: String) -> String {
+    QueueAgentPrompt.build(
+      provider: .claude, message: message, dashboardPath: "/tmp/d.json", workspace: "/tmp",
+      visibleOrder: [], deferredTicketIDs: [])
+  }
+  let plain = prompt("Why is ECC-002 second?")
+  #expect(!plain.contains("<mail-evidence-contract>"))
+  #expect(!plain.contains("<discord-evidence-contract>"))
+  #expect(plain.contains("<queue-user-message>\nWhy is ECC-002 second?"))
+  #expect(prompt("Check my inbox").contains("<mail-evidence-contract>"))
+  #expect(prompt("Search discord for the bug").contains("<discord-evidence-contract>"))
+  // App-built snapshot text before the marker never pulls in a contract.
+  let scoped = "Task snapshot:\n- FOC-1: Email ingestion\n" + QueueAgentPrompt.userRequestMarker + "status?"
+  #expect(!prompt(scoped).contains("<mail-evidence-contract>"))
+  #expect(QueueAgentPrompt.userRequest(in: scoped) == "status?")
+}
+
+@Test("Mail evidence is not required when only app context mentions mail")
+func queueAgentMailEvidenceUsesOnlyTheRequest() async throws {
+  let runner = QueueAgentRecordingRunner(results: [
+    ProcessResult(exitCode: 0, standardOutput: "FOC-1 is working.", standardError: "", timedOut: false)
+  ])
+  let reply = try await ClaudeQueueAgent(runner: runner).send(
+    message: "Recent conversation:\nuser: check my email\n" + QueueAgentPrompt.userRequestMarker
+      + "what is FOC-1 doing?",
+    dashboardPath: "/tmp/d.json", workspace: "/tmp", visibleOrder: [], deferredTicketIDs: [],
+    configuration: chatConfiguration(executable: "/mock/focus-queue-claude"))
+  #expect(reply.message == "FOC-1 is working.")
+}
+
+@Test("QChat context normalizes named task IDs and bounds the recap")
+func queueChatContextBounds() {
+  let ids = QueueChatContext.taskIDs(
+    in: "why did foc070 fail, and FOC-069 or FOC-999?", known: ["FOC-069", "FOC-070"])
+  #expect(ids == ["FOC-070", "FOC-069"])
+  let long = String(repeating: "x", count: 2_000)
+  let messages = (0..<10).map { (role: $0.isMultiple(of: 2) ? "user" : "agent", text: "\($0) " + long) }
+  let recap = QueueChatContext.recap(messages)
+  #expect(recap.components(separatedBy: "\n").filter { $0.hasPrefix("user:") || $0.hasPrefix("agent:") }.count
+    == QueueChatContext.recapMessageLimit)
+  #expect(!recap.contains("user: 0 "))
+  #expect(recap.count < QueueChatContext.recapMessageLimit * (QueueChatContext.recapCharacterLimit + 20) + 80)
+  #expect(QueueChatContext.recap([]).isEmpty)
+}
+
+@Test("QChat uses its own model defaults, separate from agent launches")
+func queueChatModelDefaults() throws {
+  var config = AppConfiguration.eccDefault()
+  config.defaultAgentModels[.claude] = "claude-opus-5-5"
+  #expect(config.chatModel(for: .claude) == "claude-sonnet-5")
+  #expect(config.chatEffort(for: .claude) == "low")
+  #expect(config.chatEffort(for: .kimi) == nil)
+  config.chatModels[.claude] = "claude-haiku-5-5"
+  let decoded = try JSONDecoder().decode(AppConfiguration.self, from: JSONEncoder().encode(config))
+  #expect(decoded.chatModel(for: .claude) == "claude-haiku-5-5")
+  #expect(decoded.defaultAgentModels[.claude] == "claude-opus-5-5")
 }
 
 @Test("Queue agent reset invokes the harness reset subcommand for the provider session")

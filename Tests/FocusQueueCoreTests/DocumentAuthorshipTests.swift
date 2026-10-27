@@ -132,6 +132,7 @@ func forkedHarnessTurn() async throws {
   let arguments = await runner.arguments
   let fork = try #require(arguments.firstIndex(of: "--fork-from"))
   #expect(arguments[fork + 1] == "source-session")
+  #expect(!arguments.contains("--fresh"))
   #expect(await runner.prompt == "Document question")
 
   configuration.forkSourceSessionID = nil
@@ -139,5 +140,6 @@ func forkedHarnessTurn() async throws {
     message: "Document question", dashboardPath: "/dashboard", workspace: "/workspace",
     visibleOrder: [], deferredTicketIDs: [], configuration: configuration, model: nil, effort: nil)
   #expect(!(await runner.arguments).contains("--fork-from"))
+  #expect((await runner.arguments).contains("--fresh"))
   #expect(await runner.prompt.hasPrefix("You are the Claude Queue agent"))
 }

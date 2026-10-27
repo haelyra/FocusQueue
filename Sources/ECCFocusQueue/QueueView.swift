@@ -1256,12 +1256,12 @@ struct QueueAgentChatView: View {
         let provider = model.defaultAgentProvider
         QueueChatAgentMenus(
           provider: provider,
-          model: model.config.defaultAgentModels[provider],
-          effort: model.config.defaultAgentEfforts[provider],
+          model: model.config.chatModel(for: provider),
+          effort: model.config.chatEffort(for: provider),
           modelChoices: model.agentModelChoices(for: provider),
           setProvider: model.setDefaultAgentProvider,
-          setModel: { model.setDefaultAgentModel($0, for: provider) },
-          setEffort: { model.setDefaultAgentEffort($0, for: provider) })
+          setModel: { model.setChatModel($0, for: provider) },
+          setEffort: { model.setChatEffort($0, for: provider) })
         Spacer(minLength: 0)
         Button("Clear Chat") { showsClearConfirmation = true }
           .font(.caption)

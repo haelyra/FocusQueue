@@ -406,6 +406,26 @@ def chat(arguments: argparse.Namespace) -> int:
             sessions[arguments.session] = prior_session
             morning.write_private_json(state_path, state)
         prompt = arguments.prompt_file.read_text(encoding="utf-8")
+        if getattr(arguments, "fresh", False):
+            # The app sends its own short recap, so a fresh turn neither resumes
+            # nor saves a session mapping whose history would grow every turn.
+            reply, _ = run_kimi(
+                prompt=prompt,
+                workspace=arguments.workspace,
+                runtime=runtime,
+                timeout=arguments.timeout,
+                sandbox="workspace-write",
+                session_id=None,
+                output_schema=None,
+                usage_file=getattr(arguments, "usage_file", None),
+                expose_evidence_directories=True,
+                expose_queue_order=True,
+                model=getattr(arguments, "model", None),
+                context_directory=getattr(arguments, "context_dir", None),
+                writable_directories=getattr(arguments, "writable_dirs", None),
+            )
+            print(reply)
+            return 0
         try:
             reply, observed_session = run_kimi(
                 prompt=prompt,
@@ -492,6 +512,8 @@ def main() -> int:
 
     chat_parser = subparsers.add_parser("chat")
     chat_parser.add_argument("--session", required=True)
+    chat_parser.add_argument("--fresh", action="store_true",
+                             help="Run a one-off turn without resuming or saving a session")
     chat_parser.add_argument("--workspace", type=Path, required=True)
     chat_parser.add_argument("--context-dir", type=Path)
     chat_parser.add_argument(

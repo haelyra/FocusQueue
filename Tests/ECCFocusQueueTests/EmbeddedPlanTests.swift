@@ -337,8 +337,19 @@ struct EmbeddedPlanTests {
     #expect(actions[0].selection.excerpt.contains("Diagram source:"))
     #expect(
       try await view.evaluateJavaScript(
-        "document.querySelectorAll('.diagram-selection-outline').length",
-        in: nil, contentWorld: .defaultClient) as? Int == 1)
+        """
+        const selected = document.querySelector('[data-plan-canvas-component].is-selected');
+        const outline = selected?.querySelector(':scope > .diagram-selection-outline');
+        const shape = selected?.querySelector('rect:not(.diagram-selection-outline), polygon, circle, ellipse');
+        const outlineBox = outline?.getBoundingClientRect();
+        const shapeBox = shape?.getBoundingClientRect();
+        [document.querySelectorAll('.diagram-selection-outline').length,
+         outline?.parentElement === selected,
+         document.querySelector('figure').classList.contains('is-selected'),
+         !!outlineBox && !!shapeBox && outlineBox.left <= shapeBox.left &&
+           outlineBox.top <= shapeBox.top && outlineBox.right >= shapeBox.right &&
+           outlineBox.bottom >= shapeBox.bottom].join('|');
+        """, in: nil, contentWorld: .defaultClient) as? String == "1|true|false|true")
   }
 
   @Test(

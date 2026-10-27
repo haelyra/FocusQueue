@@ -235,9 +235,6 @@ enum PlanCanvasWebRuntime {
             element.classList.remove('is-selected');
             element.setAttribute('aria-pressed', 'false');
           });
-          document.querySelectorAll(diagramSelector + '.is-component-selected').forEach(element => {
-            element.classList.remove('is-component-selected');
-          });
           document.querySelectorAll('.diagram-selection-outline').forEach(element => element.remove());
         }
 
@@ -255,7 +252,6 @@ enum PlanCanvasWebRuntime {
 
         function selectDiagramComponent(component, figure) {
           clearDiagramSelection();
-          figure.classList.add('is-selected', 'is-component-selected');
           component.classList.add('is-selected');
           component.setAttribute('aria-pressed', 'true');
           const label = clean(component.textContent || component.getAttribute('aria-label'), 500) ||
@@ -263,8 +259,7 @@ enum PlanCanvasWebRuntime {
           const source = bounded(diagramSource(figure), 3400);
           let bounds;
           try { bounds = component.getBBox(); } catch (_) { bounds = null; }
-          const svg = component.closest('svg');
-          if (svg && bounds && bounds.width > 0 && bounds.height > 0) {
+          if (bounds && bounds.width > 0 && bounds.height > 0) {
             const outline = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
             outline.setAttribute('class', 'diagram-selection-outline');
             outline.setAttribute('x', String(bounds.x - 6));
@@ -272,7 +267,7 @@ enum PlanCanvasWebRuntime {
             outline.setAttribute('width', String(bounds.width + 12));
             outline.setAttribute('height', String(bounds.height + 12));
             outline.setAttribute('rx', '6');
-            svg.insertBefore(outline, svg.firstChild);
+            component.insertBefore(outline, component.firstChild);
           }
           postSelection('diagram', component, bounded('Diagram component: ' + label +
             '\nDiagram source:\n' + source, 4000), '');

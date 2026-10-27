@@ -276,6 +276,7 @@ def run_claude(
     disable_tools: bool = False,
     context_directory: Path | None = None,
     writable_directories: list[Path] | None = None,
+    fork_session: bool = False,
     lean: bool = False,
     persist_session: bool = True,
     _retried_schema: bool = False,
@@ -347,6 +348,10 @@ def run_claude(
             command.append("--no-session-persistence")
         elif session_id:
             command.extend(["--resume", session_id])
+            if fork_session:
+                # The source conversation stays untouched; the reply arrives
+                # in a new session that later turns resume.
+                command.append("--fork-session")
 
         process = subprocess.Popen(
             command,
@@ -468,6 +473,7 @@ def chat(arguments: argparse.Namespace) -> int:
         state = load_state(state_path)
         sessions = state.setdefault("sessions", {})
         prior_session = str(sessions.get(arguments.session, "")) or None
+        fork_from = None if prior_session else getattr(arguments, "fork_from", None)
         prompt = arguments.prompt_file.read_text(encoding="utf-8")
         if getattr(arguments, "fresh", False):
             # The app sends its own short recap, so a fresh turn neither resumes
@@ -499,7 +505,8 @@ def chat(arguments: argparse.Namespace) -> int:
                 runtime=runtime,
                 timeout=arguments.timeout,
                 sandbox="workspace-write",
-                session_id=prior_session,
+                session_id=prior_session or fork_from,
+                fork_session=fork_from is not None,
                 output_schema=None,
                 usage_file=getattr(arguments, "usage_file", None),
                 expose_evidence_directories=True,
@@ -536,7 +543,7 @@ def chat(arguments: argparse.Namespace) -> int:
                 writable_directories=getattr(arguments, "writable_dirs", None),
             )
         session_id = observed_session or prior_session
-        if not session_id:
+        if not session_id or session_id == fork_from:
             raise ClaudeHarnessError("Claude did not return a persistent session identifier")
         sessions[arguments.session] = session_id
         morning.write_private_json(state_path, state)
@@ -614,6 +621,10 @@ def main() -> int:
     chat_parser.add_argument("--timeout", type=int, default=120)
     chat_parser.add_argument("--model", help="Override the chat model slug")
     chat_parser.add_argument("--effort", help="Override the chat effort level")
+    chat_parser.add_argument(
+        "--fork-from",
+        help="Start a session with no saved conversation as a fork of this provider session",
+    )
     chat_parser.add_argument("--fresh", action="store_true",
                              help="Run a lean one-off turn without resuming or saving a session")
 

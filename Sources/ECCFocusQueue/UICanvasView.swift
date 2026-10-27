@@ -10,6 +10,9 @@ struct UICanvasView: View {
   let model: UICanvasModel
   @State private var confirmsEnd = false
   @State private var confirmsReset = false
+  /// The rail card the human is working in opens fully; the other condenses.
+  @State private var railFocus = UICanvasRailFocus.inspector
+  @FocusState private var composerFocused: Bool
 
   var body: some View {
     VStack(spacing: 8) {
@@ -152,25 +155,30 @@ struct UICanvasView: View {
 
   // MARK: Rail
 
+  /// The inspector opens to its full height while the human selects and
+  /// restyles, and condenses to one line while they write to the agent.
   private var rail: some View {
     VStack(alignment: .leading, spacing: 10) {
-      ScrollView {
-        UICanvasInspector(model: model).frame(maxWidth: .infinity, alignment: .leading)
+      UICanvasInspector(model: model, expanded: railFocus == .inspector) { expanded in
+        if expanded { composerFocused = false }
+        railFocus = expanded ? .inspector : .chat
       }
-      .frame(minHeight: 120, maxHeight: .infinity)
-      railCard { editsSection }.frame(maxHeight: 170)
-      railCard { UICanvasConversation(model: model) }
-        .frame(minHeight: 240, maxHeight: .infinity).layoutPriority(1)
+      .uiCanvasRailCard()
+      .layoutPriority(railFocus == .inspector ? 2 : 0)
+      editsSection(compact: railFocus == .inspector).uiCanvasRailCard()
+        .frame(maxHeight: railFocus == .inspector ? nil : 170)
+      UICanvasConversation(model: model, composerFocused: $composerFocused).uiCanvasRailCard()
+        .frame(minHeight: railFocus == .chat ? 320 : 150, maxHeight: .infinity).layoutPriority(1)
+    }
+    .animation(.snappy(duration: 0.22), value: railFocus)
+    .onChange(of: composerFocused) { _, focused in if focused { railFocus = .chat } }
+    .onChange(of: model.selection?.selector) { _, selector in
+      if selector != nil { composerFocused = false; railFocus = .inspector }
     }
   }
 
-  private func railCard<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-    content()
-      .padding(10)
-      .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
-  }
-
-  private var editsSection: some View {
+  /// Compact keeps only the header so the open inspector has room.
+  private func editsSection(compact: Bool) -> some View {
     VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 6) {
         Text("Edits").font(.headline)
@@ -187,7 +195,9 @@ struct UICanvasView: View {
             Button("Revert all", role: .destructive) { model.resetEdits() }
           }
       }
-      if model.edits.isEmpty {
+      if compact {
+        EmptyView()
+      } else if model.edits.isEmpty {
         Text("Your changes to the preview collect here. Apply to file asks the agent to bake them into the mockup; Save and Finish hands over the final design.")
           .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
       } else {
@@ -394,10 +404,26 @@ enum UICanvasNavigationPolicy {
   }
 }
 
+enum UICanvasRailFocus {
+  case inspector, chat
+}
+
+extension View {
+  /// Opaque like QChat, so text over a translucent window stays readable.
+  func uiCanvasRailCard() -> some View {
+    padding(10)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+      .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.08), lineWidth: 1).allowsHitTesting(false))
+  }
+}
+
 // MARK: Conversation
 
 private struct UICanvasConversation: View {
   @Bindable var model: UICanvasModel
+  var composerFocused: FocusState<Bool>.Binding
+  @Environment(\.colorScheme) private var colorScheme
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -443,8 +469,9 @@ private struct UICanvasConversation: View {
     return VStack(alignment: isAgent ? .leading : .trailing, spacing: 2) {
       Text(entry.text).font(.callout).textSelection(.enabled)
         .padding(.horizontal, 10).padding(.vertical, 7)
-        .background(isAgent ? Color.secondary.opacity(0.12) : Color.accentColor.opacity(0.16),
+        .background(QueueChatMessageRow.surface(for: isAgent ? .agent : .user, colorScheme: colorScheme),
                     in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.07), lineWidth: 1))
       Text("\(isAgent ? model.agentName : "you") · \(Self.time(entry.at))")
         .font(.system(size: 9.5)).foregroundStyle(.secondary)
     }
@@ -456,7 +483,9 @@ private struct UICanvasConversation: View {
       if let selection = model.selection, model.anchorEnabled {
         HStack(spacing: 4) {
           Text("About").foregroundStyle(.secondary)
-          Text(selection.selector).font(.system(size: 10.5, design: .monospaced)).lineLimit(1).truncationMode(.middle)
+          Text(selection.snippet.isEmpty ? selection.descriptor : "\(selection.descriptor) “\(selection.snippet)”")
+            .lineLimit(1).truncationMode(.tail)
+            .help(selection.selector)
           Button { model.anchorEnabled = false } label: { Image(systemName: "xmark.circle.fill") }
             .buttonStyle(.plain).foregroundStyle(.secondary).help("Send without an anchor")
         }
@@ -466,6 +495,7 @@ private struct UICanvasConversation: View {
       TextField(placeholder, text: $model.draft, axis: .vertical)
         .lineLimit(1...5).textFieldStyle(.roundedBorder)
         .onSubmit { model.sendChat() }
+        .focused(composerFocused)
         .disabled(model.isEnded)
         .accessibilityLabel("Message to agent")
       HStack {
@@ -501,16 +531,61 @@ private extension String {
 
 private struct UICanvasInspector: View {
   let model: UICanvasModel
+  /// Full controls, or one summary line while the human writes to the agent.
+  let expanded: Bool
+  let setExpanded: (Bool) -> Void
   @State private var fieldError = ""
+  /// Section titles the human closed; Border and Effects start closed so the
+  /// common controls fit without scrolling.
+  @AppStorage("uiCanvasCollapsedSections") private var collapsedSections = "Border,Effects"
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    Group {
+      if expanded {
+        // Open at full height; scroll only when the window is too short to hold it.
+        ViewThatFits(in: .vertical) {
+          expandedContent
+          ScrollView { expandedContent }
+        }
+      } else {
+        condensed
+      }
+    }
+    .disabled(model.isEnded)
+  }
+
+  private var condensed: some View {
+    Button { setExpanded(true) } label: {
+      HStack(spacing: 6) {
+        Text("Selection").font(.headline)
+        if let selection = model.selection {
+          Text(selection.descriptor).font(.system(size: 11, weight: .semibold, design: .monospaced)).lineLimit(1)
+          Text(selection.snippet).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        } else {
+          Text("Nothing selected").font(.caption).foregroundStyle(.secondary)
+        }
+        Spacer(minLength: 4)
+        Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+      }
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .help("Show the selection controls")
+    .accessibilityLabel("Show selection controls")
+  }
+
+  private var expandedContent: some View {
+    VStack(alignment: .leading, spacing: 6) {
       HStack {
         Text("Selection").font(.headline)
         Spacer()
         if model.selection != nil {
           Button("Deselect") { model.deselect() }.controlSize(.small).help("Clear the selection (Esc)")
         }
+        Button { setExpanded(false) } label: { Image(systemName: "chevron.up") }
+          .buttonStyle(.plain).foregroundStyle(.secondary)
+          .help("Condense the selection controls to give the conversation room")
+          .accessibilityLabel("Condense selection controls")
       }
       if let selection = model.selection {
         selected(selection)
@@ -519,9 +594,7 @@ private struct UICanvasInspector: View {
           .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
       }
     }
-    .padding(10)
-    .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
-    .disabled(model.isEnded)
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   @ViewBuilder private func selected(_ selection: UICanvasSelectionInfo) -> some View {
@@ -544,60 +617,110 @@ private struct UICanvasInspector: View {
       Button("Edit text") { model.editText() }.controlSize(.small).disabled(!selection.editable)
       Button("Remove", role: .destructive) { model.removeSelection() }.controlSize(.small)
     }
-    group("Size") {
-      UICanvasSizeRow(label: "Width", value: selection.width) { model.setSize(width: $0, height: nil) }
-      UICanvasSizeRow(label: "Height", value: selection.height) { model.setSize(width: nil, height: $0) }
+    UICanvasRow(label: "Size", isSet: false) {
+      UICanvasSizeField(label: "Width", value: selection.width) { model.setSize(width: $0, height: nil) }
+      Text("×").foregroundStyle(.secondary)
+      UICanvasSizeField(label: "Height", value: selection.height) { model.setSize(width: nil, height: $0) }
+      Text("px").font(.caption2).foregroundStyle(.secondary)
     }
-    let has = { (property: String) in selection.style(property) != nil }
-    if has("background-color") || has("background-image") {
-      group("Fill") {
-        if let style = selection.style("background-color") { colorRow("Background", style) }
-        if let style = selection.style("background-image") { textRow("Image", style) }
+    group("Fill", summary: summary(selection, ["background-color", "background-image"])) {
+      if let style = selection.style("background-color") { colorRow("Background", style) }
+      if let style = selection.style("background-image") {
+        if let gradient = UICanvasFields.parseGradient(style.value) { gradientRows(style, gradient) }
+        else { textRow("Image", style) }
+      } else {
+        UICanvasRow(label: "Gradient", isSet: false) {
+          Button("Add gradient") {
+            let base = selection.style("background-color").flatMap { UICanvasFields.parseColor($0.value) }
+              .flatMap { $0.a > 0 ? UICanvasFields.formatColor($0) : nil } ?? "#ffffff"
+            model.setStyle("background-image", UICanvasFields.formatGradient(UICanvasGradient(
+              angle: 180, stops: [.init(color: base, position: nil), .init(color: "#d9d9de", position: nil)])))
+          }.controlSize(.small)
+          Spacer()
+        }
       }
     }
+    let has = { (property: String) in selection.style(property) != nil }
     if has("color") || has("font-size") {
-      group("Text") {
+      group("Text", summary: summary(selection, ["font-size", "font-weight", "color"])) {
         if let style = selection.style("color") { colorRow("Color", style) }
-        ForEach(["font-size", "font-weight", "line-height"], id: \.self) { property in
+        ForEach(["font-size", "font-weight"], id: \.self) { property in
           if let style = selection.style(property) { numericRow(style) }
         }
+        if let style = selection.style("line-height") { lineHeightRow(style, fontSize: selection.style("font-size")?.value) }
         if let style = selection.style("text-align") { alignRow(style) }
       }
     }
     if has("padding") || has("margin") || has("gap") {
-      group("Spacing") {
+      group("Spacing", summary: summary(selection, ["padding", "margin", "gap"])) {
         ForEach(["padding", "margin", "gap"], id: \.self) { property in
-          if let style = selection.style(property) { numericRow(style) }
+          if let style = selection.style(property) { boxRow(style) }
         }
       }
     }
     if let border = selection.style("border") {
-      group("Border") {
+      group("Border", summary: summary(selection, ["border", "border-radius"])) {
         borderRows(border)
-        if let style = selection.style("border-radius") { numericRow(style) }
+        if let style = selection.style("border-radius") { boxRow(style) }
       }
     }
-    group("Effects") {
+    group("Effects", summary: summary(selection, ["box-shadow", "opacity"])) {
       if let style = selection.style("opacity") { numericRow(style) }
-      if let style = selection.style("box-shadow") { textRow("Shadow", style) }
-      if let style = selection.style("display") {
-        UICanvasRow(label: "Display", isSet: false) { Text(style.value).font(.caption.monospaced()).foregroundStyle(.secondary) }
-      }
+      if let style = selection.style("box-shadow") { shadowRows(style) }
+      if let style = selection.style("display") { displayRow(style) }
     }
     if !fieldError.isEmpty {
       Text(fieldError).font(.caption).foregroundStyle(.orange)
     } else {
-      Text("Drag a slider or type a value and press Return. The × clears a property.")
-        .font(.caption2).foregroundStyle(.secondary)
+      Text("Drag a slider or type a value and press Return. Click a swatch for the color panel. The × clears a property.")
+        .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
     }
   }
 
-  private func group<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-    VStack(alignment: .leading, spacing: 6) {
+  private func group<Content: View>(_ title: String, summary: String, @ViewBuilder content: () -> Content) -> some View {
+    let closed = Set(collapsedSections.split(separator: ",").map(String.init))
+    let isOpen = !closed.contains(title)
+    return VStack(alignment: .leading, spacing: 5) {
       Divider()
-      Text(title).font(.system(size: 9.5, weight: .semibold)).textCase(.uppercase).foregroundStyle(.secondary)
-      content()
+      Button {
+        var next = closed
+        if isOpen { next.insert(title) } else { next.remove(title) }
+        collapsedSections = next.sorted().joined(separator: ",")
+      } label: {
+        HStack(spacing: 5) {
+          Image(systemName: isOpen ? "chevron.down" : "chevron.right").font(.system(size: 8, weight: .bold))
+            .frame(width: 9)
+          Text(title).font(.system(size: 9.5, weight: .semibold)).textCase(.uppercase)
+          if !isOpen {
+            Text(summary).font(.caption2).lineLimit(1).truncationMode(.tail)
+          }
+          Spacer(minLength: 0)
+        }
+        .foregroundStyle(.secondary)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .help(isOpen ? "Hide \(title.lowercased()) controls" : "Show \(title.lowercased()) controls")
+      if isOpen { content() }
     }
+  }
+
+  /// A closed section's one-line readout, such as "14px · 400 · #F1F1F4".
+  private func summary(_ selection: UICanvasSelectionInfo, _ properties: [String]) -> String {
+    properties.compactMap { property -> String? in
+      guard let value = selection.style(property)?.value, value != "none" else { return nil }
+      if property == "box-shadow", let shadow = UICanvasFields.parseShadows(value)?.first {
+        return "shadow \(UICanvasFields.formatNumber(shadow.x)) \(UICanvasFields.formatNumber(shadow.y)) \(UICanvasFields.formatNumber(shadow.blur))"
+      }
+      if property == "background-image" { return UICanvasFields.parseGradient(value) == nil ? "image" : "gradient" }
+      if property == "opacity" { return value == "1" ? nil : "opacity \(value)" }
+      if property == "border" {
+        let parts = UICanvasFields.borderParts(value)
+        return "\(UICanvasFields.formatNumber(parts.width))px \(parts.style) \(UICanvasColorRow.display(parts.color))"
+      }
+      if property.hasSuffix("color") { return UICanvasColorRow.display(value) }
+      return UICanvasNumericDisplay.display(value)
+    }.joined(separator: " · ")
   }
 
   private func apply(_ property: String, _ result: UICanvasFieldResult) {
@@ -618,6 +741,45 @@ private struct UICanvasInspector: View {
       clear: { model.setStyle(style.property, nil) })
   }
 
+  /// Computed line heights arrive in px; show them as a multiple of the font
+  /// size so the slider works, and write the unitless ratio CSS prefers.
+  private func lineHeightRow(_ style: UICanvasSelectionInfo.Style, fontSize: String?) -> some View {
+    var shown = style
+    if style.value.hasSuffix("px"), let pixels = Double(style.value.dropLast(2)),
+       let fontSize, fontSize.hasSuffix("px"), let size = Double(fontSize.dropLast(2)), size > 0 {
+      shown.value = UICanvasFields.formatNumber(pixels / size)
+    } else if style.value == "normal" {
+      shown.value = "1.2"
+    }
+    return numericRow(shown)
+  }
+
+  private func boxRow(_ style: UICanvasSelectionInfo.Style) -> some View {
+    let spec = UICanvasFields.numeric[style.property] ?? UICanvasFieldSpec(label: style.property, box: true)
+    return UICanvasBoxRow(style: style, spec: spec,
+      commit: { text in apply(style.property, UICanvasFields.sanitizeBoxList(text, spec)) },
+      slide: { css in fieldError = ""; model.setStyle(style.property, css) },
+      clear: { model.setStyle(style.property, nil) },
+      invalid: { fieldError = $0 })
+  }
+
+  /// One slider-and-field row for a numeric part of a compound value, such as a shadow's blur.
+  private func partRow(_ label: String, _ value: Double, unit: String = "px", range: ClosedRange<Double>,
+                       limits: ClosedRange<Double>? = nil, set: @escaping (Double) -> Void) -> some View {
+    let bounds = limits ?? range
+    let spec = UICanvasFieldSpec(label: label, unit: unit, units: [unit], min: bounds.lowerBound, max: bounds.upperBound,
+                                 step: 0.5, slider: range, sliderStep: 1)
+    return UICanvasNumericRow(
+      style: .init(property: label, value: UICanvasFields.formatNumber(value) + unit, inline: "", resettable: false),
+      spec: spec,
+      commit: { text in
+        if case .ok(_, let number?) = UICanvasFields.sanitizeNumber(text, spec) { fieldError = ""; set(number) }
+        else { fieldError = "Use \(unit), like 8" }
+      },
+      slide: { css in if let number = Double(css.dropLast(unit.count)) { fieldError = ""; set(number) } },
+      clear: {})
+  }
+
   private func colorRow(_ label: String, _ style: UICanvasSelectionInfo.Style) -> some View {
     UICanvasColorRow(label: label, value: style.value, isSet: !style.inline.isEmpty,
       set: { model.setStyle(style.property, $0) },
@@ -629,6 +791,74 @@ private struct UICanvasInspector: View {
     UICanvasTextRow(label: label, value: style.value == "none" ? "" : style.value, isSet: !style.inline.isEmpty,
       commit: { apply(style.property, UICanvasFields.sanitizeCssText($0)) },
       clear: { model.setStyle(style.property, nil) })
+  }
+
+  @ViewBuilder private func shadowRows(_ style: UICanvasSelectionInfo.Style) -> some View {
+    if let shadows = UICanvasFields.parseShadows(style.value) {
+      if let shadow = shadows.first {
+        let rest = Array(shadows.dropFirst())
+        let update = { (changed: UICanvasShadow) in
+          fieldError = ""
+          model.setStyle("box-shadow", UICanvasFields.formatShadows([changed] + rest))
+        }
+        UICanvasRow(label: "Shadow", isSet: !style.inline.isEmpty) {
+          Toggle("Inset", isOn: Binding(get: { shadow.inset }, set: { var next = shadow; next.inset = $0; update(next) }))
+            .toggleStyle(.checkbox).controlSize(.small)
+            .help("Draw the shadow inside the element")
+          Spacer()
+          Button("Remove") { model.setStyle("box-shadow", UICanvasFields.formatShadows(rest)) }
+            .controlSize(.small).help("Remove this shadow")
+        }
+        partRow("X offset", shadow.x, range: -40...40, limits: -500...500) { var next = shadow; next.x = $0; update(next) }
+        partRow("Y offset", shadow.y, range: -40...40, limits: -500...500) { var next = shadow; next.y = $0; update(next) }
+        partRow("Blur", shadow.blur, range: 0...80, limits: 0...500) { var next = shadow; next.blur = $0; update(next) }
+        partRow("Spread", shadow.spread, range: -20...40, limits: -500...500) { var next = shadow; next.spread = $0; update(next) }
+        UICanvasColorRow(label: "Shadow color", value: shadow.color, isSet: !style.inline.isEmpty,
+          set: { var next = shadow; next.color = $0; update(next) }, clear: nil, invalid: { fieldError = $0 })
+        if !rest.isEmpty {
+          Text("\(rest.count) more shadow layer\(rest.count == 1 ? "" : "s") kept as is.")
+            .font(.caption2).foregroundStyle(.secondary)
+        }
+      } else {
+        UICanvasRow(label: "Shadow", isSet: !style.inline.isEmpty) {
+          Button("Add shadow") { model.setStyle("box-shadow", UICanvasFields.formatShadows([UICanvasShadow()])) }
+            .controlSize(.small)
+          Spacer()
+        }
+      }
+    } else {
+      textRow("Shadow", style)
+    }
+  }
+
+  @ViewBuilder private func gradientRows(_ style: UICanvasSelectionInfo.Style, _ gradient: UICanvasGradient) -> some View {
+    let update = { (changed: UICanvasGradient) in
+      fieldError = ""
+      model.setStyle("background-image", UICanvasFields.formatGradient(changed))
+    }
+    partRow("Angle", gradient.angle, unit: "deg", range: 0...360) { var next = gradient; next.angle = $0; update(next) }
+    ForEach(Array(gradient.stops.enumerated()), id: \.offset) { index, stop in
+      UICanvasColorRow(
+        label: index == 0 ? "From" : index == gradient.stops.count - 1 ? "To" : "Stop \(index + 1)",
+        value: stop.color, isSet: !style.inline.isEmpty,
+        set: { var next = gradient; next.stops[index].color = $0; update(next) },
+        clear: nil, invalid: { fieldError = $0 })
+    }
+    UICanvasRow(label: "", isSet: false) {
+      Spacer()
+      Button("Remove gradient") { model.setStyle("background-image", "none") }.controlSize(.small)
+    }
+  }
+
+  private func displayRow(_ style: UICanvasSelectionInfo.Style) -> some View {
+    let options = ["block", "flex", "grid", "inline-block", "inline", "inline-flex", "none"]
+    return UICanvasRow(label: "Display", isSet: !style.inline.isEmpty) {
+      Picker("Display", selection: Binding(get: { style.value }, set: { model.setStyle("display", $0) })) {
+        ForEach(options.contains(style.value) ? options : [style.value] + options, id: \.self) { Text($0).tag($0) }
+      }
+      .labelsHidden().controlSize(.small).fixedSize()
+      Spacer()
+    }
   }
 
   private func alignRow(_ style: UICanvasSelectionInfo.Style) -> some View {
@@ -646,21 +876,25 @@ private struct UICanvasInspector: View {
 
   @ViewBuilder private func borderRows(_ style: UICanvasSelectionInfo.Style) -> some View {
     let parts = UICanvasFields.borderParts(style.value)
-    let widthSpec = UICanvasFieldSpec(label: "Width", unit: "px", units: ["px"], min: 0, max: 64, step: 0.5, slider: 0...16)
-    UICanvasNumericRow(
-      style: .init(property: "border-width", value: "\(UICanvasFields.formatNumber(parts.width))px",
-                   inline: style.inline, resettable: true),
-      spec: widthSpec,
-      commit: { text in
-        if case .ok(_, let value?) = UICanvasFields.sanitizeNumber(text, widthSpec) {
-          fieldError = ""
-          model.setStyle("border", "\(UICanvasFields.formatNumber(value))px \(parts.style == "none" ? "solid" : parts.style) \(parts.color)")
-        } else { fieldError = "Use px, like 1" }
-      },
-      slide: { css in model.setStyle("border", "\(css) \(parts.style == "none" ? "solid" : parts.style) \(parts.color)") },
-      clear: { model.setStyle("border", nil) })
+    let lineStyle = parts.style == "none" ? "solid" : parts.style
+    let border = { (width: Double, line: String, color: String) in
+      fieldError = ""
+      model.setStyle("border", "\(UICanvasFields.formatNumber(width))px \(line) \(color)")
+    }
+    partRow("Width", parts.width, range: 0...16, limits: 0...64) { border($0, lineStyle, parts.color) }
+    UICanvasRow(label: "Style", isSet: !style.inline.isEmpty) {
+      Picker("Style", selection: Binding(get: { lineStyle }, set: { border(max(1, parts.width), $0, parts.color) })) {
+        ForEach(["solid", "dashed", "dotted", "double"], id: \.self) { Text($0).tag($0) }
+      }.labelsHidden().controlSize(.small).fixedSize()
+      Spacer()
+      if !style.inline.isEmpty {
+        Button { model.setStyle("border", nil) } label: { Image(systemName: "xmark") }
+          .buttonStyle(.plain).font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
+          .help("Clear border")
+      }
+    }
     UICanvasColorRow(label: "Color", value: parts.color, isSet: !style.inline.isEmpty,
-      set: { model.setStyle("border", "\(UICanvasFields.formatNumber(max(1, parts.width)))px \(parts.style == "none" ? "solid" : parts.style) \($0)") },
+      set: { border(max(1, parts.width), lineStyle, $0) },
       clear: nil, invalid: { fieldError = $0 })
   }
 }
@@ -682,34 +916,34 @@ private struct UICanvasRow<Content: View>: View {
   }
 }
 
-private struct UICanvasSizeRow: View {
+private struct UICanvasSizeField: View {
   let label: String
   let value: Int
   let commit: (Double) -> Void
   @State private var text = ""
 
   var body: some View {
-    UICanvasRow(label: label, isSet: false) {
-      TextField(label, text: $text).textFieldStyle(.roundedBorder).font(.caption.monospacedDigit())
-        .onSubmit {
-          if case .ok(_, let number?) = UICanvasFields.sanitizeNumber(
-            text, UICanvasFieldSpec(label: label, unit: "px", units: ["px"], min: 1, max: 20_000, step: 1)) {
-            commit(number)
-          } else { text = String(value) }
-        }
-      Text("px").font(.caption2).foregroundStyle(.secondary)
-    }
+    TextField(label, text: $text).textFieldStyle(.roundedBorder).font(.caption.monospacedDigit())
+      .help(label)
+      .accessibilityLabel(label)
+      .onSubmit {
+        if case .ok(_, let number?) = UICanvasFields.sanitizeNumber(
+          text, UICanvasFieldSpec(label: label, unit: "px", units: ["px"], min: 1, max: 20_000, step: 1)) {
+          commit(number)
+        } else { text = String(value) }
+      }
     .onAppear { text = String(value) }
     .onChange(of: value) { _, newValue in text = String(newValue) }
   }
 }
 
-private struct UICanvasNumericRow: View {
+private struct UICanvasNumericRow<Accessory: View>: View {
   let style: UICanvasSelectionInfo.Style
   let spec: UICanvasFieldSpec
   let commit: (String) -> Void
   let slide: (String) -> Void
   let clear: () -> Void
+  @ViewBuilder var accessory: () -> Accessory
   @State private var text = ""
 
   /// The slider drives single values in the spec's own unit; anything else is typed.
@@ -718,7 +952,7 @@ private struct UICanvasNumericRow: View {
     guard let match = display.wholeMatch(of: /(-?[\d.]+)([a-z%]*)/), let number = Double(match.1) else { return nil }
     let unit = String(match.2)
     if spec.ratio { return unit.isEmpty ? number : nil }
-    return unit == spec.unit ? number : nil
+    return unit == spec.unit || (number == 0 && unit.isEmpty) ? number : nil
   }
 
   var body: some View {
@@ -734,8 +968,9 @@ private struct UICanvasNumericRow: View {
         .controlSize(.mini)
       }
       TextField(spec.label, text: $text).textFieldStyle(.roundedBorder).font(.caption.monospacedDigit())
-        .frame(width: sliderValue == nil ? nil : 72)
+        .frame(width: sliderValue == nil ? nil : 64)
         .onSubmit { commit(text) }
+      accessory()
       if !style.inline.isEmpty || style.resettable {
         Button { clear() } label: { Image(systemName: "xmark") }
           .buttonStyle(.plain).font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
@@ -745,10 +980,108 @@ private struct UICanvasNumericRow: View {
     .onAppear { text = Self.display(style.value) }
     .onChange(of: style.value) { _, newValue in text = Self.display(newValue) }
   }
+}
 
+extension UICanvasNumericRow where Accessory == EmptyView {
+  init(style: UICanvasSelectionInfo.Style, spec: UICanvasFieldSpec, commit: @escaping (String) -> Void,
+       slide: @escaping (String) -> Void, clear: @escaping () -> Void) {
+    self.init(style: style, spec: spec, commit: commit, slide: slide, clear: clear, accessory: { EmptyView() })
+  }
+}
+
+private enum UICanvasNumericDisplay {
   /// Trims long computed decimals such as 23.999999px.
   static func display(_ value: String) -> String {
     value.replacingOccurrences(of: #"(\d+\.\d{2})\d+"#, with: "$1", options: .regularExpression)
+  }
+}
+
+extension UICanvasNumericRow {
+  static func display(_ value: String) -> String { UICanvasNumericDisplay.display(value) }
+}
+
+/// Padding, margin, gap, and radius: one slider while every side matches,
+/// or a field per side once they differ or the human splits them.
+private struct UICanvasBoxRow: View {
+  let style: UICanvasSelectionInfo.Style
+  let spec: UICanvasFieldSpec
+  let commit: (String) -> Void
+  let slide: (String) -> Void
+  let clear: () -> Void
+  let invalid: (String) -> Void
+  @State private var splits = false
+  @State private var texts: [String] = []
+
+  private var count: Int { style.property == "gap" ? 2 : 4 }
+  private var sides: [String]? { UICanvasFields.boxSides(UICanvasNumericDisplay.display(style.value), count: count) }
+  private var uniform: Bool { sides.map { Set($0).count == 1 } ?? false }
+
+  var body: some View {
+    Group {
+      if uniform, !splits, let sides {
+        UICanvasNumericRow(
+          style: .init(property: style.property, value: sides[0], inline: style.inline, resettable: style.resettable),
+          spec: spec, commit: commit, slide: slide, clear: clear
+        ) {
+          Button { splits = true } label: { Image(systemName: count == 2 ? "rectangle.split.2x1" : "square.split.2x2") }
+            .buttonStyle(.plain).foregroundStyle(.secondary)
+            .help("Set each \(count == 2 ? "direction" : "side") separately")
+        }
+      } else if sides != nil {
+        UICanvasRow(label: spec.label, isSet: !style.inline.isEmpty) {
+          HStack(spacing: 4) {
+            ForEach(Array(texts.enumerated()), id: \.offset) { index, _ in
+              VStack(spacing: 1) {
+                TextField(UICanvasFields.sideLabels(style.property)[index], text: Binding(
+                  get: { index < texts.count ? texts[index] : "" },
+                  set: { if index < texts.count { texts[index] = $0 } }))
+                  .textFieldStyle(.roundedBorder).font(.caption2.monospacedDigit())
+                  .onSubmit(commitSides)
+                  .help(UICanvasFields.sideLabels(style.property)[index])
+                Text(Self.shortLabel(style.property, index)).font(.system(size: 8.5)).foregroundStyle(.secondary)
+              }
+            }
+          }
+          Button {
+            splits = false
+            if let first = sides?.first { commit(first) }
+          } label: { Image(systemName: "link") }
+            .buttonStyle(.plain).foregroundStyle(.secondary)
+            .help("Use one value for every \(count == 2 ? "direction" : "side")")
+          if !style.inline.isEmpty || style.resettable {
+            Button { clear() } label: { Image(systemName: "xmark") }
+              .buttonStyle(.plain).font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
+              .help("Clear \(spec.label.lowercased())")
+          }
+        }
+      } else {
+        UICanvasNumericRow(style: style, spec: spec, commit: commit, slide: slide, clear: clear)
+      }
+    }
+    .onAppear(perform: sync)
+    .onChange(of: style.value) { _, _ in sync() }
+  }
+
+  private func sync() { texts = sides ?? [] }
+
+  private func commitSides() {
+    var values: [String] = []
+    for text in texts {
+      if text.trimmingCharacters(in: .whitespaces) == "auto", spec.allowAuto { values.append("auto"); continue }
+      guard case .ok(let css, let value) = UICanvasFields.sanitizeNumber(text, spec) else {
+        invalid("Each side takes one value, like 8 or 1rem"); return
+      }
+      values.append(value == 0 ? "0" : css)
+    }
+    commit(UICanvasFields.composeBox(values))
+  }
+
+  static func shortLabel(_ property: String, _ index: Int) -> String {
+    switch property {
+    case "gap": ["Row", "Col"][index]
+    case "border-radius": ["↖", "↗", "↘", "↙"][index]
+    default: ["Top", "Right", "Bottom", "Left"][index]
+    }
   }
 }
 
@@ -760,20 +1093,19 @@ private struct UICanvasColorRow: View {
   let clear: (() -> Void)?
   let invalid: (String) -> Void
   @State private var text = ""
-
-  private var rgba: UICanvasRGBA { UICanvasFields.parseColor(value) ?? UICanvasRGBA(r: 0, g: 0, b: 0, a: 0) }
+  @State private var showsPanel = false
 
   var body: some View {
     UICanvasRow(label: label, isSet: isSet) {
-      ColorPicker(label, selection: Binding(
-        get: { Color(.sRGB, red: rgba.r / 255, green: rgba.g / 255, blue: rgba.b / 255, opacity: rgba.a) },
-        set: { color in
-          guard let srgb = NSColor(color).usingColorSpace(.sRGB) else { return }
-          set(UICanvasFields.formatColor(UICanvasRGBA(
-            r: Double(srgb.redComponent) * 255, g: Double(srgb.greenComponent) * 255,
-            b: Double(srgb.blueComponent) * 255, a: (Double(srgb.alphaComponent) * 100).rounded() / 100)))
-        }), supportsOpacity: true)
-        .labelsHidden()
+      Button { showsPanel.toggle() } label: {
+        UICanvasSwatch(rgba: UICanvasFields.parseColor(value)).frame(width: 30, height: 20)
+      }
+      .buttonStyle(.plain)
+      .help("Open the color panel")
+      .accessibilityLabel("\(label) color panel")
+      .popover(isPresented: $showsPanel, arrowEdge: .leading) {
+        UICanvasColorPanel(title: label, value: value, set: set)
+      }
       TextField(label, text: $text).textFieldStyle(.roundedBorder).font(.caption.monospaced())
         .onSubmit {
           if let color = UICanvasFields.parseColor(text) { set(UICanvasFields.formatColor(color)) }
@@ -781,6 +1113,7 @@ private struct UICanvasColorRow: View {
                   css.range(of: "^[a-z]+$", options: .regularExpression) != nil { set(css) }
           else { invalid("Use a hex color, rgb(), or a color name") }
         }
+        .help("Hex like #E0457B, rgb(), or a color name")
       if let clear {
         Button { clear() } label: { Image(systemName: "xmark") }
           .buttonStyle(.plain).font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
@@ -791,8 +1124,98 @@ private struct UICanvasColorRow: View {
     .onChange(of: value) { _, newValue in text = Self.display(newValue) }
   }
 
+  /// Hex in capitals, rgba() as written.
   static func display(_ value: String) -> String {
-    UICanvasFields.parseColor(value).map { UICanvasFields.formatColor($0).uppercased() } ?? value
+    guard let color = UICanvasFields.parseColor(value) else { return value }
+    let css = UICanvasFields.formatColor(color)
+    return css.hasPrefix("#") ? css.uppercased() : css
+  }
+}
+
+/// A color chip over a checkerboard, so transparency reads as transparency.
+struct UICanvasSwatch: View {
+  let rgba: UICanvasRGBA?
+
+  var body: some View {
+    ZStack {
+      Canvas { context, size in
+        let cell: CGFloat = 5
+        for row in 0..<Int(ceil(size.height / cell)) {
+          for column in 0..<Int(ceil(size.width / cell)) where (row + column).isMultiple(of: 2) {
+            context.fill(Path(CGRect(x: CGFloat(column) * cell, y: CGFloat(row) * cell, width: cell, height: cell)),
+                         with: .color(Color.gray.opacity(0.3)))
+          }
+        }
+      }
+      if let rgba {
+        Color(.sRGB, red: rgba.r / 255, green: rgba.g / 255, blue: rgba.b / 255, opacity: rgba.a)
+      }
+    }
+    .clipShape(RoundedRectangle(cornerRadius: 5))
+    .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.primary.opacity(0.25), lineWidth: 1))
+  }
+}
+
+/// RGB and alpha sliders, a hex field, quick swatches, and the system color
+/// panel (wheel, eyedropper) for one color value.
+struct UICanvasColorPanel: View {
+  let title: String
+  let value: String
+  let set: (String) -> Void
+  @State private var hex = ""
+
+  private static let presets = [
+    "#ffffff", "#f4f4f6", "#c7c7cc", "#8e8e93", "#3a3a3c", "#1d1d22", "#000000",
+    "#e0457b", "#ff3b30", "#ff9500", "#ffcc00", "#34c759", "#007aff", "#5856d6",
+  ]
+
+  private var rgba: UICanvasRGBA { UICanvasFields.parseColor(value) ?? UICanvasRGBA(r: 0, g: 0, b: 0, a: 1) }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(spacing: 10) {
+        UICanvasSwatch(rgba: UICanvasFields.parseColor(value)).frame(width: 46, height: 46)
+        VStack(alignment: .leading, spacing: 3) {
+          Text(title).font(.headline)
+          TextField("#RRGGBB", text: $hex).textFieldStyle(.roundedBorder).font(.system(size: 12, design: .monospaced))
+            .onSubmit { if let color = UICanvasFields.parseColor(hex) { set(UICanvasFields.formatColor(color)) } }
+            .accessibilityLabel("Hex color")
+        }
+      }
+      channel("R", value: rgba.r, tint: .red) { var next = rgba; next.r = $0; return next }
+      channel("G", value: rgba.g, tint: .green) { var next = rgba; next.g = $0; return next }
+      channel("B", value: rgba.b, tint: .blue) { var next = rgba; next.b = $0; return next }
+      channel("A", value: (rgba.a * 100).rounded(), range: 0...100, tint: .gray, suffix: "%") { var next = rgba; next.a = $0 / 100; return next }
+      LazyVGrid(columns: Array(repeating: GridItem(.fixed(24), spacing: 6), count: 7), spacing: 6) {
+        ForEach(Self.presets, id: \.self) { preset in
+          Button { set(preset) } label: { UICanvasSwatch(rgba: UICanvasFields.parseColor(preset)).frame(width: 24, height: 18) }
+            .buttonStyle(.plain).help(preset.uppercased())
+        }
+      }
+      ColorPicker("Color wheel and eyedropper", selection: Binding(
+        get: { Color(.sRGB, red: rgba.r / 255, green: rgba.g / 255, blue: rgba.b / 255, opacity: rgba.a) },
+        set: { color in
+          guard let srgb = NSColor(color).usingColorSpace(.sRGB) else { return }
+          set(UICanvasFields.formatColor(UICanvasRGBA(
+            r: Double(srgb.redComponent) * 255, g: Double(srgb.greenComponent) * 255,
+            b: Double(srgb.blueComponent) * 255, a: (Double(srgb.alphaComponent) * 100).rounded() / 100)))
+        }), supportsOpacity: true)
+        .font(.caption)
+    }
+    .padding(14)
+    .frame(width: 270)
+    .onAppear { hex = UICanvasColorRow.display(value) }
+    .onChange(of: value) { _, newValue in hex = UICanvasColorRow.display(newValue) }
+  }
+
+  private func channel(_ label: String, value: Double, range: ClosedRange<Double> = 0...255, tint: Color,
+                       suffix: String = "", change: @escaping (Double) -> UICanvasRGBA) -> some View {
+    HStack(spacing: 8) {
+      Text(label).font(.caption.weight(.semibold)).foregroundStyle(tint).frame(width: 12)
+      Slider(value: Binding(get: { value }, set: { set(UICanvasFields.formatColor(change($0.rounded()))) }), in: range)
+        .tint(tint).controlSize(.small)
+      Text("\(Int(value))\(suffix)").font(.caption.monospacedDigit()).frame(width: 38, alignment: .trailing)
+    }
   }
 }
 

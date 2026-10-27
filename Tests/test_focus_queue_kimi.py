@@ -234,6 +234,35 @@ class FocusQueueKimiTests(unittest.TestCase):
             self.assertEqual(json.loads(state.read_text())["sessions"]["queue"], SESSION_ID)
             self.assertEqual(state.stat().st_mode & 0o777, 0o600)
 
+    def test_chat_forks_once_and_saves_the_fork_before_the_first_turn(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prompt = root / "prompt.txt"
+            prompt.write_text("Discuss the document")
+            arguments = argparse.Namespace(
+                runtime=root / "runtime", session="doc", workspace=root, prompt_file=prompt,
+                timeout=60, context_dir=None, model=None, fork_from="session_source",
+            )
+            forked = mock.Mock(returncode=0, stdout='Forked to session_fork-1 ("Fork: session_source") in 9ms\n', stderr="")
+            with mock.patch.object(MODULE, "resolve_kimi", return_value="/usr/bin/kimi"), \
+                    mock.patch.object(MODULE.subprocess, "run", return_value=forked) as fork, \
+                    mock.patch.object(MODULE, "run_kimi", side_effect=[
+                        ("First", "session_fork-1"), ("Second", "session_fork-1"),
+                    ]) as run, contextlib.redirect_stdout(io.StringIO()):
+                MODULE.chat(arguments)
+                MODULE.chat(arguments)
+            self.assertEqual(fork.call_count, 1)
+            self.assertEqual(fork.call_args.args[0], ["/usr/bin/kimi", "fork", "session_source", "-y"])
+            self.assertEqual([call.kwargs["session_id"] for call in run.call_args_list],
+                             ["session_fork-1", "session_fork-1"])
+
+    def test_a_failed_fork_reports_the_kimi_error(self):
+        failed = mock.Mock(returncode=1, stdout="", stderr="Session not found")
+        with mock.patch.object(MODULE, "resolve_kimi", return_value="/usr/bin/kimi"), \
+                mock.patch.object(MODULE.subprocess, "run", return_value=failed), \
+                self.assertRaisesRegex(MODULE.KimiHarnessError, "Session not found"):
+            MODULE.fork_session("session_gone", Path("/tmp"))
+
     def test_chat_recovers_from_a_missing_session_by_retrying_fresh(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

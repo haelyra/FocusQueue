@@ -1214,114 +1214,29 @@ struct QueueAgentChatView: View {
           Text(model.showsAllProjects ? "All projects" : "All projects · Active: \(model.projectScopeName)")
             .font(.caption).foregroundStyle(.secondary)
         }
-        ScrollViewReader { proxy in
-          ScrollView {
-            LazyVStack(spacing: 0) {
-              if messages.isEmpty {
-                Text(
-                  "Discuss this task, refine its success criteria, or ask for a plan update. Decisions stay with the task."
-                )
-                .font(.callout).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading).padding(14)
-              }
-              ForEach(messages) { message in
-                QueueChatMessageRow(message: message, ticketID: ticketID).id(message.id)
-              }
-              if isRespondingHere {
-                HStack(spacing: 4) {
-                  Text("\(model.defaultAgentProvider.displayName) is checking the queue")
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
-                  QueueChatEllipsisIndicator()
-                  Spacer()
-                }
-                .padding(.horizontal, 15).padding(.vertical, 13)
-                .frame(maxWidth: .infinity)
-                .background(QueueChatMessageRow.surface(for: .agent, colorScheme: colorScheme))
-                .id("queue-agent-progress")
-              }
-            }
-            .frame(maxWidth: .infinity)
-          }
-          .scrollIndicators(.automatic)
-          .background(QueueChatMessageRow.surface(for: .agent, colorScheme: colorScheme),
-            in: Rectangle())
-          .clipShape(Rectangle())
-          .overlay(Rectangle()
-            .stroke(Color.primary.opacity(0.10), lineWidth: 1))
-          .onChange(of: messages.count) { _, _ in
-            scrollToBottom(using: proxy)
-          }
-          .onChange(of: model.isQueueAgentResponding) { _, _ in
-            scrollToBottom(using: proxy)
-          }
-        }
+        QueueChatTranscript(
+          messages: messages,
+          emptyText: "Discuss this task, refine its success criteria, or ask for a plan update. Decisions stay with the task.",
+          agentLabel: ticketID == nil ? "QCHAT" : "ORCHESTRATOR",
+          progressText: isRespondingHere ? "\(model.defaultAgentProvider.displayName) is checking the queue" : nil)
 
-        VStack(spacing: 7) {
-          if model.reportIsRunning {
-            Text("Chat resumes when the daily report finishes. Your draft stays here.")
-              .font(.caption).foregroundStyle(.secondary)
-          }
-          if let selection = canvasSelection?.wrappedValue {
-            selectionComposerContext(selection)
-              .transition(.opacity.combined(with: .move(edge: .bottom)))
-          }
-
-          HStack(alignment: .bottom, spacing: 4) {
-            QueueChatComposerTextView(
-              text: $draft,
-              isFocused: $composerIsFocused,
-              focusRequest: focusRequest,
-              maxHeight: composerMaxHeight(geometry.size.height),
-              onSend: send
-            )
-            .fixedSize(horizontal: false, vertical: true)
-            .overlay(alignment: .topLeading) {
-              if draft.isEmpty {
-                Text(
-                  ticketID == nil
-                    ? "Ask about order or request a task change"
-                    : "Discuss this task or update its plan"
-                )
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-                .allowsHitTesting(false)
-              }
-            }
-            .padding(.leading, 13)
-            .padding(.vertical, 11)
-            .accessibilityLabel("Message the queue agent")
-
-            Button {
-              if isRespondingHere { model.cancelQueueAgentMessage() } else { send() }
-            } label: {
-              Image(systemName: isRespondingHere ? "stop.circle.fill" : "arrow.up.circle.fill")
-                .font(.system(size: 24, weight: .semibold))
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 42, height: 42)
-                .padding(.trailing, 4)
-            }
-            .buttonStyle(.plain)
-            .disabled(
-              !isRespondingHere
-                && (model.isQueueAgentResponding
-                  || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                  || model.reportIsRunning)
-            )
-            .accessibilityLabel(
-              isRespondingHere ? "Stop the queue agent response" : "Send message to queue agent"
-            )
-          }
-          .notificationSurface(radius: 16)
-          .overlay {
-            RoundedRectangle(cornerRadius: 16)
-              .stroke(
-                composerIsFocused ? Color.accentColor.opacity(0.8) : Color.clear,
-                lineWidth: 1.5
-              )
-              .allowsHitTesting(false)
-          }
-        }
-        .animation(.easeOut(duration: 0.16), value: canvasSelection?.wrappedValue?.id)
+        QueueChatComposer(
+          draft: $draft,
+          isFocused: $composerIsFocused,
+          focusRequest: focusRequest,
+          maxHeight: composerMaxHeight(geometry.size.height),
+          placeholder: ticketID == nil ? "Ask about order or request a task change" : "Discuss this task or update its plan",
+          accessibilityLabel: "Message the queue agent",
+          isResponding: isRespondingHere,
+          canSend: !model.isQueueAgentResponding && !model.reportIsRunning,
+          sendLabel: "Send message to queue agent",
+          stopLabel: "Stop the queue agent response",
+          notice: model.reportIsRunning ? "Chat resumes when the daily report finishes. Your draft stays here." : nil,
+          selection: canvasSelection?.wrappedValue,
+          clearSelection: { canvasSelection?.wrappedValue = nil },
+          clearSelectionLabel: "Clear plan canvas selection",
+          onSend: send,
+          onStop: model.cancelQueueAgentMessage)
       }
     }
     .task { focusComposer() }
@@ -1332,15 +1247,21 @@ struct QueueAgentChatView: View {
   }
 
   private var chatSettingsBar: some View {
-    VStack(alignment: .leading, spacing: 6) {
+    QueueChatSettingsBar {
       if let title {
         Label(title, systemImage: "terminal")
           .font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
       }
       HStack(spacing: 8) {
-        chatProviderMenu
-        chatModelMenu
-        chatEffortMenu
+        let provider = model.defaultAgentProvider
+        QueueChatAgentMenus(
+          provider: provider,
+          model: model.config.chatModel(for: provider),
+          effort: model.config.chatEffort(for: provider),
+          modelChoices: model.agentModelChoices(for: provider),
+          setProvider: model.setDefaultAgentProvider,
+          setModel: { model.setChatModel($0, for: provider) },
+          setEffort: { model.setChatEffort($0, for: provider) })
         Spacer(minLength: 0)
         Button("Clear Chat") { showsClearConfirmation = true }
           .font(.caption)
@@ -1349,12 +1270,6 @@ struct QueueAgentChatView: View {
           .help("Erase this conversation and start a fresh session")
       }
     }
-    .padding(.horizontal, 8).padding(.vertical, 7)
-    .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-    .overlay(
-      RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08), lineWidth: 1)
-        .allowsHitTesting(false)
-    )
     .confirmationDialog(
       "Clear this conversation?",
       isPresented: $showsClearConfirmation,
@@ -1371,103 +1286,6 @@ struct QueueAgentChatView: View {
     }
   }
 
-  private var chatProviderMenu: some View {
-    Menu {
-      ForEach(AgentProvider.allCases, id: \.self) { provider in
-        Button {
-          model.setDefaultAgentProvider(provider)
-        } label: {
-          if model.defaultAgentProvider == provider {
-            Label(provider.displayName, systemImage: "checkmark")
-          } else {
-            Text(provider.displayName)
-          }
-        }
-      }
-    } label: {
-      chatToolbarMenuLabel(model.defaultAgentProvider.displayName)
-    }
-    .menuStyle(.button)
-    .buttonStyle(.plain)
-    .menuIndicator(.hidden)
-    .fixedSize()
-    .accessibilityLabel("Chat provider: \(model.defaultAgentProvider.displayName)")
-    .help("Choose the chat provider")
-  }
-
-  private var chatModelMenu: some View {
-    let provider = model.defaultAgentProvider
-    let current = model.config.chatModel(for: provider) ?? ""
-    let choices = model.agentModelChoices(for: provider)
-    let currentLabel = choices.first { ($0.model ?? "") == current }?.label
-      ?? (current.isEmpty ? "Default" : current)
-    return Menu {
-      ForEach(choices) { choice in
-        Button {
-          model.setChatModel(choice.model, for: provider)
-        } label: {
-          if (choice.model ?? "") == current {
-            Label(choice.label, systemImage: "checkmark")
-          } else {
-            Text(choice.label)
-          }
-        }
-      }
-    } label: {
-      chatToolbarMenuLabel(currentLabel)
-    }
-    .menuStyle(.button)
-    .buttonStyle(.plain)
-    .menuIndicator(.hidden)
-    .fixedSize()
-    .accessibilityLabel("Chat model: \(currentLabel)")
-    .help("Choose the chat model")
-  }
-
-  private var chatEffortMenu: some View {
-    let provider = model.defaultAgentProvider
-    let current = model.config.chatEffort(for: provider) ?? ""
-    return Menu {
-      Button {
-        model.setChatEffort(nil, for: provider)
-      } label: {
-        if current.isEmpty {
-          Label("Default", systemImage: "checkmark")
-        } else {
-          Text("Default")
-        }
-      }
-      ForEach(AppConfiguration.agentEffortLevels(for: provider), id: \.self) { effort in
-        Button {
-          model.setChatEffort(effort, for: provider)
-        } label: {
-          if current == effort {
-            Label(effort, systemImage: "checkmark")
-          } else {
-            Text(effort)
-          }
-        }
-      }
-    } label: {
-      chatToolbarMenuLabel(current.isEmpty ? "Default" : current)
-    }
-    .menuStyle(.button)
-    .buttonStyle(.plain)
-    .menuIndicator(.hidden)
-    .fixedSize()
-    .accessibilityLabel("Chat effort: \(current.isEmpty ? "Default" : current)")
-    .help("Choose the chat reasoning effort")
-  }
-
-  private func chatToolbarMenuLabel(_ text: String) -> some View {
-    HStack(spacing: 3) {
-      Text(text).font(.caption).lineLimit(1).foregroundStyle(.primary)
-      Image(systemName: "chevron.down")
-        .font(.system(size: 7, weight: .bold))
-        .foregroundStyle(.secondary)
-    }
-  }
-
   private func send() {
     let message = draft.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !message.isEmpty, !model.isQueueAgentResponding else { return }
@@ -1478,40 +1296,6 @@ struct QueueAgentChatView: View {
     }
   }
 
-  private func selectionComposerContext(_ selection: PlanCanvasSelection) -> some View {
-    HStack(alignment: .top, spacing: 9) {
-      Image(systemName: selection.kind.systemImage)
-        .font(.system(size: 12, weight: .semibold))
-        .foregroundStyle(Color.accentColor)
-        .frame(width: 24, height: 24)
-        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
-      VStack(alignment: .leading, spacing: 2) {
-        Text(selection.kind.title).font(.system(size: 10.5, weight: .semibold))
-        Text(selection.compactExcerpt)
-          .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(2)
-      }
-      Spacer(minLength: 2)
-      Button {
-        canvasSelection?.wrappedValue = nil
-      } label: {
-        Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
-          .frame(width: 40, height: 40)
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel("Clear plan canvas selection")
-      .help("Remove selected plan context")
-    }
-    .padding(9)
-    .background(
-      Color.accentColor.opacity(colorScheme == .dark ? 0.10 : 0.07),
-      in: RoundedRectangle(cornerRadius: 12)
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 12).stroke(Color.accentColor.opacity(0.24), lineWidth: 1)
-        .allowsHitTesting(false)
-    )
-  }
-
   private func composerMaxHeight(_ paneHeight: CGFloat) -> CGFloat {
     max(120, paneHeight * 0.7)
   }
@@ -1520,17 +1304,6 @@ struct QueueAgentChatView: View {
     Task { @MainActor in
       await Task.yield()
       composerIsFocused = true
-    }
-  }
-
-  private func scrollToBottom(using proxy: ScrollViewProxy) {
-    Task { @MainActor in
-      await Task.yield()
-      if isRespondingHere {
-        proxy.scrollTo("queue-agent-progress", anchor: .bottom)
-      } else if let last = messages.last {
-        proxy.scrollTo(last.id, anchor: .bottom)
-      }
     }
   }
 }
@@ -1659,27 +1432,10 @@ final class QueueChatComposerNSTextView: NSTextView {
   }
 }
 
-/// Cycles ".", "..", "...", then a blank frame instead of a spinner.
-private struct QueueChatEllipsisIndicator: View {
-  private static let frames = [".", "..", "...", " "]
-  private static let frameInterval: TimeInterval = 0.4
-
-  var body: some View {
-    TimelineView(.periodic(from: .now, by: Self.frameInterval)) { context in
-      let index = Int(context.date.timeIntervalSince1970 / Self.frameInterval)
-      Text(Self.frames[index % Self.frames.count])
-        .font(.system(size: 12, weight: .bold, design: .monospaced))
-        .foregroundStyle(.secondary)
-        .fixedSize()
-        .lineLimit(1)
-        .frame(minWidth: 16, alignment: .leading)
-    }
-  }
-}
-
 struct QueueChatMessageRow: View {
   let message: QueueChatMessage
-  let ticketID: String?
+  /// The label above agent messages; user messages read "YOU".
+  let agentLabel: String
   @Environment(\.colorScheme) private var colorScheme
   @State private var didCopy = false
 
@@ -1687,7 +1443,7 @@ struct QueueChatMessageRow: View {
     VStack(alignment: .leading, spacing: 9) {
       HStack(spacing: 6) {
         Label(
-          message.role == .agent ? (ticketID == nil ? "QCHAT" : "ORCHESTRATOR") : "YOU",
+          message.role == .agent ? agentLabel : "YOU",
           systemImage: message.role == .agent ? "terminal" : "person.crop.circle"
         )
         .font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.secondary)
@@ -1713,7 +1469,7 @@ struct QueueChatMessageRow: View {
       if let selection = message.canvasSelection {
         HStack(spacing: 6) {
           Image(systemName: selection.kind.systemImage)
-          Text(selection.kind.title)
+          Text([selection.kind.title, selection.readableLocation].compactMap { $0 }.joined(separator: " · "))
           Text(selection.compactExcerpt).lineLimit(1)
         }
         .font(.system(size: 10.5, weight: .medium))
@@ -4842,7 +4598,7 @@ extension EnvironmentValues {
 }
 
 extension View {
-  fileprivate func notificationSurface(radius: CGFloat) -> some View {
+  func notificationSurface(radius: CGFloat) -> some View {
     modifier(NotificationSurfaceModifier(radius: radius))
   }
 

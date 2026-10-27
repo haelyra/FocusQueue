@@ -362,89 +362,165 @@ struct DocumentConversationPane: View {
             maxWidth: .infinity, minHeight: 200, maxHeight: .infinity)
         .task(id: "\(document.absoluteString)|\(String(describing: scope))") {
             conversation = scope.flatMap { queue.documentConversation(for: document, scope: $0) }
-            if let conversation { await conversation.load() }
+            guard let conversation else { return }
+            // Reopening rechecks whether the creating agent still runs.
+            if conversation.isLoaded { await conversation.refreshCreator() } else { await conversation.load() }
         }
     }
 }
 
+/// Document chat in the task chat's appearance. The settings bar names the
+/// recipient: a fork of the agent that created the document while that agent
+/// runs, otherwise a new agent whose provider, model, and effort are chosen here.
 struct DocumentConversationView: View {
     @Bindable var model: DocumentConversation
     @FocusState private var composerIsFocused: Bool
+    @State private var showsClearConfirmation = false
+
     var body: some View {
-        GeometryReader { geometry in content(composerMaxHeight: max(120, geometry.size.height * 0.7)) }
-    }
-
-    /// The composer grows with its text up to most of the pane, like the task chat.
-    private func content(composerMaxHeight: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Label("Document chat", systemImage: "text.bubble").font(.system(size: 11, weight: .semibold))
-                Text(model.taskID).font(.system(size: 10)).foregroundStyle(.secondary)
-                Spacer()
-                if model.isResponding { ProgressView().controlSize(.mini) }
-            }
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
-                        if model.messages.isEmpty {
-                            Text("Discuss this document with the \(model.subject.planLabel) and applicable AGENTS.md context. Select text and start typing to ask about it.").font(.caption).foregroundStyle(.secondary)
-                        }
-                        ForEach(model.messages) { message in
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(message.role == .user ? "YOU" : "DOCUMENT AGENT").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
-                                if let selection = message.canvasSelection {
-                                    Label(
-                                        [selection.readableLocation, selection.compactExcerpt].compactMap { $0 }.joined(separator: ": "),
-                                        systemImage: selection.kind.systemImage)
-                                        .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(2)
-                                }
-                                Text(message.text).font(.system(size: 12)).textSelection(.enabled)
-                            }.id(message.id)
-                        }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                }.onChange(of: model.messages.count) { _, _ in if let last = model.messages.last { proxy.scrollTo(last.id, anchor: .bottom) } }
-            }
-            if let error = model.error { Text(error).font(.caption2).foregroundStyle(.orange) }
-            if let selection = model.selection { selectionContext(selection) }
-            HStack(alignment: .bottom) {
-                QueueChatComposerTextView(
-                    text: $model.draft, isFocused: $composerIsFocused, focusRequest: model.focusRequest,
-                    maxHeight: composerMaxHeight, onSend: { model.send() })
-                    .fixedSize(horizontal: false, vertical: true)
-                    .overlay(alignment: .topLeading) {
-                        if model.draft.isEmpty {
-                            Text("Ask about this document").font(.system(size: 13)).foregroundStyle(.secondary)
-                                .allowsHitTesting(false)
-                        }
-                    }
-                    .padding(.horizontal, 8).padding(.vertical, 6)
-                    .background(RoundedRectangle(cornerRadius: 7).fill(Color(nsColor: .textBackgroundColor)))
-                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.secondary.opacity(0.3), lineWidth: 1))
-                    .accessibilityLabel("Ask about this document")
-                Button { model.send() } label: { Image(systemName: "arrow.up.circle.fill").font(.system(size: 23)) }
-                    .buttonStyle(.plain).disabled(!model.isLoaded || model.isResponding || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .accessibilityLabel("Send to document agent")
+        GeometryReader { geometry in
+            VStack(spacing: 10) {
+                settingsBar
+                QueueChatTranscript(
+                    messages: model.messages,
+                    emptyText: "Discuss this document with the \(model.subject.planLabel) and applicable AGENTS.md context. Select text and start typing to ask about it.",
+                    agentLabel: agentLabel,
+                    progressText: model.isResponding ? progressText : nil)
+                if let error = model.error {
+                    Text(error).font(.caption2).foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                QueueChatComposer(
+                    draft: $model.draft,
+                    isFocused: $composerIsFocused,
+                    focusRequest: model.focusRequest,
+                    maxHeight: max(120, geometry.size.height * 0.7),
+                    placeholder: "Ask about this document",
+                    accessibilityLabel: "Ask about this document",
+                    isResponding: model.isResponding,
+                    canSend: model.isLoaded,
+                    sendLabel: model.route.kind == .creatorFork
+                        ? "Send to a fork of the creating agent" : "Send to a new agent",
+                    stopLabel: "Stop the document agent response",
+                    selection: model.selection,
+                    clearSelection: { model.selection = nil },
+                    onSend: model.send,
+                    onStop: model.cancel)
             }
         }
     }
 
-    private func selectionContext(_ selection: PlanCanvasSelection) -> some View {
-        HStack(alignment: .top, spacing: 7) {
-            Image(systemName: selection.kind.systemImage).font(.system(size: 11, weight: .semibold))
+    private var agentLabel: String {
+        let route = model.route
+        return route.kind == .creatorFork
+            ? "CREATOR FORK · \(route.provider.displayName.uppercased())"
+            : "NEW AGENT · \(route.provider.displayName.uppercased())"
+    }
+
+    private var progressText: String {
+        let route = model.route
+        return route.kind == .creatorFork
+            ? "The creating agent's fork is replying"
+            : "New \(route.provider.displayName) agent is replying"
+    }
+
+    private var settingsBar: some View {
+        QueueChatSettingsBar {
+            HStack(spacing: 6) {
+                Label("Document chat", systemImage: "text.bubble")
+                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                Text(model.taskID).font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Button("Clear Chat") { showsClearConfirmation = true }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .buttonStyle(.plain)
+                    .disabled(model.messages.isEmpty && model.lockedRoute == nil)
+                    .help("Erase this conversation and choose its recipient again")
+            }
+            recipient
+            if model.route.kind == .newAgent {
+                HStack(spacing: 8) {
+                    QueueChatAgentMenus(
+                        provider: model.route.provider,
+                        model: model.newAgentModel,
+                        effort: model.newAgentEffort,
+                        modelChoices: model.modelChoices(for: model.route.provider),
+                        providerEnabled: model.canChooseProvider,
+                        providerDisabledHelp: "Clear the chat to switch providers",
+                        setProvider: model.setNewAgentProvider,
+                        setModel: model.setNewAgentModel,
+                        setEffort: model.setNewAgentEffort)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .confirmationDialog(
+            "Clear this conversation?",
+            isPresented: $showsClearConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Clear Conversation", role: .destructive) { model.clear() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The transcript is erased. The next message goes to a fork of the creating agent when it is running, otherwise to a new agent.")
+        }
+    }
+
+    /// Which agent the next message reaches, and why.
+    private var recipient: some View {
+        let route = model.route
+        let isFork = route.kind == .creatorFork
+        return HStack(alignment: .top, spacing: 7) {
+            Image(systemName: isFork ? "arrow.triangle.branch" : "plus.bubble")
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(Color.accentColor)
+                .frame(width: 14)
             VStack(alignment: .leading, spacing: 2) {
-                Text([selection.kind.title, selection.readableLocation].compactMap { $0 }.joined(separator: " · "))
-                    .font(.system(size: 10.5, weight: .semibold))
-                Text(selection.compactExcerpt).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(2)
+                Text(isFork
+                    ? "To the creating agent · \(route.provider.displayName) fork"
+                    : "To a new \(route.provider.displayName) agent")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .lineLimit(2)
+                Text(recipientDetail)
+                    .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 2)
-            Button { model.selection = nil } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Clear selected passage")
-                .help("Remove the selected passage from this message")
+            Spacer(minLength: 0)
+            if model.lockedRoute == nil {
+                Button {
+                    Task { await model.refreshCreator() }
+                } label: {
+                    if model.isResolvingCreator {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: "arrow.clockwise").font(.system(size: 10, weight: .semibold))
+                    }
+                }
+                .buttonStyle(.borderless)
+                .disabled(model.isResolvingCreator)
+                .accessibilityLabel("Check for the creating agent again")
+                .help("Check again whether the agent that created this document is running")
+            }
         }
-        .padding(8)
-        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+        .padding(.top, 2)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var recipientDetail: String {
+        let route = model.route
+        if route.kind == .creatorFork {
+            let agent = route.sourceTitle.map { "“\($0)”" } ?? "The creating agent"
+            return model.lockedRoute == nil
+                ? "\(agent) wrote this document. Messages go to a fork of its conversation, so its terminal is not interrupted."
+                : "Continues a fork of \(agent), which wrote this document."
+        }
+        if model.lockedRoute != nil { return "This conversation started with a new agent." }
+        if model.isResolvingCreator && model.creator == nil { return "Looking for the agent that created this document…" }
+        if let creator = model.creator {
+            return "“\(creator.author.title)” wrote this document but is not running, so a new agent answers."
+        }
+        return "No agent in this task wrote this document, so a new agent answers."
     }
 }
 

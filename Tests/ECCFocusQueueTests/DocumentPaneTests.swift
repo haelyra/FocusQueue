@@ -17,6 +17,34 @@ private actor DocumentTestAgent: QueueAgentChatting {
     func finish(_ session: String, message: String) { pending.removeValue(forKey: session)?.resume(returning: .init(message: message, log: "")) }
 }
 
+private actor RoutingTestAgent: QueueAgentChatting {
+    struct Request: Sendable { let message: String; let workspace: String; let configuration: VerifierConfiguration; let model: String? }
+    let provider: AgentProvider
+    var requests: [Request] = []
+    var resets = 0
+    init(provider: AgentProvider) { self.provider = provider }
+    func send(message: String, dashboardPath: String, workspace: String, visibleOrder: [String],
+              deferredTicketIDs: [String], configuration: VerifierConfiguration,
+              model: String?, effort: String?) async throws -> QueueAgentReply {
+        requests.append(Request(message: message, workspace: workspace, configuration: configuration, model: model))
+        return QueueAgentReply(message: "\(provider.rawValue) reply", log: "")
+    }
+    func reset(configuration: VerifierConfiguration) async throws { resets += 1 }
+}
+
+@MainActor
+private final class RoutingTestCreator {
+    var liveWorkspace: String? = "/live/agent"
+    var scans = 0
+    func resolve(_ known: DocumentAuthor?) -> DocumentChatCreator {
+        if known == nil { scans += 1 }
+        let author = known ?? DocumentAuthor(subtaskID: "agent-1", provider: .claude, sessionID: "source-session",
+            title: "Draft the report", touchedAt: Date())
+        return DocumentChatCreator(author: author, forkSessionID: author.sessionID, liveWorkspace: liveWorkspace,
+            model: "opus", effort: "high")
+    }
+}
+
 @Suite("Side document pane")
 @MainActor
 struct DocumentPaneTests {
@@ -206,6 +234,70 @@ struct DocumentPaneTests {
         let restored = DocumentConversation(document: a, context: context, support: root, agent: agent, configuration: config, dashboardPath: "/dashboard", workspace: root.path)
         await restored.load()
         #expect(restored.messages.map(\.text) == first.messages.map(\.text))
+    }
+    @Test("Document chat forks the running creator, keeps that route, and falls back to a chosen new agent")
+    func creatorRouting() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("document-route-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = try await TaskContextStore(root: root).ensureContext(
+            ticket: .init(id: "ECC-905", title: "Routing", status: "open", summary: "Routing"))
+        let document = root.appendingPathComponent("report.md")
+        try Data("Report body".utf8).write(to: document)
+        let agents = Dictionary(uniqueKeysWithValues: AgentProvider.allCases.map { ($0, RoutingTestAgent(provider: $0)) })
+        let creator = RoutingTestCreator()
+        let services = DocumentChatServices(
+            agent: { agents[$0]! }, executable: { "/bin/focus-queue-\($0.rawValue)" },
+            resolveCreator: { creator.resolve($0) }, modelChoices: { _ in [] })
+        func conversation() -> DocumentConversation {
+            DocumentConversation(document: document, subject: DocumentConversationSubject(kind: .task(context)),
+                support: root, services: services, configuration: SetupEnvironment.starter(supportDirectory: root).verifier,
+                dashboardPath: "/dashboard", workspace: root.path, provider: .codex)
+        }
+        func waitForReply(_ chat: DocumentConversation) async throws {
+            for _ in 0..<200 where chat.isResponding { try await Task.sleep(for: .milliseconds(10)) }
+        }
+
+        let chat = conversation()
+        await chat.load()
+        #expect(chat.route.kind == .creatorFork)
+        #expect(chat.route.provider == .claude && chat.route.sourceTitle == "Draft the report")
+        chat.draft = "What does section two claim?"
+        chat.send()
+        try await waitForReply(chat)
+        let forked = try #require(await agents[.claude]!.requests.first)
+        #expect(forked.configuration.forkSourceSessionID == "source-session")
+        #expect(forked.configuration.executable == "/bin/focus-queue-claude")
+        #expect(forked.workspace == "/live/agent" && forked.model == "opus")
+        #expect(forked.message.hasPrefix(DocumentConversation.forkPreamble))
+        #expect(await agents[.claude]!.resets == 1)
+        #expect(chat.messages.last?.text == "claude reply")
+
+        // The started conversation keeps its fork even after the creator closes.
+        creator.liveWorkspace = nil
+        let restored = conversation()
+        await restored.load()
+        #expect(restored.lockedRoute?.kind == .creatorFork && restored.route.kind == .creatorFork)
+        #expect(!restored.canChooseProvider)
+        #expect(creator.scans == 2)
+
+        restored.clear()
+        for _ in 0..<200 where restored.lockedRoute != nil || restored.creator == nil || restored.isResolvingCreator {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(restored.messages.isEmpty)
+        #expect(restored.route.kind == .newAgent && restored.creator?.isOpen == false)
+        restored.setNewAgentProvider(.kimi)
+        restored.setNewAgentModel("kimi-code/k3")
+        restored.draft = "Summarize it"
+        restored.send()
+        try await waitForReply(restored)
+        let fresh = try #require(await agents[.kimi]!.requests.first)
+        #expect(fresh.configuration.forkSourceSessionID == nil)
+        #expect(fresh.model == "kimi-code/k3" && fresh.workspace == root.path)
+        #expect(!fresh.message.hasPrefix(DocumentConversation.forkPreamble))
+        #expect(restored.lockedRoute?.kind == .newAgent && !restored.canChooseProvider)
+        restored.setNewAgentProvider(.codex)
+        #expect(restored.route.provider == .kimi)
     }
 }
 

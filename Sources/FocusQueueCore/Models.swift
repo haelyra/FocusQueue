@@ -84,6 +84,9 @@ public struct VerifierConfiguration: Codable, Equatable, Sendable {
   public var supportDirectory: String?
   /// Extra directories the chat sandbox may write (dashboards, config, state).
   public var writableDirectories: [String]?
+  /// A document chat that continues an agent's conversation forks this
+  /// provider session on its first turn. Set at runtime; never configured.
+  public var forkSourceSessionID: String?
 
   public init(
     enabled: Bool,

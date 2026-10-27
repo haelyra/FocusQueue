@@ -563,6 +563,7 @@ def run_codex(
     disable_tools: bool = False,
     context_directory: Path | None = None,
     writable_directories: list[Path] | None = None,
+    fork_thread: bool = False,
     lean: bool = False,
     persist_session: bool = True,
 ) -> tuple[str, str | None]:
@@ -662,7 +663,8 @@ def run_codex(
         if output_schema is not None:
             command.extend(["--output-schema", str(output_schema)])
         if thread_id:
-            command.extend(["resume", thread_id, "-"])
+            # A fork answers in a new thread and leaves the source untouched.
+            command.extend(["fork" if fork_thread else "resume", thread_id, "-"])
         else:
             command.append("-")
 
@@ -752,6 +754,7 @@ def chat(arguments: argparse.Namespace) -> int:
         state = load_state(state_path)
         sessions = state.setdefault("sessions", {})
         prior_thread = str(sessions.get(arguments.session, "")) or None
+        fork_from = None if prior_thread else getattr(arguments, "fork_from", None)
         prompt = arguments.prompt_file.read_text(encoding="utf-8")
         if getattr(arguments, "fresh", False):
             # The app sends its own short recap, so a fresh turn neither resumes
@@ -783,7 +786,8 @@ def chat(arguments: argparse.Namespace) -> int:
                 runtime=runtime,
                 timeout=arguments.timeout,
                 sandbox="workspace-write",
-                thread_id=prior_thread,
+                thread_id=prior_thread or fork_from,
+                fork_thread=fork_from is not None,
                 output_schema=None,
                 usage_file=getattr(arguments, "usage_file", None),
                 expose_evidence_directories=True,
@@ -820,7 +824,7 @@ def chat(arguments: argparse.Namespace) -> int:
                 writable_directories=getattr(arguments, "writable_dirs", None),
             )
         thread_id = observed_thread or prior_thread
-        if not thread_id:
+        if not thread_id or thread_id == fork_from:
             raise CodexHarnessError("Codex did not return a persistent thread identifier")
         sessions[arguments.session] = thread_id
         morning.write_private_json(state_path, state)
@@ -882,6 +886,10 @@ def main() -> int:
     chat_parser.add_argument("--timeout", type=int, default=120)
     chat_parser.add_argument("--model", help="Override the chat model slug")
     chat_parser.add_argument("--effort", help="Override the chat reasoning effort level")
+    chat_parser.add_argument(
+        "--fork-from",
+        help="Start a session with no saved conversation as a fork of this provider thread",
+    )
 
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--workspace", type=Path, required=True)

@@ -2723,7 +2723,9 @@ public actor HarnessQueueAgent: QueueAgentChatting {
         defer { try? FileManager.default.removeItem(at: usageURL) }
         let runID = UUID().uuidString
         let source = Self.documentRuntimeArguments(configuration).isEmpty ? "queue_chat" : "document_chat"
-        let prompt = QueueAgentPrompt.build(
+        let forkSource = configuration.forkSourceSessionID.flatMap { $0.isEmpty ? nil : $0 }
+        // A forked agent keeps its own identity and instructions; only the queue agent gets the queue prompt.
+        let prompt = forkSource != nil ? message : QueueAgentPrompt.build(
             provider: provider,
             message: message,
             dashboardPath: dashboardPath,
@@ -2754,11 +2756,12 @@ public actor HarnessQueueAgent: QueueAgentChatting {
         )
         let requestedModel = model?.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestedEffort = effort?.trimmingCharacters(in: .whitespacesAndNewlines)
-        var arguments = Self.documentRuntimeArguments(configuration) + [
-            "chat",
-            // Callers send their own bounded recap, so no provider session is
-            // resumed and history cannot grow across turns.
-            "--fresh",
+        var arguments = Self.documentRuntimeArguments(configuration) + ["chat"]
+        // Callers send their own bounded recap, so no provider session is
+        // resumed and history cannot grow across turns. A fork is the
+        // exception: its value is the source conversation it continues.
+        if forkSource == nil { arguments.append("--fresh") }
+        arguments += [
             "--session", Self.resolvedSessionName(for: configuration, provider: provider),
             "--workspace", workspace,
             "--prompt-file", promptURL.path,
@@ -2777,6 +2780,7 @@ public actor HarnessQueueAgent: QueueAgentChatting {
         if let requestedEffort, !requestedEffort.isEmpty {
             arguments.append(contentsOf: ["--effort", requestedEffort])
         }
+        if let forkSource { arguments.append(contentsOf: ["--fork-from", forkSource]) }
         let result = try await runner.run(ProcessSpecification(
             executable: configuration.executable,
             arguments: arguments,

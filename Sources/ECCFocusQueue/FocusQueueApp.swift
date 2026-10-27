@@ -387,7 +387,19 @@ import UserNotifications
 
   private func handleQChatHotkey() {
     revealPanelOnPointerDisplay()
+    // A non-activating panel only takes typing once it is key; ordering it front is not enough.
+    panel?.makeKey()
     model.requestQueueChatFocus()
+    Task { @MainActor [weak self] in
+      try? await Task.sleep(for: .milliseconds(600))
+      guard let self, let panel else { return }
+      let focused = panel.isKeyWindow && panel.firstResponder is QueueChatComposerNSTextView
+      NSLog("QChat hotkey: panel key=%d, composer focused=%d", panel.isKeyWindow, focused)
+      if !focused {
+        programLog.record("QChat hotkey could not focus the message box.", level: .warning,
+          category: "Hotkeys")
+      }
+    }
   }
 
   @objc private func importAgentRegistration(_ notification: Notification) {

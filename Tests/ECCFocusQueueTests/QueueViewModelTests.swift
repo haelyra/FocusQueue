@@ -33,6 +33,24 @@ struct QueueViewModelTests {
     #expect(model.visibleAgents(for: "ECC-101").map(\.id) == ["primed-worker"])
   }
 
+  @Test("PDF dark mode follows the app appearance until the viewer toggle overrides it")
+  func pdfDarkModeDefaultsToAppearance() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    model.setAppearance(.light)
+    #expect(!model.isPDFDarkMode)
+    model.setAppearance(.dark)
+    #expect(model.isPDFDarkMode)
+    model.togglePDFDarkMode()
+    #expect(!model.isPDFDarkMode)
+    model.togglePDFDarkMode()
+    #expect(model.isPDFDarkMode)
+    model.togglePDFDarkMode()
+    model.setAppearance(.dark)
+    #expect(model.isPDFDarkMode, "Changing the app appearance returns PDFs to the default")
+  }
+
   @Test("A completed agent keeps running and is never archived through refresh")
   func completedAgentKeepsRunning() async throws {
     let fixture = try await Fixture()
@@ -560,6 +578,55 @@ struct QueueViewModelTests {
     let saved = try JSONDecoder().decode(
       DashboardDocument.self, from: Data(contentsOf: appDashboard))
     #expect(saved.tickets.first?.title == "Renamed app task")
+  }
+
+  @Test("The QChat hotkey expands the panel and opens QChat beside the queue")
+  func qchatHotkeyFocusRequest() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+
+    model.setPanelMode(.collapsed)
+    model.requestQueueChatFocus()
+    #expect(model.panelMode == .expanded)
+    #expect(model.isQueueChatInspectorPresented)
+    #expect(model.queueChatFocusRequest == 1)
+
+    // A second press keeps the side chat open rather than toggling it closed.
+    model.requestQueueChatFocus()
+    #expect(model.isQueueChatInspectorPresented)
+    #expect(model.queueChatFocusRequest == 2)
+  }
+
+  @Test("A QChat focus request puts the cursor in the composer, again after focus moves away")
+  func qchatFocusRequestFocusesComposer() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    // Offscreen and never ordered front, so the test cannot take keyboard focus.
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 640),
+      styleMask: [.titled], backing: .buffered, defer: true)
+    func chat(_ request: Int) -> some View {
+      QueueAgentChatView(model: model, draft: .constant(""), focusRequest: request)
+        .frame(width: 480, height: 640)
+    }
+    let host = NSHostingView(rootView: AnyView(chat(1)))
+    window.contentView = host
+    func settle() async {
+      for _ in 0..<10 {
+        host.layoutSubtreeIfNeeded()
+        try? await Task.sleep(for: .milliseconds(20))
+      }
+    }
+    await settle()
+    #expect(window.firstResponder is QueueChatComposerNSTextView)
+
+    window.makeFirstResponder(nil)
+    await settle()
+    #expect(!(window.firstResponder is QueueChatComposerNSTextView))
+    host.rootView = AnyView(chat(2))
+    await settle()
+    #expect(window.firstResponder is QueueChatComposerNSTextView)
   }
 
   @Test("An agent's canvas open expands the panel and requests its tab; other support dirs are ignored")

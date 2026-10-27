@@ -130,6 +130,11 @@ final class QueueViewModel {
   private(set) var newTaskRequest: NewTaskRequest?
   private(set) var newTaskHotkeyEnabled =
     UserDefaults.standard.bool(forKey: "voiceTaskHotkeyEnabled")
+  /// On unless turned off; the key is unset until the user changes it.
+  private(set) var qchatHotkeyEnabled =
+    UserDefaults.standard.object(forKey: "qchatHotkeyEnabled") as? Bool ?? true
+  /// Bumped per Right Option + / press; the view opens QChat and focuses its composer.
+  private(set) var queueChatFocusRequest = 0
   private(set) var panelMode: QueuePanelMode = .expanded
   private(set) var canSwitchMonitor = false
   private(set) var actionMessages: [String: String] = [:] {
@@ -336,6 +341,7 @@ final class QueueViewModel {
   )?
   @ObservationIgnored var quitHandler: (() -> Void)?
   @ObservationIgnored var newTaskHotkeyEnabledHandler: ((Bool) -> Void)?
+  @ObservationIgnored var qchatHotkeyEnabledHandler: ((Bool) -> Void)?
 
   init(
     paths: AppPaths = .live(),
@@ -645,6 +651,10 @@ final class QueueViewModel {
   var windowSnapshot: WindowSnapshot? { localState.window }
   var appearance: QueueAppearance { localState.appearance ?? .light }
   var accentStyle: QueueAccentStyle { localState.accentStyle ?? .vibrant }
+  /// PDFs follow the app's appearance until the viewer's toggle picks a side for this run.
+  private(set) var pdfDarkModeOverride: Bool?
+  var isPDFDarkMode: Bool { pdfDarkModeOverride ?? (appearance == .dark) }
+  func togglePDFDarkMode() { pdfDarkModeOverride = !isPDFDarkMode }
   var windowPlacement: QueueWindowPlacement {
     localState.window?.placement ?? config.defaultPlacement
   }
@@ -4732,6 +4742,21 @@ final class QueueViewModel {
     newTaskHotkeyEnabledHandler?(enabled)
   }
 
+  func setQChatHotkeyEnabled(_ enabled: Bool) {
+    guard qchatHotkeyEnabled != enabled else { return }
+    qchatHotkeyEnabled = enabled
+    UserDefaults.standard.set(enabled, forKey: "qchatHotkeyEnabled")
+    qchatHotkeyEnabledHandler?(enabled)
+  }
+
+  /// Opens the central QChat conversation beside the queue, like the side-panel
+  /// button, with its composer focused.
+  func requestQueueChatFocus() {
+    setPanelMode(.expanded)
+    setQueueChatInspectorPresented(true)
+    queueChatFocusRequest += 1
+  }
+
   func setDailyReportSchedule(hour: Int, minute: Int) {
     guard (0...23).contains(hour), (0...59).contains(minute) else { return }
     config.dailyReport.scheduleHour = hour
@@ -4858,6 +4883,7 @@ final class QueueViewModel {
 
   func setAppearance(_ appearance: QueueAppearance) {
     localState.appearance = appearance
+    pdfDarkModeOverride = nil
     persistLocalState()
   }
 

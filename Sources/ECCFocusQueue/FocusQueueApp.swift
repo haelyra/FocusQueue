@@ -47,6 +47,7 @@ import UserNotifications
   private var exitTerminalFocusItem: NSMenuItem?
   private var terminalFocusController: TerminalFocusModeController?
   private var newTaskHotkeyMonitor: NewTaskHotkeyMonitor?
+  private var qchatHotkeyMonitor: QChatHotkeyMonitor?
   private var focusChromeRefreshTask: Task<Void, Never>?
   private var screenReconciliationTask: Task<Void, Never>?
   private var movePersistTask: Task<Void, Never>?
@@ -140,6 +141,9 @@ import UserNotifications
     model.newTaskHotkeyEnabledHandler = { [weak self] enabled in
       if enabled { self?.startNewTaskHotkeyMonitor() } else { self?.stopNewTaskHotkeyMonitor() }
     }
+    model.qchatHotkeyEnabledHandler = { [weak self] enabled in
+      if enabled { self?.startQChatHotkeyMonitor(promptForAccess: true) } else { self?.stopQChatHotkeyMonitor() }
+    }
     model.setCanSwitchMonitor(NSScreen.screens.count > 1)
     configureDailyReportNotifications()
     NSWorkspace.shared.notificationCenter.addObserver(
@@ -152,6 +156,7 @@ import UserNotifications
     createPanel()
     createStatusItem()
     if model.newTaskHotkeyEnabled { startNewTaskHotkeyMonitor() }
+    if model.qchatHotkeyEnabled { startQChatHotkeyMonitor(promptForAccess: false) }
     positionPanel(.upperLeft, on: defaultScreen(), animated: false, persist: false)
     panel?.orderFrontRegardless()
 
@@ -219,11 +224,17 @@ import UserNotifications
     }
   }
 
+  func applicationDidBecomeActive(_ notification: Notification) {
+    // Returning from System Settings is the usual moment Accessibility was just granted.
+    if model.qchatHotkeyEnabled { qchatHotkeyMonitor?.start() }
+  }
+
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
   func applicationWillTerminate(_ notification: Notification) {
     programLog.record("Focus Queue is terminating.", category: "Lifecycle")
     newTaskHotkeyMonitor?.stop()
+    qchatHotkeyMonitor?.stop()
     morningReconciliationTask?.cancel()
     _ = try? DailyReportWorkerControl.requestCancellation(
       runtimeDirectory: paths.ingestionRuntimeDirectory)
@@ -353,6 +364,42 @@ import UserNotifications
   private func handleNewTaskHotkey() {
     revealPanelOnPointerDisplay()
     model.requestNewTask(autofocusPrompt: true)
+  }
+
+  private func startQChatHotkeyMonitor(promptForAccess: Bool) {
+    let monitor = qchatHotkeyMonitor ?? QChatHotkeyMonitor()
+    monitor.onTrigger = { [weak self] in self?.handleQChatHotkey() }
+    qchatHotkeyMonitor = monitor
+    guard !monitor.start() else { return }
+    programLog.record(
+      "QChat hotkey (Right Option + /) needs Accessibility access in System Settings > Privacy & Security.",
+      level: .warning, category: "Hotkeys")
+    if promptForAccess {
+      let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+      _ = AXIsProcessTrustedWithOptions(options)
+    }
+  }
+
+  private func stopQChatHotkeyMonitor() {
+    qchatHotkeyMonitor?.stop()
+    qchatHotkeyMonitor = nil
+  }
+
+  private func handleQChatHotkey() {
+    revealPanelOnPointerDisplay()
+    // A non-activating panel only takes typing once it is key; ordering it front is not enough.
+    panel?.makeKey()
+    model.requestQueueChatFocus()
+    Task { @MainActor [weak self] in
+      try? await Task.sleep(for: .milliseconds(600))
+      guard let self, let panel else { return }
+      let focused = panel.isKeyWindow && panel.firstResponder is QueueChatComposerNSTextView
+      NSLog("QChat hotkey: panel key=%d, composer focused=%d", panel.isKeyWindow, focused)
+      if !focused {
+        programLog.record("QChat hotkey could not focus the message box.", level: .warning,
+          category: "Hotkeys")
+      }
+    }
   }
 
   @objc private func importAgentRegistration(_ notification: Notification) {

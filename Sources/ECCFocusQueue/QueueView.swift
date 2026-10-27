@@ -65,6 +65,11 @@ struct QueueView: View {
     .onChange(of: notificationCount) { _, count in
       if count == 0 { model.setNotificationsInspectorPresented(false) }
     }
+    .onChange(of: model.queueChatFocusRequest) { _, _ in
+      // Same as the side-panel button: the QChat tab would duplicate the side chat.
+      screen = .queue
+      if selectedTab == .agent { selectedTab = .focus }
+    }
     .sheet(isPresented: $showsTerminals) { TerminalBrowserView(model: model) }
     .sheet(item: Binding(
       get: { model.newTaskRequest },
@@ -149,7 +154,8 @@ struct QueueView: View {
           .accessibilityLabel("Close Queue chat side panel")
           .help("Close Queue chat side panel")
         }
-        QueueAgentChatView(model: model, draft: $queueAgentDraft)
+        QueueAgentChatView(
+          model: model, draft: $queueAgentDraft, focusRequest: model.queueChatFocusRequest)
       }
       .frame(minWidth: 320, idealWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
     } else if model.isNotificationsInspectorPresented {
@@ -205,7 +211,8 @@ struct QueueView: View {
       case .completed:
         completedQueueContent
       case .agent:
-        QueueAgentChatView(model: model, draft: $queueAgentDraft)
+        QueueAgentChatView(
+          model: model, draft: $queueAgentDraft, focusRequest: model.queueChatFocusRequest)
       }
     }
   }
@@ -1263,6 +1270,7 @@ struct QueueAgentChatView: View {
             QueueChatComposerTextView(
               text: $draft,
               isFocused: $composerIsFocused,
+              focusRequest: focusRequest,
               maxHeight: composerMaxHeight(geometry.size.height),
               onSend: send
             )
@@ -1532,6 +1540,9 @@ struct QueueAgentChatView: View {
 private struct QueueChatComposerTextView: NSViewRepresentable {
   @Binding var text: String
   var isFocused: FocusState<Bool>.Binding
+  /// Each new value makes the text view first responder directly. The FocusState
+  /// above is not attached to a focusable view, so setting it again is a no-op.
+  var focusRequest = 0
   var maxHeight: CGFloat
   var onSend: () -> Void
 
@@ -1573,6 +1584,10 @@ private struct QueueChatComposerTextView: NSViewRepresentable {
         scrollView.window?.makeFirstResponder(textView)
       }
     }
+    if focusRequest != context.coordinator.lastFocusRequest {
+      context.coordinator.lastFocusRequest = focusRequest
+      textView.focusWhenInWindow()
+    }
   }
 
   func sizeThatFits(
@@ -1591,6 +1606,8 @@ private struct QueueChatComposerTextView: NSViewRepresentable {
   }
 
   final class Coordinator: NSObject, NSTextViewDelegate {
+    /// Starts at zero so a chat created by a focus request still takes focus.
+    var lastFocusRequest = 0
     private var text: Binding<String>
     private var isFocused: FocusState<Bool>.Binding
 
@@ -1610,8 +1627,22 @@ private struct QueueChatComposerTextView: NSViewRepresentable {
   }
 }
 
-private final class QueueChatComposerNSTextView: NSTextView {
+final class QueueChatComposerNSTextView: NSTextView {
   var onSend: (() -> Void)?
+  private var focusesOnWindowAttach = false
+
+  /// A freshly opened side chat is not in a window on its first update; focus lands on attach.
+  func focusWhenInWindow() {
+    guard let window else { focusesOnWindowAttach = true; return }
+    DispatchQueue.main.async { window.makeFirstResponder(self) }
+  }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    guard focusesOnWindowAttach, let window else { return }
+    focusesOnWindowAttach = false
+    DispatchQueue.main.async { window.makeFirstResponder(self) }
+  }
 
   override func keyDown(with event: NSEvent) {
     // 36 = Return, 76 = keypad Enter
@@ -2059,6 +2090,14 @@ private struct QueueSettingsView: View {
             Toggle("New task hotkey (Right Option + Shift)", isOn: Binding(
               get: { model.newTaskHotkeyEnabled },
               set: { model.setNewTaskHotkeyEnabled($0) }))
+          }
+          settingsSection(
+            title: "QChat hotkey",
+            detail: "Right Option + / reveals the queue and opens QChat with the message box focused for voice typing. Needs Accessibility access."
+          ) {
+            Toggle("QChat hotkey (Right Option + /)", isOn: Binding(
+              get: { model.qchatHotkeyEnabled },
+              set: { model.setQChatHotkeyEnabled($0) }))
           }
           settingsSection(
             title: "Appearance", detail: "Dark uses your WezTerm #1A1D23 background color."

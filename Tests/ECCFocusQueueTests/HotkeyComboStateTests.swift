@@ -3,58 +3,117 @@ import Testing
 
 @testable import ECCFocusQueue
 
-@Suite("Right Option + Shift combo detection")
+@Suite("New task hotkey combo detection")
 struct HotkeyComboStateTests {
   private let rightOption: UInt16 = 61
   private let leftOption: UInt16 = 58
   private let leftShift: UInt16 = 56
   private let rightShift: UInt16 = 60
+  private let rightCommand: UInt16 = 54
+  private let leftCommand: UInt16 = 55
 
   @Test("Option first, then Shift, fires once Shift lands")
   func optionFirstFires() {
     let state = HotkeyComboState()
-    #expect(!state.update(keyCode: rightOption, flags: [.option]))
-    #expect(state.update(keyCode: leftShift, flags: [.option, .shift]))
+    #expect(state.update(keyCode: rightOption, flags: [.option]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.option, .shift]) == .optionShift)
   }
 
   @Test("Shift first, then right Option, fires once Option lands")
   func shiftFirstFires() {
     let state = HotkeyComboState()
-    #expect(!state.update(keyCode: rightShift, flags: [.shift]))
-    #expect(state.update(keyCode: rightOption, flags: [.option, .shift]))
+    #expect(state.update(keyCode: rightShift, flags: [.shift]) == nil)
+    #expect(state.update(keyCode: rightOption, flags: [.option, .shift]) == .optionShift)
   }
 
   @Test("Repeated flagsChanged while held do not refire")
   func heldComboFiresOnce() {
     let state = HotkeyComboState()
-    #expect(!state.update(keyCode: rightOption, flags: [.option]))
-    #expect(state.update(keyCode: leftShift, flags: [.option, .shift]))
-    #expect(!state.update(keyCode: leftShift, flags: [.option, .shift]))
-    #expect(!state.update(keyCode: rightOption, flags: [.option, .shift]))
+    #expect(state.update(keyCode: rightOption, flags: [.option]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.option, .shift]) == .optionShift)
+    #expect(state.update(keyCode: leftShift, flags: [.option, .shift]) == nil)
+    #expect(state.update(keyCode: rightOption, flags: [.option, .shift]) == nil)
   }
 
   @Test("Re-arms only after both modifiers release")
   func reArmsOnFullRelease() {
     let state = HotkeyComboState()
-    #expect(!state.update(keyCode: rightOption, flags: [.option]))
-    #expect(state.update(keyCode: leftShift, flags: [.option, .shift]))
+    #expect(state.update(keyCode: rightOption, flags: [.option]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.option, .shift]) == .optionShift)
 
     // Shift releases but Option stays held: still considered pressed.
-    #expect(!state.update(keyCode: leftShift, flags: [.option]))
-    #expect(!state.update(keyCode: leftShift, flags: [.option, .shift]))
+    #expect(state.update(keyCode: leftShift, flags: [.option]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.option, .shift]) == nil)
 
     // Full release re-arms; pressing the combo again fires.
-    #expect(!state.update(keyCode: leftShift, flags: [.option]))
-    #expect(!state.update(keyCode: rightOption, flags: []))
-    #expect(!state.update(keyCode: leftShift, flags: [.shift]))
-    #expect(state.update(keyCode: rightOption, flags: [.option, .shift]))
+    #expect(state.update(keyCode: leftShift, flags: [.option]) == nil)
+    #expect(state.update(keyCode: rightOption, flags: []) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.shift]) == nil)
+    #expect(state.update(keyCode: rightOption, flags: [.option, .shift]) == .optionShift)
   }
 
   @Test("Left Option never fires")
   func leftOptionNeverFires() {
     let state = HotkeyComboState()
-    #expect(!state.update(keyCode: leftOption, flags: [.option]))
-    #expect(!state.update(keyCode: leftShift, flags: [.option, .shift]))
-    #expect(!state.update(keyCode: leftOption, flags: [.option, .shift]))
+    #expect(state.update(keyCode: leftOption, flags: [.option]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.option, .shift]) == nil)
+    #expect(state.update(keyCode: leftOption, flags: [.option, .shift]) == nil)
+  }
+
+  @Test("A Right Command + Shift tap fires once, on release")
+  func commandShiftTapFiresOnRelease() {
+    let state = HotkeyComboState()
+    #expect(state.update(keyCode: rightCommand, flags: [.command]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.command, .shift]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.command]) == .commandShift)
+    #expect(state.update(keyCode: rightCommand, flags: []) == nil)
+  }
+
+  @Test("Releasing Command first also completes the tap")
+  func commandReleasedFirst() {
+    let state = HotkeyComboState()
+    #expect(state.update(keyCode: leftShift, flags: [.shift]) == nil)
+    #expect(state.update(keyCode: rightCommand, flags: [.command, .shift]) == nil)
+    #expect(state.update(keyCode: rightCommand, flags: [.shift]) == .commandShift)
+    #expect(state.update(keyCode: leftShift, flags: []) == nil)
+  }
+
+  @Test("A key typed during Right Command + Shift is a shortcut, not a tap")
+  func commandShiftShortcutDoesNotFire() {
+    let state = HotkeyComboState()
+    #expect(state.update(keyCode: rightCommand, flags: [.command]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.command, .shift]) == nil)
+    state.noteKeyDown()  // e.g. ⌘⇧Z
+    #expect(state.update(keyCode: leftShift, flags: [.command]) == nil)
+    #expect(state.update(keyCode: rightCommand, flags: []) == nil)
+
+    // The next clean tap still works.
+    #expect(state.update(keyCode: rightCommand, flags: [.command]) == nil)
+    #expect(state.update(keyCode: rightShift, flags: [.command, .shift]) == nil)
+    #expect(state.update(keyCode: rightShift, flags: [.command]) == .commandShift)
+  }
+
+  @Test("Re-pressing Shift while Command stays held does not refire")
+  func commandHeldDoesNotRefire() {
+    let state = HotkeyComboState()
+    #expect(state.update(keyCode: rightCommand, flags: [.command]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.command, .shift]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.command]) == .commandShift)
+    #expect(state.update(keyCode: leftShift, flags: [.command, .shift]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.command]) == nil)
+  }
+
+  @Test("Left Command + Shift and Right Command + Shift + Option never fire")
+  func otherCommandChordsNeverFire() {
+    let state = HotkeyComboState()
+    #expect(state.update(keyCode: leftCommand, flags: [.command]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.command, .shift]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.command]) == nil)
+    #expect(state.update(keyCode: leftCommand, flags: []) == nil)
+
+    #expect(state.update(keyCode: rightCommand, flags: [.command]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.command, .shift]) == nil)
+    #expect(state.update(keyCode: leftOption, flags: [.command, .shift, .option]) == nil)
+    #expect(state.update(keyCode: leftShift, flags: [.command, .option]) == nil)
   }
 }

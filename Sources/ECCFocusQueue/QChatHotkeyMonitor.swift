@@ -1,8 +1,8 @@
 import AppKit
 
-/// Fires on Right Option + /. An NSEvent global monitor cannot consume the
-/// keystroke, so the frontmost app would type "÷"; a session event tap swallows
-/// it instead. The tap needs Accessibility trust, which the new task hotkey and
+/// Fires on Right Option + / or Right Command + /. An NSEvent global monitor
+/// cannot consume the keystroke, so the frontmost app would type "÷" or run its
+/// own ⌘/ command; a session event tap swallows it instead. The tap needs Accessibility trust, which the new task hotkey and
 /// terminal focus already rely on.
 @MainActor
 final class QChatHotkeyMonitor {
@@ -71,7 +71,7 @@ private func qchatHotkeyTapCallback(
   return passes ? Unmanaged.passUnretained(event) : nil
 }
 
-/// Testable Right Option + / matcher, independent of CGEvent.
+/// Testable Right Option / Right Command + / matcher, independent of CGEvent.
 /// keyCode 44 = the ANSI "/" key position.
 final class QChatHotkeyMatcher {
   enum Decision: Equatable {
@@ -82,11 +82,13 @@ final class QChatHotkeyMatcher {
   }
 
   static let slashKeyCode: UInt16 = 44
-  /// NX_DEVICERALTKEYMASK: set only while the right Option key is down.
+  /// NX_DEVICERALTKEYMASK / NX_DEVICERCMDKEYMASK: set only while that right-side key is down.
   static let rightOptionDeviceMask: UInt64 = 0x40
+  static let rightCommandDeviceMask: UInt64 = 0x10
   private static let alternate = CGEventFlags.maskAlternate.rawValue
-  private static let otherModifiers = CGEventFlags.maskCommand.rawValue
-    | CGEventFlags.maskControl.rawValue | CGEventFlags.maskShift.rawValue
+  private static let command = CGEventFlags.maskCommand.rawValue
+  private static let otherModifiers = CGEventFlags.maskControl.rawValue
+    | CGEventFlags.maskShift.rawValue
 
   private var swallowsKeyUp = false
 
@@ -97,8 +99,11 @@ final class QChatHotkeyMatcher {
       defer { swallowsKeyUp = false }
       return swallowsKeyUp ? .swallow : .pass
     }
-    let isCombo = flags & Self.alternate != 0 && flags & Self.rightOptionDeviceMask != 0
-      && flags & Self.otherModifiers == 0
+    let option = flags & Self.alternate != 0
+    let command = flags & Self.command != 0
+    // Exactly one of Option or Command, and it must be the right-hand key.
+    let isCombo = option != command && flags & Self.otherModifiers == 0
+      && flags & (option ? Self.rightOptionDeviceMask : Self.rightCommandDeviceMask) != 0
     guard isCombo else { return .pass }
     swallowsKeyUp = true
     return isRepeat ? .swallow : .trigger

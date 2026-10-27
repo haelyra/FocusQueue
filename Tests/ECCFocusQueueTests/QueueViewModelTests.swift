@@ -612,19 +612,27 @@ struct QueueViewModelTests {
         context: nil, characters: characters, charactersIgnoringModifiers: characters,
         isARepeat: false, keyCode: keyCode)))
     }
-    func commandShiftTap() {
+    func commandShiftTap(commandKeyUpArrives: Bool = true) {
       send(.flagsChanged, 54, [.command])
       send(.flagsChanged, 56, [.command, .shift])
       send(.flagsChanged, 56, [.command])
-      send(.flagsChanged, 54, [])
+      if commandKeyUpArrives { send(.flagsChanged, 54, []) }
     }
 
-    commandShiftTap()
+    // The opening tap activates the app on its Shift release, and the Command
+    // key-up that follows can go missing; the cancel tap must still work.
+    commandShiftTap(commandKeyUpArrives: false)
     #expect(model.newTaskRequest?.autofocusPrompt == true)
     // Typing a capital letter in the prompt between taps must not block the cancel.
     send(.flagsChanged, 56, [.shift])
     send(.keyDown, 0, [.shift])
     send(.flagsChanged, 56, [])
+    commandShiftTap()
+    #expect(model.newTaskRequest == nil)
+
+    // And the next open/cancel pair works from the healed state.
+    commandShiftTap()
+    #expect(model.newTaskRequest != nil)
     commandShiftTap()
     #expect(model.newTaskRequest == nil)
   }

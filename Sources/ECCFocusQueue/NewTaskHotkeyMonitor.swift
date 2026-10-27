@@ -33,10 +33,16 @@ final class NewTaskHotkeyMonitor {
   func handle(_ event: NSEvent) {
     guard event.type == .flagsChanged else {
       state.noteKeyDown()
+      if let reason = state.takeIgnoredReason() {
+        NSLog("New task hotkey: Right Command + Shift ignored (%@)", reason)
+      }
       return
     }
     if state.update(keyCode: event.keyCode, flags: event.modifierFlags) != nil {
       onTrigger()
+    }
+    if let reason = state.takeIgnoredReason() {
+      NSLog("New task hotkey: Right Command + Shift ignored (%@)", reason)
     }
   }
 }
@@ -53,37 +59,64 @@ final class HotkeyComboState {
   private(set) var rightCommandDown = false
   private(set) var shiftDown = false
   private var fired = false
+  /// Modifiers of the chord that fired; the chord re-arms once an event shows none of them held.
+  private var firedModifiers: NSEvent.ModifierFlags = []
   /// Right Command + Shift is common in shortcuts (⌘⇧Z, ⌘⇧4), so it fires on
   /// release and only when nothing else was typed while it was held.
   private var commandTapPending = false
 
+  /// Why the last Right Command + Shift chord ended without firing; nil if none.
+  /// The monitor logs it so a miss in the field leaves evidence.
+  private(set) var ignoredReason: String?
+
   /// Option + Shift fires once per full press and re-arms on full release.
   func update(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> Trigger? {
+    // Key-ups can go missing: a Command tap fires on release, and the app
+    // activates at that instant. Every event carries the full modifier state, so
+    // drop anything it no longer shows as held.
+    if !flags.contains(.command) { rightCommandDown = false }
+    if !flags.contains(.option) { rightOptionDown = false }
+    if !flags.contains(.shift) { shiftDown = false }
+    if fired, flags.intersection(firedModifiers).isEmpty { fired = false }
     switch keyCode {
     case 61: rightOptionDown = flags.contains(.option)
-    case 54: rightCommandDown = flags.contains(.command)
+    case 54:
+      if flags.contains(.command) {
+        // A press of a key still recorded as down means its key-up was lost.
+        if rightCommandDown { fired = false; commandTapPending = false }
+        rightCommandDown = true
+      }
     case 56, 60: shiftDown = flags.contains(.shift)
     default: break
     }
-    defer { if !rightOptionDown && !rightCommandDown && !shiftDown { fired = false } }
     if rightOptionDown && shiftDown {
       commandTapPending = false
       if fired { return nil }
       fired = true
+      firedModifiers = [.option, .shift]
       return .optionShift
     }
     if rightCommandDown && shiftDown {
       // Any other modifier joining turns the tap into some other shortcut.
-      commandTapPending = !fired && flags.intersection([.option, .control]).isEmpty
+      let clean = flags.intersection([.option, .control]).isEmpty
+      commandTapPending = !fired && clean
+      if !clean { ignoredReason = "another modifier joined" }
       return nil
     }
     guard commandTapPending else { return nil }
     commandTapPending = false
     fired = true
+    firedModifiers = [.command, .shift]
     return .commandShift
   }
 
   func noteKeyDown() {
+    if commandTapPending { ignoredReason = "a key was typed while held" }
     commandTapPending = false
+  }
+
+  func takeIgnoredReason() -> String? {
+    defer { ignoredReason = nil }
+    return ignoredReason
   }
 }

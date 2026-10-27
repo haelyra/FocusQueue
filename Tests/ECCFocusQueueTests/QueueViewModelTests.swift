@@ -349,16 +349,23 @@ struct QueueViewModelTests {
     })
 
     model.setDefaultAgentProvider(.claude)
-    model.setDefaultAgentModel("claude-sonnet-5", for: .claude)
-    model.setDefaultAgentEffort("high", for: .claude)
+    // Agent-launch defaults no longer leak into QChat (FOC-075).
+    model.setDefaultAgentModel("claude-opus-5-5", for: .claude)
+    model.setChatModel("claude-haiku-5-5", for: .claude)
+    model.setChatEffort("high", for: .claude)
 
     #expect(model.sendQueueAgentMessage("Why is ECC-102 second?"))
     try await eventually { await claudeAgent.hasPendingReply }
 
     #expect(await codexAgent.messages.isEmpty)
     #expect(await claudeAgent.messages.count == 1)
-    #expect(await claudeAgent.sentModels.first == "claude-sonnet-5")
+    #expect(await claudeAgent.sentModels.first == "claude-haiku-5-5")
     #expect(await claudeAgent.sentEfforts.first == "high")
+    let firstMessage = try #require(await claudeAgent.messages.first)
+    #expect(QueueAgentPrompt.userRequest(in: firstMessage) == "Why is ECC-102 second?")
+    #expect(firstMessage.contains("Task snapshot"))
+    #expect(firstMessage.contains("- ECC-102:"))
+    #expect(!firstMessage.contains("Recent conversation"))
     let executable = try #require(await claudeAgent.sentExecutables.first)
     #expect(executable.hasSuffix("/.local/bin/focus-queue-claude"))
 
@@ -368,6 +375,10 @@ struct QueueViewModelTests {
     model.setDefaultAgentProvider(.codex)
     #expect(model.sendQueueAgentMessage("And now with Codex?"))
     try await eventually { await codexAgent.hasPendingReply }
+    let followUp = try #require(await codexAgent.messages.first)
+    #expect(followUp.contains("Recent conversation"))
+    #expect(followUp.contains("agent: ECC-101 outranks ECC-102."))
+    #expect(QueueAgentPrompt.userRequest(in: followUp) == "And now with Codex?")
     #expect(await codexAgent.sentExecutables.first == model.config.verifier.executable)
     await codexAgent.reply("Same order.")
     try await eventually { !model.isQueueAgentResponding }

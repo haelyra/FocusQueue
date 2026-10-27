@@ -1800,6 +1800,10 @@ final class QueueViewModel {
       return false
     }
 
+    // Each turn runs in a fresh provider session; this bounded recap replaces
+    // the resumed history that grew with every tool result (FOC-075).
+    let recap = QueueChatContext.recap(
+      chatMessages(ticketID: ticketID).map { (role: $0.role.rawValue, text: $0.text) })
     appendChat(
       QueueChatMessage(role: .user, text: message, canvasSelection: canvasSelection),
       ticketID: ticketID)
@@ -1824,8 +1828,8 @@ final class QueueViewModel {
     let deferredTicketIDs = localState.deferredTicketIDs.filter { scopedTaskIDs.contains($0) }
     let scopedMessage: String
     let provider = defaultAgentProvider
-    let chatModel = Self.normalizedChatOption(defaultAgentModel(for: provider))
-    let chatEffort = Self.normalizedChatOption(defaultAgentEffort(for: provider))
+    let chatModel = Self.normalizedChatOption(config.chatModel(for: provider))
+    let chatEffort = Self.normalizedChatOption(config.chatEffort(for: provider))
     var agentConfiguration = config.verifier
     agentConfiguration.executable = config.chatExecutable(for: provider)
     agentConfiguration.supportDirectory = paths.supportDirectory.path
@@ -1849,6 +1853,14 @@ final class QueueViewModel {
     )).sorted()
     let contextualMessage =
       canvasSelection?.orchestratorMessage(userRequest: message) ?? message
+    let snapshotIDs = Array(
+      Set((ticketID.map { [$0] } ?? []) + QueueChatContext.taskIDs(
+        in: message, known: Set(taskContexts.keys).union(dashboard.tickets.map(\.id))))
+    ).sorted()
+    let turnContext = QueueChatContext.snapshot(
+      taskIDs: snapshotIDs, contexts: taskContexts, tickets: dashboard.tickets) + recap
+    let request = (turnContext.isEmpty ? "" : "\n" + turnContext)
+      + QueueAgentPrompt.userRequestMarker + contextualMessage
     if let ticketID, let context = taskContexts[ticketID] {
       agentConfiguration.sessionName = "ecc-focus-queue-task-\(ticketID.lowercased())"
       agentConfiguration.contextDirectory = context.contextDirectory.path
@@ -1858,13 +1870,13 @@ final class QueueViewModel {
         Apply changes only when requested.
 
         """
-      scopedMessage = taskScope + "Project: \(context.projectName ?? context.projectID ?? "Unassigned"). " + contextScope + contextualMessage
+      scopedMessage = taskScope + "Project: \(context.projectName ?? context.projectID ?? "Unassigned"). " + contextScope + request
     } else {
       let catalog = config.projects.map { project in
         "- \(project.name) (\(project.id)): dashboard \(project.dashboardPath); workspace \(project.workspacePath)"
       }.joined(separator: "\n")
       let scope = "Selected project: \(projectScopeName) (\(selectedProjectID ?? ProjectCatalog.otherID)). Selected task IDs: \(projectTickets.map(\.id).joined(separator: ", ")).\nConfigured projects, all readable without changing the UI selection:\n\(catalog)\n"
-      scopedMessage = scope + "Read the dashboard for the project named in the user's request. Preserve projectID and unknown fields on edits to the selected dashboard.\n\n" + contextualMessage
+      scopedMessage = scope + "Read the dashboard for the project named in the user's request. Preserve projectID and unknown fields on edits to the selected dashboard." + request
     }
     queueChatTask = Task { [weak self] in
       guard let self else { return }
@@ -1923,24 +1935,27 @@ final class QueueViewModel {
     queueChatTask?.cancel()
   }
 
-  /// Clears the visible transcript and resets the provider's harness session so
-  /// the next message starts a fresh thread.
+  /// Clears the visible transcript, the saved conversation that feeds the next
+  /// turn's recap, and every provider's harness session and saved transcript,
+  /// so the next message starts with no prior history.
   func clearQueueChat(ticketID: String?) {
     if respondingTicketID == ticketID { queueChatTask?.cancel() }
     if let ticketID { taskChatMessages[ticketID] = [] } else { queueChatMessages = [] }
     let provider = defaultAgentProvider
-    var resetConfiguration = config.verifier
-    resetConfiguration.executable = config.chatExecutable(for: provider)
-    resetConfiguration.supportDirectory = paths.supportDirectory.path
-    resetConfiguration.contextDirectory =
-      paths.supportDirectory.appendingPathComponent("tasks").path
-    if let ticketID {
-      resetConfiguration.sessionName = "ecc-focus-queue-task-\(ticketID.lowercased())"
-      if let context = taskContexts[ticketID] {
-        resetConfiguration.contextDirectory = context.contextDirectory.path
+    let resets = AgentProvider.allCases.map { candidate in
+      var resetConfiguration = config.verifier
+      resetConfiguration.executable = config.chatExecutable(for: candidate)
+      resetConfiguration.supportDirectory = paths.supportDirectory.path
+      resetConfiguration.contextDirectory =
+        paths.supportDirectory.appendingPathComponent("tasks").path
+      if let ticketID {
+        resetConfiguration.sessionName = "ecc-focus-queue-task-\(ticketID.lowercased())"
+        if let context = taskContexts[ticketID] {
+          resetConfiguration.contextDirectory = context.contextDirectory.path
+        }
       }
+      return (candidate, queueAgent(for: candidate), resetConfiguration)
     }
-    let agent = queueAgent(for: provider)
     let scope = "conversation-\(ticketID ?? "queue")"
     Task { [weak self] in
       guard let self else { return }
@@ -1950,11 +1965,15 @@ final class QueueViewModel {
       } catch {
         self.recordDurableError(error, scope: scope)
       }
-      do {
-        try await agent.reset(configuration: resetConfiguration)
-      } catch {
-        self.loadError =
-          "Could not reset the \(provider.displayName) chat session: \(error.localizedDescription)"
+      for (candidate, agent, resetConfiguration) in resets {
+        do {
+          try await agent.reset(configuration: resetConfiguration)
+        } catch where candidate == provider {
+          self.loadError =
+            "Could not reset the \(provider.displayName) chat session: \(error.localizedDescription)"
+        } catch {
+          // An inactive provider may not be installed; its stale session is harmless.
+        }
       }
     }
   }
@@ -2164,8 +2183,8 @@ final class QueueViewModel {
     documentConfiguration.executable = config.chatExecutable(for: provider)
     let conversation = DocumentConversation(document: document, subject: subject, support: paths.supportDirectory,
       agent: queueAgent(for: provider), configuration: documentConfiguration, dashboardPath: dashboardPath, workspace: config.workspacePath,
-      model: Self.normalizedChatOption(defaultAgentModel(for: provider)),
-      effort: Self.normalizedChatOption(defaultAgentEffort(for: provider)))
+      model: Self.normalizedChatOption(config.chatModel(for: provider)),
+      effort: Self.normalizedChatOption(config.chatEffort(for: provider)))
     documentConversations[key] = conversation
     return conversation
   }
@@ -3555,6 +3574,22 @@ final class QueueViewModel {
     let normalized = trimmed.flatMap { $0.isEmpty ? nil : $0 }
     guard config.defaultAgentModels[provider] != normalized else { return }
     config.defaultAgentModels[provider] = normalized
+    persistConfiguration()
+  }
+
+  func setChatModel(_ model: String?, for provider: AgentProvider) {
+    let trimmed = model?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let normalized = trimmed.flatMap { $0.isEmpty ? nil : $0 }
+    guard config.chatModels[provider] != normalized else { return }
+    config.chatModels[provider] = normalized
+    persistConfiguration()
+  }
+
+  func setChatEffort(_ effort: String?, for provider: AgentProvider) {
+    let trimmed = effort?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let normalized = trimmed.flatMap { $0.isEmpty ? nil : $0 }
+    guard config.chatEfforts[provider] != normalized else { return }
+    config.chatEfforts[provider] = normalized
     persistConfiguration()
   }
 

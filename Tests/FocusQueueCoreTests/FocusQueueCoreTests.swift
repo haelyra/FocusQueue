@@ -1597,12 +1597,20 @@ func codexQueueAgentArguments() async throws {
   #expect(prompt.contains("Do not edit state.json"))
   #expect(prompt.contains("Current local deferred task IDs: ECC-009"))
   #expect(prompt.contains("Truth is a hard operational invariant"))
-  #expect(prompt.contains("/Users/hira/.local/bin/focus-mail"))
-  #expect(prompt.contains("Use the provider selected in ingestion settings"))
-  #expect(prompt.lowercased().contains("do not use himalaya"))
-  #expect(prompt.contains("MAIL_PROOF: <nonce>"))
-  #expect(prompt.contains("/Users/hira/.local/bin/focus-discord"))
-  #expect(prompt.contains("DISCORD_PROOF: <nonce>"))
+  #expect(!prompt.contains("MAIL_PROOF: <nonce>"))
+  let connectorPrompt = CodexQueueAgent.prompt(
+    message: "Check my email and Discord for ECC-002.",
+    dashboardPath: "/tmp/dashboard.json",
+    workspace: "/tmp/workspace",
+    visibleOrder: [],
+    deferredTicketIDs: []
+  )
+  #expect(connectorPrompt.contains("/Users/hira/.local/bin/focus-mail"))
+  #expect(connectorPrompt.contains("Use the provider selected in ingestion settings"))
+  #expect(connectorPrompt.lowercased().contains("do not use himalaya"))
+  #expect(connectorPrompt.contains("MAIL_PROOF: <nonce>"))
+  #expect(connectorPrompt.contains("/Users/hira/.local/bin/focus-discord"))
+  #expect(connectorPrompt.contains("DISCORD_PROOF: <nonce>"))
   #expect(CodexQueueAgent.sessionName == "ecc-focus-queue-codex-v1")
   #expect(prompt.contains("<queue-user-message>"))
 }

@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -27,6 +28,9 @@ DEFAULT_PROOF_DIRECTORY = Path(
 DEFAULT_MAIL_COMMAND_DIRECTORY = Path(
     "/Users/hira/Library/Application Support/ECC Focus Queue/connector-commands"
 )
+# Chat turns need shell, file reads, and plan edits only. Agent, Workflow,
+# skills, and MCP schemas added ~15.7k tokens to every API call (FOC-075).
+LEAN_CHAT_TOOLS = "Bash,Read,Edit,Write,Grep,Glob"
 TRUSTED_CLAUDE_CANDIDATES = (
     Path("/Users/hira/.local/bin/claude"),
     Path("/opt/homebrew/bin/claude"),
@@ -272,6 +276,8 @@ def run_claude(
     disable_tools: bool = False,
     context_directory: Path | None = None,
     writable_directories: list[Path] | None = None,
+    lean: bool = False,
+    persist_session: bool = True,
     _retried_schema: bool = False,
 ) -> tuple[str, str | None]:
     if context_directory is not None:
@@ -284,7 +290,7 @@ def run_claude(
     if usage_file is not None:
         usage_file = usage_file.expanduser()
         usage_file.unlink(missing_ok=True)
-    with tempfile.TemporaryDirectory(prefix="turn-", dir=runtime):
+    with tempfile.TemporaryDirectory(prefix="turn-", dir=runtime) as turn_directory:
         executable = resolve_claude()
         command = [
             executable,
@@ -298,6 +304,10 @@ def run_claude(
             command.extend(["--tools", ""])
         else:
             command.extend(["--permission-mode", "bypassPermissions"])
+            if lean:
+                command.extend([
+                    "--tools", LEAN_CHAT_TOOLS, "--strict-mcp-config", "--disable-slash-commands",
+                ])
         allow_extra_directories = sandbox == "workspace-write" and not disable_tools
         if expose_evidence_directories and allow_extra_directories:
             command.extend(
@@ -320,11 +330,18 @@ def run_claude(
                 resolved = Path(directory).expanduser()
                 if resolved.is_dir():
                     command.extend(["--add-dir", str(resolved.resolve())])
+        if lean:
+            # A lean turn runs from its empty turn directory so Claude does not
+            # auto-load CLAUDE.md files above the workspace (~5.7k tokens);
+            # the workspace stays reachable as an added directory.
+            command.extend(["--add-dir", str(workspace)])
         if model is not None:
             command.extend(["--model", model])
         if effort is not None:
             command.extend(["--effort", effort])
-        if session_id:
+        if not persist_session:
+            command.append("--no-session-persistence")
+        elif session_id:
             command.extend(["--resume", session_id])
 
         process = subprocess.Popen(
@@ -334,7 +351,7 @@ def run_claude(
             stderr=subprocess.PIPE,
             text=True,
             start_new_session=True,
-            cwd=str(workspace),
+            cwd=turn_directory if lean else str(workspace),
             env={
                 **os.environ,
                 "FOCUS_QUEUE_CONNECTOR_PROOF_DIR": str(DEFAULT_PROOF_DIRECTORY),
@@ -427,6 +444,8 @@ def run_claude(
                     effort=effort,
                     disable_tools=disable_tools,
                     context_directory=context_directory,
+                    lean=lean,
+                    persist_session=persist_session,
                     _retried_schema=True,
                 )
             reply = json.dumps(payload, ensure_ascii=False)
@@ -446,6 +465,29 @@ def chat(arguments: argparse.Namespace) -> int:
         sessions = state.setdefault("sessions", {})
         prior_session = str(sessions.get(arguments.session, "")) or None
         prompt = arguments.prompt_file.read_text(encoding="utf-8")
+        if getattr(arguments, "fresh", False):
+            # The app sends its own short recap, so a fresh turn neither resumes
+            # nor saves a provider session whose history would grow every turn.
+            reply, _ = run_claude(
+                prompt=prompt,
+                workspace=arguments.workspace,
+                runtime=runtime,
+                timeout=arguments.timeout,
+                sandbox="workspace-write",
+                session_id=None,
+                output_schema=None,
+                usage_file=getattr(arguments, "usage_file", None),
+                expose_evidence_directories=True,
+                expose_queue_order=True,
+                model=getattr(arguments, "model", None),
+                effort=getattr(arguments, "effort", None),
+                context_directory=getattr(arguments, "context_dir", None),
+                writable_directories=getattr(arguments, "writable_dirs", None),
+                lean=True,
+                persist_session=False,
+            )
+            print(reply)
+            return 0
         try:
             reply, observed_session = run_claude(
                 prompt=prompt,
@@ -518,13 +560,31 @@ def run_once(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def remove_session_transcripts(session_id: str) -> int:
+    """Delete Claude's saved transcript for one session so a cleared chat
+    leaves no resumable history behind."""
+    if not re.fullmatch(r"[0-9a-fA-F-]{36}", session_id):
+        return 0
+    config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser()
+    removed = 0
+    for transcript in (config / "projects").glob(f"*/{session_id}.jsonl"):
+        transcript.unlink(missing_ok=True)
+        removed += 1
+        sidecar = transcript.with_suffix("")
+        if sidecar.is_dir() and not sidecar.is_symlink():
+            shutil.rmtree(sidecar, ignore_errors=True)
+    return removed
+
+
 def reset(arguments: argparse.Namespace) -> int:
     runtime = arguments.runtime.expanduser()
     state_path = runtime / "sessions.json"
     state = load_state(state_path)
     removed = state.setdefault("sessions", {}).pop(arguments.session, None)
     morning.write_private_json(state_path, state)
-    print(json.dumps({"status": "ok", "session": arguments.session, "reset": bool(removed)}))
+    transcripts = remove_session_transcripts(str(removed)) if removed else 0
+    print(json.dumps({"status": "ok", "session": arguments.session, "reset": bool(removed),
+                      "transcriptsRemoved": transcripts}))
     return 0
 
 
@@ -550,6 +610,8 @@ def main() -> int:
     chat_parser.add_argument("--timeout", type=int, default=120)
     chat_parser.add_argument("--model", help="Override the chat model slug")
     chat_parser.add_argument("--effort", help="Override the chat effort level")
+    chat_parser.add_argument("--fresh", action="store_true",
+                             help="Run a lean one-off turn without resuming or saving a session")
 
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--workspace", type=Path, required=True)

@@ -361,9 +361,25 @@ import UserNotifications
     newTaskHotkeyMonitor = nil
   }
 
+  /// True while the panel, or a sheet on it, takes typing.
+  private var panelHasKeyboardFocus: Bool {
+    guard let panel else { return false }
+    return panel.isKeyWindow || panel.attachedSheet?.isKeyWindow == true
+  }
+
+  /// Toggles: opens the new task sheet, refocuses it when another app has the
+  /// keyboard, and cancels it when it already has focus.
   private func handleNewTaskHotkey() {
+    if model.newTaskRequest != nil, panelHasKeyboardFocus {
+      model.clearNewTaskRequest()
+      return
+    }
     revealPanelOnPointerDisplay()
-    model.requestNewTask(autofocusPrompt: true)
+    if model.newTaskRequest == nil {
+      model.requestNewTask(autofocusPrompt: true)
+    } else if let panel {
+      (panel.attachedSheet ?? panel).makeKey()
+    }
   }
 
   private func startQChatHotkeyMonitor(promptForAccess: Bool) {
@@ -385,7 +401,15 @@ import UserNotifications
     qchatHotkeyMonitor = nil
   }
 
+  /// Toggles like the side-panel button, but a press while another app has the
+  /// keyboard brings the open chat back into focus instead of closing it.
   private func handleQChatHotkey() {
+    if model.isQueueChatInspectorPresented, model.panelMode == .expanded,
+      panel?.isKeyWindow == true, model.newTaskRequest == nil
+    {
+      model.setQueueChatInspectorPresented(false)
+      return
+    }
     revealPanelOnPointerDisplay()
     // A non-activating panel only takes typing once it is key; ordering it front is not enough.
     panel?.makeKey()

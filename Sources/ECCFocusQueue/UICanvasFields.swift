@@ -35,6 +35,28 @@ struct UICanvasRGBA: Equatable {
   var a: Double
 }
 
+/// One box-shadow layer, edited with sliders instead of CSS text.
+struct UICanvasShadow: Equatable {
+  var x = 0.0
+  var y = 4.0
+  var blur = 12.0
+  var spread = 0.0
+  var color = "rgba(0, 0, 0, 0.15)"
+  var inset = false
+}
+
+/// A linear gradient with its angle and color stops, edited with an angle
+/// slider and color swatches instead of CSS text.
+struct UICanvasGradient: Equatable {
+  struct Stop: Equatable {
+    var color: String
+    var position: String?
+  }
+
+  var angle = 180.0
+  var stops: [Stop]
+}
+
 enum UICanvasFields {
   static let lengthUnits = ["px", "rem", "em", "%"]
 
@@ -164,5 +186,146 @@ enum UICanvasFields {
       return (0, "solid", "#000000")
     }
     return (Double(match.1) ?? 0, String(match.2), String(match.3))
+  }
+
+  // MARK: Structured values
+
+  /// Splits on `separator` outside parentheses, so `rgba(0, 0, 0, .1)` stays whole.
+  static func splitTopLevel(_ value: String, separator: Character) -> [String] {
+    var parts: [String] = [], current = "", depth = 0
+    for character in value {
+      if character == "(" { depth += 1 } else if character == ")" { depth = Swift.max(0, depth - 1) }
+      if depth == 0, character == separator || (separator == " " && character.isWhitespace) {
+        if !current.isEmpty { parts.append(current) }
+        current = ""
+      } else {
+        current.append(character)
+      }
+    }
+    if !current.isEmpty { parts.append(current) }
+    return parts.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+  }
+
+  /// A unitless zero or a px length.
+  private static func pixels(_ token: String) -> Double? {
+    if let value = Double(token), value == 0 { return 0 }
+    guard token.hasSuffix("px"), let value = Double(token.dropLast(2)), value.isFinite else { return nil }
+    return value
+  }
+
+  private static func isColorToken(_ token: String) -> Bool {
+    parseColor(token) != nil || token.range(of: "^[a-z]+$", options: .regularExpression) != nil
+  }
+
+  private static func normalizedColor(_ token: String) -> String {
+    parseColor(token).map(formatColor) ?? token
+  }
+
+  /// Every layer of a box-shadow, or nil when a layer uses something the
+  /// controls cannot represent (em lengths, variables). "none" is no layers.
+  static func parseShadows(_ value: String) -> [UICanvasShadow]? {
+    let text = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if text.isEmpty || text == "none" { return [] }
+    var shadows: [UICanvasShadow] = []
+    for layer in splitTopLevel(text, separator: ",") {
+      var shadow = UICanvasShadow(), lengths: [Double] = [], color: String?
+      for token in splitTopLevel(layer, separator: " ") {
+        if token == "inset" { shadow.inset = true }
+        else if let length = pixels(token) { lengths.append(length) }
+        else if color == nil, isColorToken(token) { color = token }
+        else { return nil }
+      }
+      guard (2...4).contains(lengths.count) else { return nil }
+      shadow.x = lengths[0]
+      shadow.y = lengths[1]
+      shadow.blur = lengths.count > 2 ? Swift.max(0, lengths[2]) : 0
+      shadow.spread = lengths.count > 3 ? lengths[3] : 0
+      shadow.color = normalizedColor(color ?? "currentcolor")
+      shadows.append(shadow)
+    }
+    return shadows
+  }
+
+  static func formatShadows(_ shadows: [UICanvasShadow]) -> String {
+    guard !shadows.isEmpty else { return "none" }
+    return shadows.map { shadow in
+      let lengths = [shadow.x, shadow.y, shadow.blur, shadow.spread].map { $0 == 0 ? "0" : formatNumber($0) + "px" }
+      return (shadow.inset ? ["inset"] : []) + lengths + [shadow.color]
+    }.map { $0.joined(separator: " ") }.joined(separator: ", ")
+  }
+
+  private static let sideAngles: [String: Double] = [
+    "to top": 0, "to top right": 45, "to right top": 45, "to right": 90, "to bottom right": 135,
+    "to right bottom": 135, "to bottom": 180, "to bottom left": 225, "to left bottom": 225,
+    "to left": 270, "to top left": 315, "to left top": 315,
+  ]
+
+  /// A single linear-gradient layer, or nil for images, repeating or radial
+  /// gradients, and stacked layers, which stay as text.
+  static func parseGradient(_ value: String) -> UICanvasGradient? {
+    let text = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard splitTopLevel(text, separator: ",").count == 1,
+          let match = text.wholeMatch(of: /linear-gradient\((.*)\)/) else { return nil }
+    var arguments = splitTopLevel(String(match.1), separator: ",")
+    guard let first = arguments.first else { return nil }
+    var gradient = UICanvasGradient(stops: [])
+    if let angle = first.wholeMatch(of: /(-?[\d.]+)(deg|turn|rad|grad)/), let number = Double(angle.1) {
+      let degrees: Double = switch angle.2 {
+      case "turn": number * 360
+      case "rad": number * 180 / .pi
+      case "grad": number * 0.9
+      default: number
+      }
+      gradient.angle = (degrees.truncatingRemainder(dividingBy: 360) + 360).truncatingRemainder(dividingBy: 360)
+      arguments.removeFirst()
+    } else if first.hasPrefix("to ") {
+      guard let degrees = sideAngles[first.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)]
+      else { return nil }
+      gradient.angle = degrees
+      arguments.removeFirst()
+    }
+    for argument in arguments {
+      let tokens = splitTopLevel(argument, separator: " ")
+      guard (1...2).contains(tokens.count), isColorToken(tokens[0]) else { return nil }
+      if tokens.count == 2, tokens[1].range(of: #"^-?[\d.]+(%|px)$"#, options: .regularExpression) == nil { return nil }
+      gradient.stops.append(.init(color: normalizedColor(tokens[0]), position: tokens.count == 2 ? tokens[1] : nil))
+    }
+    return gradient.stops.count >= 2 ? gradient : nil
+  }
+
+  static func formatGradient(_ gradient: UICanvasGradient) -> String {
+    let stops = gradient.stops.map { [$0.color, $0.position].compactMap { $0 }.joined(separator: " ") }
+    return "linear-gradient(\(formatNumber(gradient.angle))deg, \(stops.joined(separator: ", ")))"
+  }
+
+  /// Per-side labels for a box shorthand, in CSS order.
+  static func sideLabels(_ property: String) -> [String] {
+    switch property {
+    case "gap": ["Row", "Column"]
+    case "border-radius": ["Top left", "Top right", "Bottom right", "Bottom left"]
+    default: ["Top", "Right", "Bottom", "Left"]
+    }
+  }
+
+  /// Expands a 1-4 part shorthand into one value per side.
+  static func boxSides(_ value: String, count: Int) -> [String]? {
+    let parts = splitTopLevel(value.trimmingCharacters(in: .whitespacesAndNewlines), separator: " ")
+    guard (1...count).contains(parts.count) else { return nil }
+    if count == 2 { return parts.count == 1 ? [parts[0], parts[0]] : parts }
+    switch parts.count {
+    case 1: return Array(repeating: parts[0], count: 4)
+    case 2: return [parts[0], parts[1], parts[0], parts[1]]
+    case 3: return [parts[0], parts[1], parts[2], parts[1]]
+    default: return parts
+    }
+  }
+
+  /// The shortest shorthand for per-side values.
+  static func composeBox(_ sides: [String]) -> String {
+    if Set(sides).count == 1 { return sides[0] }
+    guard sides.count == 4 else { return sides.joined(separator: " ") }
+    if sides[0] == sides[2], sides[1] == sides[3] { return "\(sides[0]) \(sides[1])" }
+    if sides[1] == sides[3] { return "\(sides[0]) \(sides[1]) \(sides[2])" }
+    return sides.joined(separator: " ")
   }
 }

@@ -178,7 +178,24 @@ struct WezTermConnectionTests {
     #expect(calls.count == 3)
     #expect(calls[1].timeoutSeconds == 2)
     #expect(calls[2].environment?["WEZTERM_UNIX_SOCKET"] == working)
-    #expect(calls.allSatisfy { $0.arguments == ["cli", "list", "--format", "json"] })
+    #expect(calls[0].arguments == ["cli", "list", "--format", "json"])
+    #expect(calls.dropFirst().allSatisfy { $0.arguments == ["cli", "--no-auto-start", "list", "--format", "json"] })
+  }
+
+  @Test("A socket left by a quit GUI fails fast instead of spawning a headless mux")
+  func pinnedProbesNeverAutoStart() async throws {
+    let fixtures = try SocketFixtures()
+    let stale = try fixtures.socket("gui-sock-1")
+    let runner = ConnectionProbeRunner([failed])
+    let result = try await WezTermConnection.resolve(
+      configuration: .init(executable: "/mock/wezterm", socketPath: stale), runner: runner,
+      candidateSockets: [stale])
+    #expect(!result.result.succeeded)
+    #expect(!result.result.timedOut, "A dead socket must reach the launch path, not report a lookup timeout.")
+    let calls = await runner.specifications
+    #expect(calls.count == 1)
+    #expect(calls[0].arguments == ["cli", "--no-auto-start", "list", "--format", "json"])
+    #expect(calls[0].environment?["WEZTERM_UNIX_SOCKET"] == stale)
   }
 
   @Test("Initial timeout stops discovery and remains visible to prevent duplicate launch")

@@ -191,6 +191,100 @@ struct TmuxPersistenceTests {
     try FileManager.default.removeItem(at: root)
   }
 
+  @Test("Saves reclaim a lock abandoned by a shutdown or a killed save", .enabled(if: SetupEnvironment.executable("tmux") != nil))
+  func savesReclaimAbandonedLocks() async throws {
+    let executable = try #require(SetupEnvironment.executable("tmux"))
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("persistence lock \(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let resources = root.appendingPathComponent("bundled plugins")
+    let original = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+      .deletingLastPathComponent().appendingPathComponent("Vendor/Tmux")
+    try FileManager.default.copyItem(at: original, to: resources)
+    let server = "fq-persist-lock-\(UUID().uuidString.lowercased())"
+    let runner = FoundationProcessRunner()
+    let persistence = try TmuxPersistence.prepare(executable: executable, serverName: server,
+      supportDirectory: root.appendingPathComponent("Application Support"), resourcesDirectory: resources,
+      heartbeatSeconds: 30)
+    let lock = persistence.stateDirectory.appendingPathComponent("operation.lock")
+    func abandonLock(owner: String?, modified: Date) throws {
+      try FileManager.default.createDirectory(at: lock, withIntermediateDirectories: false)
+      if let owner { try Data("\(owner)\n".utf8).write(to: lock.appendingPathComponent("pid")) }
+      try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: lock.path)
+    }
+    do {
+      let start = try await runner.run(.init(executable: executable,
+        arguments: ["-u", "-f", persistence.configurationURL.path, "-L", server,
+          "new-session", "-d", "-s", "fq-task-ecc-lock", "/bin/sleep", "120"],
+        environment: ["TMUX_TMPDIR": "/tmp"]))
+      #expect(start.succeeded, "\(start.standardError)")
+      try await persistence.enable(runner: runner)
+
+      // Killed between mkdir and the owner write, or between the two cleanup steps.
+      try abandonLock(owner: nil, modified: Date().addingTimeInterval(-60))
+      try await persistence.save(runner: runner)
+      #expect(!FileManager.default.fileExists(atPath: lock.path))
+
+      // From before the last restart: its recorded PID now names a live, unrelated process.
+      try abandonLock(owner: String(getpid()), modified: Date(timeIntervalSince1970: 1_000_000_000))
+      try await persistence.save(runner: runner)
+      #expect(!FileManager.default.fileExists(atPath: lock.path))
+
+      // A live owner from this boot keeps its lock.
+      try abandonLock(owner: String(getpid()), modified: Date())
+      await #expect(throws: TmuxError.self) { try await persistence.save(runner: runner) }
+      #expect(FileManager.default.fileExists(atPath: lock.appendingPathComponent("pid").path))
+      try FileManager.default.removeItem(at: lock)
+    } catch {
+      _ = try? await tmux(runner, executable, server, ["kill-server"])
+      try? FileManager.default.removeItem(at: root)
+      throw error
+    }
+    _ = try await tmux(runner, executable, server, ["kill-server"])
+    try FileManager.default.removeItem(at: root)
+  }
+
+  @Test("A new server keeps a larger recovery layout but replaces an outdated one", .enabled(if: SetupEnvironment.executable("tmux") != nil))
+  func recoveryFollowsTheLargestRecentLayout() async throws {
+    let executable = try #require(SetupEnvironment.executable("tmux"))
+    let runner = FoundationProcessRunner()
+    for (recoveryPanes, lastPanes, expectedPanes) in [(1, 3, 3), (3, 1, 3)] {
+      let root = FileManager.default.temporaryDirectory.appendingPathComponent("persistence recovery \(UUID().uuidString)")
+      let resources = root.appendingPathComponent("bundled plugins")
+      try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+      let original = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent().appendingPathComponent("Vendor/Tmux")
+      try FileManager.default.copyItem(at: original, to: resources)
+      let server = "fq-persist-recovery-\(UUID().uuidString.lowercased())"
+      let persistence = try TmuxPersistence.prepare(executable: executable, serverName: server,
+        supportDirectory: root.appendingPathComponent("Application Support"), resourcesDirectory: resources,
+        heartbeatSeconds: 30)
+      let snapshots = persistence.stateDirectory.appendingPathComponent("resurrect")
+      try FileManager.default.createDirectory(at: snapshots.appendingPathComponent("recovery"),
+        withIntermediateDirectories: true)
+      func layout(_ panes: Int) -> String {
+        (0..<panes).map { "pane\tfq-task-ecc-\($0)\t0\t1\t:*\t0\thost\t:/tmp\t1\tshell\t:\n" }.joined()
+      }
+      try layout(recoveryPanes).write(to: snapshots.appendingPathComponent("recovery/last"), atomically: true, encoding: .utf8)
+      try layout(lastPanes).write(to: snapshots.appendingPathComponent("last"), atomically: true, encoding: .utf8)
+      do {
+        let start = try await runner.run(.init(executable: executable,
+          arguments: ["-u", "-f", "/dev/null", "-L", server, "new-session", "-d", "-s", "bootstrap", "/bin/sleep", "60"],
+          environment: ["TMUX_TMPDIR": "/tmp"]))
+        #expect(start.succeeded, "\(start.standardError)")
+        try await persistence.enable(runner: runner)
+        let recovery = try String(contentsOf: snapshots.appendingPathComponent("recovery/last"), encoding: .utf8)
+        #expect(recovery == layout(expectedPanes),
+          "recovery \(recoveryPanes), last \(lastPanes): the larger, or newer equal, layout must be restorable")
+      } catch {
+        _ = try? await tmux(runner, executable, server, ["kill-server"])
+        try? FileManager.default.removeItem(at: root)
+        throw error
+      }
+      _ = try await tmux(runner, executable, server, ["kill-server"])
+      try FileManager.default.removeItem(at: root)
+    }
+  }
+
   private func tmux(_ runner: FoundationProcessRunner, _ executable: String, _ server: String, _ arguments: [String]) async throws -> ProcessResult {
     try await runner.run(.init(executable: executable, arguments: ["-u", "-L", server] + arguments,
       environment: ["TMUX_TMPDIR": "/tmp"], timeoutSeconds: 30))

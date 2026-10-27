@@ -508,7 +508,7 @@ public actor WezTermController: WezTermControlling {
             var pinned = configuration
             pinned.socketPath = cached
             let probe = try await runner.run(ProcessSpecification(
-                executable: pinned.executable, arguments: WezTermConnection.paneArguments,
+                executable: pinned.executable, arguments: WezTermConnection.paneArguments(for: pinned),
                 environment: pinned.cliEnvironment, timeoutSeconds: WezTermConnection.probeTimeoutSeconds))
             if WezTermConnection.hasValidPanes(probe) { return (pinned, probe) }
             resolvedSockets[configuration.executable] = nil
@@ -1997,7 +1997,7 @@ public actor WezTermController: WezTermControlling {
     private func listPanes(using configuration: WezTermConfiguration) async throws -> ProcessResult {
         try await runner.run(ProcessSpecification(
             executable: configuration.executable,
-            arguments: ["cli", "list", "--format", "json"],
+            arguments: WezTermConnection.paneArguments(for: configuration),
             environment: configuration.cliEnvironment,
             timeoutSeconds: 10
         ))

@@ -377,7 +377,7 @@ private actor TaskPaneLaunchRunner: ProcessRunning {
   #expect(receipt == DirectAgentLaunchReceipt(paneID: 42, socketPath: "/tmp/wezterm-focus.sock"))
   let calls = await runner.specifications
   #expect(calls.count == 2)
-  #expect(calls[0].arguments == ["cli", "list", "--format", "json"])
+  #expect(calls[0].arguments == ["cli", "--no-auto-start", "list", "--format", "json"])
   #expect(calls[1].arguments.starts(with: ["cli", "spawn", "--new-window"]))
   #expect(calls[1].arguments.contains("FOCUS_QUEUE_RUNTIME_MODE=terminal"))
   #expect(!calls[1].arguments.contains("FOCUS_QUEUE_TMUX_NAME=fq-direct"))

@@ -31,6 +31,7 @@ DEFAULT_MAIL_COMMAND_DIRECTORY = Path(
 # Chat turns need shell, file reads, and plan edits only. Agent, Workflow,
 # skills, and MCP schemas added ~15.7k tokens to every API call (FOC-075).
 LEAN_CHAT_TOOLS = "Bash,Read,Edit,Write,Grep,Glob"
+READER_TOOLS = "Read,Grep,Glob,WebSearch,WebFetch"
 TRUSTED_CLAUDE_CANDIDATES = (
     Path("/Users/hira/.local/bin/claude"),
     Path("/opt/homebrew/bin/claude"),
@@ -279,6 +280,7 @@ def run_claude(
     fork_session: bool = False,
     lean: bool = False,
     persist_session: bool = True,
+    reader: bool = False,
     _retried_schema: bool = False,
 ) -> tuple[str, str | None]:
     if context_directory is not None:
@@ -306,6 +308,12 @@ def run_claude(
             # `claude --help`: --tools "" disables every built-in tool; this is
             # how a read-only sandbox is approximated for the daily sweep.
             command.extend(["--tools", ""])
+        elif reader:
+            command.extend([
+                "--permission-mode", "bypassPermissions",
+                "--tools", READER_TOOLS, "--strict-mcp-config", "--disable-slash-commands",
+                "--settings", '{"disableAllHooks":true}',
+            ])
         else:
             command.extend(["--permission-mode", "bypassPermissions"])
             if lean:
@@ -455,6 +463,7 @@ def run_claude(
                     context_directory=context_directory,
                     lean=lean,
                     persist_session=persist_session,
+                    reader=reader,
                     _retried_schema=True,
                 )
             reply = json.dumps(payload, ensure_ascii=False)
@@ -475,7 +484,8 @@ def chat(arguments: argparse.Namespace) -> int:
         prior_session = str(sessions.get(arguments.session, "")) or None
         fork_from = None if prior_session else getattr(arguments, "fork_from", None)
         prompt = arguments.prompt_file.read_text(encoding="utf-8")
-        if getattr(arguments, "fresh", False):
+        reader = getattr(arguments, "reader", False)
+        if reader or getattr(arguments, "fresh", False):
             # The app sends its own short recap, so a fresh turn neither resumes
             # nor saves a provider session whose history would grow every turn.
             reply, _ = run_claude(
@@ -483,7 +493,7 @@ def chat(arguments: argparse.Namespace) -> int:
                 workspace=arguments.workspace,
                 runtime=runtime,
                 timeout=arguments.timeout,
-                sandbox="workspace-write",
+                sandbox="read-only" if reader else "workspace-write",
                 session_id=None,
                 output_schema=None,
                 usage_file=getattr(arguments, "usage_file", None),
@@ -495,6 +505,7 @@ def chat(arguments: argparse.Namespace) -> int:
                 writable_directories=getattr(arguments, "writable_dirs", None),
                 lean=True,
                 persist_session=False,
+                reader=reader,
             )
             print(reply)
             return 0
@@ -627,6 +638,8 @@ def main() -> int:
     )
     chat_parser.add_argument("--fresh", action="store_true",
                              help="Run a lean one-off turn without resuming or saving a session")
+    chat_parser.add_argument("--reader", action="store_true",
+                             help="Run an ephemeral document question with read/search tools")
 
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--workspace", type=Path, required=True)

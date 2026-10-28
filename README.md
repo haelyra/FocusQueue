@@ -25,6 +25,30 @@ directory. The launcher and app use it to share only the resolved project, task,
 workspace, tmux identity, and plan pointers. Project source and worktrees remain next
 to the configured repository, never under Application Support.
 
+## Document questions
+
+New document chats default to **Ephemeral reader**. It answers questions using the
+selected document, task summary, central plan, and recent chat messages. Each turn
+starts fresh without the creating agent's conversation or queue-management prompt.
+The reader can read and search; it cannot edit files. Codex uses `gpt-6-luna` at low
+effort, Claude uses `haiku`, and Kimi uses `kimi-code/k3.1-pro-highspeed`.
+
+Choose a different provider, model, or effort before sending. **Use creator's model**
+copies the author's model settings while keeping the reader's fresh context and
+tool limits. **Creating agent fork** continues the live author's conversation in
+a separate fork, and **New agent** retains the general agent workflow. Existing
+chats keep their recipient; **Clear Chat** lets you choose another one.
+
+The headless live reader check uses three provider requests to verify document/task
+context, tool-based reading, and edit refusal:
+
+```sh
+ECC_FOCUS_QUEUE_LIVE_DOCUMENT_TESTS=1 swift test --filter liveDocumentReaderSanity
+```
+
+Set `ECC_FOCUS_QUEUE_DOCUMENT_PROVIDER=claude` or `kimi` to check those providers.
+This check does not open or control the app UI.
+
 ## Reliable session recall
 
 New tmux agents share one session per task. **Sessions** shows a live pane map with

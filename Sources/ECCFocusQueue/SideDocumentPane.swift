@@ -370,8 +370,7 @@ struct DocumentConversationPane: View {
 }
 
 /// Document chat in the task chat's appearance. The settings bar names the
-/// recipient: a fork of the agent that created the document while that agent
-/// runs, otherwise a new agent whose provider, model, and effort are chosen here.
+/// Choose a fresh document reader, the creator's fork, or a new agent.
 struct DocumentConversationView: View {
     @Bindable var model: DocumentConversation
     @FocusState private var composerIsFocused: Bool
@@ -383,7 +382,7 @@ struct DocumentConversationView: View {
                 settingsBar
                 QueueChatTranscript(
                     messages: model.messages,
-                    emptyText: "Discuss this document with the \(model.subject.planLabel) and applicable AGENTS.md context. Select text and start typing to ask about it.",
+                    emptyText: "Discuss this document with \(model.subject.planLabel) context. Select text and start typing to ask about it.",
                     agentLabel: agentLabel,
                     progressText: model.isResponding ? progressText : nil)
                 if let error = model.error {
@@ -398,9 +397,9 @@ struct DocumentConversationView: View {
                     placeholder: "Ask about this document",
                     accessibilityLabel: "Ask about this document",
                     isResponding: model.isResponding,
-                    canSend: model.isLoaded,
-                    sendLabel: model.route.kind == .creatorFork
-                        ? "Send to a fork of the creating agent" : "Send to a new agent",
+                    canSend: model.isLoaded && !model.isClearing,
+                    sendLabel: model.route.kind == .ephemeralReader ? "Ask the ephemeral reader"
+                        : model.route.kind == .creatorFork ? "Send to a fork of the creating agent" : "Send to a new agent",
                     stopLabel: "Stop the document agent response",
                     selection: model.selection,
                     clearSelection: { model.selection = nil },
@@ -412,6 +411,7 @@ struct DocumentConversationView: View {
 
     private var agentLabel: String {
         let route = model.route
+        if route.kind == .ephemeralReader { return "READER · \(route.provider.displayName.uppercased())" }
         return route.kind == .creatorFork
             ? "CREATOR FORK · \(route.provider.displayName.uppercased())"
             : "NEW AGENT · \(route.provider.displayName.uppercased())"
@@ -419,6 +419,7 @@ struct DocumentConversationView: View {
 
     private var progressText: String {
         let route = model.route
+        if route.kind == .ephemeralReader { return "The document reader is replying" }
         return route.kind == .creatorFork
             ? "The creating agent's fork is replying"
             : "New \(route.provider.displayName) agent is replying"
@@ -438,8 +439,18 @@ struct DocumentConversationView: View {
                     .disabled(model.messages.isEmpty && model.lockedRoute == nil)
                     .help("Erase this conversation and choose its recipient again")
             }
+            Picker("Recipient", selection: Binding(
+                get: { model.route.kind }, set: { model.setRecipient($0) })) {
+                Text("Ephemeral reader").tag(DocumentChatRoute.Kind.ephemeralReader)
+                Text("Creating agent fork").tag(DocumentChatRoute.Kind.creatorFork)
+                    .disabled(model.creator?.isOpen != true && model.route.kind != .creatorFork)
+                Text("New agent").tag(DocumentChatRoute.Kind.newAgent)
+            }
+            .font(.caption)
+            .disabled(!model.canChooseProvider || model.isResponding)
+            .help("Choose who answers. Clear Chat to change a started conversation's recipient.")
             recipient
-            if model.route.kind == .newAgent {
+            if model.route.kind != .creatorFork {
                 HStack(spacing: 8) {
                     QueueChatAgentMenus(
                         provider: model.route.provider,
@@ -453,6 +464,12 @@ struct DocumentConversationView: View {
                         setEffort: model.setNewAgentEffort)
                     Spacer(minLength: 0)
                 }
+                if model.canChooseProvider, let creator = model.creator {
+                    Button("Use creator's model: \(creator.model ?? creator.author.provider.displayName + " default")") { model.useCreatorModel() }
+                        .font(.caption).buttonStyle(.borderless)
+                        .disabled(model.isResponding)
+                        .help("Use the document author's model and effort with this recipient")
+                }
             }
         }
         .confirmationDialog(
@@ -463,7 +480,7 @@ struct DocumentConversationView: View {
             Button("Clear Conversation", role: .destructive) { model.clear() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The transcript is erased. The next message goes to a fork of the creating agent when it is running, otherwise to a new agent.")
+            Text("The transcript is erased. Choose an ephemeral reader, a creating-agent fork, or a new agent for the next message.")
         }
     }
 
@@ -472,12 +489,12 @@ struct DocumentConversationView: View {
         let route = model.route
         let isFork = route.kind == .creatorFork
         return HStack(alignment: .top, spacing: 7) {
-            Image(systemName: isFork ? "arrow.triangle.branch" : "plus.bubble")
+            Image(systemName: route.kind == .ephemeralReader ? "doc.text.magnifyingglass" : isFork ? "arrow.triangle.branch" : "plus.bubble")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(Color.accentColor)
                 .frame(width: 14)
             VStack(alignment: .leading, spacing: 2) {
-                Text(isFork
+                Text(route.kind == .ephemeralReader ? "To an ephemeral \(route.provider.displayName) reader" : isFork
                     ? "To the creating agent · \(route.provider.displayName) fork"
                     : "To a new \(route.provider.displayName) agent")
                     .font(.system(size: 11.5, weight: .semibold))
@@ -509,6 +526,9 @@ struct DocumentConversationView: View {
 
     private var recipientDetail: String {
         let route = model.route
+        if route.kind == .ephemeralReader {
+            return "Reads this document with \(model.subject.planLabel) context. Answers questions and searches without changing files. Each turn starts fresh."
+        }
         if route.kind == .creatorFork {
             let agent = route.sourceTitle.map { "“\($0)”" } ?? "The creating agent"
             return model.lockedRoute == nil
@@ -518,6 +538,9 @@ struct DocumentConversationView: View {
         if model.lockedRoute != nil { return "This conversation started with a new agent." }
         if model.isResolvingCreator && model.creator == nil { return "Looking for the agent that created this document…" }
         if let creator = model.creator {
+            if creator.isOpen {
+                return "You chose a new agent. “\(creator.author.title)” also has a creating-agent fork available."
+            }
             return "“\(creator.author.title)” wrote this document but is not running, so a new agent answers."
         }
         return "No agent in this task wrote this document, so a new agent answers."

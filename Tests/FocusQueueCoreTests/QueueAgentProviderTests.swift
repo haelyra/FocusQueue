@@ -6,6 +6,7 @@ import Testing
 private actor QueueAgentRecordingRunner: ProcessRunning {
   private var results: [ProcessResult]
   private(set) var specifications: [ProcessSpecification] = []
+  private(set) var prompts: [String] = []
 
   init(results: [ProcessResult] = []) {
     self.results = results
@@ -13,10 +14,35 @@ private actor QueueAgentRecordingRunner: ProcessRunning {
 
   func run(_ specification: ProcessSpecification) throws -> ProcessResult {
     specifications.append(specification)
+    if let index = specification.arguments.firstIndex(of: "--prompt-file"),
+       let prompt = try? String(contentsOfFile: specification.arguments[index + 1], encoding: .utf8) {
+      prompts.append(prompt)
+    }
     guard !results.isEmpty else {
       return ProcessResult(exitCode: 0, standardOutput: "ok", standardError: "", timedOut: false)
     }
     return results.removeFirst()
+  }
+}
+
+@Test("Document readers bypass queue actions and receive fresh read-only provider arguments")
+func documentReaderProviderArguments() async throws {
+  for provider in AgentProvider.allCases {
+    let runner = QueueAgentRecordingRunner()
+    let agent = HarnessQueueAgent(provider: provider, runner: runner)
+    var configuration = chatConfiguration(executable: "/mock/\(provider.rawValue)")
+    configuration.documentReader = true
+    configuration.forkSourceSessionID = "must-not-fork"
+    configuration.writableDirectories = ["/must-not-write"]
+    let prompt = "Read the document.\nUser request:\nWhat does the report say about my inbox?"
+    let reply = try await agent.send(message: prompt, dashboardPath: "/dashboard", workspace: "/tmp",
+      visibleOrder: [], deferredTicketIDs: [], configuration: configuration, model: "small", effort: "low")
+    let invocation = try #require(await runner.specifications.first)
+    #expect(invocation.arguments.contains("--reader") && invocation.arguments.contains("--fresh"))
+    #expect(!invocation.arguments.contains("--fork-from") && !invocation.arguments.contains("--writable-dir"))
+    #expect(invocation.arguments.contains("small") && invocation.arguments.contains("low"))
+    #expect(await runner.prompts == [prompt])
+    #expect(reply.message == "ok")
   }
 }
 

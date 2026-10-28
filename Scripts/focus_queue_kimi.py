@@ -214,7 +214,16 @@ You are a concise assistant running one Focus Queue chat turn on the user's Mac.
 """
 
 
-def lean_chat_arguments(runtime: Path, workspace: Path) -> tuple[Path, list[str]]:
+READER_AGENT = """---
+name: focus-queue-document-reader
+description: Read documents and answer questions using read-only searches.
+tools: Read, Grep, Glob, WebSearch, FetchURL
+---
+You are an ephemeral document reader. Answer questions using the supplied document and task context. Search only when needed. Never edit files, launch agents, or change task or queue state.
+"""
+
+
+def lean_chat_arguments(runtime: Path, workspace: Path, *, reader: bool = False) -> tuple[Path, list[str]]:
     """Working directory and flags for a lean turn: an empty directory keeps
     workspace AGENTS.md files out, an empty skills directory drops the skill
     listing, and the workspace stays reachable as an added directory."""
@@ -222,9 +231,10 @@ def lean_chat_arguments(runtime: Path, workspace: Path) -> tuple[Path, list[str]
     skills_directory = runtime / "lean-chat-skills"
     for directory in (lean_directory, skills_directory):
         directory.mkdir(mode=0o700, exist_ok=True)
-    agent_file = runtime / "lean-chat-agent.md"
-    if not agent_file.exists() or agent_file.read_text(encoding="utf-8") != LEAN_CHAT_AGENT:
-        agent_file.write_text(LEAN_CHAT_AGENT, encoding="utf-8")
+    agent_file = runtime / ("document-reader-agent.md" if reader else "lean-chat-agent.md")
+    profile = READER_AGENT if reader else LEAN_CHAT_AGENT
+    if not agent_file.exists() or agent_file.read_text(encoding="utf-8") != profile:
+        agent_file.write_text(profile, encoding="utf-8")
         agent_file.chmod(0o600)
     return lean_directory, [
         "--agent-file", str(agent_file),
@@ -280,6 +290,7 @@ def run_kimi(
     context_directory: Path | None = None,
     writable_directories: list[Path] | None = None,
     lean: bool = False,
+    reader: bool = False,
     _retried_schema: bool = False,
 ) -> tuple[str, str | None]:
     if context_directory is not None:
@@ -295,7 +306,7 @@ def run_kimi(
     with tempfile.TemporaryDirectory(prefix="turn-", dir=runtime):
         executable = resolve_kimi()
         work_directory, lean_arguments = (
-            lean_chat_arguments(runtime, workspace) if lean else (workspace, [])
+            lean_chat_arguments(runtime, workspace, reader=reader) if lean else (workspace, [])
         )
         prior_marker = session_marker(newest_workspace_session(executable, work_directory))
         command = [
@@ -479,14 +490,15 @@ def chat(arguments: argparse.Namespace) -> int:
         state = load_state(state_path)
         sessions = state.setdefault("sessions", {})
         prior_session = str(sessions.get(arguments.session, "")) or None
-        fork_from = getattr(arguments, "fork_from", None)
+        reader = getattr(arguments, "reader", False)
+        fork_from = None if reader else getattr(arguments, "fork_from", None)
         if prior_session is None and fork_from:
             # Save the fork before the first turn so a failed turn never forks twice.
             prior_session = fork_session(fork_from, arguments.workspace)
             sessions[arguments.session] = prior_session
             morning.write_private_json(state_path, state)
         prompt = arguments.prompt_file.read_text(encoding="utf-8")
-        if getattr(arguments, "fresh", False):
+        if reader or getattr(arguments, "fresh", False):
             # The app sends its own short recap, so a fresh turn neither resumes
             # nor saves a session mapping whose history would grow every turn.
             reply, _ = run_kimi(
@@ -494,7 +506,7 @@ def chat(arguments: argparse.Namespace) -> int:
                 workspace=arguments.workspace,
                 runtime=runtime,
                 timeout=arguments.timeout,
-                sandbox="workspace-write",
+                sandbox="read-only" if reader else "workspace-write",
                 session_id=None,
                 output_schema=None,
                 usage_file=getattr(arguments, "usage_file", None),
@@ -504,6 +516,7 @@ def chat(arguments: argparse.Namespace) -> int:
                 context_directory=getattr(arguments, "context_dir", None),
                 writable_directories=getattr(arguments, "writable_dirs", None),
                 lean=True,
+                reader=reader,
             )
             print(reply)
             return 0
@@ -595,6 +608,8 @@ def main() -> int:
     chat_parser.add_argument("--session", required=True)
     chat_parser.add_argument("--fresh", action="store_true",
                              help="Run a one-off turn without resuming or saving a session")
+    chat_parser.add_argument("--reader", action="store_true",
+                             help="Run an ephemeral document question with read/search tools")
     chat_parser.add_argument("--workspace", type=Path, required=True)
     chat_parser.add_argument("--context-dir", type=Path)
     chat_parser.add_argument(

@@ -2312,6 +2312,41 @@ struct QueueViewModelTests {
     #expect(configured.diagnostic(for: .discord)?.statusLabel == "Setup required")
   }
 
+  @Test("The starter ingestion.json leaves each source on its own setup step, and is never rewritten")
+  func starterIngestionConfiguration() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let script = fixture.paths.connectorDiagnosticsScript
+    try FileManager.default.createDirectory(
+      at: script.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let source = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Scripts/focus_queue_connectors.py")
+    try FileManager.default.copyItem(at: source, to: script)
+    let model = await fixture.model(agent: ControlledQueueAgent())
+
+    #expect(model.createStarterIngestionConfiguration())
+    await model.diagnoseConnectors()
+
+    #expect(model.connectorDiagnosticsError == nil)
+    let snapshot = try #require(model.connectorDiagnostics)
+    #expect(snapshot.configurationPresent == true)
+    for platform in DailyReportPlatform.allCases {
+      let diagnostic = try #require(snapshot.diagnostic(for: platform))
+      #expect(diagnostic.statusLabel == "Setup required", "\(platform) should still need setup")
+      #expect(!diagnostic.nextStep.isEmpty)
+    }
+    let url = fixture.paths.ingestionConfigurationFile
+    let saved = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    #expect(saved["dashboardPath"] as? String == model.config.dashboardPath)
+    let mode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int
+    #expect(mode == 0o600)
+
+    try Data(#"{"discordGuildId":"123"}"#.utf8).write(to: url)
+    #expect(!model.createStarterIngestionConfiguration())
+    #expect(try String(contentsOf: url, encoding: .utf8) == #"{"discordGuildId":"123"}"#)
+  }
+
   @Test("Reading an archived report keeps the latest unread report notification")
   func historicalViewingPreservesLatestAttention() async throws {
     let fixture = try await Fixture()

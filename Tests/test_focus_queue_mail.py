@@ -2,6 +2,7 @@ import importlib.util
 import contextlib
 import io
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -30,8 +31,8 @@ SPEC.loader.exec_module(MODULE)
 # test fails the moment the reader reintroduces them.
 READER_MAIL_MOCK = r"""
 const fs = require("fs");
-globalThis.ObjC = {import() {}};
-globalThis.$ = (value) => value;
+globalThis.ObjC = {import() {}, unwrap(value) { return value; }};
+globalThis.$ = Object.assign((value) => value, {NSHomeDirectory() { return require("os").homedir(); }});
 let source = fs.readFileSync(process.argv[1], "utf8");
 for (const [from, to] of JSON.parse(process.argv[2] || "[]")) source = source.replace(from, to);
 eval(source);
@@ -291,6 +292,31 @@ class FocusQueueMailTests(unittest.TestCase):
             ["/usr/bin/open", "-g", "-n", str(application)],
         )
 
+    def test_reader_paths_follow_the_home_folder(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is required to exercise the JavaScript mail reader contract")
+        harness = r"""
+const fs = require("fs");
+globalThis.ObjC = {import() {}, unwrap(value) { return value; }};
+globalThis.$ = Object.assign((value) => value, {NSHomeDirectory() { return require("os").homedir(); }});
+eval(fs.readFileSync(process.argv[1], "utf8") + `
+process.stdout.write(JSON.stringify([CONFIG_PATH, DEFAULT_REQUEST_PATH, DEFAULT_RESPONSE_PATH, GMAIL_CONNECTOR_PATH]));
+`);
+"""
+        output = subprocess.run(
+            [node, "-e", harness, str(SCRIPTS / "focus-queue-mail-reader.js")],
+            check=True, capture_output=True, text=True,
+            env={**os.environ, "HOME": "/tmp/reader-home"},
+        ).stdout
+        support = "/tmp/reader-home/Library/Application Support/ECC Focus Queue"
+        self.assertEqual(json.loads(output), [
+            f"{support}/ingestion.json",
+            f"{support}/connector-commands",
+            f"{support}/mail-proofs",
+            f"{support}/automation/Scripts/focus_queue_gmail.py",
+        ])
+
     def test_reader_uses_same_configured_runtime_as_python_client(self):
         node = shutil.which("node")
         if node is None:
@@ -300,8 +326,8 @@ class FocusQueueMailTests(unittest.TestCase):
         response_runtime = self.root / "mail-proofs"
         harness = r"""
 const fs = require("fs");
-globalThis.ObjC = {import() {}};
-globalThis.$ = (value) => value;
+globalThis.ObjC = {import() {}, unwrap(value) { return value; }};
+globalThis.$ = Object.assign((value) => value, {NSHomeDirectory() { return require("os").homedir(); }});
 const source = fs.readFileSync(process.argv[1], "utf8");
 const configuredRequestRuntime = process.argv[2];
 const configuredResponseRuntime = process.argv[3];
@@ -827,8 +853,8 @@ process.stdout.write(JSON.stringify({current, superseded, unreadable}));
             self.skipTest("Node.js is required for the JavaScript reader contract")
         harness = r"""
 const fs = require("fs");
-globalThis.ObjC = {import() {}};
-globalThis.$ = (value) => value;
+globalThis.ObjC = {import() {}, unwrap(value) { return value; }};
+globalThis.$ = Object.assign((value) => value, {NSHomeDirectory() { return require("os").homedir(); }});
 eval(fs.readFileSync(process.argv[1], "utf8") + `
 const commands = [];
 readJSON = function(path) {
@@ -885,7 +911,8 @@ process.stdout.write(JSON.stringify({result, commands}));
             self.skipTest("Node.js is required for the JavaScript reader contract")
         harness = r"""
 const fs = require("fs");
-globalThis.ObjC = {import() {}};
+globalThis.ObjC = {import() {}, unwrap(value) { return value; }};
+globalThis.$ = Object.assign((value) => value, {NSHomeDirectory() { return require("os").homedir(); }});
 eval(fs.readFileSync(process.argv[1], "utf8"));
 const automation = Object.assign(new Error("localized message"), {number: -1743});
 const timedOut = Object.assign(new Error("localized message"), {number: -1712});

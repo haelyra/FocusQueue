@@ -2215,12 +2215,12 @@ public enum QueueAgentError: Error, LocalizedError {
 /// Proof-receipt rules are identical for every provider's queue agent, so
 /// verification lives in one shared verifier rather than with any harness.
 struct QueueAgentEvidenceVerifier {
-    static let mailEvidenceURL = URL(
-        fileURLWithPath: "/Users/hira/Library/Application Support/ECC Focus Queue/mail-proofs/mail-response.json"
-    )
-    static let discordEvidenceURL = URL(
-        fileURLWithPath: "/Users/hira/Library/Application Support/ECC Focus Queue/connector-proofs/discord-response.json"
-    )
+    // The Python connectors write proofs under the home folder's support
+    // directory, so these follow the home folder rather than an override.
+    private static let supportDirectory = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/ECC Focus Queue", isDirectory: true)
+    static let mailEvidenceURL = supportDirectory.appendingPathComponent("mail-proofs/mail-response.json")
+    static let discordEvidenceURL = supportDirectory.appendingPathComponent("connector-proofs/discord-response.json")
 
     struct MailEvidenceReceipt: Decodable {
         struct Message: Decodable {
@@ -2536,10 +2536,13 @@ public enum QueueAgentPrompt {
         """
     }
 
+    /// Where the installer writes the focus-mail and focus-discord wrappers.
+    private static let localBin = FileManager.default.homeDirectoryForCurrentUser.path + "/.local/bin"
+
     static let mailContract = """
 
         <mail-evidence-contract>
-        For every question involving email, mail, an inbox, a sender, a customer message, or a message link, load the `ecc-focus-mail` skill and use `/Users/hira/.local/bin/focus-mail`. Use the provider selected in ingestion settings and do not use Himalaya. Search results are excerpts only: call `focus-mail read` before describing or quoting a message body. Call `focus-mail open` only when the user explicitly asks and the selected provider supports it. A mail claim is verified only when the current-turn result contains `status: ok`, `verified: true`, `connector: ecc-focus-mail-reader`, a nonempty `account`, and `retrievedAt`; read/open claims also require the stable message `id` and `messageId`, and open requires `opened: true`. Include account, mailbox, received time, and message ID when reporting a message as read.
+        For every question involving email, mail, an inbox, a sender, a customer message, or a message link, load the `ecc-focus-mail` skill and use `\(localBin)/focus-mail`. Use the provider selected in ingestion settings and do not use Himalaya. Search results are excerpts only: call `focus-mail read` before describing or quoting a message body. Call `focus-mail open` only when the user explicitly asks and the selected provider supports it. A mail claim is verified only when the current-turn result contains `status: ok`, `verified: true`, `connector: ecc-focus-mail-reader`, a nonempty `account`, and `retrievedAt`; read/open claims also require the stable message `id` and `messageId`, and open requires `opened: true`. Include account, mailbox, received time, and message ID when reporting a message as read.
         On every successful mail-related request, copy the exact `nonce` from the final successful `focus-mail` result into a standalone final line formatted exactly as `MAIL_PROOF: <nonce>`. Never invent or reuse a nonce. The app will withhold the entire mail answer unless that nonce matches a fresh local proof receipt. If the user asks what a message said, to read it, for its contents, response, reply, or a quote, the final operation must be `read`. If the user asks to open it, the final operation must be `open` with `opened: true`. If the user asks whether the connector is available or working, the final operation must be `status`. Every other mail or inbox check must end with `search`.
         </mail-evidence-contract>
         """
@@ -2547,7 +2550,7 @@ public enum QueueAgentPrompt {
     static let discordContract = """
 
         <discord-evidence-contract>
-        For every question involving Discord or a discord.com message link, use `/Users/hira/.local/bin/focus-discord`. Never read the bot token or call the Discord API directly. Use `focus-discord status` to verify the bot and server coverage, `focus-discord channels` to list channels, `focus-discord search "query" --days 7 --limit 20` to find messages, and `focus-discord read "https://discord.com/channels/..."` before describing or quoting a full message. Search results are excerpts only. Discord writes, replies, reactions, moderation, and role changes are unavailable. Report inaccessible channels explicitly.
+        For every question involving Discord or a discord.com message link, use `\(localBin)/focus-discord`. Never read the bot token or call the Discord API directly. Use `focus-discord status` to verify the bot and server coverage, `focus-discord channels` to list channels, `focus-discord search "query" --days 7 --limit 20` to find messages, and `focus-discord read "https://discord.com/channels/..."` before describing or quoting a full message. Search results are excerpts only. Discord writes, replies, reactions, moderation, and role changes are unavailable. Report inaccessible channels explicitly.
         On every successful Discord-related request, copy the exact `nonce` from the final successful `focus-discord` result into a standalone final line formatted exactly as `DISCORD_PROOF: <nonce>`. Never invent or reuse a nonce. The app will withhold the entire Discord answer unless the nonce matches a fresh local proof receipt. If the user asks what a message said, to read it, for its content, or for a quote, the final operation must be `read`.
         </discord-evidence-contract>
         """
@@ -2572,9 +2575,8 @@ public actor HarnessQueueAgent: QueueAgentChatting {
         return ["--runtime", directory.path]
     }
 
-    private static let errorLogURL = URL(
-        fileURLWithPath: "/Users/hira/Library/Application Support/ECC Focus Queue/queue-chat.last-error.log"
-    )
+    private static let errorLogURL = TmuxPersistence.defaultSupportDirectory()
+        .appendingPathComponent("queue-chat.last-error.log")
 
     private let runner: any ProcessRunning
     private let files: any FileAccessing

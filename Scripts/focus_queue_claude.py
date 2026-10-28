@@ -21,18 +21,15 @@ import focus_queue_prompt_usage as prompt_usage
 from focus_queue_lock import acquire_exclusive_file_lock
 
 
-DEFAULT_RUNTIME = Path("/Users/hira/Library/Application Support/ECC Focus Queue/agent-claude")
-DEFAULT_PROOF_DIRECTORY = Path(
-    "/Users/hira/Library/Application Support/ECC Focus Queue/connector-proofs"
-)
-DEFAULT_MAIL_COMMAND_DIRECTORY = Path(
-    "/Users/hira/Library/Application Support/ECC Focus Queue/connector-commands"
-)
+SUPPORT_DIRECTORY = Path.home() / "Library/Application Support/ECC Focus Queue"
+DEFAULT_RUNTIME = SUPPORT_DIRECTORY / "agent-claude"
+DEFAULT_PROOF_DIRECTORY = SUPPORT_DIRECTORY / "connector-proofs"
+DEFAULT_MAIL_COMMAND_DIRECTORY = SUPPORT_DIRECTORY / "connector-commands"
 # Chat turns need shell, file reads, and plan edits only. Agent, Workflow,
 # skills, and MCP schemas added ~15.7k tokens to every API call (FOC-075).
 LEAN_CHAT_TOOLS = "Bash,Read,Edit,Write,Grep,Glob"
 TRUSTED_CLAUDE_CANDIDATES = (
-    Path("/Users/hira/.local/bin/claude"),
+    Path.home() / ".local/bin/claude",
     Path("/opt/homebrew/bin/claude"),
     Path("/usr/local/bin/claude"),
 )

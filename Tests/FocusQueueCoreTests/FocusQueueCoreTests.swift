@@ -1535,11 +1535,11 @@ func codexQueueAgentArguments() async throws {
     visibleOrder: [],
     deferredTicketIDs: []
   )
-  #expect(connectorPrompt.contains("/Users/hira/.local/bin/focus-mail"))
+  #expect(connectorPrompt.contains(FileManager.default.homeDirectoryForCurrentUser.path + "/.local/bin/focus-mail"))
   #expect(connectorPrompt.contains("Use the provider selected in ingestion settings"))
   #expect(connectorPrompt.lowercased().contains("do not use himalaya"))
   #expect(connectorPrompt.contains("MAIL_PROOF: <nonce>"))
-  #expect(connectorPrompt.contains("/Users/hira/.local/bin/focus-discord"))
+  #expect(connectorPrompt.contains(FileManager.default.homeDirectoryForCurrentUser.path + "/.local/bin/focus-discord"))
   #expect(connectorPrompt.contains("DISCORD_PROOF: <nonce>"))
   #expect(CodexQueueAgent.sessionName == "ecc-focus-queue-codex-v1")
   #expect(prompt.contains("<queue-user-message>"))

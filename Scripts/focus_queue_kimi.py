@@ -35,7 +35,7 @@ import focus_queue_prompt_usage as prompt_usage
 from focus_queue_lock import acquire_exclusive_file_lock
 
 
-DEFAULT_RUNTIME = Path("/Users/hira/Library/Application Support/ECC Focus Queue/agent-kimi")
+DEFAULT_RUNTIME = claude_harness.SUPPORT_DIRECTORY / "agent-kimi"
 DEFAULT_PROOF_DIRECTORY = claude_harness.DEFAULT_PROOF_DIRECTORY
 DEFAULT_MAIL_COMMAND_DIRECTORY = claude_harness.DEFAULT_MAIL_COMMAND_DIRECTORY
 TRUSTED_KIMI_CANDIDATES = (

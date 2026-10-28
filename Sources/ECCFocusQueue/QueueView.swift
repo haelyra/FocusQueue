@@ -2119,6 +2119,11 @@ struct QueueSettingsView: View {
             Label("No ingestion.json yet, so every source needs setup. Each row lists its next step.",
               systemImage: "info.circle")
               .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Button("Create ingestion.json", systemImage: "doc.badge.plus") {
+              if model.createStarterIngestionConfiguration() { model.runConnectorDiagnostics() }
+            }
+            .buttonStyle(.bordered)
+            .help("Write a starter file with your dashboard and blank source settings")
           }
           VStack(spacing: 8) {
             ForEach(DailyReportPlatform.allCases) { platform in

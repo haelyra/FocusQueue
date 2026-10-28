@@ -685,7 +685,7 @@ import UserNotifications
         workingDirectory: model.config.workspacePath,
         environment: [
           "PATH": [
-            "/Users/hira/.local/bin", "/opt/homebrew/bin", "/usr/local/bin",
+            NSHomeDirectory() + "/.local/bin", "/opt/homebrew/bin", "/usr/local/bin",
             "/usr/bin", "/bin", "/usr/sbin", "/sbin",
           ].joined(separator: ":")
         ],

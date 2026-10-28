@@ -907,6 +907,7 @@ final class QueueViewModel {
       config = updated
       setupError = nil
       isSetupPresented = false
+      createStarterIngestionConfiguration()
       if !configurationIsLoaded {
         bootstrapped = false
         await bootstrap()
@@ -4836,6 +4837,21 @@ final class QueueViewModel {
       enabledPlatforms.contains
     )
     persistConfiguration()
+  }
+
+  /// Writes a starter ingestion.json when none exists, so each connector shows
+  /// its own setup step. Never overwrites an existing file.
+  @discardableResult
+  func createStarterIngestionConfiguration() -> Bool {
+    do {
+      let created = try IngestionStarter.writeIfMissing(
+        supportDirectory: paths.supportDirectory, dashboardPath: config.dashboardPath)
+      if created { programLog.record("Created a starter ingestion.json.", category: "Connectors") }
+      return created
+    } catch {
+      connectorDiagnosticsError = "Could not create ingestion.json: \(error.localizedDescription)"
+      return false
+    }
   }
 
   func runConnectorDiagnostics() {

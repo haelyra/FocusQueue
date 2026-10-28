@@ -22,13 +22,10 @@ import focus_queue_prompt_usage as prompt_usage
 from focus_queue_lock import acquire_exclusive_file_lock
 
 
-DEFAULT_RUNTIME = Path("/Users/hira/Library/Application Support/ECC Focus Queue/agent")
-DEFAULT_PROOF_DIRECTORY = Path(
-    "/Users/hira/Library/Application Support/ECC Focus Queue/connector-proofs"
-)
-DEFAULT_MAIL_COMMAND_DIRECTORY = Path(
-    "/Users/hira/Library/Application Support/ECC Focus Queue/connector-commands"
-)
+SUPPORT_DIRECTORY = Path.home() / "Library/Application Support/ECC Focus Queue"
+DEFAULT_RUNTIME = SUPPORT_DIRECTORY / "agent"
+DEFAULT_PROOF_DIRECTORY = SUPPORT_DIRECTORY / "connector-proofs"
+DEFAULT_MAIL_COMMAND_DIRECTORY = SUPPORT_DIRECTORY / "connector-commands"
 DEFAULT_CODEX = Path("/opt/homebrew/bin/codex")
 NO_TOOLS_MODEL = "gpt-5.5"
 NO_TOOLS_MODEL_PREFERENCES = (

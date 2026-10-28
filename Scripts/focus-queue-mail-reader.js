@@ -1,9 +1,11 @@
 ObjC.import("Foundation");
 
-const CONFIG_PATH = "/Users/hira/Library/Application Support/ECC Focus Queue/ingestion.json";
-const DEFAULT_REQUEST_PATH = "/Users/hira/Library/Application Support/ECC Focus Queue/connector-commands";
-const DEFAULT_RESPONSE_PATH = "/Users/hira/Library/Application Support/ECC Focus Queue/mail-proofs";
-const GMAIL_CONNECTOR_PATH = "/Users/hira/Library/Application Support/ECC Focus Queue/automation/Scripts/focus_queue_gmail.py";
+// launchd starts the reader without a shell, so derive paths from the home folder.
+const SUPPORT_PATH = ObjC.unwrap($.NSHomeDirectory()) + "/Library/Application Support/ECC Focus Queue";
+const CONFIG_PATH = SUPPORT_PATH + "/ingestion.json";
+const DEFAULT_REQUEST_PATH = SUPPORT_PATH + "/connector-commands";
+const DEFAULT_RESPONSE_PATH = SUPPORT_PATH + "/mail-proofs";
+const GMAIL_CONNECTOR_PATH = SUPPORT_PATH + "/automation/Scripts/focus_queue_gmail.py";
 const CONNECTOR = "ecc-focus-mail-reader";
 const MAX_BODY_CHARACTERS = 100000;
 const MAX_SEARCH_CANDIDATES = 5000;

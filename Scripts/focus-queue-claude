@@ -1,2 +1,2 @@
 #!/bin/zsh
-exec /usr/bin/python3 /Users/hira/Documents/Github/ECCFocusQueue/Scripts/focus_queue_claude.py "$@"
+exec /usr/bin/python3 "$(dirname "$0")/focus_queue_claude.py" "$@"

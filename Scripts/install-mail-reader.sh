@@ -4,9 +4,9 @@ set -euo pipefail
 script_dir=${0:A:h}
 project_dir=${script_dir:h}
 product_name="ECC Focus Mail Reader"
-bundle_path="/Users/hira/Applications/$product_name.app"
-support_dir="/Users/hira/Library/Application Support/ECC Focus Queue"
-launch_agent="/Users/hira/Library/LaunchAgents/tools.ecc.focus-mail-reader.plist"
+bundle_path="$HOME/Applications/$product_name.app"
+support_dir="$HOME/Library/Application Support/ECC Focus Queue"
+launch_agent="$HOME/Library/LaunchAgents/tools.ecc.focus-mail-reader.plist"
 service="gui/$(/usr/bin/id -u)/tools.ecc.focus-mail-reader"
 
 if [[ -e "$bundle_path" ]]; then
@@ -29,7 +29,7 @@ designated_requirement='=designated => identifier "tools.ecc.focus-mail-reader"'
 /usr/bin/codesign --force --deep --sign - --requirements "$designated_requirement" "$bundle_path"
 /usr/bin/codesign --verify --deep --strict "$bundle_path"
 
-/bin/mkdir -p "$support_dir" "/Users/hira/Library/LaunchAgents"
+/bin/mkdir -p "$support_dir" "$HOME/Library/LaunchAgents"
 /bin/rm -f "$launch_agent"
 /usr/bin/plutil -create xml1 "$launch_agent"
 /usr/bin/plutil -insert Label -string tools.ecc.focus-mail-reader "$launch_agent"

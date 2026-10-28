@@ -2,7 +2,7 @@
 set -euo pipefail
 
 project_dir=${0:A:h:h}
-support_dir="/Users/hira/Library/Application Support/ECC Focus Queue"
+support_dir="${FOCUS_QUEUE_SUPPORT_DIR:-$HOME/Library/Application Support/ECC Focus Queue}"
 runtime_dir="$support_dir/ingestion"
 proof_dir="$support_dir/connector-proofs"
 mail_command_dir="$support_dir/connector-commands"
@@ -10,14 +10,14 @@ mail_proof_dir="$support_dir/mail-proofs"
 automation_dir="$support_dir/automation"
 automation_scripts="$automation_dir/Scripts"
 automation_config="$automation_dir/Config"
-local_bin_dir="/Users/hira/.local/bin"
-launch_agent="/Users/hira/Library/LaunchAgents/com.haelyra.ecc-focus-queue-morning.plist"
+local_bin_dir="$HOME/.local/bin"
+launch_agent="$HOME/Library/LaunchAgents/com.haelyra.ecc-focus-queue-morning.plist"
 service="gui/$(/usr/bin/id -u)/com.haelyra.ecc-focus-queue-morning"
 
 /bin/mkdir -p \
   "$runtime_dir" "$proof_dir" "$mail_command_dir" "$mail_proof_dir" \
   "$automation_scripts" "$automation_config" "$local_bin_dir" \
-  "/Users/hira/Library/LaunchAgents"
+  "$HOME/Library/LaunchAgents"
 /bin/chmod 700 "$runtime_dir" "$proof_dir" "$mail_command_dir" "$mail_proof_dir"
 for script in \
   focus_queue_morning.py focus_queue_codex.py focus_queue_claude.py focus_queue_kimi.py \

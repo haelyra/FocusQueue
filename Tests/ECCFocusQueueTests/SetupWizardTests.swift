@@ -24,7 +24,12 @@ struct SetupWizardTests {
     await restarted.bootstrap()
     await restarted.bootstrapTail?.value
     #expect(restarted.isSetupPresented)
+    #expect(!FileManager.default.fileExists(atPath: paths.ingestionConfigurationFile.path))
     #expect(await restarted.finishSetup(restarted.config))
+    // Finishing setup leaves a starter source file for connector diagnostics.
+    let ingestion = try #require(JSONSerialization.jsonObject(
+      with: Data(contentsOf: paths.ingestionConfigurationFile)) as? [String: Any])
+    #expect(ingestion["dashboardPath"] as? String == restarted.config.dashboardPath)
     #expect(!restarted.isSetupPresented)
     let saved = try JSONDecoder().decode(AppConfiguration.self, from: Data(contentsOf: paths.configurationFile))
     #expect(saved.setupCompleted == true)
@@ -43,6 +48,7 @@ struct SetupWizardTests {
     var draft = model.config
     draft.dashboardPath = root.appendingPathComponent("missing/dashboard.json").path
     #expect(await model.finishSetup(draft) == false)
+    #expect(!FileManager.default.fileExists(atPath: paths.ingestionConfigurationFile.path))
     #expect(model.setupError != nil)
     #expect(try Data(contentsOf: paths.configurationFile) == original)
   }

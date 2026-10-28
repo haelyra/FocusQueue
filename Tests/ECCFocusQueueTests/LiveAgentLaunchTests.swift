@@ -269,7 +269,7 @@ private final class LiveAgentFixture: @unchecked Sendable {
   var controller: TmuxController { TmuxController(serverName: server) }
   var paths: AppPaths {
     AppPaths(supportDirectory: support, configurationFile: support.appendingPathComponent("config.json"),
-      stateFile: support.appendingPathComponent("state.json"), reviewsDirectory: support.appendingPathComponent("reviews"),
+      stateFile: support.appendingPathComponent("state.json"),
       agentRegistrationsDirectory: support.appendingPathComponent("agent-registrations"))
   }
 

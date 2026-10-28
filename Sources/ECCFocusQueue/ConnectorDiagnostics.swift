@@ -24,6 +24,8 @@ struct ConnectorDiagnosticsSnapshot: Decodable, Equatable, Sendable {
   let version: Int
   let mode: String
   let authenticationVerified: Bool?
+  /// False when ingestion.json does not exist yet, as on a new install.
+  let configurationPresent: Bool?
   let connectors: [ConnectorDiagnostic]
 
   func diagnostic(for platform: DailyReportPlatform) -> ConnectorDiagnostic? {

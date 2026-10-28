@@ -60,8 +60,8 @@ public extension DashboardTicket {
 }
 
 /// The status and priority choices the task row offers. Closed statuses
-/// (`resolved`, `cancelled`) stay out of the menu: completion review and
-/// archive own those transitions.
+/// (`resolved`, `cancelled`) stay out of the menu: marking complete and
+/// archiving own those transitions.
 public enum TaskFieldChoices {
   public static let priorities = ["critical", "high", "medium", "low"]
   public static let openStatuses = [

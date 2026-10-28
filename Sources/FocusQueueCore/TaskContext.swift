@@ -1385,7 +1385,7 @@ public actor TaskContextStore {
             context.subtasks[index].completionOverrideAt = Date()
             context.subtasks[index].completionUnread = !context.subtasks[index].isAssignmentOnly
             context.subtasks[index].lastHeartbeatAt = Date()
-            context.subtasks[index].progressSummary = "Completed by user override. Previous review evidence is retained."
+            context.subtasks[index].progressSummary = "Marked complete by the user."
             let target = context.canonicalSubtaskID(subtaskID)
             for i in context.subtasks.indices where context.subtasks[i].parentSubtaskID != nil && context.assignmentIDs(for: context.subtasks[i]).contains(target) {
                 context.subtasks[i].status = .completed

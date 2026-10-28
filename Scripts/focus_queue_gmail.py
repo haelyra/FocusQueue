@@ -26,10 +26,8 @@ from typing import Any, Callable
 import focus_queue_morning as morning
 
 
-DEFAULT_CONFIG = Path("/Users/hira/Library/Application Support/ECC Focus Queue/ingestion.json")
-DEFAULT_AUTH_STATE = Path(
-    "/Users/hira/Library/Application Support/ECC Focus Queue/gmail-auth.json"
-)
+DEFAULT_CONFIG = Path.home() / "Library/Application Support/ECC Focus Queue/ingestion.json"
+DEFAULT_AUTH_STATE = DEFAULT_CONFIG.parent / "gmail-auth.json"
 CONNECTOR = "ecc-focus-mail-reader"
 GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -372,6 +370,30 @@ class OAuthCallbackHandler(http.server.BaseHTTPRequestHandler):
         return
 
 
+def auth_state_path(config: dict[str, Any]) -> Path:
+    """Non-secret record of authorized accounts, beside ingestion.json by default."""
+    configured = config.get("gmailAuthStatePath")
+    if configured:
+        return Path(configured).expanduser()
+    if config.get("_configPath"):
+        return Path(config["_configPath"]).expanduser().parent / "gmail-auth.json"
+    return DEFAULT_AUTH_STATE
+
+
+def authorized_accounts(state_path: Path, account: str) -> list[str]:
+    accounts: list[str] = []
+    try:
+        previous = json.loads(state_path.read_text(encoding="utf-8"))
+        if isinstance(previous, dict):
+            values = previous.get("accounts")
+            if not isinstance(values, list):
+                values = [previous.get("account")]
+            accounts = [str(value).casefold() for value in values if isinstance(value, str) and value]
+    except (OSError, ValueError):
+        pass
+    return sorted({*accounts, account})
+
+
 def authorize(config: dict[str, Any], *, open_browser: bool, timeout: int) -> dict[str, Any]:
     client = oauth_client(config)
     verifier = secrets.token_urlsafe(64)
@@ -433,7 +455,7 @@ def authorize(config: dict[str, Any], *, open_browser: bool, timeout: int) -> di
             "The authorized Gmail account does not match emailAddress",
             code="gmail_account_mismatch",
         )
-    state_path = Path(config.get("gmailAuthStatePath", DEFAULT_AUTH_STATE)).expanduser()
+    state_path = auth_state_path(config)
     if not state_path.is_absolute():
         raise GmailAccessError(
             "gmailAuthStatePath must be absolute",
@@ -446,6 +468,9 @@ def authorize(config: dict[str, Any], *, open_browser: bool, timeout: int) -> di
             "version": 1,
             "provider": "gmail",
             "account": account,
+            # Mail-via-Gmail and the Gmail report source can be different
+            # accounts sharing this file; keep every authorized account.
+            "accounts": authorized_accounts(state_path, account),
             "scope": GMAIL_SCOPE,
             "authorizedAt": utc_now(),
             "writesEnabled": False,
@@ -857,7 +882,10 @@ def main() -> int:
     subparsers.add_parser("serve", help=argparse.SUPPRESS)
     arguments = parser.parse_args()
     try:
-        config = morning.load_config(arguments.config)
+        config = morning.load_config(
+            arguments.config,
+            connector="gmail" if arguments.report_account else "email",
+        )
         if arguments.report_account:
             try:
                 config = morning.gmail_source_config(config)

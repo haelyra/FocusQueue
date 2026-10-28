@@ -425,10 +425,6 @@ public actor DurableLibraryStore {
         for i in library.assignments.indices where library.assignments[i].source == "registration"
             && library.assignments[i].endedAt == nil && localSessions.contains(library.assignments[i].sessionID)
             && !active.contains(library.assignments[i].id) { library.assignments[i].endedAt = Date() }
-        if completeSnapshot {
-            try capture(Self.encode(state.completionRequests), source: root.appendingPathComponent("review-history.json"),
-                kind: "review-history", taskID: nil, into: &library, device: device)
-        }
     }
 
     private func ingest(_ context: TaskContext, into library: inout DurableLibrary, device: Device) throws {

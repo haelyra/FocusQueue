@@ -138,12 +138,9 @@ import UserNotifications
         targetScreen: panel?.screen, requiresActivatedWindow: true)
     }
     model.quitHandler = { NSApplication.shared.terminate(nil) }
-    model.newTaskHotkeyEnabledHandler = { [weak self] enabled in
-      if enabled { self?.startNewTaskHotkeyMonitor() } else { self?.stopNewTaskHotkeyMonitor() }
-    }
-    model.qchatHotkeyEnabledHandler = { [weak self] enabled in
-      if enabled { self?.startQChatHotkeyMonitor(promptForAccess: true) } else { self?.stopQChatHotkeyMonitor() }
-    }
+    model.newTaskHotkeyEnabledHandler = { [weak self] _ in self?.applyHotkeys(promptForAccess: false) }
+    model.qchatHotkeyEnabledHandler = { [weak self] _ in self?.applyHotkeys(promptForAccess: true) }
+    model.hotkeyConfigurationHandler = { [weak self] in self?.applyHotkeys(promptForAccess: false) }
     model.setCanSwitchMonitor(NSScreen.screens.count > 1)
     configureDailyReportNotifications()
     NSWorkspace.shared.notificationCenter.addObserver(
@@ -155,8 +152,7 @@ import UserNotifications
 
     createPanel()
     createStatusItem()
-    if model.newTaskHotkeyEnabled { startNewTaskHotkeyMonitor() }
-    if model.qchatHotkeyEnabled { startQChatHotkeyMonitor(promptForAccess: false) }
+    applyHotkeys(promptForAccess: false)
     positionPanel(.upperLeft, on: defaultScreen(), animated: false, persist: false)
     panel?.orderFrontRegardless()
 
@@ -226,7 +222,7 @@ import UserNotifications
 
   func applicationDidBecomeActive(_ notification: Notification) {
     // Returning from System Settings is the usual moment Accessibility was just granted.
-    if model.qchatHotkeyEnabled { qchatHotkeyMonitor?.start() }
+    if usesDefaultGesture(.qchat) { qchatHotkeyMonitor?.start() }
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -235,6 +231,7 @@ import UserNotifications
     programLog.record("Focus Queue is terminating.", category: "Lifecycle")
     newTaskHotkeyMonitor?.stop()
     qchatHotkeyMonitor?.stop()
+    for action in HotkeyAction.allCases { GlobalHotKeyCenter.shared.unregister(action) }
     morningReconciliationTask?.cancel()
     _ = try? DailyReportWorkerControl.requestCancellation(
       runtimeDirectory: paths.ingestionRuntimeDirectory)
@@ -349,9 +346,47 @@ import UserNotifications
     model.setPanelVisible(true)
   }
 
+  /// An enabled action uses its recorded combo when it has one, otherwise its
+  /// built-in gesture monitor. Everything pauses while a shortcut field records.
+  private func applyHotkeys(promptForAccess: Bool) {
+    for action in HotkeyAction.allCases {
+      GlobalHotKeyCenter.shared.unregister(action)
+      let active = model.isHotkeyEnabled(action) && !model.isRecordingHotkey
+      let shortcut = active ? model.hotkeyShortcut(for: action) : nil
+      let gesture = active && shortcut == nil
+      switch action {
+      case .newTask:
+        if gesture { if newTaskHotkeyMonitor == nil { startNewTaskHotkeyMonitor() } } else { stopNewTaskHotkeyMonitor() }
+      case .qchat:
+        if gesture { if qchatHotkeyMonitor?.isRunning != true { startQChatHotkeyMonitor(promptForAccess: promptForAccess) } }
+        else { stopQChatHotkeyMonitor() }
+      }
+      guard let shortcut else {
+        if !model.isRecordingHotkey { model.setHotkeyError(nil, for: action) }
+        continue
+      }
+      let error = GlobalHotKeyCenter.shared.register(shortcut, for: action) { [weak self] in
+        self?.handleHotkey(action)
+      }
+      model.setHotkeyError(error, for: action)
+    }
+  }
+
+  private func usesDefaultGesture(_ action: HotkeyAction) -> Bool {
+    model.isHotkeyEnabled(action) && !model.isRecordingHotkey && model.hotkeyShortcut(for: action) == nil
+  }
+
+  private func handleHotkey(_ action: HotkeyAction) {
+    guard !model.isRecordingHotkey else { return }
+    switch action {
+    case .newTask: handleNewTaskHotkey()
+    case .qchat: handleQChatHotkey()
+    }
+  }
+
   private func startNewTaskHotkeyMonitor() {
     let monitor = NewTaskHotkeyMonitor()
-    monitor.onTrigger = { [weak self] in self?.handleNewTaskHotkey() }
+    monitor.onTrigger = { [weak self] in self?.handleHotkey(.newTask) }
     monitor.start()
     newTaskHotkeyMonitor = monitor
   }
@@ -374,7 +409,7 @@ import UserNotifications
 
   private func startQChatHotkeyMonitor(promptForAccess: Bool) {
     let monitor = qchatHotkeyMonitor ?? QChatHotkeyMonitor()
-    monitor.onTrigger = { [weak self] in self?.handleQChatHotkey() }
+    monitor.onTrigger = { [weak self] in self?.handleHotkey(.qchat) }
     qchatHotkeyMonitor = monitor
     guard !monitor.start() else { return }
     programLog.record(

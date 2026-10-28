@@ -4,7 +4,6 @@ struct AppPaths: Sendable {
     let supportDirectory: URL
     let configurationFile: URL
     let stateFile: URL
-    let reviewsDirectory: URL
     let agentRegistrationsDirectory: URL
 
     var ingestionConfigurationFile: URL {
@@ -42,7 +41,6 @@ struct AppPaths: Sendable {
                 supportDirectory: directory,
                 configurationFile: directory.appendingPathComponent("config.json"),
                 stateFile: directory.appendingPathComponent("state.json"),
-                reviewsDirectory: directory.appendingPathComponent("reviews", isDirectory: true),
                 agentRegistrationsDirectory: directory.appendingPathComponent(
                     "agent-registrations", isDirectory: true)
             )
@@ -54,7 +52,6 @@ struct AppPaths: Sendable {
             supportDirectory: base,
             configurationFile: base.appendingPathComponent("config.json"),
             stateFile: base.appendingPathComponent("state.json"),
-            reviewsDirectory: base.appendingPathComponent("reviews", isDirectory: true),
             agentRegistrationsDirectory: base.appendingPathComponent(
                 "agent-registrations", isDirectory: true)
         )

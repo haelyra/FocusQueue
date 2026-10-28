@@ -7,7 +7,6 @@ struct QueueAgentUpdate: Identifiable, Equatable {
   let ticketID: String
   let title: String
   let summary: String
-  var review: CompletionRequest? = nil
   var subtaskID: String? = nil
   var date: Date = .distantPast
   var isCleanup = false
@@ -20,8 +19,6 @@ struct QueueAgentUpdate: Identifiable, Equatable {
 struct AgentUpdateView: View {
   let model: QueueViewModel
   let update: QueueAgentUpdate
-  @State private var reviewOutput = ""
-  @State private var logError: String?
   @Binding var draft: String
 
   private var ticket: DashboardTicket? {
@@ -53,14 +50,6 @@ struct AgentUpdateView: View {
         Button { model.closeAgentUpdate() } label: { Image(systemName: "xmark") }
           .buttonStyle(.bordered).accessibilityLabel("Close agent update")
       }
-      if update.review != nil, let ticket,
-         let subtask = model.subtasks(for: ticket.id).first(where: { $0.id == update.subtaskID }) {
-        HStack {
-          Button("Override: mark complete") { model.overrideCompletion(subtask, for: ticket) }
-            .buttonStyle(.borderedProminent)
-          Button(subtask.isAssignmentOnly ? "Archive agents" : "Archive agent") { model.archiveAgent(subtask, from: ticket); model.closeAgentUpdate() }
-        }
-      }
       ScrollView {
         VStack(alignment: .leading, spacing: 14) {
           Text(update.summary.isEmpty ? "The agent recorded completion without a summary." : update.summary)
@@ -68,30 +57,6 @@ struct AgentUpdateView: View {
           if let ticket {
             LabeledContent("Task status", value: ticket.status)
             LabeledContent("Task type", value: ticket.queueTaskKind.title)
-            if let review = update.review {
-              LabeledContent("Review verdict", value: review.status.rawValue)
-              if let criteria = ticket.doneWhen, !criteria.isEmpty {
-                Text("Completion criteria").font(.headline)
-                Text(criteria).textSelection(.enabled)
-              }
-              if !reviewOutput.isEmpty {
-                Text("Verifier output").font(.headline)
-                Text(reviewOutput).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-              }
-              if let logError { Text(logError).font(.caption).foregroundStyle(.orange) }
-              HStack {
-                Button("Review again") {
-                  if review.subtaskID != nil {
-                    if let subtask = model.completionSubtask(for: review) {
-                      model.requestSubtaskCompletion(subtask, for: ticket)
-                    }
-                  } else { model.retryReview(for: ticket) }
-                }.disabled(model.localState.completionRequests.contains {
-                  $0.ticketID == ticket.id && $0.subtaskID == review.subtaskID && [.pending, .running].contains($0.status)
-                })
-                if let path = review.logPath { Button("Open full log") { model.open(path, ticketID: ticket.id) } }
-              }
-            }
             if update.isCleanup {
               Button("Retry task cleanup") { model.retryCleanup(for: ticket) }
             }
@@ -143,26 +108,7 @@ struct AgentUpdateView: View {
     }.padding(14).frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
       .background(.background, in: RoundedRectangle(cornerRadius: 14))
       .task(id: update.presentationID) {
-        reviewOutput = ""
-        logError = nil
         await model.acknowledgeAgentUpdate(update)
-        guard let path = update.review?.logPath else { return }
-        do {
-          let output = try await Task.detached {
-            let file = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
-            defer { try? file.close() }
-            let length = try file.seekToEnd()
-            let limit: UInt64 = 128 * 1024
-            try file.seek(toOffset: length > limit ? length - limit : 0)
-            return (length > limit ? "Showing the last 128 KB. Use Open full log for earlier output.\n\n" : "")
-              + String(decoding: try file.readToEnd() ?? Data(), as: UTF8.self)
-          }.value
-          guard !Task.isCancelled else { return }
-          reviewOutput = output
-        } catch {
-          guard !Task.isCancelled else { return }
-          logError = "Could not read verifier output: \(error.localizedDescription)"
-        }
       }
   }
 

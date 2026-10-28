@@ -26,7 +26,7 @@ from typing import Any
 import focus_queue_morning as morning
 
 
-DEFAULT_CONFIG = Path("/Users/hira/Library/Application Support/ECC Focus Queue/ingestion.json")
+DEFAULT_CONFIG = Path.home() / "Library/Application Support/ECC Focus Queue/ingestion.json"
 MAX_BODY_CHARACTERS = 100_000
 MAX_SEARCH_CANDIDATES = 5_000
 MAX_DAILY_REPORT_RESULTS = 500
@@ -630,7 +630,7 @@ def main() -> int:
     arguments = parser.parse_args()
 
     try:
-        config = morning.load_config(arguments.config)
+        config = morning.load_config(arguments.config, connector="email")
         if config.get("emailProvider", "apple_mail") == "gmail":
             import focus_queue_gmail
 

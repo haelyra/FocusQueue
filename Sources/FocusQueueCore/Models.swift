@@ -305,7 +305,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var persistentTerminals: Bool?
   public var tmuxExecutable: String?
   public var setupCompleted: Bool?
-  public var completionReviewEnabled: Bool
   public var agentUsageBarEnabled: Bool
   public var agentProviderFallbackOrder: [AgentProvider]
   public var agentEscalationAutoLaunch: Bool
@@ -475,7 +474,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.wezTerm = wezTerm
     self.verifier = verifier
     self.dailyReport = dailyReport
-    self.completionReviewEnabled = true
     self.agentUsageBarEnabled = true
     self.agentProviderFallbackOrder = Self.defaultAgentProviderFallbackOrder
     self.agentEscalationAutoLaunch = true
@@ -509,7 +507,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   private enum CodingKeys: String, CodingKey {
     case appName, dashboardPath, workspacePath, defaultPlacement, refreshIntervalSeconds
     case dailyRoutines, wezTerm, verifier, dailyReport, persistentTerminals, tmuxExecutable, setupCompleted
-    case completionReviewEnabled
     case agentUsageBarEnabled
     case agentProviderFallbackOrder
     case agentEscalationAutoLaunch
@@ -538,8 +535,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     persistentTerminals = try container.decodeIfPresent(Bool.self, forKey: .persistentTerminals)
     tmuxExecutable = try container.decodeIfPresent(String.self, forKey: .tmuxExecutable)
     setupCompleted = try container.decodeIfPresent(Bool.self, forKey: .setupCompleted)
-    completionReviewEnabled =
-      try container.decodeIfPresent(Bool.self, forKey: .completionReviewEnabled) ?? true
     agentUsageBarEnabled = try container.decodeIfPresent(Bool.self, forKey: .agentUsageBarEnabled) ?? true
     // Unknown providers (for example from a newer build) are skipped, never fatal.
     var seenProviders = Set<AgentProvider>()
@@ -637,7 +632,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encodeIfPresent(persistentTerminals, forKey: .persistentTerminals)
     try container.encodeIfPresent(tmuxExecutable, forKey: .tmuxExecutable)
     try container.encodeIfPresent(setupCompleted, forKey: .setupCompleted)
-    try container.encode(completionReviewEnabled, forKey: .completionReviewEnabled)
     try container.encode(agentUsageBarEnabled, forKey: .agentUsageBarEnabled)
     try container.encode(agentProviderFallbackOrder, forKey: .agentProviderFallbackOrder)
     try container.encode(agentEscalationAutoLaunch, forKey: .agentEscalationAutoLaunch)
@@ -1566,63 +1560,6 @@ public enum PullRequestTargetPolicy {
   }
 }
 
-public enum CompletionReviewStatus: String, Codable, Sendable, CaseIterable {
-  case pending
-  case running
-  case needsWork = "needs-work"
-  case accepted
-  case failed
-}
-
-public struct CompletionRequest: Codable, Identifiable, Equatable, Sendable {
-  public let id: UUID
-  public let ticketID: String
-  public let requestedAt: Date
-  public var updatedAt: Date
-  public var status: CompletionReviewStatus
-  public var summary: String?
-  public var logPath: String?
-  public let requestFilePath: String
-  public let subtaskID: String?
-  public let contextPath: String?
-  public let dashboardPath: String?
-  public let workspacePath: String?
-  public let taskTitle: String?
-  public let doneWhen: String?
-
-  public init(
-    id: UUID = UUID(),
-    ticketID: String,
-    requestedAt: Date = Date(),
-    updatedAt: Date = Date(),
-    status: CompletionReviewStatus = .pending,
-    summary: String? = nil,
-    logPath: String? = nil,
-    requestFilePath: String,
-    subtaskID: String? = nil,
-    contextPath: String? = nil,
-    dashboardPath: String? = nil,
-    workspacePath: String? = nil,
-    taskTitle: String? = nil,
-    doneWhen: String? = nil
-  ) {
-    self.id = id
-    self.ticketID = ticketID
-    self.requestedAt = requestedAt
-    self.updatedAt = updatedAt
-    self.status = status
-    self.summary = summary
-    self.logPath = logPath
-    self.requestFilePath = requestFilePath
-    self.subtaskID = subtaskID
-    self.contextPath = contextPath
-    self.dashboardPath = dashboardPath
-    self.workspacePath = workspacePath
-    self.taskTitle = taskTitle
-    self.doneWhen = doneWhen
-  }
-}
-
 public struct WindowSnapshot: Codable, Equatable, Sendable {
   public var x: Double
   public var y: Double
@@ -1928,7 +1865,6 @@ public struct LocalState: Codable, Equatable, Sendable {
   public var showsAllProjects: Bool?
   public var routineDate: String
   public var completedRoutineIDs: Set<String>
-  public var completionRequests: [CompletionRequest]
   public var deferredTicketIDs: [String]
   public var dismissedNotificationIDs: Set<String>
   public var window: WindowSnapshot?
@@ -1951,7 +1887,6 @@ public struct LocalState: Codable, Equatable, Sendable {
   public init(
     routineDate: String = "",
     completedRoutineIDs: Set<String> = [],
-    completionRequests: [CompletionRequest] = [],
     deferredTicketIDs: [String] = [],
     dismissedNotificationIDs: Set<String> = [],
     window: WindowSnapshot? = nil,
@@ -1969,7 +1904,6 @@ public struct LocalState: Codable, Equatable, Sendable {
   ) {
     self.routineDate = routineDate
     self.completedRoutineIDs = completedRoutineIDs
-    self.completionRequests = completionRequests
     self.deferredTicketIDs = deferredTicketIDs
     self.dismissedNotificationIDs = dismissedNotificationIDs
     self.window = window
@@ -2051,7 +1985,6 @@ public struct LocalState: Codable, Equatable, Sendable {
     case selectedProjectID
     case showsAllProjects
     case completedRoutineIDs
-    case completionRequests
     case deferredTicketIDs
     case dismissedNotificationIDs
     case window
@@ -2076,8 +2009,6 @@ public struct LocalState: Codable, Equatable, Sendable {
     showsAllProjects = try container.decodeIfPresent(Bool.self, forKey: .showsAllProjects)
     completedRoutineIDs =
       try container.decodeIfPresent(Set<String>.self, forKey: .completedRoutineIDs) ?? []
-    completionRequests =
-      try container.decodeIfPresent([CompletionRequest].self, forKey: .completionRequests) ?? []
     deferredTicketIDs =
       try container.decodeIfPresent([String].self, forKey: .deferredTicketIDs) ?? []
     dismissedNotificationIDs =
@@ -2112,7 +2043,6 @@ public struct LocalState: Codable, Equatable, Sendable {
     try container.encodeIfPresent(selectedProjectID, forKey: .selectedProjectID)
     try container.encodeIfPresent(showsAllProjects, forKey: .showsAllProjects)
     try container.encode(completedRoutineIDs, forKey: .completedRoutineIDs)
-    try container.encode(completionRequests, forKey: .completionRequests)
     try container.encode(deferredTicketIDs, forKey: .deferredTicketIDs)
     try container.encode(dismissedNotificationIDs, forKey: .dismissedNotificationIDs)
     try container.encodeIfPresent(window, forKey: .window)

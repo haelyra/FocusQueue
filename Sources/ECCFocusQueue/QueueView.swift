@@ -24,7 +24,7 @@ struct QueueView: View {
   @State private var restSectionDropIsTargeted = false
   @State private var queueAgentDraft = ""
   @State private var taskAgentDrafts: [String: String] = [:]
-  @State private var showsTerminals = false
+  @State private var showsSessions = false
   @State private var updateDrafts: [String: String] = [:]
   @State private var settingsTarget: QueueSettingsTarget?
   @State private var showsStaleAgentCleanupConfirmation = false
@@ -70,7 +70,7 @@ struct QueueView: View {
       screen = .queue
       if selectedTab == .agent { selectedTab = .focus }
     }
-    .sheet(isPresented: $showsTerminals) { TerminalBrowserView(model: model) }
+    .sheet(isPresented: $showsSessions) { SessionBrowserView(model: model) }
     .sheet(item: Binding(
       get: { model.newTaskRequest },
       set: { if $0 == nil { model.clearNewTaskRequest() } }
@@ -186,7 +186,7 @@ struct QueueView: View {
         QueueSettingsView(
           model: model,
           focusedSection: settingsTarget,
-          openTerminals: { showsTerminals = true },
+          openSessions: { showsSessions = true },
           openAnalytics: { model.setTokenAnalyticsPresented(true) }
         ) {
           model.setTokenAnalyticsPresented(false)
@@ -377,11 +377,6 @@ struct QueueView: View {
         if attention.date != .distantPast {
           Text(attention.date.formatted(date: .abbreviated, time: .shortened))
             .font(.system(size: 10)).foregroundStyle(.tertiary)
-        }
-        if attention.review != nil, let ticket = model.dashboard.tickets.first(where: { $0.id == attention.ticketID }),
-           let subtask = model.subtasks(for: ticket.id).first(where: { $0.id == attention.subtaskID }) {
-          Button("Override") { model.overrideCompletion(subtask, for: ticket) }
-            .help("Mark this subtask complete by user override")
         }
       }
       .padding(12).notificationSurface(radius: 14)
@@ -1715,7 +1710,7 @@ private struct DailyReportView: View {
 struct QueueSettingsView: View {
   let model: QueueViewModel
   let focusedSection: QueueSettingsTarget?
-  let openTerminals: () -> Void
+  let openSessions: () -> Void
   let openAnalytics: () -> Void
   let close: () -> Void
 
@@ -1739,20 +1734,14 @@ struct QueueSettingsView: View {
           groupHeading("Projects")
           settingsSection(
             title: "Projects",
-            detail: "The selected project sets the dashboard and workspace Focus Queue uses. Edit a project to change its task prefix, folders, or repository."
+            detail: "Choose a project to see its settings and files. Open a file to read it beside settings with its project chat."
           ) {
             VStack(alignment: .leading, spacing: 10) {
-              ProjectSettingsView(model: model)
+              ProjectSettingsSection(model: model)
               Button("Open setup wizard", systemImage: "wand.and.stars") {
                 model.isSetupPresented = true
               }.buttonStyle(.bordered)
             }
-          }
-          settingsSection(
-            title: "Project files",
-            detail: "Plan, requirements, architecture, evidence, and other files saved for a project. Choose one to open it beside settings with its project chat."
-          ) {
-            ProjectFilesSection(model: model)
           }
 
           groupHeading("Agents")
@@ -1807,15 +1796,9 @@ struct QueueSettingsView: View {
           }
           settingsSection(
             title: "Agent lifecycle",
-            detail: "Automatic steps Focus Queue takes as agents start, go stale, and finish."
+            detail: "Automatic steps Focus Queue takes as agents go stale or are escalated."
           ) {
             VStack(alignment: .leading, spacing: 12) {
-              settingToggle(
-                "Review tasks before completion",
-                detail: "A read-only Codex reviewer gathers task evidence before the app closes a task. When off, the completion control records an explicit user override instead.",
-                isOn: Binding(
-                  get: { model.config.completionReviewEnabled },
-                  set: { model.setCompletionReviewEnabled($0) }))
               settingToggle(
                 "Automatically archive stale agents",
                 detail: "Once a day, archive interrupted or idle agents with no live process, no unseen output, and no activity in 5 days. They stay recallable under Archived agents.",
@@ -1845,21 +1828,20 @@ struct QueueSettingsView: View {
                   Text("\(model.agentsPerWindow)").monospacedDigit().foregroundStyle(.secondary)
                 }
               }
-              settingToggle(
-                "Show agent usage bar",
-                detail: "Three live Codex quota and context rows below each managed task window. The values follow the active agent pane.",
-                isOn: Binding(
-                  get: { model.config.agentUsageBarEnabled },
-                  set: { model.setAgentUsageBarEnabled($0) }))
-              Button(action: openTerminals) {
-                Label("Browse terminals (\(model.terminalCount))", systemImage: "terminal")
+              VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                  Text("Agent usage bar")
+                  Spacer()
+                  featureBadge("Coming soon")
+                }
+                Text("Live quota and context rows below each managed task window.")
+                  .font(.caption).foregroundStyle(.secondary)
+              }
+              Button(action: openSessions) {
+                Label("Browse sessions", systemImage: "rectangle.stack")
               }
               .buttonStyle(.bordered)
-              .help("Review tracked task sessions, agents waiting for placement, and other open terminals")
-              if !model.unassignedAgentRegistrations.isEmpty {
-                Text("\(model.unassignedAgentRegistrations.count) tracked agent(s) still need a task.")
-                  .font(.caption).foregroundStyle(.orange)
-              }
+              .help("Active task sessions and saved sessions you can recall")
             }
           }
 
@@ -1903,18 +1885,16 @@ struct QueueSettingsView: View {
           }
           settingsSection(
             title: "Keyboard shortcuts",
-            detail: "Global hotkeys that work from any app."
+            detail: "Global hotkeys that work from any app. Click a shortcut, then press a new combo with ⌘, ⌥, or ⌃. Reset returns to the right-side default."
           ) {
-            VStack(alignment: .leading, spacing: 12) {
-              settingToggle(
-                "New task: Right Option or Right Command + Shift",
-                detail: "A tap opens a new task with the prompt focused. Either one cancels an open new task.",
+            VStack(alignment: .leading, spacing: 14) {
+              hotkeyRow(.newTask,
+                detail: "Opens a new task with the prompt focused. Press again to cancel it.",
                 isOn: Binding(
                   get: { model.newTaskHotkeyEnabled },
                   set: { model.setNewTaskHotkeyEnabled($0) }))
-              settingToggle(
-                "QChat: Right Option or Right Command + /",
-                detail: "Opens QChat beside the queue with the message box focused for voice typing. Press again to close it. Needs Accessibility access.",
+              hotkeyRow(.qchat,
+                detail: "Opens QChat beside the queue with the message box focused for voice typing. Press again to close it. The default gesture needs Accessibility access.",
                 isOn: Binding(
                   get: { model.qchatHotkeyEnabled },
                   set: { model.setQChatHotkeyEnabled($0) }))
@@ -1924,8 +1904,9 @@ struct QueueSettingsView: View {
           groupHeading("Daily reports")
           settingsSection(
             title: "Daily message report",
+            badge: "Experimental",
             detail:
-              "Automatic reports run once per day when enabled. Manual reports and history remain available."
+              "Summarizes your messages across connected platforms. Off by default; when on, it runs once a day. Manual reports and history remain available."
           ) {
             VStack(alignment: .leading, spacing: 12) {
               Toggle(
@@ -2134,6 +2115,11 @@ struct QueueSettingsView: View {
         }
 
         if let snapshot = model.connectorDiagnostics {
+          if snapshot.configurationPresent == false {
+            Label("No ingestion.json yet, so every source needs setup. Each row lists its next step.",
+              systemImage: "info.circle")
+              .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+          }
           VStack(spacing: 8) {
             ForEach(DailyReportPlatform.allCases) { platform in
               ConnectorDiagnosticRow(
@@ -2177,11 +2163,31 @@ struct QueueSettingsView: View {
     }
   }
 
+  private func hotkeyRow(_ action: HotkeyAction, detail: String, isOn: Binding<Bool>) -> some View {
+    VStack(alignment: .leading, spacing: 5) {
+      HStack(alignment: .firstTextBaseline) {
+        Toggle(action.title, isOn: isOn)
+        Spacer()
+        HotkeyRecorderField(model: model, action: action).disabled(!isOn.wrappedValue)
+      }
+      Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    }
+  }
+
+  private func featureBadge(_ text: String) -> some View {
+    Text(text).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+      .padding(.horizontal, 7).padding(.vertical, 2)
+      .background(.primary.opacity(0.07), in: Capsule())
+  }
+
   private func settingsSection<Content: View>(
-    title: String, detail: String, @ViewBuilder content: () -> Content
+    title: String, badge: String? = nil, detail: String, @ViewBuilder content: () -> Content
   ) -> some View {
     VStack(alignment: .leading, spacing: 11) {
-      Text(title).font(.system(size: 16, weight: .bold))
+      HStack(spacing: 8) {
+        Text(title).font(.system(size: 16, weight: .bold))
+        if let badge { featureBadge(badge) }
+      }
       Text(detail).font(.system(size: 13)).foregroundStyle(.secondary).fixedSize(
         horizontal: false, vertical: true)
       content()
@@ -2946,8 +2952,7 @@ private struct TicketCard: View {
     model.preferredNewAgentProvider(stored: storedNewAgentProvider)
   }
 
-  private var review: CompletionRequest? { model.latestReview(for: ticket.id) }
-  private var isChecked: Bool { model.ticketIsChecked(ticket) }
+  private var isChecked: Bool { !ticket.isOpen }
   private var recurringProgress: RecurringPullRequestProgress? {
     model.recurringPRProgress(for: ticket.id)
   }
@@ -3027,7 +3032,7 @@ private struct TicketCard: View {
         }
         Button("Cancel", role: .cancel) { completingSubtask = nil }
       } message: {
-        Text("This records a user override and preserves the prior review evidence.")
+        Text("The agent's conversation and workspace stay available.")
       }
       .confirmationDialog(
         "Delete this work item?",
@@ -3080,14 +3085,8 @@ private struct TicketCard: View {
       Task { await model.setTicketPinned(ticket, pinned: !model.isTicketPinned(ticket.id)) }
     }
     Divider()
-    if model.config.completionReviewEnabled {
-      Button("Request completion review", systemImage: "checkmark.seal") {
-        model.requestCompletion(for: ticket)
-      }
-      .disabled(!ticket.isOpen || isChecked)
-    }
-    Button("Mark as complete (skip review)", systemImage: "checkmark.circle") {
-      model.skipReviewAndComplete(ticket)
+    Button("Mark as complete", systemImage: "checkmark.circle") {
+      model.requestCompletion(for: ticket)
     }
     .disabled(!ticket.isOpen)
     Button("Archive without completion", systemImage: "archivebox") {
@@ -3121,18 +3120,8 @@ private struct TicketCard: View {
             .system(size: 20, weight: .medium)
           ).foregroundStyle(checkColor)
         }.buttonStyle(.plain).disabled(isChecked).minimumHitTarget()
-          .accessibilityLabel(
-            isChecked
-              ? "Completion review \(review?.status.rawValue ?? "requested") for \(ticket.id)"
-              : (model.config.completionReviewEnabled
-                ? "Request completion review for \(ticket.id)"
-                : "Mark \(ticket.id) complete by user override")
-          ).accessibilityHint(model.config.completionReviewEnabled
-            ? "Queues Codex evidence review before closing the task."
-            : "Marks the task complete by explicit user override without review.")
-          .help(model.config.completionReviewEnabled
-            ? "Queue an evidence-based Codex completion review"
-            : "Mark complete by user override without review")
+          .accessibilityLabel(isChecked ? "\(ticket.id) is complete" : "Mark \(ticket.id) complete")
+          .help("Mark this task complete")
 
         Button {
           withAnimation(.easeInOut(duration: 0.18)) { isCollapsedToTitle.toggle() }
@@ -3150,11 +3139,11 @@ private struct TicketCard: View {
         .help(isCollapsedToTitle ? "Expand task" : "Collapse task to title only")
       }
       .contextMenu {
-        Button("Skip review and mark as complete", systemImage: "checkmark.circle") {
-          model.skipReviewAndComplete(ticket)
+        Button("Mark as complete", systemImage: "checkmark.circle") {
+          model.requestCompletion(for: ticket)
         }
         .disabled(!ticket.isOpen)
-        Button("Archive without completion (skip review)", systemImage: "archivebox") {
+        Button("Archive without completion", systemImage: "archivebox") {
           Task { _ = await model.archiveWithoutCompletion(ticket) }
         }
         .disabled(!ticket.isOpen)
@@ -3247,7 +3236,6 @@ private struct TicketCard: View {
             )
           }
           if TaskTriagePolicy.hasHardDeadline(ticket) { TaskDeadlinePill(ticket: ticket) }
-          if let review { ReviewPill(status: review.status) }
         }
         if !isCollapsedToTitle, !ticket.briefSummary.isEmpty {
           Text(ticket.briefSummary).font(.system(size: 13)).foregroundStyle(.secondary)
@@ -3610,10 +3598,6 @@ private struct TicketCard: View {
             }.buttonStyle(.plain).accessibilityLabel("Open \(link.label)")
           }
         }
-      }
-
-      if let review {
-        ReviewDetail(review: review, retry: { model.retryReview(for: ticket) }, open: { model.open($0, ticketID: ticket.id) })
       }
 
       if let message = model.actionMessages[ticket.id] {
@@ -4373,55 +4357,6 @@ private struct StatusPill: View {
     ).tracking(0.3).foregroundStyle(color).padding(
       .horizontal, 7
     ).padding(.vertical, 3).background(color.opacity(0.12), in: Capsule())
-  }
-}
-
-private struct ReviewPill: View {
-  let status: CompletionReviewStatus
-  @Environment(\.queueAccentStyle) private var accentStyle
-
-  var body: some View { StatusPill(text: status.rawValue, color: color) }
-
-  private var color: Color {
-    switch status {
-    case .pending: QueueAccentPalette.color(.warning, style: accentStyle)
-    case .running: QueueAccentPalette.color(.info, style: accentStyle)
-    case .needsWork: QueueAccentPalette.color(.warning, style: accentStyle)
-    case .accepted: QueueAccentPalette.color(.success, style: accentStyle)
-    case .failed: QueueAccentPalette.color(.danger, style: accentStyle)
-    }
-  }
-}
-
-private struct ReviewDetail: View {
-  let review: CompletionRequest
-  let retry: () -> Void
-  let open: (String) -> Void
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 5) {
-      DetailLabel(text: "Completion review")
-      if let summary = review.summary, !summary.isEmpty {
-        Text(summary).font(.system(size: 13)).lineLimit(6).fixedSize(
-          horizontal: false, vertical: true)
-      } else {
-        Text(
-          review.status == .running
-            ? "Codex is reviewing source evidence…" : "Queued for Codex review."
-        ).font(.system(size: 13)).foregroundStyle(
-          .secondary)
-      }
-      HStack(spacing: 7) {
-        if [.failed, .needsWork].contains(review.status) {
-          Button("Review again", action: retry).buttonStyle(.link).accessibilityLabel(
-            "Review completion again")
-        }
-        if let logPath = review.logPath {
-          Button("Open log") { open(logPath) }.buttonStyle(.link).accessibilityLabel(
-            "Open completion review log")
-        }
-      }.font(.system(size: 13))
-    }.accessibilityElement(children: .contain)
   }
 }
 

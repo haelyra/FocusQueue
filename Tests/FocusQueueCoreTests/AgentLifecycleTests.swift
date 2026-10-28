@@ -56,7 +56,7 @@ struct AgentLifecycleTests {
         let late = try await store.updateProgress(ticketID: ticket.id, subtaskID: subtask.id, status: .working, summary: "Late report")
         #expect(late.subtasks[0].status == .completed)
         #expect(late.subtasks[0].completionOverrideAt != nil)
-        #expect(late.subtasks[0].progressSummary.contains("user override"))
+        #expect(late.subtasks[0].progressSummary == "Marked complete by the user.")
     }
 
     @Test("Resume uses the exact conversation and saved workspace without replaying initialization", arguments: AgentProvider.allCases)

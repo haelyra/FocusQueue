@@ -35,25 +35,26 @@ func legacyConfigurationCreatesEffectiveProject() throws {
   #expect(project.dashboardPath == "/tmp/ECC/dashboard.json")
   #expect(project.workspacePath == "/tmp/ECC")
   #expect(!configuration.dailyReport.enabled)
-  #expect(configuration.completionReviewEnabled)
   #expect(configuration.appName == "ECC Focus Queue")
 }
 
-@Test("Completion review preference persists independently of the agent verifier")
-func completionReviewPreferencePersists() async throws {
+@Test("Saving drops the removed completion review preference")
+func removedCompletionReviewKeyIsDropped() async throws {
   let root = FileManager.default.temporaryDirectory
     .appendingPathComponent("focus-queue-review-setting-\(UUID().uuidString)", isDirectory: true)
   defer { try? FileManager.default.removeItem(at: root) }
-  let repository = JSONConfigurationRepository(url: root.appendingPathComponent("config.json"))
-  var configuration = AppConfiguration.eccDefault(homeDirectory: root)
-  configuration.completionReviewEnabled = false
-  configuration.verifier.enabled = true
+  let url = root.appendingPathComponent("config.json")
+  let repository = JSONConfigurationRepository(url: url)
+  try await repository.save(AppConfiguration.eccDefault(homeDirectory: root))
+  var stored = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+  stored["completionReviewEnabled"] = true
+  try JSONSerialization.data(withJSONObject: stored).write(to: url)
 
-  try await repository.save(configuration)
   let reloaded = try await repository.loadOrCreate(default: .eccDefault(homeDirectory: root))
+  try await repository.save(reloaded)
 
-  #expect(!reloaded.completionReviewEnabled)
-  #expect(reloaded.verifier.enabled)
+  let saved = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+  #expect(saved["completionReviewEnabled"] == nil)
 }
 
 @Test("Legacy repository project catalog does not shadow queue project migration")

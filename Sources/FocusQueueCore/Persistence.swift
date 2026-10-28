@@ -183,7 +183,9 @@ public actor JSONConfigurationRepository: ConfigurationLoading {
         "appName", "dashboardPath", "workspacePath", "defaultPlacement",
         "refreshIntervalSeconds", "dailyRoutines", "wezTerm", "verifier", "dailyReport",
         "persistentTerminals", "tmuxExecutable", "setupCompleted", "focusQueueProjects",
-        "focusQueueSelectedProjectID", "projects", "selectedProjectID", "completionReviewEnabled",
+        "focusQueueSelectedProjectID", "projects", "selectedProjectID",
+        // Completion review was removed; listing its key drops it on the next save.
+        "completionReviewEnabled",
     ]
 
     private enum LegacyProjectMetadata: Equatable {
@@ -837,42 +839,5 @@ public actor JSONLocalStateStore: LocalStateStoring {
 
     private static var decoder: JSONDecoder {
         JSONDecoder()
-    }
-}
-
-public actor ReviewArtifactStore {
-    public let directory: URL
-    private let files: any FileAccessing
-    private let maximumLogCharacters: Int
-
-    public init(
-        directory: URL,
-        files: any FileAccessing = SystemFileAccessor(),
-        maximumLogCharacters: Int = 128_000
-    ) {
-        self.directory = directory
-        self.files = files
-        self.maximumLogCharacters = maximumLogCharacters
-    }
-
-    public nonisolated func requestURL(for id: UUID) -> URL {
-        directory.appendingPathComponent("\(id.uuidString).json")
-    }
-
-    public nonisolated func logURL(for id: UUID) -> URL {
-        directory.appendingPathComponent("\(id.uuidString).log")
-    }
-
-    public func writeRequest(_ request: CompletionRequest) throws {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        try files.write(try encoder.encode(request), to: requestURL(for: request.id))
-    }
-
-    @discardableResult
-    public func writeLog(_ log: String, for id: UUID) throws -> URL {
-        let bounded = String(log.prefix(maximumLogCharacters))
-        try files.write(Data(bounded.utf8), to: logURL(for: id))
-        return logURL(for: id)
     }
 }

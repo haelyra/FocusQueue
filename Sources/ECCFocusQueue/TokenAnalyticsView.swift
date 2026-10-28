@@ -704,7 +704,7 @@ private struct TokenStep {
     TokenStep(source: "daily_report_deep_pass", title: "Daily report deep pass",
               detail: "Re-checks candidate tasks with their source material.", color: Palette.slot(5)),
     TokenStep(source: "completion_review", title: "Completion review",
-              detail: "Verifies a task's evidence before marking it complete.", color: Palette.slot(6)),
+              detail: "Past runs of the removed completion review.", color: Palette.slot(6)),
     TokenStep(source: "push_review", title: "Push review",
               detail: "Reads a diff before an agent pushes.", color: Palette.slot(7)),
   ]

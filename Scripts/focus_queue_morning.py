@@ -19,6 +19,7 @@ import json
 import os
 import re
 import select
+import shutil
 import signal
 import sqlite3
 import stat
@@ -320,30 +321,53 @@ def load_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def load_config(path: Path) -> dict[str, Any]:
+# Settings a platform cannot collect without. Gmail, Slack, and Telegram report
+# their own missing setup per source instead of failing the whole run.
+PLATFORM_REQUIRED_SETTINGS: dict[str, tuple[str, ...]] = {
+    "discord": ("discordGuildId",),
+    "email": ("emailAddress",),
+    "github": ("githubRepositories",),
+}
+REPORT_REQUIRED_SETTINGS = ("dashboardPath", "dashboardDirectory", "agentExecutable")
+
+
+def missing_platform_settings(config: dict[str, Any], platforms: Any) -> list[str]:
+    missing: list[str] = []
+    for platform in REPORT_PLATFORMS:
+        if platform not in platforms:
+            continue
+        missing.extend(key for key in PLATFORM_REQUIRED_SETTINGS.get(platform, ()) if not config.get(key))
+        if (
+            platform == "email"
+            and config.get("emailProvider") == "gmail"
+            and not config.get("gmailOAuthClientPath")
+        ):
+            missing.append("gmailOAuthClientPath")
+    return list(dict.fromkeys(missing))
+
+
+def require_platform_settings(config: dict[str, Any], platforms: Any) -> None:
+    missing = missing_platform_settings(config, platforms)
+    if missing:
+        raise ReconciliationError(f"Missing ingestion settings: {', '.join(missing)}")
+
+
+def load_config(path: Path, *, connector: str | None = None) -> dict[str, Any]:
+    """Load ingestion.json.
+
+    A report run (connector=None) requires the dashboard and agent settings plus
+    the settings of each enabled platform. A connector CLI passes its platform
+    and only needs that platform's settings, so a new user can set up one
+    source without filling in the others.
+    """
     config = load_json(path)
     config["_configPath"] = str(path.expanduser())
-    required = [
-        "dashboardPath",
-        "dashboardDirectory",
-        "emailAddress",
-        "discordGuildId",
-        "githubRepositories",
-        "telegramBotUsername",
-    ]
-    missing = [key for key in required if not config.get(key)]
     if not config.get("agentExecutable") and config.get("profileExecutable"):
         config["agentExecutable"] = config["profileExecutable"]
-    if not config.get("agentExecutable"):
-        missing.append("agentExecutable")
     email_provider = str(config.get("emailProvider", "apple_mail")).strip().casefold()
     if email_provider not in {"apple_mail", "gmail"}:
         raise ReconciliationError("emailProvider must be apple_mail or gmail")
     config["emailProvider"] = email_provider
-    if email_provider == "gmail" and not config.get("gmailOAuthClientPath"):
-        missing.append("gmailOAuthClientPath")
-    if missing:
-        raise ReconciliationError(f"Missing ingestion settings: {', '.join(missing)}")
     config.setdefault("lookbackHours", 168)
     config.setdefault("maxDiscordMessagesPerChannel", 100)
     config.setdefault("maxEmailMessages", 200)
@@ -380,10 +404,16 @@ def load_config(path: Path) -> dict[str, Any]:
         raise ReconciliationError("Daily report maximumTokens must be between 10000 and 1000000")
     report_settings["maximumTokens"] = maximum_tokens
     config["dailyReport"] = report_settings
-    config.setdefault(
-        "discordCredentialPath",
-        str(Path.home() / "Library/Application Support/ECC Focus Queue/credentials.json"),
-    )
+    if connector is None:
+        missing = [key for key in REPORT_REQUIRED_SETTINGS if not config.get(key)]
+        missing.extend(missing_platform_settings(config, enabled))
+    else:
+        missing = missing_platform_settings(config, {connector})
+    if missing:
+        raise ReconciliationError(f"Missing ingestion settings: {', '.join(dict.fromkeys(missing))}")
+    # Credentials live beside ingestion.json, so a support-folder override
+    # (FOCUS_QUEUE_SUPPORT_DIR) never falls back to the real home's secrets.
+    config.setdefault("discordCredentialPath", str(path.expanduser().parent / "credentials.json"))
     config.setdefault("mailRequestDirectory", str(MAIL_COMMAND_DIRECTORY))
     config.setdefault("mailResponseDirectory", str(MAIL_PROOF_DIRECTORY))
     config.setdefault("discordRuntimeDirectory", str(CONNECTOR_PROOF_DIRECTORY))
@@ -1262,14 +1292,35 @@ def collect_telegram(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# Apple Silicon Homebrew, Intel Homebrew, then PATH. The app launches scripts
+# with a minimal PATH, so the fixed locations come first.
+GITHUB_CLI_CANDIDATES = ("/opt/homebrew/bin/gh", "/usr/local/bin/gh")
+
+
+def resolve_github_cli(config: dict[str, Any]) -> str:
+    configured = str(config.get("githubExecutable") or "").strip()
+    candidates = [configured] if configured else [*GITHUB_CLI_CANDIDATES, shutil.which("gh") or ""]
+    for candidate in candidates:
+        path = Path(candidate).expanduser()
+        if candidate and path.is_absolute() and path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+    if configured:
+        raise ReconciliationError(f"githubExecutable is not an executable file: {configured}")
+    raise ReconciliationError(
+        "GitHub CLI (gh) is not installed. Install it with `brew install gh`, run `gh auth login`, "
+        "or set githubExecutable in ingestion.json."
+    )
+
+
 def collect_github(config: dict[str, Any], cutoff: dt.datetime) -> dict[str, Any]:
     created_since = cutoff.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
     repositories: list[dict[str, Any]] = []
     truncated = False
+    gh = resolve_github_cli(config)
     for repository in config["githubRepositories"]:
         issues_result = run_command(
             [
-                "/opt/homebrew/bin/gh",
+                gh,
                 "issue", "list",
                 "--repo", str(repository),
                 "--state", "open",
@@ -1281,7 +1332,7 @@ def collect_github(config: dict[str, Any], cutoff: dt.datetime) -> dict[str, Any
         )
         open_prs_result = run_command(
             [
-                "/opt/homebrew/bin/gh",
+                gh,
                 "pr",
                 "list",
                 "--repo",
@@ -3553,6 +3604,8 @@ def main() -> int:
         platforms = set(arguments.platforms or []) or enabled_platforms
         if arguments.comprehensive:
             platforms = enabled_platforms
+        # load_config validated the enabled platforms; check any extra --platform.
+        require_platform_settings(config, platforms - enabled_platforms)
         if arguments.recheck and arguments.trigger == "scheduled":
             raise ReconciliationError("Scheduled runs cannot recheck processed messages")
         if arguments.command == "mail-snapshot":

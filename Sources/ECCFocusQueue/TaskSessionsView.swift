@@ -2,112 +2,74 @@ import AppKit
 import FocusQueueCore
 import SwiftUI
 
-struct TerminalBrowserView: View {
+struct SessionBrowserView: View {
   let model: QueueViewModel
-  @State private var selectedView = 0
+  @State private var showsRecallable = false
   var body: some View {
     VStack(spacing: 0) {
-      Picker("Terminal view", selection: $selectedView) {
-        Text("Task sessions").tag(0)
-        Text("Agents to place (\(model.unassignedAgentRegistrations.count))").tag(1)
-        Text("Other terminals").tag(2)
-      }.pickerStyle(.segmented).padding([.top, .horizontal], 16)
-      if selectedView == 1 { ExternalAgentsInboxView(model: model) }
-      else if selectedView == 2 { WezTermBrowserView(model: model) }
-      else { TaskSessionsView(model: model) }
-    }.task {
-      await model.refreshExternalAgentRegistrations()
-      if !model.unassignedAgentRegistrations.isEmpty { selectedView = 1 }
+      Picker("Sessions", selection: $showsRecallable) {
+        Text("Active").tag(false)
+        Text("Recallable (\(model.recallableAgents().count))").tag(true)
+      }.pickerStyle(.segmented).labelsHidden().padding([.top, .horizontal], 16)
+      if showsRecallable { RecallableSessionsView(model: model) } else { TaskSessionsView(model: model) }
     }
   }
 }
 
-/// Session identity is captured before optional task placement. Ambiguous
-/// workspaces stay visible here instead of silently joining the wrong task.
-private struct ExternalAgentsInboxView: View {
+/// Saved provider conversations with no live process. Opening one resumes the
+/// exact conversation in its task's workspace and tmux session.
+private struct RecallableSessionsView: View {
   let model: QueueViewModel
   @Environment(\.dismiss) private var dismiss
-  @State private var refreshing = false
-  @State private var message: String?
+  @State private var search = ""
+
+  private var sessions: [(ticket: DashboardTicket, agent: TaskSubtask)] {
+    model.recallableAgents().filter { entry in
+      search.isEmpty || [entry.ticket.id, entry.ticket.title, entry.agent.title, entry.agent.workDescription]
+        .contains { $0.localizedCaseInsensitiveContains(search) }
+    }
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack {
-        Text("Agents to place").font(.title2.bold())
+        Text("Recallable sessions").font(.title2.bold())
         Spacer()
-        Button("Refresh", systemImage: "arrow.clockwise") {
-          refreshing = true
-          Task { await model.refreshExternalAgentRegistrations(); refreshing = false }
-        }.disabled(refreshing)
         Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
       }
-      Text("These agents are tracked. Choose a task to place them in your queue.")
+      Text("Agents in open tasks that saved a conversation and are not running. Recall resumes that exact conversation.")
         .font(.callout).foregroundStyle(.secondary)
-      if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
-      if let error = model.externalAgentRegistrationError {
-        Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
-      }
+      TextField("Filter by task or agent", text: $search).textFieldStyle(.roundedBorder)
       ScrollView {
-        LazyVStack(alignment: .leading, spacing: 12) {
-          ForEach(model.unassignedAgentRegistrations) { registration in
-            VStack(alignment: .leading, spacing: 6) {
-              HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                  Text(registration.title).font(.headline).lineLimit(3)
-                  Text(registration.workDescription ?? "Work details are required before placement.")
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(3)
-                }
-                Spacer()
-                Menu("Assign task") {
-                  ForEach(model.openTickets) { ticket in
-                    Button("\(ticket.id) · \(ticket.title)") { model.assignExternalAgent(registration, to: ticket) }
-                  }
-                }.disabled(model.openTickets.isEmpty || registration.sessionID == nil)
-                  .accessibilityLabel("Assign \(registration.title) to a task")
+        LazyVStack(alignment: .leading, spacing: 10) {
+          ForEach(sessions, id: \.agent.id) { entry in
+            HStack(alignment: .top) {
+              Image(systemName: entry.agent.provider.symbolName).foregroundStyle(.secondary).frame(width: 18)
+              VStack(alignment: .leading, spacing: 3) {
+                Text(entry.agent.title).font(.headline).lineLimit(2)
+                Text("\(entry.ticket.id) · \(entry.ticket.title)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                HStack(spacing: 6) {
+                  Text(entry.agent.provider.displayName)
+                  if entry.agent.agentRemovedAt != nil { Text("· Archived") }
+                  if let last = entry.agent.lastHeartbeatAt { Text("· Active \(last, style: .relative) ago") }
+                }.font(.caption2).foregroundStyle(.secondary)
               }
-              Text(registration.cwd).font(.caption).foregroundStyle(.secondary)
-                .lineLimit(2).textSelection(.enabled)
-              if registration.registeredAt > .distantPast {
-                Text("Registered \(registration.registeredAt, style: .relative) ago")
-                  .font(.caption).foregroundStyle(.secondary)
-              }
-              if let reason = registration.reason {
-                Text(reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-              }
-              if registration.sessionID == nil {
-                Text("Waiting for a resumable provider session ID.").font(.caption).foregroundStyle(.secondary)
-              }
-              if registration.provider == .codex, let sessionID = registration.sessionID,
-                UUID(uuidString: sessionID) != nil {
-                Button(registration.tmux == nil ? "Copy resume command" : "Copy attach command") {
-                  let command: String
-                  if let tmux = registration.tmux,
-                    (try? TmuxController.validateName(tmux.name)) != nil,
-                    tmux.paneID.range(of: "^%[0-9]+$", options: .regularExpression) != nil {
-                    command = "focus-queue-session tmux attach \(tmux.name) --pane \(tmux.paneID)"
-                  } else {
-                    // Load the integration explicitly. Missing setup must stop
-                    // here instead of falling through to an unguarded alias.
-                    let entry = model.configurationURL.deletingLastPathComponent()
-                      .appendingPathComponent("shell/codex.zsh").path
-                    let quoted = "'" + entry.replacingOccurrences(of: "'", with: "'\\''") + "'"
-                    command = "/bin/zsh -lc 'source \"$1\" && codex resume \"$2\"' focus-queue-resume \(quoted) \(sessionID)"
-                  }
-                  NSPasteboard.general.clearContents()
-                  NSPasteboard.general.setString(command, forType: .string)
-                  message = "Copied. Paste into a terminal to open this exact conversation."
-                }.font(.caption)
-              }
-            }.padding(12).background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+              Spacer()
+              Button("Recall") {
+                model.openSubtask(entry.agent, for: entry.ticket, showResult: false)
+                dismiss()
+              }.disabled(model.isOpening(entry.agent, ticketID: entry.ticket.id))
+                .accessibilityLabel("Recall \(entry.agent.title)")
+            }
+            .padding(10).background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
           }
-          if model.unassignedAgentRegistrations.isEmpty, model.externalAgentRegistrationError == nil {
-            ContentUnavailableView("All detected agents are placed", systemImage: "checkmark.circle",
-              description: Text("New Codex sessions are detected automatically. Sessions without a clear task appear here."))
+          if sessions.isEmpty {
+            ContentUnavailableView(search.isEmpty ? "No sessions to recall" : "No matching sessions",
+              systemImage: "clock.arrow.circlepath",
+              description: Text("Stopped and archived agents with a saved conversation appear here."))
           }
         }
       }
-      Text("Placement keeps the existing conversation. It does not start another agent or change your task order.")
-        .font(.caption).foregroundStyle(.secondary)
     }.padding(20).frame(width: 700, height: 620)
   }
 }
@@ -155,12 +117,12 @@ struct TaskSessionsView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack {
-        Text("Task sessions").font(.title2.bold())
+        Text("Active sessions").font(.title2.bold())
         Spacer()
         Button("Refresh", systemImage: "arrow.clockwise") { Task { await reload() } }.disabled(busy)
         Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
       }
-      Text("One task, one tmux session. Each native tmux window tab holds up to four agent panes.")
+      Text("One task, one tmux session. Each native tmux window tab holds up to \(model.agentsPerWindow) agent panes.")
         .font(.callout).foregroundStyle(.secondary)
       if !names.isEmpty {
         Picker("Task", selection: $selectedTask) {

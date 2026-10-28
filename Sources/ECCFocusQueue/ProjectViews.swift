@@ -212,25 +212,84 @@ private struct ProjectTaskEditor: View {
     }
 }
 
-/// Settings section for project-level documents. Choosing a file opens it in
-/// the side document viewer with its project chat, like a central plan.
-struct ProjectFilesSection: View {
+/// The Settings project card: one dropdown chooses which project Settings
+/// shows, then its details and files follow. Picking here does not change the
+/// queue's active project; the queue's project menu does that.
+struct ProjectSettingsSection: View {
     let model: QueueViewModel
     @State private var projectID = ""
+    @State private var editor: ProjectDefinition?
+
+    private var project: ProjectDefinition? { model.config.projects.first { $0.id == projectID } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Picker("Project", selection: $projectID) {
+                    ForEach(model.config.projects) { project in
+                        Text(project.archivedAt == nil ? project.name : "\(project.name) (archived)").tag(project.id)
+                    }
+                }
+                .labelsHidden().fixedSize()
+                .accessibilityLabel("Project: \(project?.name ?? "none")")
+                Spacer()
+                Button("Add project", systemImage: "folder.badge.plus") {
+                    editor = ProjectDefinition(id: UUID().uuidString.lowercased(), name: "",
+                        dashboardPath: "", workspacePath: "", taskPrefix: "PRJ", repositoryPath: "")
+                }.controlSize(.small)
+            }
+            if let project {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Task IDs: \(project.taskPrefix)-###")
+                        Text(project.repositoryPath.isEmpty ? "No repository binding" : project.repositoryPath)
+                            .lineLimit(2).truncationMode(.middle).textSelection(.enabled)
+                        if project.id == model.selectedProject?.id {
+                            Label("Active in the queue", systemImage: "checkmark.circle.fill").foregroundStyle(.tint)
+                        } else if project.archivedAt != nil {
+                            Text("Archived · edit to restore")
+                        }
+                    }.font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Edit") { editor = project }.controlSize(.small)
+                }
+                Divider()
+                ProjectFilesSection(model: model, projectID: project.id)
+            } else {
+                Text("Add a project to organize tasks by repository.").foregroundStyle(.secondary)
+            }
+            if let error = model.projectError { Text(error).font(.caption).foregroundStyle(.orange) }
+        }
+        .sheet(item: $editor) { ProjectEditor(model: model, project: $0) }
+        .onAppear {
+            guard project == nil else { return }
+            let preferred = model.showsAllProjects ? nil : model.selectedProject?.id
+            projectID = model.activeProjects.first { $0.id == preferred }?.id
+                ?? model.activeProjects.first?.id ?? model.config.projects.first?.id ?? ""
+        }
+        .onChange(of: model.config.projects.map(\.id)) { old, new in
+            // A newly added project becomes the one shown; a removed one falls back.
+            if let added = new.first(where: { !old.contains($0) }) { projectID = added }
+            else if !new.contains(projectID) { projectID = new.first ?? "" }
+        }
+    }
+}
+
+/// A project's saved documents and links. Choosing a file opens it in the side
+/// document viewer with its project chat, like a central plan.
+struct ProjectFilesSection: View {
+    let model: QueueViewModel
+    let projectID: String
     @State private var documents: [ProjectDocument] = []
     @State private var links: [DashboardLink] = []
     @State private var error: String?
 
-    private var project: ProjectDefinition? { model.activeProjects.first { $0.id == projectID } }
+    private var project: ProjectDefinition? { model.config.projects.first { $0.id == projectID } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Picker("Project", selection: $projectID) {
-                    ForEach(model.activeProjects) { Text($0.name).tag($0.id) }
-                }
-                .labelsHidden().fixedSize()
-                .accessibilityLabel("Project for files: \(project?.name ?? "none")")
+                Text("Files").font(.caption.bold()).foregroundStyle(.secondary)
                 Spacer()
                 if let directory = documents.first?.url.deletingLastPathComponent() {
                     Button("Show in Finder", systemImage: "folder") { NSWorkspace.shared.open(directory) }
@@ -268,11 +327,6 @@ struct ProjectFilesSection: View {
                 }
             }
             if let error { Text(error).font(.caption).foregroundStyle(.orange) }
-        }
-        .onAppear {
-            guard projectID.isEmpty else { return }
-            let preferred = model.showsAllProjects ? nil : model.selectedProject?.id
-            projectID = model.activeProjects.first { $0.id == preferred }?.id ?? model.activeProjects.first?.id ?? ""
         }
         .onChange(of: projectID, initial: true) { reloadDocuments() }
     }

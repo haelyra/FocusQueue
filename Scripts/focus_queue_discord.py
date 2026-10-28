@@ -17,10 +17,11 @@ from typing import Any
 import focus_queue_morning as morning
 
 
-DEFAULT_CONFIG = Path("/Users/hira/Library/Application Support/ECC Focus Queue/ingestion.json")
-DEFAULT_RUNTIME = Path("/Users/hira/Library/Application Support/ECC Focus Queue/ingestion")
-DEFAULT_CREDENTIALS = Path("/Users/hira/Library/Application Support/ECC Focus Queue/credentials.json")
-LEGACY_CREDENTIALS = Path("/Users/hira/.hermes/.env")
+SUPPORT_DIRECTORY = Path.home() / "Library/Application Support/ECC Focus Queue"
+DEFAULT_CONFIG = SUPPORT_DIRECTORY / "ingestion.json"
+DEFAULT_RUNTIME = SUPPORT_DIRECTORY / "ingestion"
+DEFAULT_CREDENTIALS = SUPPORT_DIRECTORY / "credentials.json"
+LEGACY_CREDENTIALS = Path.home() / ".hermes/.env"
 CONNECTOR = "ecc-focus-discord-reader"
 MAX_RESULT_TEXT = 700
 MAX_MESSAGE_TEXT = 10_000
@@ -35,7 +36,12 @@ def utc_now() -> str:
 
 
 def credential_path(config: dict[str, Any]) -> Path:
-    return Path(config.get("discordCredentialPath", DEFAULT_CREDENTIALS)).expanduser()
+    configured = config.get("discordCredentialPath")
+    if configured:
+        return Path(configured).expanduser()
+    if config.get("_configPath"):
+        return Path(config["_configPath"]).expanduser().parent / "credentials.json"
+    return DEFAULT_CREDENTIALS
 
 
 def token_from_private_store(config: dict[str, Any]) -> str:
@@ -262,7 +268,7 @@ def main() -> int:
     subparsers.add_parser("migrate-credentials", help=argparse.SUPPRESS)
     arguments = parser.parse_args()
     try:
-        config = morning.load_config(arguments.config)
+        config = morning.load_config(arguments.config, connector="discord")
         if arguments.command == "migrate-credentials":
             print(json.dumps(migrate_credentials(config), indent=2))
             return 0
@@ -278,7 +284,7 @@ def main() -> int:
         return emit(config, payload)
     except Exception as error:
         try:
-            config = morning.load_config(arguments.config)
+            config = morning.load_config(arguments.config, connector="discord")
             return emit(
                 config,
                 {

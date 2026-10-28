@@ -41,7 +41,7 @@ public actor PushReviewer {
         PromptUsageMetrics.record(PromptUsageEvent(source: "push_review", component: "app_context",
             provider: subtask.provider.rawValue, taskID: context.ticketID,
             characters: max(0, prompt.count - (subtask.initialPrompt?.count ?? 0)), runID: id), in: supportDirectory)
-        var environment = CodexCompletionVerifier.agentEnvironment(configuration)
+        var environment = configuration.agentEnvironment
         environment["FOCUS_QUEUE_SUPPORT_DIR"] = supportDirectory.path
         environment["FOCUS_QUEUE_MODEL_USAGE_SOURCE"] = "push_review"
         environment["FOCUS_QUEUE_MODEL_USAGE_RUN_ID"] = id

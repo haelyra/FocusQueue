@@ -65,6 +65,11 @@ def slack_get(token: str, method: str, parameters: dict[str, str]) -> dict[str, 
                 waited += delay
                 continue
             raise SlackAccessError(f"Slack {method} returned HTTP {error.code}") from error
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            raise SlackAccessError(
+                f"Could not reach Slack for {method}; check the network connection.",
+                code="slack_unreachable",
+            ) from error
         if not isinstance(payload, dict):
             raise SlackAccessError(f"Slack {method} returned an invalid response")
         return payload
@@ -89,13 +94,18 @@ def checked(payload: dict[str, Any], method: str) -> dict[str, Any]:
     raise SlackAccessError(f"Slack {method} failed: {error}", code=f"slack_{error}")
 
 
+def credential_path(config: dict[str, Any]) -> Path:
+    """slackCredentialPath, else the shared credentials file beside ingestion.json."""
+    configured = config.get("slackCredentialPath") or config.get("discordCredentialPath")
+    if configured:
+        return Path(str(configured)).expanduser()
+    if config.get("_configPath"):
+        return Path(config["_configPath"]).expanduser().parent / "credentials.json"
+    return Path.home() / "Library/Application Support/ECC Focus Queue/credentials.json"
+
+
 def slack_token(config: dict[str, Any]) -> str:
-    path = Path(
-        config.get(
-            "slackCredentialPath",
-            config.get("discordCredentialPath", ""),
-        )
-    ).expanduser()
+    path = credential_path(config)
     try:
         credentials = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):

@@ -2062,127 +2062,13 @@ private struct CodexSessionMetadata {
     let promptHint: String?
 }
 
-public struct VerificationRunResult: Equatable, Sendable {
-    public enum Verdict: String, Equatable, Sendable {
-        case accepted
-        case needsWork = "needs-work"
-    }
-
-    public let succeeded: Bool
-    public let verdict: Verdict?
-    public let summary: String
-    public let log: String
-
-    public init(succeeded: Bool, verdict: Verdict? = nil, summary: String, log: String) {
-        self.succeeded = succeeded
-        self.verdict = verdict
-        self.summary = summary
-        self.log = log
-    }
-}
-
-public protocol CompletionVerifying: Sendable {
-    func verify(
-        ticketID: String,
-        requestFile: URL,
-        workspace: String,
-        configuration: VerifierConfiguration
-    ) async throws -> VerificationRunResult
-}
-
-public actor CodexCompletionVerifier: CompletionVerifying {
-    private let runner: any ProcessRunning
-    private let files: any FileAccessing
-
-    public init(
-        runner: any ProcessRunning = FoundationProcessRunner(),
-        files: any FileAccessing = SystemFileAccessor()
-    ) {
-        self.runner = runner
-        self.files = files
-    }
-
-    public func verify(
-        ticketID: String,
-        requestFile: URL,
-        workspace: String,
-        configuration: VerifierConfiguration
-    ) async throws -> VerificationRunResult {
-        guard configuration.enabled else {
-            return VerificationRunResult(
-                succeeded: false,
-                verdict: nil,
-                summary: "Codex completion review is disabled in config.json.",
-                log: "Verifier disabled."
-            )
-        }
-
-        let promptURL = requestFile.deletingPathExtension().appendingPathExtension("prompt.txt")
-        let prompt = """
-        Review completion intent for ticket \(ticketID). This is an evidence-gathering review, not a request to judge only the contents of the request record.
-        The local request record is at \(requestFile.path).
-        Read the request first. It contains exact dashboardPath, workspacePath, contextPath, taskTitle, doneWhen, and optional subtaskID pointers when available. Then actively gather evidence from the canonical dashboard entry; context.json; the central plan; relevant agent-log entries; the assigned workspace's status, commits, and diff; linked PR state; and the affected workflow's recorded or runnable checks. Do not reject merely because evidence is absent from the sparse request JSON. Search the named sources yourself and run safe, relevant read-only or verification commands when evidence is incomplete.
-        Re-read the workspace instructions and repository evidence. Do not trust the checkbox, prose claims, a clean tree, or process exit alone as completion evidence. Compare the requested outcome and doneWhen against concrete implementation and verification. For parent task closure only, require every completion-tracked subtask to be complete and never accept while a required resolutionPr is unmerged. For subtask closure, assess only that assignment and its recorded changes and checks. Do not require the entire parent's success criteria, merged PRs, or unrelated work to accept a subtask. A user-requested undo or cancellation is a valid completed assignment when verified. Do not require live UI automation where workspace instructions prohibit it; state the exact remaining manual check only when it is material. Do not inspect or transmit unrelated private notes.
-        This review is read-only. Do not edit the dashboard, task context, branches, worktrees, or source files, and do not run a completion command. The host applies an accepted verdict atomically and retains review evidence. Preserve worktrees and branches; never force-remove, reset, merge, commit, push, or install as part of this review.
-        Your first non-empty output line must be exactly ACCEPT or NEEDS_WORK. Use ACCEPT only when the available evidence demonstrates the applicable requested outcome and checks. Use NEEDS_WORK for a real evidence or implementation gap. After that marker, lead with one short sentence stating the accepted result or the specific missing evidence, then concise details. Do not use a generic verdict sentence.
-        """
-        try files.write(Data(prompt.utf8), to: promptURL)
-        let usageRunID = UUID().uuidString
-        if let support = configuration.supportDirectory {
-            PromptUsageMetrics.record(PromptUsageEvent(source: "completion_review", component: "app_prompt",
-                taskID: ticketID, characters: prompt.count, runID: usageRunID), in: URL(fileURLWithPath: support))
-        }
-        var reviewEnvironment = Self.agentEnvironment(configuration)
-        reviewEnvironment["FOCUS_QUEUE_MODEL_USAGE_SOURCE"] = "completion_review"
-        reviewEnvironment["FOCUS_QUEUE_MODEL_USAGE_RUN_ID"] = usageRunID
-
-        let result = try await runner.run(ProcessSpecification(
-            executable: configuration.executable,
-            arguments: [
-                "run",
-                "--workspace", workspace,
-                "--prompt-file", promptURL.path,
-                "--timeout", String(configuration.timeoutSeconds),
-                "--sandbox", "workspace-write",
-                "--label", configuration.sessionName,
-            ] + (configuration.contextDirectory.map { ["--context-dir", $0] } ?? []),
-            workingDirectory: workspace,
-            environment: reviewEnvironment,
-            timeoutSeconds: configuration.timeoutSeconds + 15
-        ))
-
-        let combinedLog = [result.standardOutput, result.standardError]
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n\n")
-        let trimmedOutput = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-        let fallback = result.timedOut
-            ? "Codex review timed out and remains pending."
-            : "Codex review failed with exit code \(result.exitCode)."
-        let lines = trimmedOutput.split(whereSeparator: \.isNewline).map(String.init)
-        let marker = lines.first?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let verdict: VerificationRunResult.Verdict? = switch marker {
-        case "ACCEPT": .accepted
-        case "NEEDS_WORK": .needsWork
-        default: nil
-        }
-        let summaryBody = lines.dropFirst(verdict == nil ? 0 : 1).joined(separator: "\n")
-          .trimmingCharacters(in: .whitespacesAndNewlines)
-        let missingVerdict = result.succeeded && verdict == nil
-          ? "Completion reviewer returned no structured verdict. Retry the review."
-          : fallback
-        return VerificationRunResult(
-            succeeded: result.succeeded,
-            verdict: verdict,
-            summary: summaryBody.isEmpty ? missingVerdict : summaryBody,
-            log: combinedLog.isEmpty ? fallback : combinedLog
-        )
-    }
-
-    public static func agentEnvironment(_ configuration: VerifierConfiguration) -> [String: String] {
+extension VerifierConfiguration {
+    /// Environment for a headless Codex run, such as the pre-push review.
+    public var agentEnvironment: [String: String] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var environment = ["PATH": "\(home)/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"]
-        if let directory = configuration.supportDirectory { environment["FOCUS_QUEUE_SUPPORT_DIR"] = directory }
-        environment["FOCUS_QUEUE_PROJECT_ID"] = configuration.projectScopeID ?? ""
+        if let directory = supportDirectory { environment["FOCUS_QUEUE_SUPPORT_DIR"] = directory }
+        environment["FOCUS_QUEUE_PROJECT_ID"] = projectScopeID ?? ""
         return environment
     }
 }
@@ -2785,7 +2671,7 @@ public actor HarnessQueueAgent: QueueAgentChatting {
             executable: configuration.executable,
             arguments: arguments,
             workingDirectory: workspace,
-            environment: CodexCompletionVerifier.agentEnvironment(configuration),
+            environment: configuration.agentEnvironment,
             timeoutSeconds: runTimeoutSeconds + 15
         ))
         if let support = configuration.supportDirectory,
@@ -2846,7 +2732,7 @@ public actor HarnessQueueAgent: QueueAgentChatting {
                 "reset",
                 "--session", Self.resolvedSessionName(for: configuration, provider: provider),
             ],
-            environment: CodexCompletionVerifier.agentEnvironment(configuration),
+            environment: configuration.agentEnvironment,
             timeoutSeconds: 30
         ))
         guard result.succeeded else {

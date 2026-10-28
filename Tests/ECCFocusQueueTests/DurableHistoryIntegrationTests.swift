@@ -189,7 +189,7 @@ private struct DurableFixture {
   @MainActor func model() async -> QueueViewModel {
     let boundary = DurableForbiddenActions()
     let model = QueueViewModel(paths: paths, terminalController: boundary,
-      verifier: boundary, queueAgent: boundary, pullRequestQueueLoader: boundary,
+      queueAgent: boundary, pullRequestQueueLoader: boundary,
       discoverExternalAgents: { [] }, locateExistingAgent: { _, _ in nil })
     await model.bootstrap()
     await model.bootstrapTail?.value
@@ -197,7 +197,7 @@ private struct DurableFixture {
   }
 }
 
-private struct DurableForbiddenActions: WezTermControlling, CompletionVerifying, QueueAgentChatting, PullRequestQueueLoading {
+private struct DurableForbiddenActions: WezTermControlling, QueueAgentChatting, PullRequestQueueLoading {
   private func denied<T>() throws -> T {
     Issue.record("Durable-history test attempted an external action")
     throw CocoaError(.featureUnsupported)
@@ -207,7 +207,6 @@ private struct DurableForbiddenActions: WezTermControlling, CompletionVerifying,
   func attach(paneID: Int, tabTitle: String, windowTitle: String, configuration: WezTermConfiguration) async throws { let _: Void = try denied() }
   func focusOrSpawn(directory: String, taskID: String, taskTitle: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult { try denied() }
   func focusOrResume(session: TaskAgentSession, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult { try denied() }
-  func verify(ticketID: String, requestFile: URL, workspace: String, configuration: VerifierConfiguration) async throws -> VerificationRunResult { try denied() }
   func load(repository: String, closedSince: String) async throws -> PullRequestQueueSnapshot { try denied() }
   func send(message: String, dashboardPath: String, workspace: String, visibleOrder: [String], deferredTicketIDs: [String], configuration: VerifierConfiguration, model: String?, effort: String?) async throws -> QueueAgentReply { try denied() }
   func reset(configuration: VerifierConfiguration) async throws { let _: Void = try denied() }

@@ -71,8 +71,8 @@ snapshot; shared agents remain attached to their other assignments. Completed
 agents leave the active list automatically and verified runtimes are closed.
 Cleanup retains dirty, ignored, unmerged, or shared worktrees; clean merged
 app-owned worktrees can be removed while branches and context remain recoverable.
-**Mark as complete…** records a confirmed user override, retains prior review logs,
-and leaves the parent task unchanged.
+**Mark as complete…** records a confirmed completion and leaves the parent task
+unchanged.
 
 New launches write structured phase-by-phase diagnostics under
 `Application Support/ECC Focus Queue/logs/agent-launches`. The document icon beside
@@ -162,8 +162,8 @@ focus-queue-session progress ECC-035 <subtask-id> working "History persistence v
 focus-queue-session complete ECC-035 <subtask-id> "Implemented; focused tests passed"
 ```
 
-Manual completion review starts the bounded verifier for the selected task or subtask. Subtask checks are scoped to the assignment, including requested undo work. Missing
-evidence stays visible in the queue. Cleanup archives first and removes only
+Marking a task complete closes its open completion-tracked work items, then resolves it
+in the dashboard. Cleanup archives first and removes only
 app-created, clean, merged worktrees with all subtasks complete. Ignored private
 files, changed branches, and unmerged commits block removal. Existing user-owned
 workspaces and Git branches are retained. Merge through the repository's review
@@ -383,8 +383,8 @@ completion message and resume command are still recognized and protected.
 
 A completed agent stays under **Work items** with a green **New result** status
 until you open it. Once seen, it moves to **Completed items**. A new prompt typed
-into its terminal returns it to Work items as Working. Task progress counts and
-the automatic task completion review also wait until every result is seen.
+into its terminal returns it to Work items as Working. Task progress counts
+also wait until every result is seen.
 
 ## Build and install
 

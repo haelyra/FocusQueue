@@ -419,7 +419,8 @@ except module.TerminationRequested:
             return subprocess.CompletedProcess(arguments, 0, output, "")
 
         with mock.patch.object(MODULE, "run_command", side_effect=command):
-            result = MODULE.collect_github({"githubRepositories": ["owner/repo"]}, cutoff)
+            result = MODULE.collect_github(
+                {"githubRepositories": ["owner/repo"], "githubExecutable": sys.executable}, cutoff)
 
         issues = result["repositories"][0]["newOpenIssues"]
         self.assertEqual([item["sourceKey"] for item in issues], [

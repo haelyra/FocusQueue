@@ -21,7 +21,7 @@ struct QueueViewModelTests {
       subtask: TaskSubtask(id: "primed-worker", title: "Primed agent", sessionID: UUID().uuidString))
     let boundary = ForbiddenExternalActions()
     let model = QueueViewModel(paths: fixture.paths,
-      terminalController: boundary, verifier: boundary, queueAgent: ControlledQueueAgent(),
+      terminalController: boundary, queueAgent: ControlledQueueAgent(),
       pullRequestQueueLoader: boundary, discoverExternalAgents: { [] },
       maintenanceEnabled: false, locateExistingAgent: { _, _ in nil })
 
@@ -2277,6 +2277,41 @@ struct QueueViewModelTests {
     ])
   }
 
+  @Test("The real connector checker reports all six platforms on a new install and finds override credentials")
+  func connectorDiagnosticsRunTheShippedChecker() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let script = fixture.paths.connectorDiagnosticsScript
+    try FileManager.default.createDirectory(
+      at: script.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let source = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Scripts/focus_queue_connectors.py")
+    try FileManager.default.copyItem(at: source, to: script)
+    let model = await fixture.model(agent: ControlledQueueAgent())
+
+    await model.diagnoseConnectors()
+
+    #expect(model.connectorDiagnosticsError == nil)
+    let fresh = try #require(model.connectorDiagnostics)
+    #expect(fresh.configurationPresent == false)
+    #expect(Set(fresh.connectors.map(\.id)) == Set(DailyReportPlatform.allCases.map(\.rawValue)))
+    for platform in DailyReportPlatform.allCases {
+      #expect(fresh.diagnostic(for: platform)?.statusLabel == "Setup required")
+    }
+
+    // Credentials beside an overridden support folder's ingestion.json count.
+    try Data("{}".utf8).write(to: fixture.paths.ingestionConfigurationFile)
+    try Data(#"{"slackToken":"xoxb-fixture"}"#.utf8).write(
+      to: fixture.paths.supportDirectory.appendingPathComponent("credentials.json"))
+    await model.diagnoseConnectors()
+
+    let configured = try #require(model.connectorDiagnostics)
+    #expect(configured.configurationPresent == true)
+    #expect(configured.diagnostic(for: .slack)?.statusLabel == "Configured, not verified")
+    #expect(configured.diagnostic(for: .discord)?.statusLabel == "Setup required")
+  }
+
   @Test("Reading an archived report keeps the latest unread report notification")
   func historicalViewingPreservesLatestAttention() async throws {
     let fixture = try await Fixture()
@@ -2294,34 +2329,6 @@ struct QueueViewModelTests {
     #expect(model.reportHistory.isUnread(latest))
     #expect(model.reportNeedsAttention)
     #expect(model.reportAttentionTitle == "Your daily report is ready")
-  }
-
-  @Test("An accepted parent review closes the canonical task and retains its evidence pointers")
-  func acceptedParentReviewClosesTask() async throws {
-    let fixture = try await Fixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let store = TaskContextStore(root: fixture.paths.supportDirectory)
-    _ = try await store.ensureContext(ticket: fixture.tickets[0])
-    _ = try await store.setPinned(ticketID: fixture.tickets[0].id, at: Date())
-    let model = await fixture.model(
-      agent: ControlledQueueAgent(), verifier: AcceptedCompletionVerifier())
-
-    model.requestCompletion(for: fixture.tickets[0])
-    try await eventually {
-      model.latestReview(for: "ECC-101")?.status == .accepted
-        && model.dashboard.tickets.first(where: { $0.id == "ECC-101" })?.isCompleted == true
-    }
-
-    let completed = try #require(model.dashboard.tickets.first { $0.id == "ECC-101" })
-    #expect(completed.completion?.completedBy == "completion-review")
-    #expect(completed.completion?.reason == "Requested behavior and workflow checks are verified.")
-    let request = try #require(model.latestReview(for: "ECC-101"))
-    let persisted = try JSONDecoder().decode(
-      CompletionRequest.self, from: Data(contentsOf: URL(fileURLWithPath: request.requestFilePath)))
-    #expect(persisted.dashboardPath == fixture.root.appendingPathComponent("dashboard.json").path)
-    #expect(persisted.workspacePath == fixture.root.path)
-    #expect(persisted.taskTitle == "Task ECC-101")
-    #expect(try await store.load(ticketID: "ECC-101")?.pinnedAt == nil)
   }
 
   @Test("Marking a completed task incomplete returns it to Focus and resets its checkbox")
@@ -2351,7 +2358,7 @@ struct QueueViewModelTests {
     #expect(focused.completedAt == nil)
     #expect(focused.completion == nil)
     #expect(!model.completedTickets.contains { $0.id == completed.id })
-    #expect(!model.ticketIsChecked(focused))
+    #expect(focused.isOpen)
     let object = try #require(
       JSONSerialization.jsonObject(
         with: Data(contentsOf: fixture.root.appendingPathComponent("dashboard.json")))
@@ -2394,7 +2401,7 @@ struct QueueViewModelTests {
     #expect(TaskCompletionCleanup.savedReport(ticketID: "ECC-102", root: fixture.root) == nil)
   }
 
-  @Test("Archiving an open task skips review and does not record successful completion")
+  @Test("Archiving an open task does not record successful completion")
   func archiveTaskWithoutCompletion() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -2412,12 +2419,11 @@ struct QueueViewModelTests {
     #expect(ticket.completedAt == nil)
     #expect(!model.openTickets.contains { $0.id == ticket.id })
     #expect(model.completedTickets.contains { $0.id == ticket.id })
-    #expect(model.localState.completionRequests.isEmpty)
     #expect(try await contexts.load(ticketID: ticket.id)?.pinnedAt == nil)
   }
 
-  @Test("Disabling completion review makes the completion control an explicit user override")
-  func disabledReviewUsesTaskOverride() async throws {
+  @Test("Marking a task complete closes its open work items and resolves it as the user")
+  func markTaskCompleteClosesWorkItems() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let store = TaskContextStore(root: fixture.paths.supportDirectory)
@@ -2426,48 +2432,15 @@ struct QueueViewModelTests {
       subtask: TaskSubtask(id: "unfinished", title: "Unfinished work", status: .working))
     let model = await fixture.model(agent: ControlledQueueAgent())
 
-    model.setCompletionReviewEnabled(false)
     model.requestCompletion(for: fixture.tickets[0])
     try await eventually {
       model.dashboard.tickets.first(where: { $0.id == "ECC-101" })?.isCompleted == true
     }
 
     let completed = try #require(model.dashboard.tickets.first { $0.id == "ECC-101" })
-    #expect(completed.completion?.completedBy == "user-override")
+    #expect(completed.completion?.completedBy == "user")
     #expect(model.subtasks(for: "ECC-101").first?.status == .completed)
     #expect(model.subtasks(for: "ECC-101").first?.completionOverrideAt != nil)
-    #expect(model.localState.completionRequests.isEmpty)
-    try await eventually {
-      try JSONDecoder().decode(
-        AppConfiguration.self,
-        from: Data(contentsOf: fixture.paths.configurationFile)
-      ).completionReviewEnabled == false
-    }
-  }
-
-  @Test("Subtask closure requires persisted completion evidence and keeps the parent task open", arguments: [false, true])
-  func subtaskClosureRequiresEvidence(persistCompletion: Bool) async throws {
-    let fixture = try await Fixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let contextStore = TaskContextStore(root: fixture.paths.supportDirectory)
-    _ = try await contextStore.ensureContext(ticket: fixture.tickets[0])
-    let subtask = TaskSubtask(id: "review-subtask", title: "Review implementation")
-    _ = try await contextStore.upsertSubtask(ticketID: "ECC-101", subtask: subtask)
-    let verifier = SubtaskVerifier(store: contextStore, persistCompletion: persistCompletion)
-    let model = await fixture.model(agent: ControlledQueueAgent(), verifier: verifier)
-    model.requestSubtaskCompletion(subtask, for: fixture.tickets[0])
-    try await eventually {
-      guard let status = model.localState.completionRequests.first?.status else { return false }
-      return status == .accepted || status == .needsWork || status == .failed
-    }
-    let request = try #require(model.localState.completionRequests.first)
-    #expect(request.status == (persistCompletion ? .accepted : .needsWork))
-    #expect(request.subtaskID == subtask.id)
-    let context = try #require(model.taskContexts["ECC-101"])
-    #expect(request.contextPath == context.contextDirectory.path)
-    #expect(model.latestReview(for: "ECC-101") == nil)
-    #expect(!model.ticketIsChecked(fixture.tickets[0]))
-    #expect(model.dashboard.tickets.first?.isOpen == true)
   }
 
   @Test("Restart keeps a completed task with unfinished subtasks in Completed with its records")
@@ -2495,48 +2468,6 @@ struct QueueViewModelTests {
       #expect(restarted.completedTickets.map(\.id).contains("ECC-999"))
     }
     #expect(try await store.load(ticketID: "ECC-999") == nil)
-  }
-
-  @Test("Completed subtasks trigger one parent review, ignore blank agent activity, and respect human review",
-    arguments: [false, true], [TaskSubtaskStatus.working, .completed])
-  func automaticParentReviewIsBounded(customerConcern: Bool, blankStatus: TaskSubtaskStatus) async throws {
-    let fixture = try await Fixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let ticket = DashboardTicket(id: "ECC-101", title: "Review task",
-      status: "open", summary: "Verify the finished subtasks",
-      taskType: customerConcern ? "customer-concern" : "task")
-    try JSONEncoder().encode(DashboardDocument(tickets: [ticket]))
-      .write(to: fixture.root.appendingPathComponent("dashboard.json"))
-    let store = TaskContextStore(root: fixture.paths.supportDirectory)
-    _ = try await store.ensureContext(ticket: ticket)
-    for id in ["implementation", "verification"] {
-      _ = try await store.upsertSubtask(ticketID: ticket.id,
-        subtask: TaskSubtask(id: id, title: id, status: .completed,
-          lastHeartbeatAt: Date().addingTimeInterval(-60)))
-    }
-    let verifier = CountingRefusalVerifier()
-    let model = await fixture.model(agent: ControlledQueueAgent(), verifier: verifier)
-    if !customerConcern {
-      try await eventually { model.latestReview(for: ticket.id)?.status == .needsWork }
-      #expect(await verifier.ticketIDs == [ticket.id])
-      #expect(model.localState.completionRequests.count == 1)
-      #expect(model.latestReview(for: ticket.id)?.subtaskID == nil)
-    }
-    var blankAgent = TaskSubtask(id: "blank", title: "Unrelated blank agent",
-      status: blankStatus, lastHeartbeatAt: Date())
-    blankAgent.tracksCompletion = false
-    _ = try await store.upsertSubtask(ticketID: ticket.id, subtask: blankAgent)
-    // Pass the model's real context-refresh throttle, so the second refresh
-    // exercises review deduplication rather than taking the fast return.
-    try await Task.sleep(for: .milliseconds(2100))
-    await model.refresh()
-    #expect(model.localState.completionRequests.count == (customerConcern ? 0 : 1))
-    #expect(await verifier.ticketIDs == (customerConcern ? [] : [ticket.id]))
-    #expect(model.dashboard.tickets.first?.isOpen == true)
-    if !customerConcern {
-      #expect(model.latestReview(for: ticket.id)?.status == .needsWork)
-      #expect(model.latestReview(for: ticket.id)?.summary == "Acceptance evidence still missing")
-    }
   }
 
   @Test("A failed daily run never attributes an older displayed report to the failed attempt")
@@ -2602,17 +2533,15 @@ struct QueueViewModelTests {
     #expect(model.dailyReportHeaderIndicator == .none)
   }
 
-  @Test("An agent update opens its own inspector, preserves the verdict, and closes on collapse")
+  @Test("An agent update opens its own inspector and closes on collapse")
   func agentUpdateNavigation() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let model = await fixture.model(agent: ControlledQueueAgent())
     model.openPlan(for: fixture.tickets[0])
     try await eventually { !model.presentedPlanMarkdown.isEmpty }
-    let review = CompletionRequest(ticketID: "ECC-101", status: .needsWork,
-      summary: "Verdict not complete: acceptance evidence missing", requestFilePath: "/tmp/request.json")
-    let update = QueueAgentUpdate(id: review.id.uuidString, ticketID: "ECC-101",
-      title: "Completion needs more work", summary: try #require(review.summary), review: review)
+    let update = QueueAgentUpdate(id: "subtask-ECC-101-implementation", ticketID: "ECC-101",
+      title: "Implementation · New result", summary: "Finished the implementation")
     model.openAgentUpdate(update)
     #expect(model.presentedAgentUpdate == update)
     #expect(model.presentedPlanTicketID == nil)
@@ -2712,32 +2641,6 @@ struct QueueViewModelTests {
     #expect(model.chatMessages(ticketID: "ECC-101").last?.text == "Could not change task type: dashboard is read-only")
     #expect(model.chatMessages(ticketID: "ECC-102").isEmpty)
     #expect(model.dashboard.tickets[0].queueTaskKind == .task)
-  }
-
-  @Test("Deleted and completed merged subtasks do not retain review notifications")
-  func staleReviewNotifications() async throws {
-    let fixture = try await Fixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let store = TaskContextStore(root: fixture.root)
-    _ = try await store.ensureContext(ticket: fixture.tickets[0])
-    var completed = TaskSubtask(id: "canonical", title: "Finished assignment", status: .completed)
-    completed.isAssignmentOnly = true
-    completed.completionOverrideAt = Date()
-    var alias = TaskSubtask(id: "old-id", title: "Old assignment", status: .blocked)
-    alias.isAssignmentOnly = true
-    alias.mergedIntoSubtaskID = completed.id
-    for subtask in [completed, alias] {
-      _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: subtask)
-    }
-    var state = LocalState()
-    state.completionRequests = ["deleted", alias.id].map {
-      CompletionRequest(ticketID: "ECC-101", status: .needsWork,
-        summary: "Old review", requestFilePath: "/tmp/old-review.json", subtaskID: $0)
-    }
-    try await JSONLocalStateStore(url: fixture.paths.stateFile).save(state)
-    let model = await fixture.model(agent: ControlledQueueAgent())
-    #expect(model.agentUpdates.isEmpty)
-    #expect(model.localState.completionRequests.count == 2)
   }
 
   @Test("Managed subtasks remain openable before provider registration arrives")
@@ -2938,7 +2841,7 @@ struct QueueViewModelTests {
     #expect(model.localState.agentSessions.first?.paneID == 42)
   }
 
-  @Test("Override completes only the selected subtask and keeps its agent without queuing parent review")
+  @Test("Override completes only the selected subtask and keeps its agent and parent task open")
   func manualOverride() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -2954,61 +2857,7 @@ struct QueueViewModelTests {
     #expect(model.dashboard.tickets[0].isOpen)
     try await Task.sleep(for: .milliseconds(2100))
     await model.refresh()
-    #expect(model.localState.completionRequests.isEmpty)
     #expect(model.dashboard.tickets[0].isOpen)
-  }
-
-  @Test("An assignment override settles running child reviews and survives a late verifier result")
-  func overrideSettlesChildReview() async throws {
-    let fixture = try await Fixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let store = TaskContextStore(root: fixture.root)
-    _ = try await store.ensureContext(ticket: fixture.tickets[0])
-    var assignment = TaskSubtask(id: "assignment", title: "Finish the assignment")
-    assignment.isAssignmentOnly = true
-    var child = TaskSubtask(id: "child", title: "Check the result", status: .blocked)
-    child.parentSubtaskID = assignment.id
-    child.tracksCompletion = false
-    for subtask in [assignment, child] {
-      _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: subtask)
-    }
-    let verifier = ControlledCompletionVerifier()
-    let model = await fixture.model(agent: ControlledQueueAgent(), verifier: verifier)
-    model.requestSubtaskCompletion(child, for: fixture.tickets[0])
-    try await eventually { await verifier.hasPendingReply }
-    model.overrideCompletion(assignment, for: fixture.tickets[0])
-    try await eventually { model.subtasks(for: "ECC-101").first(where: { $0.id == child.id })?.status == .completed }
-    #expect(model.subtasks(for: "ECC-101").first(where: { $0.id == child.id })?.agentRemovedAt == nil)
-    #expect(model.localState.completionRequests.first?.status == .accepted)
-    await verifier.reply()
-    try await eventually { model.localState.completionRequests.first?.logPath != nil }
-    #expect(model.localState.completionRequests.first?.status == .accepted)
-    #expect(model.agentUpdates.isEmpty)
-    let restarted = await fixture.model(agent: ControlledQueueAgent())
-    #expect(restarted.localState.completionRequests.first?.status == .accepted)
-    #expect(restarted.agentUpdates.isEmpty)
-  }
-
-  @Test("Restart settles an interrupted review that was already completed by the user")
-  func recoverOverriddenChildReview() async throws {
-    let fixture = try await Fixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let store = TaskContextStore(root: fixture.root)
-    _ = try await store.ensureContext(ticket: fixture.tickets[0])
-    let subtask = TaskSubtask(id: "completed", title: "User completed this")
-    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: subtask)
-    _ = try await store.overrideCompletion(ticketID: "ECC-101", subtaskID: subtask.id)
-    var state = LocalState()
-    state.completionRequests = [CompletionRequest(ticketID: "ECC-101", status: .running,
-      summary: "Earlier evidence", requestFilePath: "/tmp/stale-request.json", subtaskID: subtask.id)]
-    try await JSONLocalStateStore(url: fixture.paths.stateFile).save(state)
-
-    let model = await fixture.model(agent: ControlledQueueAgent())
-    #expect(model.localState.completionRequests.first?.status == .accepted)
-    #expect(model.agentUpdates.isEmpty)
-    try await eventually {
-      try await JSONLocalStateStore(url: fixture.paths.stateFile).load().completionRequests.first?.status == .accepted
-    }
   }
 
   @Test("Completed agents are never archived while blank agents never drive parent completion")
@@ -3023,7 +2872,6 @@ struct QueueViewModelTests {
     let model = await fixture.model(agent: ControlledQueueAgent())
     #expect(model.visibleAgents(for: "ECC-101").isEmpty)
     #expect(model.subtasks(for: "ECC-101").first?.agentRemovedAt == nil)
-    #expect(model.localState.completionRequests.isEmpty)
     #expect(model.dashboard.tickets[0].isOpen)
   }
 
@@ -3589,6 +3437,57 @@ struct QueueViewModelTests {
       return TmuxPaneLayout.maximumPanes(supportDirectory: fixture.paths.supportDirectory) == 4
         && saved.dataPlacementEnabled == true && saved.agentEscalationAutoLaunch == false
     }
+  }
+
+  @Test("Recallable sessions list saved, non-running agents across open tasks, newest first")
+  func recallableSessions() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.paths.supportDirectory)
+    for ticket in fixture.tickets { _ = try await store.ensureContext(ticket: ticket) }
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: TaskSubtask(
+      id: "older", title: "Older agent", sessionID: "11111111-1111-1111-1111-111111111111",
+      status: .idle, lastHeartbeatAt: Date().addingTimeInterval(-3_600), runtimeMode: .terminal))
+    _ = try await store.upsertSubtask(ticketID: "ECC-102", subtask: TaskSubtask(
+      id: "newer", title: "Newer agent", provider: .claude, sessionID: "22222222-2222-2222-2222-222222222222",
+      status: .completed, lastHeartbeatAt: Date().addingTimeInterval(-60), runtimeMode: .terminal))
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: TaskSubtask(
+      id: "unsaved", title: "Never started", status: .queued))
+    var assignment = TaskSubtask(id: "assignment", title: "Assignment only",
+      sessionID: "33333333-3333-3333-3333-333333333333")
+    assignment.isAssignmentOnly = true
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: assignment)
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    await model.refresh()
+
+    let recallable = model.recallableAgents()
+    #expect(recallable.map(\.agent.id) == ["newer", "older"])
+    #expect(recallable.map(\.ticket.id) == ["ECC-102", "ECC-101"])
+  }
+
+  @Test("Recorded hotkey shortcuts persist per action and reset to the default gesture")
+  func hotkeyShortcutPersistence() async throws {
+    let fixture = try await Fixture()
+    defer {
+      try? FileManager.default.removeItem(at: fixture.root)
+      for action in HotkeyAction.allCases { UserDefaults.standard.removeObject(forKey: action.shortcutDefaultsKey) }
+    }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    var applied = 0
+    model.hotkeyConfigurationHandler = { applied += 1 }
+    let combo = HotkeyShortcut(keyCode: 45, modifiers: NSEvent.ModifierFlags([.control, .option]).rawValue, keyLabel: "N")
+
+    model.setHotkeyShortcut(combo, for: .newTask)
+    #expect(model.hotkeyShortcut(for: .newTask) == combo)
+    #expect(model.hotkeyShortcut(for: .qchat) == nil)
+    let saved = try #require(UserDefaults.standard.data(forKey: HotkeyAction.newTask.shortcutDefaultsKey))
+    #expect(try JSONDecoder().decode(HotkeyShortcut.self, from: saved) == combo)
+    model.isRecordingHotkey = true
+    model.isRecordingHotkey = false
+    model.setHotkeyShortcut(nil, for: .newTask)
+    #expect(model.hotkeyShortcut(for: .newTask) == nil)
+    #expect(UserDefaults.standard.data(forKey: HotkeyAction.newTask.shortcutDefaultsKey) == nil)
+    #expect(applied == 4, "Set, record start, record stop, and reset each re-apply hotkeys")
   }
 
   @Test("The task creator fills blanks from placement, keeps the description, and launches one placed agent")
@@ -4198,7 +4097,6 @@ private struct Fixture {
   }
 
   func model(agent: ControlledQueueAgent, programLog: ProgramLogStore = ProgramLogStore(),
-             verifier: (any CompletionVerifying)? = nil,
              terminalController: (any WezTermControlling)? = nil,
              dashboardRepository: any DashboardManaging = JSONDashboardRepository(),
              taskAgentLauncher: TaskAgentLauncher = TaskAgentLauncher(),
@@ -4215,7 +4113,7 @@ private struct Fixture {
     let model = QueueViewModel(paths: paths, programLog: programLog,
       dashboardRepository: dashboardRepository,
       terminalController: terminalController ?? boundary,
-      verifier: verifier ?? boundary, queueAgent: agent,
+      queueAgent: agent,
       // Every provider must reach the mock: a real harness would reset the
       // user's live chat sessions and delete their transcripts.
       queueAgentFactory: queueAgentFactory ?? { _ in agent },
@@ -4655,56 +4553,7 @@ private actor ControlledQueueAgent: QueueAgentChatting {
   }
 }
 
-private struct SubtaskVerifier: CompletionVerifying {
-  let store: TaskContextStore
-  let persistCompletion: Bool
-  func verify(ticketID: String, requestFile: URL, workspace: String,
-    configuration: VerifierConfiguration) async throws -> VerificationRunResult {
-    _ = store
-    _ = try JSONDecoder().decode(CompletionRequest.self, from: Data(contentsOf: requestFile))
-    return VerificationRunResult(succeeded: true,
-      verdict: persistCompletion ? .accepted : .needsWork,
-      summary: persistCompletion ? "Headless verification passed" : "Review needs more evidence",
-      log: "Test evidence")
-  }
-}
-
-private struct AcceptedCompletionVerifier: CompletionVerifying {
-  func verify(ticketID: String, requestFile: URL, workspace: String,
-    configuration: VerifierConfiguration) async throws -> VerificationRunResult {
-    VerificationRunResult(succeeded: true, verdict: .accepted,
-      summary: "Requested behavior and workflow checks are verified.",
-      log: "Inspected plan, context, repository state, and affected workflow checks.")
-  }
-}
-
-private actor CountingRefusalVerifier: CompletionVerifying {
-  private(set) var ticketIDs: [String] = []
-  func verify(ticketID: String, requestFile: URL, workspace: String,
-    configuration: VerifierConfiguration) async throws -> VerificationRunResult {
-    ticketIDs.append(ticketID)
-    return VerificationRunResult(succeeded: true, verdict: .needsWork,
-      summary: "Acceptance evidence still missing", log: "Headless review refusal")
-  }
-}
-
-private actor ControlledCompletionVerifier: CompletionVerifying {
-  private var pending: CheckedContinuation<VerificationRunResult, Never>?
-  var hasPendingReply: Bool { pending != nil }
-  func verify(ticketID: String, requestFile: URL, workspace: String,
-    configuration: VerifierConfiguration) async throws -> VerificationRunResult {
-    await withCheckedContinuation { pending = $0 }
-  }
-  func reply() {
-    pending?.resume(returning: VerificationRunResult(succeeded: true, verdict: .needsWork,
-      summary: "A late review still needs evidence", log: "Retained review evidence"))
-    pending = nil
-  }
-}
-
-/// All integration boundaries fail immediately if these state tests accidentally
-/// attempt terminal manipulation, model execution, or network access.
-private struct ForbiddenExternalActions: WezTermControlling, CompletionVerifying, PullRequestQueueLoading {
+private struct ForbiddenExternalActions: WezTermControlling, PullRequestQueueLoading {
   private func forbidden<T>() throws -> T {
     Issue.record("State integration test attempted an external action")
     throw TestFailure.unexpectedExternalAction
@@ -4714,7 +4563,6 @@ private struct ForbiddenExternalActions: WezTermControlling, CompletionVerifying
   func attach(paneID: Int, tabTitle: String, windowTitle: String, configuration: WezTermConfiguration) async throws { let _: Void = try forbidden() }
   func focusOrSpawn(directory: String, taskID: String, taskTitle: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult { try forbidden() }
   func focusOrResume(session: TaskAgentSession, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult { try forbidden() }
-  func verify(ticketID: String, requestFile: URL, workspace: String, configuration: VerifierConfiguration) async throws -> VerificationRunResult { try forbidden() }
   func load(repository: String, closedSince: String) async throws -> PullRequestQueueSnapshot { try forbidden() }
 }
 

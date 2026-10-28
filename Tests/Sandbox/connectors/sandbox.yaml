@@ -1,0 +1,23 @@
+# ECC tiered sandbox manifest: Focus Queue connector setup and diagnostics.
+# Routes to Tier 1 (rootless Podman): Linux, clean-home, non-native, no
+# network capability, so the container runs with --network none.
+# run.sh invokes this from a sanitized staging copy, which ECC mounts
+# read-only at /workspace/source. Use ECC_SANDBOX_IMAGE to select the
+# connector image built from ./Containerfile.
+name: focus-queue-connector-setup
+needs:
+  os: [linux]
+  capabilities: [clean-home]
+  trust: first-party
+  native: false
+resources:
+  cpu: 1
+  memory: 512MB
+  timeout: 300
+steps:
+  setup:
+    - test "$HOME" = /home/ecc && test ! -e "$HOME/Library" && python3 --version
+    - test ! -w /workspace/source/Scripts && printf 'source mount is read-only\n'
+  assert:
+    - FOCUS_QUEUE_CONNECTOR_SANDBOX=1 python3 /workspace/source/Tests/Sandbox/connectors/scenarios.py --scripts /workspace/source/Scripts --format summary
+report: install-diff

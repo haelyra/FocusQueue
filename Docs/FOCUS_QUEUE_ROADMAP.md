@@ -44,7 +44,7 @@ flowchart LR
 
 | Location within support root | Responsibility |
 | --- | --- |
-| `config.json`, `state.json` | App configuration, queue preferences, registered sessions, completion review state. |
+| `config.json`, `state.json` | App configuration, queue preferences, and registered sessions. |
 | `tasks/<ticket>/context.json`, `plan.md` | Task/subtask assignments, workspace/runtime references, current central plan. |
 | `tasks/<ticket>/archive/` | Retained task context and plan snapshots. |
 | `library/manifest.json`, `library/blobs/` | Durable task/session/assignment identities, repository mappings, document revisions, report history, retained bytes. |

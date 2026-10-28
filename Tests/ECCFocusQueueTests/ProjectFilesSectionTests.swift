@@ -38,7 +38,7 @@ struct ProjectFilesSectionTests {
     try Data("# Architecture\n\n- One shared tmux session per task.\n".utf8).write(to: architecture)
     try Data("Plain notes for the project.\n".utf8).write(to: directory.appendingPathComponent("notes.txt"))
 
-    let section = render(ProjectFilesSection(model: model), size: NSSize(width: 420, height: 320), name: "settings-project-files")
+    let section = render(ProjectSettingsSection(model: model), size: NSSize(width: 420, height: 360), name: "settings-project-files")
     #expect(section.fittingSize.width > 0)
 
     model.openDocumentViewer(architecture, scope: .project(project.id))
@@ -149,7 +149,7 @@ struct ProjectFilesSectionTests {
     let (model, root) = try await bootstrappedModel()
     defer { try? FileManager.default.removeItem(at: root) }
     let page = render(
-      QueueSettingsView(model: model, focusedSection: nil, openTerminals: {}, openAnalytics: {}, close: {}),
+      QueueSettingsView(model: model, focusedSection: nil, openSessions: {}, openAnalytics: {}, close: {}),
       size: NSSize(width: 460, height: 4200), name: "settings-page")
     #expect(page.fittingSize.width > 0)
   }

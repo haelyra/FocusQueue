@@ -26,6 +26,8 @@ public enum TaskOutputs {
     static let ignoredDirectories: Set<String> = [
         "archive", "maintenance-history", "push-reviews", "workspace-map", "architecture",
         "node_modules", "__pycache__",
+        // App runtime state: canvas sessions, document chat routes, harness runs.
+        "canvas", "document-agents", "documents",
     ]
     static let ignoredFiles: Set<String> = [
         "plan.md", "data.md", "agent-log.md", TaskContext.initialPromptFileName, "context.json",
@@ -35,6 +37,8 @@ public enum TaskOutputs {
     static func isIgnored(fileName name: String) -> Bool {
         ignoredFiles.contains(name) || name.hasPrefix("context.json.") || name.hasPrefix("completion-review-")
             || name.hasSuffix(".lock") || name.hasSuffix(".pyc")
+            // Canvas export sidecars an agent consumes; the artifact itself stays visible.
+            || name.hasSuffix(".edits.json") || name.contains(".edited.")
     }
 
     /// Regular files under `directory`, newest first, at most `limit` of them.

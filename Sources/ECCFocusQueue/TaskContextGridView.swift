@@ -45,7 +45,7 @@ struct TaskContextGridView: View {
             }
           }
           if groups.allSatisfy({ $0.title == "Task files" }) {
-            Text("No outputs, evidence, or links yet.")
+            Text("No sessions, outputs, evidence, or links yet.")
               .font(.caption).foregroundStyle(.secondary)
               .padding(.horizontal, 4).padding(.top, 8)
           }
@@ -64,6 +64,7 @@ struct TaskContextGridView: View {
       .font(.system(size: 11)).foregroundStyle(.secondary)
       .padding(.horizontal, 12).padding(.vertical, 8)
     }
+    .task { model.refreshUICanvases(ticketID: ticket.id) }
   }
 
   private func cell(_ item: TaskContextItem) -> some View {
@@ -94,6 +95,12 @@ struct TaskContextGridView: View {
     .simultaneousGesture(TapGesture().onEnded { selection = item.id })
     .contextMenu {
       Button("Open", systemImage: "arrow.up.forward.app") { open(item) }
+      if case .canvas(let session) = item.target {
+        Button("Reconnect agent", systemImage: "arrow.triangle.branch") {
+          model.reconnectUICanvasAgent(ticketID: ticket.id, key: session.key)
+        }
+        .help("Ask the agent behind this session to listen again: a fork of the creating agent while it runs, otherwise a new agent.")
+      }
       if let url = item.fileURL {
         Button("Show in Finder", systemImage: "folder") {
           NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -116,6 +123,7 @@ struct TaskContextGridView: View {
     case .output(let output): model.openOutput(output, ticketID: ticket.id)
     case .folder(let url): model.open(url.path)
     case .web(let url): model.open(url)
+    case .canvas(let session): model.openUICanvasSession(ticketID: ticket.id, key: session.key)
     }
   }
 
@@ -165,8 +173,23 @@ struct TaskContextGridView: View {
         id: "pr:\(pr.number)", title: "PR #\(pr.number): \(pr.title)", target: .web(pr.url),
         symbol: "arrow.triangle.branch", help: pr.url)
     }
-    return [("Task files", files), ("Outputs", outputItems), ("Evidence", evidence), ("Links & PRs", links)]
+    let sessions = (model.uiCanvasSessions[ticket.id] ?? []).map { session in
+      TaskContextItem(
+        id: "canvas:\(session.key)", title: session.displayTitle, target: .canvas(session),
+        fileURL: FileManager.default.fileExists(atPath: session.file)
+          ? URL(fileURLWithPath: session.file) : nil,
+        symbol: "paintbrush.pointed",
+        help: "UI prototyping session · \(Self.presenceLabel(session)) · \(session.file)")
+    }
+    return [("Task files", files), ("Sessions", sessions), ("Outputs", outputItems),
+            ("Evidence", evidence), ("Links & PRs", links)]
       .filter { !$0.items.isEmpty }
+  }
+
+  /// The canvas presence pill's wording, for the session cell's tooltip.
+  private static func presenceLabel(_ session: UICanvasSession) -> String {
+    let agent = session.listener?.name ?? session.agentName ?? "agent"
+    return UICanvasStore.presence(of: session).label(agent: agent)
   }
 }
 
@@ -177,6 +200,7 @@ struct TaskContextItem: Identifiable {
     case folder(URL)
     case web(String)
     case output(TaskOutputFile)
+    case canvas(UICanvasSession)
   }
 
   let id: String

@@ -22,6 +22,9 @@ func taskOutputsScanSkipsRecords() throws {
                    "cleanup.json", "conversation.json", "plan-draft.json", ".lock", "context.json.pre-repair",
                    "completion-review-1.json", "archive/plan-1.md", "maintenance-history/a.json",
                    "push-reviews/r.json", "workspace-map/snapshot.json", "architecture/index.generated.md",
+                   "canvas/685baf73202f.json", "canvas/685baf73202f.pending.json",
+                   "document-agents/a9630df2bfc8c52e/sessions.json", "documents/eb8bb48b/route.json",
+                   "qa/agent-status-card.edits.json", "qa/agent-status-card.edited.html",
                    ".hidden/notes.md"] {
         try write(record, in: folder)
     }
@@ -29,9 +32,10 @@ func taskOutputsScanSkipsRecords() throws {
     try write("roadmap.md", in: folder, modified: now.addingTimeInterval(-60))
     try write("evidence/report.pdf", in: folder, modified: now)
     try write("qa/screens/render-dark.png", in: folder, modified: now.addingTimeInterval(-120))
+    try write("qa/agent-status-card.html", in: folder, modified: now.addingTimeInterval(-30))
 
     let outputs = TaskOutputs.scan(folder)
-    #expect(outputs.map(\.relativePath) == ["evidence/report.pdf", "roadmap.md", "qa/screens/render-dark.png"])
+    #expect(outputs.map(\.relativePath) == ["evidence/report.pdf", "qa/agent-status-card.html", "roadmap.md", "qa/screens/render-dark.png"])
     #expect(outputs.first?.url.path == folder.appendingPathComponent("evidence/report.pdf").standardizedFileURL.path)
     #expect(TaskOutputs.scan(folder, limit: 1).count == 1)
 }

@@ -118,11 +118,14 @@ subtask cards show when progress was last reported.
 ## Shipping preparation
 
 Agent updates open their own detail panel with the full recorded summary, completion
-verdict, verifier output, task conversation, and context links. The notification
-keeps the event visible while acknowledging only its own completed subtask. The
-bell opens notifications in the same side panel as a central plan, widening the
-window toward the screen center; closing an update opened from the list returns
-to the list.
+verdict, verifier output, task conversation, and context links. Opening an update
+acknowledges only its own completed subtask.
+
+The info button to the right of Settings opens help: documentation, the GitHub
+repository, the walkthrough replay, and **Send feedback…**. Feedback opens a
+prefilled GitHub issue from `.github/ISSUE_TEMPLATE/feedback.yml`, which labels
+every report `feedback` and `triage`. Destinations live in `QueueHelpLinks`
+(`Sources/ECCFocusQueue/QueueHelpMenu.swift`); an unset link shows as coming soon.
 
 Click a task title to view its associated sessions. Descriptions start collapsed
 for existing tasks and expanded for new unviewed tasks. A **NEW** badge beside the

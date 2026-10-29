@@ -1,0 +1,24 @@
+name: Feedback
+description: Report a bug, suggest an idea, or ask a question about Focus Queue.
+labels: [feedback, triage]
+body:
+  - type: input
+    id: kind
+    attributes:
+      label: Type
+      description: Bug, Suggestion, Question, or Other.
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: What happened, what you expected, or what would help.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Focus Queue and macOS versions, filled in by the app.
+      render: text

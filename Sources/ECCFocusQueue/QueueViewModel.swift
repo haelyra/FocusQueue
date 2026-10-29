@@ -194,11 +194,7 @@ final class QueueViewModel {
   @ObservationIgnored private var liveRuntimeSubtaskIDs: Set<String> = []
   @ObservationIgnored private var spinningRuntimeSubtaskIDs: Set<String> = []
   private(set) var isQueueChatInspectorPresented = false
-  private(set) var isNotificationsInspectorPresented = false
   private(set) var isTokenAnalyticsPresented = false
-  /// Set while an update or report opened from the notifications list is shown,
-  /// so closing it returns to the list instead of collapsing the side panel.
-  @ObservationIgnored private var returnsToNotifications = false
   private(set) var presentedAgentUpdate: QueueAgentUpdate?
   private(set) var presentedPlanTicketID: String?
   /// The in-app document viewer for files opened outside a task plan, such as
@@ -456,7 +452,7 @@ final class QueueViewModel {
   @ObservationIgnored private var openTicketsMemo = ProjectionMemo<OpenTicketsKey, [DashboardTicket]>()
   @ObservationIgnored private var completedTicketsMemo =
     ProjectionMemo<CompletedTicketsKey, CompletedTicketLists>()
-  @ObservationIgnored private var agentUpdatesMemo = ProjectionMemo<AgentUpdatesKey, AgentUpdateLists>()
+  @ObservationIgnored private var agentUpdatesMemo = ProjectionMemo<AgentUpdatesKey, [QueueAgentUpdate]>()
 
   private var allOpenTickets: [DashboardTicket] {
     projectedOpenTickets(override: savedQueueOverride)
@@ -843,7 +839,6 @@ final class QueueViewModel {
         let snapshot = showsAllProjects ? nil : try await dashboardRepository.loadSnapshot(
           from: URL(fileURLWithPath: reloaded.dashboardPath))
         config = reloaded
-        setNotificationsInspectorPresented(false)
         closeAgentUpdate()
         closePlan()
         setQueueChatInspectorPresented(false)
@@ -927,7 +922,6 @@ final class QueueViewModel {
     guard !showsAllProjects else { return }
     localState.showsAllProjects = true
     persistLocalState()
-    setNotificationsInspectorPresented(false)
     closeAgentUpdate()
     closePlan()
     setQueueChatInspectorPresented(false)
@@ -970,7 +964,6 @@ final class QueueViewModel {
       persistLocalState()
       programLog.record("Selected project \(project.name).", category: "Projects")
 
-      setNotificationsInspectorPresented(false)
       closeAgentUpdate()
       closePlan()
       setQueueChatInspectorPresented(false)
@@ -1978,7 +1971,7 @@ final class QueueViewModel {
 
   var isInspectorPresented: Bool {
     isQueueChatInspectorPresented || isDailyReportPresented || presentedPlanTicketID != nil
-      || presentedAgentUpdate != nil || isNotificationsInspectorPresented || isDocumentViewerPresented
+      || presentedAgentUpdate != nil || isDocumentViewerPresented
       || isTokenAnalyticsPresented
   }
 
@@ -1986,8 +1979,6 @@ final class QueueViewModel {
     guard presented != isTokenAnalyticsPresented else { return }
     if presented {
       isQueueChatInspectorPresented = false
-      isNotificationsInspectorPresented = false
-      returnsToNotifications = false
       presentedAgentUpdate = nil
       presentedPlanTicketID = nil
       presentedPlanURL = nil
@@ -2022,11 +2013,6 @@ final class QueueViewModel {
       return "daily-report-error:\(day)"
     }
     return "daily-report-missing:\(day)"
-  }
-
-  var showsReportNotification: Bool {
-    config.dailyReport.enabled && reportNeedsAttention
-      && !localState.dismissedNotificationIDs.contains(reportNotificationID)
   }
 
   var reportAttentionDocument: DailyReportDocument? {
@@ -2386,8 +2372,6 @@ final class QueueViewModel {
     isTokenAnalyticsPresented = false
     revealProject(for: ticket.id)
     markTicketViewed(ticket.id)
-    isNotificationsInspectorPresented = false
-    returnsToNotifications = false
     isQueueChatInspectorPresented = false
     presentedAgentUpdate = nil
     isDailyReportPresented = false
@@ -2434,28 +2418,13 @@ final class QueueViewModel {
     var taskContexts: [String: TaskContext]
   }
 
-  private struct AgentUpdateLists {
-    var all: [QueueAgentUpdate]
-    var notifications: [QueueAgentUpdate]
-  }
-
-  /// The header reads the notification count several times per render, and
-  /// each filter pass copied a whole task context per update.
-  private var agentUpdateLists: AgentUpdateLists {
+  /// Views read the update list several times per render, and each pass
+  /// copied a whole task context per update.
+  var agentUpdates: [QueueAgentUpdate] {
     let key = AgentUpdatesKey(tickets: projectTickets, closureMessages: closureMessages,
       dismissedNotificationIDs: localState.dismissedNotificationIDs, taskContexts: taskContexts)
-    return agentUpdatesMemo.value(for: key) {
-      let all = computeAgentUpdates()
-      return AgentUpdateLists(all: all, notifications: all.filter { update in
-        if update.isCleanup { return true }
-        guard let subtaskID = update.subtaskID else { return false }
-        return key.taskContexts[update.ticketID]?.subtasks.first(where: { $0.id == subtaskID })?
-          .attention != nil
-      })
-    }
+    return agentUpdatesMemo.value(for: key) { computeAgentUpdates() }
   }
-
-  var agentUpdates: [QueueAgentUpdate] { agentUpdateLists.all }
 
   private func computeAgentUpdates() -> [QueueAgentUpdate] {
     var updates: [QueueAgentUpdate] = []
@@ -2475,45 +2444,9 @@ final class QueueViewModel {
       .sorted { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
   }
 
-  var notificationAgentUpdates: [QueueAgentUpdate] { agentUpdateLists.notifications }
-
-  var notificationCount: Int {
-    (showsReportNotification ? 1 : 0) + notificationAgentUpdates.count
-  }
-
-  /// Notifications share the inspector slot so the panel widens toward the
-  /// screen center like a plan instead of squeezing beside the queue.
-  func setNotificationsInspectorPresented(_ presented: Bool) {
-    returnsToNotifications = false
-    guard presented || isNotificationsInspectorPresented else { return }
-    if presented {
-      isTokenAnalyticsPresented = false
-      isQueueChatInspectorPresented = false
-      presentedAgentUpdate = nil
-      presentedPlanTicketID = nil
-      presentedPlanURL = nil
-      isDailyReportPresented = false
-      isDocumentViewerPresented = false
-    }
-    isNotificationsInspectorPresented = presented
-    reportVisibilityHandler?(isInspectorPresented)
-  }
-
-  func toggleNotificationsInspector() {
-    setNotificationsInspectorPresented(!isNotificationsInspectorPresented)
-  }
-
-  private func reopenNotificationsIfReturning() {
-    guard returnsToNotifications else { return }
-    returnsToNotifications = false
-    isNotificationsInspectorPresented = notificationCount > 0
-  }
-
   func openAgentUpdate(_ update: QueueAgentUpdate) {
     isTokenAnalyticsPresented = false
     revealProject(for: update.ticketID)
-    if isNotificationsInspectorPresented { returnsToNotifications = true }
-    isNotificationsInspectorPresented = false
     isQueueChatInspectorPresented = false
     presentedPlanTicketID = nil
     presentedPlanURL = nil
@@ -2535,7 +2468,6 @@ final class QueueViewModel {
   func closeAgentUpdate() {
     guard presentedAgentUpdate != nil else { return }
     presentedAgentUpdate = nil
-    reopenNotificationsIfReturning()
     reportVisibilityHandler?(isInspectorPresented)
   }
 
@@ -2633,8 +2565,6 @@ final class QueueViewModel {
       if documentViewerScope != scope { documentViewer = DocumentPaneState() }
       documentViewerScope = scope
     }
-    isNotificationsInspectorPresented = false
-    returnsToNotifications = false
     isQueueChatInspectorPresented = false
     presentedAgentUpdate = nil
     presentedPlanTicketID = nil
@@ -2691,8 +2621,6 @@ final class QueueViewModel {
   func setQueueChatInspectorPresented(_ presented: Bool) {
     if presented {
       isTokenAnalyticsPresented = false
-      isNotificationsInspectorPresented = false
-      returnsToNotifications = false
       presentedAgentUpdate = nil
       presentedPlanTicketID = nil
       presentedPlanURL = nil
@@ -4561,15 +4489,11 @@ final class QueueViewModel {
   func setDailyReportPresented(_ presented: Bool) {
     if presented {
       isTokenAnalyticsPresented = false
-      if isNotificationsInspectorPresented { returnsToNotifications = true }
-      isNotificationsInspectorPresented = false
       isQueueChatInspectorPresented = false
       presentedAgentUpdate = nil
       presentedPlanTicketID = nil
       presentedPlanURL = nil
       isDocumentViewerPresented = false
-    } else if isDailyReportPresented {
-      reopenNotificationsIfReturning()
     }
     isDailyReportPresented = presented
     reportVisibilityHandler?(isInspectorPresented)
@@ -4977,7 +4901,6 @@ final class QueueViewModel {
     if mode != .expanded {
       // First, so a detail opened from the list does not reopen it while closing.
       setTokenAnalyticsPresented(false)
-      setNotificationsInspectorPresented(false)
       closeAgentUpdate()
       closePlan()
       setQueueChatInspectorPresented(false)

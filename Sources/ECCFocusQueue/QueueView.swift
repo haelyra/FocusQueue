@@ -5,10 +5,6 @@ import SwiftUI
 
 enum QueueChromeMetrics {
   static let sectionSpacing: CGFloat = 4
-  static let notificationBadgeFill = NSColor.systemYellow
-  static let notificationBadgeForeground = NSColor.black
-
-  static let notificationPanelMinWidth: CGFloat = 300
 }
 
 struct QueueView: View {
@@ -25,6 +21,7 @@ struct QueueView: View {
   @State private var queueAgentDraft = ""
   @State private var taskAgentDrafts: [String: String] = [:]
   @State private var showsSessions = false
+  @State private var showsFeedback = false
   @State private var updateDrafts: [String: String] = [:]
   @State private var settingsTarget: QueueSettingsTarget?
   @State private var showsStaleAgentCleanupConfirmation = false
@@ -64,15 +61,13 @@ struct QueueView: View {
     .preferredColorScheme(model.appearance == .dark ? .dark : .light)
     .environment(\.queueAccentStyle, model.accentStyle)
     .environment(\.opaqueBackgroundsEnabled, opaqueBackgroundsEnabled)
-    .onChange(of: notificationCount) { _, count in
-      if count == 0 { model.setNotificationsInspectorPresented(false) }
-    }
     .onChange(of: model.queueChatFocusRequest) { _, _ in
       // Same as the side-panel button: the QChat tab would duplicate the side chat.
       screen = .queue
       if selectedTab == .agent { selectedTab = .focus }
     }
     .sheet(isPresented: $showsSessions) { SessionBrowserView(model: model) }
+    .sheet(isPresented: $showsFeedback) { FeedbackSheet() }
     .sheet(item: Binding(
       get: { model.newTaskRequest },
       set: { if $0 == nil { model.clearNewTaskRequest() } }
@@ -160,8 +155,6 @@ struct QueueView: View {
           model: model, draft: $queueAgentDraft, focusRequest: model.queueChatFocusRequest)
       }
       .frame(minWidth: 320, idealWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
-    } else if model.isNotificationsInspectorPresented {
-      notificationsPanel
     } else if let update = model.presentedAgentUpdate {
       AgentUpdateView(model: model, update: update, draft: Binding(
         get: { updateDrafts[update.id] ?? "" }, set: { updateDrafts[update.id] = $0 }
@@ -219,39 +212,6 @@ struct QueueView: View {
     }
   }
 
-  private var notificationCount: Int { model.notificationCount }
-
-  private var notificationsPanel: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack {
-        Label("Notifications", systemImage: "bell.fill").font(.headline)
-        Spacer()
-        Button {
-          withAnimation(.easeInOut(duration: 0.18)) { model.setNotificationsInspectorPresented(false) }
-        } label: {
-          Image(systemName: "xmark")
-        }
-        .buttonStyle(.plain)
-        .minimumHitTarget()
-        .accessibilityLabel("Close notifications panel")
-        .help("Close notifications")
-      }
-      ScrollView {
-        LazyVStack(spacing: 8) {
-          if model.showsReportNotification { reportStatusBanner }
-          ForEach(model.notificationAgentUpdates) { attention in attentionBanner(attention) }
-        }
-        .padding(.vertical, 2)
-      }
-      .scrollIndicators(.automatic)
-    }
-    .padding(12)
-    .frame(
-      minWidth: QueueChromeMetrics.notificationPanelMinWidth, idealWidth: 500,
-      maxWidth: .infinity, maxHeight: .infinity
-    )
-  }
-
   private var dailyReportHeaderIcon: some View {
     let indicator = model.dailyReportHeaderIndicator
     return ZStack(alignment: .topTrailing) {
@@ -293,95 +253,6 @@ struct QueueView: View {
     case .ready: return "Daily message report finished. Click to read it"
     case .needsAttention: return "Daily message report finished with issues. Click to review"
     case .none: return "Daily message report"
-    }
-  }
-
-  private var reportStatusBanner: some View {
-    SwipeToClearNotification(isEnabled: !model.reportIsRunning) {
-      withAnimation(.easeInOut(duration: 0.18)) { model.dismissReportNotification() }
-    } content: {
-      HStack(spacing: 8) {
-        Button { model.showLatestDailyReport() } label: {
-          HStack(spacing: 9) {
-            if model.reportIsRunning { ProgressView().controlSize(.small) }
-            else {
-              Image(systemName: model.reportHasFailure ? "exclamationmark.triangle.fill" : "doc.text.fill")
-                .foregroundStyle(model.reportHasFailure ? Color.orange : Color.accentColor)
-            }
-            VStack(alignment: .leading, spacing: 3) {
-              Text("Global · " + model.reportAttentionTitle).font(.system(size: 12, weight: .semibold))
-              Text(model.reportAttentionMessage)
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-            }
-            Spacer(minLength: 0)
-            Image(systemName: "chevron.right").font(.caption)
-          }
-          .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("Expand daily report and run details")
-
-        if model.reportHasFailure {
-          Button(action: openConnectorDiagnostics) {
-            Image(systemName: "stethoscope")
-          }
-          .buttonStyle(.bordered)
-          .controlSize(.small)
-          .accessibilityLabel("Debug daily report connectors")
-          .help("Check Mail, Telegram, Discord, and GitHub connector setup")
-        }
-        if model.canCancelDailyReport {
-          Button(
-            model.isDailyReportCancellationRequested ? "Cancelling" : "Cancel",
-            systemImage: "xmark.circle",
-            action: model.cancelDailyReport
-          )
-          .buttonStyle(.bordered)
-          .controlSize(.small)
-          .disabled(model.isDailyReportCancellationRequested)
-          .help("Stop the active daily report process")
-        }
-      }
-      .padding(12)
-      .notificationSurface(radius: 14)
-    }
-  }
-
-  private func attentionBanner(_ attention: QueueAgentUpdate) -> some View {
-    SwipeToClearNotification {
-      withAnimation(.easeInOut(duration: 0.18)) { model.dismissAgentUpdate(attention) }
-    } content: {
-      VStack(alignment: .leading, spacing: 6) {
-        HStack(alignment: .top, spacing: 7) {
-          VStack(alignment: .leading, spacing: 3) {
-            Text(attention.conciseReason).font(.system(size: 12, weight: .semibold))
-              .fixedSize(horizontal: false, vertical: true)
-            Text("\(attention.ticketID) · \(attention.title)")
-              .font(.system(size: 11)).foregroundStyle(.secondary)
-          }
-          .frame(maxWidth: .infinity, alignment: .leading)
-          Button { model.openAgentUpdate(attention) } label: {
-            Image(systemName: "chevron.right").font(.caption)
-          }
-          .buttonStyle(.plain)
-          .minimumHitTarget()
-          .accessibilityLabel("Open update details for \(attention.title)")
-          .help("Read the explanation and review details")
-        }
-        if !attention.summary.isEmpty, attention.summary != attention.conciseReason {
-          Text(attention.summary)
-            .font(.system(size: 11)).foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-            .textSelection(.enabled)
-        }
-        if attention.date != .distantPast {
-          Text(attention.date.formatted(date: .abbreviated, time: .shortened))
-            .font(.system(size: 10)).foregroundStyle(.tertiary)
-        }
-      }
-      .padding(12).notificationSurface(radius: 14)
     }
   }
 
@@ -902,36 +773,6 @@ struct QueueView: View {
           dailyReportHeaderAccessibilityLabel
         ).help(dailyReportHeaderHelp)
         Button {
-          withAnimation(.easeInOut(duration: 0.18)) {
-            model.toggleNotificationsInspector()
-          }
-        } label: {
-          HStack(spacing: 3) {
-            Image(systemName: model.isNotificationsInspectorPresented ? "bell.fill" : "bell")
-              .font(.system(size: 13, weight: .semibold))
-            if notificationCount > 0 {
-              Text(String(notificationCount))
-                .font(.caption2.bold().monospacedDigit())
-                .foregroundStyle(Color(nsColor: QueueChromeMetrics.notificationBadgeForeground))
-                .padding(.horizontal, 5)
-                .padding(.vertical, 1)
-                .background(
-                  Color(nsColor: QueueChromeMetrics.notificationBadgeFill),
-                  in: Capsule()
-                )
-            }
-          }
-        }
-        .buttonStyle(.plain)
-        .minimumHitTarget(width: 30, height: 34)
-        .disabled(notificationCount == 0)
-        .accessibilityLabel(
-          model.isNotificationsInspectorPresented
-            ? "Close \(notificationCount) notifications"
-            : "Open \(notificationCount) notifications"
-        )
-        .help(model.isNotificationsInspectorPresented ? "Close notifications" : "Show notifications")
-        Button {
           settingsTarget = nil
           withAnimation(.easeInOut(duration: 0.18)) { screen = .settings }
         } label: {
@@ -939,6 +780,7 @@ struct QueueView: View {
         }.buttonStyle(.plain).minimumHitTarget(width: 30, height: 34).accessibilityLabel(
           "Open Focus Queue settings"
         ).help("Settings")
+        QueueHelpMenu(sendFeedback: { showsFeedback = true }).minimumHitTarget(width: 30, height: 34)
         Button {
           model.performPreferredMinimization()
         } label: {
@@ -1148,12 +990,6 @@ struct QueueView: View {
       handled = model.moveTicketToToday(ticketID) || handled
     }
     return handled
-  }
-
-  private func openConnectorDiagnostics() {
-    settingsTarget = .connectors
-    model.runConnectorDiagnostics()
-    withAnimation(.easeInOut(duration: 0.18)) { screen = .settings }
   }
 
   private var monitorButton: some View {
@@ -4373,77 +4209,6 @@ private struct StatusPill: View {
     ).tracking(0.3).foregroundStyle(color).padding(
       .horizontal, 7
     ).padding(.vertical, 3).background(color.opacity(0.12), in: Capsule())
-  }
-}
-
-struct SwipeToClearNotification<Content: View>: View {
-  let isEnabled: Bool
-  let onClear: () -> Void
-  let content: Content
-
-  @State private var horizontalOffset: CGFloat = 0
-
-  init(
-    isEnabled: Bool = true,
-    onClear: @escaping () -> Void,
-    @ViewBuilder content: () -> Content
-  ) {
-    self.isEnabled = isEnabled
-    self.onClear = onClear
-    self.content = content()
-  }
-
-  var body: some View {
-    content.offset(x: horizontalOffset)
-      .background(alignment: .leading) {
-        // The reveal affordance follows the card's size without stretching the feed.
-        HStack(spacing: 7) {
-          Image(systemName: "xmark.circle.fill")
-          Text("Clear").font(.system(size: 11, weight: .bold))
-        }
-        .foregroundStyle(.white)
-        .padding(.leading, 14)
-        .frame(maxHeight: .infinity)
-      }
-    .background(Color.red.opacity(horizontalOffset > 0 ? 0.82 : 0))
-    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .contentShape(Rectangle())
-    .simultaneousGesture(
-      DragGesture(minimumDistance: 12)
-        .onChanged { value in
-          guard isEnabled,
-            value.translation.width > 0,
-            abs(value.translation.width) > abs(value.translation.height)
-          else { return }
-          horizontalOffset = min(value.translation.width, 110)
-        }
-        .onEnded { value in
-          guard isEnabled else { return }
-          if value.translation.width >= 84,
-            abs(value.translation.width) > abs(value.translation.height)
-          {
-            withAnimation(.easeOut(duration: 0.16)) { onClear() }
-          } else {
-            withAnimation(.spring(response: 0.24, dampingFraction: 0.82)) {
-              horizontalOffset = 0
-            }
-          }
-        }
-    )
-    .swipeActions(edge: .leading, allowsFullSwipe: true) {
-      if isEnabled {
-        Button("Clear", systemImage: "xmark", role: .destructive, action: onClear)
-      }
-    }
-    .contextMenu {
-      if isEnabled {
-        Button("Clear notification", systemImage: "xmark", role: .destructive, action: onClear)
-      }
-    }
-    .accessibilityAction(named: Text("Clear notification")) {
-      if isEnabled { onClear() }
-    }
-    .help(isEnabled ? "Swipe right to clear" : "This notification stays visible while running")
   }
 }
 

@@ -902,18 +902,16 @@ struct QueueViewModelTests {
     #expect(!restartedLog.entries.contains { $0.message == "Program Log window shown." })
   }
 
-  @Test("Disabling automatic reports suppresses missing-report attention and persists")
+  @Test("Disabling automatic reports persists")
   func disabledAutomaticReports() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let model = await fixture.model(agent: ControlledQueueAgent())
-    #expect(model.showsReportNotification)
     var reportedEnabledValue: Bool?
     model.dailyReportsEnabledHandler = { reportedEnabledValue = $0 }
 
     model.setDailyReportsEnabled(false)
     #expect(!model.config.dailyReport.enabled)
-    #expect(!model.showsReportNotification)
     #expect(reportedEnabledValue == false)
     try await eventually {
       let saved = try JSONDecoder().decode(
@@ -922,7 +920,6 @@ struct QueueViewModelTests {
     }
     let restarted = await fixture.model(agent: ControlledQueueAgent())
     #expect(!restarted.config.dailyReport.enabled)
-    #expect(!restarted.showsReportNotification)
   }
 
   @Test("Agent usage bar defaults on and its Settings value persists")
@@ -1189,54 +1186,6 @@ struct QueueViewModelTests {
     #expect(model.isNewTicket("ECC-102"))
     model.markTicketViewed("ECC-102")
     #expect(!model.isNewTicket("ECC-102"))
-  }
-
-  @Test("Notifications open in the widened inspector and return after an opened detail closes")
-  func notificationsInspector() async throws {
-    let fixture = try await Fixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let model = await fixture.model(agent: ControlledQueueAgent())
-    var visibility: [Bool] = []
-    model.reportVisibilityHandler = { visibility.append($0) }
-    #expect(model.notificationCount > 0)
-
-    model.toggleNotificationsInspector()
-    #expect(model.isNotificationsInspectorPresented)
-    #expect(model.isInspectorPresented)
-    #expect(visibility.last == true)
-
-    let update = QueueAgentUpdate(id: "update", ticketID: "ECC-101", title: "Agent finished", summary: "Ready")
-    model.openAgentUpdate(update)
-    #expect(!model.isNotificationsInspectorPresented)
-    #expect(model.presentedAgentUpdate == update)
-    model.closeAgentUpdate()
-    #expect(model.isNotificationsInspectorPresented)
-    #expect(visibility.last == true)
-
-    model.showLatestDailyReport()
-    #expect(model.isDailyReportPresented)
-    #expect(!model.isNotificationsInspectorPresented)
-    model.setDailyReportPresented(false)
-    #expect(model.isNotificationsInspectorPresented)
-
-    model.openPlan(for: fixture.tickets[0])
-    #expect(!model.isNotificationsInspectorPresented)
-    model.closePlan()
-    #expect(!model.isInspectorPresented)
-
-    model.setNotificationsInspectorPresented(true)
-    model.setQueueChatInspectorPresented(true)
-    #expect(!model.isNotificationsInspectorPresented)
-    model.setNotificationsInspectorPresented(true)
-    #expect(!model.isQueueChatInspectorPresented)
-    model.toggleNotificationsInspector()
-    #expect(!model.isInspectorPresented)
-    #expect(visibility.last == false)
-
-    model.setNotificationsInspectorPresented(true)
-    model.setPanelCollapsed(true)
-    #expect(!model.isNotificationsInspectorPresented)
-    #expect(!model.isInspectorPresented)
   }
 
   @Test("Hard due dates update and clear through the view model")
@@ -2218,7 +2167,7 @@ struct QueueViewModelTests {
     }
   }
 
-  @Test("Cleared report notifications stay dismissed while a newer report can notify")
+  @Test("A seen report failure stays cleared while a newer report badges the header")
   func reportNotificationDismissal() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -2227,16 +2176,16 @@ struct QueueViewModelTests {
     model.setDailyReportRunState(isRunning: false, message: "Mail reader timed out", isError: true)
     try await eventually { model.relevantFailedReportRun != nil }
     let notificationID = model.reportNotificationID
-    #expect(model.showsReportNotification)
+    #expect(model.dailyReportHeaderIndicator == .needsAttention)
 
     model.dismissReportNotification()
-    #expect(!model.showsReportNotification)
+    #expect(model.dailyReportHeaderIndicator == .none)
     try await eventually {
       try await JSONLocalStateStore(url: fixture.paths.stateFile).load()
         .dismissedNotificationIDs.contains(notificationID)
     }
     let restarted = await fixture.model(agent: ControlledQueueAgent())
-    #expect(!restarted.showsReportNotification)
+    #expect(restarted.dailyReportHeaderIndicator == .none)
 
     let newer = fixture.report(
       "newer-report",
@@ -2245,7 +2194,7 @@ struct QueueViewModelTests {
     try fixture.archive(newer)
     try JSONEncoder().encode(newer).write(to: fixture.paths.latestDailyReportFile)
     await restarted.reloadDailyReport()
-    #expect(restarted.showsReportNotification)
+    #expect(restarted.dailyReportHeaderIndicator != .none)
     #expect(restarted.reportNotificationID != notificationID)
   }
 
@@ -2620,43 +2569,6 @@ struct QueueViewModelTests {
     try await eventually {
       try await JSONLocalStateStore(url: fixture.paths.stateFile).load()
         .dismissedNotificationIDs.contains(second.presentationID)
-    }
-  }
-
-  @Test("The notification feed excludes ordinary results and completions")
-  func notificationFeedOnlyIncludesAttention() async throws {
-    let fixture = try await Fixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let store = TaskContextStore(root: fixture.root)
-    _ = try await store.ensureContext(ticket: fixture.tickets[0])
-
-    var result = TaskSubtask(
-      id: "result", title: "Fresh result", status: .idle,
-      progressSummary: "A new result is ready", completionUnread: true)
-    result.resultID = "result-1"
-    var completed = TaskSubtask(
-      id: "completed", title: "Finished work", status: .completed,
-      progressSummary: "The work is complete", completionUnread: true)
-    completed.resultID = "result-2"
-    var attention = TaskSubtask(
-      id: "attention", title: "Needs a decision", status: .idle,
-      progressSummary: "Choose a deployment target", completionUnread: true)
-    attention.attention = .question
-    attention.resultID = "attention-1"
-    for subtask in [result, completed, attention] {
-      _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: subtask)
-    }
-
-    let model = await fixture.model(agent: ControlledQueueAgent())
-    #expect(Set(model.agentUpdates.compactMap(\.subtaskID)) == ["result", "completed", "attention"])
-    #expect(model.notificationAgentUpdates.map(\.subtaskID) == ["attention"])
-
-    // The feed is memoized. A later attention change must still reach it.
-    result.attention = .approval
-    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: result)
-    try await eventually(maxAttempts: 400) {
-      await model.refresh()
-      return Set(model.notificationAgentUpdates.compactMap(\.subtaskID)) == ["result", "attention"]
     }
   }
 

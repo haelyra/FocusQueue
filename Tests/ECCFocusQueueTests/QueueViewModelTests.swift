@@ -783,6 +783,33 @@ struct QueueViewModelTests {
     #expect(model.visibleUICanvases(ticketID: ticket.id).map(\.key) == [session.key])
   }
 
+  @Test("An HTML output opens as a native canvas tab instead of an external app")
+  func htmlOutputOpensAsCanvas() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let ticket = try #require(model.openTickets.first)
+    model.openPlan(for: ticket)
+    try await eventually { model.taskContexts[ticket.id] != nil }
+    let context = try #require(model.taskContexts[ticket.id])
+    let mockup = context.contextDirectory.appendingPathComponent("qa/card.html")
+    try FileManager.default.createDirectory(at: mockup.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("<!doctype html><body><p>Hi</p></body>".utf8).write(to: mockup)
+
+    let output = TaskOutputFile(relativePath: "qa/card.html", url: mockup, modifiedAt: Date())
+    model.openOutput(output, ticketID: ticket.id)
+
+    let session = try #require(model.uiCanvasStore.find(file: mockup.path, taskID: ticket.id),
+      "Opening an HTML output creates its canvas session")
+    #expect(model.requestedUICanvas?.key == session.key)
+    #expect(model.visibleUICanvases(ticketID: ticket.id).map(\.key) == [session.key])
+    #expect(model.presentedPlanTicketID == ticket.id)
+
+    // A second open reuses the session instead of duplicating it.
+    model.openOutput(output, ticketID: ticket.id)
+    #expect(model.uiCanvasStore.sessions(taskID: ticket.id).count == 1)
+  }
+
   @Test("Task rename updates a loaded context and rejects an empty replacement")
   func taskRenamePropagation() async throws {
     let fixture = try await Fixture()

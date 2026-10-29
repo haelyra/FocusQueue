@@ -1630,9 +1630,38 @@ final class QueueViewModel {
   }
 
   /// Opens an output and stops announcing it; the file stays in the context folder.
+  /// HTML mockups open in the native UI canvas instead of an external browser:
+  /// an existing session reopens its tab, otherwise a session is created so the
+  /// agent can be reconnected to it.
   func openOutput(_ output: TaskOutputFile, ticketID: String) {
-    open(output.url.path, ticketID: ticketID)
+    if ["html", "htm"].contains(output.url.pathExtension.lowercased()),
+      openUICanvasForArtifact(output.url, ticketID: ticketID) != nil {
+      // Routed to the canvas tab.
+    } else {
+      open(output.url.path, ticketID: ticketID)
+    }
     Task { await markOutputsReviewed([output], ticketID: ticketID) }
+  }
+
+  /// The canvas session for an HTML artifact: the existing one, or a fresh
+  /// session on first open. A session the human ended stays ended; its tab
+  /// shows the finished state until the human reconnects the agent.
+  @discardableResult
+  private func openUICanvasForArtifact(_ artifact: URL, ticketID: String) -> String? {
+    let ticketID = ticketID.uppercased()
+    guard dashboard.tickets.contains(where: { $0.id == ticketID }) else { return nil }
+    let session: UICanvasSession?
+    if let existing = uiCanvasStore.find(file: artifact.path, taskID: ticketID) {
+      session = existing
+    } else if case .opened(let created) = try? uiCanvasStore.open(
+      file: artifact.path, taskID: ticketID, title: nil, viewport: nil, reopen: false, agentName: nil) {
+      session = created
+    } else {
+      session = nil
+    }
+    guard let session else { return nil }
+    openUICanvasSession(ticketID: ticketID, key: session.key)
+    return session.key
   }
 
   func markOutputsReviewed(_ outputs: [TaskOutputFile], ticketID: String) async {

@@ -223,7 +223,11 @@ final class QueueViewModel {
   private(set) var requestedUICanvas: UICanvasRequest?
   /// Canvas tabs the human closed; an agent's next `canvas open` shows them again.
   private(set) var dismissedUICanvasKeys: Set<String> = []
+  /// Ended canvases the human reopened from the task's context; they stay
+  /// visible past the usual one-day review window until dismissed again.
+  private(set) var reopenedUICanvasKeys: Set<String> = []
   @ObservationIgnored private var uiCanvasModels: [String: UICanvasModel] = [:]
+  @ObservationIgnored private var uiCanvasReconnectTasks: [String: Task<Void, Never>] = [:]
   private(set) var presentedPlanMarkdown = ""
   private(set) var isPlanLoading = false
   private(set) var planError: String? {
@@ -1651,9 +1655,38 @@ final class QueueViewModel {
   }
 
   /// Opens an output and stops announcing it; the file stays in the context folder.
+  /// HTML mockups open in the native UI canvas instead of an external browser:
+  /// an existing session reopens its tab, otherwise a session is created so the
+  /// agent can be reconnected to it.
   func openOutput(_ output: TaskOutputFile, ticketID: String) {
-    open(output.url.path, ticketID: ticketID)
+    if ["html", "htm"].contains(output.url.pathExtension.lowercased()),
+      openUICanvasForArtifact(output.url, ticketID: ticketID) != nil {
+      // Routed to the canvas tab.
+    } else {
+      open(output.url.path, ticketID: ticketID)
+    }
     Task { await markOutputsReviewed([output], ticketID: ticketID) }
+  }
+
+  /// The canvas session for an HTML artifact: the existing one, or a fresh
+  /// session on first open. A session the human ended stays ended; its tab
+  /// shows the finished state until the human reconnects the agent.
+  @discardableResult
+  private func openUICanvasForArtifact(_ artifact: URL, ticketID: String) -> String? {
+    let ticketID = ticketID.uppercased()
+    guard dashboard.tickets.contains(where: { $0.id == ticketID }) else { return nil }
+    let session: UICanvasSession?
+    if let existing = uiCanvasStore.find(file: artifact.path, taskID: ticketID) {
+      session = existing
+    } else if case .opened(let created) = try? uiCanvasStore.open(
+      file: artifact.path, taskID: ticketID, title: nil, viewport: nil, reopen: false, agentName: nil) {
+      session = created
+    } else {
+      session = nil
+    }
+    guard let session else { return nil }
+    openUICanvasSession(ticketID: ticketID, key: session.key)
+    return session.key
   }
 
   func markOutputsReviewed(_ outputs: [TaskOutputFile], ticketID: String) async {
@@ -2534,11 +2567,13 @@ final class QueueViewModel {
   var uiCanvasStore: UICanvasStore { UICanvasStore(root: paths.supportDirectory) }
 
   /// Canvas tabs for a task: every open session, plus ended ones from the last
-  /// day so a finished design stays reviewable until its tab is closed.
+  /// day so a finished design stays reviewable until its tab is closed. A
+  /// session the human reopened from the task's context stays until dismissed.
   func visibleUICanvases(ticketID: String) -> [UICanvasSession] {
     let cutoff = UICanvasStore.timestamp(Date().addingTimeInterval(-86_400))
     return (uiCanvasSessions[ticketID] ?? []).filter {
-      !dismissedUICanvasKeys.contains($0.key) && (!$0.isEnded || $0.updatedAt > cutoff)
+      !dismissedUICanvasKeys.contains($0.key)
+        && (!$0.isEnded || $0.updatedAt > cutoff || reopenedUICanvasKeys.contains($0.key))
     }
   }
 
@@ -2560,6 +2595,100 @@ final class QueueViewModel {
     dismissedUICanvasKeys.insert(key)
     uiCanvasModels["\(ticketID.uppercased())/\(key)"]?.stop()
   }
+
+  /// The human picked a session in the task's context: show its canvas tab the
+  /// way a CLI `canvas open` does, even when the session ended long ago.
+  func openUICanvasSession(ticketID: String, key: String) {
+    let ticketID = ticketID.uppercased()
+    dismissedUICanvasKeys.remove(key)
+    reopenedUICanvasKeys.insert(key)
+    refreshUICanvases(ticketID: ticketID)
+    guard dashboard.tickets.contains(where: { $0.id == ticketID }) else { return }
+    if panelMode != .expanded { setPanelMode(.expanded) }
+    if presentedPlanTicketID != ticketID,
+      let ticket = dashboard.tickets.first(where: { $0.id == ticketID }) {
+      openPlan(for: ticket)
+    }
+    requestedUICanvas = UICanvasRequest(ticketID: ticketID, key: key)
+  }
+
+  /// Asks the agent behind a canvas session to listen again: a fork of the
+  /// creating agent while it still runs, else a new chat agent for the task.
+  /// An ended session the human reconnects is reopened first, matching the
+  /// CLI's explicit-reopen rule. The reply lands in the canvas conversation.
+  func reconnectUICanvasAgent(ticketID: String, key: String) {
+    let ticketID = ticketID.uppercased()
+    let id = "\(ticketID)/\(key)"
+    if let existing = uiCanvasReconnectTasks[id], !existing.isCancelled { return }
+    guard let session = try? uiCanvasStore.load(taskID: ticketID, key: key) else { return }
+    openUICanvasSession(ticketID: ticketID, key: key)
+    if session.isEnded {
+      _ = try? uiCanvasStore.open(file: session.file, taskID: ticketID, title: nil, viewport: nil,
+        reopen: true, agentName: nil)
+      refreshUICanvases(ticketID: ticketID)
+    }
+    uiCanvasReconnectTasks[id] = Task { [weak self] in
+      guard let self else { return }
+      defer { uiCanvasReconnectTasks[id] = nil }
+      do {
+        let creator = await documentCreator(path: session.file, ticketID: ticketID, known: nil)
+        try Task.checkCancellation()
+        let provider = creator?.author.provider ?? defaultAgentProvider
+        var configuration = config.verifier
+        configuration.executable = config.chatExecutable(for: provider)
+        configuration.supportDirectory = paths.supportDirectory.path
+        configuration.sessionName = "ecc-focus-queue-task-\(ticketID.lowercased())-canvas-\(key)"
+        configuration.contextDirectory = taskContexts[ticketID]?.contextDirectory.path
+        configuration.projectScopeID = dashboard.tickets.first { $0.id == ticketID }?.projectID
+          ?? selectedProjectID
+        let agent = queueAgent(for: provider)
+        var prompt = Self.canvasReconnectPrompt(session: session, ticketID: ticketID)
+        let workspace: String
+        if let creator, creator.isOpen {
+          // The creator's terminal keeps running; the fork answers here.
+          configuration.forkSourceSessionID = creator.forkSessionID
+          prompt = Self.canvasForkPreamble + prompt
+          workspace = creator.liveWorkspace ?? config.workspacePath
+        } else {
+          // A new route never inherits a session an earlier reconnect left behind.
+          try await agent.reset(configuration: configuration)
+          workspace = dashboard.tickets.first { $0.id == ticketID }.map(defaultRepository)
+            ?? config.workspacePath
+        }
+        try Task.checkCancellation()
+        let reply = try await agent.send(
+          message: prompt, dashboardPath: config.dashboardPath, workspace: workspace,
+          visibleOrder: openTickets.map(\.id), deferredTicketIDs: [], configuration: configuration,
+          model: creator?.model ?? Self.normalizedChatOption(config.chatModel(for: provider)),
+          effort: creator?.effort ?? Self.normalizedChatOption(config.chatEffort(for: provider)))
+        try Task.checkCancellation()
+        try uiCanvasStore.reply(taskID: ticketID, key: key, text: reply.message)
+      } catch is CancellationError {
+        // The app closed mid-reconnect; leave the session as it was.
+      } catch {
+        try? uiCanvasStore.reply(taskID: ticketID, key: key,
+          text: "Reconnect failed: \(error.localizedDescription)")
+      }
+      refreshUICanvases(ticketID: ticketID)
+    }
+  }
+
+  private static func canvasReconnectPrompt(session: UICanvasSession, ticketID: String) -> String {
+    let file = "'" + session.file.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    return """
+      The user reopened the UI canvas "\(session.displayTitle)" (\(session.file)) in Focus Queue \
+      and wants you listening again. Reconnect now: run \
+      `focus-queue-session canvas open \(file) --task \(ticketID)` to reattach the session, then \
+      `focus-queue-session canvas await \(file)` to pick up any queued feedback. Reply in one \
+      sentence once you are listening.
+      """
+  }
+
+  private static let canvasForkPreamble = """
+    Focus Queue canvas reconnect: this turn runs in a fork of your conversation so the user can reopen a UI canvas you created. Your original terminal conversation continues separately and never sees this fork. Answer here. Do not report task progress, results, or completion with focus-queue-session from this fork, and change files only when the user asks.
+
+
+    """
 
   /// The CLI changed a session. An `open` shows the task's plan viewer on that
   /// canvas, expanding the panel the way ECC's canvas opens a browser tab.

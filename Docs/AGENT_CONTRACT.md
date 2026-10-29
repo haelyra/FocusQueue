@@ -36,6 +36,7 @@ Projects own unique 2 to 5 character task prefixes. Focus Queue uses `FOC-###`; 
 - `agent-log.md`: timestamped decisions, configuration, progress detail, research/evidence links, and handoffs. Read relevant entries on demand. Append with `focus-queue-session log <TASK-ID> <AGENT-ID> "entry"`.
 - Supporting artifacts: store beside task context and link from the plan or log. Context lives outside disposable worktrees.
 - Structured state: use helper commands for progress, result, attention, and verified completion. Preserve user queue order, cleared subtasks, and other agents' identities.
+- UI components: agents open every UI component they build or prototype in Focus Queue's native canvas by default, even without being asked, so the user can view and edit it live in the app. Write the component as a self-contained `.html` file, open it with `focus-queue-session canvas open <file>`, and keep `focus-queue-session canvas await <file>` listening while iterating.
 
 Preparing task context creates missing documents and outlines empty plans without replacing authored content. Log appends use the same cross-process task lock as state changes. They never re-save the central plan or overwrite task state. Symbolic-link log destinations are rejected. Existing historical plans are preserved until a deliberate archival migration.
 

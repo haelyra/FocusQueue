@@ -133,7 +133,9 @@ final class QueueViewModel {
   /// On unless turned off; the key is unset until the user changes it.
   private(set) var qchatHotkeyEnabled =
     UserDefaults.standard.object(forKey: "qchatHotkeyEnabled") as? Bool ?? true
-  /// A recorded combo per action; a missing entry keeps the built-in gesture.
+  private(set) var toggleMinimizationHotkeyEnabled =
+    UserDefaults.standard.object(forKey: "toggleMinimizationHotkeyEnabled") as? Bool ?? true
+  /// A recorded combo per action; a missing entry keeps the built-in shortcut or gesture.
   private(set) var hotkeyShortcuts: [HotkeyAction: HotkeyShortcut] = HotkeyAction.allCases
     .reduce(into: [:]) { shortcuts, action in
       if let data = UserDefaults.standard.data(forKey: action.shortcutDefaultsKey),
@@ -231,9 +233,9 @@ final class QueueViewModel {
   private(set) var launchingTaskIDs: Set<String> = []
   /// Set when a managed agent's registration stayed incomplete past its
   /// post-launch window; QueueView presents it as a hard alert.
-  var registrationValidationAlert: String?
   private var reportedRegistrationIssueIDs: Set<String> = []
   private(set) var openingSubtaskIDs: Set<String> = []
+  private(set) var pauseChangingSubtaskIDs: Set<String> = []
   private(set) var openingAgentSessionIDs: Set<String> = []
   private(set) var agentSessionErrors: [String: String] = [:] {
     didSet {
@@ -623,30 +625,49 @@ final class QueueViewModel {
     isSavingProject = true
     defer { isSavingProject = false }
     do {
-      if project.id == ProjectCatalog.otherID, project.archivedAt != nil {
-        throw TaskContextError.commandFailed("Other is the fallback project and cannot be archived.")
-      }
-      var next = config
-      let isNew = next.projects.contains(where: { $0.id == project.id }) == false
-      if let index = next.projects.firstIndex(where: { $0.id == project.id }) { next.projects[index] = project }
-      else { next.projects.append(project) }
-      _ = try next.validated()
-      if isNew {
-        var prepared = next
-        guard prepared.selectProject(id: project.id) else {
-          throw TaskContextError.commandFailed("The new project could not be selected.")
-        }
-        try SetupEnvironment.prepareWorkspace(configuration: prepared)
-      }
-      configurationSaveTask?.cancel()
-      await configurationSaveTask?.value
-      try await configurationRepository.save(next)
-      config = next
-      lastContextRefresh = nil
-      await refresh()
+      try await persistProject(project)
       projectError = nil
       return true
     } catch { projectError = error.localizedDescription; return false }
+  }
+
+  /// The draft retains a newly created remote even if subsequent local persistence fails.
+  func createProject(_ draft: inout ProjectSetupDraft,
+                     service: ProjectSetupService = ProjectSetupService()) async -> Bool {
+    guard !isSavingProject else { return false }
+    isSavingProject = true
+    defer { isSavingProject = false }
+    do {
+      let project = try await service.prepare(&draft, supportDirectory: paths.supportDirectory,
+        projects: config.projects)
+      try await persistProject(project)
+      projectError = nil
+      return true
+    } catch { projectError = error.localizedDescription; return false }
+  }
+
+  private func persistProject(_ project: ProjectDefinition) async throws {
+    if project.id == ProjectCatalog.otherID, project.archivedAt != nil {
+      throw TaskContextError.commandFailed("Other is the fallback project and cannot be archived.")
+    }
+    var next = config
+    let isNew = next.projects.contains(where: { $0.id == project.id }) == false
+    if let index = next.projects.firstIndex(where: { $0.id == project.id }) { next.projects[index] = project }
+    else { next.projects.append(project) }
+    _ = try next.validated()
+    if isNew {
+      var prepared = next
+      guard prepared.selectProject(id: project.id) else {
+        throw TaskContextError.commandFailed("The new project could not be selected.")
+      }
+      try SetupEnvironment.prepareWorkspace(configuration: prepared)
+    }
+    configurationSaveTask?.cancel()
+    await configurationSaveTask?.value
+    try await configurationRepository.save(next)
+    config = next
+    lastContextRefresh = nil
+    await refresh()
   }
   @discardableResult
   func assignProject(_ projectID: String?, to ticketID: String) async -> Bool {
@@ -3824,33 +3845,40 @@ final class QueueViewModel {
   /// Marks the task complete in its canonical dashboard, closing any open
   /// completion-tracked assignments first.
   func requestCompletion(for ticket: DashboardTicket) {
-    guard ticket.isOpen else { return }
+    Task { await completeTicket(ticket) }
+  }
+
+  /// Returns false when the task stays open, so the card can undo its
+  /// completion animation and show the failure message.
+  @discardableResult
+  func completeTicket(_ ticket: DashboardTicket) async -> Bool {
+    guard ticket.isOpen else { return false }
     actionMessages[ticket.id] = "Marking complete…"
     let ticketDashboardPath = dashboardPath(for: ticket)
-    Task {
-      do {
-        try await validateCanonicalCompletion(
-          ticketID: ticket.id, dashboardPath: ticketDashboardPath)
-        if let context = taskContexts[ticket.id] {
-          let openAssignments = context.focusSubtasks.filter {
-            $0.tracksCompletion && $0.status != .completed
-          }
-          for subtask in openAssignments {
-            taskContexts[ticket.id] = try await taskContextStore.overrideCompletion(
-              ticketID: ticket.id, subtaskID: subtask.id)
-          }
+    do {
+      try await validateCanonicalCompletion(
+        ticketID: ticket.id, dashboardPath: ticketDashboardPath)
+      if let context = taskContexts[ticket.id] {
+        let openAssignments = context.focusSubtasks.filter {
+          $0.tracksCompletion && $0.status != .completed
         }
-        let resolved = try await resolveCanonicalTicket(
-          ticketID: ticket.id,
-          dashboardPath: ticketDashboardPath,
-          reason: "Marked complete by the user.",
-          evidence: [],
-          completedBy: "user")
-        if let resolved { await finalizeCompletedTask(resolved) }
-        actionMessages[ticket.id] = "Task marked complete."
-      } catch {
-        actionMessages[ticket.id] = "Could not mark complete: \(error.localizedDescription)"
+        for subtask in openAssignments {
+          taskContexts[ticket.id] = try await taskContextStore.overrideCompletion(
+            ticketID: ticket.id, subtaskID: subtask.id)
+        }
       }
+      let resolved = try await resolveCanonicalTicket(
+        ticketID: ticket.id,
+        dashboardPath: ticketDashboardPath,
+        reason: "Marked complete by the user.",
+        evidence: [],
+        completedBy: "user")
+      if let resolved { await finalizeCompletedTask(resolved) }
+      actionMessages[ticket.id] = "Task marked complete."
+      return true
+    } catch {
+      actionMessages[ticket.id] = "Could not mark complete: \(error.localizedDescription)"
+      return false
     }
   }
 
@@ -4005,16 +4033,13 @@ final class QueueViewModel {
   private func reportRegistrationIssue(_ issue: AgentRegistrationIssue) {
     let identity = issue.registrationID + "|" + issue.missingFields.joined(separator: ",")
     guard reportedRegistrationIssueIDs.insert(identity).inserted else { return }
+    // No modal: the dedupe set resets on every relaunch, so an alert re-raised
+    // every stale taskless record after each install. The card error and the
+    // program log carry the issue instead.
     programLog.record(
-      "Agent registration incomplete: \(issue.summary).",
+      "Agent registration incomplete: \(issue.summary). "
+        + "Re-register the agent from its pane with focus-queue-session attach <TASK-ID>.",
       level: .error, category: "Agent registration")
-    let text = "Agent registration is incomplete: \(issue.summary). "
-      + "Re-register the agent from its pane with focus-queue-session attach <TASK-ID>."
-    if let existing = registrationValidationAlert, !existing.isEmpty {
-      registrationValidationAlert = existing + "\n\n" + text
-    } else {
-      registrationValidationAlert = text
-    }
   }
 
   func importProvisionalAgentIntakes(_ receipts: [AgentIntakeReceipt]) async throws {
@@ -4395,6 +4420,55 @@ final class QueueViewModel {
     }
   }
 
+  /// Pause and Resume drive the provider TUI through its managed tmux pane;
+  /// WezTerm-only and external agents keep their own terminal controls.
+  func canPause(_ subtask: TaskSubtask) -> Bool {
+    subtask.tmux != nil && subtask.hasAgent && subtask.status != .completed && subtask.agentRemovedAt == nil
+  }
+
+  func isChangingPause(_ subtask: TaskSubtask, ticketID: String) -> Bool {
+    pauseChangingSubtaskIDs.contains(Self.subtaskKey(ticketID: ticketID, subtaskID: subtask.id))
+  }
+
+  func pauseAgent(_ subtask: TaskSubtask, for ticket: DashboardTicket) {
+    changePause(subtask, for: ticket, pause: true)
+  }
+
+  func resumeAgent(_ subtask: TaskSubtask, for ticket: DashboardTicket) {
+    changePause(subtask, for: ticket, pause: false)
+  }
+
+  private func changePause(_ subtask: TaskSubtask, for ticket: DashboardTicket, pause: Bool) {
+    let key = Self.subtaskKey(ticketID: ticket.id, subtaskID: subtask.id)
+    guard pauseChangingSubtaskIDs.insert(key).inserted else { return }
+    agentSessionErrors[key] = nil
+    Task {
+      defer { pauseChangingSubtaskIDs.remove(key) }
+      let controller = AgentPauseController(store: taskContextStore)
+      do {
+        if pause {
+          taskContexts[ticket.id] = try await controller.pause(ticketID: ticket.id, subtaskID: subtask.id)
+          actionMessages[ticket.id] = "Paused \(subtask.title). Press Resume to continue the same conversation."
+        } else {
+          taskContexts[ticket.id] = try await controller.resume(ticketID: ticket.id, subtaskID: subtask.id)
+          actionMessages[ticket.id] = "Resumed \(subtask.title)."
+        }
+      } catch TmuxError.stopped where !pause {
+        // The pane closed while paused, for example after a restart. Clear the
+        // pause and reopen the saved conversation in a new pane.
+        taskContexts[ticket.id] = try? await taskContextStore.setPaused(
+          ticketID: ticket.id, subtaskID: subtask.id, paused: false, promptSent: false)
+        openSubtask(subtask, for: ticket, showResult: false)
+        actionMessages[ticket.id] = "\(subtask.title)'s pane had closed, so Focus Queue reopened its saved conversation. Type continue in it to carry on."
+      } catch TmuxError.stopped {
+        actionMessages[ticket.id] = "\(subtask.title)'s pane has already closed, so nothing is running to pause."
+      } catch {
+        agentSessionErrors[key] = error.localizedDescription
+        actionMessages[ticket.id] = error.localizedDescription
+      }
+    }
+  }
+
   private func upsertAgentSession(_ session: TaskAgentSession) {
     localState.upsertAgentSession(session)
   }
@@ -4676,12 +4750,22 @@ final class QueueViewModel {
     switch action {
     case .newTask: newTaskHotkeyEnabled
     case .qchat: qchatHotkeyEnabled
+    case .toggleMinimization: toggleMinimizationHotkeyEnabled
     }
   }
 
-  func hotkeyShortcut(for action: HotkeyAction) -> HotkeyShortcut? { hotkeyShortcuts[action] }
+  func hotkeyShortcut(for action: HotkeyAction) -> HotkeyShortcut? {
+    hotkeyShortcuts[action] ?? action.defaultShortcut
+  }
 
-  /// nil restores the action's built-in right-side gesture.
+  func setToggleMinimizationHotkeyEnabled(_ enabled: Bool) {
+    guard toggleMinimizationHotkeyEnabled != enabled else { return }
+    toggleMinimizationHotkeyEnabled = enabled
+    UserDefaults.standard.set(enabled, forKey: "toggleMinimizationHotkeyEnabled")
+    hotkeyConfigurationHandler?()
+  }
+
+  /// nil restores the action's built-in shortcut or gesture.
   func setHotkeyShortcut(_ shortcut: HotkeyShortcut?, for action: HotkeyAction) {
     guard hotkeyShortcuts[action] != shortcut else { return }
     hotkeyShortcuts[action] = shortcut
@@ -4892,6 +4976,14 @@ final class QueueViewModel {
       persistLocalState()
     }
     applyMinimization(preference)
+  }
+
+  func toggleMinimization(isMiniaturized: Bool = false) {
+    if isMiniaturized || panelMode != .expanded {
+      setPanelMode(.expanded)
+    } else {
+      performPreferredMinimization()
+    }
   }
 
   func performPreferredMinimization() {

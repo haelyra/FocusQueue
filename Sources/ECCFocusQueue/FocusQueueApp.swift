@@ -360,6 +360,7 @@ import UserNotifications
       case .qchat:
         if gesture { if qchatHotkeyMonitor?.isRunning != true { startQChatHotkeyMonitor(promptForAccess: promptForAccess) } }
         else { stopQChatHotkeyMonitor() }
+      case .toggleMinimization: break
       }
       guard let shortcut else {
         if !model.isRecordingHotkey { model.setHotkeyError(nil, for: action) }
@@ -381,6 +382,14 @@ import UserNotifications
     switch action {
     case .newTask: handleNewTaskHotkey()
     case .qchat: handleQChatHotkey()
+    case .toggleMinimization:
+      let wasMiniaturized = panel?.isMiniaturized == true
+      model.toggleMinimization(isMiniaturized: wasMiniaturized)
+      if wasMiniaturized {
+        panel?.deminiaturize(nil)
+        panel?.orderFrontRegardless()
+        model.setPanelVisible(true)
+      }
     }
   }
 

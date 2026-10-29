@@ -3,9 +3,9 @@ import Carbon.HIToolbox
 import SwiftUI
 
 /// The global shortcuts a user can rebind. Each one starts on its built-in
-/// right-side gesture; recording a combo replaces the gesture until reset.
+/// shortcut or right-side gesture; recording a combo replaces it until reset.
 enum HotkeyAction: String, CaseIterable, Identifiable {
-  case newTask, qchat
+  case newTask, qchat, toggleMinimization
 
   var id: String { rawValue }
 
@@ -13,6 +13,7 @@ enum HotkeyAction: String, CaseIterable, Identifiable {
     switch self {
     case .newTask: "New task"
     case .qchat: "QChat"
+    case .toggleMinimization: "Toggle minimization"
     }
   }
 
@@ -20,6 +21,16 @@ enum HotkeyAction: String, CaseIterable, Identifiable {
     switch self {
     case .newTask: "Right ⌥ or Right ⌘ + ⇧"
     case .qchat: "Right ⌥ or Right ⌘ + /"
+    case .toggleMinimization: "⌘,"
+    }
+  }
+
+  var defaultShortcut: HotkeyShortcut? {
+    switch self {
+    case .newTask, .qchat: nil
+    case .toggleMinimization:
+      HotkeyShortcut(keyCode: UInt16(kVK_ANSI_Comma), modifiers: NSEvent.ModifierFlags.command.rawValue,
+        keyLabel: ",")
     }
   }
 
@@ -171,7 +182,7 @@ private func globalHotKeyHandler(
 }
 
 /// A Raycast-style shortcut field: click Record, press the combo, done.
-/// Reset returns the action to its built-in right-side gesture.
+/// Reset returns the action to its built-in shortcut or gesture.
 struct HotkeyRecorderField: View {
   let model: QueueViewModel
   let action: HotkeyAction
@@ -195,11 +206,11 @@ struct HotkeyRecorderField: View {
         .buttonStyle(.bordered)
         .accessibilityLabel(isRecording ? "Recording \(action.title) shortcut" : "Record \(action.title) shortcut")
         .help(isRecording ? "Press the new shortcut, or Escape to cancel" : "Click, then press the shortcut you want")
-        if shortcut != nil, !isRecording {
+        if model.hotkeyShortcuts[action] != nil, !isRecording {
           Button("Reset") {
             message = nil
             model.setHotkeyShortcut(nil, for: action)
-          }.controlSize(.small).help("Use the default gesture: \(action.defaultGesture)")
+          }.controlSize(.small).help("Use the default shortcut: \(action.defaultGesture)")
         }
       }
       if let error = message ?? model.hotkeyErrors[action] {

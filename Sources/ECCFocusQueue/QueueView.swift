@@ -302,14 +302,6 @@ struct QueueView: View {
 
       if !isFilteringTasks, !remainingTickets.isEmpty || !model.visibleRoutines.isEmpty { moreButton }
     }
-    .alert("Agent registration incomplete", isPresented: Binding(
-      get: { model.registrationValidationAlert != nil },
-      set: { if !$0 { model.registrationValidationAlert = nil } }
-    )) {
-      Button("OK", role: .cancel) { model.registrationValidationAlert = nil }
-    } message: {
-      Text(model.registrationValidationAlert ?? "")
-    }
   }
 
   private var todayFocusSection: some View {
@@ -1057,6 +1049,10 @@ enum QueueSettingsTarget: Hashable {
   case connectors
 }
 
+private enum CardCompletionPhase {
+  case idle, checked, minimized
+}
+
 private enum QueueTab: Hashable {
   case focus
   case completed
@@ -1773,7 +1769,7 @@ struct QueueSettingsView: View {
           }
           settingsSection(
             title: "Keyboard shortcuts",
-            detail: "Global hotkeys that work from any app. Click a shortcut, then press a new combo with ⌘, ⌥, or ⌃. Reset returns to the right-side default."
+            detail: "Global hotkeys that work from any app. Click a shortcut, then press a new combo with ⌘, ⌥, or ⌃. Reset returns to the default shortcut."
           ) {
             VStack(alignment: .leading, spacing: 14) {
               hotkeyRow(.newTask,
@@ -1786,6 +1782,11 @@ struct QueueSettingsView: View {
                 isOn: Binding(
                   get: { model.qchatHotkeyEnabled },
                   set: { model.setQChatHotkeyEnabled($0) }))
+              hotkeyRow(.toggleMinimization,
+                detail: "Toggles the full queue and your preferred minimized view (FQ, top task, or Dock).",
+                isOn: Binding(
+                  get: { model.toggleMinimizationHotkeyEnabled },
+                  set: { model.setToggleMinimizationHotkeyEnabled($0) }))
             }
           }
 
@@ -2838,8 +2839,10 @@ private struct TicketCard: View {
   @State private var deletingSubtask: TaskSubtask?
   @State private var isCollapsedToTitle = false
   @State private var showsTaskDetails = false
+  @State private var completionPhase = CardCompletionPhase.idle
   @AppStorage("newAgentProvider") private var storedNewAgentProvider: AgentProvider?
   @Environment(\.queueAccentStyle) private var accentStyle
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.walkthroughTicketID) private var walkthroughTicketID
 
   private var isWalkthroughTicket: Bool { walkthroughTicketID == ticket.id }
@@ -2848,7 +2851,8 @@ private struct TicketCard: View {
     model.preferredNewAgentProvider(stored: storedNewAgentProvider)
   }
 
-  private var isChecked: Bool { !ticket.isOpen }
+  private var isChecked: Bool { !ticket.isOpen || completionPhase != .idle }
+  private var isMinimized: Bool { completionPhase == .minimized }
   private var recurringProgress: RecurringPullRequestProgress? {
     model.recurringPRProgress(for: ticket.id)
   }
@@ -2969,6 +2973,14 @@ private struct TicketCard: View {
       .accessibilityAction(named: "Move up") { moveOnePosition(up: true) }
       .accessibilityAction(named: "Move down") { moveOnePosition(up: false) }
       .accessibilityHint("Drag to reorder. Drop on the upper half of a task to place it before, or the lower half to place it after.")
+      // Pinning the measured height first lets the collapse animate from a
+      // concrete value; the negative padding absorbs the list's 10 pt spacing.
+      .fixedSize(horizontal: false, vertical: completionPhase != .idle)
+      .scaleEffect(isMinimized && !reduceMotion ? 0.3 : 1, anchor: .top)
+      .opacity(isMinimized ? 0 : 1)
+      .frame(height: completionPhase == .idle ? nil : isMinimized ? 0 : cardHeight, alignment: .top)
+      .padding(.bottom, isMinimized ? -10 : 0)
+      .allowsHitTesting(!isMinimized)
   }
 
   /// The ••• menu and the card's right-click menu share these actions.
@@ -2982,10 +2994,8 @@ private struct TicketCard: View {
       Task { await model.setTicketPinned(ticket, pinned: !model.isTicketPinned(ticket.id)) }
     }
     Divider()
-    Button("Mark as complete", systemImage: "checkmark.circle") {
-      model.requestCompletion(for: ticket)
-    }
-    .disabled(!ticket.isOpen)
+    Button("Mark as complete", systemImage: "checkmark.circle") { completeWithAnimation() }
+    .disabled(isChecked)
     Button("Archive without completion", systemImage: "archivebox") {
       Task { _ = await model.archiveWithoutCompletion(ticket) }
     }
@@ -2999,6 +3009,19 @@ private struct TicketCard: View {
     Button("Move to bottom") { model.moveTicket(ticket.id, to: .bottom) }
   }
 
+  /// Holds the green check briefly, then shrinks the card out of the Focus
+  /// list while the task resolves. A failed completion restores the card.
+  private func completeWithAnimation() {
+    guard ticket.isOpen, completionPhase == .idle else { return }
+    withAnimation(.spring(duration: 0.3, bounce: 0.4)) { completionPhase = .checked }
+    Task { @MainActor in
+      try? await Task.sleep(for: .milliseconds(650))
+      withAnimation(.easeIn(duration: reduceMotion ? 0.2 : 0.4)) { completionPhase = .minimized }
+      if await model.completeTicket(ticket) { return }
+      withAnimation(.easeOut(duration: 0.25)) { completionPhase = .idle }
+    }
+  }
+
   private func moveOnePosition(up: Bool) {
     let ids = model.openTickets.map(\.id)
     guard let index = ids.firstIndex(of: ticket.id) else { return }
@@ -3010,12 +3033,12 @@ private struct TicketCard: View {
   private var summary: some View {
     HStack(alignment: .top, spacing: 11) {
       VStack(spacing: 1) {
-        Button {
-          if !isChecked { model.requestCompletion(for: ticket) }
-        } label: {
+        Button(action: completeWithAnimation) {
           Image(systemName: isChecked ? "checkmark.circle.fill" : "circle").font(
             .system(size: 20, weight: .medium)
           ).foregroundStyle(checkColor)
+            .contentTransition(.symbolEffect(.replace))
+            .scaleEffect(completionPhase == .checked ? 1.15 : 1)
         }.buttonStyle(.plain).disabled(isChecked).minimumHitTarget()
           .accessibilityLabel(isChecked ? "\(ticket.id) is complete" : "Mark \(ticket.id) complete")
           .help("Mark this task complete")
@@ -3037,10 +3060,8 @@ private struct TicketCard: View {
         .help(isCollapsedToTitle ? "Expand task" : "Collapse task to title only")
       }
       .contextMenu {
-        Button("Mark as complete", systemImage: "checkmark.circle") {
-          model.requestCompletion(for: ticket)
-        }
-        .disabled(!ticket.isOpen)
+        Button("Mark as complete", systemImage: "checkmark.circle") { completeWithAnimation() }
+        .disabled(isChecked)
         Button("Archive without completion", systemImage: "archivebox") {
           Task { _ = await model.archiveWithoutCompletion(ticket) }
         }
@@ -3592,7 +3613,8 @@ private struct AgentRowLabel: View {
             isOpening: isOpening,
             issue: model.agentSessionError(for: agent, ticketID: ticket.id),
             attention: agent.attention,
-            lastOutputAt: AgentOutputTimestamp.value(for: agent))
+            lastOutputAt: AgentOutputTimestamp.value(for: agent),
+            pausedAt: agent.isPaused ? agent.pausedAt : nil)
         }
         Text(agent.workDescription)
           .font(.system(size: 11))
@@ -3644,6 +3666,14 @@ private struct TaskAgentRow: View {
           : "Open \(agent.title), \(agent.attention?.label ?? model.effectiveStatus(for: agent).rawValue)"
       )
       .help("Focus or resume this agent in its saved workspace")
+
+      if model.canPause(agent) {
+        AgentPauseButton(
+          agent: agent, isChanging: model.isChangingPause(agent, ticketID: ticket.id),
+          pause: { model.pauseAgent(agent, for: ticket) },
+          resume: { model.resumeAgent(agent, for: ticket) })
+        .disabled(isOpening)
+      }
 
       Menu {
         Button("Open agent", systemImage: "terminal") {
@@ -3704,6 +3734,37 @@ private struct TaskAgentRow: View {
     } message: {
       Text("The live pane will close. The work item, conversation, and workspace stay available under Archived agents.")
     }
+  }
+}
+
+/// Pause stops the agent's running turn with Esc; Resume asks the same
+/// conversation to continue. Both act on the agent's managed tmux pane.
+private struct AgentPauseButton: View {
+  let agent: TaskSubtask
+  let isChanging: Bool
+  let pause: () -> Void
+  let resume: () -> Void
+
+  var body: some View {
+    Button { agent.isPaused ? resume() : pause() } label: {
+      Group {
+        if isChanging {
+          ProgressView().controlSize(.mini)
+        } else {
+          Image(systemName: agent.isPaused ? "play.fill" : "pause.fill")
+            .font(.system(size: 11, weight: .semibold))
+        }
+      }
+      .frame(width: 22, height: 22)
+      .background(Color.primary.opacity(0.08), in: Circle())
+    }
+    .buttonStyle(.plain)
+    .minimumHitTarget()
+    .disabled(isChanging)
+    .accessibilityLabel(agent.isPaused ? "Resume agent \(agent.title)" : "Pause agent \(agent.title)")
+    .help(agent.isPaused
+      ? "Resume: ask this agent to continue where it stopped, in the same conversation"
+      : "Pause: stop this agent's current turn (Esc) and keep its conversation open for Resume")
   }
 }
 
@@ -3768,6 +3829,7 @@ struct AgentStatusIndicator: View {
   let isOpening: Bool
   let issue: String?
   var attention: AgentAttention? = nil
+  var pausedAt: Date? = nil
 
   @Environment(\.queueAccentStyle) private var accentStyle
 
@@ -3793,6 +3855,7 @@ struct AgentStatusIndicator: View {
   private var statusLabel: String {
     if isOpening { return "Opening" }
     if issue != nil { return "Problem" }
+    if pausedAt != nil { return "Paused" }
     if let attention { return attention.label }
     if status == .blocked { return "Problem" }
     // A busy agent reads as Working; an earlier unread result is only noted.
@@ -3809,6 +3872,7 @@ struct AgentStatusIndicator: View {
 
   private var icon: String {
     if issue != nil { return "exclamationmark.circle.fill" }
+    if pausedAt != nil { return "pause.circle.fill" }
     if let attention { return attention.icon }
     if status == .blocked { return "exclamationmark.circle.fill" }
     if hasUnreadCompletion && status != .working { return "circle.fill" }
@@ -3823,7 +3887,9 @@ struct AgentStatusIndicator: View {
 
   private var color: Color {
     if isOpening { return QueueAccentPalette.color(.info, style: accentStyle) }
-    if issue != nil || attention?.isProblem == true {
+    if issue != nil { return QueueAccentPalette.color(.danger, style: accentStyle) }
+    if pausedAt != nil { return QueueAccentPalette.color(.info, style: accentStyle) }
+    if attention?.isProblem == true {
       return QueueAccentPalette.color(.danger, style: accentStyle)
     }
     if attention != nil { return QueueAccentPalette.color(.warning, style: accentStyle) }
@@ -3841,6 +3907,11 @@ struct AgentStatusIndicator: View {
   }
 
   private var helpText: String {
+    if let pausedAt {
+      return "Paused \(AgentOutputAgeFormatter.string(from: pausedAt, relativeTo: Date())). "
+        + "The conversation stays open in its pane. Provider prompt caches expire after minutes to about an hour, "
+        + "so the first turn after a longer pause re-reads the conversation at full input cost."
+    }
     switch status {
     case .working:
       return hasUnreadCompletion
@@ -3864,6 +3935,7 @@ struct AgentStatusCluster: View {
   let issue: String?
   var attention: AgentAttention? = nil
   var lastOutputAt: Date? = nil
+  var pausedAt: Date? = nil
 
   var body: some View {
     HStack(spacing: 8) {
@@ -3872,7 +3944,8 @@ struct AgentStatusCluster: View {
         hasUnreadCompletion: hasUnreadCompletion,
         isOpening: isOpening,
         issue: issue,
-        attention: attention)
+        attention: attention,
+        pausedAt: pausedAt)
       if let lastOutputAt {
         AgentOutputAgeLabel(outputAt: lastOutputAt)
       }

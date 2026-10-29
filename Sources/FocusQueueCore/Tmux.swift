@@ -292,6 +292,22 @@ public actor TmuxController {
     return true
   }
 
+  /// Presses Escape in a verified provider pane. Escape stops a running turn
+  /// in the Claude, Codex, and Kimi TUIs and leaves them open; Ctrl-C would
+  /// quit an idle Claude or Codex session instead.
+  public func interrupt(_ reference: TmuxSessionReference) async throws {
+    _ = try await verify(reference)
+    try await checked(reference.executable, ["send-keys", "-t", reference.paneID, "Escape"])
+  }
+
+  /// The visible text of a verified pane.
+  public func screen(_ reference: TmuxSessionReference) async throws -> String {
+    _ = try await verify(reference)
+    let result = try await run(reference.executable, ["capture-pane", "-p", "-t", reference.paneID])
+    guard result.succeeded else { throw TmuxError.unavailable(String(result.standardError.prefix(800))) }
+    return result.standardOutput
+  }
+
   public static func startArguments(name: String, directory: String, command: [String]) throws -> [String] {
     try validateName(name)
     guard directory.hasPrefix("/"), !command.isEmpty else { throw TmuxError.unavailable("An absolute directory and a command are required.") }

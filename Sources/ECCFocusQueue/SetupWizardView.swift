@@ -152,6 +152,7 @@ struct SetupWizardView: View {
   private func choose(directory: Bool, selection: (URL) -> Void) {
     let panel = NSOpenPanel()
     panel.canChooseDirectories = directory
+    panel.canCreateDirectories = directory
     panel.canChooseFiles = !directory
     panel.allowsMultipleSelection = false
     if !directory { panel.allowedContentTypes = [.json] }

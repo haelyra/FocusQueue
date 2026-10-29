@@ -68,6 +68,14 @@ import UserNotifications
   private var isResolvingDailyReportApproval = false
   private var availabilityResumedAt = Date()
 
+  override init() { super.init() }
+
+  init(panel: FocusPanel, model: QueueViewModel) {
+    super.init()
+    self.panel = panel
+    self.model = model
+  }
+
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.regular)
     programLog.record("Focus Queue launched.", category: "Lifecycle")
@@ -98,6 +106,7 @@ import UserNotifications
     model.placementHandler = { [weak self] placement in
       self?.positionPanelOnCurrentDisplay(placement, animated: true)
     }
+    model.windowPinHandler = { [weak self] in self?.persistDraggedPlacement() }
     model.monitorSwitchHandler = { [weak self] in self?.switchPanelMonitor() }
     model.panelModeHandler = { [weak self] mode in self?.setPanelMode(mode) }
     model.minimizeHandler = { [weak self] in self?.panel?.miniaturize(nil) }
@@ -185,6 +194,11 @@ import UserNotifications
           restoredFrame.size.width = compactPanelWidth
           isApplyingPanelFrame = true
           panel?.setFrame(restoredFrame, display: false)
+          isApplyingPanelFrame = false
+        }
+        if model.isWindowPinned {
+          isApplyingPanelFrame = true
+          panel?.setFrame(Self.rect(from: snapshot), display: false)
           isApplyingPanelFrame = false
         }
         let savedScreen = restoredScreen(for: snapshot)
@@ -334,11 +348,13 @@ import UserNotifications
       containing: pointer,
       screenFrames: frames
     ).map { screens[$0] }
-    positionPanel(
-      currentPlacement,
-      on: pointerScreen ?? defaultScreen(),
-      animated: false
-    )
+    if !model.isWindowPinned {
+      positionPanel(
+        currentPlacement,
+        on: pointerScreen ?? defaultScreen(),
+        animated: false
+      )
+    }
     NSApp.unhide(nil)
     panel.deminiaturize(nil)
     panel.orderFrontRegardless()
@@ -518,7 +534,8 @@ import UserNotifications
       NSSound.beep()
       return
     }
-    positionPanel(currentPlacement, on: screens[nextIndex], animated: true)
+    positionPanel(currentPlacement, on: screens[nextIndex], animated: true,
+      preservePinnedPosition: false)
     panel.orderFrontRegardless()
     model.setPanelVisible(true)
   }
@@ -1166,7 +1183,8 @@ import UserNotifications
     _ placement: QueueWindowPlacement,
     on targetScreen: NSScreen,
     animated: Bool,
-    persist: Bool = true
+    persist: Bool = true,
+    preservePinnedPosition: Bool = true
   ) {
     guard let panel else { return }
     if model.isPanelCollapsed {
@@ -1203,7 +1221,7 @@ import UserNotifications
       width: clampedMinimumWidth,
       height: 500
     )
-    let frame = DisplayGeometry.panelFrame(
+    var frame = DisplayGeometry.panelFrame(
       preferredWidth: panel.frame.width,
       visibleFrame: targetScreen.visibleFrame,
       placement: placement,
@@ -1212,6 +1230,11 @@ import UserNotifications
       maximumWidth: inspectorLayout.maximumWidth
     )
 
+    if model.isWindowPinned, preservePinnedPosition {
+      frame = PinnedWindowGeometry.frame(current: panel.frame,
+        size: NSSize(width: frame.width, height: panel.frame.height),
+        visibleFrame: targetScreen.visibleFrame)
+    }
     currentPlacement = placement
     isApplyingPanelFrame = true
     panel.setFrame(frame, display: true, animate: animated)
@@ -1227,10 +1250,11 @@ import UserNotifications
     _ placement: QueueWindowPlacement,
     animated: Bool
   ) {
-    positionPanel(placement, on: currentPanelScreen(), animated: animated)
+    positionPanel(placement, on: currentPanelScreen(), animated: animated,
+      preservePinnedPosition: false)
   }
 
-  private func setPanelMode(_ mode: QueuePanelMode) {
+  func setPanelMode(_ mode: QueuePanelMode) {
     guard let panel else { return }
     let previousMode = appliedPanelMode
     isApplyingPanelFrame = true
@@ -1273,7 +1297,9 @@ import UserNotifications
     }
     appliedPanelMode = mode
     isApplyingPanelFrame = false
-    if mode == .expanded { positionPanelOnCurrentDisplay(currentPlacement, animated: true) }
+    if mode == .expanded {
+      positionPanel(currentPlacement, on: currentPanelScreen(), animated: true)
+    }
     scheduleFocusChromeRefresh()
   }
 
@@ -1296,7 +1322,7 @@ import UserNotifications
     panel.minSize = NSSize(width: clampedMinimumWidth, height: 500)
     let preferredWidth = layout.preferredWidth(compactWidth: compactPanelWidth)
     panel.maxSize = NSSize(width: layout.maximumWidth, height: 10_000)
-    let frame = DisplayGeometry.panelFrame(
+    var frame = DisplayGeometry.panelFrame(
       preferredWidth: preferredWidth,
       visibleFrame: screen.visibleFrame,
       placement: currentPlacement,
@@ -1304,6 +1330,11 @@ import UserNotifications
       minimumWidth: minimumWidth,
       maximumWidth: layout.maximumWidth
     )
+    if model.isWindowPinned {
+      frame = PinnedWindowGeometry.frame(current: panel.frame,
+        size: NSSize(width: frame.width, height: panel.frame.height),
+        visibleFrame: screen.visibleFrame)
+    }
     isApplyingPanelFrame = true
     panel.setFrame(frame, display: true, animate: true)
     isApplyingPanelFrame = false

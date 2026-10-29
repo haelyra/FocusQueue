@@ -34,6 +34,21 @@ struct PanelChromeTests {
     #expect(probe.frame.maxY == hostingView.bounds.maxY)
   }
 
+  @Test("Pinned geometry preserves its anchor and keeps disconnected-display windows reachable")
+  func pinnedGeometry() {
+    let visible = CGRect(x: -1440, y: 25, width: 1440, height: 875)
+    let current = CGRect(x: -1000, y: 200, width: 440, height: 500)
+    #expect(PinnedWindowGeometry.frame(current: current, size: current.size,
+      visibleFrame: visible) == current)
+    let wider = PinnedWindowGeometry.frame(current: current,
+      size: CGSize(width: 800, height: 500), visibleFrame: visible)
+    #expect(wider.origin == current.origin)
+    let recovered = PinnedWindowGeometry.frame(
+      current: CGRect(x: 2000, y: 2000, width: 440, height: 500),
+      size: current.size, visibleFrame: visible)
+    #expect(visible.contains(recovered))
+  }
+
   @Test("Opaque mode uses fully opaque panel surfaces")
   func opaquePanelSurfaces() throws {
     let dark = try #require(NSColor(QueuePalette.panel(for: .dark, opaqueBackgrounds: true))

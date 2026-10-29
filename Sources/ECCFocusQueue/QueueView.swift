@@ -754,6 +754,7 @@ struct QueueView: View {
           .lineLimit(1).minimumScaleFactor(0.8)
         Spacer()
         monitorButton
+        pinWindowButton
         Button {
           if model.dailyReport == nil {
             Task { await model.reloadDailyReport() }
@@ -780,7 +781,7 @@ struct QueueView: View {
             .system(size: 13, weight: .semibold))
         }.buttonStyle(.plain).minimumHitTarget(width: 30, height: 34).accessibilityLabel(
           "Minimize Focus Queue using the saved option"
-        ).help("Minimize queue; right-click to choose how")
+        ).help(model.minimizationHelp)
           .contextMenu {
             Button("Fully minimize", systemImage: "minus") {
               model.minimize(using: .dock)
@@ -982,6 +983,21 @@ struct QueueView: View {
       handled = model.moveTicketToToday(ticketID) || handled
     }
     return handled
+  }
+
+  private var pinWindowButton: some View {
+    Button {
+      model.toggleWindowPin()
+    } label: {
+      Image(systemName: model.isWindowPinned ? "pin.fill" : "pin")
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(model.isWindowPinned ? Color.accentColor : Color.secondary)
+    }.buttonStyle(.plain).minimumHitTarget(width: 30, height: 34)
+      .accessibilityLabel("Pin to window")
+      .accessibilityValue(model.isWindowPinned ? "On" : "Off")
+      .help(model.isWindowPinned
+        ? "Unpin window to use screen placement"
+        : "Pin to window: keep the queue at its current position")
   }
 
   private var monitorButton: some View {

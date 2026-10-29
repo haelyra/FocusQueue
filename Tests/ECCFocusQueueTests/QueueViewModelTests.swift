@@ -924,6 +924,39 @@ struct QueueViewModelTests {
     #expect(saved.tickets.first { $0.id == ticket.id }?.title == "Canonical rename")
   }
 
+  @Test("Pinned window keeps its frame through real panel minimize and restore transitions")
+  func pinnedPanelWorkflow() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(!model.isWindowPinned)
+    model.toggleWindowPin()
+    try await eventually {
+      try await JSONLocalStateStore(url: fixture.paths.stateFile).load().isWindowPinned
+    }
+    let restarted = await fixture.model(agent: ControlledQueueAgent())
+    #expect(restarted.isWindowPinned)
+
+    let visible = try #require(NSScreen.screens.first).visibleFrame
+    let original = NSRect(x: (visible.midX - 220).rounded(), y: (visible.midY - 250).rounded(),
+      width: 440, height: 500)
+    let panel = FocusPanel(contentRect: original,
+      styleMask: [.titled, .resizable, .fullSizeContentView],
+      backing: .buffered, defer: false)
+    panel.setFrame(original, display: false)
+    let delegate = AppDelegate(panel: panel, model: model)
+    model.panelModeHandler = { delegate.setPanelMode($0) }
+    for preference in [QueueMinimizationPreference.fq, .topTask] {
+      model.minimize(using: preference)
+      #expect(model.panelMode != .expanded)
+      model.toggleMinimization()
+      #expect(panel.frame == original)
+      #expect(model.isWindowPinned)
+    }
+    model.toggleWindowPin()
+    #expect(!model.isWindowPinned)
+  }
+
   @Test("Minimization hotkey toggles each preferred view back to the full queue")
   func minimizationHotkeyWorkflow() async throws {
     let fixture = try await Fixture()
@@ -971,11 +1004,13 @@ struct QueueViewModelTests {
     let model = await fixture.model(agent: ControlledQueueAgent())
     #expect(model.isHotkeyEnabled(.toggleMinimization))
     #expect(model.hotkeyShortcut(for: .toggleMinimization)?.displayString == "⌘,")
+    #expect(model.minimizationHelp.contains("Toggle minimization: ⌘,"))
     let custom = HotkeyShortcut(keyCode: 40, modifiers: NSEvent.ModifierFlags.command.rawValue, keyLabel: "K")
     var configurationChanges = 0
     model.hotkeyConfigurationHandler = { configurationChanges += 1 }
     model.setHotkeyShortcut(custom, for: .toggleMinimization)
     model.setToggleMinimizationHotkeyEnabled(false)
+    #expect(model.minimizationHelp.contains("⌘K (disabled in Settings)"))
     let restarted = await fixture.model(agent: ControlledQueueAgent())
     #expect(!restarted.isHotkeyEnabled(.toggleMinimization))
     #expect(restarted.hotkeyShortcut(for: .toggleMinimization) == custom)

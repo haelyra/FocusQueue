@@ -251,27 +251,29 @@ public actor AgentActivityObserver {
         guard let sessionID = agent.sessionID,
               UUID(uuidString: sessionID) != nil || agent.provider.isValidSessionID(sessionID) else { return nil }
         let key = agent.provider.rawValue + ":" + sessionID.lowercased()
-        let root = switch agent.provider {
-        case .codex: codexRoot.appendingPathComponent("sessions")
-        case .claude: claudeRoot.appendingPathComponent("projects")
-        case .kimi: kimiRoot.appendingPathComponent("sessions")
+        let roots = switch agent.provider {
+        case .codex: ["sessions", "archived_sessions"].map { codexRoot.appendingPathComponent($0) }
+        case .claude: [claudeRoot.appendingPathComponent("projects")]
+        case .kimi: [kimiRoot.appendingPathComponent("sessions")]
         }
         if let location = locations[key], !FileManager.default.fileExists(atPath: location.path) {
             locations[key] = nil
             searchedAt[key] = nil
-            scans[root.path] = nil
+            for root in roots { scans[root.path] = nil }
         }
         if locations[key] == nil, Date().timeIntervalSince(searchedAt[key] ?? .distantPast) >= 60 {
             searchedAt[key] = Date()
             let suffix = (sessionID + ".jsonl").lowercased()
             // A Kimi session is a `session_<id>` directory; its main agent writes `agents/main/wire.jsonl`.
             let kimiDirectories = Set([sessionID, "session_" + sessionID].map { $0.lowercased() })
-            locations[key] = sessionFiles(root: root).first {
-                agent.provider == .kimi
-                    ? $0.path.hasSuffix("/agents/main/wire.jsonl")
-                        && kimiDirectories.contains($0.deletingLastPathComponent().deletingLastPathComponent()
-                            .deletingLastPathComponent().lastPathComponent.lowercased())
-                    : $0.lastPathComponent.lowercased().hasSuffix(suffix)
+            for root in roots where locations[key] == nil {
+                locations[key] = sessionFiles(root: root).first {
+                    agent.provider == .kimi
+                        ? $0.path.hasSuffix("/agents/main/wire.jsonl")
+                            && kimiDirectories.contains($0.deletingLastPathComponent().deletingLastPathComponent()
+                                .deletingLastPathComponent().lastPathComponent.lowercased())
+                        : $0.lastPathComponent.lowercased().hasSuffix(suffix)
+                }
             }
         }
         return locations[key]

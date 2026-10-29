@@ -35,13 +35,15 @@ private actor RoutingTestAgent: QueueAgentChatting {
 @MainActor
 private final class RoutingTestCreator {
     var liveWorkspace: String? = "/live/agent"
+    var isAvailable = true
     var scans = 0
-    func resolve(_ known: DocumentAuthor?) -> DocumentChatCreator {
+    func resolve(_ known: DocumentAuthor?) -> DocumentChatCreator? {
+        guard isAvailable else { return nil }
         if known == nil { scans += 1 }
         let author = known ?? DocumentAuthor(subtaskID: "agent-1", provider: .claude, sessionID: "source-session",
             title: "Draft the report", touchedAt: Date())
         return DocumentChatCreator(author: author, forkSessionID: author.sessionID, liveWorkspace: liveWorkspace,
-            model: "opus", effort: "high")
+            savedWorkspace: "/saved/agent", model: "opus", effort: "high")
     }
 }
 
@@ -289,6 +291,25 @@ struct DocumentPaneTests {
         }
         #expect(restored.messages.isEmpty)
         #expect(restored.route.kind == .ephemeralReader && restored.creator?.isOpen == false)
+
+        await restored.reconnectToCreator()
+        #expect(restored.route.kind == .creatorFork && restored.route.workspace == "/saved/agent")
+        restored.draft = "Reconnect to the author"
+        restored.send()
+        try await waitForReply(restored)
+        let archivedFork = try #require(await agents[.claude]!.requests.last)
+        #expect(archivedFork.configuration.forkSourceSessionID == "source-session")
+        #expect(archivedFork.workspace == "/saved/agent")
+
+        restored.clear()
+        for _ in 0..<200 where restored.isClearing {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        creator.isAvailable = false
+        await restored.reconnectToCreator()
+        #expect(restored.route.kind == .ephemeralReader)
+        #expect(restored.error == "Could not reconnect to the creating agent. Focus Queue could not find its saved conversation.")
+
         restored.setRecipient(.newAgent)
         restored.setNewAgentProvider(.kimi)
         restored.setNewAgentModel("kimi-code/k3")

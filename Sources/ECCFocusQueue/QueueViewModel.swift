@@ -2216,8 +2216,10 @@ final class QueueViewModel {
       }).value else { return nil }
       author = found
     }
-    let agent = context.subtasks.first { $0.id == author.subtaskID }
-    let running = agent?.agentRemovedAt == nil
+    guard let agent = context.subtasks.first(where: { $0.id == author.subtaskID }),
+          agent.sessionID?.caseInsensitiveCompare(author.sessionID) == .orderedSame,
+          await agentActivityObserver.transcriptURL(for: agent) != nil else { return nil }
+    let running = agent.agentRemovedAt == nil
       ? try? await locateExistingAgent(author.provider, author.sessionID) : nil
     // Kimi records may keep the bare UUID of a `session_<uuid>` session; a
     // Codex sub-agent thread forks through its lineage root, as it resumes.
@@ -2226,9 +2228,14 @@ final class QueueViewModel {
     case .codex: CodexSessionLineage.root(of: author.sessionID)
     default: author.sessionID
     }
-    return DocumentChatCreator(author: author, forkSessionID: forkSessionID, liveWorkspace: running?.cwd,
-      model: Self.normalizedChatOption(agent?.launchConfiguration?.model),
-      effort: Self.normalizedChatOption(agent?.launchConfiguration?.effort))
+    let savedWorkspace = [agent.workspace?.path, context.worktreePath, context.repositoryPath,
+      context.projectRepositoryPath, config.workspacePath]
+      .compactMap { $0 }
+      .first { FileManager.default.fileExists(atPath: $0) }
+    return DocumentChatCreator(author: author, forkSessionID: forkSessionID,
+      liveWorkspace: running?.cwd, savedWorkspace: savedWorkspace,
+      model: Self.normalizedChatOption(agent.launchConfiguration?.model),
+      effort: Self.normalizedChatOption(agent.launchConfiguration?.effort))
   }
 
   func chatMessages(ticketID: String?) -> [QueueChatMessage] {

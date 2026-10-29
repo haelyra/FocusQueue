@@ -443,13 +443,24 @@ struct DocumentConversationView: View {
                 get: { model.route.kind }, set: { model.setRecipient($0) })) {
                 Text("Ephemeral reader").tag(DocumentChatRoute.Kind.ephemeralReader)
                 Text("Creating agent fork").tag(DocumentChatRoute.Kind.creatorFork)
-                    .disabled(model.creator?.isOpen != true && model.route.kind != .creatorFork)
+                    .disabled(model.creator == nil && model.route.kind != .creatorFork)
                 Text("New agent").tag(DocumentChatRoute.Kind.newAgent)
             }
             .font(.caption)
             .disabled(!model.canChooseProvider || model.isResponding)
             .help("Choose who answers. Clear Chat to change a started conversation's recipient.")
             recipient
+            if model.lockedRoute == nil, model.route.kind != .creatorFork {
+                Button {
+                    Task { await model.reconnectToCreator() }
+                } label: {
+                    Label("Reconnect to creating agent", systemImage: "arrow.triangle.branch")
+                }
+                .font(.caption)
+                .buttonStyle(.borderless)
+                .disabled(model.isResolvingCreator || model.isResponding || model.isClearing)
+                .help("Find the agent that created this document and use a fork of its saved conversation, even when archived")
+            }
             if model.route.kind != .creatorFork {
                 HStack(spacing: 8) {
                     QueueChatAgentMenus(
@@ -541,7 +552,7 @@ struct DocumentConversationView: View {
             if creator.isOpen {
                 return "You chose a new agent. “\(creator.author.title)” also has a creating-agent fork available."
             }
-            return "“\(creator.author.title)” wrote this document but is not running, so a new agent answers."
+            return "“\(creator.author.title)” wrote this document but is not running. Reconnect to use a fork of its saved conversation."
         }
         return "No agent in this task wrote this document, so a new agent answers."
     }

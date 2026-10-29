@@ -201,16 +201,17 @@ struct DocumentChatRoute: Codable, Equatable, Sendable {
     var workspace: String?
 }
 
-/// The task agent that wrote a document and, while its provider process
-/// runs, the directory that process works in.
+/// The task agent that wrote a document and the workspace where a fork can run.
 struct DocumentChatCreator: Equatable, Sendable {
     let author: DocumentAuthor
     /// The provider's identity for the conversation to fork.
     let forkSessionID: String
     let liveWorkspace: String?
+    let savedWorkspace: String?
     let model: String?
     let effort: String?
     var isOpen: Bool { liveWorkspace != nil }
+    var workspace: String? { liveWorkspace ?? savedWorkspace }
 }
 
 /// Provider chat agents and creator lookup, supplied by QueueViewModel.
@@ -329,10 +330,11 @@ final class DocumentConversation {
             route.model = newAgentModel; route.effort = newAgentEffort
             return route
         }
-        if recipientChoice == .creatorFork, let creator, let liveWorkspace = creator.liveWorkspace {
+        if recipientChoice == .creatorFork, let creator {
             return DocumentChatRoute(kind: .creatorFork, provider: creator.author.provider,
                 model: creator.model, effort: creator.effort, sourceSubtaskID: creator.author.subtaskID,
-                sourceSessionID: creator.forkSessionID, sourceTitle: creator.author.title, workspace: liveWorkspace)
+                sourceSessionID: creator.forkSessionID, sourceTitle: creator.author.title,
+                workspace: creator.workspace ?? workspace)
         }
         return DocumentChatRoute(kind: recipientChoice == .ephemeralReader ? .ephemeralReader : .newAgent,
             provider: newAgentProvider, model: newAgentModel, effort: newAgentEffort)
@@ -352,8 +354,25 @@ final class DocumentConversation {
 
     func setRecipient(_ kind: DocumentChatRoute.Kind) {
         guard canChooseProvider, !isResponding,
-              kind != .creatorFork || creator?.isOpen == true else { return }
+              kind != .creatorFork || creator != nil else { return }
         recipientChoice = kind
+    }
+
+    /// Rechecks the saved provider conversation before routing document chat to
+    /// a fork. Archived agents remain valid while their record and transcript exist.
+    func reconnectToCreator() async {
+        guard canChooseProvider, !isResponding, !isResolvingCreator else { return }
+        isResolvingCreator = true
+        error = nil
+        defer { isResolvingCreator = false }
+        guard let resolved = await services.resolveCreator(creator?.author) else {
+            creator = nil
+            recipientChoice = .ephemeralReader
+            error = "Could not reconnect to the creating agent. Focus Queue could not find its saved conversation."
+            return
+        }
+        creator = resolved
+        recipientChoice = .creatorFork
     }
 
     /// Use the author's full model without importing its conversation or permissions.
@@ -470,7 +489,12 @@ final class DocumentConversation {
                 messages.append(QueueChatMessage(role: .agent, text: reply.message))
             } catch is CancellationError {
                 // Stopped by the user; the request stays in the transcript.
-            } catch { messages.append(QueueChatMessage(role: .agent, text: error.localizedDescription)) }
+            } catch {
+                let detail = route.kind == .creatorFork
+                    ? "Could not reconnect to \(route.sourceTitle ?? "the creating agent"): \(error.localizedDescription)"
+                    : error.localizedDescription
+                messages.append(QueueChatMessage(role: .agent, text: detail))
+            }
             do { try await store.save(messages) }
             catch { self.error = "Conversation remains in memory; saving failed: \(error.localizedDescription)" }
         }

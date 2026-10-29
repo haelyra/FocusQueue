@@ -192,6 +192,25 @@ struct SubtaskFocusTests {
         #expect(event?.kind == .result)
     }
 
+    @Test("Archived Codex conversations remain discoverable for reconnect")
+    func archivedCodexTranscript() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("archived-codex-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let archive = root.appendingPathComponent("codex/archived_sessions/2026/10/29")
+        try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
+        let sessionID = UUID().uuidString
+        let transcript = archive.appendingPathComponent("rollout-archived-\(sessionID).jsonl")
+        try Data("{}\n".utf8).write(to: transcript)
+        let observer = AgentActivityObserver(codexRoot: root.appendingPathComponent("codex"),
+            claudeRoot: root.appendingPathComponent("claude"))
+        let agent = TaskSubtask(id: "archived", title: "Archived creator",
+            provider: .codex, sessionID: sessionID)
+
+        let found = await observer.transcriptURL(for: agent)
+        #expect(found?.lastPathComponent == transcript.lastPathComponent)
+        #expect(found.map { FileManager.default.fileExists(atPath: $0.path) } == true)
+    }
+
     @Test("Transcript polling reads only appended bytes and safely resets after truncation")
     func activityIncrementalReads() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("activity-incremental-\(UUID().uuidString)")

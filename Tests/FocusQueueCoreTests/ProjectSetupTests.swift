@@ -12,6 +12,7 @@ struct ProjectSetupTests {
 
   private func draft() -> ProjectSetupDraft {
     var draft = ProjectSetupDraft()
+    draft.folderMode = .new
     draft.name = "Example project"
     draft.taskPrefix = "EXP"
     draft.purpose = "Organize research and build a prototype."
@@ -74,6 +75,74 @@ struct ProjectSetupTests {
     #expect(try store.links(projectID: project.id).first?.url == request.remote)
     #expect(try store.documents(projectID: project.id).map(\.kind).contains(.prd))
     #expect(try await ProjectSetupService().prepare(&request, supportDirectory: root, projects: []) == project)
+  }
+
+  @Test("Create new folder uses the chosen parent and retains that folder on a later retry")
+  func chosenNewFolder() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    var request = draft()
+    request.folderPath = root.path
+    request.newFolderName = "New working folder"
+    let support = root.appendingPathComponent("support")
+    let expected = root.appendingPathComponent("New working folder")
+    #expect(!FileManager.default.fileExists(atPath: expected.path))
+    let project = try await ProjectSetupService().prepare(&request, supportDirectory: support, projects: [])
+    #expect(project.workspacePath == expected.path)
+    #expect(request.folderMode == .existing)
+    #expect(request.folderPath == expected.path)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: expected.path).isEmpty)
+    #expect(try await ProjectSetupService().prepare(&request, supportDirectory: support, projects: []) == project)
+  }
+
+  @Test("A taken folder or file name cannot be used for a newly created working folder", arguments: [true, false])
+  func folderCollision(isDirectory: Bool) async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let target = root.appendingPathComponent("Taken")
+    if isDirectory { try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false) }
+    else { try Data("Keep existing file".utf8).write(to: target) }
+    var request = draft()
+    request.folderPath = root.path
+    request.newFolderName = "Taken"
+    do {
+      _ = try await ProjectSetupService().prepare(&request, supportDirectory: root.appendingPathComponent("support"), projects: [])
+      Issue.record("Expected folder name collision")
+    } catch { #expect(error.localizedDescription.contains("already exists")) }
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["Taken"])
+    if !isDirectory { #expect(try String(contentsOf: target, encoding: .utf8) == "Keep existing file") }
+  }
+
+  @Test("New folder names cannot escape their chosen parent", arguments: ["", ".", "..", "../outside", "bad/name", "bad:name", " name ", "line\nbreak"])
+  func invalidFolderNames(name: String) throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    var request = draft()
+    request.folderPath = root.path
+    request.newFolderName = name
+    #expect(throws: (any Error).self) {
+      try ProjectSetupService().validateWorkingFolder(request, supportDirectory: root.appendingPathComponent("support"))
+    }
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+  }
+
+  @Test("Task prefix starts empty and only 2 to 5 ASCII letters can pass setup validation")
+  func explicitLetterPrefix() throws {
+    var blank = ProjectSetupDraft()
+    blank.name = "A named project"
+    #expect(blank.taskPrefix.isEmpty)
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    var request = draft()
+    for invalid in ["", "P", "A B", "AB ", " PQR", "P2", "AB-CD", "ABCDEF", "éé"] {
+      request.taskPrefix = invalid
+      #expect(throws: (any Error).self) { try ProjectSetupService().validate(request, supportDirectory: root, projects: []) }
+    }
+    for valid in ["AB", "APP", "abcde"] {
+      request.taskPrefix = valid
+      try ProjectSetupService().validate(request, supportDirectory: root, projects: [])
+    }
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
   }
 
   @Test("Existing documents are copied, an imported PRD wins, and source plan is retained separately")
@@ -265,6 +334,12 @@ private actor SetupGitHubRunner: ProcessRunning {
     if specification.executable == "/usr/bin/git" { return try await FoundationProcessRunner().run(specification) }
     if specification.arguments.starts(with: ["auth", "status"]), authenticationFails {
       return .init(exitCode: 1, standardOutput: "", standardError: "Not signed in", timedOut: false)
+    }
+    if specification.arguments.starts(with: ["auth", "status"]) {
+      return .init(exitCode: 0, standardOutput: "{\"login\":\"example\",\"state\":\"success\"}", standardError: "", timedOut: false)
+    }
+    if specification.arguments.first == "api" {
+      return .init(exitCode: 1, standardOutput: "HTTP/2.0 404 Not Found\r\n\r\n", standardError: "Not Found (HTTP 404)", timedOut: false)
     }
     if specification.arguments.starts(with: ["repo", "create"]) {
       if creationTimesOut { return .init(exitCode: 15, standardOutput: "", standardError: "", timedOut: true) }

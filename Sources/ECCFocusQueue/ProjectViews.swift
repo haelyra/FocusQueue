@@ -127,6 +127,7 @@ private struct ProjectEditor: View {
                 Button("Choose…") {
                     let panel = NSOpenPanel()
                     panel.canChooseDirectories = true; panel.canChooseFiles = false
+                    panel.canCreateDirectories = true
                     panel.allowsMultipleSelection = false
                     if panel.runModal() == .OK, let url = panel.url {
                         project.workspacePath = url.path
@@ -143,6 +144,7 @@ private struct ProjectEditor: View {
                 Button("Choose…") {
                     let panel = NSOpenPanel()
                     panel.canChooseDirectories = true; panel.canChooseFiles = false
+                    panel.canCreateDirectories = true
                     panel.allowsMultipleSelection = false
                     if panel.runModal() == .OK, let url = panel.url { project.repositoryPath = url.path }
                 }

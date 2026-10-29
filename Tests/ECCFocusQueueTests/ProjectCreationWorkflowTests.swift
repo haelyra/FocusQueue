@@ -23,6 +23,7 @@ struct ProjectCreationWorkflowTests {
 
   private func request() -> ProjectSetupDraft {
     var draft = ProjectSetupDraft()
+    draft.folderMode = .new
     draft.name = "Wizard workflow"
     draft.taskPrefix = "WIZ"
     draft.purpose = "Help a team organize its prototype and requirements."
@@ -111,6 +112,36 @@ struct ProjectCreationWorkflowTests {
     #expect(model.openTickets.first?.id == "WIZ-001")
   }
 
+  @Test("Create new working folder outside managed storage, save the project, create a task and reload")
+  func createChosenWorkingFolderWorkflow() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("new working folder \(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let parent = root.appendingPathComponent("Parent's projects")
+    try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+    let support = root.appendingPathComponent("support")
+    let model = await model(at: support)
+    var request = ProjectSetupDraft()
+    request.name = "Folder creation workflow"
+    request.folderMode = .new
+    request.folderPath = parent.path
+    request.newFolderName = "New project folder"
+    request.purpose = "Exercise the explicit folder creation option through app persistence."
+    #expect(request.taskPrefix.isEmpty)
+    #expect(await model.createProject(&request) == false)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: parent.path).isEmpty)
+    request.taskPrefix = "FOL"
+    #expect(await model.createProject(&request))
+    let project = try #require(model.config.projects.first { $0.id == request.id })
+    #expect(project.workspacePath == parent.appendingPathComponent("New project folder").path)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: project.workspacePath).isEmpty)
+    #expect(await model.selectProject(id: project.id))
+    #expect(await model.createTask(title: "Folder task", summary: "Verify the chosen working folder", projectID: project.id))
+    #expect(model.openTickets.contains { $0.id == "FOL-001" })
+    let restarted = await self.model(at: support)
+    #expect(restarted.config.projects.contains(project))
+    #expect(restarted.openTickets.contains { $0.id == "FOL-001" })
+  }
+
   @Test("Invalid setup creates no files and changes no project configuration")
   func rejectedSetup() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("wizard invalid \(UUID().uuidString)")
@@ -134,7 +165,8 @@ struct ProjectCreationWorkflowTests {
     var draft = request()
     draft.remote = "https://github.com/example/manual"
     for step in ProjectCreationStep.allCases {
-      let host = NSHostingView(rootView: ProjectCreationWizard(model: model, draft: draft, step: step))
+      let host = NSHostingView(rootView: ProjectCreationWizard(model: model, draft: draft, step: step,
+        service: ProjectSetupService(githubExecutable: nil)))
       host.frame = NSRect(x: 0, y: 0, width: 620, height: 590)
       host.layoutSubtreeIfNeeded()
       #expect(host.fittingSize.width == 620)

@@ -25,12 +25,27 @@ struct ProjectCreationWizard: View {
   @State private var isDiscovering = false
   @State private var isSubmitting = false
   @State private var error: String?
+  @State private var githubAccount: String?
+  @State private var githubCheck: ProjectGitHubRepositoryCheck?
+  @State private var githubError: String?
+  @State private var checkingGitHub = false
+  @State private var checkedGitHubInput: GitHubCheckInput?
+  @State private var checkRequest = 0
   @Environment(\.dismiss) private var dismiss
-  private let service = ProjectSetupService()
+  private let service: ProjectSetupService
+
+  private struct GitHubCheckInput: Equatable {
+    let directory: String
+    let repository: String
+    let create: Bool
+    let refresh: Int
+  }
 
   init(model: QueueViewModel, draft: ProjectSetupDraft = ProjectSetupDraft(),
-       step: ProjectCreationStep = .folder, discovery: ProjectFolderDiscovery? = nil) {
+       step: ProjectCreationStep = .folder, discovery: ProjectFolderDiscovery? = nil,
+       service: ProjectSetupService = ProjectSetupService()) {
     self.model = model
+    self.service = service
     _draft = State(initialValue: draft)
     _step = State(initialValue: step)
     _discovery = State(initialValue: discovery)
@@ -80,36 +95,38 @@ struct ProjectCreationWizard: View {
     }
     .textFieldStyle(.roundedBorder).padding(22).frame(width: 620, height: 590)
     .interactiveDismissDisabled(busy)
+    .task(id: githubCheckInput) { await checkGitHub() }
   }
 
   private var folderQuestions: some View {
     VStack(alignment: .leading, spacing: 12) {
       Text("What is your project called?").font(.headline)
       TextField("Project name", text: $draft.name)
-        .onChange(of: draft.name) { old, new in
-          if draft.taskPrefix.isEmpty || draft.taskPrefix == ProjectCatalog.suggestedPrefix(name: old, id: draft.id) {
-            draft.taskPrefix = ProjectCatalog.suggestedPrefix(name: new, id: draft.id)
-          }
-        }
-      TextField("Task prefix, e.g. APP", text: $draft.taskPrefix)
-      Text("Tasks will use \(draft.taskPrefix.uppercased())-001, \(draft.taskPrefix.uppercased())-002, and so on.")
+      Text("Task prefix").font(.headline)
+      TextField("Choose 2 to 5 letters, e.g. APP", text: $draft.taskPrefix)
+      Text("The letters before each task number. For example, APP creates APP-001 and APP-002. Use letters only, without spaces or numbers.")
         .font(.caption).foregroundStyle(.secondary)
-      Text("Do you already have a project folder?").font(.headline).padding(.top, 8)
-      Picker("Project folder", selection: $draft.folderMode) {
-        Text("Start a new project").tag(ProjectSetupDraft.FolderMode.new)
-        Text("Connect an existing folder").tag(ProjectSetupDraft.FolderMode.existing)
-      }.pickerStyle(.radioGroup)
-      if draft.folderMode == .existing {
-        HStack {
-          TextField("Existing project folder", text: $draft.folderPath)
-          Button("Choose…") { chooseFolder() }
-        }
-        Text("We will look for Git remotes, a PRD, and other documentation in this folder.")
-          .font(.caption).foregroundStyle(.secondary)
-      } else {
-        Text("Focus Queue will create a workspace for your project. To use a folder elsewhere, choose Connect an existing folder.")
-          .font(.callout).foregroundStyle(.secondary)
+      if !draft.taskPrefix.isEmpty && !draft.hasValidTaskPrefix {
+        Text("Enter 2 to 5 letters. Spaces, numbers, and punctuation are not accepted.").font(.caption).foregroundStyle(.orange)
       }
+      Text("Working folder").font(.headline).padding(.top, 8)
+      Toggle("Create new folder", isOn: Binding(get: { draft.folderMode == .new }, set: {
+        draft.folderMode = $0 ? .new : .existing
+      }))
+      HStack {
+        TextField(draft.folderMode == .new ? "Parent folder for the new project" : "Existing project folder", text: $draft.folderPath)
+        Button("Choose…") { chooseFolder() }
+      }
+      if draft.folderMode == .new {
+        TextField("New folder name", text: $draft.newFolderName)
+        if !draft.folderPath.isEmpty && !draft.newFolderName.isEmpty {
+          Text("Create: \(draft.workingFolder(supportDirectory: model.projectContextStore.root).path)")
+            .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+        }
+      }
+      Text(draft.folderMode == .new ? "The folder is created when you submit the final review."
+        : "We will look for Git remotes, a PRD, and other documentation in this folder.")
+        .font(.caption).foregroundStyle(.secondary)
     }
   }
 
@@ -140,7 +157,23 @@ struct ProjectCreationWizard: View {
         Text("No repository URL detected. Add one below, create a repository, or continue without one.")
           .foregroundStyle(.secondary)
       }
-      TextField("Git repository URL (optional)", text: $draft.remote).disabled(draft.createRepository)
+      Toggle("Create new GitHub repository (private)", isOn: $draft.createRepository)
+        .disabled(!(discovery?.remotes.isEmpty ?? true))
+        .onChange(of: draft.createRepository) { _, enabled in
+          if enabled && draft.repositoryName.isEmpty {
+            draft.repositoryName = draft.remote.isEmpty
+              ? draft.name.lowercased().split { !$0.isLetter && !$0.isNumber }.joined(separator: "-") : draft.remote
+          }
+          if enabled { draft.remote = "" }
+        }
+      if !(discovery?.remotes.isEmpty ?? true) {
+        Text("This folder already has a Git remote. Choose a separate folder to create a new repository.")
+          .font(.caption).foregroundStyle(.secondary)
+      }
+      TextField(draft.createRepository ? "Repository name, owner/name, or GitHub URL" : "Git repository URL (optional)",
+        text: Binding(get: { draft.createRepository ? draft.repositoryName : draft.remote }, set: {
+          if draft.createRepository { draft.repositoryName = $0 } else { draft.remote = $0 }
+        }))
       if !draft.createRepository, !draft.remote.isEmpty, ProjectCatalog.normalizedRemote(draft.remote) == nil {
         Text("Enter a repository URL such as https://github.com/owner/repo or git@github.com:owner/repo.git.")
           .font(.caption).foregroundStyle(.orange)
@@ -148,21 +181,15 @@ struct ProjectCreationWizard: View {
       if !draft.createRepository && !draft.remote.isEmpty {
         Button("Continue without a repository URL") { draft.remote = "" }.buttonStyle(.link)
       }
-      Toggle("Create a new private GitHub repository", isOn: $draft.createRepository)
-        .disabled(!(discovery?.remotes.isEmpty ?? true))
-        .onChange(of: draft.createRepository) { _, enabled in
-          if enabled {
-            draft.remote = ""
-            if draft.repositoryName.isEmpty {
-              draft.repositoryName = draft.name.lowercased().split { !$0.isLetter && !$0.isNumber }.joined(separator: "-")
-            }
-          }
-        }
       if draft.createRepository {
-        TextField("Repository name or owner/name", text: $draft.repositoryName)
+        if ProjectSetupService.githubRepositoryName(draft.repositoryName) == nil {
+          Text("Use a repository name, owner/name, or a GitHub repository URL. Spaces are not accepted.")
+            .font(.caption).foregroundStyle(.orange)
+        }
         Text("Uses your GitHub CLI account. The repository will be private. Your files will stay local until you choose to commit and push them.")
           .font(.caption).foregroundStyle(.secondary)
       }
+      githubStatus
     }
   }
 
@@ -206,7 +233,7 @@ struct ProjectCreationWizard: View {
     VStack(alignment: .leading, spacing: 12) {
       Text("Ready to create \(draft.name)?").font(.headline)
       LabeledContent("Task IDs", value: "\(draft.taskPrefix.uppercased())-###")
-      LabeledContent("Folder", value: draft.folderMode == .existing ? draft.folderPath : "New workspace managed by Focus Queue")
+      LabeledContent("Folder", value: draft.workingFolder(supportDirectory: model.projectContextStore.root).path)
       LabeledContent("Repository", value: draft.createRepository ? "Create \(draft.repositoryName) (private)" : (draft.remote.isEmpty ? "None" : draft.remote))
       Divider()
       Text(draft.purpose).textSelection(.enabled)
@@ -221,10 +248,11 @@ struct ProjectCreationWizard: View {
     switch step {
     case .folder:
       !draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        && draft.taskPrefix.range(of: "^[A-Za-z][A-Za-z0-9]{1,4}$", options: .regularExpression) != nil
-        && (draft.folderMode == .new || draft.folderPath.hasPrefix("/"))
+        && draft.hasValidTaskPrefix && draft.folderPath.hasPrefix("/")
+        && (draft.folderMode == .existing || !draft.newFolderName.isEmpty)
     case .repository:
-      draft.createRepository ? !draft.repositoryName.isEmpty : (draft.remote.isEmpty || ProjectCatalog.normalizedRemote(draft.remote) != nil)
+      draft.createRepository ? (githubCheck?.isAvailable == true && checkedGitHubInput == githubCheckInput)
+        : (draft.remote.isEmpty || ProjectCatalog.normalizedRemote(draft.remote) != nil)
     case .purpose: !draft.purpose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     case .documentation, .review: true
     }
@@ -233,6 +261,8 @@ struct ProjectCreationWizard: View {
   private func advance() {
     error = nil
     if step == .folder {
+      do { try service.validateWorkingFolder(draft, supportDirectory: model.projectContextStore.root) }
+      catch { self.error = error.localizedDescription; return }
       if model.config.projects.contains(where: {
         $0.name.caseInsensitiveCompare(draft.name.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
           || $0.taskPrefix == draft.taskPrefix.uppercased()
@@ -294,9 +324,89 @@ struct ProjectCreationWizard: View {
     panel.canChooseFiles = false
     panel.canCreateDirectories = true
     panel.allowsMultipleSelection = false
+    panel.title = draft.folderMode == .new ? "Choose a parent folder" : "Choose a working folder"
     if panel.runModal() == .OK, let url = panel.url {
       draft.folderPath = url.path
       if draft.name.isEmpty { draft.name = url.lastPathComponent }
+    }
+  }
+
+  private var githubCheckInput: GitHubCheckInput? {
+    guard step == .repository else { return nil }
+    return .init(directory: draft.folderPath.isEmpty ? model.projectContextStore.root.path : draft.folderPath,
+      repository: draft.createRepository ? draft.repositoryName : draft.remote,
+      create: draft.createRepository, refresh: checkRequest)
+  }
+
+  private var githubStatus: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      if checkingGitHub { ProgressView("Checking GitHub account and repository…").controlSize(.small) }
+      if let githubAccount {
+        Label("Signed in to GitHub as \(githubAccount)", systemImage: "person.crop.circle.badge.checkmark")
+          .font(.callout).foregroundStyle(.green)
+      }
+      if let githubError { Text(githubError).font(.callout).foregroundStyle(.orange) }
+      if checkedGitHubInput == githubCheckInput, let githubCheck {
+        if draft.createRepository && !githubCheck.isAvailable {
+          Text("\(githubCheck.fullName) already exists. Choose another name or use the existing repository.")
+            .font(.callout).foregroundStyle(.orange)
+          Button("Use existing repository") {
+            draft.remote = githubCheck.url
+            draft.createRepository = false
+          }
+        } else {
+          Text(githubCheck.isAvailable
+            ? (draft.createRepository ? "No repository found: \(githubCheck.fullName). GitHub confirms availability during creation."
+              : "Repository not found or not accessible to this account. Check the URL and permissions.")
+            : "Repository found: \(githubCheck.fullName)")
+            .font(.caption).foregroundStyle(githubCheck.isAvailable && !draft.createRepository ? .orange : .secondary)
+        }
+      }
+      HStack {
+        Button("Check again") { checkRequest += 1 }
+        if githubAccount == nil {
+          Button("Copy sign-in command") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(ProjectSetupService.githubSignInCommand(
+              at: githubCheckInput?.directory ?? draft.folderPath), forType: .string)
+          }
+        }
+      }.controlSize(.small)
+      if githubAccount == nil && !checkingGitHub {
+        Text("Run the copied command in your terminal to sign in from the selected folder, then Check again.")
+          .font(.caption).foregroundStyle(.secondary)
+      }
+    }
+  }
+
+  private func checkGitHub() async {
+    guard let input = githubCheckInput else { return }
+    githubAccount = nil
+    githubCheck = nil
+    githubError = nil
+    checkedGitHubInput = nil
+    checkingGitHub = true
+    defer { if githubCheckInput == input { checkingGitHub = false } }
+    do {
+      try await Task.sleep(for: .milliseconds(350))
+      let account = try await service.githubAccount(at: input.directory)
+      guard !Task.isCancelled, githubCheckInput == input else { return }
+      githubAccount = account
+      let isGitHubURL = ProjectCatalog.normalizedRemote(input.repository)?.hasPrefix("github.com/") == true
+      if !input.repository.isEmpty, (input.create || isGitHubURL),
+        ProjectSetupService.githubRepositoryName(input.repository) != nil {
+        let result = try await service.checkGitHubRepository(input.repository, account: account, at: input.directory)
+        guard !Task.isCancelled, githubCheckInput == input else { return }
+        githubCheck = result
+      }
+      checkedGitHubInput = input
+    } catch is CancellationError {
+      // The next input owns the status after an edit or Back.
+    } catch {
+      guard !Task.isCancelled, githubCheckInput == input else { return }
+      if error as? ProjectGitHubError == .signInRequired { githubAccount = nil }
+      githubError = error.localizedDescription
+      checkedGitHubInput = input
     }
   }
 

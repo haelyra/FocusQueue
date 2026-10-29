@@ -18,7 +18,7 @@ private actor DocumentTestAgent: QueueAgentChatting {
 }
 
 private actor RoutingTestAgent: QueueAgentChatting {
-    struct Request: Sendable { let message: String; let workspace: String; let configuration: VerifierConfiguration; let model: String? }
+    struct Request: Sendable { let message: String; let workspace: String; let configuration: VerifierConfiguration; let model: String?; let effort: String? }
     let provider: AgentProvider
     var requests: [Request] = []
     var resets = 0
@@ -26,7 +26,7 @@ private actor RoutingTestAgent: QueueAgentChatting {
     func send(message: String, dashboardPath: String, workspace: String, visibleOrder: [String],
               deferredTicketIDs: [String], configuration: VerifierConfiguration,
               model: String?, effort: String?) async throws -> QueueAgentReply {
-        requests.append(Request(message: message, workspace: workspace, configuration: configuration, model: model))
+        requests.append(Request(message: message, workspace: workspace, configuration: configuration, model: model, effort: effort))
         return QueueAgentReply(message: "\(provider.rawValue) reply", log: "")
     }
     func reset(configuration: VerifierConfiguration) async throws { resets += 1 }
@@ -212,6 +212,7 @@ struct DocumentPaneTests {
         let first = DocumentConversation(document: a, context: context, support: root, agent: agent, configuration: config, dashboardPath: "/dashboard", workspace: root.path)
         let second = DocumentConversation(document: b, context: context, support: root, agent: agent, configuration: config, dashboardPath: "/dashboard", workspace: root.path)
         await first.load(); await second.load()
+        first.setRecipient(.newAgent); second.setRecipient(.newAgent)
         first.draft = "Review first"; first.send()
         second.draft = "Review second"; second.send()
         let pane = DocumentPaneState(); pane.open(a); pane.open(b); pane.dismiss()
@@ -259,6 +260,8 @@ struct DocumentPaneTests {
 
         let chat = conversation()
         await chat.load()
+        #expect(chat.route.kind == .ephemeralReader && chat.route.model == "gpt-6-luna")
+        chat.setRecipient(.creatorFork)
         #expect(chat.route.kind == .creatorFork)
         #expect(chat.route.provider == .claude && chat.route.sourceTitle == "Draft the report")
         chat.draft = "What does section two claim?"
@@ -281,11 +284,12 @@ struct DocumentPaneTests {
         #expect(creator.scans == 2)
 
         restored.clear()
-        for _ in 0..<200 where restored.lockedRoute != nil || restored.creator == nil || restored.isResolvingCreator {
+        for _ in 0..<200 where restored.isClearing {
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(restored.messages.isEmpty)
-        #expect(restored.route.kind == .newAgent && restored.creator?.isOpen == false)
+        #expect(restored.route.kind == .ephemeralReader && restored.creator?.isOpen == false)
+        restored.setRecipient(.newAgent)
         restored.setNewAgentProvider(.kimi)
         restored.setNewAgentModel("kimi-code/k3")
         restored.draft = "Summarize it"
@@ -298,6 +302,64 @@ struct DocumentPaneTests {
         #expect(restored.lockedRoute?.kind == .newAgent && !restored.canChooseProvider)
         restored.setNewAgentProvider(.codex)
         #expect(restored.route.provider == .kimi)
+    }
+
+    @Test("Reader defaults to a small model, includes task sources, and preserves the creator-model option")
+    func ephemeralReaderRouting() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("document-reader-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = try await TaskContextStore(root: root).ensureContext(
+            ticket: .init(id: "ECC-906", title: "Reader task", status: "open", summary: "Explain the report"))
+        let document = root.appendingPathComponent("report.md")
+        try Data("Document sentinel: the answer is violet.".utf8).write(to: document)
+        try Data("Coding instruction sentinel".utf8).write(to: root.appendingPathComponent("AGENTS.md"))
+        let agents = Dictionary(uniqueKeysWithValues: AgentProvider.allCases.map { ($0, RoutingTestAgent(provider: $0)) })
+        let creator = RoutingTestCreator()
+        let services = DocumentChatServices(agent: { agents[$0]! }, executable: { "/mock/\($0.rawValue)" },
+            resolveCreator: { creator.resolve($0) }, modelChoices: { _ in [] })
+        func conversation() -> DocumentConversation {
+            DocumentConversation(document: document, subject: .init(kind: .task(context)), support: root,
+                services: services, configuration: SetupEnvironment.starter(supportDirectory: root).verifier,
+                dashboardPath: "/dashboard", workspace: root.path, provider: .codex)
+        }
+        func reply(_ chat: DocumentConversation, _ text: String) async throws {
+            chat.draft = text; chat.send()
+            for _ in 0..<200 where chat.isResponding { try await Task.sleep(for: .milliseconds(10)) }
+            #expect(!chat.isResponding)
+        }
+        let chat = conversation()
+        await chat.load()
+        #expect(chat.creator?.isOpen == true)
+        #expect(chat.route.kind == .ephemeralReader)
+        #expect(chat.route.model == "gpt-6-luna" && chat.route.effort == "low")
+        try await reply(chat, "What is the answer?")
+        let request = try #require(await agents[.codex]!.requests.first)
+        #expect(request.configuration.documentReader == true && request.configuration.forkSourceSessionID == nil)
+        #expect(request.model == "gpt-6-luna" && request.effort == "low" && request.workspace == root.path)
+        #expect(request.message.hasPrefix(DocumentConversation.readerPreamble))
+        #expect(request.message.contains("Document sentinel") && request.message.contains("Explain the report"))
+        #expect(request.message.contains(context.planPath) && request.message.contains("Reader task"))
+        #expect(!request.message.contains("Coding instruction sentinel"))
+        #expect(await agents[.claude]!.requests.isEmpty)
+        chat.setRecipient(.creatorFork)
+        #expect(chat.route.kind == .ephemeralReader)
+        try await reply(chat, "Can you explain that?")
+        #expect(await agents[.codex]!.requests.last?.message.contains("codex reply") == true)
+        let restored = conversation()
+        await restored.load()
+        #expect(restored.route.kind == .ephemeralReader && restored.route.model == "gpt-6-luna")
+        #expect(restored.messages.count == 4 && !restored.canChooseProvider)
+
+        restored.clear()
+        for _ in 0..<200 where restored.isClearing { try await Task.sleep(for: .milliseconds(10)) }
+        // The full creator model is also available with a fresh, restricted reader.
+        restored.useCreatorModel()
+        #expect(restored.route.kind == .ephemeralReader)
+        #expect(restored.route.provider == .claude && restored.route.model == "opus")
+        try await reply(restored, "Explain with the creator's model")
+        let fullModel = try #require(await agents[.claude]!.requests.first)
+        #expect(fullModel.model == "opus" && fullModel.effort == "high" && fullModel.configuration.documentReader == true)
+        #expect(fullModel.configuration.forkSourceSessionID == nil && fullModel.workspace == root.path)
     }
 }
 

@@ -3355,6 +3355,26 @@ struct QueueViewModelTests {
     #expect(FileManager.default.fileExists(atPath: context.planPath))
   }
 
+  @Test("New document readers use lightweight defaults instead of the full task-chat model")
+  func documentReaderDefaults() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    var configuration = try JSONDecoder().decode(
+      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    configuration.defaultAgentProvider = .claude
+    configuration.chatModels = [.claude: "opus"]
+    configuration.chatEfforts = [.claude: "high"]
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let context = try #require(model.taskContexts["ECC-101"])
+    let chat = try #require(model.documentConversation(for: URL(fileURLWithPath: context.planPath), ticketID: context.ticketID))
+    #expect(chat.route.kind == .ephemeralReader)
+    #expect(chat.route.provider == .claude && chat.route.model == "haiku" && chat.route.effort == "low")
+    chat.setNewAgentProvider(.codex)
+    #expect(chat.route.model == "gpt-6-luna" && chat.route.effort == "low")
+    #expect(model.config.chatModel(for: .claude) == "opus")
+  }
+
   @Test("The default provider follows the configured fallback order")
   func defaultProviderFollowsFallbackOrder() async throws {
     let fixture = try await Fixture()

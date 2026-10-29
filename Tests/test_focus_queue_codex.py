@@ -436,6 +436,22 @@ class FocusQueueCodexTests(unittest.TestCase):
         self.assertIn(str(root), [command[i + 1] for i, v in enumerate(command) if v == "--add-dir"])
         self.assertIn("resume", command)
 
+    def test_reader_is_read_only_and_never_forks_or_saves_a_thread(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prompt = root / "prompt.txt"
+            prompt.write_text("Explain the report.")
+            arguments = argparse.Namespace(runtime=root / "runtime", session="reader", workspace=root,
+                prompt_file=prompt, timeout=10, reader=True, fork_from="must-not-fork")
+            with mock.patch.object(MODULE, "run_codex", return_value=("Answer", "thread")) as run, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(MODULE.chat(arguments), 0)
+            self.assertEqual(run.call_args.kwargs["sandbox"], "read-only")
+            self.assertIsNone(run.call_args.kwargs["thread_id"])
+            self.assertFalse(run.call_args.kwargs["persist_session"])
+            self.assertTrue(run.call_args.kwargs["lean"])
+            self.assertFalse((root / "runtime" / "sessions.json").exists())
+
     def test_fresh_chat_runs_lean_without_saving_a_thread(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

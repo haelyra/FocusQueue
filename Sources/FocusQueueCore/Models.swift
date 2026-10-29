@@ -87,6 +87,8 @@ public struct VerifierConfiguration: Codable, Equatable, Sendable {
   /// A document chat that continues an agent's conversation forks this
   /// provider session on its first turn. Set at runtime; never configured.
   public var forkSourceSessionID: String?
+  /// Runtime-only document Q&A with a fresh session and read/search tools.
+  public var documentReader: Bool?
 
   public init(
     enabled: Bool,

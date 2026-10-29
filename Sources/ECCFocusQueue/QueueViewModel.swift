@@ -2190,9 +2190,7 @@ final class QueueViewModel {
       modelChoices: { [weak self] provider in self?.agentModelChoices(for: provider) ?? [] })
     let conversation = DocumentConversation(document: document, subject: subject, support: paths.supportDirectory,
       services: services, configuration: config.verifier, dashboardPath: dashboardPath,
-      workspace: config.workspacePath, provider: provider,
-      model: Self.normalizedChatOption(config.chatModel(for: provider)),
-      effort: Self.normalizedChatOption(config.chatEffort(for: provider)))
+      workspace: config.workspacePath, provider: provider)
     documentConversations[key] = conversation
     return conversation
   }

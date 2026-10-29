@@ -491,6 +491,28 @@ class FocusQueueClaudeTests(unittest.TestCase):
         self.assertIn(str(root), [command[i + 1] for i, v in enumerate(command) if v == "--add-dir"])
         self.assertEqual(captured["kwargs"]["cwd"], str(root / "runtime" / "lean-chat"))
 
+    def test_reader_has_only_read_and_search_tools(self):
+        captured = {}
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            MODULE, "resolve_claude", return_value="/usr/bin/claude"
+        ), mock.patch.object(MODULE.subprocess, "Popen", fake_process(captured, envelope("answer"))):
+            root = Path(temporary)
+            prompt = root / "prompt.txt"
+            prompt.write_text("Explain this document.")
+            arguments = argparse.Namespace(runtime=root / "runtime", session="reader", workspace=root,
+                prompt_file=prompt, timeout=10, reader=True, fork_from="must-not-fork")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(MODULE.chat(arguments), 0)
+            command = captured["command"]
+            tools = set(command[command.index("--tools") + 1].split(","))
+            self.assertEqual(tools, {"Read", "Grep", "Glob", "WebSearch", "WebFetch"})
+            self.assertIn("--no-session-persistence", command)
+            self.assertIn("--strict-mcp-config", command)
+            self.assertEqual(json.loads(command[command.index("--settings") + 1]), {"disableAllHooks": True})
+            self.assertNotIn("--fork-session", command)
+            self.assertNotIn("--resume", command)
+            self.assertFalse((root / "runtime" / "sessions.json").exists())
+
     def test_fresh_chat_neither_resumes_nor_saves_a_session(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

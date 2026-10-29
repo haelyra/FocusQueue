@@ -54,6 +54,7 @@ struct TaskProjectMenu: View {
 struct ProjectSettingsView: View {
     let model: QueueViewModel
     @State private var editor: ProjectDefinition?
+    @State private var showsCreation = false
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(model.config.projects) { project in
@@ -80,11 +81,11 @@ struct ProjectSettingsView: View {
             }
             if model.config.projects.isEmpty { Text("Add a project to organize tasks by repository.").foregroundStyle(.secondary) }
             Button("Add project", systemImage: "folder.badge.plus") {
-                editor = ProjectDefinition(id: UUID().uuidString.lowercased(), name: "",
-                    dashboardPath: "", workspacePath: "", taskPrefix: "PRJ", repositoryPath: "")
+                showsCreation = true
             }
             if let error = model.projectError { Text(error).font(.caption).foregroundStyle(.orange) }
         }.sheet(item: $editor) { ProjectEditor(model: model, project: $0) }
+            .sheet(isPresented: $showsCreation) { ProjectCreationWizard(model: model) }
     }
 }
 
@@ -219,6 +220,7 @@ struct ProjectSettingsSection: View {
     let model: QueueViewModel
     @State private var projectID = ""
     @State private var editor: ProjectDefinition?
+    @State private var showsCreation = false
 
     private var project: ProjectDefinition? { model.config.projects.first { $0.id == projectID } }
 
@@ -234,8 +236,7 @@ struct ProjectSettingsSection: View {
                 .accessibilityLabel("Project: \(project?.name ?? "none")")
                 Spacer()
                 Button("Add project", systemImage: "folder.badge.plus") {
-                    editor = ProjectDefinition(id: UUID().uuidString.lowercased(), name: "",
-                        dashboardPath: "", workspacePath: "", taskPrefix: "PRJ", repositoryPath: "")
+                    showsCreation = true
                 }.controlSize(.small)
             }
             if let project {
@@ -261,6 +262,7 @@ struct ProjectSettingsSection: View {
             if let error = model.projectError { Text(error).font(.caption).foregroundStyle(.orange) }
         }
         .sheet(item: $editor) { ProjectEditor(model: model, project: $0) }
+        .sheet(isPresented: $showsCreation) { ProjectCreationWizard(model: model) }
         .onAppear {
             guard project == nil else { return }
             let preferred = model.showsAllProjects ? nil : model.selectedProject?.id

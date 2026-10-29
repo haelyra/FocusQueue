@@ -618,30 +618,49 @@ final class QueueViewModel {
     isSavingProject = true
     defer { isSavingProject = false }
     do {
-      if project.id == ProjectCatalog.otherID, project.archivedAt != nil {
-        throw TaskContextError.commandFailed("Other is the fallback project and cannot be archived.")
-      }
-      var next = config
-      let isNew = next.projects.contains(where: { $0.id == project.id }) == false
-      if let index = next.projects.firstIndex(where: { $0.id == project.id }) { next.projects[index] = project }
-      else { next.projects.append(project) }
-      _ = try next.validated()
-      if isNew {
-        var prepared = next
-        guard prepared.selectProject(id: project.id) else {
-          throw TaskContextError.commandFailed("The new project could not be selected.")
-        }
-        try SetupEnvironment.prepareWorkspace(configuration: prepared)
-      }
-      configurationSaveTask?.cancel()
-      await configurationSaveTask?.value
-      try await configurationRepository.save(next)
-      config = next
-      lastContextRefresh = nil
-      await refresh()
+      try await persistProject(project)
       projectError = nil
       return true
     } catch { projectError = error.localizedDescription; return false }
+  }
+
+  /// The draft retains a newly created remote even if subsequent local persistence fails.
+  func createProject(_ draft: inout ProjectSetupDraft,
+                     service: ProjectSetupService = ProjectSetupService()) async -> Bool {
+    guard !isSavingProject else { return false }
+    isSavingProject = true
+    defer { isSavingProject = false }
+    do {
+      let project = try await service.prepare(&draft, supportDirectory: paths.supportDirectory,
+        projects: config.projects)
+      try await persistProject(project)
+      projectError = nil
+      return true
+    } catch { projectError = error.localizedDescription; return false }
+  }
+
+  private func persistProject(_ project: ProjectDefinition) async throws {
+    if project.id == ProjectCatalog.otherID, project.archivedAt != nil {
+      throw TaskContextError.commandFailed("Other is the fallback project and cannot be archived.")
+    }
+    var next = config
+    let isNew = next.projects.contains(where: { $0.id == project.id }) == false
+    if let index = next.projects.firstIndex(where: { $0.id == project.id }) { next.projects[index] = project }
+    else { next.projects.append(project) }
+    _ = try next.validated()
+    if isNew {
+      var prepared = next
+      guard prepared.selectProject(id: project.id) else {
+        throw TaskContextError.commandFailed("The new project could not be selected.")
+      }
+      try SetupEnvironment.prepareWorkspace(configuration: prepared)
+    }
+    configurationSaveTask?.cancel()
+    await configurationSaveTask?.value
+    try await configurationRepository.save(next)
+    config = next
+    lastContextRefresh = nil
+    await refresh()
   }
   @discardableResult
   func assignProject(_ projectID: String?, to ticketID: String) async -> Bool {

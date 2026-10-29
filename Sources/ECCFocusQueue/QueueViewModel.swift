@@ -224,7 +224,6 @@ final class QueueViewModel {
   private(set) var launchingTaskIDs: Set<String> = []
   /// Set when a managed agent's registration stayed incomplete past its
   /// post-launch window; QueueView presents it as a hard alert.
-  var registrationValidationAlert: String?
   private var reportedRegistrationIssueIDs: Set<String> = []
   private(set) var openingSubtaskIDs: Set<String> = []
   private(set) var pauseChangingSubtaskIDs: Set<String> = []
@@ -3814,33 +3813,40 @@ final class QueueViewModel {
   /// Marks the task complete in its canonical dashboard, closing any open
   /// completion-tracked assignments first.
   func requestCompletion(for ticket: DashboardTicket) {
-    guard ticket.isOpen else { return }
+    Task { await completeTicket(ticket) }
+  }
+
+  /// Returns false when the task stays open, so the card can undo its
+  /// completion animation and show the failure message.
+  @discardableResult
+  func completeTicket(_ ticket: DashboardTicket) async -> Bool {
+    guard ticket.isOpen else { return false }
     actionMessages[ticket.id] = "Marking complete…"
     let ticketDashboardPath = dashboardPath(for: ticket)
-    Task {
-      do {
-        try await validateCanonicalCompletion(
-          ticketID: ticket.id, dashboardPath: ticketDashboardPath)
-        if let context = taskContexts[ticket.id] {
-          let openAssignments = context.focusSubtasks.filter {
-            $0.tracksCompletion && $0.status != .completed
-          }
-          for subtask in openAssignments {
-            taskContexts[ticket.id] = try await taskContextStore.overrideCompletion(
-              ticketID: ticket.id, subtaskID: subtask.id)
-          }
+    do {
+      try await validateCanonicalCompletion(
+        ticketID: ticket.id, dashboardPath: ticketDashboardPath)
+      if let context = taskContexts[ticket.id] {
+        let openAssignments = context.focusSubtasks.filter {
+          $0.tracksCompletion && $0.status != .completed
         }
-        let resolved = try await resolveCanonicalTicket(
-          ticketID: ticket.id,
-          dashboardPath: ticketDashboardPath,
-          reason: "Marked complete by the user.",
-          evidence: [],
-          completedBy: "user")
-        if let resolved { await finalizeCompletedTask(resolved) }
-        actionMessages[ticket.id] = "Task marked complete."
-      } catch {
-        actionMessages[ticket.id] = "Could not mark complete: \(error.localizedDescription)"
+        for subtask in openAssignments {
+          taskContexts[ticket.id] = try await taskContextStore.overrideCompletion(
+            ticketID: ticket.id, subtaskID: subtask.id)
+        }
       }
+      let resolved = try await resolveCanonicalTicket(
+        ticketID: ticket.id,
+        dashboardPath: ticketDashboardPath,
+        reason: "Marked complete by the user.",
+        evidence: [],
+        completedBy: "user")
+      if let resolved { await finalizeCompletedTask(resolved) }
+      actionMessages[ticket.id] = "Task marked complete."
+      return true
+    } catch {
+      actionMessages[ticket.id] = "Could not mark complete: \(error.localizedDescription)"
+      return false
     }
   }
 
@@ -3995,16 +4001,13 @@ final class QueueViewModel {
   private func reportRegistrationIssue(_ issue: AgentRegistrationIssue) {
     let identity = issue.registrationID + "|" + issue.missingFields.joined(separator: ",")
     guard reportedRegistrationIssueIDs.insert(identity).inserted else { return }
+    // No modal: the dedupe set resets on every relaunch, so an alert re-raised
+    // every stale taskless record after each install. The card error and the
+    // program log carry the issue instead.
     programLog.record(
-      "Agent registration incomplete: \(issue.summary).",
+      "Agent registration incomplete: \(issue.summary). "
+        + "Re-register the agent from its pane with focus-queue-session attach <TASK-ID>.",
       level: .error, category: "Agent registration")
-    let text = "Agent registration is incomplete: \(issue.summary). "
-      + "Re-register the agent from its pane with focus-queue-session attach <TASK-ID>."
-    if let existing = registrationValidationAlert, !existing.isEmpty {
-      registrationValidationAlert = existing + "\n\n" + text
-    } else {
-      registrationValidationAlert = text
-    }
   }
 
   func importProvisionalAgentIntakes(_ receipts: [AgentIntakeReceipt]) async throws {

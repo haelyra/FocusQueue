@@ -2489,6 +2489,22 @@ struct QueueViewModelTests {
     #expect(model.subtasks(for: "ECC-101").first?.completionOverrideAt != nil)
   }
 
+  @Test("Awaited completion reports whether the task left the queue so the card can restore itself")
+  func awaitedCompletionReportsOutcome() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+
+    #expect(await model.completeTicket(fixture.tickets[0]))
+    #expect(!model.openTickets.contains { $0.id == "ECC-101" })
+
+    let completed = try #require(model.dashboard.tickets.first { $0.id == "ECC-101" })
+    #expect(!(await model.completeTicket(completed)))
+    let missing = DashboardTicket(id: "ECC-404", title: "Missing", status: "open", summary: "Gone")
+    #expect(!(await model.completeTicket(missing)))
+    #expect(model.actionMessages["ECC-404"]?.hasPrefix("Could not mark complete") == true)
+  }
+
   @Test("Restart keeps a completed task with unfinished subtasks in Completed with its records")
   func completedTaskWithOpenSubtasksStaysCompleted() async throws {
     let fixture = try await Fixture()

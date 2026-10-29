@@ -270,14 +270,6 @@ struct QueueView: View {
 
       if !isFilteringTasks, !remainingTickets.isEmpty || !model.visibleRoutines.isEmpty { moreButton }
     }
-    .alert("Agent registration incomplete", isPresented: Binding(
-      get: { model.registrationValidationAlert != nil },
-      set: { if !$0 { model.registrationValidationAlert = nil } }
-    )) {
-      Button("OK", role: .cancel) { model.registrationValidationAlert = nil }
-    } message: {
-      Text(model.registrationValidationAlert ?? "")
-    }
   }
 
   private var todayFocusSection: some View {
@@ -1015,6 +1007,10 @@ private enum QueueScreen {
 
 enum QueueSettingsTarget: Hashable {
   case connectors
+}
+
+private enum CardCompletionPhase {
+  case idle, checked, minimized
 }
 
 private enum QueueTab: Hashable {
@@ -2802,14 +2798,17 @@ private struct TicketCard: View {
   @State private var deletingSubtask: TaskSubtask?
   @State private var isCollapsedToTitle = false
   @State private var showsTaskDetails = false
+  @State private var completionPhase = CardCompletionPhase.idle
   @AppStorage("newAgentProvider") private var storedNewAgentProvider: AgentProvider?
   @Environment(\.queueAccentStyle) private var accentStyle
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   private var newAgentProvider: AgentProvider {
     model.preferredNewAgentProvider(stored: storedNewAgentProvider)
   }
 
-  private var isChecked: Bool { !ticket.isOpen }
+  private var isChecked: Bool { !ticket.isOpen || completionPhase != .idle }
+  private var isMinimized: Bool { completionPhase == .minimized }
   private var recurringProgress: RecurringPullRequestProgress? {
     model.recurringPRProgress(for: ticket.id)
   }
@@ -2929,6 +2928,14 @@ private struct TicketCard: View {
       .accessibilityAction(named: "Move up") { moveOnePosition(up: true) }
       .accessibilityAction(named: "Move down") { moveOnePosition(up: false) }
       .accessibilityHint("Drag to reorder. Drop on the upper half of a task to place it before, or the lower half to place it after.")
+      // Pinning the measured height first lets the collapse animate from a
+      // concrete value; the negative padding absorbs the list's 10 pt spacing.
+      .fixedSize(horizontal: false, vertical: completionPhase != .idle)
+      .scaleEffect(isMinimized && !reduceMotion ? 0.3 : 1, anchor: .top)
+      .opacity(isMinimized ? 0 : 1)
+      .frame(height: completionPhase == .idle ? nil : isMinimized ? 0 : cardHeight, alignment: .top)
+      .padding(.bottom, isMinimized ? -10 : 0)
+      .allowsHitTesting(!isMinimized)
   }
 
   /// The ••• menu and the card's right-click menu share these actions.
@@ -2942,10 +2949,8 @@ private struct TicketCard: View {
       Task { await model.setTicketPinned(ticket, pinned: !model.isTicketPinned(ticket.id)) }
     }
     Divider()
-    Button("Mark as complete", systemImage: "checkmark.circle") {
-      model.requestCompletion(for: ticket)
-    }
-    .disabled(!ticket.isOpen)
+    Button("Mark as complete", systemImage: "checkmark.circle") { completeWithAnimation() }
+    .disabled(isChecked)
     Button("Archive without completion", systemImage: "archivebox") {
       Task { _ = await model.archiveWithoutCompletion(ticket) }
     }
@@ -2959,6 +2964,19 @@ private struct TicketCard: View {
     Button("Move to bottom") { model.moveTicket(ticket.id, to: .bottom) }
   }
 
+  /// Holds the green check briefly, then shrinks the card out of the Focus
+  /// list while the task resolves. A failed completion restores the card.
+  private func completeWithAnimation() {
+    guard ticket.isOpen, completionPhase == .idle else { return }
+    withAnimation(.spring(duration: 0.3, bounce: 0.4)) { completionPhase = .checked }
+    Task { @MainActor in
+      try? await Task.sleep(for: .milliseconds(650))
+      withAnimation(.easeIn(duration: reduceMotion ? 0.2 : 0.4)) { completionPhase = .minimized }
+      if await model.completeTicket(ticket) { return }
+      withAnimation(.easeOut(duration: 0.25)) { completionPhase = .idle }
+    }
+  }
+
   private func moveOnePosition(up: Bool) {
     let ids = model.openTickets.map(\.id)
     guard let index = ids.firstIndex(of: ticket.id) else { return }
@@ -2970,12 +2988,12 @@ private struct TicketCard: View {
   private var summary: some View {
     HStack(alignment: .top, spacing: 11) {
       VStack(spacing: 1) {
-        Button {
-          if !isChecked { model.requestCompletion(for: ticket) }
-        } label: {
+        Button(action: completeWithAnimation) {
           Image(systemName: isChecked ? "checkmark.circle.fill" : "circle").font(
             .system(size: 20, weight: .medium)
           ).foregroundStyle(checkColor)
+            .contentTransition(.symbolEffect(.replace))
+            .scaleEffect(completionPhase == .checked ? 1.15 : 1)
         }.buttonStyle(.plain).disabled(isChecked).minimumHitTarget()
           .accessibilityLabel(isChecked ? "\(ticket.id) is complete" : "Mark \(ticket.id) complete")
           .help("Mark this task complete")
@@ -2996,10 +3014,8 @@ private struct TicketCard: View {
         .help(isCollapsedToTitle ? "Expand task" : "Collapse task to title only")
       }
       .contextMenu {
-        Button("Mark as complete", systemImage: "checkmark.circle") {
-          model.requestCompletion(for: ticket)
-        }
-        .disabled(!ticket.isOpen)
+        Button("Mark as complete", systemImage: "checkmark.circle") { completeWithAnimation() }
+        .disabled(isChecked)
         Button("Archive without completion", systemImage: "archivebox") {
           Task { _ = await model.archiveWithoutCompletion(ticket) }
         }

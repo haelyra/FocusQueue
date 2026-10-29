@@ -6,6 +6,16 @@ import Testing
 @Suite("Hotkey recording")
 @MainActor
 struct HotkeyShortcutTests {
+  @Test("Minimization defaults to the Command comma Carbon shortcut")
+  func minimizationDefault() throws {
+    let shortcut = try #require(HotkeyAction.toggleMinimization.defaultShortcut)
+    #expect(shortcut.keyCode == UInt16(kVK_ANSI_Comma))
+    #expect(shortcut.carbonModifiers == UInt32(cmdKey))
+    #expect(shortcut.displayString == "⌘,")
+    #expect(HotkeyAction.newTask.defaultShortcut == nil)
+    #expect(HotkeyAction.qchat.defaultShortcut == nil)
+  }
+
   @Test("A combo with Command, Option, or Control records with its layout label")
   func recordsCombo() {
     let result = HotkeyShortcut.record(keyCode: UInt16(kVK_ANSI_N), flags: [.control, .option], characters: "n")

@@ -844,6 +844,68 @@ struct QueueViewModelTests {
     #expect(saved.tickets.first { $0.id == ticket.id }?.title == "Canonical rename")
   }
 
+  @Test("Minimization hotkey toggles each preferred view back to the full queue")
+  func minimizationHotkeyWorkflow() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    var dockMinimizations = 0
+    var appliedModes: [QueuePanelMode] = []
+    model.minimizeHandler = { dockMinimizations += 1 }
+    model.panelModeHandler = { appliedModes.append($0) }
+
+    for preference in [QueueMinimizationPreference.fq, .topTask, .dock] {
+      model.setPanelMode(.expanded)
+      model.minimize(using: preference)
+      model.toggleMinimization(isMiniaturized: preference == .dock)
+      #expect(model.panelMode == .expanded)
+      let previousDockMinimizations = dockMinimizations
+      model.toggleMinimization()
+      switch preference {
+      case .fq: #expect(model.panelMode == .collapsed)
+      case .topTask: #expect(model.panelMode == .topTask)
+      case .dock: #expect(dockMinimizations == previousDockMinimizations + 1)
+      }
+      model.toggleMinimization(isMiniaturized: preference == .dock)
+      #expect(model.panelMode == .expanded)
+      #expect(model.minimizationPreference == preference)
+    }
+    #expect(appliedModes.contains(.collapsed))
+    #expect(appliedModes.contains(.topTask))
+    #expect(appliedModes.last == .expanded)
+  }
+
+  @Test("Minimization shortcut settings persist, rebind, disable, and reset to Command comma")
+  func minimizationHotkeySettings() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let defaults = UserDefaults.standard
+    let keys = ["toggleMinimizationHotkeyEnabled", HotkeyAction.toggleMinimization.shortcutDefaultsKey]
+    let saved = keys.map { defaults.object(forKey: $0) }
+    defer {
+      for (key, value) in zip(keys, saved) {
+        if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
+      }
+    }
+    for key in keys { defaults.removeObject(forKey: key) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(model.isHotkeyEnabled(.toggleMinimization))
+    #expect(model.hotkeyShortcut(for: .toggleMinimization)?.displayString == "⌘,")
+    let custom = HotkeyShortcut(keyCode: 40, modifiers: NSEvent.ModifierFlags.command.rawValue, keyLabel: "K")
+    var configurationChanges = 0
+    model.hotkeyConfigurationHandler = { configurationChanges += 1 }
+    model.setHotkeyShortcut(custom, for: .toggleMinimization)
+    model.setToggleMinimizationHotkeyEnabled(false)
+    let restarted = await fixture.model(agent: ControlledQueueAgent())
+    #expect(!restarted.isHotkeyEnabled(.toggleMinimization))
+    #expect(restarted.hotkeyShortcut(for: .toggleMinimization) == custom)
+    model.setHotkeyShortcut(nil, for: .toggleMinimization)
+    model.setToggleMinimizationHotkeyEnabled(true)
+    #expect(model.hotkeyShortcut(for: .toggleMinimization) == HotkeyAction.toggleMinimization.defaultShortcut)
+    #expect(configurationChanges == 4)
+    #expect(defaults.data(forKey: HotkeyAction.toggleMinimization.shortcutDefaultsKey) == nil)
+  }
+
   @Test("The collapse button repeats and persists the selected minimization behavior")
   func preferredMinimization() async throws {
     let fixture = try await Fixture()

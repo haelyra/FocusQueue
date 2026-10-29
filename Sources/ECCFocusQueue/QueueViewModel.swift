@@ -133,7 +133,9 @@ final class QueueViewModel {
   /// On unless turned off; the key is unset until the user changes it.
   private(set) var qchatHotkeyEnabled =
     UserDefaults.standard.object(forKey: "qchatHotkeyEnabled") as? Bool ?? true
-  /// A recorded combo per action; a missing entry keeps the built-in gesture.
+  private(set) var toggleMinimizationHotkeyEnabled =
+    UserDefaults.standard.object(forKey: "toggleMinimizationHotkeyEnabled") as? Bool ?? true
+  /// A recorded combo per action; a missing entry keeps the built-in shortcut or gesture.
   private(set) var hotkeyShortcuts: [HotkeyAction: HotkeyShortcut] = HotkeyAction.allCases
     .reduce(into: [:]) { shortcuts, action in
       if let data = UserDefaults.standard.data(forKey: action.shortcutDefaultsKey),
@@ -4663,12 +4665,22 @@ final class QueueViewModel {
     switch action {
     case .newTask: newTaskHotkeyEnabled
     case .qchat: qchatHotkeyEnabled
+    case .toggleMinimization: toggleMinimizationHotkeyEnabled
     }
   }
 
-  func hotkeyShortcut(for action: HotkeyAction) -> HotkeyShortcut? { hotkeyShortcuts[action] }
+  func hotkeyShortcut(for action: HotkeyAction) -> HotkeyShortcut? {
+    hotkeyShortcuts[action] ?? action.defaultShortcut
+  }
 
-  /// nil restores the action's built-in right-side gesture.
+  func setToggleMinimizationHotkeyEnabled(_ enabled: Bool) {
+    guard toggleMinimizationHotkeyEnabled != enabled else { return }
+    toggleMinimizationHotkeyEnabled = enabled
+    UserDefaults.standard.set(enabled, forKey: "toggleMinimizationHotkeyEnabled")
+    hotkeyConfigurationHandler?()
+  }
+
+  /// nil restores the action's built-in shortcut or gesture.
   func setHotkeyShortcut(_ shortcut: HotkeyShortcut?, for action: HotkeyAction) {
     guard hotkeyShortcuts[action] != shortcut else { return }
     hotkeyShortcuts[action] = shortcut
@@ -4879,6 +4891,14 @@ final class QueueViewModel {
       persistLocalState()
     }
     applyMinimization(preference)
+  }
+
+  func toggleMinimization(isMiniaturized: Bool = false) {
+    if isMiniaturized || panelMode != .expanded {
+      setPanelMode(.expanded)
+    } else {
+      performPreferredMinimization()
+    }
   }
 
   func performPreferredMinimization() {

@@ -1732,7 +1732,7 @@ struct QueueSettingsView: View {
           }
           settingsSection(
             title: "Keyboard shortcuts",
-            detail: "Global hotkeys that work from any app. Click a shortcut, then press a new combo with ⌘, ⌥, or ⌃. Reset returns to the right-side default."
+            detail: "Global hotkeys that work from any app. Click a shortcut, then press a new combo with ⌘, ⌥, or ⌃. Reset returns to the default shortcut."
           ) {
             VStack(alignment: .leading, spacing: 14) {
               hotkeyRow(.newTask,
@@ -1745,6 +1745,11 @@ struct QueueSettingsView: View {
                 isOn: Binding(
                   get: { model.qchatHotkeyEnabled },
                   set: { model.setQChatHotkeyEnabled($0) }))
+              hotkeyRow(.toggleMinimization,
+                detail: "Toggles the full queue and your preferred minimized view (FQ, top task, or Dock).",
+                isOn: Binding(
+                  get: { model.toggleMinimizationHotkeyEnabled },
+                  set: { model.setToggleMinimizationHotkeyEnabled($0) }))
             }
           }
 

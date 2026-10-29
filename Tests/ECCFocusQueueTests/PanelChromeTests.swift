@@ -33,6 +33,21 @@ struct PanelChromeTests {
     #expect(hostingView.safeAreaInsets.top > 0)
     #expect(probe.frame.maxY == hostingView.bounds.maxY)
   }
+
+  @Test("Opaque mode uses fully opaque panel surfaces")
+  func opaquePanelSurfaces() throws {
+    let dark = try #require(NSColor(QueuePalette.panel(for: .dark, opaqueBackgrounds: true))
+      .usingColorSpace(.deviceRGB))
+    let light = try #require(NSColor(QueuePalette.panel(for: .light, opaqueBackgrounds: true))
+      .usingColorSpace(.deviceRGB))
+
+    #expect(dark.alphaComponent == 1)
+    #expect(light.alphaComponent == 1)
+    #expect(dark.brightnessComponent < NSColor(QueuePalette.component(for: .dark)).brightnessComponent)
+    #expect(light.redComponent == 1)
+    #expect(light.greenComponent == 1)
+    #expect(light.blueComponent == 1)
+  }
 }
 
 private final class PanelEdgeProbeView: NSView {}

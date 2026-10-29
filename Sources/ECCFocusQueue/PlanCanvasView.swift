@@ -109,7 +109,7 @@ struct PlanCanvasView: View {
         .help("Save any edits and return to the queue").accessibilityLabel("Close plan")
       }
       .padding(12)
-      .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+      .opaqueAwareMaterialBackground(in: RoundedRectangle(cornerRadius: 16))
       .overlay(
         RoundedRectangle(cornerRadius: 16).stroke(Color.primary.opacity(0.08), lineWidth: 1)
           .allowsHitTesting(false)

@@ -388,7 +388,7 @@ struct DocumentViewerInspector: View {
                     .help("Close the document viewer").accessibilityLabel("Close document viewer")
             }
             .padding(12)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .opaqueAwareMaterialBackground(in: RoundedRectangle(cornerRadius: 16))
             .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.primary.opacity(0.08), lineWidth: 1)
                 .allowsHitTesting(false))
             if let error = panes.error {

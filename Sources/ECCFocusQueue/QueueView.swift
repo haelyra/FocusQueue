@@ -32,6 +32,7 @@ struct QueueView: View {
   /// the body ran on each render and dominated queue redraws.
   @State private var staleAgentCandidateCount = 0
   @AppStorage("agentViewEnabled") private var agentViewEnabled = false
+  @AppStorage(OpaqueBackgroundsPreference.defaultsKey) private var opaqueBackgroundsEnabled = false
   @State private var isTaskSearchActive = false
   @State private var taskSearchQuery = ""
   @State private var taskSearchCache = TaskSearchCache()
@@ -62,6 +63,7 @@ struct QueueView: View {
     }
     .preferredColorScheme(model.appearance == .dark ? .dark : .light)
     .environment(\.queueAccentStyle, model.accentStyle)
+    .environment(\.opaqueBackgroundsEnabled, opaqueBackgroundsEnabled)
     .onChange(of: notificationCount) { _, count in
       if count == 0 { model.setNotificationsInspectorPresented(false) }
     }
@@ -1713,6 +1715,7 @@ struct QueueSettingsView: View {
   let openSessions: () -> Void
   let openAnalytics: () -> Void
   let close: () -> Void
+  @AppStorage(OpaqueBackgroundsPreference.defaultsKey) private var opaqueBackgroundsEnabled = false
 
   var body: some View {
     VStack(spacing: 10) {
@@ -1860,6 +1863,14 @@ struct QueueSettingsView: View {
                   Text(style.displayName).tag(style)
                 }
               }.pickerStyle(.segmented).labelsHidden()
+              DisclosureGroup("Advanced") {
+                settingToggle(
+                  "Opaque backgrounds",
+                  detail: "Replace translucent and blurred surfaces with solid dark gray or white backgrounds.",
+                  isOn: $opaqueBackgroundsEnabled
+                )
+                .padding(.top, 8)
+              }
             }
           }
           settingsSection(
@@ -4474,11 +4485,12 @@ private struct MinimumHitTargetModifier: ViewModifier {
 private struct PanelSurfaceModifier: ViewModifier {
   let radius: CGFloat
   @Environment(\.colorScheme) private var colorScheme
+  @Environment(\.opaqueBackgroundsEnabled) private var opaqueBackgroundsEnabled
 
   func body(content: Content) -> some View {
     content.background {
       RoundedRectangle(cornerRadius: radius, style: .continuous).fill(
-        QueuePalette.panel(for: colorScheme))
+        QueuePalette.panel(for: colorScheme, opaqueBackgrounds: opaqueBackgroundsEnabled))
     }.clipShape(
       RoundedRectangle(cornerRadius: radius, style: .continuous)
     ).overlay {
@@ -4488,7 +4500,7 @@ private struct PanelSurfaceModifier: ViewModifier {
   }
 }
 
-private enum QueuePalette {
+enum QueuePalette {
   static let wezTermBackground = Color(red: 26 / 255, green: 29 / 255, blue: 35 / 255)
   static let lightComponent = Color(red: 240 / 255, green: 242 / 255, blue: 245 / 255)
 
@@ -4500,8 +4512,11 @@ private enum QueuePalette {
     colorScheme == .dark ? Color.white.opacity(0.13) : Color.white.opacity(0.72)
   }
 
-  static func panel(for colorScheme: ColorScheme) -> Color {
-    colorScheme == .dark ? wezTermBackground.opacity(0.80) : Color.white.opacity(0.29)
+  static func panel(for colorScheme: ColorScheme, opaqueBackgrounds: Bool = false) -> Color {
+    if opaqueBackgrounds {
+      return OpaqueBackgroundPalette.replacementSurface(for: colorScheme)
+    }
+    return colorScheme == .dark ? wezTermBackground.opacity(0.80) : Color.white.opacity(0.29)
   }
 
   static func panelBorder(for colorScheme: ColorScheme) -> Color {

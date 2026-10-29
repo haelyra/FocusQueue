@@ -77,7 +77,7 @@ struct UICanvasView: View {
         }
     }
     .padding(.horizontal, 12).padding(.vertical, 8)
-    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+    .opaqueAwareMaterialBackground(in: RoundedRectangle(cornerRadius: 12))
     .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.08), lineWidth: 1).allowsHitTesting(false))
   }
 
@@ -112,7 +112,7 @@ struct UICanvasView: View {
         if model.isEnded { endedCard }
         else if let error = model.loadError {
           ContentUnavailableView("Mockup unavailable", systemImage: "doc.badge.ellipsis", description: Text(error))
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .opaqueAwareMaterialBackground(in: RoundedRectangle(cornerRadius: 12))
         }
       }
       statusBar
@@ -149,7 +149,7 @@ struct UICanvasView: View {
         .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
     }
     .padding(22).frame(maxWidth: 360)
-    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    .opaqueAwareMaterialBackground(in: RoundedRectangle(cornerRadius: 16))
     .shadow(color: .black.opacity(0.15), radius: 18, y: 6)
   }
 

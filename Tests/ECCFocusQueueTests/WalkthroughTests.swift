@@ -1,0 +1,94 @@
+import Foundation
+import FocusQueueCore
+import Testing
+@testable import ECCFocusQueue
+
+@Suite("First-run walkthrough")
+@MainActor
+struct WalkthroughTests {
+  private func freshModel() async -> (QueueViewModel, AppPaths, URL) {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("walkthrough \(UUID().uuidString)")
+    let paths = AppPaths.live(environment: ["FOCUS_QUEUE_SUPPORT_DIR": root.path])
+    let model = QueueViewModel(paths: paths)
+    await model.bootstrap()
+    await model.bootstrapTail?.value
+    return (model, paths, root)
+  }
+
+  @Test("Skipping ends the tour for good and completes first-run setup")
+  func skipPersists() async throws {
+    let (model, paths, root) = await freshModel()
+    defer { try? FileManager.default.removeItem(at: root) }
+    #expect(model.walkthrough != nil)
+    model.finishWalkthrough()
+    #expect(model.walkthrough == nil)
+    #expect(model.localState.walkthroughCompletedAt != nil)
+    #expect(model.config.setupCompleted == true)
+    // Saves are debounced; poll briefly for the persisted files.
+    var restarted: QueueViewModel?
+    for _ in 0..<40 {
+      try await Task.sleep(for: .milliseconds(100))
+      let config = try? JSONDecoder().decode(AppConfiguration.self, from: Data(contentsOf: paths.configurationFile))
+      if config?.setupCompleted == true { break }
+    }
+    restarted = QueueViewModel(paths: paths)
+    await restarted?.bootstrap()
+    await restarted?.bootstrapTail?.value
+    #expect(restarted?.walkthrough == nil)
+    #expect(restarted?.isSetupPresented == false)
+  }
+
+  @Test("Back and Next walk every step, and Next on the last step finishes")
+  func navigation() async throws {
+    let (model, _, root) = await freshModel()
+    defer { try? FileManager.default.removeItem(at: root) }
+    model.retreatWalkthrough()
+    #expect(model.walkthrough?.step == .welcome)
+    model.advanceWalkthrough()
+    #expect(model.walkthrough?.step == .terminal)
+    model.retreatWalkthrough()
+    #expect(model.walkthrough?.step == .welcome)
+    for _ in 1..<WalkthroughStep.allCases.count { model.advanceWalkthrough() }
+    #expect(model.walkthrough?.step == .help)
+    model.advanceWalkthrough()
+    #expect(model.walkthrough == nil)
+    #expect(model.localState.walkthroughCompletedAt != nil)
+  }
+
+  @Test("The minimize step advances once the panel comes back")
+  func minimizeGoal() async throws {
+    let (model, _, root) = await freshModel()
+    defer { try? FileManager.default.removeItem(at: root) }
+    while model.walkthrough?.step != .minimize { model.advanceWalkthrough() }
+    model.checkWalkthroughGoal()
+    #expect(model.walkthrough?.step == .minimize)
+    model.setPanelMode(.collapsed)
+    model.checkWalkthroughGoal()
+    #expect(model.walkthrough?.step == .minimize)
+    model.setPanelMode(.expanded)
+    model.checkWalkthroughGoal()
+    #expect(model.walkthrough?.step == .rightClick)
+  }
+
+  @Test("Choosing a terminal stores it for managed agent windows")
+  func terminalChoice() async throws {
+    let (model, _, root) = await freshModel()
+    defer { try? FileManager.default.removeItem(at: root) }
+    model.setManagedTerminal(.ghostty)
+    #expect(model.config.wezTerm.applicationName == "Ghostty")
+    #expect(model.config.wezTerm.terminalApp == .ghostty)
+    model.setManagedTerminal(.terminal)
+    #expect(model.config.wezTerm.terminalApp.requiresTmux)
+  }
+
+  @Test("Replay restarts the tour at the welcome card")
+  func replay() async throws {
+    let (model, _, root) = await freshModel()
+    defer { try? FileManager.default.removeItem(at: root) }
+    model.finishWalkthrough()
+    model.setPanelMode(.collapsed)
+    model.startWalkthrough()
+    #expect(model.walkthrough?.step == .welcome)
+    #expect(model.panelMode == .expanded)
+  }
+}

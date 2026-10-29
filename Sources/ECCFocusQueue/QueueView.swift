@@ -107,6 +107,16 @@ struct QueueView: View {
       }
     }
     .padding(12).frame(minWidth: 380, idealWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
+      .overlayPreferenceValue(WalkthroughAnchorKey.self) { anchors in
+        if let progress = model.walkthrough {
+          WalkthroughOverlay(model: model, progress: progress, anchors: anchors)
+        }
+      }
+      .environment(\.walkthroughTicketID, model.walkthrough == nil ? nil : model.walkthroughTicket?.id)
+      .onChange(of: model.walkthrough?.step) { _, step in showWalkthroughStep(step) }
+      .onChange(of: model.walkthrough == nil ? nil : model.walkthroughSnapshot) { _, _ in
+        model.checkWalkthroughGoal()
+      }
       .panelSurface(radius: 30).preferredColorScheme(
         model.appearance == .dark ? .dark : .light
       ).environment(\.queueAccentStyle, model.accentStyle).tint(
@@ -172,6 +182,28 @@ struct QueueView: View {
   }
 
   @ViewBuilder private var queuePane: some View {
+    VStack(spacing: 8) {
+      if let progress = model.walkthrough {
+        WalkthroughBar(model: model, progress: progress)
+      }
+      queuePaneContent
+    }
+  }
+
+  /// Puts the queue screen and tab a walkthrough step points at on screen.
+  private func showWalkthroughStep(_ step: WalkthroughStep?) {
+    guard let step else { return }
+    switch step.screen {
+    case .settings:
+      settingsTarget = nil
+      withAnimation(.easeInOut(duration: 0.18)) { screen = .settings }
+    case .queue:
+      if screen == .settings { withAnimation(.easeInOut(duration: 0.18)) { screen = .queue } }
+      if step.presentation != .card, step != .qchat, selectedTab != .focus { selectedTab = .focus }
+    }
+  }
+
+  @ViewBuilder private var queuePaneContent: some View {
     Group {
       if model.isPanelCollapsed {
         compactHeader
@@ -289,6 +321,7 @@ struct QueueView: View {
     return VStack(alignment: .leading, spacing: 10) {
       HStack {
         focusHeading(resultCount: search?.tickets.count)
+          .walkthroughAnchor(.search)
         Menu {
           ForEach(QueueActivitySortMode.allCases.filter { $0 != .manual }) { mode in
             Button { model.setQueueActivitySortMode(mode) } label: {
@@ -535,6 +568,7 @@ struct QueueView: View {
       .accessibilityLabel("New task in \(model.selectedProject?.name ?? "selected project")")
       .help("Add a task to \(model.selectedProject?.name ?? "the selected project")")
       .disabled(model.selectedProject == nil)
+      .walkthroughAnchor(.newTask)
 
       // AppKit re-measures segmented labels on every layout pass. Plain strings
       // keep that measuring from re-reading and re-observing the model.
@@ -548,6 +582,7 @@ struct QueueView: View {
       .pickerStyle(.segmented)
       .labelsHidden()
       .accessibilityLabel("Queue section")
+      .walkthroughAnchor(.qchat)
       .onChange(of: selectedTab) { _, tab in
         if tab == .agent, model.isQueueChatInspectorPresented {
           model.setQueueChatInspectorPresented(false)
@@ -780,7 +815,11 @@ struct QueueView: View {
         }.buttonStyle(.plain).minimumHitTarget(width: 30, height: 34).accessibilityLabel(
           "Open Focus Queue settings"
         ).help("Settings")
-        QueueHelpMenu(sendFeedback: { showsFeedback = true }).minimumHitTarget(width: 30, height: 34)
+        QueueHelpMenu(sendFeedback: { showsFeedback = true }, replayWalkthrough: {
+          withAnimation(.snappy) { model.startWalkthrough() }
+        })
+        .minimumHitTarget(width: 30, height: 34)
+        .walkthroughAnchor(.help)
         Button {
           model.performPreferredMinimization()
         } label: {
@@ -789,6 +828,7 @@ struct QueueView: View {
         }.buttonStyle(.plain).minimumHitTarget(width: 30, height: 34).accessibilityLabel(
           "Minimize Focus Queue using the saved option"
         ).help("Minimize queue; right-click to choose how")
+          .walkthroughAnchor(.minimize)
           .contextMenu {
             Button("Fully minimize", systemImage: "minus") {
               model.minimize(using: .dock)
@@ -1581,6 +1621,7 @@ struct QueueSettingsView: View {
                 model.isSetupPresented = true
               }.buttonStyle(.bordered)
             }
+            .walkthroughAnchor(.projectSettings)
           }
 
           groupHeading("Agents")
@@ -2799,6 +2840,9 @@ private struct TicketCard: View {
   @State private var showsTaskDetails = false
   @AppStorage("newAgentProvider") private var storedNewAgentProvider: AgentProvider?
   @Environment(\.queueAccentStyle) private var accentStyle
+  @Environment(\.walkthroughTicketID) private var walkthroughTicketID
+
+  private var isWalkthroughTicket: Bool { walkthroughTicketID == ticket.id }
 
   private var newAgentProvider: AgentProvider {
     model.preferredNewAgentProvider(stored: storedNewAgentProvider)
@@ -2843,6 +2887,7 @@ private struct TicketCard: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       summary
+        .walkthroughAnchor(.taskCard, isEnabled: isWalkthroughTicket)
       if !isCollapsedToTitle {
         taskOverview
         agentControls
@@ -2974,6 +3019,7 @@ private struct TicketCard: View {
         }.buttonStyle(.plain).disabled(isChecked).minimumHitTarget()
           .accessibilityLabel(isChecked ? "\(ticket.id) is complete" : "Mark \(ticket.id) complete")
           .help("Mark this task complete")
+          .walkthroughAnchor(.completeTask, isEnabled: isWalkthroughTicket)
 
         Button {
           withAnimation(.easeInOut(duration: 0.18)) { isCollapsedToTitle.toggle() }
@@ -3242,6 +3288,7 @@ private struct TicketCard: View {
       }
       .buttonStyle(.bordered).controlSize(.regular)
       .font(.system(size: 12, weight: .semibold))
+      .walkthroughAnchor(.planAndContext, isEnabled: isWalkthroughTicket)
       let newOutputs = model.newOutputs(for: ticket.id)
       if !newOutputs.isEmpty {
         NewOutputsPanel(ticketID: ticket.id, outputs: newOutputs, model: model) { showsContext = true }

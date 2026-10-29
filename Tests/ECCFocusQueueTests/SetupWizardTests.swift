@@ -6,7 +6,7 @@ import Testing
 @Suite("First-run setup")
 @MainActor
 struct SetupWizardTests {
-  @Test("An empty account boots into a working queue and setup remains pending across restart")
+  @Test("An empty account boots into a working queue and the walkthrough until it is finished")
   func firstRun() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("first-run \(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -15,15 +15,16 @@ struct SetupWizardTests {
     await model.bootstrap()
     await model.bootstrapTail?.value
     #expect(model.configurationIsLoaded)
-    #expect(model.isSetupPresented)
+    // The walkthrough replaces the setup sheet on a new install.
+    #expect(model.walkthrough?.step == .welcome)
+    #expect(!model.isSetupPresented)
     #expect(model.loadError == nil)
     #expect(model.dashboard.tickets.isEmpty)
     #expect(!model.config.verifier.enabled)
-    model.isSetupPresented = false
     let restarted = QueueViewModel(paths: paths)
     await restarted.bootstrap()
     await restarted.bootstrapTail?.value
-    #expect(restarted.isSetupPresented)
+    #expect(restarted.walkthrough?.step == .welcome)
     #expect(!FileManager.default.fileExists(atPath: paths.ingestionConfigurationFile.path))
     #expect(await restarted.finishSetup(restarted.config))
     // Finishing setup leaves a starter source file for connector diagnostics.

@@ -27,6 +27,9 @@ public enum TaskOutputs {
         "archive", "maintenance-history", "push-reviews", "workspace-map", "architecture",
         "node_modules", "__pycache__",
     ]
+    /// App-owned folders at the context root: UI Canvas session records and the
+    /// walkthrough's demo mockup. Deeper folders with these names are agent files.
+    static let ignoredTopLevelDirectories: Set<String> = ["canvas", "walkthrough"]
     static let ignoredFiles: Set<String> = [
         "plan.md", "data.md", "agent-log.md", TaskContext.initialPromptFileName, "context.json",
         "maintenance.json", TaskCompletionCleanup.reportName, "conversation.json", "plan-draft.json",
@@ -49,7 +52,10 @@ public enum TaskOutputs {
             guard let values = try? url.resourceValues(forKeys: Set(keys)) else { continue }
             let name = url.lastPathComponent
             if values.isDirectory == true {
-                if ignoredDirectories.contains(name) || enumerator.level > 4 { enumerator.skipDescendants() }
+                if ignoredDirectories.contains(name) || enumerator.level > 4
+                    || (enumerator.level == 1 && ignoredTopLevelDirectories.contains(name)) {
+                    enumerator.skipDescendants()
+                }
                 continue
             }
             let path = url.standardizedFileURL.path

@@ -150,6 +150,15 @@ final class QueueViewModel {
   /// Bumped per Right Option + / press; the view opens QChat and focuses its composer.
   private(set) var queueChatFocusRequest = 0
   private(set) var panelMode: QueuePanelMode = .expanded
+  /// Counts returns from minimized, FQ, top-task, or hidden states.
+  private(set) var panelRestoreCount = 0
+  /// The first-run walkthrough while it runs; nil otherwise.
+  private(set) var walkthrough: WalkthroughProgress?
+  /// The task where the walkthrough's first agent launched.
+  private(set) var walkthroughTicketID: String?
+  private(set) var walkthroughMessage: String?
+  /// Filled by `refreshProviderAccounts`; previews and recordings may seed it.
+  var providerAccounts: [AgentProvider: ProviderAccountState] = [:]
   private(set) var canSwitchMonitor = false
   private(set) var actionMessages: [String: String] = [:] {
     didSet { logChangedMessages(actionMessages, previous: oldValue, categoryPrefix: "Task") }
@@ -681,9 +690,13 @@ final class QueueViewModel {
         configurationURL: paths.configurationFile
       ).recoverPending()
       config = try await configurationRepository.loadOrCreate(default: SetupEnvironment.starter(supportDirectory: paths.supportDirectory))
-      isSetupPresented = firstRun || config.setupCompleted == false
+      let needsSetup = firstRun || config.setupCompleted == false
       configurationIsLoaded = true
       localState = try await stateStore.load()
+      // A new install gets the walkthrough, which covers terminal setup; the
+      // setup wizard stays available from Settings.
+      if needsSetup, localState.walkthroughCompletedAt == nil { startWalkthrough() }
+      else { isSetupPresented = needsSetup }
       localState.selectedProjectID = selectedProjectID
       await primePresentationFromDisk()
     } catch {
@@ -3178,8 +3191,8 @@ final class QueueViewModel {
     let workDescription = String((suppliedDescription.isEmpty
       ? (promptDescription.isEmpty ? (includePrompt ? title : "") : promptDescription)
       : suppliedDescription).prefix(2_000))
-    guard useTmux || config.wezTerm.applicationName.caseInsensitiveCompare("Terminal") != .orderedSame else {
-      actionMessages[ticket.id] = "macOS Terminal requires tmux for reliable agent launch and recall. Configure tmux or select WezTerm."
+    guard useTmux || !config.wezTerm.terminalApp.requiresTmux else {
+      actionMessages[ticket.id] = "\(config.wezTerm.terminalApp.displayName) requires tmux for reliable agent launch and recall. Configure tmux or select WezTerm."
       completion?(false)
       return
     }
@@ -4908,12 +4921,127 @@ final class QueueViewModel {
     if mode != .expanded, isDailyReportPresented {
       setDailyReportPresented(false)
     }
+    if mode == .expanded { panelRestoreCount += 1 }
     panelMode = mode
     panelModeHandler?(mode)
   }
 
   func quit() {
     quitHandler?()
+  }
+
+  // MARK: Walkthrough
+
+  var walkthroughSnapshot: WalkthroughSnapshot {
+    WalkthroughSnapshot(
+      projectCount: config.projects.filter { $0.id != ProjectCatalog.otherID }.count,
+      agentCount: taskContexts.values.reduce(0) { $0 + $1.subtasks.filter(\.hasAgent).count },
+      panelRestoreCount: panelRestoreCount)
+  }
+
+  /// The open task whose controls the walkthrough points at: the one that got
+  /// the tour's first agent, else the first task with an agent, else the top task.
+  var walkthroughTicket: DashboardTicket? {
+    let open = openTickets
+    if let walkthroughTicketID, let ticket = open.first(where: { $0.id == walkthroughTicketID }) {
+      return ticket
+    }
+    return open.first { !focusSubtasks(for: $0.id).filter(\.hasAgent).isEmpty } ?? open.first
+  }
+
+  func startWalkthrough() {
+    setPanelMode(.expanded)
+    walkthroughTicketID = nil
+    walkthroughMessage = nil
+    walkthrough = WalkthroughProgress(baseline: walkthroughSnapshot)
+  }
+
+  func advanceWalkthrough() {
+    guard var progress = walkthrough else { return }
+    walkthroughMessage = nil
+    if progress.next(walkthroughSnapshot) { walkthrough = progress } else { finishWalkthrough() }
+  }
+
+  func retreatWalkthrough() {
+    guard var progress = walkthrough else { return }
+    walkthroughMessage = nil
+    progress.back(walkthroughSnapshot)
+    walkthrough = progress
+  }
+
+  /// Finishing and skipping both end the tour for good; the info menu replays it.
+  func finishWalkthrough() {
+    walkthrough = nil
+    walkthroughMessage = nil
+    localState.walkthroughCompletedAt = Date()
+    persistLocalState()
+    if config.setupCompleted != true {
+      config.setupCompleted = true
+      persistConfiguration()
+    }
+  }
+
+  /// Advances a step whose goal the user just completed.
+  func checkWalkthroughGoal() {
+    guard let progress = walkthrough, progress.isGoalMet(walkthroughSnapshot) else { return }
+    if progress.step == .launchAgent {
+      walkthroughTicketID = openTickets.max { left, right in
+        latestAgentLaunch(left.id) < latestAgentLaunch(right.id)
+      }?.id
+    }
+    advanceWalkthrough()
+  }
+
+  private func latestAgentLaunch(_ ticketID: String) -> Date {
+    focusSubtasks(for: ticketID).filter(\.hasAgent)
+      .compactMap { $0.lastHeartbeatAt ?? $0.lastPromptAt }.max() ?? .distantPast
+  }
+
+  /// Opens the example mockup as a UI Canvas tab on the tour's task, the same
+  /// way `focus-queue-session canvas open` does for an agent.
+  func openWalkthroughCanvasDemo() {
+    guard let ticket = walkthroughTicket else { return }
+    do {
+      let file = try UICanvasDemo.install(supportDirectory: paths.supportDirectory, taskID: ticket.id)
+      guard case .opened(let session) = try uiCanvasStore.open(
+        file: file.path, taskID: ticket.id, title: UICanvasDemo.title, viewport: "mobile",
+        reopen: true, agentName: "Demo")
+      else { return }
+      handleUICanvasChange(ticketID: ticket.id, key: session.key, event: "open", root: nil)
+      walkthroughMessage = nil
+    } catch {
+      walkthroughMessage = "Could not open the demo canvas: \(error.localizedDescription)"
+    }
+  }
+
+  func setManagedTerminal(_ app: ManagedTerminalApp) {
+    guard config.wezTerm.applicationName != app.applicationName else { return }
+    config.wezTerm.applicationName = app.applicationName
+    if app == .wezTerm, let executable = SetupEnvironment.executable("wezterm") {
+      config.wezTerm.executable = executable
+    }
+    persistConfiguration()
+  }
+
+  func refreshProviderAccounts(_ providers: [AgentProvider] = AgentProvider.allCases) async {
+    for provider in providers where providerAccounts[provider] == nil {
+      providerAccounts[provider] = .checking
+    }
+    await withTaskGroup(of: (AgentProvider, ProviderAccountState).self) { group in
+      for provider in providers {
+        group.addTask { (provider, await ProviderAccounts.check(provider)) }
+      }
+      for await (provider, state) in group { providerAccounts[provider] = state }
+    }
+  }
+
+  func signIn(to provider: AgentProvider) async {
+    do {
+      try await ProviderAccounts.openSignIn(provider, configuration: config.wezTerm)
+      walkthroughMessage = "Finish signing in to \(provider.displayName) in \(config.wezTerm.terminalApp.displayName). This card updates when you're done."
+    } catch {
+      walkthroughMessage = error.localizedDescription
+    }
   }
 
   func saveWindow(_ snapshot: WindowSnapshot) {
@@ -4936,6 +5064,7 @@ final class QueueViewModel {
     let wasHidden = !panelVisible
     panelVisible = visible
     if visible, wasHidden {
+      panelRestoreCount += 1
       lastDashboardRead = nil
       lastExternalRegistrationRefresh = nil
       Task { await refresh() }

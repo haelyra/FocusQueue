@@ -1885,6 +1885,8 @@ public struct LocalState: Codable, Equatable, Sendable {
   /// The most recent user launch for each provider, so switching providers in
   /// the task creator restores that provider's last model and effort.
   public var lastAgentLaunches: [AgentLaunchPreset]?
+  /// Set when the first-run walkthrough is finished or skipped, so it shows once.
+  public var walkthroughCompletedAt: Date?
 
   public init(
     routineDate: String = "",
@@ -1902,7 +1904,8 @@ public struct LocalState: Codable, Equatable, Sendable {
     viewedTicketSources: Set<String>? = nil,
     queueActivitySortMode: QueueActivitySortMode? = nil,
     lastAgentLaunch: AgentLaunchPreset? = nil,
-    lastAgentLaunches: [AgentLaunchPreset]? = nil
+    lastAgentLaunches: [AgentLaunchPreset]? = nil,
+    walkthroughCompletedAt: Date? = nil
   ) {
     self.routineDate = routineDate
     self.completedRoutineIDs = completedRoutineIDs
@@ -1920,6 +1923,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     self.queueActivitySortMode = queueActivitySortMode
     self.lastAgentLaunch = lastAgentLaunch
     self.lastAgentLaunches = lastAgentLaunches
+    self.walkthroughCompletedAt = walkthroughCompletedAt
   }
 
   /// Records a user launch as the overall default and as its provider's last.
@@ -2002,6 +2006,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     case queueActivitySortMode = "queueSortMode"
     case lastAgentLaunch
     case lastAgentLaunches
+    case walkthroughCompletedAt
   }
 
   public init(from decoder: any Decoder) throws {
@@ -2037,6 +2042,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     // Decode entries one by one so an unknown provider drops only its own entry.
     lastAgentLaunches = (try? container.decodeIfPresent([TolerantLaunchPreset].self, forKey: .lastAgentLaunches))?
       .compactMap(\.preset)
+    walkthroughCompletedAt = try? container.decodeIfPresent(Date.self, forKey: .walkthroughCompletedAt)
   }
 
   public func encode(to encoder: any Encoder) throws {
@@ -2058,6 +2064,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     try container.encodeIfPresent(queueActivitySortMode, forKey: .queueActivitySortMode)
     try container.encodeIfPresent(lastAgentLaunch, forKey: .lastAgentLaunch)
     try container.encodeIfPresent(lastAgentLaunches, forKey: .lastAgentLaunches)
+    try container.encodeIfPresent(walkthroughCompletedAt, forKey: .walkthroughCompletedAt)
   }
 
   private struct TolerantLaunchPreset: Decodable {

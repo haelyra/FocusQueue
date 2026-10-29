@@ -118,6 +118,11 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     public var completionTerminalRetained: Bool?
     public var completedRuntimeOpenedAt: Date?
     public var launchConfiguration: AgentLaunchConfiguration?
+    /// When the person interrupted this agent from Focus Queue. Cleared by
+    /// Resume or by any later prompt, so a pause never outlives new work.
+    public var pausedAt: Date?
+
+    public var isPaused: Bool { pausedAt != nil && status != .completed }
 
     public var hasAgent: Bool {
         !isAssignmentOnly && (parentSubtaskID != nil || sessionID != nil || tmux != nil || terminalPaneID != nil || lastHeartbeatAt != nil || status == .completed)
@@ -252,7 +257,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         case runtimeMode, terminalPaneID, terminalSocketPath, workspace, workspaceHistory, initialPrompt, agentRemovedAt, tracksCompletion, completionOverrideAt
         case completionTerminalRetained
         case isAssignmentOnly, parentSubtaskID, associatedSubtaskIDs, mergedIntoSubtaskID, attention, resultID, resultSummary, resultAt, observedEventID, observedEventAt, completedRuntimeOpenedAt
-        case lastHookEventAt, launchConfiguration
+        case lastHookEventAt, launchConfiguration, pausedAt
     }
 
     public init(from decoder: any Decoder) throws {
@@ -296,6 +301,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         completionTerminalRetained = try values.decodeIfPresent(Bool.self, forKey: .completionTerminalRetained)
         completedRuntimeOpenedAt = try values.decodeIfPresent(Date.self, forKey: .completedRuntimeOpenedAt)
         launchConfiguration = try values.decodeIfPresent(AgentLaunchConfiguration.self, forKey: .launchConfiguration)
+        pausedAt = try values.decodeIfPresent(Date.self, forKey: .pausedAt)
     }
 
     /// A live terminal is not proof of activity. Only a recent explicit heartbeat is.
@@ -1235,6 +1241,7 @@ public actor TaskContextStore {
             context.subtasks[index].lastHeartbeatAt = now
             if let sessionID { context.subtasks[index].sessionID = sessionID }
             context.subtasks[index].attention = status == .blocked ? .failed : nil
+            if status == .completed || status == .working { context.subtasks[index].pausedAt = nil }
             if status == .completed {
                 context.subtasks[index].completionUnread = !context.subtasks[index].isAssignmentOnly
                 context.subtasks[index].resultID = UUID().uuidString
@@ -1468,6 +1475,34 @@ public actor TaskContextStore {
         }
     }
 
+    /// Records a pause or resume the person requested from Focus Queue. A
+    /// pause reads as idle and dates the heartbeat, so hook events from the
+    /// interrupted turn cannot mark the agent Working again. A resume that
+    /// sent no prompt only clears the pause.
+    @discardableResult public func setPaused(
+        ticketID: String, subtaskID: String, paused: Bool, promptSent: Bool = true, at date: Date = Date()
+    ) throws -> TaskContext {
+        try mutate(ticketID: ticketID) { context in
+            guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
+            guard context.subtasks[index].status != .completed else { return }
+            if paused {
+                context.subtasks[index].pausedAt = date
+                context.subtasks[index].status = .idle
+                context.subtasks[index].attention = nil
+                context.subtasks[index].lastHeartbeatAt = max(context.subtasks[index].lastHeartbeatAt ?? .distantPast, date)
+            } else if !promptSent {
+                context.subtasks[index].pausedAt = nil
+            } else {
+                context.subtasks[index].pausedAt = nil
+                context.subtasks[index].status = .working
+                context.subtasks[index].attention = nil
+                context.subtasks[index].lastHeartbeatAt = max(context.subtasks[index].lastHeartbeatAt ?? .distantPast, date)
+                context.subtasks[index].lastPromptAt = max(context.subtasks[index].lastPromptAt ?? .distantPast, date)
+                context.lastPromptAt = max(context.lastPromptAt ?? .distantPast, date)
+            }
+        }
+    }
+
     @discardableResult public func observeActivity(ticketID: String, subtaskID: String, event: AgentActivityEvent) throws -> TaskContext {
         try mutate(ticketID: ticketID) { context in
             guard let i = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
@@ -1478,6 +1513,10 @@ public actor TaskContextStore {
             }
             if case .prompt = event.kind, event.date > (context.subtasks[i].lastPromptAt ?? .distantPast) {
                 context.subtasks[i].lastPromptAt = event.date
+            }
+            // Typing into a paused pane resumes it as surely as the Resume button.
+            if case .prompt = event.kind, let pausedAt = context.subtasks[i].pausedAt, event.date > pausedAt {
+                context.subtasks[i].pausedAt = nil
             }
             guard context.subtasks[i].observedEventID != event.id else { return }
             if context.subtasks[i].status == .completed {
@@ -1522,6 +1561,8 @@ public actor TaskContextStore {
             switch event.kind {
             case .working, .prompt:
                 guard isCurrentActivity else { return }
+                // A paused agent's interrupted turn can still flush tool events.
+                if case .working = event.kind, context.subtasks[i].pausedAt != nil { return }
                 context.subtasks[i].lastHeartbeatAt = event.date
                 if !event.summary.isEmpty { context.subtasks[i].progressSummary = event.summary }
                 context.subtasks[i].status = .working
@@ -1547,6 +1588,8 @@ public actor TaskContextStore {
                 }
             case .attention(let attention):
                 guard isCurrentActivity else { return }
+                // Pause's own Esc is recorded as an interrupted turn; it is not a problem.
+                if attention == .interrupted, context.subtasks[i].pausedAt != nil { return }
                 context.subtasks[i].lastHeartbeatAt = event.date
                 if !event.summary.isEmpty { context.subtasks[i].progressSummary = event.summary }
                 context.subtasks[i].status = attention.isProblem ? .blocked : .idle

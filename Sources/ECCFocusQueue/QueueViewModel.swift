@@ -225,6 +225,7 @@ final class QueueViewModel {
   var registrationValidationAlert: String?
   private var reportedRegistrationIssueIDs: Set<String> = []
   private(set) var openingSubtaskIDs: Set<String> = []
+  private(set) var pauseChangingSubtaskIDs: Set<String> = []
   private(set) var openingAgentSessionIDs: Set<String> = []
   private(set) var agentSessionErrors: [String: String] = [:] {
     didSet {
@@ -4379,6 +4380,55 @@ final class QueueViewModel {
         actionMessages[ticket.id] = "Subtask marked complete."
         if presentedAgentUpdate?.ticketID == ticket.id { closeAgentUpdate() }
       } catch { actionMessages[ticket.id] = error.localizedDescription }
+    }
+  }
+
+  /// Pause and Resume drive the provider TUI through its managed tmux pane;
+  /// WezTerm-only and external agents keep their own terminal controls.
+  func canPause(_ subtask: TaskSubtask) -> Bool {
+    subtask.tmux != nil && subtask.hasAgent && subtask.status != .completed && subtask.agentRemovedAt == nil
+  }
+
+  func isChangingPause(_ subtask: TaskSubtask, ticketID: String) -> Bool {
+    pauseChangingSubtaskIDs.contains(Self.subtaskKey(ticketID: ticketID, subtaskID: subtask.id))
+  }
+
+  func pauseAgent(_ subtask: TaskSubtask, for ticket: DashboardTicket) {
+    changePause(subtask, for: ticket, pause: true)
+  }
+
+  func resumeAgent(_ subtask: TaskSubtask, for ticket: DashboardTicket) {
+    changePause(subtask, for: ticket, pause: false)
+  }
+
+  private func changePause(_ subtask: TaskSubtask, for ticket: DashboardTicket, pause: Bool) {
+    let key = Self.subtaskKey(ticketID: ticket.id, subtaskID: subtask.id)
+    guard pauseChangingSubtaskIDs.insert(key).inserted else { return }
+    agentSessionErrors[key] = nil
+    Task {
+      defer { pauseChangingSubtaskIDs.remove(key) }
+      let controller = AgentPauseController(store: taskContextStore)
+      do {
+        if pause {
+          taskContexts[ticket.id] = try await controller.pause(ticketID: ticket.id, subtaskID: subtask.id)
+          actionMessages[ticket.id] = "Paused \(subtask.title). Press Resume to continue the same conversation."
+        } else {
+          taskContexts[ticket.id] = try await controller.resume(ticketID: ticket.id, subtaskID: subtask.id)
+          actionMessages[ticket.id] = "Resumed \(subtask.title)."
+        }
+      } catch TmuxError.stopped where !pause {
+        // The pane closed while paused, for example after a restart. Clear the
+        // pause and reopen the saved conversation in a new pane.
+        taskContexts[ticket.id] = try? await taskContextStore.setPaused(
+          ticketID: ticket.id, subtaskID: subtask.id, paused: false, promptSent: false)
+        openSubtask(subtask, for: ticket, showResult: false)
+        actionMessages[ticket.id] = "\(subtask.title)'s pane had closed, so Focus Queue reopened its saved conversation. Type continue in it to carry on."
+      } catch TmuxError.stopped {
+        actionMessages[ticket.id] = "\(subtask.title)'s pane has already closed, so nothing is running to pause."
+      } catch {
+        agentSessionErrors[key] = error.localizedDescription
+        actionMessages[ticket.id] = error.localizedDescription
+      }
     }
   }
 

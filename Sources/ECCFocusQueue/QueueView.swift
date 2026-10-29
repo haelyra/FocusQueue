@@ -3545,7 +3545,8 @@ private struct AgentRowLabel: View {
             isOpening: isOpening,
             issue: model.agentSessionError(for: agent, ticketID: ticket.id),
             attention: agent.attention,
-            lastOutputAt: AgentOutputTimestamp.value(for: agent))
+            lastOutputAt: AgentOutputTimestamp.value(for: agent),
+            pausedAt: agent.isPaused ? agent.pausedAt : nil)
         }
         Text(agent.workDescription)
           .font(.system(size: 11))
@@ -3597,6 +3598,14 @@ private struct TaskAgentRow: View {
           : "Open \(agent.title), \(agent.attention?.label ?? model.effectiveStatus(for: agent).rawValue)"
       )
       .help("Focus or resume this agent in its saved workspace")
+
+      if model.canPause(agent) {
+        AgentPauseButton(
+          agent: agent, isChanging: model.isChangingPause(agent, ticketID: ticket.id),
+          pause: { model.pauseAgent(agent, for: ticket) },
+          resume: { model.resumeAgent(agent, for: ticket) })
+        .disabled(isOpening)
+      }
 
       Menu {
         Button("Open agent", systemImage: "terminal") {
@@ -3657,6 +3666,37 @@ private struct TaskAgentRow: View {
     } message: {
       Text("The live pane will close. The work item, conversation, and workspace stay available under Archived agents.")
     }
+  }
+}
+
+/// Pause stops the agent's running turn with Esc; Resume asks the same
+/// conversation to continue. Both act on the agent's managed tmux pane.
+private struct AgentPauseButton: View {
+  let agent: TaskSubtask
+  let isChanging: Bool
+  let pause: () -> Void
+  let resume: () -> Void
+
+  var body: some View {
+    Button { agent.isPaused ? resume() : pause() } label: {
+      Group {
+        if isChanging {
+          ProgressView().controlSize(.mini)
+        } else {
+          Image(systemName: agent.isPaused ? "play.fill" : "pause.fill")
+            .font(.system(size: 11, weight: .semibold))
+        }
+      }
+      .frame(width: 22, height: 22)
+      .background(Color.primary.opacity(0.08), in: Circle())
+    }
+    .buttonStyle(.plain)
+    .minimumHitTarget()
+    .disabled(isChanging)
+    .accessibilityLabel(agent.isPaused ? "Resume agent \(agent.title)" : "Pause agent \(agent.title)")
+    .help(agent.isPaused
+      ? "Resume: ask this agent to continue where it stopped, in the same conversation"
+      : "Pause: stop this agent's current turn (Esc) and keep its conversation open for Resume")
   }
 }
 
@@ -3721,6 +3761,7 @@ struct AgentStatusIndicator: View {
   let isOpening: Bool
   let issue: String?
   var attention: AgentAttention? = nil
+  var pausedAt: Date? = nil
 
   @Environment(\.queueAccentStyle) private var accentStyle
 
@@ -3746,6 +3787,7 @@ struct AgentStatusIndicator: View {
   private var statusLabel: String {
     if isOpening { return "Opening" }
     if issue != nil { return "Problem" }
+    if pausedAt != nil { return "Paused" }
     if let attention { return attention.label }
     if status == .blocked { return "Problem" }
     // A busy agent reads as Working; an earlier unread result is only noted.
@@ -3762,6 +3804,7 @@ struct AgentStatusIndicator: View {
 
   private var icon: String {
     if issue != nil { return "exclamationmark.circle.fill" }
+    if pausedAt != nil { return "pause.circle.fill" }
     if let attention { return attention.icon }
     if status == .blocked { return "exclamationmark.circle.fill" }
     if hasUnreadCompletion && status != .working { return "circle.fill" }
@@ -3776,7 +3819,9 @@ struct AgentStatusIndicator: View {
 
   private var color: Color {
     if isOpening { return QueueAccentPalette.color(.info, style: accentStyle) }
-    if issue != nil || attention?.isProblem == true {
+    if issue != nil { return QueueAccentPalette.color(.danger, style: accentStyle) }
+    if pausedAt != nil { return QueueAccentPalette.color(.info, style: accentStyle) }
+    if attention?.isProblem == true {
       return QueueAccentPalette.color(.danger, style: accentStyle)
     }
     if attention != nil { return QueueAccentPalette.color(.warning, style: accentStyle) }
@@ -3794,6 +3839,11 @@ struct AgentStatusIndicator: View {
   }
 
   private var helpText: String {
+    if let pausedAt {
+      return "Paused \(AgentOutputAgeFormatter.string(from: pausedAt, relativeTo: Date())). "
+        + "The conversation stays open in its pane. Provider prompt caches expire after minutes to about an hour, "
+        + "so the first turn after a longer pause re-reads the conversation at full input cost."
+    }
     switch status {
     case .working:
       return hasUnreadCompletion
@@ -3817,6 +3867,7 @@ struct AgentStatusCluster: View {
   let issue: String?
   var attention: AgentAttention? = nil
   var lastOutputAt: Date? = nil
+  var pausedAt: Date? = nil
 
   var body: some View {
     HStack(spacing: 8) {
@@ -3825,7 +3876,8 @@ struct AgentStatusCluster: View {
         hasUnreadCompletion: hasUnreadCompletion,
         isOpening: isOpening,
         issue: issue,
-        attention: attention)
+        attention: attention,
+        pausedAt: pausedAt)
       if let lastOutputAt {
         AgentOutputAgeLabel(outputAt: lastOutputAt)
       }

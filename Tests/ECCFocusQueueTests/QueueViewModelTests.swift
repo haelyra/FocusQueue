@@ -730,6 +730,86 @@ struct QueueViewModelTests {
     #expect(canvas.title == "Card")
   }
 
+  @Test("Reopening a canvas from context revives an old ended session; reconnect resets and reaches a fresh agent")
+  func uiCanvasContextReopenAndReconnect() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let agent = ControlledQueueAgent()
+    let model = await fixture.model(agent: agent)
+    let ticket = try #require(model.openTickets.first)
+    let mockup = fixture.root.appendingPathComponent("card.html")
+    try Data("<!doctype html><body><p id=\"x\">Hi</p></body>".utf8).write(to: mockup)
+    guard case .opened(let session) = try model.uiCanvasStore.open(
+      file: mockup.path, taskID: ticket.id, title: "Card", viewport: nil, reopen: false, agentName: "Codex")
+    else { Issue.record("open refused"); return }
+    try model.uiCanvasStore.end(taskID: ticket.id, key: session.key, endedBy: "user")
+
+    // Age the session past the one-day review window: it leaves the tab bar.
+    let old = UICanvasStore.timestamp(Date().addingTimeInterval(-2 * 86_400))
+    try model.uiCanvasStore.update(taskID: ticket.id, key: session.key) { stored in
+      stored?.createdAt = old
+      stored?.updatedAt = old
+    }
+    model.refreshUICanvases(ticketID: ticket.id)
+    #expect(model.visibleUICanvases(ticketID: ticket.id).isEmpty)
+
+    // The Sessions section of the task's context reopens it as a selected tab.
+    model.openUICanvasSession(ticketID: ticket.id, key: session.key)
+    #expect(model.requestedUICanvas?.key == session.key)
+    #expect(model.presentedPlanTicketID == ticket.id)
+    #expect(model.visibleUICanvases(ticketID: ticket.id).map(\.key) == [session.key])
+    model.dismissUICanvas(ticketID: ticket.id, key: session.key)
+    #expect(model.visibleUICanvases(ticketID: ticket.id).isEmpty, "Dismiss wins over reopen")
+
+    // Reconnect reopens the ended session and asks a fresh agent to listen.
+    model.reconnectUICanvasAgent(ticketID: ticket.id, key: session.key)
+    try await eventually { await agent.hasPendingReply }
+    let prompt = try #require(await agent.messages.last)
+    #expect(prompt.contains("canvas open"))
+    #expect(prompt.contains("canvas await"))
+    #expect(prompt.contains("--task \(ticket.id)"))
+    let sessionName = "ecc-focus-queue-task-\(ticket.id.lowercased())-canvas-\(session.key)"
+    #expect(await agent.resetSessionNames == [sessionName])
+    #expect(try model.uiCanvasStore.load(taskID: ticket.id, key: session.key)?.isEnded == false,
+      "Reconnect reopens a user-ended session")
+    #expect(model.requestedUICanvas?.key == session.key)
+
+    // The agent's reply lands in the canvas conversation.
+    await agent.reply("Listening again.")
+    try await eventually {
+      try model.uiCanvasStore.load(taskID: ticket.id, key: session.key)?.chat.last?.text
+        == "Listening again."
+    }
+    #expect(model.visibleUICanvases(ticketID: ticket.id).map(\.key) == [session.key])
+  }
+
+  @Test("An HTML output opens as a native canvas tab instead of an external app")
+  func htmlOutputOpensAsCanvas() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let ticket = try #require(model.openTickets.first)
+    model.openPlan(for: ticket)
+    try await eventually { model.taskContexts[ticket.id] != nil }
+    let context = try #require(model.taskContexts[ticket.id])
+    let mockup = context.contextDirectory.appendingPathComponent("qa/card.html")
+    try FileManager.default.createDirectory(at: mockup.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("<!doctype html><body><p>Hi</p></body>".utf8).write(to: mockup)
+
+    let output = TaskOutputFile(relativePath: "qa/card.html", url: mockup, modifiedAt: Date())
+    model.openOutput(output, ticketID: ticket.id)
+
+    let session = try #require(model.uiCanvasStore.find(file: mockup.path, taskID: ticket.id),
+      "Opening an HTML output creates its canvas session")
+    #expect(model.requestedUICanvas?.key == session.key)
+    #expect(model.visibleUICanvases(ticketID: ticket.id).map(\.key) == [session.key])
+    #expect(model.presentedPlanTicketID == ticket.id)
+
+    // A second open reuses the session instead of duplicating it.
+    model.openOutput(output, ticketID: ticket.id)
+    #expect(model.uiCanvasStore.sessions(taskID: ticket.id).count == 1)
+  }
+
   @Test("Task rename updates a loaded context and rejects an empty replacement")
   func taskRenamePropagation() async throws {
     let fixture = try await Fixture()

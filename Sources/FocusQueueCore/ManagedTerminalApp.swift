@@ -129,7 +129,7 @@ public enum TerminalCommandLauncher {
     // as WezTerm and Ghostty do. It runs in its own session: a watcher left
     // on the tty would make Terminal ask before every manual close.
     let closer = "/usr/bin/perl -e \(shellQuote(windowCloser)) -- \"$$\" \"$fq_tty\" "
-      + "\(shellQuote(findWindowScript)) \(shellQuote(closeWindowScript))"
+      + shellQuote(windowScript)
     let script = """
       #!/bin/zsh
       /bin/rm -f -- \(shellQuote(file.path))
@@ -151,58 +151,72 @@ public enum TerminalCommandLauncher {
   /// Records the window while its tab is live (a finished tab keeps a stale
   /// tty name), waits for the command's process, then closes that window.
   /// The second fork detaches it from tmux, or Terminal titles the window
-  /// "tmux ▸ perl".
+  /// "tmux ▸ perl". Several Terminal processes can run at once and Apple
+  /// Events by name reach only one, so it addresses the ancestor that owns
+  /// this tty by pid.
   static let windowCloser = """
     use POSIX (); POSIX::setsid(); exit 0 if fork;
-    my ($pid, $tty, $find, $close) = @ARGV;
-    open(my $out, "-|", "/usr/bin/osascript", "-e", $find, $tty) or exit 1;
+    my ($pid, $tty, $script) = @ARGV;
+    my $terminal = $pid;
+    while ($terminal > 1) {
+      my ($parent, $command) = `/bin/ps -o ppid=,comm= -p $terminal` =~ /^\\s*(\\d+)\\s+(.*?)\\s*$/ or exit 1;
+      last if $command =~ m{/Terminal\\.app/Contents/MacOS/Terminal$};
+      $terminal = $parent;
+    }
+    exit 1 unless $terminal > 1;
+    my @osascript = ("/usr/bin/osascript", "-l", "JavaScript", "-e", $script);
+    open(my $out, "-|", @osascript, "find", $terminal, $tty) or exit 1;
     my $window = <$out>; close $out;
     exit 1 unless defined $window && $window =~ /^(\\d+)\\s*$/;
     my $id = $1;
     sleep 1 while kill 0, $pid;
-    exec "/usr/bin/osascript", "-e", $close, $id;
+    exec @osascript, "close", $terminal, $id;
     """
 
-  /// Windows are matched by id because index references shift while other
-  /// windows open, which fails the lookup when several agents launch at once.
-  static let findWindowScript = """
-    on run argv
-      tell application "Terminal"
-        repeat 20 times
-          try
-            set windowIDs to id of every window whose tty of tab 1 is item 1 of argv
-            repeat with i from 1 to count of windowIDs
-              set windowID to item i of windowIDs
-              if (count of processes of tab 1 of window id windowID) > 0 then return windowID as text
-            end repeat
-          end try
-          delay 0.25
-        end repeat
-      end tell
-      return ""
-    end run
-    """
-
-  /// Waits for the shell to finish so the close never prompts, and leaves a
-  /// window the user merged other tabs into: Terminal cannot close one tab.
-  static let closeWindowScript = """
-    on run argv
-      set windowID to (item 1 of argv) as integer
-      tell application "Terminal"
-        repeat 40 times
-          if not (exists window id windowID) then return
-          set w to window id windowID
-          -- A window the user already closed lingers, hidden, for a while.
-          if not ((visible of w) or (miniaturized of w)) then return
-          if (count of tabs of w) is not 1 then return
-          if (count of processes of tab 1 of w) is 0 then
-            close w
-            return
-          end if
-          delay 0.25
-        end repeat
-      end tell
-    end run
+  /// ScriptingBridge with raw codes from Terminal's dictionary, because
+  /// AppleScript and JXA can only name an application, not a process.
+  /// `find` matches by id, as index references shift while other windows
+  /// open. `close` waits for the shell to finish so the close never prompts,
+  /// and leaves a window the user merged other tabs into: Terminal cannot
+  /// close one tab.
+  static let windowScript = """
+    ObjC.import("ScriptingBridge");
+    const WINDOW = 0x6377696e, TAB = 0x74746162, ID = 0x49442020, TTY = 0x74747479;
+    const PROCESSES = 0x70726373, VISIBLE = 0x70766973, MINIATURIZED = 0x706d6e64;
+    const value = (object, code) => ObjC.unwrap(object.propertyWithCode(code).get);
+    // The bridge returns element counts as strings.
+    const count = array => Number(array.count);
+    const busy = tab => count(tab.propertyWithCode(PROCESSES).get) > 0;
+    function run([mode, pid, target]) {
+      const windows = $.SBApplication.applicationWithProcessIdentifier(Number(pid))
+        .elementArrayWithCode(WINDOW);
+      for (let attempt = 0; attempt < 40; attempt++) {
+        try {
+          if (mode === "find") {
+            for (let index = 0; index < count(windows); index++) {
+              const id = value(windows.objectAtIndex(index), ID);
+              const tabs = windows.objectWithID(id).elementArrayWithCode(TAB);
+              for (let tab = 0; tab < count(tabs); tab++) {
+                const item = tabs.objectAtIndex(tab);
+                if (value(item, TTY) === target && busy(item)) return String(id);
+              }
+            }
+          } else {
+            const window = windows.objectWithID(Number(target));
+            // A window the user already closed lingers, hidden, for a while.
+            if (!value(window, VISIBLE) && !value(window, MINIATURIZED)) return "";
+            const tabs = window.elementArrayWithCode(TAB);
+            if (count(tabs) !== 1) return "";
+            if (!busy(tabs.objectAtIndex(0))) {
+              window.sendEventIdParameters(0x636f7265, 0x636c6f73, 0);
+              return "closed";
+            }
+          }
+        } catch (error) {}
+        delay(0.25);
+      }
+      return "";
+    }
     """
 
   static func shellQuote(_ value: String) -> String {

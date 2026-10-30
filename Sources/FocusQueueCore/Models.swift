@@ -1873,6 +1873,7 @@ public struct LocalState: Codable, Equatable, Sendable {
   public var appearance: QueueAppearance?
   public var accentStyle: QueueAccentStyle?
   public var minimizationPreference: QueueMinimizationPreference
+  public var isWindowPinned: Bool
   public var programLogWindowVisible: Bool
   public var agentSessions: [TaskAgentSession]
   public var lastStaleAgentSweepAt: Date?
@@ -1897,6 +1898,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     appearance: QueueAppearance? = nil,
     accentStyle: QueueAccentStyle? = nil,
     minimizationPreference: QueueMinimizationPreference = .fq,
+    isWindowPinned: Bool = false,
     programLogWindowVisible: Bool = false,
     agentSessions: [TaskAgentSession] = [],
     lastStaleAgentSweepAt: Date? = nil,
@@ -1915,6 +1917,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     self.appearance = appearance
     self.accentStyle = accentStyle
     self.minimizationPreference = minimizationPreference
+    self.isWindowPinned = isWindowPinned
     self.programLogWindowVisible = programLogWindowVisible
     self.agentSessions = agentSessions
     self.lastStaleAgentSweepAt = lastStaleAgentSweepAt
@@ -1997,6 +2000,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     case appearance
     case accentStyle
     case minimizationPreference
+    case isWindowPinned
     case programLogWindowVisible
     case agentSessions
     case viewedTicketIDs
@@ -2026,6 +2030,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     minimizationPreference =
       try container.decodeIfPresent(QueueMinimizationPreference.self, forKey: .minimizationPreference)
       ?? .fq
+    isWindowPinned = try container.decodeIfPresent(Bool.self, forKey: .isWindowPinned) ?? false
     programLogWindowVisible =
       try container.decodeIfPresent(Bool.self, forKey: .programLogWindowVisible) ?? false
     agentSessions =
@@ -2057,6 +2062,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     try container.encodeIfPresent(appearance, forKey: .appearance)
     try container.encodeIfPresent(accentStyle, forKey: .accentStyle)
     try container.encode(minimizationPreference, forKey: .minimizationPreference)
+    try container.encode(isWindowPinned, forKey: .isWindowPinned)
     try container.encode(programLogWindowVisible, forKey: .programLogWindowVisible)
     try container.encode(agentSessions, forKey: .agentSessions)
     try container.encodeIfPresent(viewedTicketIDs, forKey: .viewedTicketIDs)

@@ -347,6 +347,7 @@ final class QueueViewModel {
 
   @ObservationIgnored var placementHandler: ((QueueWindowPlacement) -> Void)?
   @ObservationIgnored var monitorSwitchHandler: (() -> Void)?
+  @ObservationIgnored var windowPinHandler: (() -> Void)?
   @ObservationIgnored var minimizeHandler: (() -> Void)?
   @ObservationIgnored var panelModeHandler: ((QueuePanelMode) -> Void)?
   @ObservationIgnored var reportVisibilityHandler: ((Bool) -> Void)?
@@ -5057,6 +5058,20 @@ final class QueueViewModel {
 
   func placeWindow(_ placement: QueueWindowPlacement) {
     placementHandler?(placement)
+  }
+
+  var isWindowPinned: Bool { localState.isWindowPinned }
+
+  func toggleWindowPin() {
+    localState.isWindowPinned.toggle()
+    windowPinHandler?()
+    persistLocalState()
+  }
+
+  var minimizationHelp: String {
+    let shortcut = hotkeyShortcut(for: .toggleMinimization)?.displayString ?? "⌘,"
+    let availability = toggleMinimizationHotkeyEnabled ? "" : " (disabled in Settings)"
+    return "Toggle minimization: \(shortcut)\(availability); right-click to choose how"
   }
 
   func switchMonitor() {

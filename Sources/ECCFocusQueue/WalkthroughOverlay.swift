@@ -6,7 +6,6 @@ import SwiftUI
 
 enum WalkthroughAnchorID: Hashable {
   case target(WalkthroughTarget)
-  case bar
 }
 
 struct WalkthroughAnchorKey: PreferenceKey {
@@ -42,41 +41,41 @@ extension EnvironmentValues {
   }
 }
 
-// MARK: Bar
+// MARK: Controls
 
-/// Back, Next, and Skip stay above the queue for the whole tour.
-struct WalkthroughBar: View {
+/// Progress, Skip, Back, and Next along the bottom of every tour card.
+private struct WalkthroughControls: View {
   let model: QueueViewModel
   let progress: WalkthroughProgress
 
+  private var nextTitle: String {
+    progress.isFirst ? "Start tour" : progress.isLast ? "Finish" : "Next"
+  }
+
   var body: some View {
-    HStack(spacing: 8) {
-      Image(systemName: "sparkles").font(.system(size: 12, weight: .bold)).foregroundStyle(.tint)
-      VStack(alignment: .leading, spacing: 3) {
-        Text("Tour · \(progress.step.kicker)").font(.system(size: 12, weight: .bold)).lineLimit(1)
+    VStack(spacing: 10) {
+      Divider().opacity(0.6)
+      HStack(spacing: 8) {
         ProgressView(value: Double(progress.position), total: Double(progress.count))
-          .progressViewStyle(.linear).frame(maxWidth: 120)
+          .progressViewStyle(.linear).frame(width: 64)
           .accessibilityLabel("Step \(progress.position) of \(progress.count)")
+        Text("\(progress.position)/\(progress.count)")
+          .font(.system(size: 10, weight: .semibold).monospacedDigit()).foregroundStyle(.secondary)
+        Button("Skip") { model.finishWalkthrough() }
+          .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
+          .help("Skip the tour. Replay it any time from the info menu.")
+        Spacer(minLength: 4)
+        if !progress.isFirst {
+          Button("Back") { withAnimation(.snappy) { model.retreatWalkthrough() } }
+            .controlSize(.small).help("Previous step")
+        }
+        Button(nextTitle) { withAnimation(.snappy) { model.advanceWalkthrough() } }
+          .buttonStyle(.borderedProminent).controlSize(.small)
+          .keyboardShortcut(progress.step.presentation == .card ? .defaultAction : nil)
+          .help(progress.isLast ? "End the tour" : "Next step")
       }
-      Text("\(progress.position)/\(progress.count)")
-        .font(.system(size: 10, weight: .semibold).monospacedDigit()).foregroundStyle(.secondary)
-      Spacer(minLength: 4)
-      Button("Back") { withAnimation(.snappy) { model.retreatWalkthrough() } }
-        .controlSize(.small).disabled(progress.isFirst)
-        .help("Previous step")
-      Button(progress.isLast ? "Finish" : "Next") { withAnimation(.snappy) { model.advanceWalkthrough() } }
-        .buttonStyle(.borderedProminent).controlSize(.small)
-        .help(progress.isLast ? "End the tour" : "Next step")
-      Button { model.finishWalkthrough() } label: {
-        Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
-      }
-      .buttonStyle(.plain).frame(width: 24, height: 24).contentShape(Rectangle())
-      .accessibilityLabel("Skip tour")
-      .help("Skip the tour. Replay it any time from the info menu.")
     }
-    .padding(.horizontal, 12).padding(.vertical, 8)
-    .walkthroughSurface(radius: 14)
-    .anchorPreference(key: WalkthroughAnchorKey.self, value: .bounds) { [.bar: $0] }
+    .padding(.top, 2)
   }
 }
 
@@ -90,34 +89,31 @@ struct WalkthroughOverlay: View {
   var body: some View {
     GeometryReader { proxy in
       let size = proxy.size
-      let bar = anchors[.bar].map { proxy[$0] }
       switch progress.step.presentation {
       case .card:
         ZStack {
-          WalkthroughDimShape(hole: .zero, bar: bar)
-            .fill(Color.black.opacity(0.42), style: FillStyle(eoFill: true))
-            .contentShape(WalkthroughDimShape(hole: .zero, bar: bar), eoFill: true)
+          Rectangle()
+            .fill(Color.black.opacity(0.6))
+            .contentShape(Rectangle())
             .onTapGesture {}
-          WalkthroughCard(model: model, step: progress.step)
+          WalkthroughCard(model: model, progress: progress)
             .frame(maxWidth: min(size.width - 28, 430))
-            .frame(maxHeight: max(size.height - (bar?.maxY ?? 0) - 24, 200))
-            .padding(.top, (bar?.maxY ?? 0) + 8)
-            .padding(.bottom, 12)
+            .frame(maxHeight: max(size.height - 24, 200))
+            .padding(.vertical, 12)
             .id(progress.step)
             .transition(.opacity.combined(with: .scale(scale: 0.97)))
         }
       case .spotlight(let target):
         let rect = anchors[.target(target)].map { proxy[$0] }
-          .flatMap { visibleHole($0, size: size, bar: bar) }
+          .flatMap { visibleHole($0, size: size) }
         ZStack(alignment: .topLeading) {
-          WalkthroughDimShape(hole: rect ?? .zero, bar: bar)
-            .fill(Color.black.opacity(0.38), style: FillStyle(eoFill: true))
+          WalkthroughDimShape(hole: rect ?? .zero)
+            .fill(Color.black.opacity(0.55), style: FillStyle(eoFill: true))
             .allowsHitTesting(false)
           if let rect {
             WalkthroughRing(rect: rect).allowsHitTesting(false)
           }
-          WalkthroughCallout(model: model, progress: progress, hole: rect, size: size,
-            top: (bar?.maxY ?? 0) + 8)
+          WalkthroughCallout(model: model, progress: progress, hole: rect, size: size, top: 8)
         }
         .animation(.snappy(duration: 0.3), value: rect)
       }
@@ -126,19 +122,17 @@ struct WalkthroughOverlay: View {
 
   /// Pads the control and drops it when it sits off screen, such as a task
   /// card scrolled out of view, so the callout explains instead.
-  private func visibleHole(_ rect: CGRect, size: CGSize, bar: CGRect?) -> CGRect? {
+  private func visibleHole(_ rect: CGRect, size: CGSize) -> CGRect? {
     let padded = rect.insetBy(dx: -6, dy: -6)
     let visible = padded.intersection(CGRect(origin: .zero, size: size))
     guard !visible.isNull, visible.height >= 16, visible.width >= 16 else { return nil }
-    if let bar, visible.maxY <= bar.maxY { return nil }
     return visible
   }
 }
 
-/// The dimmed layer with holes for the spotlighted control and the tour bar.
+/// The dimmed layer with a hole for the spotlighted control.
 private struct WalkthroughDimShape: Shape {
   var hole: CGRect
-  var bar: CGRect?
 
   var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, AnimatablePair<CGFloat, CGFloat>> {
     get { .init(.init(hole.origin.x, hole.origin.y), .init(hole.size.width, hole.size.height)) }
@@ -152,9 +146,6 @@ private struct WalkthroughDimShape: Shape {
     var path = Path(rect)
     if hole.width > 0, hole.height > 0 {
       path.addRoundedRect(in: hole, cornerSize: CGSize(width: 12, height: 12), style: .continuous)
-    }
-    if let bar {
-      path.addRoundedRect(in: bar, cornerSize: CGSize(width: 14, height: 14), style: .continuous)
     }
     return path
   }
@@ -266,6 +257,7 @@ private struct WalkthroughCalloutContent: View {
         }
         .padding(.top, 2)
       }
+      WalkthroughControls(model: model, progress: progress)
     }
     .padding(14)
     .walkthroughSurface(radius: 16)
@@ -402,7 +394,9 @@ struct WalkthroughLifecycleDiagram: View {
 
 private struct WalkthroughCard: View {
   let model: QueueViewModel
-  let step: WalkthroughStep
+  let progress: WalkthroughProgress
+
+  private var step: WalkthroughStep { progress.step }
 
   var body: some View {
     // Short cards size to their content; a short window scrolls instead of clipping.
@@ -436,6 +430,7 @@ private struct WalkthroughCard: View {
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
+      WalkthroughControls(model: model, progress: progress)
     }
     .padding(18)
   }
@@ -449,15 +444,9 @@ private struct WalkthroughWelcomeContent: View {
       feature("arrow.triangle.branch", "Every agent gets its own git worktree and tmux pane, cleaned up when the task is resolved.")
       feature("doc.text", "Each task has one central plan that every agent in it receives.")
       feature("bubble.left.and.bubble.right", "QChat manages tasks and agents when you'd rather ask than click.")
-      Text("About two minutes. Use Back and Next at the top, or skip and replay it later from the info menu.")
+      Text("About two minutes. Use Back and Next below, or skip and replay it later from the info menu.")
         .font(.system(size: 11)).foregroundStyle(.tertiary)
         .fixedSize(horizontal: false, vertical: true)
-      HStack {
-        Button("Skip tour") { model.finishWalkthrough() }.buttonStyle(.plain).foregroundStyle(.secondary)
-        Spacer()
-        Button("Start tour") { withAnimation(.snappy) { model.advanceWalkthrough() } }
-          .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
-      }
     }
     .padding(.top, 2)
   }

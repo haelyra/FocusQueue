@@ -181,15 +181,6 @@ struct QueueView: View {
     }
   }
 
-  @ViewBuilder private var queuePane: some View {
-    VStack(spacing: 8) {
-      if let progress = model.walkthrough {
-        WalkthroughBar(model: model, progress: progress)
-      }
-      queuePaneContent
-    }
-  }
-
   /// Puts the queue screen and tab a walkthrough step points at on screen.
   private func showWalkthroughStep(_ step: WalkthroughStep?) {
     guard let step else { return }
@@ -203,7 +194,7 @@ struct QueueView: View {
     }
   }
 
-  @ViewBuilder private var queuePaneContent: some View {
+  @ViewBuilder private var queuePane: some View {
     Group {
       if model.isPanelCollapsed {
         compactHeader

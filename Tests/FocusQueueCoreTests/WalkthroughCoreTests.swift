@@ -69,12 +69,12 @@ struct WalkthroughCoreTests {
     let fresh = try UICanvasDemo.install(supportDirectory: root, taskID: "FOC-1")
     let store = UICanvasStore(root: root)
     guard case .opened(let session) = try store.open(
-      file: fresh.path, taskID: "FOC-1", title: UICanvasDemo.title, viewport: "mobile",
+      file: fresh.path, taskID: "FOC-1", title: UICanvasDemo.title, viewport: "desktop",
       reopen: true, agentName: "Demo") else {
       Issue.record("Demo canvas did not open"); return
     }
     #expect(session.title == UICanvasDemo.title)
-    #expect(session.viewport == "mobile")
+    #expect(session.viewport == "desktop")
     #expect(store.sessions(taskID: "FOC-1").count == 1)
   }
 }

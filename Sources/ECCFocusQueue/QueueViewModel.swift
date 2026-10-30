@@ -5240,7 +5240,7 @@ final class QueueViewModel {
     do {
       let file = try UICanvasDemo.install(supportDirectory: paths.supportDirectory, taskID: ticket.id)
       guard case .opened(let session) = try uiCanvasStore.open(
-        file: file.path, taskID: ticket.id, title: UICanvasDemo.title, viewport: "mobile",
+        file: file.path, taskID: ticket.id, title: UICanvasDemo.title, viewport: "desktop",
         reopen: true, agentName: "Demo")
       else { return }
       handleUICanvasChange(ticketID: ticket.id, key: session.key, event: "open", root: nil)

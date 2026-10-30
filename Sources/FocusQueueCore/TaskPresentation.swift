@@ -95,7 +95,7 @@ public enum TaskFieldChoices {
 }
 
 public enum TaskTriagePolicy {
-  public static func date(from value: String?) -> Date? {
+  public static func date(from value: String?, timeZone: TimeZone = .autoupdatingCurrent) -> Date? {
     guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
     let fractional = ISO8601DateFormatter()
     fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -103,15 +103,21 @@ public enum TaskTriagePolicy {
     if let date = ISO8601DateFormatter().date(from: value) { return date }
     let day = DateFormatter()
     day.locale = Locale(identifier: "en_US_POSIX")
-    day.timeZone = TimeZone(secondsFromGMT: 0)
+    day.calendar = Calendar(identifier: .gregorian)
+    day.timeZone = timeZone
     day.dateFormat = "yyyy-MM-dd"
     return day.date(from: value)
   }
 
   public static func dateOnlyString(for date: Date) -> String {
+    dateOnlyString(for: date, timeZone: .autoupdatingCurrent)
+  }
+
+  public static func dateOnlyString(for date: Date, timeZone: TimeZone) -> String {
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    formatter.calendar = Calendar(identifier: .gregorian)
+    formatter.timeZone = timeZone
     formatter.dateFormat = "yyyy-MM-dd"
     return formatter.string(from: date)
   }

@@ -2399,7 +2399,7 @@ private struct RoutineRow: View {
   }
 }
 
-private struct CompletedTicketCard: View {
+struct CompletedTicketCard: View {
   let ticket: DashboardTicket
   let model: QueueViewModel
 
@@ -2571,8 +2571,8 @@ private struct CompletedTicketCard: View {
     VStack(alignment: .leading, spacing: 5) {
       DetailLabel(text: "Completion")
       completionField(label: "Status", value: ticket.status)
-      if let completionTimestamp = ticket.completionTimestamp {
-        completionField(label: "Closed", value: completionTimestamp)
+      if let completionDate = ticket.completionDateLabel {
+        completionField(label: "Closed", value: completionDate)
       }
       if let reason = ticket.completion?.reason, !reason.isEmpty {
         completionField(label: "Reason", value: reason)

@@ -536,6 +536,7 @@ final class QueueViewModel {
   private struct CompletedTicketsKey: Equatable {
     var tickets: [DashboardTicket]
     var today: String
+    var timeZone: TimeZone
   }
 
   private struct CompletedTicketLists {
@@ -546,7 +547,7 @@ final class QueueViewModel {
 
   private var completedTicketLists: CompletedTicketLists {
     let key = CompletedTicketsKey(tickets: projectTickets,
-      today: Self.dayFormatter.string(from: Date()))
+      today: Self.dayFormatter.string(from: Date()), timeZone: .current)
     return completedTicketsMemo.value(for: key) {
       // A completed task stays here even when its cleanup needs attention;
       // the card shows the cleanup message and a retry.
@@ -559,8 +560,8 @@ final class QueueViewModel {
           return $0.id > $1.id
         }
       return CompletedTicketLists(all: all,
-        today: all.filter { $0.completionDay == key.today },
-        past: all.filter { $0.completionDay != key.today })
+        today: all.filter { $0.completionDay(in: key.timeZone) == key.today },
+        past: all.filter { $0.completionDay(in: key.timeZone) != key.today })
     }
   }
 

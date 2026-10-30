@@ -19,7 +19,7 @@ struct DailyReportHistoryView: View {
               .font(.caption).foregroundStyle(snapshot.isUnread(report) ? Color.accentColor : .secondary)
               .accessibilityLabel(snapshot.isUnread(report) ? "Unread" : "Viewed")
             VStack(alignment: .leading, spacing: 3) {
-              Text("\(report.reportDate ?? String(report.finishedAt.prefix(10))) · \(report.status.rawValue.capitalized)")
+              Text("\(report.reportDate ?? TaskTriagePolicy.date(from: report.finishedAt).map(TokenUsageDay.key) ?? report.finishedAt) · \(report.status.rawValue.capitalized)")
                 .font(.callout.weight(.medium))
               Text(report.summary).font(.caption).foregroundStyle(.secondary).lineLimit(3)
             }

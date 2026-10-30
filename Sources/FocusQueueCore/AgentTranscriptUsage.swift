@@ -62,11 +62,14 @@ public enum AgentTranscriptUsage {
         var daily: [String: TokenBreakdown] = [:]
     }
 
-    private struct CacheKey: Hashable { let path: String; let size: Int; let modified: Date }
+    private struct CacheKey: Hashable {
+        let path: String; let size: Int; let modified: Date; let timeZone: TimeZone
+    }
     nonisolated(unsafe) private static var cache: [String: (CacheKey, FileUsage)] = [:]
     private static let cacheLock = NSLock()
 
-    public static func scan(_ sessions: [Session], home: URL = FileManager.default.homeDirectoryForCurrentUser)
+    public static func scan(_ sessions: [Session], home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                            timeZone: TimeZone = .current)
         -> [AgentSessionUsage] {
         let codexFiles = codexTranscripts(home: home)
         var seen = Set<String>()
@@ -79,13 +82,14 @@ public enum AgentTranscriptUsage {
             case "codex": files = codexFiles[sessionID].map { [$0] } ?? []
             default: files = []
             }
-            guard let main = files.first, let primary = usage(of: main, provider: session.provider) else {
+            guard let main = files.first,
+                  let primary = usage(of: main, provider: session.provider, timeZone: timeZone) else {
                 return nil
             }
             var totals = primary.totals
             var daily = primary.daily
             for extra in files.dropFirst() {
-                guard let usage = usage(of: extra, provider: session.provider) else { continue }
+                guard let usage = usage(of: extra, provider: session.provider, timeZone: timeZone) else { continue }
                 totals = totals + usage.totals
                 daily.merge(usage.daily, uniquingKeysWith: +)
             }
@@ -131,17 +135,17 @@ public enum AgentTranscriptUsage {
         return files
     }
 
-    static func usage(of url: URL, provider: String) -> FileUsage? {
+    static func usage(of url: URL, provider: String, timeZone: TimeZone = .current) -> FileUsage? {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = attributes[.size] as? Int, let modified = attributes[.modificationDate] as? Date
         else { return nil }
-        let key = CacheKey(path: url.path, size: size, modified: modified)
+        let key = CacheKey(path: url.path, size: size, modified: modified, timeZone: timeZone)
         cacheLock.lock()
         let cached = cache[url.path]
         cacheLock.unlock()
         if let cached, cached.0 == key { return cached.1 }
         guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
-        let parsed = provider == "claude" ? parseClaude(data) : parseCodex(data)
+        let parsed = provider == "claude" ? parseClaude(data, timeZone: timeZone) : parseCodex(data, timeZone: timeZone)
         cacheLock.lock()
         cache[url.path] = (key, parsed)
         cacheLock.unlock()
@@ -151,7 +155,7 @@ public enum AgentTranscriptUsage {
     /// Claude writes one line per content block, each repeating the message's
     /// usage, so a message counts once by its ID. Lines can carry large tool
     /// output, so only the `usage` object, message ID, and timestamp are decoded.
-    static func parseClaude(_ data: Data) -> FileUsage {
+    static func parseClaude(_ data: Data, timeZone: TimeZone = .current) -> FileUsage {
         var result = FileUsage()
         var messages = Set<String>()
         forEachLine(in: data, containing: Array(#""usage":{"#.utf8)) { line in
@@ -163,13 +167,13 @@ public enum AgentTranscriptUsage {
                                         cacheWrite: usage["cache_creation_input_tokens"] as? Int ?? 0,
                                         output: output)
             record(tokens, context: tokens.input,
-                   timestamp: stringValue(after: #""timestamp":""#, in: line), into: &result)
+                   timestamp: stringValue(after: #""timestamp":""#, in: line), timeZone: timeZone, into: &result)
         }
         return result
     }
 
     /// Codex repeats `token_count` events; only a change in the running total is a new turn.
-    static func parseCodex(_ data: Data) -> FileUsage {
+    static func parseCodex(_ data: Data, timeZone: TimeZone = .current) -> FileUsage {
         var result = FileUsage()
         var previousTotal: [String: Any]?
         forEachLine(in: data, containing: Array(#""token_count""#.utf8)) { line in
@@ -186,18 +190,18 @@ public enum AgentTranscriptUsage {
                                         cacheWrite: last["cache_write_input_tokens"] as? Int ?? 0,
                                         output: last["output_tokens"] as? Int ?? 0)
             if let window = info["model_context_window"] as? Int { result.contextWindow = window }
-            record(tokens, context: input, timestamp: object["timestamp"] as? String, into: &result)
+            record(tokens, context: input, timestamp: object["timestamp"] as? String, timeZone: timeZone, into: &result)
         }
         return result
     }
 
-    private static func record(_ tokens: TokenBreakdown, context: Int, timestamp: String?,
+    private static func record(_ tokens: TokenBreakdown, context: Int, timestamp: String?, timeZone: TimeZone,
                                into result: inout FileUsage) {
         result.turns += 1
         if result.firstContext == 0 { result.firstContext = context }
         result.peakContext = max(result.peakContext, context)
         result.totals = result.totals + tokens
-        let day = timestamp.flatMap(parseTimestamp).map(TokenUsageDay.key) ?? "unknown"
+        let day = timestamp.flatMap(parseTimestamp).map { TokenUsageDay.key($0, timeZone: timeZone) } ?? "unknown"
         result.daily[day, default: TokenBreakdown()] = result.daily[day, default: TokenBreakdown()] + tokens
     }
 
@@ -264,15 +268,26 @@ public enum AgentTranscriptUsage {
 
 /// Local calendar days, so "today" matches the user's clock rather than UTC.
 public enum TokenUsageDay {
+    public static let rangeOptions = [1, 7, 14, 30]
+
     public static func key(_ date: Date) -> String {
-        let parts = Calendar.current.dateComponents([.year, .month, .day], from: date)
+        key(date, timeZone: .autoupdatingCurrent)
+    }
+
+    public static func key(_ date: Date, timeZone: TimeZone) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
         return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
     }
 
     /// The last `count` day keys, oldest first, ending today.
-    public static func recent(_ count: Int, now: Date = Date()) -> [String] {
-        (0..<count).reversed().compactMap { offset in
-            Calendar.current.date(byAdding: .day, value: -offset, to: now).map(key)
+    public static func recent(_ count: Int, now: Date = Date(), timeZone: TimeZone = .autoupdatingCurrent) -> [String] {
+        guard count > 0 else { return [] }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        return (0..<count).reversed().compactMap { offset in
+            calendar.date(byAdding: .day, value: -offset, to: now).map { key($0, timeZone: timeZone) }
         }
     }
 }

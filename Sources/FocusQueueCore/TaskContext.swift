@@ -371,6 +371,11 @@ public struct TaskContext: Codable, Equatable, Sendable {
     public var managedWorktree = false
     public var subtasks: [TaskSubtask] = []
     public var lastPromptAt: Date? = nil
+    /// Most recent explicit context-viewer or agent-open interaction.
+    public var lastInteractionAt: Date? = nil
+    public var latestInteractionAt: Date? {
+        [lastPromptAt, lastInteractionAt].compactMap { $0 }.max()
+    }
     public var pinnedAt: Date? = nil
     /// Context-folder outputs the user opened or dismissed, keyed by relative
     /// path, with the modification date seen. A later edit marks one new again.
@@ -1304,6 +1309,27 @@ public actor TaskContextStore {
                 try Data(plan.utf8).write(to: planURL, options: .atomic)
             }
             return url
+        }
+    }
+
+    @discardableResult public func recordInteraction(
+        ticketID: String, at date: Date = Date()
+    ) throws -> TaskContext {
+        try locked(ticketID: ticketID) {
+            guard var context = try load(ticketID: ticketID) else { throw TaskContextError.missingContext(ticketID) }
+            guard date > (context.lastInteractionAt ?? .distantPast) else { return context }
+            let url = context.contextDirectory.appendingPathComponent("context.json")
+            guard var document = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any] else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            context.lastInteractionAt = date
+            context.updatedAt = Date()
+            // This narrow presentation update preserves future fields and agent records verbatim.
+            document["lastInteractionAt"] = date.timeIntervalSinceReferenceDate
+            document["updatedAt"] = context.updatedAt.timeIntervalSinceReferenceDate
+            try JSONSerialization.data(withJSONObject: document, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+                .write(to: url, options: .atomic)
+            return context
         }
     }
 

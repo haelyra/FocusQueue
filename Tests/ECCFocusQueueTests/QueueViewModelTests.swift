@@ -1301,6 +1301,29 @@ struct QueueViewModelTests {
     #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
   }
 
+  @Test("Native context opens reorder tasks immediately and survive restart")
+  func contextOpensRecordRecentInteraction() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    model.setQueueActivitySortMode(.recentInteraction)
+    model.openPlan(for: fixture.tickets[0])
+    try await eventually { !model.isPlanLoading }
+    let promptBefore = model.taskContexts["ECC-102"]?.lastPromptAt
+    let context = try #require(model.taskContexts["ECC-102"])
+    model.open(context.dataURL.path, ticketID: "ECC-102")
+    try await eventually { model.taskContexts["ECC-102"]?.lastInteractionAt != nil }
+    #expect(model.presentedPlanURL == context.dataURL)
+    #expect(model.openTickets.map(\.id) == ["ECC-102", "ECC-101"])
+    #expect(model.taskContexts["ECC-102"]?.lastPromptAt == promptBefore)
+    let restarted = await fixture.model(agent: ControlledQueueAgent())
+    restarted.setQueueActivitySortMode(.recentInteraction)
+    #expect(restarted.openTickets.map(\.id) == ["ECC-102", "ECC-101"])
+    // Reopening an already-viewed task must count again.
+    restarted.openPlan(for: fixture.tickets[0])
+    try await eventually { restarted.openTickets.first?.id == "ECC-101" }
+  }
+
   @Test("Viewed tasks and activity sort preference survive restart")
   func viewedTasksAndSortPreference() async throws {
     let fixture = try await Fixture()
@@ -2828,8 +2851,13 @@ struct QueueViewModelTests {
       identifyManagedAgent: { subtask, _ in subtask.sessionID })
     let subtask = try #require(model.subtasks(for: "ECC-101").first)
 
+    model.setQueueActivitySortMode(.recentInteraction)
+    model.openPlan(for: fixture.tickets[1])
+    try await eventually { model.openTickets.first?.id == "ECC-102" && !model.isPlanLoading }
     model.openSubtask(subtask, for: fixture.tickets[0])
     try await eventually { model.isOpening(subtask, ticketID: "ECC-101") }
+    try await eventually { model.openTickets.first?.id == "ECC-101" }
+    #expect(model.taskContexts["ECC-101"]?.lastInteractionAt != nil)
     let session = try #require(model.session(for: subtask, ticketID: "ECC-101"))
     #expect(model.isOpening(session))
     await terminal.release()
@@ -2969,7 +2997,11 @@ struct QueueViewModelTests {
     let session = TaskAgentSession(ticketID: "ECC-101", provider: .codex,
       sessionID: UUID().uuidString, tabTitle: "Historical", workingDirectory: fixture.root.path,
       resumePrompt: "Automatically start implementing again", tmux: runtime)
+    model.setQueueActivitySortMode(.recentInteraction)
+    model.openPlan(for: fixture.tickets[1])
+    try await eventually { model.openTickets.first?.id == "ECC-102" && !model.isPlanLoading }
     model.viewAgent(session, for: fixture.tickets[0])
+    try await eventually { model.openTickets.first?.id == "ECC-101" }
     try await eventually { model.actionMessages["ECC-101"]?.contains("Managed session") == true }
     let recalled = try #require(await recorder.sessions.first)
     #expect(recalled.workingDirectory == fixture.root.path)

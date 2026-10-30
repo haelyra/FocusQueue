@@ -156,13 +156,27 @@ struct ManagedTerminalAppTests {
       "/bin/zsh", "-lic", "command claude auth login"])
   }
 
-  @Test("WezTerm starts a fresh process running the command")
+  @Test("WezTerm starts a fresh process with the managed config that loads the user's own")
   func wezTermArguments() async throws {
+    let support = FileManager.default.temporaryDirectory
+      .appendingPathComponent("fq-terminal-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: support) }
     let runner = RecordingRunner()
     try await TerminalCommandLauncher.open(
-      ["/bin/echo", "hi"], configuration: .init(executable: "/mock/wezterm"), runner: runner)
+      ["/bin/echo", "hi"], configuration: .init(executable: "/mock/wezterm"),
+      supportDirectory: support, runner: runner)
     let call = try #require(await runner.calls.first)
-    #expect(call.arguments == ["-na", "WezTerm", "--args", "--skip-config", "start", "--always-new-process", "--",
-      "/bin/echo", "hi"])
+    let configFile = WezTermManagedConfig.fileURL(supportDirectory: support)
+    #expect(call.arguments == ["-na", "WezTerm", "--args", "--config-file", configFile.path,
+      "start", "--always-new-process", "--", "/bin/echo", "hi"])
+    let script = try String(contentsOf: configFile, encoding: .utf8)
+    // The handler must be registered before the user's config loads and stop
+    // later handlers, or a user gui-startup drops the attach command.
+    let handler = try #require(script.range(of: "wezterm.on(\"gui-startup\""))
+    let load = try #require(script.range(of: "pcall(dofile, path)"))
+    #expect(handler.lowerBound < load.lowerBound)
+    #expect(script.contains("wezterm.mux.spawn_window(cmd or {})"))
+    #expect(script.contains("return false"))
+    #expect(script.contains("os.getenv(\"FOCUS_QUEUE_WEZTERM_TAB_TITLE\")"))
   }
 }

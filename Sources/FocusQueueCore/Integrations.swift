@@ -465,6 +465,7 @@ public actor WezTermController: WezTermControlling {
     private let claudeRootOverride: URL?
     private let codexRootOverride: URL?
     private let kimiRootOverride: URL?
+    private let supportDirectory: URL
     private static let processSnapshotTTL: TimeInterval = 3
     private var processSnapshots: [String: (fetchedAt: Date, result: ProcessResult)] = [:]
     private var processSnapshotTasks: [String: Task<ProcessResult, Error>] = [:]
@@ -472,8 +473,9 @@ public actor WezTermController: WezTermControlling {
 
     public init(runner: any ProcessRunning = FoundationProcessRunner(), candidateSockets: [String]? = nil,
                 verificationAttempts: Int = 10, claudeRoot: URL? = nil, codexRoot: URL? = nil,
-                kimiRoot: URL? = nil) {
+                kimiRoot: URL? = nil, supportDirectory: URL? = nil) {
         self.runner = runner
+        self.supportDirectory = supportDirectory ?? TmuxPersistence.defaultSupportDirectory()
         self.candidateSockets = candidateSockets
         self.labelAttempts = max(1, min(verificationAttempts, 10))
         self.claudeRootOverride = claudeRoot
@@ -831,7 +833,8 @@ public actor WezTermController: WezTermControlling {
         try await runtime.select(live)
         if configuration.terminalApp.requiresTmux {
             let result = try await ManagedTerminalLauncher.open(
-                reference: live, configuration: configuration, runner: runner)
+                reference: live, titles: Self.managedTitles(taskID: taskID, taskTitle: taskTitle),
+                configuration: configuration, supportDirectory: supportDirectory, runner: runner)
             _ = try await runtime.verify(live)
             return result
         }
@@ -927,10 +930,14 @@ public actor WezTermController: WezTermControlling {
         // `wezterm start` stays in the foreground for the window's lifetime, so
         // running it directly let the runner's deadline kill the new window.
         // Launch Services owns the GUI instead; only the attach is awaited.
+        // The managed config keeps the user's appearance and labels the window.
+        let configFile = try WezTermManagedConfig.install(supportDirectory: supportDirectory)
         let started = try await runner.run(ProcessSpecification(
             executable: "/usr/bin/open",
-            arguments: ["-na", configuration.applicationName, "--args", "--skip-config", "start",
-                "--always-new-process", "--cwd", directory, "--"] + command,
+            arguments: WezTermManagedConfig.openArguments(
+                applicationName: configuration.applicationName, configFile: configFile,
+                titles: Self.managedTitles(taskID: taskID, taskTitle: taskTitle),
+                directory: directory, command: command),
             workingDirectory: directory, timeoutSeconds: 15))
         guard started.succeeded else {
             let detail = started.timedOut ? "the launch timed out" : Self.failureDetail(started)
@@ -947,6 +954,13 @@ public actor WezTermController: WezTermControlling {
         }
         throw WezTermError.actionFailed(
             "WezTerm did not attach to the saved tmux pane. Focus Queue did not open a fallback shell.")
+    }
+
+    /// The same labels a running WezTerm GUI gets through `cli set-*-title`.
+    private static func managedTitles(taskID: String, taskTitle: String) -> WezTermManagedConfig.Titles {
+        WezTermManagedConfig.Titles(
+            tab: AgentTerminalLabels.managedTabTitle(ticketID: taskID, taskTitle: taskTitle),
+            window: AgentTerminalLabels.windowTitle(ticketID: taskID.uppercased(), taskTitle: taskTitle))
     }
 
     private func waitForManagedClient(

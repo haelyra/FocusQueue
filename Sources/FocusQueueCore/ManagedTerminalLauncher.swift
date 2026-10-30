@@ -9,12 +9,16 @@ import Foundation
 enum ManagedTerminalLauncher {
   static func open(
     reference: TmuxSessionReference,
+    titles: WezTermManagedConfig.Titles,
     configuration: WezTermConfiguration,
+    supportDirectory: URL,
     runner: any ProcessRunning
   ) async throws -> TerminalActionResult {
     let attach = try TmuxController.attachCommand(reference: reference)
     do {
-      try await TerminalCommandLauncher.open(attach, configuration: configuration, runner: runner)
+      try await TerminalCommandLauncher.open(
+        attach, configuration: configuration, titles: titles,
+        supportDirectory: supportDirectory, runner: runner)
     } catch WezTermError.actionFailed(let detail) {
       throw WezTermError.actionFailed("The managed agent is still running, but \(detail)")
     }

@@ -186,9 +186,13 @@ struct ManagedSessionRecallTests {
       tmux: reference, runtimeMode: .tmux)
     subtask.workspace = AgentWorkspace(path: "/tmp", repositoryPath: "/tmp")
 
+    let support = FileManager.default.temporaryDirectory
+      .appendingPathComponent("fq-recall-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: support) }
+
     let action = try await WezTermController(
-      runner: runner, candidateSockets: []).openAgentRuntime(
-        subtask, taskID: "ECC-1",
+      runner: runner, candidateSockets: [], supportDirectory: support).openAgentRuntime(
+        subtask, taskID: "ECC-1", taskTitle: "Fix recall",
         configuration: .init(executable: "/mock/wezterm", applicationName: "WezTerm"))
 
     #expect(action == .spawned(paneID: nil))
@@ -196,9 +200,17 @@ struct ManagedSessionRecallTests {
     // Launch Services owns the GUI; a runner deadline must never close it.
     let started = try #require(calls.first { $0.executable == "/usr/bin/open" })
     #expect(started.workingDirectory == "/tmp")
+    // The managed config loads the user's own WezTerm settings and labels the
+    // window, instead of `--skip-config` defaults titled "tmux".
+    let configFile = WezTermManagedConfig.fileURL(supportDirectory: support)
     #expect(started.arguments.starts(with: [
-      "-na", "WezTerm", "--args", "--skip-config", "start", "--always-new-process", "--cwd", "/tmp", "--",
+      "-na", "WezTerm",
+      "--env", "FOCUS_QUEUE_WEZTERM_TAB_TITLE=Fix recall · tmux",
+      "--env", "FOCUS_QUEUE_WEZTERM_WINDOW_TITLE=Fix recall",
+      "--args", "--config-file", configFile.path, "start", "--always-new-process", "--cwd", "/tmp", "--",
     ]))
+    #expect(!started.arguments.contains("--skip-config"))
+    #expect(FileManager.default.fileExists(atPath: configFile.path))
     #expect(started.arguments.contains("attach-session"))
     #expect(started.arguments.contains("=fq-task-ecc-1"))
     #expect(started.arguments.contains("%7"))
@@ -216,13 +228,15 @@ struct ManagedSessionRecallTests {
 
     let result = try await WezTermController(
       runner: runner, candidateSockets: []).openAgentRuntime(
-        subtask, taskID: "ECC-1",
+        subtask, taskID: "ECC-1", taskTitle: "Fix recall",
         configuration: .init(executable: "/mock/wezterm", applicationName: "Ghostty"))
 
     #expect(result == .spawned(paneID: nil))
     let calls = await runner.calls
     let opened = try #require(calls.first { $0.executable == "/usr/bin/open" })
-    #expect(opened.arguments.starts(with: ["-na", "Ghostty", "--args", "--quit-after-last-window-closed=true", "-e"]))
+    #expect(opened.arguments.starts(with: [
+      "-na", "Ghostty", "--args", "--quit-after-last-window-closed=true", "--title=Fix recall", "-e",
+    ]))
     #expect(opened.arguments.contains("/mock/tmux"))
     #expect(opened.arguments.contains("attach-session"))
     #expect(opened.arguments.contains("=fq-task-ecc-1"))
@@ -239,7 +253,7 @@ struct ManagedSessionRecallTests {
 
     let result = try await WezTermController(
       runner: runner, candidateSockets: []).openAgentRuntime(
-        subtask, taskID: "ECC-1",
+        subtask, taskID: "ECC-1", taskTitle: "Fix recall",
         configuration: .init(executable: "/mock/wezterm", applicationName: "Terminal"))
 
     #expect(result == .spawned(paneID: nil))
@@ -253,6 +267,7 @@ struct ManagedSessionRecallTests {
     #expect(script.contains("'attach-session'"))
     #expect(script.contains("'=fq-task-ecc-1'"))
     #expect(script.contains("'%7'"))
+    #expect(script.contains("printf '\\033]0;%s\\007' 'Fix recall'\nexec "))
     #expect(!calls.contains { $0.executable == "/mock/wezterm" })
     let syntax = try await FoundationProcessRunner().run(.init(
       executable: "/bin/zsh", arguments: ["-n", scriptPath], timeoutSeconds: 10))
@@ -361,14 +376,20 @@ struct ManagedSessionRecallTests {
       result(output), result(output), result(), result(), result(exit: 1), result(), result(exit: 1),
     ])
 
+    let support = FileManager.default.temporaryDirectory
+      .appendingPathComponent("fq-recall-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: support) }
+
     await #expect(throws: WezTermError.self) {
-      try await WezTermController(runner: runner, candidateSockets: []).focusOrResume(
+      try await WezTermController(runner: runner, candidateSockets: [], supportDirectory: support).focusOrResume(
         session: session(), taskID: "ECC-1", configuration: .init(executable: "/mock/wezterm"))
     }
     let calls = await runner.calls
     let opened = calls.filter { $0.executable == "/usr/bin/open" }
     #expect(opened.count == 1)
-    #expect(opened.first?.arguments.starts(with: ["-na", "WezTerm", "--args", "--skip-config", "start"]) == true)
+    #expect(opened.first?.arguments.starts(with: ["-na", "WezTerm"]) == true)
+    #expect(opened.first?.arguments.contains("--config-file") == true)
+    #expect(opened.first?.arguments.contains("--skip-config") == false)
     #expect(!calls.flatMap(\.arguments).contains("resume"))
     #expect(!calls.flatMap(\.arguments).contains("new-session"))
     #expect(!calls.contains { $0.executable == "/usr/sbin/lsof" || $0.executable == "/bin/ps" })
@@ -451,8 +472,10 @@ struct ManagedSessionRecallTests {
     #expect(await runner.calls.count == 5)
   }
 
-  /// Opt-in: needs WezTerm installed and no WezTerm GUI running, as after a
-  /// restart. The window must outlive the launch command's 15-second deadline.
+  /// Opt-in: needs WezTerm installed. An absent socket forces the path a
+  /// restart takes, with no WezTerm GUI running. The window must outlive the
+  /// launch command's 15-second deadline, attach through the user's own
+  /// WezTerm config, and carry the task labels instead of "tmux".
   @Test("Live: recall without a WezTerm GUI keeps the new window attached",
     .enabled(if: ProcessInfo.processInfo.environment["ECC_FOCUS_QUEUE_LIVE_TERMINAL_TESTS"] == "1"))
   func liveRecallWithoutGUIKeepsWindow() async throws {
@@ -463,12 +486,33 @@ struct ManagedSessionRecallTests {
     let reference = try await controller.start(
       name: name, directory: "/tmp", command: ["/bin/sleep", "600"], executable: tmux)
     do {
-      let result = try await WezTermController().openManagedRuntime(
-        reference, taskID: "FOC-077", provider: .claude,
-        configuration: .init(executable: wezterm, applicationName: "WezTerm"))
+      // A socket with no GUI behind it is what a restart leaves; probing it
+      // fails fast and recall takes the cold-start path.
+      let absent = FileManager.default.temporaryDirectory
+        .appendingPathComponent("fq-absent-\(UUID().uuidString.prefix(8))").path
+      let result = try await WezTermController(candidateSockets: []).openManagedRuntime(
+        reference, taskID: "FOC-077", provider: .claude, taskTitle: "Live recall check",
+        configuration: .init(executable: wezterm, applicationName: "WezTerm", socketPath: absent))
       #expect(result == .spawned(paneID: nil))
       try await Task.sleep(for: .seconds(20))
       #expect(try await controller.clientTTYs(for: reference).count == 1)
+
+      let runner = FoundationProcessRunner()
+      let processes = try await runner.run(.init(
+        executable: "/usr/bin/pgrep", arguments: ["-f", "wezterm-gui.*--config-file.*\(name)"],
+        timeoutSeconds: 5))
+      let pid = try #require(processes.standardOutput.split(separator: "\n").first.map(String.init))
+      let socket = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".local/share/wezterm/gui-sock-\(pid)").path
+      let listed = try await runner.run(.init(
+        executable: wezterm, arguments: ["cli", "list", "--format", "json"],
+        environment: ["WEZTERM_UNIX_SOCKET": socket], timeoutSeconds: 10))
+      let panes = try #require(JSONSerialization.jsonObject(
+        with: Data(listed.standardOutput.utf8)) as? [[String: Any]])
+      #expect(panes.count == 1)
+      #expect(panes.first?["tab_title"] as? String == "Live recall check · tmux")
+      #expect(panes.first?["window_title"] as? String == "Live recall check")
+      _ = try? await runner.run(.init(executable: "/bin/kill", arguments: [pid], timeoutSeconds: 5))
     } catch {
       try? await controller.stop(reference)
       throw error

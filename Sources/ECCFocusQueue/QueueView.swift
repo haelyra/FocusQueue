@@ -1708,6 +1708,8 @@ struct QueueSettingsView: View {
             detail: "Each task runs its agents as panes in one shared tmux session."
           ) {
             VStack(alignment: .leading, spacing: 12) {
+              TerminalAppSetting(model: model)
+              Divider()
               Stepper(value: Binding(
                 get: { model.agentsPerWindow },
                 set: { model.setAgentsPerWindow($0) }
@@ -2100,6 +2102,52 @@ struct QueueSettingsView: View {
         horizontal: false, vertical: true)
       content()
     }.padding(16).frame(maxWidth: .infinity, alignment: .leading).notificationSurface(radius: 18)
+  }
+}
+
+/// Which desktop terminal opens agent panes. The choice applies to the next
+/// agent opened; windows already open stay where they are.
+private struct TerminalAppSetting: View {
+  let model: QueueViewModel
+  @State private var installed: Set<ManagedTerminalApp> = []
+
+  private var selected: ManagedTerminalApp { model.config.wezTerm.terminalApp }
+  private var hasTmux: Bool {
+    (model.config.tmuxExecutable ?? SetupEnvironment.executable("tmux"))
+      .map { FileManager.default.isExecutableFile(atPath: $0) } ?? false
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text("Terminal app")
+      Picker("Terminal app", selection: Binding(
+        get: { selected },
+        set: { model.setManagedTerminal($0) }
+      )) {
+        ForEach(ManagedTerminalApp.allCases) { Text($0.displayName).tag($0) }
+      }.pickerStyle(.segmented).labelsHidden()
+      Text("\(selected.summary) Your own \(selected.displayName) settings apply. Takes effect the next time you open an agent.")
+        .font(.caption).foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      if !installed.contains(selected) {
+        HStack(spacing: 6) {
+          Label("\(selected.displayName) is not installed.", systemImage: "exclamationmark.triangle")
+            .font(.caption).foregroundStyle(.orange)
+          if let url = selected.downloadURL {
+            Link("Get it", destination: url).font(.caption.weight(.semibold))
+          }
+        }
+      } else if selected.requiresTmux && !hasTmux {
+        Label("\(selected.displayName) needs tmux. Install it with brew install tmux.",
+          systemImage: "exclamationmark.triangle")
+          .font(.caption).foregroundStyle(.orange)
+      }
+    }
+    .onAppear {
+      installed = Set(ManagedTerminalApp.allCases.filter {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.bundleIdentifier) != nil
+      })
+    }
   }
 }
 

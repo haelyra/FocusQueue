@@ -65,9 +65,13 @@ extension WezTermConfiguration {
 /// Opens a new desktop terminal window that runs one command. Used for
 /// managed tmux attach and for provider sign-in.
 public enum TerminalCommandLauncher {
+  /// `titles` labels the new window; without them the terminal shows its
+  /// own default, which for a tmux attach is just "tmux".
   public static func open(
     _ command: [String],
     configuration: WezTermConfiguration,
+    titles: WezTermManagedConfig.Titles? = nil,
+    supportDirectory: URL = TmuxPersistence.defaultSupportDirectory(),
     runner: any ProcessRunning = FoundationProcessRunner()
   ) async throws {
     let app = configuration.terminalApp
@@ -75,16 +79,20 @@ public enum TerminalCommandLauncher {
     let arguments: [String]
     switch app {
     case .terminal:
-      let file = try makeTerminalCommand(command)
+      let file = try makeTerminalCommand(command, title: titles?.window)
       commandFile = file
       arguments = ["-na", "Terminal", file.path]
     case .ghostty:
       // Each `open -n` starts its own Ghostty process; quitting with its last
       // window keeps one-off launches from leaving idle instances behind.
-      arguments = ["-na", "Ghostty", "--args", "--quit-after-last-window-closed=true", "-e"] + command
+      // Ghostty still reads the user's own config; `--title` only pins the label.
+      arguments = ["-na", "Ghostty", "--args", "--quit-after-last-window-closed=true"]
+        + (titles.map { ["--title=\($0.window)"] } ?? []) + ["-e"] + command
     case .wezTerm:
-      arguments = ["-na", configuration.applicationName, "--args",
-        "--skip-config", "start", "--always-new-process", "--"] + command
+      let configFile = try WezTermManagedConfig.install(supportDirectory: supportDirectory)
+      arguments = WezTermManagedConfig.openArguments(
+        applicationName: configuration.applicationName, configFile: configFile,
+        titles: titles, directory: nil, command: command)
     }
     let result = try await runner.run(ProcessSpecification(
       executable: "/usr/bin/open", arguments: arguments, timeoutSeconds: 15))
@@ -95,7 +103,7 @@ public enum TerminalCommandLauncher {
     }
   }
 
-  static func makeTerminalCommand(_ command: [String]) throws -> URL {
+  static func makeTerminalCommand(_ command: [String], title: String? = nil) throws -> URL {
     let files = FileManager.default
     let directory = files.temporaryDirectory.appendingPathComponent(
       "focus-queue-terminal-\(geteuid())", isDirectory: true)
@@ -112,10 +120,12 @@ public enum TerminalCommandLauncher {
 
     let file = directory.appendingPathComponent("\(UUID().uuidString.lowercased()).command")
     let words = command.map(shellQuote).joined(separator: " ")
+    // Terminal has no title option; an OSC 0 sequence before tmux starts sets it.
+    let titleLine = title.map { "printf '\\033]0;%s\\007' \(shellQuote($0))\n" } ?? ""
     let script = """
       #!/bin/zsh
       /bin/rm -f -- \(shellQuote(file.path))
-      exec \(words)
+      \(titleLine)exec \(words)
       """ + "\n"
     do {
       try Data(script.utf8).write(to: file, options: .withoutOverwriting)

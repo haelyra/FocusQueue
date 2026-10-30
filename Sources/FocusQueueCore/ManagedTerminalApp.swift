@@ -81,7 +81,9 @@ public enum TerminalCommandLauncher {
     case .terminal:
       let file = try makeTerminalCommand(command, title: titles?.window)
       commandFile = file
-      arguments = ["-na", "Terminal", file.path]
+      // No `-n`: every extra Terminal process restores the saved windows
+      // again, and AppleScript can only reach one of them to close a window.
+      arguments = ["-a", "Terminal", file.path]
     case .ghostty:
       // Each `open -n` starts its own Ghostty process; quitting with its last
       // window keeps one-off launches from leaving idle instances behind.
@@ -122,10 +124,19 @@ public enum TerminalCommandLauncher {
     let words = command.map(shellQuote).joined(separator: " ")
     // Terminal has no title option; an OSC 0 sequence before tmux starts sets it.
     let titleLine = title.map { "printf '\\033]0;%s\\007' \(shellQuote($0))\n" } ?? ""
+    // Terminal keeps a window open after its shell exits unless the user's
+    // profile says otherwise, so a watcher closes it once the command ends,
+    // as WezTerm and Ghostty do. It runs in its own session: a watcher left
+    // on the tty would make Terminal ask before every manual close.
+    let closer = "/usr/bin/perl -e \(shellQuote(windowCloser)) -- \"$$\" \"$fq_tty\" "
+      + "\(shellQuote(findWindowScript)) \(shellQuote(closeWindowScript))"
     let script = """
       #!/bin/zsh
       /bin/rm -f -- \(shellQuote(file.path))
-      \(titleLine)exec \(words)
+      \(titleLine)if fq_tty=$(/usr/bin/tty); then
+        \(closer) >/dev/null 2>&1 </dev/null &!
+      fi
+      exec \(words)
       """ + "\n"
     do {
       try Data(script.utf8).write(to: file, options: .withoutOverwriting)
@@ -136,6 +147,63 @@ public enum TerminalCommandLauncher {
     }
     return file
   }
+
+  /// Records the window while its tab is live (a finished tab keeps a stale
+  /// tty name), waits for the command's process, then closes that window.
+  /// The second fork detaches it from tmux, or Terminal titles the window
+  /// "tmux ▸ perl".
+  static let windowCloser = """
+    use POSIX (); POSIX::setsid(); exit 0 if fork;
+    my ($pid, $tty, $find, $close) = @ARGV;
+    open(my $out, "-|", "/usr/bin/osascript", "-e", $find, $tty) or exit 1;
+    my $window = <$out>; close $out;
+    exit 1 unless defined $window && $window =~ /^(\\d+)\\s*$/;
+    my $id = $1;
+    sleep 1 while kill 0, $pid;
+    exec "/usr/bin/osascript", "-e", $close, $id;
+    """
+
+  /// Windows are matched by id because index references shift while other
+  /// windows open, which fails the lookup when several agents launch at once.
+  static let findWindowScript = """
+    on run argv
+      tell application "Terminal"
+        repeat 20 times
+          try
+            set windowIDs to id of every window whose tty of tab 1 is item 1 of argv
+            repeat with i from 1 to count of windowIDs
+              set windowID to item i of windowIDs
+              if (count of processes of tab 1 of window id windowID) > 0 then return windowID as text
+            end repeat
+          end try
+          delay 0.25
+        end repeat
+      end tell
+      return ""
+    end run
+    """
+
+  /// Waits for the shell to finish so the close never prompts, and leaves a
+  /// window the user merged other tabs into: Terminal cannot close one tab.
+  static let closeWindowScript = """
+    on run argv
+      set windowID to (item 1 of argv) as integer
+      tell application "Terminal"
+        repeat 40 times
+          if not (exists window id windowID) then return
+          set w to window id windowID
+          -- A window the user already closed lingers, hidden, for a while.
+          if not ((visible of w) or (miniaturized of w)) then return
+          if (count of tabs of w) is not 1 then return
+          if (count of processes of tab 1 of w) is 0 then
+            close w
+            return
+          end if
+          delay 0.25
+        end repeat
+      end tell
+    end run
+    """
 
   static func shellQuote(_ value: String) -> String {
     "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"

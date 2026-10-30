@@ -74,6 +74,7 @@ import UserNotifications
     super.init()
     self.panel = panel
     self.model = model
+    configureWindowPinning()
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
@@ -106,7 +107,7 @@ import UserNotifications
     model.placementHandler = { [weak self] placement in
       self?.positionPanelOnCurrentDisplay(placement, animated: true)
     }
-    model.windowPinHandler = { [weak self] in self?.persistDraggedPlacement() }
+    configureWindowPinning()
     model.monitorSwitchHandler = { [weak self] in self?.switchPanelMonitor() }
     model.panelModeHandler = { [weak self] mode in self?.setPanelMode(mode) }
     model.minimizeHandler = { [weak self] in self?.panel?.miniaturize(nil) }
@@ -168,6 +169,7 @@ import UserNotifications
     Task { [weak self] in
       guard let self else { return }
       await model.bootstrap()
+      applyWindowPinning()
       if !model.config.dailyReport.enabled {
         disableAutomaticDailyReports()
       }
@@ -400,11 +402,17 @@ import UserNotifications
     case .qchat: handleQChatHotkey()
     case .toggleMinimization:
       let wasMiniaturized = panel?.isMiniaturized == true
-      model.toggleMinimization(isMiniaturized: wasMiniaturized)
-      if wasMiniaturized {
-        panel?.deminiaturize(nil)
-        panel?.orderFrontRegardless()
-        model.setPanelVisible(true)
+      let isPinnedOnAnotherSpace = model.isWindowPinned && panel?.isOnActiveSpace == false
+      if wasMiniaturized || model.panelMode != .expanded || isPinnedOnAnotherSpace {
+        // Only this explicit shortcut may summon a pinned queue onto another Space.
+        withPanelOnActiveSpace { panel in
+          model.setPanelMode(.expanded)
+          panel.deminiaturize(nil)
+          panel.makeKeyAndOrderFront(nil)
+          model.setPanelVisible(true)
+        }
+      } else {
+        model.toggleMinimization()
       }
     }
   }
@@ -1051,6 +1059,34 @@ import UserNotifications
     } catch {}
   }
 
+  private func configureWindowPinning() {
+    model.windowPinHandler = { [weak self] in
+      self?.applyWindowPinning()
+      self?.persistDraggedPlacement()
+    }
+    applyWindowPinning()
+  }
+
+  private func applyWindowPinning() {
+    guard let panel else { return }
+    // Frame preservation alone cannot pin a panel that AppKit puts in every Space.
+    panel.level = model.isWindowPinned ? .normal : .floating
+    panel.collectionBehavior = model.isWindowPinned
+      ? [.managed, .fullScreenAuxiliary]
+      : [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+  }
+
+  /// Scope Space movement to an explicit minimization-shortcut reveal. Restore
+  /// the pin policy immediately so later app activation cannot keep following.
+  func withPanelOnActiveSpace(_ operation: (FocusPanel) -> Void) {
+    guard let panel else { return }
+    if model.isWindowPinned {
+      panel.collectionBehavior = [.moveToActiveSpace, .managed, .fullScreenAuxiliary]
+    }
+    defer { applyWindowPinning() }
+    operation(panel)
+  }
+
   private func createPanel() {
     let panel = FocusPanel(
       contentRect: NSRect(x: 0, y: 0, width: 440, height: 780),
@@ -1086,6 +1122,7 @@ import UserNotifications
     hostingView.layer?.backgroundColor = NSColor.clear.cgColor
     panel.contentView = hostingView
     self.panel = panel
+    applyWindowPinning()
     let terminalFocusController = TerminalFocusModeController(queuePanel: panel)
     terminalFocusController.stateDidChange = { [weak self] isActive in
       self?.exitTerminalFocusItem?.isHidden = !isActive

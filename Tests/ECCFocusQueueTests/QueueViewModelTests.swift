@@ -944,7 +944,31 @@ struct QueueViewModelTests {
       styleMask: [.titled, .resizable, .fullSizeContentView],
       backing: .buffered, defer: false)
     panel.setFrame(original, display: false)
+    // Reproduce the actual production panel's cross-Space defaults.
+    panel.level = .floating
+    panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
     let delegate = AppDelegate(panel: panel, model: model)
+    #expect(panel.level == .normal)
+    #expect(!panel.collectionBehavior.contains(.canJoinAllSpaces))
+    #expect(!panel.collectionBehavior.contains(.stationary))
+    for _ in 0..<3 {
+      model.toggleWindowPin()
+      #expect(!model.isWindowPinned)
+      #expect(panel.level == .floating)
+      #expect(panel.collectionBehavior.contains(.canJoinAllSpaces))
+      model.toggleWindowPin()
+      #expect(model.isWindowPinned)
+      #expect(panel.level == .normal)
+      #expect(!panel.collectionBehavior.contains(.canJoinAllSpaces))
+    }
+    delegate.withPanelOnActiveSpace { summonedPanel in
+      #expect(summonedPanel === panel)
+      #expect(summonedPanel.collectionBehavior.contains(.moveToActiveSpace))
+      #expect(!summonedPanel.collectionBehavior.contains(.canJoinAllSpaces))
+    }
+    #expect(!panel.collectionBehavior.contains(.moveToActiveSpace))
+    #expect(!panel.collectionBehavior.contains(.canJoinAllSpaces))
+    #expect(panel.level == .normal)
     model.panelModeHandler = { delegate.setPanelMode($0) }
     for preference in [QueueMinimizationPreference.fq, .topTask] {
       model.minimize(using: preference)

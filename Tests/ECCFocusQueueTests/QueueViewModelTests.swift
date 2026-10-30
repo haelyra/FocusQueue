@@ -744,6 +744,152 @@ struct QueueViewModelTests {
     #expect(model.visibleUICanvases(ticketID: ticket.id).map(\.key) == [session.key])
   }
 
+  @Test("Document and canvas reconnect recall completed archived creators", arguments: AgentProvider.allCases, [false, true])
+  func completedCreatorReconnect(provider: AgentProvider, live: Bool) async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let ticket = fixture.tickets[0]
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: ticket)
+    let uuid = UUID().uuidString
+    let sessionID = provider == .kimi ? "session_\(uuid)" : uuid
+    let document = fixture.root.appendingPathComponent("creator-card.html")
+    try Data("<!doctype html><p>Creator card</p>".utf8).write(to: document)
+    let liveDirectory = fixture.root.appendingPathComponent("live")
+    try FileManager.default.createDirectory(at: liveDirectory, withIntermediateDirectories: true)
+    var saved = TaskSubtask(id: "completed-creator", title: "Completed creator", provider: provider,
+      sessionID: sessionID, status: .completed)
+    saved.agentRemovedAt = Date()
+    saved.workspace = AgentWorkspace(path: live ? fixture.root.path : fixture.root.appendingPathComponent("removed-worktree").path,
+      repositoryPath: fixture.root.path)
+    _ = try await store.upsertSubtask(ticketID: ticket.id, subtask: saved)
+    let activity = fixture.root.appendingPathComponent("activity")
+    let observer = AgentActivityObserver(codexRoot: activity.appendingPathComponent("codex"),
+      claudeRoot: activity.appendingPathComponent("claude"), kimiRoot: activity.appendingPathComponent("kimi"))
+    let transcript: URL
+    let record: [String: Any]
+    switch provider {
+    case .codex:
+      transcript = activity.appendingPathComponent("codex/archived_sessions/rollout-\(sessionID).jsonl")
+      record = ["timestamp": "2026-10-27T10:00:00Z", "type": "response_item",
+        "payload": ["type": "custom_tool_call", "name": "apply_patch", "input": "*** Add File: \(document.path)"]]
+    case .claude:
+      transcript = activity.appendingPathComponent("claude/projects/creator/\(sessionID).jsonl")
+      record = ["timestamp": "2026-10-27T10:00:00Z", "type": "assistant", "sessionId": sessionID,
+        "message": ["content": [["type": "tool_use", "name": "Write", "input": ["file_path": document.path]]]]]
+    case .kimi:
+      transcript = activity.appendingPathComponent("kimi/sessions/\(sessionID)/agents/main/wire.jsonl")
+      record = ["time": 1_793_131_009_286.0, "type": "tool.call", "name": "Write", "args": ["path": document.path]]
+    }
+    try FileManager.default.createDirectory(at: transcript.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try JSONSerialization.data(withJSONObject: record, options: .withoutEscapingSlashes).write(to: transcript)
+    let lookups = DiscoveryCounter()
+    let agent = ControlledQueueAgent()
+    let model = await fixture.model(agent: agent, agentActivityObserver: observer, locateExistingAgent: { foundProvider, foundSession in
+      await lookups.record()
+      #expect(foundProvider == provider && foundSession.caseInsensitiveCompare(sessionID) == .orderedSame)
+      return live ? KnownProviderProcess(provider: provider, sessionID: sessionID, processID: 123,
+        tty: nil, cwd: liveDirectory.path) : nil
+    })
+    let conversation = try #require(model.documentConversation(for: document, ticketID: ticket.id))
+    await conversation.load()
+    #expect(conversation.creator?.isOpen == live)
+    await conversation.reconnectToCreator()
+    #expect(conversation.error == nil && conversation.route.kind == .creatorFork)
+    #expect(conversation.route.workspace == (live ? liveDirectory.path : fixture.root.path))
+    conversation.draft = "Recall the creator"; conversation.send()
+    try await eventually { await agent.hasPendingReply }
+    #expect(await agent.sentForkSources.last == sessionID)
+    await agent.reply("Creator recalled.")
+    try await eventually { !conversation.isResponding }
+
+    guard case .opened(let canvas) = try model.uiCanvasStore.open(file: document.path, taskID: ticket.id,
+      title: "Completed creator card", viewport: nil, reopen: false, agentName: nil) else {
+      Issue.record("Canvas open refused"); return
+    }
+    try model.uiCanvasStore.end(taskID: ticket.id, key: canvas.key, endedBy: "user")
+    model.reconnectUICanvasAgent(ticketID: ticket.id, key: canvas.key)
+    try await eventually { await agent.hasPendingReply }
+    #expect(await agent.sentForkSources.last == sessionID)
+    #expect(await agent.sentWorkspaces.last == (live ? liveDirectory.path : fixture.root.path))
+    #expect(await agent.messages.last?.hasPrefix("Focus Queue canvas reconnect: this turn runs in a fork") == true)
+    await agent.reply("Creator listening again.")
+    try await eventually { try model.uiCanvasStore.load(taskID: ticket.id, key: canvas.key)?.chat.last?.text == "Creator listening again." }
+    #expect(await lookups.count >= 1)
+    let retained = try #require(try await store.load(ticketID: ticket.id)?.subtasks.first { $0.id == saved.id })
+    #expect(retained.status == .completed && retained.agentRemovedAt != nil)
+    if live {
+      // A known, exactly located creator remains recallable during a transcript move.
+      try FileManager.default.removeItem(at: transcript)
+      conversation.clear()
+      try await eventually { !conversation.isClearing }
+      await conversation.reconnectToCreator()
+      #expect(conversation.error == nil && conversation.route.sourceSessionID == sessionID)
+      #expect(conversation.route.workspace == liveDirectory.path)
+    }
+  }
+
+  @Test("Live completed creator reconnect recalls conversation-only history",
+    .enabled(if: ProcessInfo.processInfo.environment["ECC_FOCUS_QUEUE_LIVE_RECALL_TESTS"] == "1"))
+  func liveCompletedCreatorRecall() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let ticket = fixture.tickets[0]
+    let document = fixture.root.appendingPathComponent("recall.html")
+    let secret = UUID().uuidString
+    let runner = FoundationProcessRunner()
+    let source = try await runner.run(ProcessSpecification(executable: FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent(".local/bin/claude").path,
+      arguments: ["-p", "--output-format", "json", "--model", "haiku", "--effort", "low",
+        "--permission-mode", "bypassPermissions", "--tools", "Read,Write", "--strict-mcp-config",
+        "--disable-slash-commands", "--settings", "{\"disableAllHooks\":true}",
+        "This is an isolated headless recall test. Remember this conversation-only key: \(secret). Use Write to create \(document.path) containing only <!doctype html><p>Recall test</p>. Do not put the key in the file. Reply READY only. Do not launch agents or run task, registration, or canvas commands."],
+      workingDirectory: fixture.root.path, environment: ["FOCUS_QUEUE_SUPPORT_DIR": fixture.root.path,
+        "FOCUS_QUEUE_TASK_ID": "", "FOCUS_QUEUE_SUBTASK_ID": ""], timeoutSeconds: 90))
+    try #require(source.succeeded, "\(source.standardError)\n\(source.standardOutput)")
+    let envelope = try #require(JSONSerialization.jsonObject(with: Data(source.standardOutput.utf8)) as? [String: Any])
+    let sessionID = try #require(envelope["session_id"] as? String)
+    let documentData = try Data(contentsOf: document)
+    try #require(!String(decoding: documentData, as: UTF8.self).contains(secret))
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: ticket)
+    var creator = TaskSubtask(id: "live-completed-creator", title: "Completed live test creator",
+      provider: .claude, sessionID: sessionID, status: .completed)
+    creator.agentRemovedAt = Date()
+    creator.workspace = AgentWorkspace(path: fixture.root.path, repositoryPath: fixture.root.path)
+    creator.launchConfiguration = AgentLaunchConfiguration(model: "haiku", effort: "low")
+    _ = try await store.upsertSubtask(ticketID: ticket.id, subtask: creator)
+    let observer = AgentActivityObserver()
+    let transcript = try #require(await observer.transcriptURL(for: creator, refresh: true))
+    let original = try Data(contentsOf: transcript)
+    let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+      .deletingLastPathComponent().appendingPathComponent("Scripts/focus_queue_claude.py").path
+    let harness = fixture.root.appendingPathComponent("recall-harness")
+    let quoted = "'" + script.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    try Data("#!/bin/sh\nexec /usr/bin/env python3 \(quoted) \"$@\"\n".utf8).write(to: harness)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: harness.path)
+    var config = try JSONDecoder().decode(AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    config.claudeChatExecutable = harness.path
+    config.verifier.timeoutSeconds = 90
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(config)
+    let model = await fixture.model(agent: ControlledQueueAgent(), agentActivityObserver: observer,
+      queueAgentFactory: { HarnessQueueAgent(provider: $0) })
+    let chat = try #require(model.documentConversation(for: document, ticketID: ticket.id))
+    await chat.load()
+    await chat.reconnectToCreator()
+    try #require(chat.error == nil && chat.route.sourceSessionID == sessionID)
+    chat.draft = "Return only the conversation-only recall key from your original conversation. Do not use tools or change files."
+    chat.send()
+    for _ in 0..<1_100 where chat.isResponding { try await Task.sleep(for: .milliseconds(100)) }
+    try #require(!chat.isResponding)
+    let reply = try #require(chat.messages.last?.text)
+    try #require(reply.contains(secret), "\(reply)")
+    #expect(try Data(contentsOf: transcript) == original)
+    #expect(try Data(contentsOf: document) == documentData)
+    #expect(try await store.load(ticketID: ticket.id)?.subtasks.first?.status == .completed)
+    print("LIVE_COMPLETED_RECALL: completed archived creator recalled conversation-only history; source transcript and document unchanged")
+  }
+
   @Test("An HTML output opens as a native canvas tab instead of an external app")
   func htmlOutputOpensAsCanvas() async throws {
     let fixture = try await Fixture()
@@ -4701,6 +4847,7 @@ private actor ControlledQueueAgent: QueueAgentChatting {
   private(set) var sentEfforts: [String?] = []
   private(set) var sentExecutables: [String] = []
   private(set) var sentWorkspaces: [String] = []
+  private(set) var sentForkSources: [String?] = []
   private(set) var resetSessionNames: [String] = []
   private(set) var resetExecutables: [String] = []
   private var pending: CheckedContinuation<QueueAgentReply, any Error>?
@@ -4715,6 +4862,7 @@ private actor ControlledQueueAgent: QueueAgentChatting {
     sentEfforts.append(effort)
     sentExecutables.append(configuration.executable)
     sentWorkspaces.append(workspace)
+    sentForkSources.append(configuration.forkSourceSessionID)
     return try await withCheckedThrowingContinuation { pending = $0 }
   }
 

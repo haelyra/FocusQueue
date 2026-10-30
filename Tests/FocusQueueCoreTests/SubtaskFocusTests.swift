@@ -211,6 +211,24 @@ struct SubtaskFocusTests {
         #expect(found.map { FileManager.default.fileExists(atPath: $0.path) } == true)
     }
 
+    @Test("Explicit reconnect retries a cached transcript miss immediately")
+    func reconnectRetriesMissingTranscript() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("recall-missing-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let archive = root.appendingPathComponent("codex/archived_sessions")
+        try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
+        let observer = AgentActivityObserver(codexRoot: root.appendingPathComponent("codex"),
+            claudeRoot: root.appendingPathComponent("claude"))
+        let sessionID = UUID().uuidString
+        let agent = TaskSubtask(id: "finished", title: "Finished", sessionID: sessionID, status: .completed)
+        #expect(await observer.transcriptURL(for: agent) == nil)
+        let transcript = archive.appendingPathComponent("rollout-\(sessionID).jsonl")
+        try Data("{}\n".utf8).write(to: transcript)
+        #expect(await observer.transcriptURL(for: agent) == nil, "Background polling retains its cooldown")
+        let found = await observer.transcriptURL(for: agent, refresh: true)
+        #expect(found?.resolvingSymlinksInPath().path == transcript.resolvingSymlinksInPath().path)
+    }
+
     @Test("Transcript polling reads only appended bytes and safely resets after truncation")
     func activityIncrementalReads() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("activity-incremental-\(UUID().uuidString)")

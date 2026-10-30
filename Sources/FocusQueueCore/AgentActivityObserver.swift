@@ -246,11 +246,14 @@ public actor AgentActivityObserver {
     }
 
     /// The provider transcript that records this agent's saved conversation.
-    public func transcriptURL(for agent: TaskSubtask) -> URL? {
+    public func transcriptURL(for agent: TaskSubtask, refresh: Bool = false) -> URL? {
         // Saved Kimi records may hold the bare UUID of a `session_<uuid>` directory.
         guard let sessionID = agent.sessionID,
               UUID(uuidString: sessionID) != nil || agent.provider.isValidSessionID(sessionID) else { return nil }
         let key = agent.provider.rawValue + ":" + sessionID.lowercased()
+        // An explicit reconnect must retry a previous miss immediately. Polling
+        // keeps its cooldown; directory stamps still reuse unchanged file lists.
+        if refresh { searchedAt[key] = nil }
         let roots = switch agent.provider {
         case .codex: ["sessions", "archived_sessions"].map { codexRoot.appendingPathComponent($0) }
         case .claude: [claudeRoot.appendingPathComponent("projects")]

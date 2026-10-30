@@ -2289,7 +2289,7 @@ final class QueueViewModel {
     } else {
       var candidates: [(agent: TaskSubtask, transcript: URL)] = []
       for agent in context.subtasks where agent.sessionID != nil && !agent.isAssignmentOnly {
-        if let transcript = await agentActivityObserver.transcriptURL(for: agent) {
+        if let transcript = await agentActivityObserver.transcriptURL(for: agent, refresh: true) {
           candidates.append((agent, transcript))
         }
       }
@@ -2301,10 +2301,8 @@ final class QueueViewModel {
       author = found
     }
     guard let agent = context.subtasks.first(where: { $0.id == author.subtaskID }),
-          agent.sessionID?.caseInsensitiveCompare(author.sessionID) == .orderedSame,
-          await agentActivityObserver.transcriptURL(for: agent) != nil else { return nil }
-    let running = agent.agentRemovedAt == nil
-      ? try? await locateExistingAgent(author.provider, author.sessionID) : nil
+          agent.provider == author.provider,
+          agent.sessionID?.caseInsensitiveCompare(author.sessionID) == .orderedSame else { return nil }
     // Kimi records may keep the bare UUID of a `session_<uuid>` session; a
     // Codex sub-agent thread forks through its lineage root, as it resumes.
     let forkSessionID = switch author.provider {
@@ -2312,6 +2310,11 @@ final class QueueViewModel {
     case .codex: CodexSessionLineage.root(of: author.sessionID)
     default: author.sessionID
     }
+    // Completion and archive flags describe the task record, not whether its
+    // exact provider conversation is still running or can be forked from disk.
+    let running = try? await locateExistingAgent(author.provider, forkSessionID)
+    let transcript = await agentActivityObserver.transcriptURL(for: agent, refresh: true)
+    guard running != nil || transcript != nil else { return nil }
     let savedWorkspace = [agent.workspace?.path, context.worktreePath, context.repositoryPath,
       context.projectRepositoryPath, config.workspacePath]
       .compactMap { $0 }
@@ -2645,8 +2648,8 @@ final class QueueViewModel {
     requestedUICanvas = UICanvasRequest(ticketID: ticketID, key: key)
   }
 
-  /// Asks the agent behind a canvas session to listen again: a fork of the
-  /// creating agent while it still runs, else a new chat agent for the task.
+  /// Recalls the canvas creator's saved conversation, including completed or
+  /// archived agents. Only an unknown creator starts a fresh task chat agent.
   /// An ended session the human reconnects is reopened first, matching the
   /// CLI's explicit-reopen rule. The reply lands in the canvas conversation.
   func reconnectUICanvasAgent(ticketID: String, key: String) {
@@ -2677,11 +2680,11 @@ final class QueueViewModel {
         let agent = queueAgent(for: provider)
         var prompt = Self.canvasReconnectPrompt(session: session, ticketID: ticketID)
         let workspace: String
-        if let creator, creator.isOpen {
-          // The creator's terminal keeps running; the fork answers here.
+        if let creator {
+          // A live or saved creator answers in a fork; its task stays complete.
           configuration.forkSourceSessionID = creator.forkSessionID
           prompt = Self.canvasForkPreamble + prompt
-          workspace = creator.liveWorkspace ?? config.workspacePath
+          workspace = creator.workspace ?? config.workspacePath
         } else {
           // A new route never inherits a session an earlier reconnect left behind.
           try await agent.reset(configuration: configuration)

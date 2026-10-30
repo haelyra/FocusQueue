@@ -197,6 +197,7 @@ struct TokenAnalyticsView: View, Equatable {
         Text("Calls")
         Text("Actual total")
         Text("Actual / run")
+        Text("Cached")
         Text("Focus Queue text / run")
       }
       .font(.caption.bold()).foregroundStyle(.secondary)
@@ -212,6 +213,9 @@ struct TokenAnalyticsView: View, Equatable {
           Text(row.actualTotal.map(compact) ?? row.step.actualNote)
             .foregroundStyle(row.actualTotal == nil ? .secondary : .primary)
           Text(row.actualAverage.map(compact) ?? "—")
+          Text(row.actualTotal.map { $0 > 0 ? "\(row.cachedInput * 100 / $0)%" : "—" } ?? "—")
+            .foregroundStyle(.secondary)
+            .help("Share of the actual total that was prompt-cache reads or writes: context the provider re-read, not new text")
           Text(row.estimatedAverage > 0 ? compact(row.estimatedAverage) : "—")
         }
         .font(.callout.monospacedDigit())
@@ -602,7 +606,7 @@ struct AnalyticsRange {
         let summary = PromptUsageSummary(events: bySource[step.source] ?? [])
         return StepRow(step: step, runs: summary.reportedRuns, attempts: summary.runs,
                        actualTotal: summary.actualTokens, actualAverage: summary.actualAverage,
-                       estimatedAverage: summary.estimatedAverage)
+                       cachedInput: summary.cachedInputTokens, estimatedAverage: summary.estimatedAverage)
       }
       let agentPoints = days.flatMap { day in TokenKind.allCases.map { kind in
         DayPoint(day: day, series: kind.title,
@@ -640,6 +644,8 @@ struct StepRow: Identifiable {
   let attempts: Int
   let actualTotal: Int?
   let actualAverage: Int?
+  /// Prompt-cache input inside `actualTotal`.
+  var cachedInput = 0
   let estimatedAverage: Int
   var id: String { step.source }
 }
@@ -723,7 +729,7 @@ struct TokenStep {
     TokenStep(source: "queue_chat", title: "Queue Chat",
               detail: "App instructions and queue state sent with each Queue Chat message.", color: Palette.slot(1)),
     TokenStep(source: "document_chat", title: "Document chat",
-              detail: "Quoted documents, plan, and history sent with a document question.", color: Palette.slot(2)),
+              detail: "Quoted documents, plan, and history sent with a document question. A creating-agent fork also re-reads that agent's whole conversation on every tool step.", color: Palette.slot(2)),
     TokenStep(source: "extraction", title: "data.md extraction",
               detail: "Reviews a prompt for durable facts to save.", color: Palette.slot(3)),
     TokenStep(source: "daily_report", title: "Daily report",

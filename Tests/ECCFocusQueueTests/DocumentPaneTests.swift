@@ -276,6 +276,16 @@ struct DocumentPaneTests {
         #expect(forked.message.hasPrefix(DocumentConversation.forkPreamble))
         #expect(await agents[.claude]!.resets == 1)
         #expect(chat.messages.last?.text == "claude reply")
+        // A fork already holds its plan, instruction files, and earlier turns; only the document and request are sent.
+        #expect(forked.message.contains("Report body") && forked.message.hasSuffix("User request:\nWhat does section two claim?"))
+        #expect(!forked.message.contains("<source path=\(String(reflecting: context.planPath))>"))
+        #expect(!forked.message.contains("AGENTS.md project instructions"))
+        chat.draft = "And section three?"
+        chat.send()
+        try await waitForReply(chat)
+        let followUp = try #require(await agents[.claude]!.requests.last)
+        #expect(followUp.message.hasSuffix("User request:\nAnd section three?"))
+        #expect(!followUp.message.contains("What does section two claim?"))
 
         // The started conversation keeps its fork even after the creator closes.
         creator.liveWorkspace = nil

@@ -543,8 +543,8 @@ struct DocumentConversationView: View {
         if route.kind == .creatorFork {
             let agent = route.sourceTitle.map { "“\($0)”" } ?? "The creating agent"
             return model.lockedRoute == nil
-                ? "\(agent) wrote this document. Messages go to a fork of its conversation, so its terminal is not interrupted."
-                : "Continues a fork of \(agent), which wrote this document."
+                ? "\(agent) wrote this document. Messages go to a fork of its conversation, so its terminal is not interrupted. Each message re-reads that whole conversation, so even a short question can use hundreds of thousands of tokens."
+                : "Continues a fork of \(agent), which wrote this document. Each message re-reads its whole conversation."
         }
         if model.lockedRoute != nil { return "This conversation started with a new agent." }
         if model.isResolvingCreator && model.creator == nil { return "Looking for the agent that created this document…" }

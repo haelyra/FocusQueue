@@ -26,13 +26,15 @@ struct TokenAnalyticsView: View, Equatable {
   @State private var selectedStepDay: String?
 
   init(supportDirectory: URL, sessions: [AgentTranscriptUsage.Session], scrolls: Bool = true,
-       events: [PromptUsageEvent] = [], agents: [AgentSessionUsage] = [], close: @escaping () -> Void) {
+       events: [PromptUsageEvent] = [], agents: [AgentSessionUsage] = [], rangeDays: Int = 14,
+       close: @escaping () -> Void) {
     self.supportDirectory = supportDirectory
     self.sessions = sessions
     self.scrolls = scrolls
     self.close = close
     _events = State(initialValue: events)
     _agents = State(initialValue: agents)
+    _rangeDays = State(initialValue: rangeDays)
     _ranges = State(initialValue: events.isEmpty && agents.isEmpty ? [:] : AnalyticsRange.build(events: events, agents: agents))
   }
 
@@ -53,7 +55,7 @@ struct TokenAnalyticsView: View, Equatable {
   private var content: some View {
     VStack(alignment: .leading, spacing: 16) {
       explanation
-      Text("Snapshot taken when opened. Reopen to update. Calls show reported usage / attempts; attempts without reports may have failed or been stopped.")
+      Text("Snapshot taken when opened. Reopen to update. Days follow your Mac's time zone; 1 day means today. Calls show reported usage / attempts; attempts without reports may have failed or been stopped.")
         .font(.caption).foregroundStyle(.secondary)
       summaryTiles
       agentDailyCard
@@ -78,9 +80,9 @@ struct TokenAnalyticsView: View, Equatable {
       if isLoading { ProgressView().controlSize(.small) }
       Spacer()
       Picker("Range", selection: $rangeDays) {
-        Text("7 days").tag(7)
-        Text("14 days").tag(14)
-        Text("30 days").tag(30)
+        ForEach(TokenUsageDay.rangeOptions, id: \.self) { days in
+          Text(days == 1 ? "1 day" : "\(days) days").tag(days)
+        }
       }
       .pickerStyle(.segmented).labelsHidden().fixedSize()
     }
@@ -229,7 +231,8 @@ struct TokenAnalyticsView: View, Equatable {
       providerTable
       if !top.isEmpty {
         HStack(alignment: .firstTextBaseline) {
-          Text("Largest agents · last \(rangeDays) days").font(.subheadline.bold())
+          Text(rangeDays == 1 ? "Largest agents · today" : "Largest agents · last \(rangeDays) days")
+            .font(.subheadline.bold())
           Spacer()
           Text("Dashed line: average \(compact(average)) across \(ranked.count) agents")
             .font(.caption).foregroundStyle(.secondary)
@@ -471,8 +474,9 @@ struct TokenAnalyticsView: View, Equatable {
     let sessions = sessions
     Task.detached(priority: .userInitiated) {
       let events = PromptUsageMetrics.load(in: support)
-      let agents = AgentTranscriptUsage.scan(sessions)
-      let ranges = AnalyticsRange.build(events: events, agents: agents)
+      let timeZone = TimeZone.current
+      let agents = AgentTranscriptUsage.scan(sessions, timeZone: timeZone)
+      let ranges = AnalyticsRange.build(events: events, agents: agents, timeZone: timeZone)
       await MainActor.run {
         self.ranges = ranges
         self.events = events
@@ -574,7 +578,7 @@ func compact(_ value: Int) -> String {
 }
 
 /// Preaggregated once off the UI thread. Scrolling and chart selection never scan events.
-private struct AnalyticsRange {
+struct AnalyticsRange {
   let days: [String]
   let measured: [PromptUsageEvent]
   let agents: [(AgentSessionUsage, TokenBreakdown)]
@@ -582,10 +586,12 @@ private struct AnalyticsRange {
   let agentPoints: [DayPoint]
   let stepPoints: [DayPoint]
 
-  static func build(events: [PromptUsageEvent], agents: [AgentSessionUsage]) -> [Int: Self] {
-    let byDay = Dictionary(grouping: events.filter { $0.runID != nil }, by: { TokenUsageDay.key($0.timestamp) })
-    return Dictionary(uniqueKeysWithValues: [7, 14, 30].map { count in
-      let days = TokenUsageDay.recent(count)
+  static func build(events: [PromptUsageEvent], agents: [AgentSessionUsage], now: Date = Date(),
+                    timeZone: TimeZone = .current) -> [Int: Self] {
+    let byDay = Dictionary(grouping: events.filter { $0.runID != nil },
+                           by: { TokenUsageDay.key($0.timestamp, timeZone: timeZone) })
+    return Dictionary(uniqueKeysWithValues: TokenUsageDay.rangeOptions.map { count in
+      let days = TokenUsageDay.recent(count, now: now, timeZone: timeZone)
       let measured = days.flatMap { byDay[$0] ?? [] }
       let bySource = Dictionary(grouping: measured, by: \.source)
       let active = agents.compactMap { agent -> (AgentSessionUsage, TokenBreakdown)? in
@@ -614,7 +620,7 @@ private struct AnalyticsRange {
   }
 }
 
-private struct DayPoint: Identifiable {
+struct DayPoint: Identifiable {
   let day: String
   let series: String
   let tokens: Int
@@ -628,7 +634,7 @@ private struct ContextSlice: Identifiable {
   var id: String { "\(group)|\(series)" }
 }
 
-private struct StepRow: Identifiable {
+struct StepRow: Identifiable {
   let step: TokenStep
   let runs: Int
   let attempts: Int
@@ -694,7 +700,7 @@ private enum ContextPart {
   }
 }
 
-private struct TokenStep {
+struct TokenStep {
   let source: String
   let title: String
   let detail: String

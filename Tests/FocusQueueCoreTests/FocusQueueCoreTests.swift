@@ -791,7 +791,7 @@ func completedTicketTimestamp() {
 
   #expect(canonical.isCompleted)
   #expect(canonical.completionTimestamp == "2026-08-30T14:00:00Z")
-  #expect(canonical.completionDay == "2026-08-30")
+  #expect(canonical.completionDay(in: TimeZone(secondsFromGMT: 0)!) == "2026-08-30")
   #expect(legacy.completionDay == "2026-08-28")
 }
 

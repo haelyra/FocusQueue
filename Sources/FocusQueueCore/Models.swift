@@ -1400,7 +1400,20 @@ public struct DashboardTicket: Codable, Identifiable, Equatable, Sendable {
   public var completionTimestamp: String? { completedAt ?? updatedAt }
 
   public var completionDay: String? {
-    completionTimestamp.map { String($0.prefix(10)) }
+    completionDay(in: .autoupdatingCurrent)
+  }
+
+  public func completionDay(in timeZone: TimeZone) -> String? {
+    guard let date = TaskTriagePolicy.date(from: completionTimestamp, timeZone: timeZone) else { return nil }
+    return TaskTriagePolicy.dateOnlyString(for: date, timeZone: timeZone)
+  }
+
+  /// Date-only legacy records have no time to convert or invent.
+  public var completionDateLabel: String? {
+    guard let raw = completionTimestamp else { return nil }
+    guard raw.count != 10, let date = TaskTriagePolicy.date(from: raw) else { return raw }
+    return date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened,
+      timeZone: .autoupdatingCurrent))
   }
 
   public var isRecurringPullRequestTask: Bool {

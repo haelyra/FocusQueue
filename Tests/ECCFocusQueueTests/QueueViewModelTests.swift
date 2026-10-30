@@ -11,6 +11,37 @@ import Darwin
 @Suite("Queue app state integration")
 @MainActor
 struct QueueViewModelTests {
+  @Test("Persisted completions group and render using the computer-local day")
+  func completedDatesWorkflow() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let now = Date()
+    let today = TokenUsageDay.key(now)
+    let yesterday = TokenUsageDay.key(try #require(Calendar.current.date(byAdding: .day, value: -1, to: now)))
+    let timestamps = [ISO8601DateFormatter().string(from: now), yesterday]
+    let tickets = fixture.tickets.enumerated().map { index, ticket in
+      DashboardTicket(id: ticket.id, title: ticket.title, status: "resolved", summary: ticket.summary,
+                      completedAt: timestamps[index])
+    }
+    try JSONEncoder().encode(DashboardDocument(tickets: tickets))
+      .write(to: fixture.root.appendingPathComponent("dashboard.json"))
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(model.completedTodayTickets.map(\.id) == ["ECC-101"])
+    #expect(model.pastCompletedTickets.map(\.id) == ["ECC-102"])
+    #expect(model.completedTodayTickets.first?.completionDay == today)
+    model.setExpanded(true, ticketID: tickets[0].id)
+    let renderer = ImageRenderer(content: CompletedTicketCard(ticket: tickets[0], model: model)
+      .padding(16).frame(width: 560).environment(\.colorScheme, .light))
+    let image = try #require(renderer.nsImage)
+    #expect(image.size.width == 560)
+    #expect(image.size.height > 150)
+    if let output = ProcessInfo.processInfo.environment["FOCUS_QUEUE_RENDER_DIR"],
+       let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff) {
+      try bitmap.representation(using: .png, properties: [:])?.write(to:
+        URL(fileURLWithPath: output).appendingPathComponent("completed-local-date.png"))
+    }
+  }
+
   @Test("Bootstrap primes saved agents from disk before background reconciliation")
   func bootstrapPrimesAgentsBeforeReconciliation() async throws {
     let fixture = try await Fixture()

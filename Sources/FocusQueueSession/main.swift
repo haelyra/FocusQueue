@@ -301,7 +301,7 @@ enum SessionRegistrationError: Error, LocalizedError {
                 let width = max(3, numbers.map { $0.1 }.max() ?? 0)
                 let next = (numbers.map { $0.0 }.max() ?? 0) + 1
                 let newID = "\(prefix)\(String(format: "%0\(width)d", next))"
-                let day = String(ISO8601DateFormatter().string(from: Date()).prefix(10))
+                let day = TaskTriagePolicy.dateOnlyString(for: Date())
                 let ticket = DashboardTicket(id: newID, title: title, projectID: project.id,
                     category: project.name, status: "backlog", summary: summary,
                     next: "Review this deferred requirement and choose an owner.",

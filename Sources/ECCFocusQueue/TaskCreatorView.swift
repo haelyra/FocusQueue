@@ -98,11 +98,12 @@ struct TaskCreatorSheet: View {
       HStack {
         Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
         Spacer()
-        Button(isSubmitting ? "Placing…" : startsAgent ? "Create and launch" : "Create task") {
+        Button(isSubmitting ? "Placing…" : startsAgent ? "Launch ⌘↩" : "Create task ⌘↩") {
           submit(.checkForMatch)
         }
         .buttonStyle(.borderedProminent)
-        .keyboardShortcut(.defaultAction)
+        // Return types a newline in the prompt, so ⌘↩ submits from anywhere.
+        .keyboardShortcut(.return, modifiers: .command)
         .disabled(isSubmitting || trimmedDescription.isEmpty || project == nil || (startsAgent && match != nil))
       }
     }
@@ -245,12 +246,12 @@ struct TaskAgentCreatorSheet: View {
       HStack {
         Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
         Spacer()
-        Button("Launch agent") {
+        Button("Launch ⌘↩") {
           model.launchPromptedAgent(for: ticket, prompt: prompt, title: title, preset: agent)
           dismiss()
         }
         .buttonStyle(.borderedProminent)
-        .keyboardShortcut(.defaultAction)
+        .keyboardShortcut(.return, modifiers: .command)
         .disabled(trimmedPrompt.isEmpty || ticket.isCompleted || model.launchingTaskIDs.contains(ticket.id))
       }
     }

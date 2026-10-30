@@ -484,7 +484,7 @@ def parse_thread_id(stdout: str) -> str | None:
     return None
 
 
-def parse_token_usage(stdout: str) -> dict[str, int] | None:
+def parse_token_usage(stdout: str, baseline: dict[str, int] | None = None) -> dict[str, int] | None:
     usage: dict[str, Any] | None = None
     for line in stdout.splitlines():
         try:
@@ -496,6 +496,9 @@ def parse_token_usage(stdout: str) -> dict[str, int] | None:
             usage = candidate
     if usage is None:
         return None
+    if baseline is not None:
+        usage = {key: max(0, int(value or 0) - baseline.get(key, 0))
+                 for key, value in usage.items()}
     input_tokens = int(usage.get("input_tokens", 0) or 0)
     output_tokens = int(usage.get("output_tokens", 0) or 0)
     return {
@@ -507,8 +510,31 @@ def parse_token_usage(stdout: str) -> dict[str, int] | None:
     }
 
 
-def write_token_usage(path: Path, stdout: str) -> dict[str, int] | None:
-    usage = parse_token_usage(stdout)
+def session_token_baseline(thread_id: str) -> dict[str, int] | None:
+    """Snapshot inherited usage before a resume/fork, without reading prompt text."""
+    if not re.fullmatch(r"[a-zA-Z0-9-]+", thread_id):
+        return None
+    root = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "sessions"
+    for path in root.glob(f"**/*-{thread_id}.jsonl"):
+        latest = None
+        try:
+            with path.open() as stream:
+                for line in stream:
+                    if '"token_count"' not in line:
+                        continue
+                    event = json.loads(line)
+                    info = event.get("payload", {}).get("info") or {}
+                    if isinstance(info.get("total_token_usage"), dict):
+                        latest = info["total_token_usage"]
+            if latest is not None:
+                return {key: int(value or 0) for key, value in latest.items()}
+        except (OSError, ValueError, TypeError):
+            continue
+    return None
+
+
+def write_token_usage(path: Path, stdout: str, baseline: dict[str, int] | None = None) -> dict[str, int] | None:
+    usage = parse_token_usage(stdout, baseline)
     if usage is not None:
         morning.write_private_json(path.expanduser(), usage)
     return usage
@@ -525,6 +551,7 @@ def write_run_diagnostic(
     stderr: str,
     return_code: int | None,
     timed_out: bool,
+    baseline: dict[str, int] | None = None,
 ) -> None:
     """Keep a private, prompt-free record so harness failures are diagnosable."""
     payload = {
@@ -536,7 +563,7 @@ def write_run_diagnostic(
         "observedThreadId": parse_thread_id(stdout),
         "returnCode": return_code,
         "timedOut": timed_out,
-        "usage": parse_token_usage(stdout),
+        "usage": parse_token_usage(stdout, baseline) if baseline is not None else None,
         "stdoutBytes": len(stdout.encode("utf-8")),
         "stderrBytes": len(stderr.encode("utf-8")),
     }
@@ -570,6 +597,8 @@ def run_codex(
         context_directory = context_directory.resolve(strict=True)
     runtime.mkdir(parents=True, exist_ok=True)
     runtime.chmod(0o700)
+    # Codex turn.completed reports lifetime totals, including the source of a fork.
+    baseline = session_token_baseline(thread_id) if thread_id else {}
     started_at = datetime.now(timezone.utc).isoformat()
     if usage_file is not None:
         usage_file = usage_file.expanduser()
@@ -701,9 +730,10 @@ def run_codex(
                     stderr=stderr,
                     return_code=process.returncode,
                     timed_out=True,
+                    baseline=baseline,
                 )
-                if usage_file is not None:
-                    write_token_usage(usage_file, stdout)
+                if usage_file is not None and baseline is not None:
+                    write_token_usage(usage_file, stdout, baseline)
                 raise CodexHarnessError(f"Codex exceeded the {timeout}-second run budget") from error
         finally:
             signal.signal(signal.SIGTERM, previous_handler)
@@ -718,12 +748,13 @@ def run_codex(
             stderr=stderr,
             return_code=process.returncode,
             timed_out=False,
+            baseline=baseline,
         )
-        if usage_file is not None:
-            write_token_usage(usage_file, stdout)
-        if usage_file is None:
+        if usage_file is not None and baseline is not None:
+            write_token_usage(usage_file, stdout, baseline)
+        if usage_file is None and baseline is not None:
             # A caller that asks for a usage file records its own attributed event.
-            prompt_usage.record_provider_usage("codex", model, parse_token_usage(stdout),
+            prompt_usage.record_provider_usage("codex", model, parse_token_usage(stdout, baseline),
                 source=os.environ.get("FOCUS_QUEUE_MODEL_USAGE_SOURCE") or "provider_usage",
                 run_id=os.environ.get("FOCUS_QUEUE_MODEL_USAGE_RUN_ID"),
                 support=Path(os.environ["FOCUS_QUEUE_SUPPORT_DIR"]) if os.environ.get("FOCUS_QUEUE_SUPPORT_DIR") else runtime.parent)

@@ -142,6 +142,34 @@ struct ProjectCreationWorkflowTests {
     #expect(restarted.openTickets.contains { $0.id == "FOL-001" })
   }
 
+  @Test("Delete a selected project, reload, preserve working files and documents, and protect Other")
+  func deleteProjectWorkflow() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("delete workflow \(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = await model(at: root)
+    var draft = request()
+    #expect(await model.createProject(&draft))
+    #expect(await model.selectProject(id: draft.id))
+    #expect(await model.createTask(title: "Remove queue data", summary: "", projectID: draft.id))
+    let project = try #require(model.selectedProject)
+    let source = URL(fileURLWithPath: project.workspacePath).appendingPathComponent("source.txt")
+    try Data("keep me".utf8).write(to: source)
+    let plan = try model.projectContextStore.planURL(projectID: draft.id)
+    let authored = try Data(contentsOf: plan)
+    let otherProjects = model.config.projects.filter { $0.id != draft.id }
+    #expect(await model.deleteProject(id: draft.id))
+    #expect(model.config.projects == otherProjects)
+    #expect(model.selectedProjectID != draft.id)
+    #expect(!model.dashboard.tickets.contains { $0.id == "WIZ-001" })
+    #expect(!FileManager.default.fileExists(atPath: project.dashboardPath))
+    #expect(try String(contentsOf: source, encoding: .utf8) == "keep me")
+    #expect(try Data(contentsOf: plan) == authored)
+    let restarted = await self.model(at: root)
+    #expect(!restarted.config.projects.contains { $0.id == draft.id })
+    #expect(await restarted.deleteProject(id: ProjectCatalog.otherID) == false)
+    #expect(restarted.config.projects.contains { $0.id == ProjectCatalog.otherID })
+  }
+
   @Test("Invalid setup creates no files and changes no project configuration")
   func rejectedSetup() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("wizard invalid \(UUID().uuidString)")

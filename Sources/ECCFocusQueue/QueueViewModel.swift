@@ -637,6 +637,35 @@ final class QueueViewModel {
     } catch { projectError = error.localizedDescription; return false }
   }
 
+  @discardableResult
+  func deleteProject(id: String) async -> Bool {
+    guard !isSavingProject else { return false }
+    isSavingProject = true
+    defer { isSavingProject = false }
+    configurationSaveTask?.cancel()
+    await configurationSaveTask?.value
+    do {
+      for url in documentViewer.tabs {
+        guard documentContentStore.saveBeforeClose(url) else {
+          throw TaskContextError.commandFailed("Save your open document edits before deleting this project.")
+        }
+      }
+      config = try ProjectDeletion(supportDirectory: paths.supportDirectory,
+        configurationURL: paths.configurationFile).delete(projectID: id)
+      localState.selectedProjectID = config.selectedProjectID
+      closeAgentUpdate()
+      closePlan()
+      closeDocumentViewer()
+      lastContextRefresh = nil
+      lastDashboardStamp = nil
+      lastDashboardRead = nil
+      await primePresentationFromDisk()
+      await refresh()
+      projectError = nil
+      return true
+    } catch { projectError = error.localizedDescription; return false }
+  }
+
   /// The draft retains a newly created remote even if subsequent local persistence fails.
   func createProject(_ draft: inout ProjectSetupDraft,
                      service: ProjectSetupService = ProjectSetupService()) async -> Bool {

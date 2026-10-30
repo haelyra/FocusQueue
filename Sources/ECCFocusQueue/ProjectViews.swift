@@ -106,6 +106,7 @@ private struct ProjectEditor: View {
     @State private var project: ProjectDefinition
     @State private var remote: String
     @State private var aliases: String
+    @State private var showsDeleteConfirmation = false
     @Environment(\.dismiss) private var dismiss
 
     init(model: QueueViewModel, project: ProjectDefinition) {
@@ -162,6 +163,7 @@ private struct ProjectEditor: View {
                         updated.archivedAt = project.archivedAt == nil ? Date() : nil
                         Task { if await model.saveProject(updated) { dismiss() } }
                     }
+                    Button("Delete project…", role: .destructive) { showsDeleteConfirmation = true }
                 }
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -180,6 +182,14 @@ private struct ProjectEditor: View {
                         || (!project.repositoryPath.isEmpty && !project.repositoryPath.hasPrefix("/")))
             }.disabled(model.isSavingProject)
         }.textFieldStyle(.roundedBorder).padding(22).frame(width: 560)
+        .alert("Delete \(project.name)?", isPresented: $showsDeleteConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete project", role: .destructive) {
+                Task { if await model.deleteProject(id: project.id) { dismiss() } }
+            }
+        } message: {
+            Text("Deleting this project will remove it from Focus Queue and delete its private queue data. Your project files, working folders, and saved project and task documents will not be deleted. This cannot be undone.")
+        }
     }
 }
 

@@ -282,15 +282,21 @@ struct QueueView: View {
 
   private var activeQueueContent: some View {
     VStack(spacing: 10) {
-      ScrollView {
-        LazyVStack(alignment: .leading, spacing: 10) {
-          todayFocusSection
+      ScrollViewReader { proxy in
+        ScrollView {
+          LazyVStack(alignment: .leading, spacing: 10) {
+            todayFocusSection.id("active-queue-top")
 
-          if showsMoreTasks, !isFilteringTasks {
-            additionalQueue.transition(.opacity.combined(with: .move(edge: .bottom)))
+            if showsMoreTasks, !isFilteringTasks {
+              additionalQueue.transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+          }.padding(.horizontal, 2).padding(.vertical, 2)
+        }.scrollIndicators(.automatic)
+          .onChange(of: model.queueScrollSnapshot) { previous, current in
+            guard !isFilteringTasks, current.shouldScrollToTop(from: previous) else { return }
+            proxy.scrollTo("active-queue-top", anchor: .top)
           }
-        }.padding(.horizontal, 2).padding(.vertical, 2)
-      }.scrollIndicators(.automatic)
+      }
 
       if !isFilteringTasks, !remainingTickets.isEmpty || !model.visibleRoutines.isEmpty { moreButton }
     }

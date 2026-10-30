@@ -84,6 +84,15 @@ final class QueueViewModel {
   private(set) var dashboard = DashboardDocument(tickets: [])
   private(set) var localState = LocalState()
   private(set) var savedQueueOverride: QueueOrderDocument?
+  var queueScrollSnapshot: QueueScrollSnapshot {
+    let tickets = openTickets
+    return QueueScrollSnapshot(
+      scopeID: showsAllProjects ? ProjectCatalog.allProjectsScopeID : config.selectedProjectID,
+      orderedIDs: tickets.map(\.id),
+      interactions: Dictionary(uniqueKeysWithValues: tickets.compactMap { ticket in
+        taskContexts[ticket.id]?.latestInteractionAt.map { (ticket.id, $0) }
+      }))
+  }
   var savedQueueOrder: [String]? { savedQueueOverride?.orderedIDs }
   private var queueOrderStore: QueueOrderStore {
     QueueOrderStore(

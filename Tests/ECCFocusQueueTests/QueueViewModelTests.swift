@@ -1473,17 +1473,21 @@ struct QueueViewModelTests {
     try await eventually { !model.isPlanLoading }
     let promptBefore = model.taskContexts["ECC-102"]?.lastPromptAt
     let context = try #require(model.taskContexts["ECC-102"])
+    let beforeInteraction = model.queueScrollSnapshot
     model.open(context.dataURL.path, ticketID: "ECC-102")
     try await eventually { model.taskContexts["ECC-102"]?.lastInteractionAt != nil }
     #expect(model.presentedPlanURL == context.dataURL)
     #expect(model.openTickets.map(\.id) == ["ECC-102", "ECC-101"])
+    #expect(model.queueScrollSnapshot.shouldScrollToTop(from: beforeInteraction))
     #expect(model.taskContexts["ECC-102"]?.lastPromptAt == promptBefore)
     let restarted = await fixture.model(agent: ControlledQueueAgent())
     restarted.setQueueActivitySortMode(.recentInteraction)
     #expect(restarted.openTickets.map(\.id) == ["ECC-102", "ECC-101"])
     // Reopening an already-viewed task must count again.
+    let beforeReopen = restarted.queueScrollSnapshot
     restarted.openPlan(for: fixture.tickets[0])
     try await eventually { restarted.openTickets.first?.id == "ECC-101" }
+    #expect(restarted.queueScrollSnapshot.shouldScrollToTop(from: beforeReopen))
   }
 
   @Test("Viewed tasks and activity sort preference survive restart")

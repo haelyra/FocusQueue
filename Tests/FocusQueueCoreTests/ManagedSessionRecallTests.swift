@@ -281,22 +281,21 @@ struct ManagedSessionRecallTests {
     try? FileManager.default.removeItem(atPath: scriptPath)
   }
 
-  @Test("macOS Terminal window closer compiles as Perl and AppleScript")
+  @Test("macOS Terminal window closer compiles as Perl and JavaScript")
   func macTerminalWindowCloserCompiles() async throws {
     let runner = FoundationProcessRunner()
     let perl = try await runner.run(.init(
       executable: "/usr/bin/perl", arguments: ["-c", "-e", TerminalCommandLauncher.windowCloser],
       timeoutSeconds: 10))
     #expect(perl.succeeded, "\(perl.standardError)")
-    for source in [TerminalCommandLauncher.findWindowScript, TerminalCommandLauncher.closeWindowScript] {
-      let output = FileManager.default.temporaryDirectory
-        .appendingPathComponent("fq-closer-\(UUID().uuidString).scpt")
-      defer { try? FileManager.default.removeItem(at: output) }
-      let compiled = try await runner.run(.init(
-        executable: "/usr/bin/osacompile", arguments: ["-e", source, "-o", output.path],
-        timeoutSeconds: 20))
-      #expect(compiled.succeeded, "\(compiled.standardError)")
-    }
+    let output = FileManager.default.temporaryDirectory
+      .appendingPathComponent("fq-closer-\(UUID().uuidString).scpt")
+    defer { try? FileManager.default.removeItem(at: output) }
+    let compiled = try await runner.run(.init(
+      executable: "/usr/bin/osacompile",
+      arguments: ["-l", "JavaScript", "-e", TerminalCommandLauncher.windowScript, "-o", output.path],
+      timeoutSeconds: 20))
+    #expect(compiled.succeeded, "\(compiled.standardError)")
   }
 
   @Test("Legacy entries are rejected without provider reconstruction")

@@ -7,3 +7,4 @@ dist/
 
 # Experiment state
 Experiments/DataExtractor/results/*.sqlite
+__pycache__/

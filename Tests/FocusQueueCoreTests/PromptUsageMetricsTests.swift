@@ -16,6 +16,19 @@ final class PromptUsageMetricsTests: XCTestCase {
         XCTAssertFalse(raw.contains("promptBody"))
     }
 
+    func testAppendOnlyCorrectionReplacesUsageWithoutAddingRuns() throws {
+        let support = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: support) }
+        for total in [10_761_047, 32_175] {
+            PromptUsageMetrics.record(PromptUsageEvent(source: "document_chat", component: "provider_usage",
+                actualTotalTokens: total, runID: "fork", scope: "provider", id: "same-report"), in: support)
+        }
+        let loaded = PromptUsageMetrics.load(in: support)
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertEqual(PromptUsageSummary(events: loaded).actualTokens, 32_175)
+        XCTAssertEqual(PromptUsageSummary(events: loaded).reportedRuns, 1)
+    }
+
     func testSummaryUsesDistinctRunsAndOnlyReportedActualUsage() {
         let events = [
             PromptUsageEvent(source: "placement", component: "system", characters: 400, runID: "a"),

@@ -146,6 +146,7 @@ struct QueueView: View {
                          sessions: model.tokenAnalyticsSessions) {
         model.setTokenAnalyticsPresented(false)
       }
+      .equatable()
       .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
     } else if model.isQueueChatInspectorPresented {
       VStack(alignment: .leading, spacing: 10) {

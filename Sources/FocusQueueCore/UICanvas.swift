@@ -309,6 +309,9 @@ public struct UICanvasStore: Sendable {
     public static let listenerExpiry: TimeInterval = 30
     public static let typingExpiry: TimeInterval = 10
     public static let thinkingExpiry: TimeInterval = 300
+    /// How long queued feedback waits for an agent's `await` before the app
+    /// delivers it to the reconnected agent itself.
+    public static let relayGrace: TimeInterval = 3
 
     public let root: URL
 
@@ -581,6 +584,24 @@ public struct UICanvasStore: Sendable {
         return session.pendingFeedback.isEmpty ? .waiting : .queued
     }
 
+    /// Whether the app should deliver queued feedback itself: nothing is parked
+    /// in `await`, no agent is working, and the oldest item waited out the
+    /// grace period. A user-ended session relays only a Save and Finish.
+    public static func needsRelay(_ session: UICanvasSession, now: Date = Date(),
+                                  isAlive: (Int32) -> Bool = UICanvasStore.processIsAlive) -> Bool {
+        guard let oldest = session.pendingFeedback.compactMap({ date($0.at) }).min(),
+              now.timeIntervalSince(oldest) >= relayGrace else { return false }
+        if session.isEnded, !session.pendingFeedback.contains(where: { $0.kind == "finish" }) { return false }
+        if let listener = session.listener, let seen = date(listener.seenAt),
+           now.timeIntervalSince(seen) < listenerExpiry, isAlive(listener.pid) { return false }
+        if let activity = session.activity, let at = date(activity.at) {
+            let age = now.timeIntervalSince(at)
+            if activity.state == "typing", age < typingExpiry { return false }
+            if activity.state == "thinking", age < thinkingExpiry { return false }
+        }
+        return true
+    }
+
     /// Whether the human has this canvas on screen in Focus Queue right now.
     public static func isViewerVisible(_ session: UICanvasSession, now: Date = Date()) -> Bool {
         guard let seen = session.viewerSeenAt.flatMap(date) else { return false }
@@ -660,6 +681,53 @@ public enum UICanvasEditSummary {
         }
         if let anchor = item.anchor { return "[\(anchor.snippet.isEmpty ? anchor.selector : anchor.snippet)] \(item.text)" }
         return item.text
+    }
+}
+
+/// The turn the app sends a reconnected agent: queued canvas feedback plus the
+/// next step, without the `await` loop a terminal agent runs.
+public enum UICanvasRelayPrompt {
+    /// `recap` adds recent canvas chat for an agent with no saved conversation.
+    public static func build(session: UICanvasSession, items: [UICanvasFeedbackItem], recap: Bool) -> String {
+        var lines = [
+            "The user sent this from the Focus Queue UI canvas \"\(session.displayTitle)\" (\(session.file)). "
+                + "Focus Queue delivers each canvas message to you as a turn, so do not run "
+                + "`focus-queue-session canvas await` or `canvas open`.",
+        ]
+        let earlier = session.chat.dropLast(items.count).suffix(8)
+        if recap, !earlier.isEmpty {
+            lines.append("Recent canvas conversation:\n" + earlier.map {
+                "\($0.role == "agent" ? "agent" : "user"): \($0.text.prefix(600))"
+            }.joined(separator: "\n"))
+        }
+        // The full edit log stays in the export file the item names.
+        let trimmed = items.map { item -> UICanvasFeedbackItem in
+            var item = item
+            item.edits = nil
+            return item
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        if let data = try? encoder.encode(trimmed), let json = String(data: data, encoding: .utf8) {
+            lines.append("Feedback:\n" + json)
+        }
+        lines.append(nextStep(items) + " Reply in one to three sentences saying what you changed; "
+            + "your reply appears in the canvas conversation.")
+        return lines.joined(separator: "\n\n")
+    }
+
+    static func nextStep(_ items: [UICanvasFeedbackItem]) -> String {
+        if let finish = items.first(where: { $0.kind == "finish" }) {
+            return "The user clicked Save and Finish. Read the final markup at \(finish.exportPath ?? "the .edited.html export") "
+                + "(edit log: \(finish.editsPath ?? "the .edits.json export")) and reproduce that exact look in the real "
+                + "component with full functionality."
+        }
+        if let applied = items.first(where: { $0.kind == "edits" }) {
+            return "The user applied \(applied.editCount ?? 0) edit(s) to the preview. Rewrite the mockup file from "
+                + "\(applied.exportPath ?? "the .edited.html export") and keep it self-contained."
+        }
+        return "Make the requested change in the mockup file; the preview live-reloads and re-applies the user's "
+            + "pending edits. If the user only asked a question, answer it without editing."
     }
 }
 

@@ -99,7 +99,7 @@ struct TaskContextGridView: View {
         Button("Reconnect agent", systemImage: "arrow.triangle.branch") {
           model.reconnectUICanvasAgent(ticketID: ticket.id, key: session.key)
         }
-        .help("Ask the agent behind this session to listen again: a fork of the creating agent while it runs, otherwise a new agent.")
+        .help("Reopen this session and reach its agent: a fork of the creating agent, otherwise a new agent.")
       }
       if let url = item.fileURL {
         Button("Show in Finder", systemImage: "folder") {

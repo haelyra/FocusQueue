@@ -427,7 +427,7 @@ private struct UICanvasConversation: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
-      Text("Conversation").font(.headline)
+      connection
       ScrollViewReader { proxy in
         ScrollView {
           VStack(alignment: .leading, spacing: 8) {
@@ -449,6 +449,47 @@ private struct UICanvasConversation: View {
     }
   }
 
+  /// Whether the agent hears this canvas, with a reconnect while it does not.
+  private var connection: some View {
+    let presence = model.presence
+    let disconnected = [.waiting, .queued, .ended].contains(presence) && !model.isAgentTurnRunning
+    return VStack(alignment: .leading, spacing: 4) {
+      HStack(spacing: 6) {
+        Text("Conversation").font(.headline)
+        Spacer(minLength: 4)
+        if model.isAgentTurnRunning {
+          ProgressView().controlSize(.mini)
+        } else if disconnected {
+          Button {
+            model.reconnect()
+          } label: {
+            Label(presence == .ended ? "Reopen and Reconnect" : "Reconnect Agent",
+                  systemImage: "arrow.triangle.2.circlepath")
+          }
+          .controlSize(.small)
+          .help("Reach the agent that built this canvas through a fork of its conversation, or a new agent when none is found")
+        }
+      }
+      HStack(spacing: 5) {
+        Circle().fill(disconnected ? Color.orange : Color.green).frame(width: 6, height: 6)
+        Text(connectionText(presence))
+          .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+      }
+      .accessibilityElement(children: .combine)
+    }
+  }
+
+  private func connectionText(_ presence: UICanvasPresence) -> String {
+    if model.isAgentTurnRunning { return "Connecting to \(model.agentName)…" }
+    switch presence {
+    case .listening: return "\(model.agentName.capitalizedFirst) is listening."
+    case .thinking, .typing: return "\(model.agentName.capitalizedFirst) is working on it."
+    case .ended: return "Session ended. Reopen to keep iterating with \(model.agentName)."
+    case .waiting, .queued:
+      return "\(model.agentName.capitalizedFirst) is not listening. Messages you send reconnect it automatically."
+    }
+  }
+
   @ViewBuilder private var activity: some View {
     switch model.presence {
     case .thinking, .typing:
@@ -457,7 +498,7 @@ private struct UICanvasConversation: View {
         Text(model.presence == .typing ? "\(model.agentName) is typing…" : "\(model.agentName) is working on it…")
       }.font(.caption).foregroundStyle(.secondary)
     case .queued:
-      Text("Queued. \(model.agentName) is not listening right now and picks this up the moment it checks in.")
+      Text("Queued. Focus Queue delivers this to \(model.agentName) in a moment if it does not check in.")
         .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
     default:
       EmptyView()

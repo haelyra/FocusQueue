@@ -88,6 +88,13 @@ final class UICanvasModel {
   private(set) var renderedViewport = CGSize.zero
   var draft = ""
   var anchorEnabled = true
+  /// The app is running a reconnect or relay turn for this session.
+  var isAgentTurnRunning = false
+
+  /// Supplied by QueueViewModel: deliver queued feedback to the reconnected
+  /// agent, and reconnect it explicitly.
+  @ObservationIgnored var relayQueuedFeedback: (() -> Void)?
+  @ObservationIgnored var reconnectAgent: (() -> Void)?
 
   @ObservationIgnored weak var webView: WKWebView?
   @ObservationIgnored private var scroll: (x: Double, y: Double) = (0, 0)
@@ -162,6 +169,11 @@ final class UICanvasModel {
         session = loaded
         if loaded.isEnded, !wasEnded { setMode(.interact) }
       }
+    }
+    // No agent picked up the feedback: the app delivers it, so an open canvas
+    // reaches its agent even when nothing is parked in `canvas await`.
+    if !isAgentTurnRunning, let session, UICanvasStore.needsRelay(session, now: now) {
+      relayQueuedFeedback?()
     }
     if let fileURL, let stamp = modificationDate(fileURL), stamp != artifactStamp {
       let isFirst = artifactStamp == nil
@@ -358,6 +370,11 @@ final class UICanvasModel {
     }
   }
 
+  func reconnect() {
+    guard !isAgentTurnRunning else { return }
+    reconnectAgent?()
+  }
+
   func endSession() {
     do {
       try store.end(taskID: taskID, key: key, endedBy: "user")
@@ -370,7 +387,7 @@ final class UICanvasModel {
   private var deliveryNote: String {
     switch presence {
     case .listening, .thinking, .typing: "Delivered. \(agentName) has it."
-    default: "Queued. \(agentName) picks this up the moment it checks in."
+    default: "Queued. Focus Queue reconnects \(agentName) if it does not check in."
     }
   }
 

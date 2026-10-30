@@ -2633,6 +2633,9 @@ final class QueueViewModel {
     let id = "\(ticketID.uppercased())/\(key)"
     if let model = uiCanvasModels[id] { return model }
     let model = UICanvasModel(store: uiCanvasStore, taskID: ticketID.uppercased(), key: key)
+    model.relayQueuedFeedback = { [weak self] in self?.relayUICanvasFeedback(ticketID: ticketID, key: key) }
+    model.reconnectAgent = { [weak self] in self?.reconnectUICanvasAgent(ticketID: ticketID, key: key) }
+    model.isAgentTurnRunning = uiCanvasReconnectTasks[id] != nil
     uiCanvasModels[id] = model
     return model
   }
@@ -2664,20 +2667,56 @@ final class QueueViewModel {
   /// CLI's explicit-reopen rule. The reply lands in the canvas conversation.
   func reconnectUICanvasAgent(ticketID: String, key: String) {
     let ticketID = ticketID.uppercased()
-    let id = "\(ticketID)/\(key)"
-    if let existing = uiCanvasReconnectTasks[id], !existing.isCancelled { return }
-    guard let session = try? uiCanvasStore.load(taskID: ticketID, key: key) else { return }
+    guard uiCanvasReconnectTasks["\(ticketID)/\(key)"] == nil,
+      let session = try? uiCanvasStore.load(taskID: ticketID, key: key) else { return }
     openUICanvasSession(ticketID: ticketID, key: key)
     if session.isEnded {
       _ = try? uiCanvasStore.open(file: session.file, taskID: ticketID, title: nil, viewport: nil,
         reopen: true, agentName: nil)
       refreshUICanvases(ticketID: ticketID)
     }
+    try? uiCanvasStore.setActivity(taskID: ticketID, key: key, state: "thinking")
+    runUICanvasTurn(ticketID: ticketID, key: key, file: session.file, resetsNewAgent: true) { _ in
+      Self.canvasReconnectPrompt(session: session)
+    }
+  }
+
+  /// Delivers queued canvas feedback when no agent is parked in `canvas await`,
+  /// so a reopened canvas reaches its agent without a terminal listener.
+  func relayUICanvasFeedback(ticketID: String, key: String) {
+    let ticketID = ticketID.uppercased()
+    guard uiCanvasReconnectTasks["\(ticketID)/\(key)"] == nil,
+      let session = try? uiCanvasStore.load(taskID: ticketID, key: key),
+      UICanvasStore.needsRelay(session),
+      let taken = try? uiCanvasStore.takeFeedback(taskID: ticketID, key: key),
+      taken.status == .feedback else { return }
+    runUICanvasTurn(ticketID: ticketID, key: key, file: session.file, resetsNewAgent: false) { creator in
+      UICanvasRelayPrompt.build(session: session, items: taken.items, recap: creator == nil)
+    }
+  }
+
+  /// One app-run turn for a canvas: a fork of the creator, otherwise the task's
+  /// canvas chat agent. Its reply is posted to the canvas conversation.
+  private func runUICanvasTurn(ticketID: String, key: String, file: String, resetsNewAgent: Bool,
+                               prompt makePrompt: @escaping (DocumentChatCreator?) -> String) {
+    let id = "\(ticketID)/\(key)"
+    uiCanvasModels[id]?.isAgentTurnRunning = true
     uiCanvasReconnectTasks[id] = Task { [weak self] in
       guard let self else { return }
-      defer { uiCanvasReconnectTasks[id] = nil }
+      // A long turn would outlive the thinking expiry and look abandoned.
+      let heartbeat = Task { [store = uiCanvasStore] in
+        while !Task.isCancelled {
+          try? await Task.sleep(nanoseconds: UInt64(UICanvasStore.thinkingExpiry / 3 * 1_000_000_000))
+          if !Task.isCancelled { try? store.setActivity(taskID: ticketID, key: key, state: "thinking") }
+        }
+      }
+      defer {
+        heartbeat.cancel()
+        uiCanvasReconnectTasks[id] = nil
+        uiCanvasModels[id]?.isAgentTurnRunning = false
+      }
       do {
-        let creator = await documentCreator(path: session.file, ticketID: ticketID, known: nil)
+        let creator = await documentCreator(path: file, ticketID: ticketID, known: nil)
         try Task.checkCancellation()
         let provider = creator?.author.provider ?? defaultAgentProvider
         var configuration = config.verifier
@@ -2687,8 +2726,9 @@ final class QueueViewModel {
         configuration.contextDirectory = taskContexts[ticketID]?.contextDirectory.path
         configuration.projectScopeID = dashboard.tickets.first { $0.id == ticketID }?.projectID
           ?? selectedProjectID
+        configuration.writableDirectories = [URL(fileURLWithPath: file).deletingLastPathComponent().path]
         let agent = queueAgent(for: provider)
-        var prompt = Self.canvasReconnectPrompt(session: session, ticketID: ticketID)
+        var prompt = makePrompt(creator)
         let workspace: String
         if let creator {
           // A live or saved creator answers in a fork; its task stays complete.
@@ -2697,7 +2737,7 @@ final class QueueViewModel {
           workspace = creator.workspace ?? config.workspacePath
         } else {
           // A new route never inherits a session an earlier reconnect left behind.
-          try await agent.reset(configuration: configuration)
+          if resetsNewAgent { try await agent.reset(configuration: configuration) }
           workspace = dashboard.tickets.first { $0.id == ticketID }.map(defaultRepository)
             ?? config.workspacePath
         }
@@ -2710,24 +2750,24 @@ final class QueueViewModel {
         try Task.checkCancellation()
         try uiCanvasStore.reply(taskID: ticketID, key: key, text: reply.message)
       } catch is CancellationError {
-        // The app closed mid-reconnect; leave the session as it was.
+        // The app closed mid-turn; leave the transcript as it was.
+        try? uiCanvasStore.setActivity(taskID: ticketID, key: key, state: "idle")
       } catch {
         try? uiCanvasStore.reply(taskID: ticketID, key: key,
           text: "Reconnect failed: \(error.localizedDescription)")
       }
       refreshUICanvases(ticketID: ticketID)
+      uiCanvasModels[id]?.refresh()
     }
   }
 
-  private static func canvasReconnectPrompt(session: UICanvasSession, ticketID: String) -> String {
-    let file = "'" + session.file.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    return """
-      The user reopened the UI canvas "\(session.displayTitle)" (\(session.file)) in Focus Queue \
-      and wants you listening again. Reconnect now: run \
-      `focus-queue-session canvas open \(file) --task \(ticketID)` to reattach the session, then \
-      `focus-queue-session canvas await \(file)` to pick up any queued feedback. Reply in one \
-      sentence once you are listening.
-      """
+  private static func canvasReconnectPrompt(session: UICanvasSession) -> String {
+    """
+    The user reopened the UI canvas "\(session.displayTitle)" (\(session.file)) in Focus Queue and \
+    reconnected you. Focus Queue now delivers each canvas message to you as a turn, so do not run \
+    `focus-queue-session canvas await` or `canvas open`. Reply in one or two sentences: confirm you are \
+    reconnected and say what the mockup shows now or what you last changed.
+    """
   }
 
   private static let canvasForkPreamble = """

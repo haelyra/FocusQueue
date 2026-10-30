@@ -757,9 +757,9 @@ struct QueueViewModelTests {
     model.reconnectUICanvasAgent(ticketID: ticket.id, key: session.key)
     try await eventually { await agent.hasPendingReply }
     let prompt = try #require(await agent.messages.last)
-    #expect(prompt.contains("canvas open"))
-    #expect(prompt.contains("canvas await"))
-    #expect(prompt.contains("--task \(ticket.id)"))
+    #expect(prompt.contains(session.file))
+    #expect(prompt.contains("do not run `focus-queue-session canvas await`"))
+    #expect(model.uiCanvasModel(ticketID: ticket.id, key: session.key).isAgentTurnRunning)
     let sessionName = "ecc-focus-queue-task-\(ticket.id.lowercased())-canvas-\(session.key)"
     #expect(await agent.resetSessionNames == [sessionName])
     #expect(try model.uiCanvasStore.load(taskID: ticket.id, key: session.key)?.isEnded == false,
@@ -773,6 +773,28 @@ struct QueueViewModelTests {
         == "Listening again."
     }
     #expect(model.visibleUICanvases(ticketID: ticket.id).map(\.key) == [session.key])
+    try await eventually { await !model.uiCanvasModel(ticketID: ticket.id, key: session.key).isAgentTurnRunning }
+
+    // With no agent parked in `await`, the app delivers queued feedback itself.
+    try model.uiCanvasStore.queueFeedback(taskID: ticket.id, key: session.key,
+      items: [UICanvasFeedbackItem(kind: "chat", text: "Make the heading blue")])
+    model.relayUICanvasFeedback(ticketID: ticket.id, key: session.key)
+    #expect(try model.uiCanvasStore.load(taskID: ticket.id, key: session.key)?.pendingFeedback.count == 1,
+      "Feedback waits out the grace period for a terminal listener")
+    try model.uiCanvasStore.update(taskID: ticket.id, key: session.key) { stored in
+      stored?.pendingFeedback[0].at = UICanvasStore.timestamp(Date().addingTimeInterval(-10))
+    }
+    model.relayUICanvasFeedback(ticketID: ticket.id, key: session.key)
+    try await eventually { await agent.hasPendingReply }
+    let relayed = try #require(await agent.messages.last)
+    #expect(relayed.contains("Make the heading blue") && relayed.contains("Recent canvas conversation"))
+    #expect(await agent.resetSessionNames == [sessionName], "A relay turn never resets the agent")
+    let taken = try #require(try model.uiCanvasStore.load(taskID: ticket.id, key: session.key))
+    #expect(taken.pendingFeedback.isEmpty && UICanvasStore.presence(of: taken) == .thinking)
+    await agent.reply("Heading is blue now.")
+    try await eventually {
+      try model.uiCanvasStore.load(taskID: ticket.id, key: session.key)?.chat.last?.text == "Heading is blue now."
+    }
   }
 
   @Test("Document and canvas reconnect recall completed archived creators", arguments: AgentProvider.allCases, [false, true])
@@ -919,6 +941,70 @@ struct QueueViewModelTests {
     #expect(try Data(contentsOf: document) == documentData)
     #expect(try await store.load(ticketID: ticket.id)?.subtasks.first?.status == .completed)
     print("LIVE_COMPLETED_RECALL: completed archived creator recalled conversation-only history; source transcript and document unchanged")
+  }
+
+  @Test("Live canvas relay delivers queued feedback to a completed creator's fork, which edits the mockup",
+    .enabled(if: ProcessInfo.processInfo.environment["ECC_FOCUS_QUEUE_LIVE_RECALL_TESTS"] == "1"))
+  func liveCanvasRelay() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let ticket = fixture.tickets[0]
+    let mockup = fixture.root.appendingPathComponent("relay.html")
+    let runner = FoundationProcessRunner()
+    let source = try await runner.run(ProcessSpecification(executable: FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent(".local/bin/claude").path,
+      arguments: ["-p", "--output-format", "json", "--model", "haiku", "--effort", "low",
+        "--permission-mode", "bypassPermissions", "--tools", "Read,Write", "--strict-mcp-config",
+        "--disable-slash-commands", "--settings", "{\"disableAllHooks\":true}",
+        "This is an isolated headless canvas test. Use Write to create \(mockup.path) containing only <!doctype html><p id=\"status\">Draft</p>. Reply READY only. Do not launch agents or run task, registration, or canvas commands."],
+      workingDirectory: fixture.root.path, environment: ["FOCUS_QUEUE_SUPPORT_DIR": fixture.root.path,
+        "FOCUS_QUEUE_TASK_ID": "", "FOCUS_QUEUE_SUBTASK_ID": ""], timeoutSeconds: 90))
+    try #require(source.succeeded, "\(source.standardError)\n\(source.standardOutput)")
+    let envelope = try #require(JSONSerialization.jsonObject(with: Data(source.standardOutput.utf8)) as? [String: Any])
+    let sessionID = try #require(envelope["session_id"] as? String)
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: ticket)
+    var creator = TaskSubtask(id: "live-canvas-creator", title: "Live canvas creator",
+      provider: .claude, sessionID: sessionID, status: .completed)
+    creator.workspace = AgentWorkspace(path: fixture.root.path, repositoryPath: fixture.root.path)
+    creator.launchConfiguration = AgentLaunchConfiguration(model: "haiku", effort: "low")
+    _ = try await store.upsertSubtask(ticketID: ticket.id, subtask: creator)
+    let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+      .deletingLastPathComponent().appendingPathComponent("Scripts/focus_queue_claude.py").path
+    let harness = fixture.root.appendingPathComponent("relay-harness")
+    let quoted = "'" + script.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    try Data("#!/bin/sh\nexec /usr/bin/env python3 \(quoted) \"$@\"\n".utf8).write(to: harness)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: harness.path)
+    var config = try JSONDecoder().decode(AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    config.claudeChatExecutable = harness.path
+    config.verifier.timeoutSeconds = 120
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(config)
+    let model = await fixture.model(agent: ControlledQueueAgent(), agentActivityObserver: AgentActivityObserver(),
+      queueAgentFactory: { HarnessQueueAgent(provider: $0) })
+    model.openPlan(for: ticket)
+    try await eventually { model.taskContexts[ticket.id] != nil }
+
+    guard case .opened(let session) = try model.uiCanvasStore.open(file: mockup.path, taskID: ticket.id,
+      title: "Relay", viewport: nil, reopen: false, agentName: "Claude Code") else {
+      Issue.record("Canvas open refused"); return
+    }
+    let canvas = model.uiCanvasModel(ticketID: ticket.id, key: session.key)
+    canvas.draft = "Change the text of #status from Draft to Relay OK."
+    canvas.sendChat()
+    try model.uiCanvasStore.update(taskID: ticket.id, key: session.key) { stored in
+      stored?.pendingFeedback[0].at = UICanvasStore.timestamp(Date().addingTimeInterval(-10))
+    }
+    // The open canvas tab's poll is what hands queued feedback to the relay.
+    canvas.refresh()
+    try #require(canvas.isAgentTurnRunning)
+    for _ in 0..<1_500 where canvas.isAgentTurnRunning { try await Task.sleep(for: .milliseconds(100)) }
+    let finished = try #require(try model.uiCanvasStore.load(taskID: ticket.id, key: session.key))
+    let reply = try #require(finished.chat.last)
+    try #require(reply.role == "agent" && !reply.text.hasPrefix("Reconnect failed"), "\(reply.text)")
+    let html = try String(contentsOf: mockup, encoding: .utf8)
+    #expect(html.contains("Relay OK"), "\(html)")
+    #expect(finished.pendingFeedback.isEmpty)
+    print("LIVE_CANVAS_RELAY: fork replied \"\(reply.text)\"; mockup now: \(html)")
   }
 
   @Test("An HTML output opens as a native canvas tab instead of an external app")

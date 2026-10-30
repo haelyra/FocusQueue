@@ -33,6 +33,9 @@
 
 ## Delivery checkpoints
 
+- Requested app changes include automatic canonical integration, remote delivery,
+  installation, restart, and verification. Continue through those steps after
+  feature verification; a feature-branch handoff alone does not complete delivery.
 - After a requested application change passes its appropriate tests, commit the
   cohesive repository changes before reporting completion. Do not leave verified
   work only in the working tree.

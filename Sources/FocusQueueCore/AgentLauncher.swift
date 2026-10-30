@@ -687,8 +687,14 @@ public actor TaskAgentLauncher {
       includePrompt: includePrompt, usageRunID: usageRunID)
     var connection = try await processController.resolveConnection(
       configuration: configuration)
+    if connection.result.timedOut {
+      connection = try await processController.startWezTermAfterTimeout(
+        configuration: configuration,
+        workingDirectory: subtask.workspace?.path ?? context.worktreePath)
+    }
     guard !connection.result.timedOut else {
-      throw WezTermError.actionFailed("WezTerm lookup timed out. No direct agent launch was attempted.")
+      throw WezTermError.actionFailed(
+        "WezTerm lookup timed out again after Focus Queue started WezTerm. No direct agent launch was attempted.")
     }
     if !connection.result.succeeded {
       let bootstrap = try await runner.run(ProcessSpecification(

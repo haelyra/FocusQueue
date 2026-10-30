@@ -79,6 +79,37 @@ private actor DeterministicRecallRunner: ProcessRunning {
   }
 }
 
+private actor RestartingWezTermRunner: ProcessRunning {
+  private let inner: DeterministicRecallRunner
+  private let startSucceeds: Bool
+  private let timesOutAfterStart: Bool
+  private(set) var calls: [ProcessSpecification] = []
+  private var started = false
+
+  init(reference: TmuxSessionReference, agentID: String, startSucceeds: Bool = true,
+       timesOutAfterStart: Bool = false) {
+    inner = DeterministicRecallRunner(reference: reference, agentID: agentID)
+    self.startSucceeds = startSucceeds
+    self.timesOutAfterStart = timesOutAfterStart
+  }
+
+  func run(_ specification: ProcessSpecification) async throws -> ProcessResult {
+    calls.append(specification)
+    if specification.executable == "/usr/bin/open", specification.arguments == ["-a", "WezTerm"] {
+      guard startSucceeds else {
+        return .init(exitCode: 1, standardOutput: "", standardError: "Unable to find application", timedOut: false)
+      }
+      started = true
+      return .init(exitCode: 0, standardOutput: "", standardError: "", timedOut: false)
+    }
+    if specification.executable == "/mock/wezterm", specification.arguments.contains("list"),
+       !started || timesOutAfterStart {
+      return .init(exitCode: 1, standardOutput: "", standardError: "", timedOut: true)
+    }
+    return try await inner.run(specification)
+  }
+}
+
 @Suite("Managed session recall")
 struct ManagedSessionRecallTests {
   private let tmuxOutput = "fq-implement\t123\t1000\t%0\t124\t/dev/ttys099\t0\n"
@@ -216,6 +247,76 @@ struct ManagedSessionRecallTests {
     #expect(started.arguments.contains("%7"))
     #expect(!calls.contains { $0.executable == "/mock/wezterm" && $0.arguments.contains("start") })
     #expect(calls.filter { $0.executable == "/usr/bin/open" }.count == 1)
+  }
+
+  @Test("A lookup timeout starts WezTerm once, then focuses the exact agent")
+  func timeoutStartsWezTermAndRetries() async throws {
+    let reference = taskReference()
+    let runner = RestartingWezTermRunner(reference: reference, agentID: "agent-one")
+    var subtask = TaskSubtask(id: "agent-one", title: "Exact agent", provider: .codex,
+      tmux: reference, runtimeMode: .tmux)
+    subtask.workspace = AgentWorkspace(path: "/tmp", repositoryPath: "/tmp")
+
+    let result = try await WezTermController(
+      runner: runner, candidateSockets: [], startupPollInterval: .milliseconds(1)
+    ).openAgentRuntime(
+      subtask, taskID: "ECC-1",
+      configuration: .init(executable: "/mock/wezterm", applicationName: "WezTerm"))
+
+    #expect(result == .focused(paneID: 41))
+    let calls = await runner.calls
+    // The first `open -a` is the recovery start; focusing the pane activates the app again.
+    let opens = calls.filter { $0.executable == "/usr/bin/open" }
+    #expect(opens.first?.arguments == ["-a", "WezTerm"])
+    #expect(opens.first?.workingDirectory == "/tmp")
+    // The app start sits between the timed-out probe and the successful one.
+    let listIndexes = calls.indices.filter { calls[$0].arguments.contains("list") && calls[$0].executable == "/mock/wezterm" }
+    let openIndex = try #require(calls.firstIndex { $0.executable == "/usr/bin/open" })
+    #expect(listIndexes.first! < openIndex && listIndexes.last! > openIndex)
+    #expect(!calls.flatMap(\.arguments).contains("spawn"))
+  }
+
+  @Test("A lookup that still times out after the start reports it without a second start or a spawn")
+  func timeoutAfterStartStops() async throws {
+    let reference = taskReference()
+    let runner = RestartingWezTermRunner(reference: reference, agentID: "agent-one", timesOutAfterStart: true)
+    var subtask = TaskSubtask(id: "agent-one", title: "Exact agent", provider: .codex,
+      tmux: reference, runtimeMode: .tmux)
+    subtask.workspace = AgentWorkspace(path: "/tmp", repositoryPath: "/tmp")
+
+    await #expect(throws: WezTermError.self) {
+      try await WezTermController(
+        runner: runner, candidateSockets: [], startupAttempts: 3,
+        startupPollInterval: .milliseconds(1)
+      ).openAgentRuntime(
+        subtask, taskID: "ECC-1",
+        configuration: .init(executable: "/mock/wezterm", applicationName: "WezTerm"))
+    }
+    let calls = await runner.calls
+    #expect(calls.filter { $0.executable == "/usr/bin/open" }.count == 1)
+    #expect(!calls.flatMap(\.arguments).contains("spawn"))
+  }
+
+  @Test("A failed WezTerm start surfaces its error and never spawns a view")
+  func failedStartReportsDetail() async throws {
+    let reference = taskReference()
+    let runner = RestartingWezTermRunner(reference: reference, agentID: "agent-one", startSucceeds: false)
+    var subtask = TaskSubtask(id: "agent-one", title: "Exact agent", provider: .codex,
+      tmux: reference, runtimeMode: .tmux)
+    subtask.workspace = AgentWorkspace(path: "/tmp", repositoryPath: "/tmp")
+
+    do {
+      _ = try await WezTermController(
+        runner: runner, candidateSockets: [], startupPollInterval: .milliseconds(1)
+      ).openAgentRuntime(
+        subtask, taskID: "ECC-1",
+        configuration: .init(executable: "/mock/wezterm", applicationName: "WezTerm"))
+      Issue.record("Expected the failed start to throw")
+    } catch let error as WezTermError {
+      #expect(error.localizedDescription.contains("could not start WezTerm"))
+      #expect(error.localizedDescription.contains("Unable to find application"))
+    }
+    #expect(!(await runner.calls).flatMap(\.arguments).contains("spawn"))
   }
 
   @Test("Ghostty recall opens a new window attached to the exact verified tmux pane")

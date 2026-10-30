@@ -462,6 +462,8 @@ public actor WezTermController: WezTermControlling {
     private let runner: any ProcessRunning
     private let candidateSockets: [String]?
     private let labelAttempts: Int
+    private let startupAttempts: Int
+    private let startupPollInterval: Duration
     private let claudeRootOverride: URL?
     private let codexRootOverride: URL?
     private let kimiRootOverride: URL?
@@ -472,12 +474,16 @@ public actor WezTermController: WezTermControlling {
     private var resolvedSockets: [String: String] = [:]
 
     public init(runner: any ProcessRunning = FoundationProcessRunner(), candidateSockets: [String]? = nil,
-                verificationAttempts: Int = 10, claudeRoot: URL? = nil, codexRoot: URL? = nil,
+                verificationAttempts: Int = 10, startupAttempts: Int = 20,
+                startupPollInterval: Duration = .milliseconds(500),
+                claudeRoot: URL? = nil, codexRoot: URL? = nil,
                 kimiRoot: URL? = nil, supportDirectory: URL? = nil) {
         self.runner = runner
         self.supportDirectory = supportDirectory ?? TmuxPersistence.defaultSupportDirectory()
         self.candidateSockets = candidateSockets
         self.labelAttempts = max(1, min(verificationAttempts, 10))
+        self.startupAttempts = max(1, min(startupAttempts, 40))
+        self.startupPollInterval = startupPollInterval
         self.claudeRootOverride = claudeRoot
         self.codexRootOverride = codexRoot
         self.kimiRootOverride = kimiRoot
@@ -520,6 +526,29 @@ public actor WezTermController: WezTermControlling {
         if configuration.socketPath == nil, WezTermConnection.hasValidPanes(connection.result),
            let socket = connection.configuration.socketPath {
             resolvedSockets[configuration.executable] = socket
+        }
+        return connection
+    }
+
+    /// A lookup that times out means the GUI behind the saved socket is gone or
+    /// still starting. `open -a` only activates a running app, so starting it here
+    /// cannot add a window; it revives a quit WezTerm so the caller can retry once.
+    func startWezTermAfterTimeout(
+        configuration: WezTermConfiguration, workingDirectory: String?
+    ) async throws -> (configuration: WezTermConfiguration, result: ProcessResult) {
+        resolvedSockets[configuration.executable] = nil
+        let started = try await runner.run(ProcessSpecification(
+            executable: "/usr/bin/open", arguments: ["-a", configuration.applicationName],
+            workingDirectory: workingDirectory, timeoutSeconds: 15))
+        guard started.succeeded else {
+            throw WezTermError.actionFailed(
+                "WezTerm lookup timed out and Focus Queue could not start WezTerm: "
+                + Self.failureDetail(started))
+        }
+        var connection = try await resolveConnection(configuration: configuration)
+        for _ in 1..<startupAttempts where !connection.result.succeeded {
+            try await Task.sleep(for: startupPollInterval)
+            connection = try await resolveConnection(configuration: configuration)
         }
         return connection
     }
@@ -873,10 +902,14 @@ public actor WezTermController: WezTermControlling {
         configuration: WezTermConfiguration,
         runtime: TmuxController
     ) async throws -> TerminalActionResult {
-        let connection = try await resolveConnection(configuration: configuration)
+        var connection = try await resolveConnection(configuration: configuration)
+        if connection.result.timedOut {
+            connection = try await startWezTermAfterTimeout(
+                configuration: configuration, workingDirectory: directory)
+        }
         guard !connection.result.timedOut else {
             throw WezTermError.actionFailed(
-                "WezTerm lookup timed out. The managed agent remains available in tmux.")
+                "WezTerm lookup timed out again after Focus Queue started WezTerm. The managed agent remains available in tmux.")
         }
 
         if connection.result.succeeded {

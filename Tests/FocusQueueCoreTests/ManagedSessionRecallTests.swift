@@ -206,6 +206,29 @@ struct ManagedSessionRecallTests {
     #expect(!calls.contains { $0.executable == "/usr/bin/open" && $0.arguments.contains("-na") })
   }
 
+  @Test("Ghostty recall opens a new window attached to the exact verified tmux pane")
+  func deterministicGhosttyRecipe() async throws {
+    let agentID = "agent-two"
+    let reference = taskReference()
+    let runner = DeterministicRecallRunner(reference: reference, agentID: agentID)
+    let subtask = TaskSubtask(id: agentID, title: "Ghostty agent", provider: .codex,
+      tmux: reference, runtimeMode: .tmux)
+
+    let result = try await WezTermController(
+      runner: runner, candidateSockets: []).openAgentRuntime(
+        subtask, taskID: "ECC-1",
+        configuration: .init(executable: "/mock/wezterm", applicationName: "Ghostty"))
+
+    #expect(result == .spawned(paneID: nil))
+    let calls = await runner.calls
+    let opened = try #require(calls.first { $0.executable == "/usr/bin/open" })
+    #expect(opened.arguments.starts(with: ["-na", "Ghostty", "--args", "--quit-after-last-window-closed=true", "-e"]))
+    #expect(opened.arguments.contains("/mock/tmux"))
+    #expect(opened.arguments.contains("attach-session"))
+    #expect(opened.arguments.contains("=fq-task-ecc-1"))
+    #expect(!calls.contains { $0.executable == "/mock/wezterm" })
+  }
+
   @Test("macOS Terminal recall opens a command file for the exact verified tmux pane")
   func deterministicMacTerminalRecipe() async throws {
     let agentID = "agent-two"

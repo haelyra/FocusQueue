@@ -77,3 +77,13 @@ func taskOutputsReviewPersists() async throws {
     let pruned = try await store.markOutputsReviewed(ticketID: ticket.id, outputs: [notes])
     #expect(pruned.reviewedOutputs?.keys.sorted() == ["notes.md"])
 }
+
+@Test("The walkthrough demo mockup is not an output, but a nested walkthrough folder is")
+func taskOutputsSkipWalkthroughDemo() throws {
+    let folder = try outputsFixture(); defer { try? FileManager.default.removeItem(at: folder) }
+    let now = Date()
+    try write("canvas/118a7ad1e7d6.json", in: folder, modified: now)
+    try write("walkthrough/ui-canvas-demo.html", in: folder, modified: now)
+    try write("evidence/walkthrough/notes.md", in: folder, modified: now)
+    #expect(TaskOutputs.scan(folder).map(\.relativePath) == ["evidence/walkthrough/notes.md"])
+}

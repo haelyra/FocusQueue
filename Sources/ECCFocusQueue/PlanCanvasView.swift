@@ -784,7 +784,7 @@ struct NewTaskAgentView: View {
     return FileManager.default.isExecutableFile(atPath: executable)
   }
   private var requiresTmux: Bool {
-    model.config.wezTerm.applicationName.caseInsensitiveCompare("Terminal") == .orderedSame
+    model.config.wezTerm.terminalApp.requiresTmux
   }
   private var name: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
   private var preview: String {

@@ -829,7 +829,7 @@ public actor WezTermController: WezTermControlling {
         // Externally created sessions can also have several panes or windows.
         // Selecting the saved identity is required before attaching its view.
         try await runtime.select(live)
-        if configuration.applicationName.caseInsensitiveCompare("Terminal") == .orderedSame {
+        if configuration.terminalApp.requiresTmux {
             let result = try await ManagedTerminalLauncher.open(
                 reference: live, configuration: configuration, runner: runner)
             _ = try await runtime.verify(live)

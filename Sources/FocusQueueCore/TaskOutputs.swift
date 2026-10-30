@@ -29,6 +29,9 @@ public enum TaskOutputs {
         // App runtime state: canvas sessions, document chat routes, harness runs.
         "canvas", "document-agents", "documents",
     ]
+    /// The walkthrough's demo mockup at the context root. A deeper folder with
+    /// this name is an agent's.
+    static let ignoredTopLevelDirectories: Set<String> = ["walkthrough"]
     static let ignoredFiles: Set<String> = [
         "plan.md", "data.md", "agent-log.md", TaskContext.initialPromptFileName, "context.json",
         "maintenance.json", TaskCompletionCleanup.reportName, "conversation.json", "plan-draft.json",
@@ -53,7 +56,10 @@ public enum TaskOutputs {
             guard let values = try? url.resourceValues(forKeys: Set(keys)) else { continue }
             let name = url.lastPathComponent
             if values.isDirectory == true {
-                if ignoredDirectories.contains(name) || enumerator.level > 4 { enumerator.skipDescendants() }
+                if ignoredDirectories.contains(name) || enumerator.level > 4
+                    || (enumerator.level == 1 && ignoredTopLevelDirectories.contains(name)) {
+                    enumerator.skipDescendants()
+                }
                 continue
             }
             let path = url.standardizedFileURL.path

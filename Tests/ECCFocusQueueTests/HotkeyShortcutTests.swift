@@ -6,14 +6,28 @@ import Testing
 @Suite("Hotkey recording")
 @MainActor
 struct HotkeyShortcutTests {
-  @Test("Minimization defaults to the Command comma Carbon shortcut")
-  func minimizationDefault() throws {
-    let shortcut = try #require(HotkeyAction.toggleMinimization.defaultShortcut)
-    #expect(shortcut.keyCode == UInt16(kVK_ANSI_Comma))
-    #expect(shortcut.carbonModifiers == UInt32(cmdKey))
-    #expect(shortcut.displayString == "⌘,")
-    #expect(HotkeyAction.newTask.defaultShortcut == nil)
-    #expect(HotkeyAction.qchat.defaultShortcut == nil)
+  @Test("Defaults are Command period, slash, and comma Carbon shortcuts")
+  func defaults() {
+    let expected: [HotkeyAction: (Int, String)] = [
+      .newTask: (kVK_ANSI_Period, "⌘."), .qchat: (kVK_ANSI_Slash, "⌘/"), .toggleMinimization: (kVK_ANSI_Comma, "⌘,"),
+    ]
+    for action in HotkeyAction.allCases {
+      let shortcut = action.defaultShortcut
+      #expect(shortcut.keyCode == UInt16(expected[action]!.0))
+      // Carbon's cmdKey has no side, so either Command key triggers it.
+      #expect(shortcut.carbonModifiers == UInt32(cmdKey))
+      #expect(shortcut.displayString == expected[action]!.1)
+    }
+  }
+
+  @Test("The default New task and QChat shortcuts register as system hot keys")
+  func defaultsRegister() {
+    let center = GlobalHotKeyCenter.shared
+    for action in [HotkeyAction.newTask, .qchat] {
+      #expect(center.register(action.defaultShortcut, for: action) {} == nil)
+      #expect(center.isRegistered(action))
+      center.unregister(action)
+    }
   }
 
   @Test("A combo with Command, Option, or Control records with its layout label")

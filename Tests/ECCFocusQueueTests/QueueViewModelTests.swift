@@ -628,45 +628,6 @@ struct QueueViewModelTests {
     #expect(model.queueChatFocusRequest == 2)
   }
 
-  @Test("A Right Command + Shift tap opens the new task sheet and the next tap cancels it")
-  func newTaskHotkeyTogglesSheet() async throws {
-    let fixture = try await Fixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let model = await fixture.model(agent: ControlledQueueAgent())
-    let monitor = NewTaskHotkeyMonitor()
-    monitor.onTrigger = { model.toggleNewTaskRequest() }
-    func send(_ type: NSEvent.EventType, _ keyCode: UInt16, _ flags: NSEvent.ModifierFlags) {
-      let characters = type == .keyDown ? "A" : ""
-      monitor.handle(try! #require(NSEvent.keyEvent(
-        with: type, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0,
-        context: nil, characters: characters, charactersIgnoringModifiers: characters,
-        isARepeat: false, keyCode: keyCode)))
-    }
-    func commandShiftTap(commandKeyUpArrives: Bool = true) {
-      send(.flagsChanged, 54, [.command])
-      send(.flagsChanged, 56, [.command, .shift])
-      send(.flagsChanged, 56, [.command])
-      if commandKeyUpArrives { send(.flagsChanged, 54, []) }
-    }
-
-    // The opening tap activates the app on its Shift release, and the Command
-    // key-up that follows can go missing; the cancel tap must still work.
-    commandShiftTap(commandKeyUpArrives: false)
-    #expect(model.newTaskRequest?.autofocusPrompt == true)
-    // Typing a capital letter in the prompt between taps must not block the cancel.
-    send(.flagsChanged, 56, [.shift])
-    send(.keyDown, 0, [.shift])
-    send(.flagsChanged, 56, [])
-    commandShiftTap()
-    #expect(model.newTaskRequest == nil)
-
-    // And the next open/cancel pair works from the healed state.
-    commandShiftTap()
-    #expect(model.newTaskRequest != nil)
-    commandShiftTap()
-    #expect(model.newTaskRequest == nil)
-  }
-
   @Test("A QChat focus request puts the cursor in the composer, again after focus moves away")
   func qchatFocusRequestFocusesComposer() async throws {
     let fixture = try await Fixture()
@@ -944,7 +905,31 @@ struct QueueViewModelTests {
       styleMask: [.titled, .resizable, .fullSizeContentView],
       backing: .buffered, defer: false)
     panel.setFrame(original, display: false)
+    // Reproduce the actual production panel's cross-Space defaults.
+    panel.level = .floating
+    panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
     let delegate = AppDelegate(panel: panel, model: model)
+    #expect(panel.level == .normal)
+    #expect(!panel.collectionBehavior.contains(.canJoinAllSpaces))
+    #expect(!panel.collectionBehavior.contains(.stationary))
+    for _ in 0..<3 {
+      model.toggleWindowPin()
+      #expect(!model.isWindowPinned)
+      #expect(panel.level == .floating)
+      #expect(panel.collectionBehavior.contains(.canJoinAllSpaces))
+      model.toggleWindowPin()
+      #expect(model.isWindowPinned)
+      #expect(panel.level == .normal)
+      #expect(!panel.collectionBehavior.contains(.canJoinAllSpaces))
+    }
+    delegate.withPanelOnActiveSpace { summonedPanel in
+      #expect(summonedPanel === panel)
+      #expect(summonedPanel.collectionBehavior.contains(.moveToActiveSpace))
+      #expect(!summonedPanel.collectionBehavior.contains(.canJoinAllSpaces))
+    }
+    #expect(!panel.collectionBehavior.contains(.moveToActiveSpace))
+    #expect(!panel.collectionBehavior.contains(.canJoinAllSpaces))
+    #expect(panel.level == .normal)
     model.panelModeHandler = { delegate.setPanelMode($0) }
     for preference in [QueueMinimizationPreference.fq, .topTask] {
       model.minimize(using: preference)
@@ -1003,7 +988,7 @@ struct QueueViewModelTests {
     for key in keys { defaults.removeObject(forKey: key) }
     let model = await fixture.model(agent: ControlledQueueAgent())
     #expect(model.isHotkeyEnabled(.toggleMinimization))
-    #expect(model.hotkeyShortcut(for: .toggleMinimization)?.displayString == "⌘,")
+    #expect(model.hotkeyShortcut(for: .toggleMinimization).displayString == "⌘,")
     #expect(model.minimizationHelp.contains("Toggle minimization: ⌘,"))
     let custom = HotkeyShortcut(keyCode: 40, modifiers: NSEvent.ModifierFlags.command.rawValue, keyLabel: "K")
     var configurationChanges = 0
@@ -1299,6 +1284,29 @@ struct QueueViewModelTests {
     #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
     #expect(model.moveTicket("ECC-101", to: .bottom))
     #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
+  }
+
+  @Test("Native context opens reorder tasks immediately and survive restart")
+  func contextOpensRecordRecentInteraction() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    model.setQueueActivitySortMode(.recentInteraction)
+    model.openPlan(for: fixture.tickets[0])
+    try await eventually { !model.isPlanLoading }
+    let promptBefore = model.taskContexts["ECC-102"]?.lastPromptAt
+    let context = try #require(model.taskContexts["ECC-102"])
+    model.open(context.dataURL.path, ticketID: "ECC-102")
+    try await eventually { model.taskContexts["ECC-102"]?.lastInteractionAt != nil }
+    #expect(model.presentedPlanURL == context.dataURL)
+    #expect(model.openTickets.map(\.id) == ["ECC-102", "ECC-101"])
+    #expect(model.taskContexts["ECC-102"]?.lastPromptAt == promptBefore)
+    let restarted = await fixture.model(agent: ControlledQueueAgent())
+    restarted.setQueueActivitySortMode(.recentInteraction)
+    #expect(restarted.openTickets.map(\.id) == ["ECC-102", "ECC-101"])
+    // Reopening an already-viewed task must count again.
+    restarted.openPlan(for: fixture.tickets[0])
+    try await eventually { restarted.openTickets.first?.id == "ECC-101" }
   }
 
   @Test("Viewed tasks and activity sort preference survive restart")
@@ -2828,8 +2836,13 @@ struct QueueViewModelTests {
       identifyManagedAgent: { subtask, _ in subtask.sessionID })
     let subtask = try #require(model.subtasks(for: "ECC-101").first)
 
+    model.setQueueActivitySortMode(.recentInteraction)
+    model.openPlan(for: fixture.tickets[1])
+    try await eventually { model.openTickets.first?.id == "ECC-102" && !model.isPlanLoading }
     model.openSubtask(subtask, for: fixture.tickets[0])
     try await eventually { model.isOpening(subtask, ticketID: "ECC-101") }
+    try await eventually { model.openTickets.first?.id == "ECC-101" }
+    #expect(model.taskContexts["ECC-101"]?.lastInteractionAt != nil)
     let session = try #require(model.session(for: subtask, ticketID: "ECC-101"))
     #expect(model.isOpening(session))
     await terminal.release()
@@ -2969,7 +2982,11 @@ struct QueueViewModelTests {
     let session = TaskAgentSession(ticketID: "ECC-101", provider: .codex,
       sessionID: UUID().uuidString, tabTitle: "Historical", workingDirectory: fixture.root.path,
       resumePrompt: "Automatically start implementing again", tmux: runtime)
+    model.setQueueActivitySortMode(.recentInteraction)
+    model.openPlan(for: fixture.tickets[1])
+    try await eventually { model.openTickets.first?.id == "ECC-102" && !model.isPlanLoading }
     model.viewAgent(session, for: fixture.tickets[0])
+    try await eventually { model.openTickets.first?.id == "ECC-101" }
     try await eventually { model.actionMessages["ECC-101"]?.contains("Managed session") == true }
     let recalled = try #require(await recorder.sessions.first)
     #expect(recalled.workingDirectory == fixture.root.path)
@@ -3625,7 +3642,7 @@ struct QueueViewModelTests {
     #expect(recallable.map(\.ticket.id) == ["ECC-102", "ECC-101"])
   }
 
-  @Test("Recorded hotkey shortcuts persist per action and reset to the default gesture")
+  @Test("Recorded hotkey shortcuts persist per action and reset to the default shortcut")
   func hotkeyShortcutPersistence() async throws {
     let fixture = try await Fixture()
     defer {
@@ -3639,15 +3656,19 @@ struct QueueViewModelTests {
 
     model.setHotkeyShortcut(combo, for: .newTask)
     #expect(model.hotkeyShortcut(for: .newTask) == combo)
-    #expect(model.hotkeyShortcut(for: .qchat) == nil)
+    #expect(model.hotkeyShortcut(for: .qchat) == HotkeyAction.qchat.defaultShortcut)
     let saved = try #require(UserDefaults.standard.data(forKey: HotkeyAction.newTask.shortcutDefaultsKey))
     #expect(try JSONDecoder().decode(HotkeyShortcut.self, from: saved) == combo)
     model.isRecordingHotkey = true
     model.isRecordingHotkey = false
     model.setHotkeyShortcut(nil, for: .newTask)
-    #expect(model.hotkeyShortcut(for: .newTask) == nil)
+    #expect(model.hotkeyShortcut(for: .newTask) == HotkeyAction.newTask.defaultShortcut)
     #expect(UserDefaults.standard.data(forKey: HotkeyAction.newTask.shortcutDefaultsKey) == nil)
     #expect(applied == 4, "Set, record start, record stop, and reset each re-apply hotkeys")
+    // Recording the built-in combo stores nothing, so Reset stays hidden.
+    model.setHotkeyShortcut(HotkeyAction.qchat.defaultShortcut, for: .qchat)
+    #expect(model.hotkeyShortcuts[.qchat] == nil)
+    #expect(UserDefaults.standard.data(forKey: HotkeyAction.qchat.shortcutDefaultsKey) == nil)
   }
 
   @Test("The task creator fills blanks from placement, keeps the description, and launches one placed agent")

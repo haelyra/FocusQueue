@@ -135,11 +135,12 @@ final class QueueViewModel {
     UserDefaults.standard.object(forKey: "qchatHotkeyEnabled") as? Bool ?? true
   private(set) var toggleMinimizationHotkeyEnabled =
     UserDefaults.standard.object(forKey: "toggleMinimizationHotkeyEnabled") as? Bool ?? true
-  /// A recorded combo per action; a missing entry keeps the built-in shortcut or gesture.
+  /// A recorded combo per action; a missing entry keeps the built-in shortcut.
   private(set) var hotkeyShortcuts: [HotkeyAction: HotkeyShortcut] = HotkeyAction.allCases
     .reduce(into: [:]) { shortcuts, action in
       if let data = UserDefaults.standard.data(forKey: action.shortcutDefaultsKey),
-        let shortcut = try? JSONDecoder().decode(HotkeyShortcut.self, from: data) {
+        let shortcut = try? JSONDecoder().decode(HotkeyShortcut.self, from: data),
+        shortcut != action.defaultShortcut {
         shortcuts[action] = shortcut
       }
     }
@@ -149,7 +150,7 @@ final class QueueViewModel {
   var isRecordingHotkey = false {
     didSet { if oldValue != isRecordingHotkey { hotkeyConfigurationHandler?() } }
   }
-  /// Bumped per Right Option + / press; the view opens QChat and focuses its composer.
+  /// Bumped per QChat hotkey press; the view opens QChat and focuses its composer.
   private(set) var queueChatFocusRequest = 0
   private(set) var panelMode: QueuePanelMode = .expanded
   /// Counts returns from minimized, FQ, top-task, or hidden states.
@@ -476,7 +477,7 @@ final class QueueViewModel {
 
   private func projectedOpenTickets(override queueOverride: QueueOrderDocument?) -> [DashboardTicket] {
     let tickets = dashboard.tickets
-    let lastPromptAt = taskContexts.compactMapValues(\.lastPromptAt)
+    let lastPromptAt = taskContexts.compactMapValues(\.latestInteractionAt)
     let lastOutputAt = taskContexts.compactMapValues { context in
       context.subtasks.compactMap { $0.lastOutputAt ?? $0.resultAt }.max()
     }
@@ -1627,7 +1628,7 @@ final class QueueViewModel {
   var queueActivitySortCaption: String {
     switch queueActivitySortMode {
     case .recentActivity: "Active in the last 2 days first · then by priority"
-    case .recentInteraction: "Last agent interaction first · deadlines cycle the rest"
+    case .recentInteraction: "Last task interaction first · deadlines cycle the rest"
     case .recentOutput: "Latest agent output first · deadlines cycle the rest"
     case .triage: "Hard due dates and rough triage targets"
     case .manual: "Your saved task order"
@@ -2449,12 +2450,14 @@ final class QueueViewModel {
     presentedPlanMarkdown = ""
     isPlanLoading = true
     planError = nil
+    let interactionAt = Date()
     let presentationID = UUID()
     planPresentationID = presentationID
     reportVisibilityHandler?(true)
     Task {
       do {
         taskContexts[ticket.id] = try await taskContextStore.ensureContext(ticket: ticket, project: project(for: ticket))
+        taskContexts[ticket.id] = try await taskContextStore.recordInteraction(ticketID: ticket.id, at: interactionAt)
         guard planPresentationID == presentationID, presentedPlanTicketID == ticket.id else { return }
         await reloadPresentedPlan()
       } catch {
@@ -3139,12 +3142,23 @@ final class QueueViewModel {
       expectedHeartbeat: subtask.resultID == nil ? subtask.lastHeartbeatAt : nil)
   }
 
+  private func recordTaskInteraction(for ticket: DashboardTicket) {
+    let date = Date()
+    Task {
+      do {
+        _ = try await taskContextStore.ensureContext(ticket: ticket, project: project(for: ticket))
+        taskContexts[ticket.id] = try await taskContextStore.recordInteraction(ticketID: ticket.id, at: date)
+      } catch { actionMessages[ticket.id] = error.localizedDescription }
+    }
+  }
+
   func openSubtask(_ subtask: TaskSubtask, for ticket: DashboardTicket, showResult: Bool = true) {
     guard !subtask.isAssignmentOnly else {
       actionMessages[ticket.id] = "Choose an agent below this subtask, or use New agent to start one."
       return
     }
     if showResult && subtask.status == .completed && subtask.agentRemovedAt != nil {
+      recordTaskInteraction(for: ticket)
       openAgentUpdate(QueueAgentUpdate(id: "subtask-\(ticket.id)-\(subtask.id)", ticketID: ticket.id,
         title: "\(subtask.title) completed", summary: subtask.resultSummary ?? subtask.progressSummary,
         subtaskID: subtask.id, date: subtask.resultAt ?? subtask.lastHeartbeatAt ?? .distantPast, resultID: subtask.resultID))
@@ -3152,6 +3166,7 @@ final class QueueViewModel {
     }
     let key = Self.subtaskKey(ticketID: ticket.id, subtaskID: subtask.id)
     guard openingSubtaskIDs.insert(key).inserted else { return }
+    recordTaskInteraction(for: ticket)
     agentSessionErrors[key] = nil
     let sessionKey = session(for: subtask, ticketID: ticket.id).map(Self.openingKey)
     if let sessionKey { openingAgentSessionIDs.insert(sessionKey) }
@@ -3357,6 +3372,7 @@ final class QueueViewModel {
       completion?(false)
       return
     }
+    recordTaskInteraction(for: ticket)
     actionMessages[ticket.id] = "Preparing task worktree and agent context…"
     Task {
       var assignment: TaskSubtask?
@@ -4393,6 +4409,7 @@ final class QueueViewModel {
     if session.tmux == nil { session.tmux = subtask?.tmux }
     let openingKey = Self.openingKey(for: session)
     guard openingAgentSessionIDs.insert(openingKey).inserted else { return }
+    recordTaskInteraction(for: ticket)
     if let subtask {
       let subtaskKey = Self.subtaskKey(ticketID: ticket.id, subtaskID: subtask.id)
       openingSubtaskIDs.insert(subtaskKey)
@@ -4884,7 +4901,7 @@ final class QueueViewModel {
     }
   }
 
-  func hotkeyShortcut(for action: HotkeyAction) -> HotkeyShortcut? {
+  func hotkeyShortcut(for action: HotkeyAction) -> HotkeyShortcut {
     hotkeyShortcuts[action] ?? action.defaultShortcut
   }
 
@@ -4895,8 +4912,9 @@ final class QueueViewModel {
     hotkeyConfigurationHandler?()
   }
 
-  /// nil restores the action's built-in shortcut or gesture.
+  /// nil restores the action's built-in shortcut. Recording the default stores nothing.
   func setHotkeyShortcut(_ shortcut: HotkeyShortcut?, for action: HotkeyAction) {
+    let shortcut = shortcut == action.defaultShortcut ? nil : shortcut
     guard hotkeyShortcuts[action] != shortcut else { return }
     hotkeyShortcuts[action] = shortcut
     hotkeyErrors[action] = nil
@@ -5069,7 +5087,7 @@ final class QueueViewModel {
   }
 
   var minimizationHelp: String {
-    let shortcut = hotkeyShortcut(for: .toggleMinimization)?.displayString ?? "⌘,"
+    let shortcut = hotkeyShortcut(for: .toggleMinimization).displayString
     let availability = toggleMinimizationHotkeyEnabled ? "" : " (disabled in Settings)"
     return "Toggle minimization: \(shortcut)\(availability); right-click to choose how"
   }

@@ -111,9 +111,12 @@ public enum PromptUsageMetrics {
     public static func load(in supportDirectory: URL) -> [PromptUsageEvent] {
         guard let data = try? Data(contentsOf: file(in: supportDirectory)),
               let text = String(data: data, encoding: .utf8) else { return [] }
-        return text.split(separator: "\n").compactMap {
+        let events = text.split(separator: "\n").compactMap {
             try? JSONDecoder.analytics.decode(PromptUsageEvent.self, from: Data($0.utf8))
         }
+        // Append-only corrections retain original metadata; the latest revision wins.
+        var seen = Set<String>()
+        return events.reversed().filter { seen.insert($0.id).inserted }.reversed()
     }
 }
 

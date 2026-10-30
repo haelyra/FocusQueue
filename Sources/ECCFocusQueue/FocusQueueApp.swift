@@ -46,8 +46,6 @@ import UserNotifications
   private var statusItem: NSStatusItem?
   private var exitTerminalFocusItem: NSMenuItem?
   private var terminalFocusController: TerminalFocusModeController?
-  private var newTaskHotkeyMonitor: NewTaskHotkeyMonitor?
-  private var qchatHotkeyMonitor: QChatHotkeyMonitor?
   private var focusChromeRefreshTask: Task<Void, Never>?
   private var screenReconciliationTask: Task<Void, Never>?
   private var movePersistTask: Task<Void, Never>?
@@ -74,6 +72,7 @@ import UserNotifications
     super.init()
     self.panel = panel
     self.model = model
+    configureWindowPinning()
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
@@ -106,7 +105,7 @@ import UserNotifications
     model.placementHandler = { [weak self] placement in
       self?.positionPanelOnCurrentDisplay(placement, animated: true)
     }
-    model.windowPinHandler = { [weak self] in self?.persistDraggedPlacement() }
+    configureWindowPinning()
     model.monitorSwitchHandler = { [weak self] in self?.switchPanelMonitor() }
     model.panelModeHandler = { [weak self] mode in self?.setPanelMode(mode) }
     model.minimizeHandler = { [weak self] in self?.panel?.miniaturize(nil) }
@@ -147,9 +146,9 @@ import UserNotifications
         targetScreen: panel?.screen, requiresActivatedWindow: true)
     }
     model.quitHandler = { NSApplication.shared.terminate(nil) }
-    model.newTaskHotkeyEnabledHandler = { [weak self] _ in self?.applyHotkeys(promptForAccess: false) }
-    model.qchatHotkeyEnabledHandler = { [weak self] _ in self?.applyHotkeys(promptForAccess: true) }
-    model.hotkeyConfigurationHandler = { [weak self] in self?.applyHotkeys(promptForAccess: false) }
+    model.newTaskHotkeyEnabledHandler = { [weak self] _ in self?.applyHotkeys() }
+    model.qchatHotkeyEnabledHandler = { [weak self] _ in self?.applyHotkeys() }
+    model.hotkeyConfigurationHandler = { [weak self] in self?.applyHotkeys() }
     model.setCanSwitchMonitor(NSScreen.screens.count > 1)
     configureDailyReportNotifications()
     NSWorkspace.shared.notificationCenter.addObserver(
@@ -161,13 +160,14 @@ import UserNotifications
 
     createPanel()
     createStatusItem()
-    applyHotkeys(promptForAccess: false)
+    applyHotkeys()
     positionPanel(.upperLeft, on: defaultScreen(), animated: false, persist: false)
     panel?.orderFrontRegardless()
 
     Task { [weak self] in
       guard let self else { return }
       await model.bootstrap()
+      applyWindowPinning()
       if !model.config.dailyReport.enabled {
         disableAutomaticDailyReports()
       }
@@ -234,17 +234,10 @@ import UserNotifications
     }
   }
 
-  func applicationDidBecomeActive(_ notification: Notification) {
-    // Returning from System Settings is the usual moment Accessibility was just granted.
-    if usesDefaultGesture(.qchat) { qchatHotkeyMonitor?.start() }
-  }
-
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
   func applicationWillTerminate(_ notification: Notification) {
     programLog.record("Focus Queue is terminating.", category: "Lifecycle")
-    newTaskHotkeyMonitor?.stop()
-    qchatHotkeyMonitor?.stop()
     for action in HotkeyAction.allCases { GlobalHotKeyCenter.shared.unregister(action) }
     morningReconciliationTask?.cancel()
     _ = try? DailyReportWorkerControl.requestCancellation(
@@ -362,35 +355,20 @@ import UserNotifications
     model.setPanelVisible(true)
   }
 
-  /// An enabled action uses its recorded combo when it has one, otherwise its
-  /// built-in gesture monitor. Everything pauses while a shortcut field records.
-  private func applyHotkeys(promptForAccess: Bool) {
+  /// An enabled action registers its recorded combo, or its built-in one.
+  /// Everything pauses while a shortcut field records.
+  private func applyHotkeys() {
     for action in HotkeyAction.allCases {
       GlobalHotKeyCenter.shared.unregister(action)
-      let active = model.isHotkeyEnabled(action) && !model.isRecordingHotkey
-      let shortcut = active ? model.hotkeyShortcut(for: action) : nil
-      let gesture = active && shortcut == nil
-      switch action {
-      case .newTask:
-        if gesture { if newTaskHotkeyMonitor == nil { startNewTaskHotkeyMonitor() } } else { stopNewTaskHotkeyMonitor() }
-      case .qchat:
-        if gesture { if qchatHotkeyMonitor?.isRunning != true { startQChatHotkeyMonitor(promptForAccess: promptForAccess) } }
-        else { stopQChatHotkeyMonitor() }
-      case .toggleMinimization: break
-      }
-      guard let shortcut else {
+      guard model.isHotkeyEnabled(action), !model.isRecordingHotkey else {
         if !model.isRecordingHotkey { model.setHotkeyError(nil, for: action) }
         continue
       }
-      let error = GlobalHotKeyCenter.shared.register(shortcut, for: action) { [weak self] in
+      let error = GlobalHotKeyCenter.shared.register(model.hotkeyShortcut(for: action), for: action) { [weak self] in
         self?.handleHotkey(action)
       }
       model.setHotkeyError(error, for: action)
     }
-  }
-
-  private func usesDefaultGesture(_ action: HotkeyAction) -> Bool {
-    model.isHotkeyEnabled(action) && !model.isRecordingHotkey && model.hotkeyShortcut(for: action) == nil
   }
 
   private func handleHotkey(_ action: HotkeyAction) {
@@ -400,25 +378,19 @@ import UserNotifications
     case .qchat: handleQChatHotkey()
     case .toggleMinimization:
       let wasMiniaturized = panel?.isMiniaturized == true
-      model.toggleMinimization(isMiniaturized: wasMiniaturized)
-      if wasMiniaturized {
-        panel?.deminiaturize(nil)
-        panel?.orderFrontRegardless()
-        model.setPanelVisible(true)
+      let isPinnedOnAnotherSpace = model.isWindowPinned && panel?.isOnActiveSpace == false
+      if wasMiniaturized || model.panelMode != .expanded || isPinnedOnAnotherSpace {
+        // Only this explicit shortcut may summon a pinned queue onto another Space.
+        withPanelOnActiveSpace { panel in
+          model.setPanelMode(.expanded)
+          panel.deminiaturize(nil)
+          panel.makeKeyAndOrderFront(nil)
+          model.setPanelVisible(true)
+        }
+      } else {
+        model.toggleMinimization()
       }
     }
-  }
-
-  private func startNewTaskHotkeyMonitor() {
-    let monitor = NewTaskHotkeyMonitor()
-    monitor.onTrigger = { [weak self] in self?.handleHotkey(.newTask) }
-    monitor.start()
-    newTaskHotkeyMonitor = monitor
-  }
-
-  private func stopNewTaskHotkeyMonitor() {
-    newTaskHotkeyMonitor?.stop()
-    newTaskHotkeyMonitor = nil
   }
 
   /// Plain toggle. Gating the cancel on key-window state failed: a sheet on the
@@ -430,25 +402,6 @@ import UserNotifications
       panel?.attachedSheet?.isKeyWindow == true, NSApp.isActive)
     if !isOpen { revealPanelOnPointerDisplay() }
     model.toggleNewTaskRequest()
-  }
-
-  private func startQChatHotkeyMonitor(promptForAccess: Bool) {
-    let monitor = qchatHotkeyMonitor ?? QChatHotkeyMonitor()
-    monitor.onTrigger = { [weak self] in self?.handleHotkey(.qchat) }
-    qchatHotkeyMonitor = monitor
-    guard !monitor.start() else { return }
-    programLog.record(
-      "QChat hotkey (Right Option + /) needs Accessibility access in System Settings > Privacy & Security.",
-      level: .warning, category: "Hotkeys")
-    if promptForAccess {
-      let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-      _ = AXIsProcessTrustedWithOptions(options)
-    }
-  }
-
-  private func stopQChatHotkeyMonitor() {
-    qchatHotkeyMonitor?.stop()
-    qchatHotkeyMonitor = nil
   }
 
   /// Toggles like the side-panel button, but a press while another app has the
@@ -1051,6 +1004,34 @@ import UserNotifications
     } catch {}
   }
 
+  private func configureWindowPinning() {
+    model.windowPinHandler = { [weak self] in
+      self?.applyWindowPinning()
+      self?.persistDraggedPlacement()
+    }
+    applyWindowPinning()
+  }
+
+  private func applyWindowPinning() {
+    guard let panel else { return }
+    // Frame preservation alone cannot pin a panel that AppKit puts in every Space.
+    panel.level = model.isWindowPinned ? .normal : .floating
+    panel.collectionBehavior = model.isWindowPinned
+      ? [.managed, .fullScreenAuxiliary]
+      : [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+  }
+
+  /// Scope Space movement to an explicit minimization-shortcut reveal. Restore
+  /// the pin policy immediately so later app activation cannot keep following.
+  func withPanelOnActiveSpace(_ operation: (FocusPanel) -> Void) {
+    guard let panel else { return }
+    if model.isWindowPinned {
+      panel.collectionBehavior = [.moveToActiveSpace, .managed, .fullScreenAuxiliary]
+    }
+    defer { applyWindowPinning() }
+    operation(panel)
+  }
+
   private func createPanel() {
     let panel = FocusPanel(
       contentRect: NSRect(x: 0, y: 0, width: 440, height: 780),
@@ -1086,6 +1067,7 @@ import UserNotifications
     hostingView.layer?.backgroundColor = NSColor.clear.cgColor
     panel.contentView = hostingView
     self.panel = panel
+    applyWindowPinning()
     let terminalFocusController = TerminalFocusModeController(queuePanel: panel)
     terminalFocusController.stateDidChange = { [weak self] isActive in
       self?.exitTerminalFocusItem?.isHidden = !isActive

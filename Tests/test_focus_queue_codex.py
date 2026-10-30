@@ -324,6 +324,26 @@ class FocusQueueCodexTests(unittest.TestCase):
             },
         )
 
+    def test_fork_usage_excludes_inherited_lifetime_totals(self):
+        stdout = json.dumps({"type": "turn.completed", "usage": {
+            "input_tokens": 10708837, "cached_input_tokens": 9646848, "output_tokens": 52210}})
+        usage = MODULE.parse_token_usage(stdout, {
+            "input_tokens": 10676687, "cached_input_tokens": 9634688, "output_tokens": 52185})
+        self.assertEqual(usage["totalTokens"], 32175)
+        self.assertEqual(usage["cachedInputTokens"], 12160)
+        self.assertEqual(usage["outputTokens"], 25)
+
+    def test_baseline_reads_latest_session_total_before_invocation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "sessions" / "2026"
+            root.mkdir(parents=True)
+            (root / "rollout-source-1.jsonl").write_text("\n".join(
+                json.dumps({"payload": {"type": "token_count", "info": {
+                    "total_token_usage": {"input_tokens": value}}}}) for value in [100, 250]))
+            with mock.patch.dict(os.environ, {"CODEX_HOME": temporary}):
+                self.assertEqual(MODULE.session_token_baseline("source-1"), {"input_tokens": 250})
+                self.assertIsNone(MODULE.session_token_baseline("missing"))
+
     def test_usage_metadata_is_written_privately_for_the_calling_worker(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "usage.json"
@@ -669,19 +689,22 @@ class FocusQueueCodexTests(unittest.TestCase):
                 Path(command[command.index("--output-last-message") + 1]).write_text("ok", encoding="utf-8")
 
             def communicate(self, **_kwargs):
-                return ('{"type":"thread.started","thread_id":"fork-2"}\n', "")
+                return ('{"type":"thread.started","thread_id":"fork-2"}\n{"type":"turn.completed","usage":{"input_tokens":1100,"output_tokens":110}}\n', "")
 
             def poll(self):
                 return 0
 
         with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
             MODULE, "resolve_codex", return_value="/usr/bin/codex"
-        ), mock.patch.object(MODULE.subprocess, "Popen", FakeProcess):
+        ), mock.patch.object(MODULE.subprocess, "Popen", FakeProcess), mock.patch.object(
+            MODULE, "session_token_baseline", return_value={"input_tokens": 1000, "output_tokens": 100}
+        ):
             reply, thread = MODULE.run_codex(
                 prompt="Discuss", workspace=Path(temporary), runtime=Path(temporary) / "runtime",
                 timeout=10, sandbox="workspace-write", thread_id="source-2", output_schema=None,
-                fork_thread=True,
+                fork_thread=True, usage_file=Path(temporary) / "usage.json",
             )
+            self.assertEqual(json.loads((Path(temporary) / "usage.json").read_text())["totalTokens"], 110)
         self.assertEqual(captured["command"][-3:], ["fork", "source-2", "-"])
         self.assertEqual((reply, thread), ("ok", "fork-2"))
 

@@ -6,7 +6,10 @@ import SwiftUI
 
 /// Token usage from local files only: the app's prompt counters and the
 /// providers' own session transcripts. No model is called to render this view.
-struct TokenAnalyticsView: View {
+struct TokenAnalyticsView: View, Equatable {
+  nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+    lhs.supportDirectory == rhs.supportDirectory && lhs.scrolls == rhs.scrolls
+  }
   let supportDirectory: URL
   let sessions: [AgentTranscriptUsage.Session]
   /// Off only when rendering the whole page to an image.
@@ -15,6 +18,8 @@ struct TokenAnalyticsView: View {
 
   @State private var events: [PromptUsageEvent]
   @State private var agents: [AgentSessionUsage]
+  @State private var ranges: [Int: AnalyticsRange]
+  @State private var didLoad = false
   @State private var isLoading = false
   @State private var rangeDays = 14
   @State private var selectedAgentDay: String?
@@ -28,6 +33,7 @@ struct TokenAnalyticsView: View {
     self.close = close
     _events = State(initialValue: events)
     _agents = State(initialValue: agents)
+    _ranges = State(initialValue: events.isEmpty && agents.isEmpty ? [:] : AnalyticsRange.build(events: events, agents: agents))
   }
 
   var body: some View {
@@ -41,12 +47,14 @@ struct TokenAnalyticsView: View {
       }
     }
     .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 14))
-    .onAppear { if scrolls { reload() } }
+    .onAppear { if scrolls && !didLoad { didLoad = true; reload() } }
   }
 
   private var content: some View {
     VStack(alignment: .leading, spacing: 16) {
       explanation
+      Text("Snapshot taken when opened. Reopen to update. Calls show reported usage / attempts; attempts without reports may have failed or been stopped.")
+        .font(.caption).foregroundStyle(.secondary)
       summaryTiles
       agentDailyCard
       stepDailyCard
@@ -75,7 +83,6 @@ struct TokenAnalyticsView: View {
         Text("30 days").tag(30)
       }
       .pickerStyle(.segmented).labelsHidden().fixedSize()
-      Button("Refresh", systemImage: "arrow.clockwise") { reload() }
     }
     .padding(.horizontal, 16).padding(.vertical, 12)
   }
@@ -120,12 +127,7 @@ struct TokenAnalyticsView: View {
   // MARK: Daily usage
 
   private var agentDailyCard: some View {
-    let points = days.flatMap { day in
-      TokenKind.allCases.map { kind in
-        DayPoint(day: day, series: kind.title,
-                 tokens: agentsInRange.reduce(0) { $0 + kind.value($1.0.daily[day] ?? TokenBreakdown()) })
-      }
-    }
+    let points = ranges[rangeDays]?.agentPoints ?? []
     return card {
       sectionTitle("Daily agent usage", "All tracked agent sessions, by how the provider processed the tokens.")
       if points.allSatisfy({ $0.tokens == 0 }) {
@@ -156,13 +158,7 @@ struct TokenAnalyticsView: View {
 
   private var stepDailyCard: some View {
     let reported = TokenStep.modelCalls
-    let points = days.flatMap { day in
-      reported.map { step in
-        DayPoint(day: day, series: step.title, tokens: measured
-          .filter { $0.source == step.source && TokenUsageDay.key($0.timestamp) == day }
-          .compactMap(\.reportedTotalTokens).reduce(0, +))
-      }
-    }
+    let points = ranges[rangeDays]?.stepPoints ?? []
     return card {
       sectionTitle("Daily usage by app step", "Actual tokens for each model call Focus Queue makes on its own.")
       if points.allSatisfy({ $0.tokens == 0 }) {
@@ -196,7 +192,7 @@ struct TokenAnalyticsView: View {
     Grid(alignment: .trailing, horizontalSpacing: 14, verticalSpacing: 7) {
       GridRow {
         Text("Step").gridColumnAlignment(.leading)
-        Text("Runs")
+        Text("Calls")
         Text("Actual total")
         Text("Actual / run")
         Text("Focus Queue text / run")
@@ -210,7 +206,7 @@ struct TokenAnalyticsView: View {
             Text(row.step.title)
           }
           .help(row.step.detail)
-          Text(row.runs.formatted())
+          Text(row.step.actualNote == "—" ? "\(row.runs) / \(row.attempts)" : row.attempts.formatted())
           Text(row.actualTotal.map(compact) ?? row.step.actualNote)
             .foregroundStyle(row.actualTotal == nil ? .secondary : .primary)
           Text(row.actualAverage.map(compact) ?? "—")
@@ -429,29 +425,10 @@ struct TokenAnalyticsView: View {
 
   // MARK: Derived data
 
-  private var days: [String] { TokenUsageDay.recent(rangeDays) }
-
-  private var measured: [PromptUsageEvent] {
-    let range = Set(days)
-    return events.filter { $0.runID != nil && range.contains(TokenUsageDay.key($0.timestamp)) }
-  }
-
-  /// Agents with usage in range, paired with their usage summed over the range.
-  private var agentsInRange: [(AgentSessionUsage, TokenBreakdown)] {
-    agents.compactMap { agent in
-      let usage = days.reduce(TokenBreakdown()) { $0 + (agent.daily[$1] ?? TokenBreakdown()) }
-      return usage.total > 0 ? (agent, usage) : nil
-    }
-  }
-
-  private var stepRows: [StepRow] {
-    TokenStep.all.map { step in
-      let rows = measured.filter { $0.source == step.source }
-      let summary = PromptUsageSummary(events: rows)
-      return StepRow(step: step, runs: summary.runs, actualTotal: summary.actualTokens,
-                     actualAverage: summary.actualAverage, estimatedAverage: summary.estimatedAverage)
-    }
-  }
+  private var days: [String] { ranges[rangeDays]?.days ?? [] }
+  private var measured: [PromptUsageEvent] { ranges[rangeDays]?.measured ?? [] }
+  private var agentsInRange: [(AgentSessionUsage, TokenBreakdown)] { ranges[rangeDays]?.agents ?? [] }
+  private var stepRows: [StepRow] { ranges[rangeDays]?.steps ?? [] }
 
   private var launchBreakdown: [ContextSlice] {
     let launches = events.filter { $0.source == "agent_launch" && $0.runID != nil }
@@ -495,7 +472,9 @@ struct TokenAnalyticsView: View {
     Task.detached(priority: .userInitiated) {
       let events = PromptUsageMetrics.load(in: support)
       let agents = AgentTranscriptUsage.scan(sessions)
+      let ranges = AnalyticsRange.build(events: events, agents: agents)
       await MainActor.run {
+        self.ranges = ranges
         self.events = events
         self.agents = agents
         self.isLoading = false
@@ -594,6 +573,47 @@ func compact(_ value: Int) -> String {
   }
 }
 
+/// Preaggregated once off the UI thread. Scrolling and chart selection never scan events.
+private struct AnalyticsRange {
+  let days: [String]
+  let measured: [PromptUsageEvent]
+  let agents: [(AgentSessionUsage, TokenBreakdown)]
+  let steps: [StepRow]
+  let agentPoints: [DayPoint]
+  let stepPoints: [DayPoint]
+
+  static func build(events: [PromptUsageEvent], agents: [AgentSessionUsage]) -> [Int: Self] {
+    let byDay = Dictionary(grouping: events.filter { $0.runID != nil }, by: { TokenUsageDay.key($0.timestamp) })
+    return Dictionary(uniqueKeysWithValues: [7, 14, 30].map { count in
+      let days = TokenUsageDay.recent(count)
+      let measured = days.flatMap { byDay[$0] ?? [] }
+      let bySource = Dictionary(grouping: measured, by: \.source)
+      let active = agents.compactMap { agent -> (AgentSessionUsage, TokenBreakdown)? in
+        let total = days.reduce(TokenBreakdown()) { $0 + (agent.daily[$1] ?? TokenBreakdown()) }
+        return total.total > 0 ? (agent, total) : nil
+      }
+      let steps = TokenStep.all.map { step in
+        let summary = PromptUsageSummary(events: bySource[step.source] ?? [])
+        return StepRow(step: step, runs: summary.reportedRuns, attempts: summary.runs,
+                       actualTotal: summary.actualTokens, actualAverage: summary.actualAverage,
+                       estimatedAverage: summary.estimatedAverage)
+      }
+      let agentPoints = days.flatMap { day in TokenKind.allCases.map { kind in
+        DayPoint(day: day, series: kind.title,
+                 tokens: active.reduce(0) { $0 + kind.value($1.0.daily[day] ?? TokenBreakdown()) })
+      } }
+      let stepPoints = days.flatMap { day in
+        let totals = Dictionary(grouping: byDay[day] ?? [], by: \.source).mapValues {
+          $0.compactMap(\.reportedTotalTokens).reduce(0, +)
+        }
+        return TokenStep.modelCalls.map { DayPoint(day: day, series: $0.title, tokens: totals[$0.source] ?? 0) }
+      }
+      return (count, Self(days: days, measured: measured, agents: active, steps: steps,
+                          agentPoints: agentPoints, stepPoints: stepPoints))
+    })
+  }
+}
+
 private struct DayPoint: Identifiable {
   let day: String
   let series: String
@@ -611,6 +631,7 @@ private struct ContextSlice: Identifiable {
 private struct StepRow: Identifiable {
   let step: TokenStep
   let runs: Int
+  let attempts: Int
   let actualTotal: Int?
   let actualAverage: Int?
   let estimatedAverage: Int

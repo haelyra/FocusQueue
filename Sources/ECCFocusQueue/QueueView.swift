@@ -1794,7 +1794,7 @@ struct QueueSettingsView: View {
                   get: { model.newTaskHotkeyEnabled },
                   set: { model.setNewTaskHotkeyEnabled($0) }))
               hotkeyRow(.qchat,
-                detail: "Opens QChat beside the queue with the message box focused for voice typing. Press again to close it. The default gesture needs Accessibility access.",
+                detail: "Opens QChat beside the queue with the message box focused for voice typing. Press again to close it.",
                 isOn: Binding(
                   get: { model.qchatHotkeyEnabled },
                   set: { model.setQChatHotkeyEnabled($0) }))

@@ -193,17 +193,17 @@ struct ManagedSessionRecallTests {
 
     #expect(action == .spawned(paneID: nil))
     let calls = await runner.calls
-    let started = try #require(calls.first {
-      $0.executable == "/mock/wezterm" && $0.arguments.starts(with: ["--skip-config", "start"])
-    })
+    // Launch Services owns the GUI; a runner deadline must never close it.
+    let started = try #require(calls.first { $0.executable == "/usr/bin/open" })
     #expect(started.workingDirectory == "/tmp")
     #expect(started.arguments.starts(with: [
-      "--skip-config", "start", "--always-new-process", "--cwd", "/tmp", "--",
+      "-na", "WezTerm", "--args", "--skip-config", "start", "--always-new-process", "--cwd", "/tmp", "--",
     ]))
     #expect(started.arguments.contains("attach-session"))
     #expect(started.arguments.contains("=fq-task-ecc-1"))
     #expect(started.arguments.contains("%7"))
-    #expect(!calls.contains { $0.executable == "/usr/bin/open" && $0.arguments.contains("-na") })
+    #expect(!calls.contains { $0.executable == "/mock/wezterm" && $0.arguments.contains("start") })
+    #expect(calls.filter { $0.executable == "/usr/bin/open" }.count == 1)
   }
 
   @Test("Ghostty recall opens a new window attached to the exact verified tmux pane")
@@ -366,10 +366,9 @@ struct ManagedSessionRecallTests {
         session: session(), taskID: "ECC-1", configuration: .init(executable: "/mock/wezterm"))
     }
     let calls = await runner.calls
-    #expect(calls.filter { $0.executable == "/usr/bin/open" }.isEmpty)
-    #expect(calls.contains {
-      $0.executable == "/mock/wezterm" && $0.arguments.starts(with: ["--skip-config", "start"])
-    })
+    let opened = calls.filter { $0.executable == "/usr/bin/open" }
+    #expect(opened.count == 1)
+    #expect(opened.first?.arguments.starts(with: ["-na", "WezTerm", "--args", "--skip-config", "start"]) == true)
     #expect(!calls.flatMap(\.arguments).contains("resume"))
     #expect(!calls.flatMap(\.arguments).contains("new-session"))
     #expect(!calls.contains { $0.executable == "/usr/sbin/lsof" || $0.executable == "/bin/ps" })
@@ -450,5 +449,30 @@ struct ManagedSessionRecallTests {
         configuration: .init(executable: "/mock/wezterm"))
     }
     #expect(await runner.calls.count == 5)
+  }
+
+  /// Opt-in: needs WezTerm installed and no WezTerm GUI running, as after a
+  /// restart. The window must outlive the launch command's 15-second deadline.
+  @Test("Live: recall without a WezTerm GUI keeps the new window attached",
+    .enabled(if: ProcessInfo.processInfo.environment["ECC_FOCUS_QUEUE_LIVE_TERMINAL_TESTS"] == "1"))
+  func liveRecallWithoutGUIKeepsWindow() async throws {
+    let tmux = try #require(SetupEnvironment.executable("tmux"))
+    let wezterm = try #require(SetupEnvironment.executable("wezterm"))
+    let controller = TmuxController()
+    let name = "fq-live-recall-\(UUID().uuidString.prefix(8).lowercased())"
+    let reference = try await controller.start(
+      name: name, directory: "/tmp", command: ["/bin/sleep", "600"], executable: tmux)
+    do {
+      let result = try await WezTermController().openManagedRuntime(
+        reference, taskID: "FOC-077", provider: .claude,
+        configuration: .init(executable: wezterm, applicationName: "WezTerm"))
+      #expect(result == .spawned(paneID: nil))
+      try await Task.sleep(for: .seconds(20))
+      #expect(try await controller.clientTTYs(for: reference).count == 1)
+    } catch {
+      try? await controller.stop(reference)
+      throw error
+    }
+    try await controller.stop(reference)
   }
 }

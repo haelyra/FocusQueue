@@ -924,15 +924,21 @@ public actor WezTermController: WezTermControlling {
 
         let previousClients = try await runtime.clientTTYs(for: reference)
         let command = try TmuxController.attachCommand(reference: reference)
+        // `wezterm start` stays in the foreground for the window's lifetime, so
+        // running it directly let the runner's deadline kill the new window.
+        // Launch Services owns the GUI instead; only the attach is awaited.
         let started = try await runner.run(ProcessSpecification(
-            executable: configuration.executable,
-            arguments: ["--skip-config", "start", "--always-new-process", "--cwd", directory, "--"] + command,
+            executable: "/usr/bin/open",
+            arguments: ["-na", configuration.applicationName, "--args", "--skip-config", "start",
+                "--always-new-process", "--cwd", directory, "--"] + command,
             workingDirectory: directory, timeoutSeconds: 15))
         guard started.succeeded else {
+            let detail = started.timedOut ? "the launch timed out" : Self.failureDetail(started)
             throw WezTermError.actionFailed(
-                "The managed agent remains in tmux, but WezTerm could not attach it: \(Self.failureDetail(started))")
+                "The managed agent remains in tmux, but WezTerm could not attach it: \(detail)")
         }
-        for _ in 0..<12 {
+        // A cold GUI start after a restart takes seconds, not milliseconds.
+        for _ in 0..<100 {
             let clients = try await runtime.clientTTYs(for: reference)
             if !clients.subtracting(previousClients).isEmpty {
                 return .spawned(paneID: nil)

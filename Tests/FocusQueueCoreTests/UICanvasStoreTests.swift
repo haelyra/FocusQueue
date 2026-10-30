@@ -164,6 +164,56 @@ struct UICanvasStoreTests {
         #expect(UICanvasPresence.listening.label(agent: "Codex") == "Codex listening")
     }
 
+    @Test("The app relays feedback only after the grace period with no listener or working agent")
+    func relayGate() throws {
+        let fixture = try Fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        _ = try fixture.open()
+        var session = try fixture.store.queueFeedback(taskID: "FOC-070", key: fixture.open().key,
+            items: [UICanvasFeedbackItem(kind: "chat", text: "Make the price bigger")])
+        let queuedAt = try #require(UICanvasStore.date(session.pendingFeedback[0].at))
+        let later = queuedAt.addingTimeInterval(UICanvasStore.relayGrace + 1)
+        #expect(!UICanvasStore.needsRelay(session, now: queuedAt.addingTimeInterval(1)), "An await gets first pick")
+        #expect(UICanvasStore.needsRelay(session, now: later))
+        session.listener = UICanvasListener(name: "Codex", pid: 42, seenAt: UICanvasStore.timestamp(later))
+        #expect(!UICanvasStore.needsRelay(session, now: later, isAlive: { _ in true }))
+        #expect(UICanvasStore.needsRelay(session, now: later, isAlive: { _ in false }), "A dead listener does not block")
+        session.listener = nil
+        session.activity = UICanvasActivity(state: "thinking", at: UICanvasStore.timestamp(later))
+        #expect(!UICanvasStore.needsRelay(session, now: later), "A working agent keeps its turn")
+        session.activity = nil
+        session.status = "ended"
+        #expect(!UICanvasStore.needsRelay(session, now: later), "End without saving drops queued chat")
+        session.pendingFeedback.append(UICanvasFeedbackItem(kind: "finish"))
+        #expect(UICanvasStore.needsRelay(session, now: later.addingTimeInterval(UICanvasStore.relayGrace)))
+        session.pendingFeedback = []
+        #expect(!UICanvasStore.needsRelay(session, now: later))
+    }
+
+    @Test("The relay prompt carries feedback and the next step without the await loop")
+    func relayPrompt() throws {
+        let fixture = try Fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let opened = try fixture.open()
+        try fixture.store.reply(taskID: "FOC-070", key: opened.key, text: "Card is in place.")
+        let item = UICanvasFeedbackItem(kind: "chat", text: "Make the price bigger",
+            anchor: UICanvasAnchor(selector: "#price", tag: "p", snippet: "$12", size: .init(width: 40, height: 20)))
+        let session = try fixture.store.queueFeedback(taskID: "FOC-070", key: opened.key, items: [item])
+        let prompt = UICanvasRelayPrompt.build(session: session, items: session.pendingFeedback, recap: true)
+        #expect(prompt.contains(session.file))
+        #expect(prompt.contains("do not run `focus-queue-session canvas await`"))
+        #expect(prompt.contains("Make the price bigger") && prompt.contains("#price"))
+        #expect(prompt.contains("agent: Card is in place."))
+        #expect(!prompt.contains("user: Make the price bigger"), "The delivered item is not repeated as history")
+        #expect(!UICanvasRelayPrompt.build(session: session, items: session.pendingFeedback, recap: false)
+            .contains("Recent canvas conversation"))
+        let finish = UICanvasFeedbackItem(kind: "finish", edits: [.object(["kind": .string("remove"), "selector": .string("#x")])],
+            exportPath: "/tmp/card.edited.html", editsPath: "/tmp/card.edits.json")
+        let finishPrompt = UICanvasRelayPrompt.build(session: session, items: [finish], recap: false)
+        #expect(finishPrompt.contains("Save and Finish") && finishPrompt.contains("/tmp/card.edited.html"))
+        #expect(!finishPrompt.contains("\"selector\""), "The edit log stays in its export file")
+    }
+
     @Test("The app's viewer heartbeat reports whether the human has the canvas open")
     func viewerHeartbeat() throws {
         let fixture = try Fixture()

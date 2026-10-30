@@ -259,7 +259,7 @@ struct ManagedSessionRecallTests {
     #expect(result == .spawned(paneID: nil))
     let calls = await runner.calls
     let opened = try #require(calls.first { $0.executable == "/usr/bin/open" })
-    #expect(opened.arguments.starts(with: ["-na", "Terminal"]))
+    #expect(opened.arguments.starts(with: ["-a", "Terminal"]))
     let scriptPath = try #require(opened.arguments.last)
     let script = try String(contentsOfFile: scriptPath, encoding: .utf8)
     #expect(script.hasPrefix("#!/bin/zsh\n"))
@@ -267,7 +267,11 @@ struct ManagedSessionRecallTests {
     #expect(script.contains("'attach-session'"))
     #expect(script.contains("'=fq-task-ecc-1'"))
     #expect(script.contains("'%7'"))
-    #expect(script.contains("printf '\\033]0;%s\\007' 'Fix recall'\nexec "))
+    #expect(script.contains("printf '\\033]0;%s\\007' 'Fix recall'\nif fq_tty="))
+    // The window closer starts in its own session before tmux replaces the script.
+    #expect(script.contains("POSIX::setsid()"))
+    #expect(script.contains("-- \"$$\" \"$fq_tty\" "))
+    #expect(script.contains(" &!\nfi\nexec "))
     #expect(!calls.contains { $0.executable == "/mock/wezterm" })
     let syntax = try await FoundationProcessRunner().run(.init(
       executable: "/bin/zsh", arguments: ["-n", scriptPath], timeoutSeconds: 10))
@@ -275,6 +279,24 @@ struct ManagedSessionRecallTests {
     let permissions = try FileManager.default.attributesOfItem(atPath: scriptPath)[.posixPermissions] as? NSNumber
     #expect(permissions?.intValue == 0o700)
     try? FileManager.default.removeItem(atPath: scriptPath)
+  }
+
+  @Test("macOS Terminal window closer compiles as Perl and AppleScript")
+  func macTerminalWindowCloserCompiles() async throws {
+    let runner = FoundationProcessRunner()
+    let perl = try await runner.run(.init(
+      executable: "/usr/bin/perl", arguments: ["-c", "-e", TerminalCommandLauncher.windowCloser],
+      timeoutSeconds: 10))
+    #expect(perl.succeeded, "\(perl.standardError)")
+    for source in [TerminalCommandLauncher.findWindowScript, TerminalCommandLauncher.closeWindowScript] {
+      let output = FileManager.default.temporaryDirectory
+        .appendingPathComponent("fq-closer-\(UUID().uuidString).scpt")
+      defer { try? FileManager.default.removeItem(at: output) }
+      let compiled = try await runner.run(.init(
+        executable: "/usr/bin/osacompile", arguments: ["-e", source, "-o", output.path],
+        timeoutSeconds: 20))
+      #expect(compiled.succeeded, "\(compiled.standardError)")
+    }
   }
 
   @Test("Legacy entries are rejected without provider reconstruction")

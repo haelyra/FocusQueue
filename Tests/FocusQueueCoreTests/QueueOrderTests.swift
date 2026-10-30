@@ -31,6 +31,35 @@ struct QueueOrderTests {
                         status: "open", summary: "", updatedAt: "2026-09-17")
     }
 
+    @Test("Explicit interactions persist, preserve prompts and fields, and combine with later prompts")
+    func explicitInteractionOrdering() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = TaskContextStore(root: root)
+        let pair = Array(tickets.prefix(2))
+        for ticket in pair { _ = try await store.ensureContext(ticket: ticket) }
+        let prompt = Date(timeIntervalSinceReferenceDate: 100)
+        _ = try await store.recordPrompt(ticketID: pair[0].id, at: prompt)
+        let context = try #require(try await store.load(ticketID: pair[1].id))
+        let url = context.contextDirectory.appendingPathComponent("context.json")
+        var raw = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        raw["futureField"] = ["keep": "authored"]
+        try JSONSerialization.data(withJSONObject: raw).write(to: url)
+        _ = try await store.recordInteraction(ticketID: pair[1].id, at: prompt.addingTimeInterval(60))
+        _ = try await store.recordInteraction(ticketID: pair[1].id, at: prompt.addingTimeInterval(-60))
+        let saved = try #require(try await TaskContextStore(root: root).load(ticketID: pair[1].id))
+        #expect(saved.lastPromptAt == nil)
+        #expect(saved.lastInteractionAt == prompt.addingTimeInterval(60))
+        let preserved = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        #expect((preserved["futureField"] as? [String: String]) == ["keep": "authored"])
+        let first = try #require(try await store.load(ticketID: pair[0].id))
+        #expect(QueueOrderStore.automaticTickets(pair, deferredTicketIDs: [], mode: .recentInteraction,
+            contexts: [first, saved]).map(\.id) == pair.reversed().map(\.id))
+        let later = try await store.recordPrompt(ticketID: pair[0].id, at: prompt.addingTimeInterval(120))
+        #expect(QueueOrderStore.automaticTickets(pair, deferredTicketIDs: [], mode: .recentInteraction,
+            contexts: [later, saved]).map(\.id) == pair.map(\.id))
+    }
+
     @Test("Moving a task first keeps the previous first task second")
     func movePreservesOthersAndSurvivesReload() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

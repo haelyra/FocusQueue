@@ -209,7 +209,7 @@ public struct QueueOrderStore: Sendable {
         now: Date = Date()
     ) -> [DashboardTicket] {
         let promptDates = Dictionary(contexts.compactMap { context in
-            context.lastPromptAt.map { (context.ticketID, $0) }
+            context.latestInteractionAt.map { (context.ticketID, $0) }
         }, uniquingKeysWith: max)
         let outputDates = Dictionary(contexts.compactMap { context in
             context.subtasks.compactMap { $0.lastOutputAt ?? $0.resultAt }.max()

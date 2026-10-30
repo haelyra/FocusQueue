@@ -95,7 +95,7 @@ struct TaskDetailsView: View {
           }
           detailRow("Agents", value: "\(agents.count) total · \(activeAgentCount) active")
           detailRow("Tokens spent", value: "Not recorded")
-          detailRow("Last interaction", value: relativeTime(lastPromptAt))
+          detailRow("Last interaction", value: relativeTime(model.taskContexts[ticket.id]?.latestInteractionAt))
           detailRow("Latest output", value: relativeTime(lastOutputAt))
         }
         triageCallout

@@ -3,7 +3,7 @@ import Carbon.HIToolbox
 import SwiftUI
 
 /// The global shortcuts a user can rebind. Each one starts on its built-in
-/// shortcut or right-side gesture; recording a combo replaces it until reset.
+/// shortcut; recording a combo replaces it until reset.
 enum HotkeyAction: String, CaseIterable, Identifiable {
   case newTask, qchat, toggleMinimization
 
@@ -17,20 +17,13 @@ enum HotkeyAction: String, CaseIterable, Identifiable {
     }
   }
 
-  var defaultGesture: String {
-    switch self {
-    case .newTask: "Right ⌥ or Right ⌘ + ⇧"
-    case .qchat: "Right ⌥ or Right ⌘ + /"
-    case .toggleMinimization: "⌘,"
-    }
-  }
-
-  var defaultShortcut: HotkeyShortcut? {
-    switch self {
-    case .newTask, .qchat: nil
-    case .toggleMinimization:
-      HotkeyShortcut(keyCode: UInt16(kVK_ANSI_Comma), modifiers: NSEvent.ModifierFlags.command.rawValue,
-        keyLabel: ",")
+  /// Carbon hot keys match either Command key, so left and right ⌘ both work.
+  var defaultShortcut: HotkeyShortcut {
+    let command = NSEvent.ModifierFlags.command.rawValue
+    return switch self {
+    case .newTask: HotkeyShortcut(keyCode: UInt16(kVK_ANSI_Period), modifiers: command, keyLabel: ".")
+    case .qchat: HotkeyShortcut(keyCode: UInt16(kVK_ANSI_Slash), modifiers: command, keyLabel: "/")
+    case .toggleMinimization: HotkeyShortcut(keyCode: UInt16(kVK_ANSI_Comma), modifiers: command, keyLabel: ",")
     }
   }
 
@@ -182,7 +175,7 @@ private func globalHotKeyHandler(
 }
 
 /// A Raycast-style shortcut field: click Record, press the combo, done.
-/// Reset returns the action to its built-in shortcut or gesture.
+/// Reset returns the action to its built-in shortcut.
 struct HotkeyRecorderField: View {
   let model: QueueViewModel
   let action: HotkeyAction
@@ -192,7 +185,7 @@ struct HotkeyRecorderField: View {
   @State private var message: String?
 
   private var isRecording: Bool { monitor != nil }
-  private var shortcut: HotkeyShortcut? { model.hotkeyShortcut(for: action) }
+  private var shortcut: HotkeyShortcut { model.hotkeyShortcut(for: action) }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
@@ -210,7 +203,7 @@ struct HotkeyRecorderField: View {
           Button("Reset") {
             message = nil
             model.setHotkeyShortcut(nil, for: action)
-          }.controlSize(.small).help("Use the default shortcut: \(action.defaultGesture)")
+          }.controlSize(.small).help("Use the default shortcut: \(action.defaultShortcut.displayString)")
         }
       }
       if let error = message ?? model.hotkeyErrors[action] {
@@ -226,7 +219,7 @@ struct HotkeyRecorderField: View {
         keyLabel: "").displayString
       return preview.isEmpty ? "Press shortcut…" : preview + "…"
     }
-    return shortcut?.displayString ?? "Default · \(action.defaultGesture)"
+    return shortcut.displayString
   }
 
   private func toggleRecording() {

@@ -135,11 +135,12 @@ final class QueueViewModel {
     UserDefaults.standard.object(forKey: "qchatHotkeyEnabled") as? Bool ?? true
   private(set) var toggleMinimizationHotkeyEnabled =
     UserDefaults.standard.object(forKey: "toggleMinimizationHotkeyEnabled") as? Bool ?? true
-  /// A recorded combo per action; a missing entry keeps the built-in shortcut or gesture.
+  /// A recorded combo per action; a missing entry keeps the built-in shortcut.
   private(set) var hotkeyShortcuts: [HotkeyAction: HotkeyShortcut] = HotkeyAction.allCases
     .reduce(into: [:]) { shortcuts, action in
       if let data = UserDefaults.standard.data(forKey: action.shortcutDefaultsKey),
-        let shortcut = try? JSONDecoder().decode(HotkeyShortcut.self, from: data) {
+        let shortcut = try? JSONDecoder().decode(HotkeyShortcut.self, from: data),
+        shortcut != action.defaultShortcut {
         shortcuts[action] = shortcut
       }
     }
@@ -149,7 +150,7 @@ final class QueueViewModel {
   var isRecordingHotkey = false {
     didSet { if oldValue != isRecordingHotkey { hotkeyConfigurationHandler?() } }
   }
-  /// Bumped per Right Option + / press; the view opens QChat and focuses its composer.
+  /// Bumped per QChat hotkey press; the view opens QChat and focuses its composer.
   private(set) var queueChatFocusRequest = 0
   private(set) var panelMode: QueuePanelMode = .expanded
   private(set) var canSwitchMonitor = false
@@ -4871,7 +4872,7 @@ final class QueueViewModel {
     }
   }
 
-  func hotkeyShortcut(for action: HotkeyAction) -> HotkeyShortcut? {
+  func hotkeyShortcut(for action: HotkeyAction) -> HotkeyShortcut {
     hotkeyShortcuts[action] ?? action.defaultShortcut
   }
 
@@ -4882,8 +4883,9 @@ final class QueueViewModel {
     hotkeyConfigurationHandler?()
   }
 
-  /// nil restores the action's built-in shortcut or gesture.
+  /// nil restores the action's built-in shortcut. Recording the default stores nothing.
   func setHotkeyShortcut(_ shortcut: HotkeyShortcut?, for action: HotkeyAction) {
+    let shortcut = shortcut == action.defaultShortcut ? nil : shortcut
     guard hotkeyShortcuts[action] != shortcut else { return }
     hotkeyShortcuts[action] = shortcut
     hotkeyErrors[action] = nil
@@ -5056,7 +5058,7 @@ final class QueueViewModel {
   }
 
   var minimizationHelp: String {
-    let shortcut = hotkeyShortcut(for: .toggleMinimization)?.displayString ?? "⌘,"
+    let shortcut = hotkeyShortcut(for: .toggleMinimization).displayString
     let availability = toggleMinimizationHotkeyEnabled ? "" : " (disabled in Settings)"
     return "Toggle minimization: \(shortcut)\(availability); right-click to choose how"
   }

@@ -132,29 +132,6 @@ def remote_integration_revision(repository, integration_ref):
     return parse_remote_revision(output, branch)
 
 
-def live_integration_revision(provenance):
-    _, branch = split_integration_ref(provenance["integrationRef"])
-    try:
-        result = subprocess.run(
-            [
-                "/usr/bin/git",
-                "ls-remote",
-                "--exit-code",
-                provenance["originURL"],
-                f"refs/heads/{branch}",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.SubprocessError as error:
-        detail = getattr(error, "stderr", "") or str(error)
-        raise ValueError(
-            f"Could not verify the live canonical integration revision: {detail.strip()}"
-        ) from error
-    return parse_remote_revision(result.stdout, branch)
-
-
 def validate_primary_checkout(repository):
     top_level = Path(
         _git(repository, "rev-parse", "--path-format=absolute", "--show-toplevel")
@@ -628,10 +605,6 @@ class Installer:
                         or not automation_digest_matches(self.automation, automation_entry)):
                     raise ValueError(
                         f"Installed automation changed; retained for review: {self.automation}")
-        if live_integration_revision(self.source_provenance) != self.source_provenance["revision"]:
-            raise ValueError(
-                "The candidate revision is no longer the live canonical integration revision."
-            )
         return {"mode": "preflight", "application": str(self.app), "helper": str(self.helper),
                 "launchAtLogin": self.login, "desktopShortcut": self.shortcut,
                 "configuration": "preserve existing; first launch offers setup",

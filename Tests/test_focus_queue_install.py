@@ -43,7 +43,6 @@ class InstallerTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.home = self.root / "Another User"
         self.bundle = self.root / "Built.app"
-        self.live_revision = self.first_revision
         self.make_app(self.bundle, b"new executable")
         self.installer = MODULE.Installer(
             self.bundle, self.home, start=False
@@ -53,10 +52,6 @@ class InstallerTests(unittest.TestCase):
             self.calls.append(args)
             if args[0] == "/usr/bin/ditto":
                 shutil.copytree(args[1], args[2])
-            if args[:3] == ["/usr/bin/git", "ls-remote", "--exit-code"]:
-                return subprocess.CompletedProcess(
-                    args, 0, f"{self.live_revision}\t{args[-1]}\n", ""
-                )
             return subprocess.CompletedProcess(args, 0, "", "")
         self.mock_run = mock.patch.object(MODULE.subprocess, "run", side_effect=run)
         self.mock_run.start()
@@ -138,7 +133,7 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(result["desktopShortcut"])
         self.assertEqual(
             [call[0] for call in self.calls],
-            ["/usr/bin/codesign", "/usr/bin/git"],
+            ["/usr/bin/codesign"],
         )
 
     def test_first_install_records_source_provenance_in_v2_receipt(self):
@@ -165,7 +160,6 @@ class InstallerTests(unittest.TestCase):
             reachable=[second_revision, self.first_revision],
             integration_revision=second_revision,
         )
-        self.live_revision = second_revision
 
         MODULE.Installer(replacement_bundle, self.home, start=False).install()
 
@@ -218,24 +212,13 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "canonical integration revision"):
             MODULE.Installer(replacement_bundle, self.home, start=False).install()
 
-    def test_artifact_is_rejected_if_remote_main_advanced_after_build(self):
+    def test_install_needs_no_repository_access(self):
         self.installer.install()
-        before_app = (self.installer.app / "Contents/MacOS/ECCFocusQueue").read_bytes()
-        before_manifest = self.installer.manifest.read_bytes()
-        self.live_revision = "e" * 40
-        replacement = MODULE.Installer(self.bundle, self.home, start=True)
 
-        with mock.patch.object(replacement, "stop") as stop, self.assertRaisesRegex(
-            ValueError, "no longer the live canonical integration revision"
-        ):
-            replacement.install()
-
-        stop.assert_not_called()
-        self.assertEqual(
-            (self.installer.app / "Contents/MacOS/ECCFocusQueue").read_bytes(),
-            before_app,
+        self.assertFalse(
+            [args for args in self.calls if args[:2] == ["/usr/bin/git", "ls-remote"]]
         )
-        self.assertEqual(self.installer.manifest.read_bytes(), before_manifest)
+        self.assertTrue((self.installer.app / "Contents/MacOS/ECCFocusQueue").exists())
 
     def test_candidate_cannot_select_a_different_integration_ref(self):
         self.write_provenance(self.bundle, integration_ref="HEAD")

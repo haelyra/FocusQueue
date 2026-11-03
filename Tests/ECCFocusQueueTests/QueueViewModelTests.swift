@@ -3862,12 +3862,12 @@ struct QueueViewModelTests {
     let model = await fixture.model(agent: ControlledQueueAgent())
 
     #expect(model.agentsPerWindow == TmuxPaneLayout.defaultMaximumPanes)
-    #expect(!model.dataPlacementEnabled)
+    #expect(model.dataPlacementEnabled)
     #expect(model.config.agentEscalationAutoLaunch)
 
     model.setAgentsPerWindow(40)
     #expect(model.agentsPerWindow == 12)
-    model.setDataPlacementEnabled(true)
+    model.setDataPlacementEnabled(false)
     model.setAgentEscalationAutoLaunch(false)
     try await eventually {
       TmuxPaneLayout.maximumPanes(supportDirectory: fixture.paths.supportDirectory) == 12
@@ -3879,7 +3879,7 @@ struct QueueViewModelTests {
       let saved = try JSONDecoder().decode(
         AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
       return TmuxPaneLayout.maximumPanes(supportDirectory: fixture.paths.supportDirectory) == 4
-        && saved.dataPlacementEnabled == true && saved.agentEscalationAutoLaunch == false
+        && saved.dataPlacementEnabled == false && saved.agentEscalationAutoLaunch == false
     }
   }
 

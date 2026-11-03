@@ -1,0 +1,45 @@
+{
+  "catalog": {
+    "projects": [
+      {
+        "id": "focus-queue",
+        "name": "Focus Queue"
+      },
+      {
+        "id": "recipe-box",
+        "name": "Recipe Box"
+      },
+      {
+        "id": "other",
+        "name": "Other"
+      }
+    ],
+    "tasks": [
+      {
+        "id": "FOC-101",
+        "project_id": "focus-queue",
+        "title": "Test install in macOS sandbox",
+        "summary": "Clean VM install and first-run check."
+      },
+      {
+        "id": "FOC-090",
+        "project_id": "focus-queue",
+        "title": "Terminal picker in settings",
+        "summary": "Choose WezTerm, Ghostty or Terminal."
+      },
+      {
+        "id": "RCP-002",
+        "project_id": "recipe-box",
+        "title": "Dietary tags",
+        "summary": "Tag recipes as vegan or gluten free."
+      }
+    ]
+  },
+  "event": {
+    "prompt": "Put a fish emoji at the end of each task title in the queue list so I can spot them.",
+    "task_id": "FOC-101"
+  },
+  "expected": {
+    "placements": []
+  }
+}

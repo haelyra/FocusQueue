@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
 import json
+import shlex
 import os
 from pathlib import Path
 import shutil
@@ -937,6 +938,33 @@ def usage_command(wrapper, flags, arguments):
     return [*command, *unique_flags, *arguments]
 
 
+def prompt_hook_arguments(arguments, helper, home=None):
+    """Add a per-launch UserPromptSubmit hook so each prompt reaches Focus Queue.
+
+    The hook registers the session and starts background data extraction without
+    editing the user's global Claude settings. It uses the global installer's exact
+    command, so it is skipped when that hook is installed, and it never replaces
+    settings the user passed for this launch.
+    """
+    if (not Path(helper).is_file() or "--bare" in arguments
+            or any(value == "--settings" or value.startswith("--settings=") for value in arguments)):
+        return arguments
+    command = shlex.quote(str(helper)) + " register-event --provider claude >/dev/null"
+    try:
+        installed = json.loads((Path(home or Path.home()) / ".claude/settings.json").read_text())
+        entries = installed.get("hooks", {}).get("UserPromptSubmit", [])
+        if any(isinstance(hook, dict) and hook.get("command") == command
+               for entry in entries if isinstance(entry, dict)
+               for hook in entry.get("hooks", []) if isinstance(entry.get("hooks"), list)):
+            return arguments
+    except (OSError, ValueError, AttributeError):
+        pass
+    settings = {"hooks": {"UserPromptSubmit": [{"hooks": [{
+        "type": "command", "command": command, "timeout": 10,
+        "statusMessage": "Track this session in Focus Queue"}]}]}}
+    return ["--settings", json.dumps(settings, separators=(",", ":")), *arguments]
+
+
 def start(helper, name, command, *, prompt=None, support=None, task_id=None, agent_id=None):
     if task_id is not None or agent_id is not None:
         if not (isinstance(task_id, str) and isinstance(agent_id, str)
@@ -1040,7 +1068,8 @@ def main(argv=None):
     prompt_usage.record_instruction_files(Path(intake["cwd"]), "claude",
         run_id=os.environ.get("FOCUS_QUEUE_USAGE_RUN_ID") or intake["launchID"],
         task_id=placement.get("taskID"), support=support)
-    command = usage_command(options.usage_wrapper, options.default_flag, arguments)
+    command = usage_command(options.usage_wrapper, options.default_flag,
+                            prompt_hook_arguments(arguments, options.helper))
     os.chdir(intake["cwd"])
     if not interactive or bypass:
         if session_id:

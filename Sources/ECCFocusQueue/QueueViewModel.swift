@@ -5702,8 +5702,8 @@ final class QueueViewModel {
     persistConfiguration()
   }
 
-  /// Native prompt hooks extract durable project and task facts only when this is on.
-  var dataPlacementEnabled: Bool { config.dataPlacementEnabled == true }
+  /// Native prompt hooks extract durable project and task facts unless the user turned this off.
+  var dataPlacementEnabled: Bool { config.dataPlacementEnabled != false }
 
   func setDataPlacementEnabled(_ enabled: Bool) {
     guard dataPlacementEnabled != enabled else { return }

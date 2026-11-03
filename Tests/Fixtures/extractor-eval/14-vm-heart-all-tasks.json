@@ -1,0 +1,45 @@
+{
+  "catalog": {
+    "projects": [
+      {
+        "id": "recipe-box",
+        "name": "Recipe Box"
+      },
+      {
+        "id": "trail-notes",
+        "name": "Trail Notes"
+      },
+      {
+        "id": "other",
+        "name": "Other"
+      }
+    ],
+    "tasks": [
+      {
+        "id": "RCP-003",
+        "project_id": "recipe-box",
+        "title": "Add ingredient-based recipe search",
+        "summary": "Search box that finds recipes by ingredient."
+      },
+      {
+        "id": "RCP-002",
+        "project_id": "recipe-box",
+        "title": "Add dietary tags to recipes",
+        "summary": "Tag recipes as vegan or gluten free."
+      }
+    ]
+  },
+  "event": {
+    "prompt": "for all tasks in the recipe project add a heart emoji at the end",
+    "task_id": "RCP-002"
+  },
+  "expected": {
+    "placements": [
+      {
+        "destination": "project",
+        "target_id": "recipe-box",
+        "text": "End agent output with a heart emoji."
+      }
+    ]
+  }
+}

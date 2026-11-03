@@ -1,0 +1,45 @@
+{
+  "catalog": {
+    "projects": [
+      {
+        "id": "recipe-box",
+        "name": "Recipe Box"
+      },
+      {
+        "id": "trail-notes",
+        "name": "Trail Notes"
+      },
+      {
+        "id": "other",
+        "name": "Other"
+      }
+    ],
+    "tasks": [
+      {
+        "id": "RCP-003",
+        "project_id": "recipe-box",
+        "title": "Add ingredient-based recipe search",
+        "summary": "Search box that finds recipes by ingredient."
+      },
+      {
+        "id": "RCP-002",
+        "project_id": "recipe-box",
+        "title": "Add dietary tags to recipes",
+        "summary": "Tag recipes as vegan or gluten free."
+      }
+    ]
+  },
+  "event": {
+    "prompt": "Add a search box that finds recipes by ingredient. This lets users locate recipes by what they have on hand or want to cook. also ensure that every agent working on this projects adds a puffer fish emoji to the end of all outputs",
+    "task_id": "RCP-003"
+  },
+  "expected": {
+    "placements": [
+      {
+        "destination": "project",
+        "target_id": "recipe-box",
+        "text": "End all agent output with a puffer fish emoji."
+      }
+    ]
+  }
+}

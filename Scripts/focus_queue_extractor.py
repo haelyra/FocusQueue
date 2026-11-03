@@ -91,6 +91,7 @@ Most of the prompt is current work for the agent receiving it. Extract ONLY stat
 - preferences or constraints that outlive this request (visual style, coding practices, communication style)
 - deliverables or decisions the user mentioned as needed but did NOT ask the agent to do now
 - requirements that belong to a different existing task than the current one
+Agent reply style is always durable: an instruction about how agents open, close, sign, format, or size their own messages ("add a puffer fish at the end", "start replies with a heart", "keep your answers short") is a preference that applies to every later reply, even when it is casual, labeled a test, unrelated to the main request, or mixed into it. Extract it as a preference with confidence 0.9 or higher. Its scope is the current project unless the prompt names another project or explicitly says all projects. A standing rule stated for every task, every agent, or all output in a project ("for all tasks in the recipe project add a heart emoji at the end", "every agent on this project should…") is agent reply style unless it names a product element such as a page, title, or list. A change to the product being built (a page footer, an emoji in the app's UI) or to one specific answer ("end this answer with a list") is current work, not reply style.
 Each extracted text is one or two short sentences, ideally under 160 characters. State only the information a future agent needs to act. Do not copy the user's conversation, explain why you routed it, or include implementation notes, test results, source paths, or historical evidence in text.
 For each atom provide:
 - quote: the exact verbatim excerpt from the prompt (must appear in it word for word)
@@ -475,11 +476,17 @@ def validate_atom(atom, catalog, prompt, threshold):
     if destination == "user":
         if kind != "preference":
             return inbox(clean, "only preferences may be user-scoped")
-        names_project = any((row.get("name") or "").casefold() in quote.casefold()
-                            for row in catalog.get("projects", []) if len(row.get("name") or "") >= 5)
-        if not USER_SCOPE_EVIDENCE.search(quote) or ((PROJECT_SCOPE_EVIDENCE.search(quote) or names_project)
+        named = [row["id"] for row in catalog.get("projects", [])
+                 if len(row.get("name") or "") >= 5 and row["name"].casefold() in quote.casefold()]
+        if not USER_SCOPE_EVIDENCE.search(quote) or ((PROJECT_SCOPE_EVIDENCE.search(quote) or named)
                                                       and not GLOBAL_SCOPE_EVIDENCE.search(quote)):
-            return inbox(clean, "no explicit cross-project scope evidence in the quote")
+            # Without cross-project wording the smallest scope that still holds
+            # the preference is the project the quote names, else the current one.
+            fallback = named[0] if len(named) == 1 else catalog["id"]
+            if len(named) > 1 or fallback not in projects:
+                return inbox(clean, "no explicit cross-project scope evidence in the quote")
+            clean["destination"], clean["target_id"] = "project", fallback
+            return clean, None
         clean["target_id"] = "user"
     elif destination == "project":
         if kind != "preference":

@@ -884,8 +884,20 @@ enum SessionRegistrationError: Error, LocalizedError {
         let environment = ProcessInfo.processInfo.environment
         guard data.count <= 1_048_576,
               let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+        let root = supportDirectory(environment: environment)
         _ = try? await AgentHookStatus.apply(payload: payload, provider: provider, environment: environment,
-            store: TaskContextStore(root: supportDirectory(environment: environment)), date: date)
+            store: TaskContextStore(root: root), date: date)
+        // Every app launch carries this hook, so its prompts reach data extraction
+        // even when the optional global registration hook is not installed.
+        if payload["hook_event_name"] as? String == "UserPromptSubmit",
+           (payload["agent_id"] as? String)?.isEmpty != false,
+           let config = try? loadConfiguration(from: root) {
+            let taskID = environment["FOCUS_QUEUE_TASK_ID"].flatMap { $0.isEmpty ? nil : $0 }
+            startPromptExtraction(prompt: payload["prompt"] as? String, sessionID: payload["session_id"] as? String,
+                projectID: PromptExtraction.projectID(environment: environment, taskID: taskID,
+                                                      configuration: config, root: root),
+                taskID: taskID, provider: provider, environment: environment, root: root, config: config)
+        }
     }
 
     private static func registerEvent(arguments: [String]) async throws {
@@ -983,38 +995,47 @@ enum SessionRegistrationError: Error, LocalizedError {
         output["agentID"] = record.agentID; output["parentSessionID"] = record.parentSessionID
         output["placementPath"] = placement?.capsulePath
         try emit(output)
-        if config.dataPlacementEnabled == true,
-           environment["FOCUS_QUEUE_EXTRACTION_CHILD"] != "1",
-           event.hookEventName == "UserPromptSubmit", !event.isSubagent,
-           let prompt = event.prompt?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !prompt.isEmpty, prompt.count <= 4_000,
-           let projectID = placement?.projectID {
-            // The provider hook has a short deadline. Let extraction finish in a child
-            // process while registration returns immediately to the user's agent.
-            let script = root.appendingPathComponent("automation/Scripts/focus_queue_extractor.py")
-            if FileManager.default.fileExists(atPath: script.path) {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-                var arguments = [script.path, "extract", "--prompt-stdin", "--project", projectID,
-                                 "--provider", provider.rawValue, "--apply"]
-                if let taskID = record.taskID { arguments += ["--task", taskID] }
-                process.arguments = arguments
-                var childEnvironment = environment
-                childEnvironment["FOCUS_QUEUE_EXTRACTION_CHILD"] = "1"
-                childEnvironment["FOCUS_QUEUE_SESSION_EXECUTABLE"] = CommandLine.arguments[0]
-                process.environment = childEnvironment
-                let input = Pipe()
-                process.standardInput = input
-                process.standardOutput = FileHandle.nullDevice
-                process.standardError = FileHandle.nullDevice
-                do {
-                    try process.run()
-                    input.fileHandleForWriting.write(Data(prompt.utf8))
-                    try? input.fileHandleForWriting.close()
-                } catch {
-                    try? input.fileHandleForWriting.close()
-                }
-            }
+        if event.hookEventName == "UserPromptSubmit", !event.isSubagent {
+            startPromptExtraction(prompt: event.prompt, sessionID: event.providerSessionID ?? event.sessionID,
+                                  projectID: placement?.projectID, taskID: record.taskID, provider: provider,
+                                  environment: environment, root: root, config: config)
+        }
+    }
+
+    /// Starts background data extraction for one user prompt. The provider hook has a
+    /// short deadline, so extraction finishes in a child process while the hook returns.
+    private static func startPromptExtraction(prompt rawPrompt: String?, sessionID: String?, projectID: String?,
+                                              taskID: String?, provider: AgentProvider,
+                                              environment: [String: String], root: URL, config: AppConfiguration) {
+        guard config.dataPlacementEnabled != false,
+              environment["FOCUS_QUEUE_EXTRACTION_CHILD"] != "1",
+              let prompt = rawPrompt?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !prompt.isEmpty, prompt.count <= PromptExtraction.promptLimit,
+              let projectID else { return }
+        let script = root.appendingPathComponent("automation/Scripts/focus_queue_extractor.py")
+        guard FileManager.default.fileExists(atPath: script.path),
+              PromptExtraction.claim(provider: provider.rawValue, sessionID: sessionID, prompt: prompt, root: root)
+        else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        var arguments = [script.path, "extract", "--prompt-stdin", "--project", projectID,
+                         "--provider", provider.rawValue, "--apply"]
+        if let taskID { arguments += ["--task", taskID] }
+        process.arguments = arguments
+        var childEnvironment = environment
+        childEnvironment["FOCUS_QUEUE_EXTRACTION_CHILD"] = "1"
+        childEnvironment["FOCUS_QUEUE_SESSION_EXECUTABLE"] = CommandLine.arguments[0]
+        process.environment = childEnvironment
+        let input = Pipe()
+        process.standardInput = input
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            input.fileHandleForWriting.write(Data(prompt.utf8))
+            try? input.fileHandleForWriting.close()
+        } catch {
+            try? input.fileHandleForWriting.close()
         }
     }
 
@@ -1029,7 +1050,7 @@ enum SessionRegistrationError: Error, LocalizedError {
             configuration.dataPlacementEnabled = arguments[1] == "on"
             try await repository.save(configuration)
         }
-        try emit(["dataPlacementEnabled": configuration.dataPlacementEnabled == true])
+        try emit(["dataPlacementEnabled": configuration.dataPlacementEnabled != false])
     }
 
     private static func dataCommand(arguments: [String]) async throws {

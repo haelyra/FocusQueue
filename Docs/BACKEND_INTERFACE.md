@@ -128,7 +128,7 @@ The hook-ingestion path; reads **one JSON `ExternalAgentEvent` from stdin** (≤
 A non-UUID `session_id` is accepted but degrades the record to a non-provider identity. Malformed JSON → exit 1.
 
 **`focus-queue-session status-event --provider codex|claude|kimi`**
-The status-hook path; reads one provider hook payload from stdin (≤1 MB), prints nothing, and always exits 0, so a failure never reaches the agent. It finds the agent whose saved provider session equals `session_id`. The inherited `FOCUS_QUEUE_TASK_ID`/`FOCUS_QUEUE_SUBTASK_ID` are a fast path, used only when that agent's session matches, so a nested launch never updates its parent. The app reads the change on its next refresh (2 s while visible).
+The status-hook path; reads one provider hook payload from stdin (≤1 MB), prints nothing, and always exits 0, so a failure never reaches the agent. It finds the agent whose saved provider session equals `session_id`. The inherited `FOCUS_QUEUE_TASK_ID`/`FOCUS_QUEUE_SUBTASK_ID` are a fast path, used only when that agent's session matches, so a nested launch never updates its parent. The app reads the change on its next refresh (2 s while visible). A top-level `UserPromptSubmit` also starts background data extraction for the agent's project (from `FOCUS_QUEUE_AGENT_CONTEXT`, else the dashboard that owns `FOCUS_QUEUE_TASK_ID`) unless `data-placement off` is set. Every app launch carries this hook, so extraction does not depend on the optional global `register-event` hook; when both report a prompt, a one-time claim under `extraction-claims/` keeps it to one model call.
 
 | Hook event | Status |
 |---|---|
@@ -162,7 +162,7 @@ The Router agent, its `route inspect` / `route start` commands, the in-app compo
 
 **`task create <PROJECT-ID> <title> <summary>`** — creates a backlog task in the named active project through the locked dashboard repository. It chooses the next project ID, returns the existing open task for an exact title and summary replay, and initializes its task context.
 
-**`data place <user|project|task> <target-id> <fact>`** — appends one short fact to `user/data.md`, `projects/<id>/data.md`, or `tasks/<ID>/data.md`. The command verifies active project or open task identity, limits the fact to 200 characters and two sentences, rejects symlink destinations, and returns `{scope,targetID,path,added}`. An identical line returns `added: false`. Use `task create` for deferred work; the extractor calls these commands after validating the model proposal.
+**`data place <user|project|task> <target-id> <fact>`** — appends one short fact to `user/data.md`, `projects/<id>/data.md`, or `tasks/<ID>/data.md`. The command verifies active project or open task identity, limits the fact to 200 characters and two sentences, rejects symlink destinations, and returns `{scope,targetID,path,added}`. An identical line returns `added: false`. Use `task create` for deferred work; the extractor calls these commands after validating the model proposal. New projects get an empty `data.md`. **`data-placement on|off|status`** switches prompt extraction; it is on unless the user turned it off.
 
 **`data ensure`** — creates empty `user/data.md` and `projects/<id>/data.md` files for every active project. It preserves existing contents and returns `{created,existing}` path lists. Run it after adding a project or when provisioning an existing catalog. Append concise facts with `data place user user "<fact>"` or `data place project <id> "<fact>"`; this command only creates the files.
 

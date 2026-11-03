@@ -74,7 +74,11 @@ struct ProjectSetupTests {
     #expect(prd.contains(request.audience) && prd.contains(request.successCriteria))
     #expect(try store.links(projectID: project.id).first?.url == request.remote)
     #expect(try store.documents(projectID: project.id).map(\.kind).contains(.prd))
+    #expect(try Data(contentsOf: directory.appendingPathComponent("data.md")).isEmpty)
+    #expect(try store.documents(projectID: project.id).map(\.kind).contains(.data))
+    try Data("- End every reply with a puffer fish emoji.\n".utf8).write(to: directory.appendingPathComponent("data.md"))
     #expect(try await ProjectSetupService().prepare(&request, supportDirectory: root, projects: []) == project)
+    #expect(try String(contentsOf: directory.appendingPathComponent("data.md"), encoding: .utf8).contains("puffer fish"))
   }
 
   @Test("Create new folder uses the chosen parent and retains that folder on a later retry")

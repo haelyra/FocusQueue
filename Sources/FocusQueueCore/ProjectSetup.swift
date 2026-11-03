@@ -264,6 +264,16 @@ public struct ProjectSetupService: Sendable {
       try Data("{\"tickets\":[]}\n".utf8).write(to: dashboard, options: .withoutOverwriting)
       try files.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dashboard.path)
     }
+    // Project data starts empty; prompt extraction appends durable facts to it later,
+    // so it stays out of the authored-document collision check above.
+    let projectData = directory.appendingPathComponent("data.md")
+    guard (try? projectData.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else {
+      throw Self.error("Project data storage is redirected.")
+    }
+    if !files.fileExists(atPath: projectData.path) {
+      try Data().write(to: projectData, options: .withoutOverwriting)
+      try files.setAttributes([.posixPermissions: 0o600], ofItemAtPath: projectData.path)
+    }
     return project
   }
 

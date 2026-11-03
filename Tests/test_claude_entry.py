@@ -161,6 +161,25 @@ with open({str(record)!r}, "a") as stream: stream.write(json.dumps(sys.argv[1:])
                          ("noninteractive", self.session_id))
         self.assertEqual(ENTRY.invocation(["-p", "--help"], classify_agents=True)[0], "utility")
 
+    def test_prompt_hook_reaches_focus_queue_without_global_settings(self):
+        self.helper.chmod(0o755)
+        home = self.root / "home"
+        (home / ".claude").mkdir(parents=True)
+        arguments = ENTRY.prompt_hook_arguments(["Fix the hotkey"], self.helper, home)
+        self.assertEqual(arguments[0], "--settings")
+        self.assertEqual(arguments[2:], ["Fix the hotkey"])
+        hook = json.loads(arguments[1])["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+        self.assertEqual(hook["command"],
+                         shlex.quote(str(self.helper)) + " register-event --provider claude >/dev/null")
+        self.assertEqual(ENTRY.initial_prompt(arguments), "Fix the hotkey")
+        # The user's own settings and an installed global hook are never doubled.
+        own = ["--settings", "/tmp/mine.json", "Fix the hotkey"]
+        self.assertEqual(ENTRY.prompt_hook_arguments(own, self.helper, home), own)
+        (home / ".claude/settings.json").write_text(json.dumps({"hooks": {"UserPromptSubmit": [
+            {"hooks": [{"type": "command", "command": hook["command"]}]}]}}))
+        self.assertEqual(ENTRY.prompt_hook_arguments(["hi"], self.helper, home), ["hi"])
+        self.assertEqual(ENTRY.prompt_hook_arguments(["hi"], self.root / "missing", home), ["hi"])
+
     def test_repository_identity_accepts_macos_tmp_alias_only_for_same_inode(self):
         self.assertTrue(ENTRY.same_repository_identity(
             "/tmp/project/.git:123:456", "/private/tmp/project/.git:123:456"))
@@ -553,7 +572,8 @@ with open({str(record)!r}, "a") as stream: stream.write(json.dumps(sys.argv[1:])
                                          ({"FOCUS_QUEUE_CLAUDE_TMUX":"off"}, True), ({}, False)):
             with self.subTest(environment=environment, interactive=interactive):
                 path, args = self.invoke_main(["hello"], environment, interactive)
-                self.assertEqual(args, ["/bin/bash", str(self.adapter), str(self.wrapper), "--", "hello"])
+                self.assertEqual(args, ["/bin/bash", str(self.adapter), str(self.wrapper), "--",
+                               *ENTRY.prompt_hook_arguments(["hello"], self.helper)])
         self.assertTrue(all(call == ["intake-changed"] or call[:1] == ["placement"] for call in self.calls()))
         self.assertEqual(len(list((self.support / "tracking/launches").glob("*.json"))), 3)
 
@@ -567,7 +587,8 @@ with open({str(record)!r}, "a") as stream: stream.write(json.dumps(sys.argv[1:])
             "FOCUS_QUEUE_SUBTASK_ID":"agent-123",
         })
         self.assertEqual(path, "/bin/bash")
-        self.assertEqual(args, ["/bin/bash", str(self.adapter), str(self.wrapper), "--", "hello"])
+        self.assertEqual(args, ["/bin/bash", str(self.adapter), str(self.wrapper), "--",
+                               *ENTRY.prompt_hook_arguments(["hello"], self.helper)])
         reference_call = next(call for call in self.calls() if call[:2] == ["tmux", "reference"])
         self.assertEqual(reference_call, ["tmux", "reference", "fq-task-ecc-035", "%7",
                                           "--task", "ECC-035", "--agent", "agent-123",

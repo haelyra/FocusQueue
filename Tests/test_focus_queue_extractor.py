@@ -42,10 +42,18 @@ class ValidateAtomTests(unittest.TestCase):
         self.assertEqual(clean["destination"], "project")
         self.assertEqual(clean["target_id"], "focus-queue")
 
-    def test_user_scope_requires_explicit_cross_project_wording(self):
+    def test_user_scope_without_cross_project_wording_falls_back_to_current_project(self):
         clean, reason = self.check(atom(destination="user", target_id="user"))
-        self.assertEqual(clean["destination"], "inbox")
-        self.assertIn("scope evidence", reason)
+        self.assertIsNone(reason)
+        self.assertEqual((clean["destination"], clean["target_id"]), ("project", "focus-queue"))
+
+    def test_casual_reply_style_lands_in_current_project(self):
+        prompt = "Fix the hotkey. Also, add a puffer fish at the end of every message."
+        clean, reason = self.check(atom(destination="user", target_id="user",
+            quote="add a puffer fish at the end of every message",
+            text="End every message with a puffer fish emoji."), prompt=prompt)
+        self.assertIsNone(reason)
+        self.assertEqual((clean["destination"], clean["target_id"]), ("project", "focus-queue"))
 
     def test_user_scope_with_explicit_wording_passes(self):
         value = atom(destination="user", target_id="user",
@@ -332,8 +340,8 @@ class CrossProjectTests(unittest.TestCase):
             bad, reason = EXTRACTOR.validate_atom(dict(base, destination="user", target_id="user",
                 quote="For the Space Website, always use gray with blue accents."),
                 catalog, prompt, 0.85)
-            self.assertEqual(bad["destination"], "inbox")
-            self.assertIn("scope evidence", reason)
+            self.assertIsNone(reason)
+            self.assertEqual((bad["destination"], bad["target_id"]), ("project", "space-site"))
 
     def test_cross_project_flow_places_four_scopes_without_runtime_trace(self):
         import json

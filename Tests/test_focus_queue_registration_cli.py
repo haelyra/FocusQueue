@@ -67,26 +67,32 @@ class RegistrationCLITests(unittest.TestCase):
         self.assertEqual(attached["status"], "registered")
         self.assertNotEqual(attached["subtaskID"], "deleted-inherited-id")
 
-    def test_data_placement_switch_dispatches_prompt_only_when_enabled(self):
+    def wait_for(self, path):
+        import time
+        for _ in range(50):
+            if path.exists():
+                return True
+            time.sleep(0.05)
+        return path.exists()
+
+    def test_data_placement_is_on_by_default_and_the_switch_stops_dispatch(self):
         import time
         script = self.support / "automation/Scripts/focus_queue_extractor.py"
         script.parent.mkdir(parents=True)
         capture = self.support / "hook-capture.json"
         script.write_text("import json, pathlib, sys\n" +
             f"pathlib.Path({str(capture)!r}).write_text(json.dumps({{'args': sys.argv[1:], 'prompt': sys.stdin.read()}}))\n")
-        self.assertFalse(self.command("data-placement", "status")["dataPlacementEnabled"])
+        self.assertTrue(self.command("data-placement", "status")["dataPlacementEnabled"])
         prompt = "Remember blue accents for the space website."
+        self.assertFalse(self.command("data-placement", "off")["dataPlacementEnabled"])
         self.command("register-event", "--provider", "codex", "--task", "ECC-401",
             payload=self.event(str(uuid.uuid4()), "UserPromptSubmit", prompt=prompt))
+        time.sleep(0.3)
         self.assertFalse(capture.exists())
         self.assertTrue(self.command("data-placement", "on")["dataPlacementEnabled"])
         self.command("register-event", "--provider", "codex", "--task", "ECC-401",
             payload=self.event(str(uuid.uuid4()), "UserPromptSubmit", prompt=prompt))
-        for _ in range(50):
-            if capture.exists():
-                break
-            time.sleep(0.05)
-        self.assertTrue(capture.exists())
+        self.assertTrue(self.wait_for(capture))
         result = json.loads(capture.read_text())
         self.assertEqual(result["prompt"], prompt)
         self.assertIn("--apply", result["args"])
@@ -95,7 +101,39 @@ class RegistrationCLITests(unittest.TestCase):
             payload=self.event(str(uuid.uuid4()), "UserPromptSubmit", prompt="Nested model call"),
             extra_environment={"FOCUS_QUEUE_EXTRACTION_CHILD": "1"})
         self.assertEqual(nested["status"], "ignored")
-        self.assertFalse(self.command("data-placement", "off")["dataPlacementEnabled"])
+
+    def test_launch_status_hook_extracts_each_prompt_once(self):
+        import time
+        script = self.support / "automation/Scripts/focus_queue_extractor.py"
+        script.parent.mkdir(parents=True)
+        capture = self.support / "hook-capture.json"
+        script.write_text("import json, pathlib, sys\n" +
+            f"pathlib.Path({str(capture)!r}).write_text(json.dumps({{'args': sys.argv[1:], 'prompt': sys.stdin.read()}}))\n")
+        capsule = self.root / "capsule.json"
+        capsule.write_text(json.dumps({"projectID": "other", "taskID": "ECC-401"}))
+        agent = {"FOCUS_QUEUE_AGENT_CONTEXT": str(capsule), "FOCUS_QUEUE_TASK_ID": "ECC-401"}
+        session_id = str(uuid.uuid4())
+        prompt = "Fix the label. Also, add a puffer fish at the end of every message."
+        self.command("status-event", "--provider", "claude", extra_environment=agent,
+            payload=self.event(session_id, "UserPromptSubmit", prompt=prompt))
+        self.assertTrue(self.wait_for(capture))
+        result = json.loads(capture.read_text())
+        self.assertEqual(result["prompt"], prompt)
+        self.assertEqual(result["args"][result["args"].index("--project") + 1], "other")
+        self.assertEqual(result["args"][result["args"].index("--task") + 1], "ECC-401")
+        # The optional global registration hook reports the same prompt: no second model call.
+        capture.unlink()
+        self.command("register-event", "--provider", "claude", "--task", "ECC-401",
+            payload=self.event(session_id, "UserPromptSubmit", prompt=prompt))
+        time.sleep(0.3)
+        self.assertFalse(capture.exists())
+        # Sub-agent prompts and other hook events never reach extraction.
+        self.command("status-event", "--provider", "claude", extra_environment=agent,
+            payload=self.event(session_id, "UserPromptSubmit", prompt="Sub-agent work", agent_id="child"))
+        self.command("status-event", "--provider", "claude", extra_environment=agent,
+            payload=self.event(session_id, "Stop"))
+        time.sleep(0.3)
+        self.assertFalse(capture.exists())
 
     def test_manual_prompt_creates_a_tracked_task_until_explicitly_reassigned(self):
         self.add_task("ECC-402")

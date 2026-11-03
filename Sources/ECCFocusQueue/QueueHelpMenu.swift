@@ -6,7 +6,7 @@ import SwiftUI
 enum QueueHelpLinks {
   /// Fill in once the documentation site is published.
   static let documentation: URL? = nil
-  static let repository: URL? = URL(string: "https://github.com/haelyra/ECCFocusQueue")
+  static let repository: URL? = URL(string: "https://github.com/haelyra/FocusQueue")
   /// Optional email fallback for people without a GitHub account.
   static let feedbackEmail: String? = nil
   /// Matches `.github/ISSUE_TEMPLATE/feedback.yml`, which labels every report.

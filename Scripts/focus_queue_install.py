@@ -29,7 +29,10 @@ PROMPT_END = "<!-- END ECC FOCUS QUEUE AGENT CONTRACT v1 -->"
 PROVENANCE_SCHEMA_VERSION = 1
 MANIFEST_VERSION = 2
 DEFAULT_INTEGRATION_REF = "origin/main"
-OFFICIAL_REPOSITORY_IDENTITY = "github.com/haelyra/eccfocusqueue"
+OFFICIAL_REPOSITORY_IDENTITY = "github.com/haelyra/focusqueue"
+# The repository was renamed from ECCFocusQueue. Builds and installations recorded under
+# the old name are the same repository, so upgrades across the rename keep working.
+OFFICIAL_REPOSITORY_IDENTITIES = frozenset({OFFICIAL_REPOSITORY_IDENTITY, "github.com/haelyra/eccfocusqueue"})
 PROVENANCE_FIELDS = {
     "schemaVersion",
     "repositoryIdentity",
@@ -207,7 +210,7 @@ def validate_source_provenance(value, *, require_integrated=False):
     if require_integrated:
         if value["integrationRef"] != DEFAULT_INTEGRATION_REF:
             raise ValueError("The candidate build does not use the canonical integration ref.")
-        if value["repositoryIdentity"] != OFFICIAL_REPOSITORY_IDENTITY:
+        if value["repositoryIdentity"] not in OFFICIAL_REPOSITORY_IDENTITIES:
             raise ValueError("The candidate build does not come from the official repository.")
         if value["dirty"]:
             raise ValueError("The candidate build contains uncommitted changes.")
@@ -584,6 +587,8 @@ class Installer:
                 if (
                     installed_provenance["repositoryIdentity"]
                     != self.source_provenance["repositoryIdentity"]
+                    and not {installed_provenance["repositoryIdentity"],
+                             self.source_provenance["repositoryIdentity"]} <= OFFICIAL_REPOSITORY_IDENTITIES
                 ):
                     raise ValueError(
                         "The candidate build comes from a different repository."

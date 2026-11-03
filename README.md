@@ -5,8 +5,76 @@ always-on-top, all-Spaces queue. First launch offers a setup wizard with an empt
 queue or an existing workspace. New Agent offers a checked-by-default tmux option so sessions can be reattached from
 another device through SSH over Tailscale while execution stays on the original Mac. It can also launch a terminal-owned session without tmux.
 
-The current target is a private macOS beta. See [the beta handoff](Docs/LAUNCH_BETA.md)
-for compatibility, installation, reconnect instructions and remaining public-launch gates.
+Focus Queue is in public beta. See [the beta handoff](Docs/LAUNCH_BETA.md)
+for compatibility, reconnect instructions and remaining launch gates.
+
+## Install (beta testers)
+
+These steps were tested on a clean macOS 26.6 Apple silicon Mac.
+
+### 1. Requirements
+
+- An Apple silicon Mac (M1 or later) with macOS 14 or later. The beta build is arm64 only.
+- Apple's Command Line Tools, which provide `python3` and `git`:
+  ```sh
+  xcode-select --install
+  ```
+- [Homebrew](https://brew.sh), then tmux and a terminal. Focus Queue supports Ghostty,
+  WezTerm and Terminal.app; Ghostty is the simplest:
+  ```sh
+  brew install tmux
+  brew install --cask ghostty
+  ```
+- At least one agent CLI on your own subscription. Claude Code:
+  ```sh
+  curl -fsSL https://claude.ai/install.sh | bash
+  ```
+  Codex and Kimi Code also work. You can sign in from the app's walkthrough.
+
+### 2. Download and install
+
+1. Download `FocusQueue-0.3.0-beta-arm64.zip` from the
+   [latest release](https://github.com/haelyra/FocusQueue/releases).
+2. In Terminal, unpack it and run the installer:
+   ```sh
+   cd ~/Downloads
+   ditto -x -k FocusQueue-0.3.0-beta-arm64.zip .
+   xattr -dr com.apple.quarantine "Focus Queue Beta"
+   "Focus Queue Beta/Install.command" --desktop
+   ```
+   The beta is not notarized yet. The `xattr` line clears the download flag so macOS
+   lets the app open. Run it only on a ZIP you downloaded from this repository.
+
+The installer puts the app in `~/Applications/Focus Queue.app`, the
+`focus-queue-session` helper in `~/.local/bin`, and a Desktop shortcut. It does not
+need GitHub access. Add `--login` to start Focus Queue at login, or `--check` for a
+read-only preflight.
+
+### 3. First launch
+
+Focus Queue opens as a panel and a menu-bar item. The walkthrough guides you through:
+
+1. Choosing your terminal (pick Ghostty if you followed step 1).
+2. Choosing your default agent and signing in to its subscription.
+3. Creating your first project: a name, a 2 to 5 letter task prefix, and a working folder.
+4. Launching your first agent from **+**: type what you want and press ⌘↩.
+
+Open **Settings** (gear) > **Projects** > **Open setup wizard** later to change the
+workspace, terminal or tmux path. The wizard's **Install command-line helper**
+reinstalls `focus-queue-session` if it is missing.
+
+Lasting instructions in a prompt, such as "end every reply with a 🐡", are saved to
+that project's `data.md`, so every later agent in the project follows them. Turn this
+off under **Settings** > **Task placement** > **Save durable facts from prompts**.
+
+### Update or uninstall
+
+- **Update:** download the newer ZIP and repeat step 2. Your projects, tasks and settings are kept.
+- **Uninstall:** run `"Focus Queue Beta/Uninstall.command"`. It moves the installed
+  files to a backup and leaves your task data in place.
+
+Report bugs and feedback in [GitHub Issues](https://github.com/haelyra/FocusQueue/issues),
+or from the info (ⓘ) menu in the app.
 
 ## Projects
 

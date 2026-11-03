@@ -108,12 +108,13 @@ class InstallerTests(unittest.TestCase):
         integration_ref="origin/main",
         repository_identity=None,
         dirty=False,
+        origin_url="https://github.com/haelyra/ECCFocusQueue.git",
     ):
         revision = revision or self.first_revision
         provenance = {
             "schemaVersion": 1,
             "repositoryIdentity": repository_identity or self.repository_identity,
-            "originURL": "https://github.com/haelyra/ECCFocusQueue.git",
+            "originURL": origin_url,
             "revision": revision,
             "branch": "main",
             "dirty": dirty,
@@ -169,6 +170,40 @@ class InstallerTests(unittest.TestCase):
             (self.installer.app / "Contents/MacOS/ECCFocusQueue").read_bytes(),
             b"integrated executable",
         )
+
+    def test_build_from_the_renamed_repository_upgrades_an_install_from_the_old_name(self):
+        self.installer.install()
+        second_revision = "b" * 40
+        renamed_bundle = self.root / "Renamed.app"
+        self.make_app(renamed_bundle, b"renamed executable")
+        self.write_provenance(
+            renamed_bundle,
+            revision=second_revision,
+            reachable=[second_revision, self.first_revision],
+            repository_identity="github.com/haelyra/focusqueue",
+            origin_url="https://github.com/haelyra/FocusQueue.git",
+        )
+
+        MODULE.Installer(renamed_bundle, self.home, start=False).install()
+
+        manifest = json.loads(self.installer.manifest.read_text())
+        self.assertEqual(manifest["sourceProvenance"]["repositoryIdentity"], "github.com/haelyra/focusqueue")
+        self.assertEqual(
+            (self.installer.app / "Contents/MacOS/ECCFocusQueue").read_bytes(), b"renamed executable")
+
+    def test_build_from_an_unrelated_repository_is_still_rejected(self):
+        self.installer.install()
+        other_bundle = self.root / "Other.app"
+        self.make_app(other_bundle, b"other executable")
+        self.write_provenance(
+            other_bundle,
+            revision="c" * 40,
+            reachable=["c" * 40, self.first_revision],
+            repository_identity="github.com/example/focusqueue",
+            origin_url="https://github.com/example/FocusQueue.git",
+        )
+        with self.assertRaisesRegex(ValueError, "official repository"):
+            MODULE.Installer(other_bundle, self.home, start=False).install()
 
     def test_divergent_release_is_rejected_before_stop_or_replacement(self):
         self.installer.install()

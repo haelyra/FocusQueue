@@ -231,3 +231,72 @@ private struct ProjectSetupExternalBoundary: WezTermControlling, PullRequestQueu
   func focusOrResume(session: TaskAgentSession, taskID: String, configuration: WezTermConfiguration) async throws -> TerminalActionResult { try forbidden() }
   func load(repository: String, closedSince: String) async throws -> PullRequestQueueSnapshot { try forbidden() }
 }
+
+/// A fresh install keeps its queue data under Application Support. An agent in
+/// a project without a source folder must still start, from the home directory.
+@Suite("Agents without a project folder")
+@MainActor
+struct NoRepositoryLaunchTests {
+  private func freshModel(_ root: URL) async -> QueueViewModel {
+    let model = QueueViewModel(paths: AppPaths.live(environment: ["FOCUS_QUEUE_SUPPORT_DIR": root.path]),
+      terminalController: ProjectSetupExternalBoundary(), pullRequestQueueLoader: ProjectSetupExternalBoundary(),
+      discoverExternalAgents: { [] }, labelTmuxPane: { _, _ in }, maintenanceEnabled: false,
+      checkProviderAccount: { _ in .signedIn }, locateExistingAgent: { _, _ in nil })
+    await model.bootstrap()
+    await model.bootstrapTail?.value
+    return model
+  }
+
+  @Test("A task in Other or the starter queue starts its agent in the home directory, not Focus Queue's data folder")
+  func fallsBackToHome() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("no-repo-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = await freshModel(root)
+    let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+    let other = DashboardTicket(id: "OTH-1", title: "Write a haiku", projectID: ProjectCatalog.otherID, status: "backlog", summary: "")
+    let starter = DashboardTicket(id: "FQ-1", title: "Plan the week", status: "backlog", summary: "")
+    for ticket in [other, starter] {
+      let directory = model.defaultRepository(for: ticket)
+      #expect(directory == home, "\(ticket.id) would start in \(directory)")
+      // The tester's failure: provisioning the old default raised the Application Support guard.
+      let workspace = try await TaskWorktreeManager().provisionAgent(ticketID: ticket.id,
+        subtaskID: UUID().uuidString, path: directory, policy: .existingCheckout,
+        store: TaskContextStore(root: root))
+      #expect(workspace.path == directory)
+    }
+  }
+
+  @Test("A project with its own folder keeps launching there")
+  func keepsProjectFolder() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("no-repo-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let folder = root.appendingPathComponent("habit app", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let model = await freshModel(root.appendingPathComponent("support"))
+    let dashboard = root.appendingPathComponent("support/projects/habit/dashboard.json")
+    try FileManager.default.createDirectory(at: dashboard.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data(#"{"tickets":[]}"#.utf8).write(to: dashboard)
+    let project = ProjectDefinition(id: "habit", name: "Habit", dashboardPath: dashboard.path,
+      workspacePath: folder.path, taskPrefix: "HAB", repositoryPath: "")
+    #expect(await model.saveProject(project))
+    let ticket = DashboardTicket(id: "HAB-1", title: "Streaks", projectID: "habit", status: "backlog", summary: "")
+    #expect(model.defaultRepository(for: ticket) == folder.path)
+  }
+
+  @Test("Real worktrees inside Focus Queue's data folder are still refused, without pointing at Documents")
+  func guardRemains() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("no-repo-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let inside = root.appendingPathComponent("projects/other/workspace", isDirectory: true)
+    try FileManager.default.createDirectory(at: inside, withIntermediateDirectories: true)
+    await #expect {
+      _ = try await TaskWorktreeManager().provisionAgent(ticketID: "OTH-1", subtaskID: UUID().uuidString,
+        path: inside.path, policy: .existingCheckout, store: TaskContextStore(root: root))
+    } throws: { error in
+      let message = error.localizedDescription
+      return message.contains("data folder") && !message.contains("Documents")
+    }
+    #expect(TaskWorktreeManager.isApplicationSupportPath(inside.path, storeRoot: root))
+    #expect(!TaskWorktreeManager.isApplicationSupportPath(root.deletingLastPathComponent().path, storeRoot: root))
+  }
+}

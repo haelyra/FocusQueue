@@ -66,7 +66,8 @@ off under **Settings** > **Task placement** > **Save durable facts from prompts*
 
 ### Update or uninstall
 
-- **Update:** download the newer ZIP and repeat step 2. Your projects, tasks and settings are kept.
+- **Update:** from 0.3.2 on, open **Settings** > **Updates** and click **Install update** when a new release is
+  offered. Older versions: download the newer ZIP and repeat step 2. Your projects, tasks and settings are kept.
 - **Uninstall:** run `"Focus Queue Beta/Uninstall.command"`. It moves the installed
   files to a backup and leaves your task data in place.
 

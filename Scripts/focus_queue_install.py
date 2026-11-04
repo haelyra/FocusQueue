@@ -243,18 +243,44 @@ def read_source_provenance(bundle, *, require_integrated=False):
     return validate_source_provenance(value, require_integrated=require_integrated)
 
 
+def read_text_or_empty(path):
+    return path.read_text() if path.exists() else ""
+
+
+def prompt_block(original, *, label):
+    """Returns the (start, end) of our delimited block, or None when the text has none."""
+    if PROMPT_START not in original and PROMPT_END not in original:
+        return None
+    if original.count(PROMPT_START) != 1 or original.count(PROMPT_END) != 1:
+        raise ValueError(f"The installed {label} instruction markers require review.")
+    start, end = original.index(PROMPT_START), original.index(PROMPT_END) + len(PROMPT_END)
+    if end <= start:
+        raise ValueError(f"The installed {label} instruction markers are reversed.")
+    return start, end
+
+
 def merge_agent_prompt(original, payload, *, label):
     """Replace only our delimited block; keep personal instructions byte-for-byte."""
     if not payload.startswith(PROMPT_START) or not payload.rstrip().endswith(PROMPT_END):
         raise ValueError(f"The bundled {label} instruction block is incomplete.")
-    if PROMPT_START in original or PROMPT_END in original:
-        if original.count(PROMPT_START) != 1 or original.count(PROMPT_END) != 1:
-            raise ValueError(f"The installed {label} instruction markers require review.")
-        start, end = original.index(PROMPT_START), original.index(PROMPT_END) + len(PROMPT_END)
-        if end <= start:
-            raise ValueError(f"The installed {label} instruction markers are reversed.")
-        return original[:start] + payload.rstrip("\n") + original[end:]
+    block = prompt_block(original, label=label)
+    if block is not None:
+        return original[:block[0]] + payload.rstrip("\n") + original[block[1]:]
     return original + ("\n\n" if original else "") + payload
+
+
+def remove_agent_prompt(original, *, label):
+    """Remove only our delimited block and the blank lines around it; keep personal text.
+
+    A file holding nothing else becomes empty; it is never deleted.
+    """
+    block = prompt_block(original, label=label)
+    if block is None:
+        return original
+    before, after = original[:block[0]].rstrip("\n"), original[block[1]:].lstrip("\n")
+    if before and after:
+        return before + "\n\n" + after
+    return before + "\n" if before else after
 # fq and its placement classifier come from the shell-entry installers. Once fq
 # is installed, every app install refreshes them, plus the Claude entry fq
 # dispatches, under the same local-change rules as the configured Codex entry.
@@ -484,8 +510,13 @@ class Installer:
         self.desktop = self.home / "Desktop" / f"{PRODUCT}.app"
         self.legacy_desktop = self.home / "Desktop" / f"{LEGACY_PRODUCT}.app"
         self.manifest = self.support / "install-manifest.json"
-        self.codex_prompt = self.home / "Documents/AGENTS.md"
-        self.claude_prompt = self.home / "Documents/CLAUDE.md"
+        # The global instruction files every Codex and Claude session reads.
+        self.codex_prompt = self.home / ".codex/AGENTS.md"
+        self.claude_prompt = self.home / ".claude/CLAUDE.md"
+        # Earlier releases wrote the block under ~/Documents, which only agents started
+        # there read. Installation moves it out, leaving the rest of these files alone.
+        self.legacy_codex_prompt = self.home / "Documents/AGENTS.md"
+        self.legacy_claude_prompt = self.home / "Documents/CLAUDE.md"
         self.codex_entry = self.support / "shell/focus_queue_codex_entry.py"
         self.codex_usage_wrapper = self.support / "shell/focus_queue_usage_wrapper.sh"
         self.codex_usage_renderer = self.support / "shell/focus_queue_codex_bar.js"
@@ -495,6 +526,18 @@ class Installer:
         self.service = f"gui/{os.getuid()}/{IDENTIFIER}"
         self.legacy_shortcut_owned = False
         self.source_provenance = None
+
+    def prompt_files(self):
+        """(global file, legacy file, bundled payload, label) for each agent's contract block."""
+        return ((self.codex_prompt, self.legacy_codex_prompt, "CODEX_GLOBAL_INSTRUCTIONS.md", "Codex"),
+                (self.claude_prompt, self.legacy_claude_prompt, "CLAUDE_GLOBAL_INSTRUCTIONS.md", "Claude"))
+
+    def prompt_plan(self, target, legacy, label):
+        """Validates the legacy file's markers and describes the change for the preflight report."""
+        plan = f"merge app-owned block into {target}; preserve personal instructions"
+        if prompt_block(read_text_or_empty(legacy), label=label) is not None:
+            plan += f"; move the block out of {legacy}, keeping its other text"
+        return plan
 
     def preflight(self):
         if os.uname().sysname != "Darwin":
@@ -515,18 +558,16 @@ class Installer:
                 raise ValueError(f"Built app is incomplete: missing executable {name}.")
         bundled_automation = self.bundle / "Contents/Resources/automation"
         validate_bundle_member(self.bundle, bundled_automation)
-        safe_destination(self.codex_prompt, self.home)
-        safe_destination(self.claude_prompt, self.home)
-        payload = self.bundle / "Contents/Resources/CODEX_GLOBAL_INSTRUCTIONS.md"
-        validate_bundle_member(self.bundle, payload)
-        if not payload.is_file() or payload.is_symlink():
-            raise ValueError("The built app is missing its shareable Codex instructions.")
-        merge_agent_prompt(self.codex_prompt.read_text() if self.codex_prompt.exists() else "", payload.read_text(), label="Codex")
-        claude_payload = self.bundle / "Contents/Resources/CLAUDE_GLOBAL_INSTRUCTIONS.md"
-        validate_bundle_member(self.bundle, claude_payload)
-        if not claude_payload.is_file() or claude_payload.is_symlink():
-            raise ValueError("The built app is missing its shareable Claude instructions.")
-        merge_agent_prompt(self.claude_prompt.read_text() if self.claude_prompt.exists() else "", claude_payload.read_text(), label="Claude")
+        prompt_plans = {}
+        for target, legacy, resource, label in self.prompt_files():
+            safe_destination(target, self.home)
+            safe_destination(legacy, self.home)
+            payload = self.bundle / "Contents/Resources" / resource
+            validate_bundle_member(self.bundle, payload)
+            if not payload.is_file() or payload.is_symlink():
+                raise ValueError(f"The built app is missing its shareable {label} instructions.")
+            merge_agent_prompt(read_text_or_empty(target), payload.read_text(), label=label)
+            prompt_plans[label] = self.prompt_plan(target, legacy, label)
         safe_destination(self.codex_entry, self.home)
         safe_destination(self.codex_usage_wrapper, self.home)
         safe_destination(self.codex_usage_renderer, self.home)
@@ -675,8 +716,8 @@ class Installer:
                 "launchAtLogin": self.login, "desktopShortcut": self.shortcut,
                 "configuration": "preserve existing; first launch offers setup",
                 "companions": "app-owned automation updated; companion launch agents unchanged",
-                "codexInstructions": "merge app-owned block; preserve personal instructions",
-                "claudeInstructions": "merge app-owned block; preserve personal instructions",
+                "codexInstructions": prompt_plans["Codex"],
+                "claudeInstructions": prompt_plans["Claude"],
                 "signature": "verified (does not imply notarization)"}
 
     def stop(self):
@@ -744,7 +785,7 @@ class Installer:
         backup = Path(tempfile.mkdtemp(prefix="install-", dir=backup_root))
         self.app.parent.mkdir(parents=True, exist_ok=True)
         stage = Path(tempfile.mkdtemp(prefix=".focus-queue-stage-", dir=self.app.parent))
-        changes = []
+        changes, created_directories = [], []
         old_application = (
             self.app if self.app.exists()
             else self.legacy_app if self.legacy_app.exists()
@@ -789,18 +830,24 @@ class Installer:
                 (staged_helper, self.helper),
                 (staged_automation, self.automation),
             ]
-            original_prompt = self.codex_prompt.read_bytes() if self.codex_prompt.exists() else b""
-            staged_prompt = stage / "codex-instructions.md"
-            staged_prompt.write_text(merge_agent_prompt(original_prompt.decode(),
-                (staged_app / "Contents/Resources/CODEX_GLOBAL_INSTRUCTIONS.md").read_text(), label="Codex"))
-            staged_prompt.chmod(self.codex_prompt.stat().st_mode & 0o777 if self.codex_prompt.exists() else 0o600)
-            planned.append((staged_prompt, self.codex_prompt))
-            original_claude_prompt = self.claude_prompt.read_bytes() if self.claude_prompt.exists() else b""
-            staged_claude_prompt = stage / "claude-instructions.md"
-            staged_claude_prompt.write_text(merge_agent_prompt(original_claude_prompt.decode(),
-                (staged_app / "Contents/Resources/CLAUDE_GLOBAL_INSTRUCTIONS.md").read_text(), label="Claude"))
-            staged_claude_prompt.chmod(self.claude_prompt.stat().st_mode & 0o777 if self.claude_prompt.exists() else 0o600)
-            planned.append((staged_claude_prompt, self.claude_prompt))
+            # Original bytes of every instruction file this install rewrites; each is
+            # rechecked just before replacement so a concurrent edit is never lost.
+            original_prompts = {}
+            for target, legacy, resource, label in self.prompt_files():
+                original = target.read_bytes() if target.exists() else b""
+                original_prompts[target] = original
+                staged_prompt = stage / f"{label.lower()}-instructions.md"
+                staged_prompt.write_text(merge_agent_prompt(original.decode(),
+                    (staged_app / "Contents/Resources" / resource).read_text(), label=label))
+                staged_prompt.chmod(target.stat().st_mode & 0o777 if target.exists() else 0o600)
+                planned.append((staged_prompt, target))
+                legacy_original = legacy.read_bytes() if legacy.exists() else b""
+                if prompt_block(legacy_original.decode(), label=label) is not None:
+                    original_prompts[legacy] = legacy_original
+                    staged_legacy = stage / f"{label.lower()}-legacy-instructions.md"
+                    staged_legacy.write_text(remove_agent_prompt(legacy_original.decode(), label=label))
+                    staged_legacy.chmod(legacy.stat().st_mode & 0o777)
+                    planned.append((staged_legacy, legacy))
             # Refresh an already configured entry without changing aliases, flags or hook trust.
             original_entry = self.codex_entry.read_bytes() if self.codex_entry.exists() else None
             original_usage_wrapper = (self.codex_usage_wrapper.read_bytes()
@@ -866,11 +913,14 @@ class Installer:
                                **({"digestAlgorithm": TREE_DIGEST_ALGORITHM}
                                   if target == self.automation else {})}
                               for source, target in planned if target not in {
-                                  self.codex_prompt, self.claude_prompt, self.codex_entry,
+                                  *original_prompts, self.codex_entry,
                                   self.codex_usage_wrapper,
                                   self.codex_usage_renderer, self.codex_usage_license, *self.fq_files}],
                 "managedSettings": [{"path": str(self.codex_prompt), "ownership": "delimited-block-only"},
                     {"path": str(self.claude_prompt), "ownership": "delimited-block-only"},
+                    # Only the app's block was ever removed here; the rest stays the user's.
+                    {"path": str(self.legacy_codex_prompt), "ownership": "legacy-delimited-block-removed"},
+                    {"path": str(self.legacy_claude_prompt), "ownership": "legacy-delimited-block-removed"},
                     {"path": str(self.codex_entry), "ownership": "configured-entry-only"},
                     {"path": str(self.codex_usage_wrapper), "ownership": "configured-entry-support"},
                     {"path": str(self.codex_usage_renderer), "ownership": "configured-entry-support"},
@@ -898,10 +948,12 @@ class Installer:
                 self.stop()
                 stopped = True
             for index, (source, target) in enumerate(operations):
-                if target == self.codex_prompt and (target.read_bytes() if target.exists() else b"") != original_prompt:
-                    raise ValueError("Codex instructions changed during installation; retry to preserve the newer edit.")
-                if target == self.claude_prompt and (target.read_bytes() if target.exists() else b"") != original_claude_prompt:
-                    raise ValueError("Claude instructions changed during installation; retry to preserve the newer edit.")
+                if target in original_prompts and (
+                    target.read_bytes() if target.exists() else b""
+                ) != original_prompts[target]:
+                    label = "Codex" if target.name == "AGENTS.md" else "Claude"
+                    raise ValueError(f"{label} instructions changed during installation ({target}); "
+                                     "retry to preserve the newer edit.")
                 if target == self.codex_entry and (target.read_bytes() if target.exists() else None) != original_entry:
                     raise ValueError("Codex entry changed during installation; retry to preserve the newer edit.")
                 if target == self.codex_usage_wrapper and (
@@ -920,6 +972,10 @@ class Installer:
                     target.read_bytes() if target.exists() else None
                 ) != original_fq[target]:
                     raise ValueError(f"{target.name} changed during installation; retry to preserve the newer edit.")
+                if source is not None and target in original_prompts and not target.parent.exists():
+                    # ~/.codex or ~/.claude: private, and removed again if installation fails.
+                    target.parent.mkdir(mode=0o700)
+                    created_directories.append(target.parent)
                 if source is not None:
                     target.parent.mkdir(parents=True, exist_ok=True)
                 previous = backup / str(index)
@@ -949,6 +1005,11 @@ class Installer:
                     target.rename(backup / f"failed-new-{index}")
                 if previous is not None:
                     previous.rename(target)
+            for directory in reversed(created_directories):
+                try:
+                    directory.rmdir()
+                except OSError:
+                    pass
             recovery_file = backup / "recovery.json"
             if recovery_file.exists():
                 recovery["status"] = "rolled_back"
@@ -1010,8 +1071,19 @@ def _uninstall_locked(installer, home, *, check, stop):
             elif not path.is_file() or digest(path) != item["sha256"]:
                 raise ValueError(f"Installed file changed; retained: {path}")
         targets.append(path)
+    # The app owns only its delimited block in the agents' instruction files.
+    prompts = []
+    for path, _, _, label in installer.prompt_files():
+        for candidate in (path, installer.legacy_codex_prompt if label == "Codex" else installer.legacy_claude_prompt):
+            safe_destination(candidate, home)
+            if candidate.is_file() and not candidate.is_symlink():
+                text = candidate.read_text()
+                if prompt_block(text, label=label) is not None:
+                    prompts.append((candidate, text, remove_agent_prompt(text, label=label)))
     result = {"mode": "uninstall-preview", "paths": [str(path) for path in targets],
-              "preserved": "configuration, task files, history, backups, tmux sessions and companion services"}
+              "instructionBlocksRemoved": [str(path) for path, _, _ in prompts],
+              "preserved": "configuration, task files, history, backups, tmux sessions, companion services "
+                           "and personal text in agent instruction files"}
     if check:
         return result
     backup_root = installer.support / "backups"
@@ -1026,10 +1098,22 @@ def _uninstall_locked(installer, home, *, check, stop):
             destination = backup / str(index)
             path.rename(destination)
             moved.append((path, destination))
+        for path, text, stripped in prompts:
+            if path.read_text() != text:
+                raise ValueError(f"{path} changed during uninstall; retry to preserve the newer edit.")
+            destination = backup / str(len(moved))
+            mode = path.stat().st_mode & 0o777
+            path.rename(destination)
+            moved.append((path, destination))
+            path.write_text(stripped)
+            path.chmod(mode)
         (backup / "recovery.json").write_text(json.dumps({"paths": [
             {"destination": str(path), "backup": str(saved)} for path, saved in moved]}, indent=2) + "\n")
     except BaseException:
         for path, saved in reversed(moved):
+            if path.exists():
+                # An instruction file rewritten without the block; the original replaces it.
+                path.unlink()
             saved.rename(path)
         raise
     return {**result, "mode": "uninstalled", "backupDirectory": str(backup)}

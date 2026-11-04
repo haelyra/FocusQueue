@@ -18,6 +18,10 @@ installer (git, python3; run Install.command again when it finishes), and uses
 Homebrew to install tmux and the GitHub CLI (gh). Without Homebrew it prints how to
 install it and continues. Its JSON result lists each tool under "prerequisites".
 
+It adds Focus Queue's agent instructions, as one marked block, to ~/.claude/CLAUDE.md
+and ~/.codex/AGENTS.md, keeping your own text in those files. A block that an older
+version put in ~/Documents/CLAUDE.md or ~/Documents/AGENTS.md moves there.
+
 It installs the app to ~/Applications and the focus-queue-session helper to ~/.local/bin, preserves
 your existing configuration, and keeps backups before replacing a previous version.
 It does not need GitHub access. Use --check for a read-only preflight, --login for

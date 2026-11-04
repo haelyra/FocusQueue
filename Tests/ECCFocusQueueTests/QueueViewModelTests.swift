@@ -1929,7 +1929,7 @@ struct QueueViewModelTests {
     try await eventually(maxAttempts: 1_000) { model.launchingTaskIDs.isEmpty }
 
     let agent = try #require(model.subtasks(for: "ECC-101").first { $0.id == agentID })
-    #expect(agent.title == "Codex agent")
+    #expect(agent.title == "Codex gpt-6.1-sol")
     #expect(agent.provider == .codex)
     #expect(agent.initialPrompt == nil)
     #expect(agent.assignmentDescription.isEmpty)
@@ -3797,13 +3797,14 @@ struct QueueViewModelTests {
 
     #expect(model.defaultAgentProvider == .kimi)
     #expect(model.defaultAgentModel(for: .kimi) == "kimi-code/k3")
-    #expect(model.defaultAgentModel(for: .codex) == nil)
+    #expect(model.defaultAgentModel(for: .codex) == "gpt-6.1-sol")
+    #expect(model.defaultAgentEffort(for: .codex) == "medium")
     #expect(model.preferredNewAgentProvider(stored: nil) == .kimi)
     #expect(model.preferredNewAgentProvider(stored: .claude) == .claude)
-    #expect(model.agentModelChoices(for: .kimi).map(\.label).first == "Default")
+    #expect(!model.agentModelChoices(for: .kimi).contains { $0.model == nil })
 
     #expect(model.taskCreatorLaunchDefaults == AgentLaunchPreset(
-      provider: .kimi, model: "kimi-code/k3", effort: nil,
+      provider: .kimi, model: "kimi-code/k3", effort: "high",
       workspacePolicy: .isolatedCommittedSnapshot, useTmux: true, includePrompt: true))
 
     model.setDefaultAgentProvider(.claude)
@@ -3811,7 +3812,8 @@ struct QueueViewModelTests {
     model.setDefaultAgentModel("sonnet", for: .claude)
     #expect(model.defaultAgentModel(for: .claude) == "sonnet")
     model.setDefaultAgentModel("", for: .claude)
-    #expect(model.defaultAgentModel(for: .claude) == nil)
+    // Clearing the choice falls back to the standard model, never to an unnamed default.
+    #expect(model.defaultAgentModel(for: .claude) == "claude-opus-5-5")
     try await eventually {
       let saved = try JSONDecoder().decode(
         AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))

@@ -58,6 +58,7 @@ struct TaskCreatorSheet: View {
               .focused($promptFocused)
               .accessibilityLabel("Task prompt")
           }
+          .requiredField(missing: trimmedDescription.isEmpty)
           TextField("Title (optional)", text: $title,
                     prompt: Text("Leave blank for an agent-written title"))
           TextField("Card description (optional)", text: $displayDescription,
@@ -319,7 +320,6 @@ struct AgentLaunchOptions: View {
       get: { agent.effort ?? "" },
       set: { agent.effort = $0.isEmpty ? nil : $0 }
     )) {
-      Text("Default").tag("")
       ForEach(AppConfiguration.agentEffortLevels(for: agent.provider), id: \.self) { Text($0).tag($0) }
       if let current = agent.effort,
          !AppConfiguration.agentEffortLevels(for: agent.provider).contains(current) {

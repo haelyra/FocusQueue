@@ -1640,6 +1640,19 @@ struct QueueSettingsView: View {
 
           groupHeading("Agents")
           settingsSection(
+            title: "Sign-in",
+            detail: "Agents run through each provider's own CLI and your subscription. Check who is signed in, or sign in to another provider."
+          ) {
+            VStack(alignment: .leading, spacing: 10) {
+              WalkthroughSignInContent(model: model)
+              Toggle("Report failed sign-ins to the beta tracker", isOn: Binding(
+                get: { model.reportsSignInFailures }, set: { model.setReportsSignInFailures($0) }))
+              Text("When a sign-in fails, Focus Queue files a GitHub issue with the error, the CLI version, and your Mac and app versions. Paths, emails and tokens are removed. Issues on this repository are public.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+          }
+          settingsSection(
             title: "Default agent",
             detail: "New agents and quick launches start with this provider and its default model unless you pick another one. The + task creator uses it when no agent has been launched yet."
           ) {
@@ -1653,7 +1666,7 @@ struct QueueSettingsView: View {
                 }
               }.pickerStyle(.segmented).labelsHidden()
               Picker("Default model", selection: Binding(
-                get: { model.config.defaultAgentModels[model.defaultAgentProvider] ?? "" },
+                get: { model.defaultAgentModel(for: model.defaultAgentProvider) ?? "" },
                 set: { model.setDefaultAgentModel($0, for: model.defaultAgentProvider) }
               )) {
                 ForEach(model.agentModelChoices(for: model.defaultAgentProvider)) { choice in
@@ -1661,15 +1674,14 @@ struct QueueSettingsView: View {
                 }
               }
               Picker("Default effort", selection: Binding(
-                get: { model.config.defaultAgentEfforts[model.defaultAgentProvider] ?? "" },
+                get: { model.defaultAgentEffort(for: model.defaultAgentProvider) ?? "" },
                 set: { model.setDefaultAgentEffort($0, for: model.defaultAgentProvider) }
               )) {
-                Text("Default").tag("")
                 ForEach(AppConfiguration.agentEffortLevels(for: model.defaultAgentProvider), id: \.self) { effort in
                   Text(effort).tag(effort)
                 }
               }
-              Text("Default launches the provider without a model or effort setting, so it follows the provider's own config.")
+              Text("New agents start with this model and effort. You can change both for each launch.")
                 .font(.caption).foregroundStyle(.secondary)
             }
           }

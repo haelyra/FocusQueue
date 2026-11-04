@@ -349,7 +349,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   /// visibility), the Claude Code model lineup and aliases, and the Kimi Code
   /// aliases from the managed `kimi provider list --json` entries.
   public static let defaultAgentModelChoices: [AgentModelChoice] = [
-    AgentModelChoice(provider: .codex, label: "Default"),
     AgentModelChoice(provider: .codex, label: "gpt-6.1-sol", model: "gpt-6.1-sol"),
     AgentModelChoice(provider: .codex, label: "gpt-6-astra", model: "gpt-6-astra"),
     AgentModelChoice(provider: .codex, label: "gpt-6-sol", model: "gpt-6-sol"),
@@ -357,7 +356,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     AgentModelChoice(provider: .codex, label: "gpt-5.6-sol", model: "gpt-5.6-sol"),
     AgentModelChoice(provider: .codex, label: "gpt-5.6-terra", model: "gpt-5.6-terra"),
     AgentModelChoice(provider: .codex, label: "gpt-5.6-luna", model: "gpt-5.6-luna"),
-    AgentModelChoice(provider: .claude, label: "Default"),
     AgentModelChoice(provider: .claude, label: "fable-5.1", model: "claude-fable-5-1"),
     AgentModelChoice(provider: .claude, label: "opus-5.5", model: "claude-opus-5-5"),
     AgentModelChoice(provider: .claude, label: "sonnet-5.5", model: "claude-sonnet-5-5"),
@@ -370,7 +368,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     AgentModelChoice(provider: .claude, label: "opus", model: "opus"),
     AgentModelChoice(provider: .claude, label: "sonnet", model: "sonnet"),
     AgentModelChoice(provider: .claude, label: "haiku", model: "haiku"),
-    AgentModelChoice(provider: .kimi, label: "Default"),
     AgentModelChoice(provider: .kimi, label: "K3.1 Pro", model: "kimi-code/k3.1-pro"),
     AgentModelChoice(provider: .kimi, label: "K3.1 Pro Highspeed", model: "kimi-code/k3.1-pro-highspeed"),
     AgentModelChoice(provider: .kimi, label: "K3", model: "kimi-code/k3"),
@@ -396,8 +393,25 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     let defaults = Self.defaultAgentModelChoices
     let builtInIDs = Set(defaults.map(\.id))
     return defaults + configured.filter {
-      !builtInIDs.contains($0.id) && !Self.retiredAgentModelChoices.contains($0)
+      $0.model != nil && !builtInIDs.contains($0.id) && !Self.retiredAgentModelChoices.contains($0)
     }
+  }
+
+  /// What a launch uses when the user has not picked a model or effort. Every
+  /// launch names both, so the app always shows the model that actually runs.
+  public static let standardAgentModels: [AgentProvider: String] = [
+    .claude: "claude-opus-5-5", .codex: "gpt-6.1-sol", .kimi: "kimi-code/k3.1-pro",
+  ]
+  public static let standardAgentEfforts: [AgentProvider: String] = [
+    .claude: "high", .codex: "medium", .kimi: "high",
+  ]
+
+  public func agentModel(for provider: AgentProvider) -> String? {
+    defaultAgentModels[provider] ?? Self.standardAgentModels[provider]
+  }
+
+  public func agentEffort(for provider: AgentProvider) -> String? {
+    defaultAgentEfforts[provider] ?? Self.standardAgentEfforts[provider]
   }
 
   /// Effort levels accepted by agent launches (Codex `model_reasoning_effort`,
@@ -1884,6 +1898,8 @@ public struct LocalState: Codable, Equatable, Sendable {
   public var dismissedNotificationIDs: Set<String>
   public var window: WindowSnapshot?
   public var appearance: QueueAppearance?
+  /// Beta: file failed sign-ins on GitHub Issues. Nil means on.
+  public var reportsSignInFailures: Bool?
   public var accentStyle: QueueAccentStyle?
   public var minimizationPreference: QueueMinimizationPreference
   public var isWindowPinned: Bool
@@ -2011,6 +2027,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     case dismissedNotificationIDs
     case window
     case appearance
+    case reportsSignInFailures
     case accentStyle
     case minimizationPreference
     case isWindowPinned
@@ -2039,6 +2056,7 @@ public struct LocalState: Codable, Equatable, Sendable {
       try container.decodeIfPresent(Set<String>.self, forKey: .dismissedNotificationIDs) ?? []
     window = try container.decodeIfPresent(WindowSnapshot.self, forKey: .window)
     appearance = try container.decodeIfPresent(QueueAppearance.self, forKey: .appearance)
+    reportsSignInFailures = try container.decodeIfPresent(Bool.self, forKey: .reportsSignInFailures)
     accentStyle = try container.decodeIfPresent(QueueAccentStyle.self, forKey: .accentStyle)
     minimizationPreference =
       try container.decodeIfPresent(QueueMinimizationPreference.self, forKey: .minimizationPreference)
@@ -2073,6 +2091,7 @@ public struct LocalState: Codable, Equatable, Sendable {
     try container.encode(dismissedNotificationIDs, forKey: .dismissedNotificationIDs)
     try container.encodeIfPresent(window, forKey: .window)
     try container.encodeIfPresent(appearance, forKey: .appearance)
+    try container.encodeIfPresent(reportsSignInFailures, forKey: .reportsSignInFailures)
     try container.encodeIfPresent(accentStyle, forKey: .accentStyle)
     try container.encode(minimizationPreference, forKey: .minimizationPreference)
     try container.encode(isWindowPinned, forKey: .isWindowPinned)

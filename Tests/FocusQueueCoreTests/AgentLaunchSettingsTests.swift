@@ -37,7 +37,9 @@ struct AgentLaunchSettingsTests {
             AgentModelChoice(provider: .kimi, label: "K3", model: "kimi-code/k3")))
         #expect(decoded.agentModelChoices.contains(
             AgentModelChoice(provider: .codex, label: "Custom build", model: "custom-model")))
-        #expect(decoded.agentModelChoices.first == AgentModelChoice(provider: .codex, label: "Default"))
+        // A saved "Default" names no model, so it is dropped rather than kept as a custom entry.
+        #expect(!decoded.agentModelChoices.contains { $0.model == nil })
+        #expect(decoded.agentModelChoices.first == AppConfiguration.defaultAgentModelChoices.first)
         #expect(decoded.agentModelChoices.last == AgentModelChoice(
             provider: .codex, label: "Custom build", model: "custom-model"))
     }

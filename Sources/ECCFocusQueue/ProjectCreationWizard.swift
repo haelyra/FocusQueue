@@ -91,6 +91,7 @@ struct ProjectCreationWizard: View {
         Button(step == .review ? "Create project" : "Continue") { advance() }
           .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
           .disabled(!canContinue)
+          .help(canContinue ? "" : "Fill in the fields marked Required")
       }.disabled(busy)
     }
     .textFieldStyle(.roundedBorder).padding(22).frame(width: 620, height: 590)
@@ -102,8 +103,10 @@ struct ProjectCreationWizard: View {
     VStack(alignment: .leading, spacing: 12) {
       Text("What is your project called?").font(.headline)
       TextField("Project name", text: $draft.name)
+        .requiredField(missing: draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
       Text("Task prefix").font(.headline)
       TextField("Choose 2 to 5 letters, e.g. APP", text: $draft.taskPrefix)
+        .requiredField(missing: !draft.hasValidTaskPrefix)
       Text("The letters before each task number. For example, APP creates APP-001 and APP-002. Use letters only, without spaces or numbers.")
         .font(.caption).foregroundStyle(.secondary)
       if !draft.taskPrefix.isEmpty && !draft.hasValidTaskPrefix {
@@ -115,10 +118,12 @@ struct ProjectCreationWizard: View {
       }))
       HStack {
         TextField(draft.folderMode == .new ? "Parent folder for the new project" : "Existing project folder", text: $draft.folderPath)
+          .requiredField(missing: !draft.folderPath.hasPrefix("/"))
         Button("Choose…") { chooseFolder() }
       }
       if draft.folderMode == .new {
         TextField("New folder name", text: $draft.newFolderName)
+          .requiredField(missing: draft.newFolderName.isEmpty)
         if !draft.folderPath.isEmpty && !draft.newFolderName.isEmpty {
           Text("Create: \(draft.workingFolder(supportDirectory: model.projectContextStore.root).path)")
             .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
@@ -197,6 +202,7 @@ struct ProjectCreationWizard: View {
     VStack(alignment: .leading, spacing: 12) {
       Text("What is the purpose of this project?").font(.headline)
       TextField("What are you building, and why?", text: $draft.purpose, axis: .vertical).lineLimit(3...5)
+        .requiredField(missing: draft.purpose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
       Text("Who is it for? (optional)").font(.headline)
       TextField("Users, audience, or team", text: $draft.audience, axis: .vertical).lineLimit(2...3)
       Text("What would success look like? (optional)").font(.headline)
@@ -417,5 +423,24 @@ struct ProjectCreationWizard: View {
     panel.allowedContentTypes = [.pdf, .plainText, UTType(filenameExtension: "md") ?? .plainText,
       UTType(filenameExtension: "markdown") ?? .plainText]
     if panel.runModal() == .OK { draft.documents = Array(Set(draft.documents + panel.urls)).sorted { $0.path < $1.path } }
+  }
+}
+
+extension View {
+  /// Outlines a required field that is still empty or invalid, so the reason
+  /// Continue is unavailable is visible where it needs fixing.
+  func requiredField(missing: Bool) -> some View {
+    overlay(alignment: .topTrailing) {
+      if missing {
+        Text("Required").font(.caption2.weight(.semibold)).foregroundStyle(.orange)
+          .padding(.horizontal, 5).offset(y: -14)
+          .accessibilityHidden(true)
+      }
+    }
+    .overlay {
+      RoundedRectangle(cornerRadius: 6).stroke(.orange, lineWidth: missing ? 1.5 : 0)
+        .allowsHitTesting(false)
+    }
+    .accessibilityHint(missing ? "Required" : "")
   }
 }

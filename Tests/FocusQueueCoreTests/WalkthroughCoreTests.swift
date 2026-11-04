@@ -91,15 +91,16 @@ struct ProviderAccountsTests {
       let script = ProviderAccounts.statusScript(for: provider)
       #expect(script.hasPrefix("command -v \(provider.executableName) "))
       #expect(script.contains("|| exit 127; command \(provider.executableName) "))
-      #expect(ProviderAccounts.loginScript(for: provider).contains("elif command \(provider.executableName) "))
+      #expect(ProviderAccounts.loginScript(for: provider).contains("else command \(provider.executableName) "))
       #expect(ProviderAccounts.state(for: provider, result: result(127)) == .notInstalled)
     }
-    #expect(ProviderAccounts.loginScript(for: .claude).contains("elif command claude auth login; then"))
-    #expect(ProviderAccounts.loginScript(for: .codex).contains("elif command codex login; then"))
+    #expect(ProviderAccounts.loginScript(for: .claude).contains("else command claude auth login; fq_status=$?"))
+    #expect(ProviderAccounts.loginScript(for: .codex).contains("else command codex login; fq_status=$?"))
   }
 
   /// Runs the sign-in script against a stub CLI and returns what the window shows.
-  private func runLogin(_ provider: AgentProvider, stub: String?) async throws -> String {
+  private func runLogin(_ provider: AgentProvider, stub: String?,
+                        attempt: SignInAttempt? = nil) async throws -> String {
     let bin = FileManager.default.temporaryDirectory.appendingPathComponent("login-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: bin) }
@@ -108,19 +109,72 @@ struct ProviderAccountsTests {
       try Data("#!/bin/sh\n\(stub)\n".utf8).write(to: file)
       try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
     }
-    let script = "PATH=\(bin.path):/usr/bin:/bin; " + ProviderAccounts.loginScript(for: provider) + " </dev/null"
+    let script = "PATH=\(bin.path):/usr/bin:/bin; "
+      + ProviderAccounts.loginScript(for: provider, attempt: attempt) + " </dev/null"
     let output = try await FoundationProcessRunner().run(.init(
-      executable: "/bin/zsh", arguments: ["-fc", script], timeoutSeconds: 10))
+      executable: "/bin/zsh", arguments: ["-fc", script], timeoutSeconds: 15))
     return output.standardOutput
   }
 
   @Test("The sign-in window reports success, failure, or a missing CLI instead of always saying finished")
   func loginOutcome() async throws {
-    #expect(try await runLogin(.codex, stub: "exit 0").contains("Signed in to Codex."))
+    let succeeded = try await runLogin(.codex, stub: "exit 0")
+    #expect(succeeded.contains("Signed in to Codex. This window closes in a moment."))
+    #expect(!succeeded.contains("Press Return"), "A successful window closes by itself")
     let failed = try await runLogin(.codex, stub: "exit 3")
     #expect(failed.contains("did not finish (exit 3)"))
+    #expect(failed.contains("Press Return"))
     #expect(!failed.contains("Signed in"))
     #expect(try await runLogin(.claude, stub: nil).contains("The claude CLI is not installed"))
+  }
+
+  @Test("A sign-in window records its exit status and the CLI's errors for the app")
+  func loginRecordsOutcome() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("attempt-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let failure = try SignInAttempt(provider: .codex, root: root)
+    #expect(failure.outcome() == nil, "Still running")
+    _ = try await runLogin(.codex, stub: "echo 'Error: token exchange failed' >&2; exit 4", attempt: failure)
+    #expect(failure.outcome() == .failed(status: 4, errors: "Error: token exchange failed"))
+    let success = try SignInAttempt(provider: .claude, root: root)
+    _ = try await runLogin(.claude, stub: "exit 0", attempt: success)
+    #expect(success.outcome() == .succeeded)
+    success.remove()
+    #expect(success.outcome() == nil)
+  }
+
+  @Test("Failure reports hide the home folder, account name, emails, and tokens")
+  func reportRedaction() {
+    let report = SignInFailureReport(
+      provider: .codex, exitStatus: 1,
+      errors: "open /Users/divi/.codex/auth.json failed for divi@example.com token=abcdefghijklmnopqrstuvwxyz0123456789ABCD",
+      accountState: "Could not check: /Users/divi/.zshrc", cliPath: "/Users/divi/.npm/bin/codex",
+      cliVersion: "codex-cli 0.145.0", terminal: "macOS Terminal", environment: "Focus Queue 0.3.2 · macOS 26.1.0",
+      home: "/Users/divi")
+    #expect(report.title == "Sign-in failed: Codex (exit 1)")
+    #expect(!report.body.contains("/Users/divi"))
+    #expect(!report.body.contains("divi@example.com"))
+    #expect(!report.body.contains("abcdefghijklmnopqrstuvwxyz0123456789ABCD"))
+    #expect(report.body.contains("~/.codex/auth.json"))
+    #expect(report.body.contains("codex-cli 0.145.0"))
+  }
+
+  @Test("Reports go through a signed-in GitHub CLI, else open a prefilled issue page")
+  func reportDelivery() async throws {
+    let report = SignInFailureReport(provider: .claude, exitStatus: 2, errors: "boom", accountState: "Not signed in",
+      cliPath: nil, cliVersion: nil, terminal: "Ghostty", environment: "test", home: "/Users/x")
+    let filed = await SignInFailureReporter.submit(report, gh: "/mock/gh", runner: ScriptedRunner([
+      .init(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
+      .init(exitCode: 0, standardOutput: "https://github.com/haelyra/FocusQueue/issues/12\n", standardError: "", timedOut: false),
+    ]))
+    #expect(filed == .filed(URL(string: "https://github.com/haelyra/FocusQueue/issues/12")!))
+    let signedOut = await SignInFailureReporter.submit(report, gh: "/mock/gh", runner: ScriptedRunner([
+      .init(exitCode: 1, standardOutput: "", standardError: "not logged in", timedOut: false),
+    ]))
+    guard case .openInBrowser(let page) = signedOut else { Issue.record("Expected a browser page"); return }
+    #expect(page.absoluteString.hasPrefix("https://github.com/haelyra/FocusQueue/issues/new?"))
+    #expect(page.absoluteString.contains("Sign-in%20failed:%20Claude"))
+    #expect(await SignInFailureReporter.submit(report, gh: nil, runner: ScriptedRunner([])) == signedOut)
   }
 
   @Test("A failed check shows the CLI's own last line, from stdout when stderr is empty")
@@ -226,5 +280,15 @@ struct ManagedTerminalAppTests {
     #expect(script.contains("wezterm.mux.spawn_window(cmd or {})"))
     #expect(script.contains("return false"))
     #expect(script.contains("os.getenv(\"FOCUS_QUEUE_WEZTERM_TAB_TITLE\")"))
+  }
+}
+
+/// Returns canned results in order, so no real gh command runs.
+private actor ScriptedRunner: ProcessRunning {
+  private var results: [ProcessResult]
+  init(_ results: [ProcessResult]) { self.results = results }
+  func run(_ specification: ProcessSpecification) throws -> ProcessResult {
+    results.isEmpty ? ProcessResult(exitCode: 1, standardOutput: "", standardError: "", timedOut: false)
+      : results.removeFirst()
   }
 }

@@ -452,6 +452,14 @@ private struct WalkthroughWelcomeContent: View {
       feature("arrow.triangle.branch", "Every agent gets its own git worktree and tmux pane, cleaned up when the task is resolved.")
       feature("doc.text", "Each task has one central plan that every agent in it receives.")
       feature("bubble.left.and.bubble.right", "QChat manages tasks and agents when you'd rather ask than click.")
+      Picker("Appearance", selection: Binding(get: { model.appearance }, set: { model.setAppearance($0) })) {
+        ForEach(QueueAppearance.allCases) { appearance in
+          Label(appearance.displayName, systemImage: appearance == .dark ? "moon.fill" : "sun.max.fill")
+            .tag(appearance)
+        }
+      }
+      .pickerStyle(.segmented)
+      .accessibilityLabel("Appearance")
       Text("About two minutes. Use Back and Next below, or skip and replay it later from the info menu.")
         .font(.system(size: 11)).foregroundStyle(.tertiary)
         .fixedSize(horizontal: false, vertical: true)
@@ -597,7 +605,9 @@ struct ProviderSignInGate: View {
   }
 }
 
-private struct WalkthroughSignInContent: View {
+/// Each provider's sign-in state with Sign in and Install actions. Used by the
+/// tour, the sign-in gate, and Settings.
+struct WalkthroughSignInContent: View {
   let model: QueueViewModel
   @State private var pending: Set<AgentProvider> = []
   @State private var refreshing = false
@@ -665,12 +675,15 @@ private struct WalkthroughSignInContent: View {
         .font(.system(size: 18)).foregroundStyle(.green)
         .accessibilityLabel("\(provider.displayName) signed in")
     case .signedOut, .failed:
-      Button("Sign in") {
+      let open = model.isSigningIn(provider)
+      Button(open ? "Waiting…" : "Sign in") {
         pending.insert(provider)
         Task { await model.signIn(to: provider) }
       }
       .buttonStyle(.borderedProminent).controlSize(.small)
-      .help("Opens \(model.config.wezTerm.terminalApp.displayName) on the \(provider.executableName) sign-in")
+      .disabled(open)
+      .help(open ? "Finish in the sign-in window that is already open"
+        : "Opens \(model.config.wezTerm.terminalApp.displayName) on the \(provider.executableName) sign-in")
     case .notInstalled:
       if let url = ProviderAccounts.installURL(for: provider) {
         Link("Install", destination: url).font(.system(size: 12, weight: .semibold))

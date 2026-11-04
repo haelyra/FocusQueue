@@ -2252,13 +2252,10 @@ public protocol QueueAgentChatting: Sendable {
 }
 
 public enum QueueAgentError: Error, LocalizedError {
-    case disabled(AgentProvider)
     case failed(AgentProvider, String)
 
     public var errorDescription: String? {
         switch self {
-        case .disabled(let provider):
-            "\(provider.displayName) Queue chat is disabled in config.json."
         case .failed(let provider, let detail):
             "\(provider.displayName) Queue chat failed: \(detail)"
         }
@@ -2654,7 +2651,6 @@ public actor HarnessQueueAgent: QueueAgentChatting {
         model: String? = nil,
         effort: String? = nil
     ) async throws -> QueueAgentReply {
-        guard configuration.enabled else { throw QueueAgentError.disabled(provider) }
 
         let promptURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("focus-queue-chat-\(UUID().uuidString).txt")
@@ -2782,7 +2778,6 @@ public actor HarnessQueueAgent: QueueAgentChatting {
     }
 
     public func reset(configuration: VerifierConfiguration) async throws {
-        guard configuration.enabled else { throw QueueAgentError.disabled(provider) }
         let result = try await runner.run(ProcessSpecification(
             executable: configuration.executable,
             arguments: Self.documentRuntimeArguments(configuration) + [

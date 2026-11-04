@@ -173,11 +173,16 @@ func agentModelChoiceConfiguration() throws {
     AppConfiguration.self, from: JSONEncoder().encode(config))
   #expect(roundTripped.agentModelChoices == config.agentModelChoices)
   #expect(AppConfiguration.defaultAgentModelChoices.map(\.provider)
-    == Array(repeating: .codex, count: 8)
-      + Array(repeating: .claude, count: 13)
-      + Array(repeating: .kimi, count: 7))
-  #expect(AppConfiguration.defaultAgentModelChoices.first(where: { $0.model == nil && $0.provider == .claude })?.label == "Default")
-  #expect(AppConfiguration.defaultAgentModelChoices.first(where: { $0.model == nil && $0.provider == .kimi })?.label == "Default")
+    == Array(repeating: .codex, count: 7)
+      + Array(repeating: .claude, count: 12)
+      + Array(repeating: .kimi, count: 6))
+  // Every built-in choice names a real model, and each provider's standard model is listed.
+  #expect(!AppConfiguration.defaultAgentModelChoices.contains { $0.model == nil })
+  for provider in AgentProvider.allCases {
+    let standard = try #require(AppConfiguration.standardAgentModels[provider])
+    #expect(AppConfiguration.defaultAgentModelChoices.contains { $0.provider == provider && $0.model == standard })
+    #expect(AppConfiguration.agentEffortLevels(for: provider).contains(try #require(AppConfiguration.standardAgentEfforts[provider])))
+  }
 }
 
 @Test("Daily report documents retain platform counts, messages, tasks, and exact usage")

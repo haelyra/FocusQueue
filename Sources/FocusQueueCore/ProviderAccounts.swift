@@ -35,20 +35,28 @@ public enum ProviderAccounts {
     return "command -v \(name) >/dev/null 2>&1 || exit 127; command \(name) \(check)"
   }
 
-  public static func loginScript(for provider: AgentProvider) -> String {
+  /// Runs the provider's own sign-in. With an attempt, it records the exit
+  /// status and a copy of the CLI's errors so the app can report a failure.
+  /// A successful window closes by itself; a failed one stays open to read.
+  public static func loginScript(for provider: AgentProvider, attempt: SignInAttempt? = nil) -> String {
     let name = provider.executableName
     let login = switch provider {
     case .claude: "auth login"
     case .codex, .kimi: "login"
     }
-    // Report the real outcome: a window that always says "finished" hides a failed sign-in.
     let display = provider.displayName.replacingOccurrences(of: "'", with: "")
-    return "if ! command -v \(name) >/dev/null 2>&1; then "
+    let quote = TerminalCommandLauncher.shellQuote
+    let errors = attempt.map { " 2> >(/usr/bin/tee \(quote($0.errorFile.path)) >&2)" } ?? ""
+    let record = attempt.map { "printf '%s\\n' \"$fq_status\" > \(quote($0.statusFile.path)); " } ?? ""
+    return "fq_status=0; if ! command -v \(name) >/dev/null 2>&1; then fq_status=127; "
       + "printf '\\nThe \(name) CLI is not installed. Install it, then click Sign in again in Focus Queue.\\n'; "
-      + "elif command \(name) \(login); then "
-      + "printf '\\nSigned in to \(display). Focus Queue updates within a few seconds.\\n'; "
-      + "else printf '\\nSign-in to \(display) did not finish (exit %s). Click Sign in in Focus Queue to try again.\\n' \"$?\"; fi; "
-      + "printf 'Press Return to close this window.'; read _"
+      + "else command \(name) \(login)\(errors); fq_status=$?; fi; "
+      + record
+      + "if [ \"$fq_status\" -eq 0 ]; then "
+      + "printf '\\nSigned in to \(display). This window closes in a moment.\\n'; sleep 2; "
+      + "else [ \"$fq_status\" -eq 127 ] || "
+      + "printf '\\nSign-in to \(display) did not finish (exit %s). Focus Queue shows what went wrong.\\n' \"$fq_status\"; "
+      + "printf 'Press Return to close this window.'; read _; fi"
   }
 
   /// True once every provider's check has finished and none is signed in.
@@ -130,11 +138,12 @@ public enum ProviderAccounts {
   /// Opens the configured terminal on the provider's own interactive sign-in.
   public static func openSignIn(
     _ provider: AgentProvider,
+    attempt: SignInAttempt? = nil,
     configuration: WezTermConfiguration,
     runner: any ProcessRunning = FoundationProcessRunner(),
     shell: String = InteractiveAgentShell.executable()
   ) async throws {
     try await TerminalCommandLauncher.open(
-      [shell, "-lic", loginScript(for: provider)], configuration: configuration, runner: runner)
+      [shell, "-lic", loginScript(for: provider, attempt: attempt)], configuration: configuration, runner: runner)
   }
 }

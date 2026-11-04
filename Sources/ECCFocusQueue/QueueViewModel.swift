@@ -173,6 +173,11 @@ final class QueueViewModel {
   var providerAccounts: [AgentProvider: ProviderAccountState] = [:]
   /// Set when every check failed to run and the user chose to continue anyway.
   private(set) var providerSignInDeferred = false
+  /// Sign-in windows still open, by provider. One at a time per provider.
+  private(set) var signInAttempts: [AgentProvider: SignInAttempt] = [:]
+  private var signInStartedAt: [AgentProvider: Date] = [:]
+  /// One report per provider per launch, so a retry loop cannot flood the tracker.
+  private var reportedSignInFailures: Set<AgentProvider> = []
   private(set) var canSwitchMonitor = false
   private(set) var actionMessages: [String: String] = [:] {
     didSet { logChangedMessages(actionMessages, previous: oldValue, categoryPrefix: "Task") }
@@ -213,6 +218,7 @@ final class QueueViewModel {
   @ObservationIgnored private var lastMaintenanceAt: Date?
   @ObservationIgnored private let maintenanceEnabled: Bool
   @ObservationIgnored private let checkProviderAccount: @Sendable (AgentProvider) async -> ProviderAccountState
+  @ObservationIgnored private let fileSignInFailure: @Sendable (SignInFailureContext) async -> SignInFailureReporter.Delivery
   private(set) var subtaskActivityRevision = 0
   /// Agents whose tmux or WezTerm pane the last refresh confirmed alive.
   @ObservationIgnored private var liveRuntimeSubtaskIDs: Set<String> = []
@@ -409,6 +415,9 @@ final class QueueViewModel {
     checkProviderAccount: @escaping @Sendable (AgentProvider) async -> ProviderAccountState = {
       await ProviderAccounts.check($0)
     },
+    fileSignInFailure: @escaping @Sendable (SignInFailureContext) async -> SignInFailureReporter.Delivery = {
+      await SignInFailureReporter.file($0)
+    },
     locateExistingAgent: @escaping @Sendable (AgentProvider, String) async throws -> KnownProviderProcess? = { provider, sessionID in
       try await WezTermController().locateProviderProcess(provider: provider, sessionID: sessionID)
     }
@@ -427,6 +436,7 @@ final class QueueViewModel {
     }
     self.locateExistingAgent = locateExistingAgent
     self.checkProviderAccount = checkProviderAccount
+    self.fileSignInFailure = fileSignInFailure
     self.taskContextStore = TaskContextStore(root: paths.supportDirectory)
     self.reportHistoryRepository = JSONDailyReportHistoryRepository(runtimeDirectory: paths.ingestionRuntimeDirectory)
     self.conversationStore = QueueConversationStore(root: paths.supportDirectory)
@@ -736,7 +746,8 @@ final class QueueViewModel {
   var projects: [ProjectConfiguration] { config.projects }
   var selectedProject: ProjectConfiguration? { config.selectedProject }
   var windowSnapshot: WindowSnapshot? { localState.window }
-  var appearance: QueueAppearance { localState.appearance ?? .light }
+  /// New installs start dark; the welcome card offers light.
+  var appearance: QueueAppearance { localState.appearance ?? .dark }
   var accentStyle: QueueAccentStyle { localState.accentStyle ?? .vibrant }
   /// PDFs follow the app's appearance until the viewer's toggle picks a side for this run.
   private(set) var pdfDarkModeOverride: Bool?
@@ -1172,10 +1183,13 @@ final class QueueViewModel {
 
   /// The provider's last user launch, else its Settings model and effort.
   func lastAgentLaunch(for provider: AgentProvider) -> AgentLaunchPreset {
-    localState.lastAgentLaunch(for: provider) ?? AgentLaunchPreset(
-      provider: provider, model: defaultAgentModel(for: provider),
-      effort: defaultAgentEffort(for: provider), workspacePolicy: .isolatedCommittedSnapshot,
+    var preset = localState.lastAgentLaunch(for: provider) ?? AgentLaunchPreset(
+      provider: provider, workspacePolicy: .isolatedCommittedSnapshot,
       useTmux: true, includePrompt: true)
+    // A launch saved with "Default" names no model; show the one that will run.
+    preset.model = preset.model ?? defaultAgentModel(for: provider)
+    preset.effort = preset.effort ?? defaultAgentEffort(for: provider)
+    return preset
   }
 
   /// Only launches the user starts update the creator's defaults; automatic
@@ -3776,19 +3790,20 @@ final class QueueViewModel {
   }
 
   /// A configured default model; nil launches the provider without `--model`.
+  /// The configured model, else the provider's standard one; never empty.
   func defaultAgentModel(for provider: AgentProvider) -> String? {
-    config.defaultAgentModels[provider]
+    config.agentModel(for: provider)
   }
 
-  /// A configured default effort; nil launches the provider without an effort flag.
   func defaultAgentEffort(for provider: AgentProvider) -> String? {
-    config.defaultAgentEfforts[provider]
+    config.agentEffort(for: provider)
   }
 
+  /// Concrete models only: an older config's "Default" entry named no model.
   func agentModelChoices(for provider: AgentProvider) -> [AgentModelChoice] {
     let configured = config.agentModelChoices
     return (configured.isEmpty ? AppConfiguration.defaultAgentModelChoices : configured)
-      .filter { $0.provider == provider }
+      .filter { $0.provider == provider && $0.model != nil }
   }
 
   func setDefaultAgentProvider(_ provider: AgentProvider) {
@@ -5384,6 +5399,58 @@ final class QueueViewModel {
       }
       for await (provider, state) in group { providerAccounts[provider] = state }
     }
+    await collectSignInOutcomes()
+  }
+
+  var reportsSignInFailures: Bool { localState.reportsSignInFailures != false }
+
+  func setReportsSignInFailures(_ enabled: Bool) {
+    guard reportsSignInFailures != enabled else { return }
+    localState.reportsSignInFailures = enabled
+    persistLocalState()
+  }
+
+  /// Reads the result each finished sign-in window left behind. A success the
+  /// status check does not confirm is a failure too, since the user is stuck.
+  private func collectSignInOutcomes() async {
+    for (provider, attempt) in signInAttempts {
+      guard let outcome = attempt.outcome() else { continue }
+      signInAttempts[provider] = nil
+      signInStartedAt[provider] = nil
+      attempt.remove()
+      switch outcome {
+      case .failed(127, _):
+        continue // Not installed: the card offers Install instead.
+      case .failed(let status, let errors):
+        await reportSignInFailure(provider, exitStatus: status, errors: errors)
+      case .succeeded:
+        let state = await checkProviderAccount(provider)
+        providerAccounts[provider] = state
+        if !state.isSignedIn { await reportSignInFailure(provider, exitStatus: nil, errors: "") }
+      }
+    }
+  }
+
+  private func reportSignInFailure(_ provider: AgentProvider, exitStatus: Int32?, errors: String) async {
+    let summary = "Sign-in to \(provider.displayName) did not finish"
+      + (exitStatus.map { " (exit \($0))" } ?? "") + "."
+    walkthroughMessage = summary + " Click Sign in to try again."
+    guard reportsSignInFailures, reportedSignInFailures.insert(provider).inserted else { return }
+    let state = providerAccounts[provider]
+    let stateText = state.map { state in
+      if case .failed(let reason) = state { return "\(state.label): \(reason)" }
+      return state.label
+    } ?? "not checked"
+    let delivery = await fileSignInFailure(SignInFailureContext(
+      provider: provider, exitStatus: exitStatus, errors: errors, accountState: stateText,
+      terminal: config.wezTerm.terminalApp.displayName, environment: FeedbackDraft.environmentSummary))
+    switch delivery {
+    case .filed(let url):
+      walkthroughMessage = summary + " The details were sent to the Focus Queue beta tracker (\(url.absoluteString)). Click Sign in to try again."
+    case .openInBrowser(let url):
+      NSWorkspace.shared.open(url)
+      walkthroughMessage = summary + " A prefilled bug report opened in your browser: submit it to send us the details. Click Sign in to try again."
+    }
   }
 
   /// No provider CLI is signed in, so the queue is covered by the sign-in gate.
@@ -5399,9 +5466,26 @@ final class QueueViewModel {
     providerSignInDeferred = true
   }
 
+  /// True while that provider's sign-in window is open, for up to two minutes.
+  func isSigningIn(_ provider: AgentProvider) -> Bool {
+    guard signInAttempts[provider] != nil, let started = signInStartedAt[provider] else { return false }
+    return Date().timeIntervalSince(started) < 120
+  }
+
   func signIn(to provider: AgentProvider) async {
+    // Each click would otherwise open another window for the same sign-in.
+    guard !isSigningIn(provider) else {
+      walkthroughMessage = "Finish signing in to \(provider.displayName) in the window that is already open."
+      return
+    }
+    signInAttempts.removeValue(forKey: provider)?.remove()
+    let attempt = try? SignInAttempt(provider: provider, root: paths.supportDirectory)
     do {
-      try await ProviderAccounts.openSignIn(provider, configuration: config.wezTerm)
+      try await ProviderAccounts.openSignIn(provider, attempt: attempt, configuration: config.wezTerm)
+      if let attempt {
+        signInAttempts[provider] = attempt
+        signInStartedAt[provider] = Date()
+      }
       walkthroughMessage = "Finish signing in to \(provider.displayName) in \(config.wezTerm.terminalApp.displayName). This card updates when you're done."
     } catch {
       walkthroughMessage = error.localizedDescription

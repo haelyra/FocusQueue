@@ -15,14 +15,11 @@ These steps were tested on a clean macOS 26.6 Apple silicon Mac.
 ### 1. Requirements
 
 - An Apple silicon Mac (M1 or later) with macOS 14 or later. The beta build is arm64 only.
-- Apple's Command Line Tools, which provide `python3` and `git`:
+- [Homebrew](https://brew.sh). The installer uses it to add tmux, and the GitHub CLI
+  (`gh`) for beta reports, if they are missing. If Apple's Command Line Tools (`git`,
+  `python3`) are missing, the installer opens Apple's installer; run it again afterwards.
+- A terminal. Focus Queue supports Ghostty, WezTerm and Terminal.app; Ghostty is the simplest:
   ```sh
-  xcode-select --install
-  ```
-- [Homebrew](https://brew.sh), then tmux and a terminal. Focus Queue supports Ghostty,
-  WezTerm and Terminal.app; Ghostty is the simplest:
-  ```sh
-  brew install tmux
   brew install --cask ghostty
   ```
 - At least one agent CLI on your own subscription. Claude Code:

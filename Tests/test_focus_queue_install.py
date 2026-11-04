@@ -448,7 +448,7 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(self.installer.app.exists())
 
     def test_global_prompt_install_is_idempotent_and_preserves_personal_text(self):
-        prompt = self.home / "Documents/AGENTS.md"
+        prompt = self.home / ".codex/AGENTS.md"
         prompt.parent.mkdir(parents=True)
         personal = "# Personal\n\nKeep my exact words.\n\n"
         prompt.write_text(personal)
@@ -463,7 +463,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(manifest["managedSettings"][0]["ownership"], "delimited-block-only")
 
     def test_claude_global_prompt_merges_beside_codex_and_stays_idempotent(self):
-        prompt = self.home / "Documents/CLAUDE.md"
+        prompt = self.home / ".claude/CLAUDE.md"
         prompt.parent.mkdir(parents=True)
         personal = "# Personal\n\nKeep my exact words.\n\n"
         prompt.write_text(personal)
@@ -472,15 +472,112 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue(once.startswith(personal))
         self.assertEqual(once.count(MODULE.PROMPT_START), 1)
         self.assertIn("installed `claude` shell entry", once)
-        codex_prompt = (self.home / "Documents/AGENTS.md").read_text()
+        codex_prompt = (self.home / ".codex/AGENTS.md").read_text()
         self.assertIn("installed `codex` shell entry", codex_prompt)
         self.assertEqual(codex_prompt.count(MODULE.PROMPT_START), 1)
         self.installer.install()
         self.assertEqual(prompt.read_text(), once)
-        self.assertEqual((self.home / "Documents/AGENTS.md").read_text(), codex_prompt)
+        self.assertEqual((self.home / ".codex/AGENTS.md").read_text(), codex_prompt)
+
+    def legacy_prompt_homes(self):
+        """A pre-move install: blocks in ~/Documents beside personal text, personal global files."""
+        block = lambda resource: (Path(__file__).parents[1] / "Config" / resource).read_text()
+        files = {
+            "legacy_claude": (self.home / "Documents/CLAUDE.md",
+                              "# Bias for action\n\nOwn outcomes.\n\n" + block("CLAUDE_GLOBAL_INSTRUCTIONS.md")
+                              + "\n# Agent Output Contract\n\nBLUF first.\n"),
+            "legacy_codex": (self.home / "Documents/AGENTS.md",
+                             "Personal Codex notes.\n\n" + block("CODEX_GLOBAL_INSTRUCTIONS.md")),
+            "global_codex": (self.home / ".codex/AGENTS.md", "My 350-byte personal Codex rules.\n"),
+        }
+        for path, text in files.values():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        return files
+
+    def test_install_moves_the_block_to_the_global_files_and_keeps_personal_text(self):
+        files = self.legacy_prompt_homes()
+        self.assertFalse((self.home / ".claude").exists())
+
+        preview = self.installer.preflight()
+        self.assertIn("move the block out of", preview["claudeInstructions"])
+        self.assertIn(str(self.home / ".codex/AGENTS.md"), preview["codexInstructions"])
+        self.assertEqual(files["legacy_claude"][0].read_text(), files["legacy_claude"][1], "--check is read-only")
+
+        self.installer.install()
+
+        legacy_claude = files["legacy_claude"][0].read_text()
+        self.assertEqual(legacy_claude, "# Bias for action\n\nOwn outcomes.\n\n# Agent Output Contract\n\nBLUF first.\n")
+        self.assertEqual(files["legacy_codex"][0].read_text(), "Personal Codex notes.\n")
+        global_codex = (self.home / ".codex/AGENTS.md").read_text()
+        self.assertTrue(global_codex.startswith(files["global_codex"][1]))
+        self.assertEqual(global_codex.count(MODULE.PROMPT_START), 1)
+        global_claude = self.home / ".claude/CLAUDE.md"
+        self.assertEqual(global_claude.read_text().count(MODULE.PROMPT_START), 1)
+        self.assertEqual((self.home / ".claude").stat().st_mode & 0o777, 0o700)
+        manifest = json.loads(self.installer.manifest.read_text())
+        self.assertIn({"path": str(files["legacy_claude"][0]), "ownership": "legacy-delimited-block-removed"},
+                      manifest["managedSettings"])
+        self.assertNotIn(str(global_claude), [entry["path"] for entry in manifest["artifacts"]])
+
+        once = {path: path.read_bytes() for path in
+                (files["legacy_claude"][0], files["legacy_codex"][0], global_claude, self.home / ".codex/AGENTS.md")}
+        self.installer.install()
+        self.assertEqual({path: path.read_bytes() for path in once}, once, "A second install changes nothing")
+
+    def test_a_legacy_file_holding_only_the_block_is_emptied_not_deleted(self):
+        legacy = self.home / "Documents/CLAUDE.md"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text((Path(__file__).parents[1] / "Config/CLAUDE_GLOBAL_INSTRUCTIONS.md").read_text())
+
+        self.installer.install()
+
+        self.assertTrue(legacy.is_file())
+        self.assertEqual(legacy.read_text(), "")
+
+    def test_failed_install_restores_every_instruction_file(self):
+        files = self.legacy_prompt_homes()
+        before = {path: path.read_bytes() for path, _ in files.values()}
+        original = MODULE.subprocess.run.side_effect
+
+        def fail_on_start(args, **kwargs):
+            if args[:2] == ["/usr/bin/open", "-g"]:
+                raise subprocess.CalledProcessError(1, args)
+            return original(args, **kwargs)
+
+        installer = MODULE.Installer(self.bundle, self.home, start=True)
+        with mock.patch.object(MODULE.subprocess, "run", side_effect=fail_on_start), \
+                mock.patch.object(MODULE.Installer, "stop"):
+            with self.assertRaises(subprocess.CalledProcessError):
+                installer.install()
+
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+        self.assertFalse((self.home / ".claude").exists(), "The new ~/.claude directory is removed again")
+
+    def test_uninstall_removes_only_the_block_from_global_and_legacy_files(self):
+        files = self.legacy_prompt_homes()
+        self.installer.install()
+        global_claude = self.home / ".claude/CLAUDE.md"
+        # A Documents block from an older copy elsewhere is removed too.
+        files["legacy_codex"][0].write_text("Personal Codex notes.\n\n"
+                                            + (Path(__file__).parents[1] / "Config/CODEX_GLOBAL_INSTRUCTIONS.md").read_text())
+
+        preview = MODULE.uninstall(self.home, check=True, stop=False)
+        self.assertIn(str(global_claude), preview["instructionBlocksRemoved"])
+        self.assertIn(MODULE.PROMPT_START, global_claude.read_text(), "Preview is read-only")
+
+        result = MODULE.uninstall(self.home, stop=False)
+
+        self.assertEqual(result["mode"], "uninstalled")
+        self.assertEqual((self.home / ".codex/AGENTS.md").read_text(), files["global_codex"][1])
+        self.assertTrue(global_claude.is_file())
+        self.assertEqual(global_claude.read_text(), "")
+        self.assertEqual(files["legacy_codex"][0].read_text(), "Personal Codex notes.\n")
+        self.assertEqual(files["legacy_claude"][0].read_text(),
+                         "# Bias for action\n\nOwn outcomes.\n\n# Agent Output Contract\n\nBLUF first.\n")
 
     def test_malformed_claude_global_prompt_markers_fail_without_overwriting(self):
-        prompt = self.home / "Documents/CLAUDE.md"
+        prompt = self.home / ".claude/CLAUDE.md"
         prompt.parent.mkdir(parents=True)
         prompt.write_text("My notes\n" + MODULE.PROMPT_START)
         before = prompt.read_bytes()
@@ -489,13 +586,15 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(prompt.read_bytes(), before)
 
     def test_malformed_global_prompt_markers_fail_without_overwriting(self):
-        prompt = self.home / "Documents/AGENTS.md"
-        prompt.parent.mkdir(parents=True)
-        prompt.write_text("My notes\n" + MODULE.PROMPT_START)
-        before = prompt.read_bytes()
-        with self.assertRaises(ValueError):
-            self.installer.install()
-        self.assertEqual(prompt.read_bytes(), before)
+        for prompt in (self.home / ".codex/AGENTS.md", self.home / "Documents/AGENTS.md"):
+            with self.subTest(prompt=prompt):
+                prompt.parent.mkdir(parents=True, exist_ok=True)
+                prompt.write_text("My notes\n" + MODULE.PROMPT_START)
+                before = prompt.read_bytes()
+                with self.assertRaises(ValueError):
+                    self.installer.install()
+                self.assertEqual(prompt.read_bytes(), before)
+                prompt.unlink()
 
     def test_existing_launcher_refresh_preserves_alias_and_uninstall_preserves_personal_prompt(self):
         self.make_app(self.installer.app, b"previous")
@@ -515,9 +614,9 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.installer.codex_usage_renderer.read_bytes(), b"renderer:new executable")
         self.assertEqual(self.installer.codex_usage_license.read_bytes(), b"license:new executable")
         self.assertEqual(shell.read_text(), "my configured aliases and flags")
-        installed_prompt = prompt.read_bytes()
+        self.assertIn(MODULE.PROMPT_START, prompt.read_text())
         MODULE.uninstall(self.home, stop=False)
-        self.assertEqual(prompt.read_bytes(), installed_prompt)
+        self.assertEqual(prompt.read_text(), "Personal text\n")
         self.assertTrue(entry.exists())
 
     def test_installed_fq_refreshes_with_the_claude_entry_it_dispatches(self):
@@ -867,6 +966,97 @@ class InstallerTests(unittest.TestCase):
 
         self.assertEqual(result["mode"], "uninstalled")
         self.assertFalse(self.installer.legacy_app.exists())
+
+
+class PrerequisiteTests(unittest.TestCase):
+    """tmux and gh come from Homebrew; nothing here runs a real install."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        self.bin = root / "bin"
+        self.bin.mkdir()
+        self.brew = root / "brew"
+        self.calls = []
+        self.developer_tools = 0
+        self.brew_exit = 0
+
+        def run(args, **kwargs):
+            self.calls.append(args)
+            if args[0] == "/usr/bin/xcode-select":
+                return subprocess.CompletedProcess(args, self.developer_tools, "", "")
+            if args[0] == str(self.brew) and self.brew_exit == 0:
+                self.tool(args[2])
+            return subprocess.CompletedProcess(args, self.brew_exit)
+        patcher = mock.patch.object(MODULE.subprocess, "run", side_effect=run)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def tool(self, name, directory=None):
+        path = (directory or self.bin) / name
+        path.write_text("#!/bin/sh\n")
+        path.chmod(0o755)
+        return path
+
+    def ensure(self, install, brew=True):
+        if brew and not self.brew.exists():
+            self.tool("brew", self.brew.parent)
+        return MODULE.ensure_prerequisites(
+            install, brew_candidates=(self.brew,), directories=(), path=str(self.bin))
+
+    def brew_installs(self):
+        return [call[2] for call in self.calls if call[0] == str(self.brew)]
+
+    def test_missing_tmux_and_gh_are_installed_with_homebrew(self):
+        self.tool("git")
+
+        report = self.ensure(install=True)
+
+        self.assertEqual(self.brew_installs(), ["tmux", "gh"])
+        self.assertEqual(report["tmux"], f"installed: {self.bin / 'tmux'}")
+        self.assertEqual(report["gh"], f"installed: {self.bin / 'gh'}")
+        self.assertEqual(report["git"], f"present: {self.bin / 'git'}")
+        brew_call = next(c for c in self.calls if c[0] == str(self.brew))
+        self.assertEqual(brew_call, [str(self.brew), "install", "tmux"])
+
+    def test_check_only_reports_what_would_be_installed(self):
+        report = self.ensure(install=False)
+
+        self.assertEqual(self.brew_installs(), [])
+        self.assertEqual(report["tmux"], f"would install with {self.brew} install tmux")
+        self.assertTrue(report["gh"].endswith("(optional)"))
+
+    def test_present_tools_are_left_alone(self):
+        self.tool("tmux")
+        self.tool("gh")
+
+        report = self.ensure(install=True)
+
+        self.assertEqual(self.brew_installs(), [])
+        self.assertTrue(report["tmux"].startswith("present: "))
+
+    def test_without_homebrew_the_install_continues_with_a_hint(self):
+        report = self.ensure(install=True, brew=False)
+
+        self.assertEqual(self.brew_installs(), [])
+        self.assertIn("https://brew.sh", report["tmux"])
+        self.assertTrue(report["gh"].endswith("(optional)"))
+
+    def test_a_failed_brew_install_is_reported_not_raised(self):
+        self.brew_exit = 1
+
+        report = self.ensure(install=True)
+
+        self.assertEqual(report["tmux"], "failed: brew install tmux exited 1")
+        self.assertEqual(report["gh"], "failed: brew install gh exited 1 (optional)")
+
+    def test_missing_command_line_tools_are_reported(self):
+        self.developer_tools = 2
+
+        report = self.ensure(install=False)
+
+        self.assertIn("xcode-select --install", report["git"])
 
 
 if __name__ == "__main__":

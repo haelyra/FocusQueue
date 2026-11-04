@@ -1624,6 +1624,10 @@ struct QueueSettingsView: View {
         VStack(alignment: .leading, spacing: 14) {
           if focusedSection == .connectors { connectorDiagnosticsSection }
 
+          settingsSection(title: "Updates", detail: "Install new Focus Queue beta releases from GitHub.") {
+            AppUpdateSection()
+          }
+
           groupHeading("Projects")
           settingsSection(
             title: "Projects",

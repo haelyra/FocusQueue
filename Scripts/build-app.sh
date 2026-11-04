@@ -22,7 +22,8 @@ bundle_path="$staging_dir/$product_name.app"
 /bin/cp "$project_dir/Config/config.example.json" "$bundle_path/Contents/Resources/config.example.json"
 /bin/cp "$project_dir/Config/CODEX_GLOBAL_INSTRUCTIONS.md" "$bundle_path/Contents/Resources/CODEX_GLOBAL_INSTRUCTIONS.md"
 /bin/cp "$project_dir/Config/CLAUDE_GLOBAL_INSTRUCTIONS.md" "$bundle_path/Contents/Resources/CLAUDE_GLOBAL_INSTRUCTIONS.md"
-/bin/cp "$build_dir/checkouts/Ink/LICENSE" "$bundle_path/Contents/Resources/Ink-LICENSE.txt"
+# SwiftPM checkouts are read-only; a read-only file makes the testers' `xattr -dr` step fail.
+/usr/bin/install -m 0644 "$build_dir/checkouts/Ink/LICENSE" "$bundle_path/Contents/Resources/Ink-LICENSE.txt"
 /usr/bin/ditto "$project_dir/Vendor/Tmux" "$bundle_path/Contents/Resources/tmux"
 /bin/mkdir -p "$bundle_path/Contents/Resources/shell"
 /bin/cp "$project_dir/Scripts/focus_queue_codex_entry.py" "$project_dir/Scripts/focus_queue_usage_wrapper.sh" \

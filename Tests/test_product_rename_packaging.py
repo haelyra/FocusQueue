@@ -42,8 +42,15 @@ class ProductRenamePackagingTests(unittest.TestCase):
         beta = (ROOT / "Docs/BETA_README.txt").read_text()
 
         self.assertTrue(readme.startswith("# Focus Queue\n"))
-        self.assertTrue(beta.startswith("Focus Queue 0.3.0 private beta\n"))
-        self.assertIn("Drag Focus Queue.app", beta)
+        self.assertTrue(beta.startswith("Focus Queue 0.3.0 public beta\n"))
+        self.assertIn('xattr -dr com.apple.quarantine "Focus Queue Beta"', beta)
+        self.assertIn('xattr -dr com.apple.quarantine "Focus Queue Beta"', readme)
+
+    def test_bundled_files_are_writable_so_testers_can_clear_quarantine(self):
+        script = (ROOT / "Scripts/build-app.sh").read_text()
+
+        self.assertIn('/usr/bin/install -m 0644 "$build_dir/checkouts/Ink/LICENSE"', script)
+        self.assertNotIn('/bin/cp "$build_dir/checkouts/', script)
 
 
 if __name__ == "__main__":

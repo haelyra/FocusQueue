@@ -1,28 +1,33 @@
-Focus Queue 0.3.0 private beta
+Focus Queue 0.3.0 public beta
 
-Requires macOS 14 or later. This archive is built for the architecture in its filename.
-The local development build uses an ad hoc signature. Public distribution requires
-Developer ID signing, notarization and a downloaded-artifact Gatekeeper check.
+Requires an Apple silicon Mac with macOS 14 or later, tmux, a terminal (Ghostty,
+WezTerm or Terminal.app) and at least one agent CLI (Claude Code, Codex or Kimi Code)
+signed in with your own subscription. Full steps:
+https://github.com/haelyra/FocusQueue#install-beta-testers
+
+This beta has an ad hoc signature and is not notarized. Clear the download flag
+before installing, and only for a ZIP downloaded from github.com/haelyra/FocusQueue.
 
 INSTALL
-Drag Focus Queue.app to your Applications folder and open it. The native setup
-wizard creates an empty local queue or lets you select an existing JSON dashboard.
-The packaged app does not need Python, Xcode, provider credentials or model calls
-for basic setup. Settings > Open setup wizard reopens setup at any time.
+From the folder that holds this archive's "Focus Queue Beta" folder:
+  xattr -dr com.apple.quarantine "Focus Queue Beta"
+  "Focus Queue Beta/Install.command" --desktop
 
-For managed installation, open Install.command. It requires /usr/bin/python3
-(provided with Apple command line developer tools). It installs the app and helper
-under your home directory, preserves your existing configuration, and retains
-backups before replacing a previous version. Use --check for a read-only preflight,
---login for launch at login, and --desktop for a Desktop shortcut. Existing login
-and shortcut choices are retained. Mail and scheduled agents are separate.
+Install.command requires /usr/bin/python3 (xcode-select --install). It installs the
+app to ~/Applications and the focus-queue-session helper to ~/.local/bin, preserves
+your existing configuration, and keeps backups before replacing a previous version.
+It does not need GitHub access. Use --check for a read-only preflight, --login for
+launch at login, and --desktop for a Desktop shortcut. Existing login and shortcut
+choices are retained.
 
-TERMINALS
-WezTerm provides desktop agent launch, pane discovery, labels and recall.
-Other terminal apps use the command-line tmux path; their desktop panes are not
-controlled by this beta. Providers and tmux must be installed separately.
-The wizard's Install command-line helper button installs a missing helper without
+The first launch opens a walkthrough: choose your terminal and agent, sign in, then
+create a project. Settings > Projects > Open setup wizard reopens setup at any time.
+The wizard's Install command-line helper button reinstalls a missing helper without
 editing your shell profiles. Add $HOME/.local/bin to PATH or use its full path.
+
+Lasting instructions in a prompt, such as "end every reply with a fish emoji", are
+saved to the project's data.md so later agents follow them. Turn this off in
+Settings > Task placement > Save durable facts from prompts.
 
 PERSISTENT SESSIONS
 In setup, enable Keep new agents running in tmux and select the tmux executable.

@@ -410,6 +410,67 @@ def verify_installed_app(path, description):
         ) from error
 
 
+# Agents run in tmux, and git comes with Apple's Command Line Tools. gh is optional; the app
+# can use it to file beta reports. Homebrew itself stays a manual step: it asks for a password.
+HOMEBREW_CANDIDATES = (Path("/opt/homebrew/bin/brew"), Path("/usr/local/bin/brew"))
+TOOL_DIRECTORIES = (Path("/opt/homebrew/bin"), Path("/usr/local/bin"))
+BREW_PREREQUISITES = (("tmux", True), ("gh", False))
+HOMEBREW_HINT = ('Install Homebrew from https://brew.sh, then run "brew install {tool}" '
+                 "and run Install.command again.")
+
+
+def find_tool(name, path=None, directories=TOOL_DIRECTORIES):
+    found = shutil.which(name, path=path if path is not None else os.environ.get("PATH", ""))
+    if found:
+        return found
+    for directory in directories:
+        candidate = directory / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
+def ensure_prerequisites(install, *, brew_candidates=HOMEBREW_CANDIDATES,
+                         directories=TOOL_DIRECTORIES, path=None):
+    """Installs missing tmux and gh with Homebrew; with install=False, only reports.
+
+    Never fails the app installation: each tool's outcome is reported instead.
+    Homebrew output goes to stderr so stdout stays the installer's JSON result.
+    """
+    report = {}
+    developer = subprocess.run(["/usr/bin/xcode-select", "-p"], capture_output=True, text=True)
+    git = find_tool("git", path, directories)
+    report["git"] = (f"present: {git}" if developer.returncode == 0 and git
+                     else 'missing: run "xcode-select --install", then Install.command again')
+    brew = next((str(candidate) for candidate in brew_candidates
+                 if candidate.is_file() and os.access(candidate, os.X_OK)), None)
+    for tool, required in BREW_PREREQUISITES:
+        existing = find_tool(tool, path, directories)
+        if existing:
+            report[tool] = f"present: {existing}"
+        elif brew is None:
+            report[tool] = "missing: " + HOMEBREW_HINT.format(tool=tool)
+            if install and required:
+                print(f"{tool} is not installed. " + HOMEBREW_HINT.format(tool=tool), file=sys.stderr)
+        elif not install:
+            report[tool] = f"would install with {brew} install {tool}"
+        else:
+            print(f"Installing {tool} with Homebrew...", file=sys.stderr, flush=True)
+            environment = {**os.environ, "HOMEBREW_NO_AUTO_UPDATE": "1", "NONINTERACTIVE": "1"}
+            try:
+                result = subprocess.run([brew, "install", tool], stdin=subprocess.DEVNULL,
+                                        stdout=sys.stderr, stderr=sys.stderr, env=environment,
+                                        timeout=900)
+                installed = find_tool(tool, path, directories) if result.returncode == 0 else None
+                report[tool] = (f"installed: {installed}" if installed
+                                else f"failed: brew install {tool} exited {result.returncode}")
+            except (OSError, subprocess.SubprocessError) as error:
+                report[tool] = f"failed: {error}"
+        if not required and not report[tool].startswith(("present", "installed")):
+            report[tool] += " (optional)"
+    return report
+
+
 class Installer:
     def __init__(self, bundle, home, *, login=False, desktop=False, start=True):
         self.bundle = bundle.absolute()
@@ -1021,7 +1082,10 @@ def main():
         if args.bundle is None:
             parser.error("--bundle is required for installation")
         installer = Installer(args.bundle, Path.home(), login=args.login, desktop=args.desktop, start=not args.no_start)
-        print(json.dumps(installer.preflight() if args.check else installer.install(), indent=2))
+        # Before the app install, so the app finds tmux on its first launch.
+        prerequisites = ensure_prerequisites(install=not args.check)
+        result = installer.preflight() if args.check else installer.install()
+        print(json.dumps({**result, "prerequisites": prerequisites}, indent=2))
         return 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"Installation failed: {error}", file=sys.stderr)

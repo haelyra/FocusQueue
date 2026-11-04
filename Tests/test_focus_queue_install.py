@@ -869,5 +869,96 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(self.installer.legacy_app.exists())
 
 
+class PrerequisiteTests(unittest.TestCase):
+    """tmux and gh come from Homebrew; nothing here runs a real install."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        self.bin = root / "bin"
+        self.bin.mkdir()
+        self.brew = root / "brew"
+        self.calls = []
+        self.developer_tools = 0
+        self.brew_exit = 0
+
+        def run(args, **kwargs):
+            self.calls.append(args)
+            if args[0] == "/usr/bin/xcode-select":
+                return subprocess.CompletedProcess(args, self.developer_tools, "", "")
+            if args[0] == str(self.brew) and self.brew_exit == 0:
+                self.tool(args[2])
+            return subprocess.CompletedProcess(args, self.brew_exit)
+        patcher = mock.patch.object(MODULE.subprocess, "run", side_effect=run)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def tool(self, name, directory=None):
+        path = (directory or self.bin) / name
+        path.write_text("#!/bin/sh\n")
+        path.chmod(0o755)
+        return path
+
+    def ensure(self, install, brew=True):
+        if brew and not self.brew.exists():
+            self.tool("brew", self.brew.parent)
+        return MODULE.ensure_prerequisites(
+            install, brew_candidates=(self.brew,), directories=(), path=str(self.bin))
+
+    def brew_installs(self):
+        return [call[2] for call in self.calls if call[0] == str(self.brew)]
+
+    def test_missing_tmux_and_gh_are_installed_with_homebrew(self):
+        self.tool("git")
+
+        report = self.ensure(install=True)
+
+        self.assertEqual(self.brew_installs(), ["tmux", "gh"])
+        self.assertEqual(report["tmux"], f"installed: {self.bin / 'tmux'}")
+        self.assertEqual(report["gh"], f"installed: {self.bin / 'gh'}")
+        self.assertEqual(report["git"], f"present: {self.bin / 'git'}")
+        brew_call = next(c for c in self.calls if c[0] == str(self.brew))
+        self.assertEqual(brew_call, [str(self.brew), "install", "tmux"])
+
+    def test_check_only_reports_what_would_be_installed(self):
+        report = self.ensure(install=False)
+
+        self.assertEqual(self.brew_installs(), [])
+        self.assertEqual(report["tmux"], f"would install with {self.brew} install tmux")
+        self.assertTrue(report["gh"].endswith("(optional)"))
+
+    def test_present_tools_are_left_alone(self):
+        self.tool("tmux")
+        self.tool("gh")
+
+        report = self.ensure(install=True)
+
+        self.assertEqual(self.brew_installs(), [])
+        self.assertTrue(report["tmux"].startswith("present: "))
+
+    def test_without_homebrew_the_install_continues_with_a_hint(self):
+        report = self.ensure(install=True, brew=False)
+
+        self.assertEqual(self.brew_installs(), [])
+        self.assertIn("https://brew.sh", report["tmux"])
+        self.assertTrue(report["gh"].endswith("(optional)"))
+
+    def test_a_failed_brew_install_is_reported_not_raised(self):
+        self.brew_exit = 1
+
+        report = self.ensure(install=True)
+
+        self.assertEqual(report["tmux"], "failed: brew install tmux exited 1")
+        self.assertEqual(report["gh"], "failed: brew install gh exited 1 (optional)")
+
+    def test_missing_command_line_tools_are_reported(self):
+        self.developer_tools = 2
+
+        report = self.ensure(install=False)
+
+        self.assertIn("xcode-select --install", report["git"])
+
+
 if __name__ == "__main__":
     unittest.main()

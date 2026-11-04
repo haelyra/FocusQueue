@@ -1,4 +1,4 @@
-Focus Queue 0.3.0 public beta
+Focus Queue 0.3.1 public beta
 
 Requires an Apple silicon Mac with macOS 14 or later, tmux, a terminal (Ghostty,
 WezTerm or Terminal.app) and at least one agent CLI (Claude Code, Codex or Kimi Code)

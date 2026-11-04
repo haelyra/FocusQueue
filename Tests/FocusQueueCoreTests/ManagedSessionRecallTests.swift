@@ -361,7 +361,9 @@ struct ManagedSessionRecallTests {
     let calls = await runner.calls
     let opened = try #require(calls.first { $0.executable == "/usr/bin/open" })
     #expect(opened.arguments.starts(with: ["-a", "Terminal"]))
-    let scriptPath = try #require(opened.arguments.last)
+    // Starting Terminal must not reopen every window from its last session.
+    #expect(opened.arguments.suffix(3) == ["--args", "-ApplePersistenceIgnoreState", "YES"])
+    let scriptPath = try #require(opened.arguments.first { $0.hasSuffix(".command") })
     let script = try String(contentsOfFile: scriptPath, encoding: .utf8)
     #expect(script.hasPrefix("#!/bin/zsh\n"))
     #expect(script.contains("'/mock/tmux'"))

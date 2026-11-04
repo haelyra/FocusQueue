@@ -83,7 +83,9 @@ public enum TerminalCommandLauncher {
       commandFile = file
       // No `-n`: every extra Terminal process restores the saved windows
       // again, and AppleScript can only reach one of them to close a window.
-      arguments = ["-a", "Terminal", file.path]
+      // A launch that starts Terminal would still reopen every window saved
+      // from its last session; this skips that. A running Terminal ignores it.
+      arguments = ["-a", "Terminal", file.path, "--args", "-ApplePersistenceIgnoreState", "YES"]
     case .ghostty:
       // Each `open -n` starts its own Ghostty process; quitting with its last
       // window keeps one-off launches from leaving idle instances behind.

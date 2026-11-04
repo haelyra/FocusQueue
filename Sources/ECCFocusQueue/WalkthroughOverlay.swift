@@ -48,6 +48,12 @@ private struct WalkthroughControls: View {
   let model: QueueViewModel
   let progress: WalkthroughProgress
 
+  /// Agents cannot run without a provider, so the tour waits on its sign-in step.
+  private var waitsForSignIn: Bool {
+    progress.step == .signIn && !model.hasSignedInProvider
+      && !ProviderAccounts.canContinueUnverified(model.providerAccounts)
+  }
+
   private var nextTitle: String {
     progress.isFirst ? "Start tour" : progress.isLast ? "Finish" : "Next"
   }
@@ -72,7 +78,9 @@ private struct WalkthroughControls: View {
         Button(nextTitle) { withAnimation(.snappy) { model.advanceWalkthrough() } }
           .buttonStyle(.borderedProminent).controlSize(.small)
           .keyboardShortcut(progress.step.presentation == .card ? .defaultAction : nil)
-          .help(progress.isLast ? "End the tour" : "Next step")
+          .disabled(waitsForSignIn)
+          .help(waitsForSignIn ? "Sign in to at least one provider to continue"
+            : progress.isLast ? "End the tour" : "Next step")
       }
     }
     .padding(.top, 2)
@@ -552,6 +560,43 @@ private struct WalkthroughAgentsContent: View {
   }
 }
 
+/// Covers the queue while no provider CLI is signed in: no agent can run
+/// without one. It closes on its own once a sign-in is detected.
+struct ProviderSignInGate: View {
+  let model: QueueViewModel
+
+  var body: some View {
+    ZStack {
+      Rectangle().fill(Color.black.opacity(0.6)).contentShape(Rectangle()).onTapGesture {}
+      ViewThatFits(in: .vertical) {
+        content
+        ScrollView { content }.scrollBounceBehavior(.basedOnSize)
+      }
+      .walkthroughSurface(radius: 20)
+      .frame(maxWidth: 430)
+      .padding(14)
+    }
+  }
+
+  private var content: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text("SUBSCRIPTIONS").font(.system(size: 10, weight: .bold)).tracking(0.6).foregroundStyle(.tint)
+      Text("Sign in to start using Focus Queue").font(.system(size: 17, weight: .bold))
+        .fixedSize(horizontal: false, vertical: true)
+      Text("Agents run through your own Claude, Codex, or Kimi subscription. Sign in to at least one. This screen closes by itself when a sign-in finishes.")
+        .font(.system(size: 12)).foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      WalkthroughSignInContent(model: model)
+      if ProviderAccounts.canContinueUnverified(model.providerAccounts) {
+        Button("Continue without a verified sign-in") { model.continueWithoutVerifiedSignIn() }
+          .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
+          .help("A status check could not run. Continue if you know a provider is signed in.")
+      }
+    }
+    .padding(18)
+  }
+}
+
 private struct WalkthroughSignInContent: View {
   let model: QueueViewModel
   @State private var pending: Set<AgentProvider> = []
@@ -579,7 +624,8 @@ private struct WalkthroughSignInContent: View {
         Button(refreshing ? "Checking…" : "Check again", systemImage: "arrow.clockwise") { refresh() }
           .controlSize(.small).disabled(refreshing)
         Spacer()
-        Text("Skip any you don't use.").font(.system(size: 11)).foregroundStyle(.tertiary)
+        Text(model.hasSignedInProvider ? "Skip any you don't use." : "Sign in to at least one.")
+          .font(.system(size: 11)).foregroundStyle(.tertiary)
       }
       if let message = model.walkthroughMessage {
         Text(message).font(.system(size: 11)).foregroundStyle(.secondary)
@@ -587,12 +633,16 @@ private struct WalkthroughSignInContent: View {
       }
     }
     .task { if model.providerAccounts.isEmpty { await model.refreshProviderAccounts() } }
-    .task(id: pending) {
-      // Re-check providers with an open sign-in window until they finish.
-      while !pending.isEmpty, !Task.isCancelled {
+    .task {
+      // Re-check providers with an open sign-in window until they finish, and
+      // every provider while none is signed in, so a sign-in or install done
+      // anywhere shows up without pressing Check again.
+      while !Task.isCancelled {
         try? await Task.sleep(for: .seconds(4))
         guard !Task.isCancelled else { return }
-        await model.refreshProviderAccounts(Array(pending))
+        let targets = model.hasSignedInProvider ? Array(pending) : AgentProvider.allCases
+        guard !targets.isEmpty else { continue }
+        await model.refreshProviderAccounts(targets)
         pending = pending.filter { model.providerAccounts[$0]?.isSignedIn != true }
       }
     }

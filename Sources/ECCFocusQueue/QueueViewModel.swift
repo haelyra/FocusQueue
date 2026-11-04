@@ -171,6 +171,8 @@ final class QueueViewModel {
   private(set) var walkthroughMessage: String?
   /// Filled by `refreshProviderAccounts`; previews and recordings may seed it.
   var providerAccounts: [AgentProvider: ProviderAccountState] = [:]
+  /// Set when every check failed to run and the user chose to continue anyway.
+  private(set) var providerSignInDeferred = false
   private(set) var canSwitchMonitor = false
   private(set) var actionMessages: [String: String] = [:] {
     didSet { logChangedMessages(actionMessages, previous: oldValue, categoryPrefix: "Task") }
@@ -210,6 +212,7 @@ final class QueueViewModel {
   @ObservationIgnored private var maintenanceSignatures: [String: String] = [:]
   @ObservationIgnored private var lastMaintenanceAt: Date?
   @ObservationIgnored private let maintenanceEnabled: Bool
+  @ObservationIgnored private let checkProviderAccount: @Sendable (AgentProvider) async -> ProviderAccountState
   private(set) var subtaskActivityRevision = 0
   /// Agents whose tmux or WezTerm pane the last refresh confirmed alive.
   @ObservationIgnored private var liveRuntimeSubtaskIDs: Set<String> = []
@@ -403,6 +406,9 @@ final class QueueViewModel {
     maintenanceEnabled: Bool = true,
     identifyManagedAgent: (@Sendable (TaskSubtask, WezTermConfiguration) async throws -> String?)? = nil,
     providerExecutableAvailable: (@Sendable (AgentProvider) -> Bool)? = nil,
+    checkProviderAccount: @escaping @Sendable (AgentProvider) async -> ProviderAccountState = {
+      await ProviderAccounts.check($0)
+    },
     locateExistingAgent: @escaping @Sendable (AgentProvider, String) async throws -> KnownProviderProcess? = { provider, sessionID in
       try await WezTermController().locateProviderProcess(provider: provider, sessionID: sessionID)
     }
@@ -420,6 +426,7 @@ final class QueueViewModel {
       SetupEnvironment.executable($0.executableName) != nil
     }
     self.locateExistingAgent = locateExistingAgent
+    self.checkProviderAccount = checkProviderAccount
     self.taskContextStore = TaskContextStore(root: paths.supportDirectory)
     self.reportHistoryRepository = JSONDailyReportHistoryRepository(runtimeDirectory: paths.ingestionRuntimeDirectory)
     self.conversationStore = QueueConversationStore(root: paths.supportDirectory)
@@ -774,6 +781,10 @@ final class QueueViewModel {
     // seconds. Reconcile them after the panel already renders the saved queue.
     bootstrapTail = Task { @MainActor [weak self] in
       await self?.finishBootstrap()
+    }
+    // Checked at every launch so the sign-in gate covers installs that finished the tour without one.
+    if walkthrough == nil {
+      Task { @MainActor [weak self] in await self?.refreshProviderAccounts() }
     }
   }
 
@@ -4953,6 +4964,8 @@ final class QueueViewModel {
   }
 
   func requestNewTask(projectID: String? = nil, autofocusPrompt: Bool = false) {
+    // An agent cannot start without a signed-in provider; the gate explains why.
+    guard !requiresProviderSignIn else { return setPanelMode(.expanded) }
     newTaskRequest = NewTaskRequest(
       projectID: projectID ?? selectedProject?.id,
       autofocusPrompt: autofocusPrompt
@@ -5311,6 +5324,8 @@ final class QueueViewModel {
     walkthroughMessage = nil
     localState.walkthroughCompletedAt = Date()
     persistLocalState()
+    // A tour skipped before its sign-in step never checked the providers; the gate needs them.
+    if providerAccounts.isEmpty { Task { await refreshProviderAccounts() } }
     if config.setupCompleted != true {
       config.setupCompleted = true
       persistConfiguration()
@@ -5365,10 +5380,23 @@ final class QueueViewModel {
     }
     await withTaskGroup(of: (AgentProvider, ProviderAccountState).self) { group in
       for provider in providers {
-        group.addTask { (provider, await ProviderAccounts.check(provider)) }
+        group.addTask { [checkProviderAccount] in (provider, await checkProviderAccount(provider)) }
       }
       for await (provider, state) in group { providerAccounts[provider] = state }
     }
+  }
+
+  /// No provider CLI is signed in, so the queue is covered by the sign-in gate.
+  /// The walkthrough shows its own sign-in step instead.
+  var requiresProviderSignIn: Bool {
+    configurationIsLoaded && walkthrough == nil && !providerSignInDeferred
+      && ProviderAccounts.signInRequired(providerAccounts)
+  }
+
+  var hasSignedInProvider: Bool { providerAccounts.values.contains(where: \.isSignedIn) }
+
+  func continueWithoutVerifiedSignIn() {
+    providerSignInDeferred = true
   }
 
   func signIn(to provider: AgentProvider) async {

@@ -156,7 +156,8 @@ private struct DemoEnvironment {
     root = output.appendingPathComponent("support-\(name)", isDirectory: true)
     try? FileManager.default.removeItem(at: root)
     let paths = AppPaths.live(environment: ["FOCUS_QUEUE_SUPPORT_DIR": root.path])
-    model = QueueViewModel(paths: paths)
+    // A demo films the tour, not this machine's provider sign-ins.
+    model = QueueViewModel(paths: paths, checkProviderAccount: { _ in .signedIn })
     await model.bootstrap()
     await model.bootstrapTail?.value
   }

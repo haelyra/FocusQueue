@@ -54,7 +54,8 @@ struct QueueViewModelTests {
     let model = QueueViewModel(paths: fixture.paths,
       terminalController: boundary, queueAgent: ControlledQueueAgent(),
       pullRequestQueueLoader: boundary, discoverExternalAgents: { [] },
-      maintenanceEnabled: false, locateExistingAgent: { _, _ in nil })
+      maintenanceEnabled: false, checkProviderAccount: { _ in .signedIn },
+      locateExistingAgent: { _, _ in nil })
 
     await model.bootstrap()
 
@@ -4575,6 +4576,8 @@ private struct Fixture {
       maintenanceEnabled: false,
       identifyManagedAgent: identifyManagedAgent,
       providerExecutableAvailable: providerExecutableAvailable,
+      // Real status checks would start each installed provider CLI.
+      checkProviderAccount: { _ in .signedIn },
       locateExistingAgent: locateExistingAgent)
     await model.bootstrap()
     await model.bootstrapTail?.value

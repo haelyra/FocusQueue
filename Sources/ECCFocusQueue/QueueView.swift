@@ -66,6 +66,9 @@ struct QueueView: View {
       screen = .queue
       if selectedTab == .agent { selectedTab = .focus }
     }
+    .onChange(of: model.requiresProviderSignIn) { _, required in
+      if required { model.setPanelMode(.expanded) }
+    }
     .sheet(isPresented: $showsSessions) { SessionBrowserView(model: model) }
     .sheet(isPresented: $showsFeedback) { FeedbackSheet() }
     .sheet(item: Binding(
@@ -112,6 +115,7 @@ struct QueueView: View {
           WalkthroughOverlay(model: model, progress: progress, anchors: anchors)
         }
       }
+      .overlay { if model.requiresProviderSignIn { ProviderSignInGate(model: model) } }
       .environment(\.walkthroughTicketID, model.walkthrough == nil ? nil : model.walkthroughTicket?.id)
       .onChange(of: model.walkthrough?.step) { _, step in showWalkthroughStep(step) }
       .onChange(of: model.walkthrough == nil ? nil : model.walkthroughSnapshot) { _, _ in

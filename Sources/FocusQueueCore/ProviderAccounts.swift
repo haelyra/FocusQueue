@@ -41,7 +41,29 @@ public enum ProviderAccounts {
     case .claude: "auth login"
     case .codex, .kimi: "login"
     }
-    return "command \(name) \(login); printf '\\nSign-in finished. Press Return to close this window.'; read _"
+    // Report the real outcome: a window that always says "finished" hides a failed sign-in.
+    let display = provider.displayName.replacingOccurrences(of: "'", with: "")
+    return "if ! command -v \(name) >/dev/null 2>&1; then "
+      + "printf '\\nThe \(name) CLI is not installed. Install it, then click Sign in again in Focus Queue.\\n'; "
+      + "elif command \(name) \(login); then "
+      + "printf '\\nSigned in to \(display). Focus Queue updates within a few seconds.\\n'; "
+      + "else printf '\\nSign-in to \(display) did not finish (exit %s). Click Sign in in Focus Queue to try again.\\n' \"$?\"; fi; "
+      + "printf 'Press Return to close this window.'; read _"
+  }
+
+  /// True once every provider's check has finished and none is signed in.
+  /// No agent can run then, so the queue stays behind the sign-in screen.
+  public static func signInRequired(_ states: [AgentProvider: ProviderAccountState]) -> Bool {
+    AgentProvider.allCases.allSatisfy { provider in
+      guard let state = states[provider] else { return false }
+      return state != .checking && !state.isSignedIn
+    }
+  }
+
+  /// A check that could not run (a slow shell profile, for example) proves
+  /// nothing, so the user may continue past the gate on their own judgment.
+  public static func canContinueUnverified(_ states: [AgentProvider: ProviderAccountState]) -> Bool {
+    states.values.contains { if case .failed = $0 { true } else { false } }
   }
 
   public static func installURL(for provider: AgentProvider) -> URL? {
@@ -84,8 +106,11 @@ public enum ProviderAccounts {
         return configured ? .signedIn : .signedOut
       }
     }
-    let detail = result.standardError.trimmingCharacters(in: .whitespacesAndNewlines)
-    return .failed(detail.isEmpty ? "Exit status \(result.exitCode)." : String(detail.prefix(240)))
+    // Some CLIs report errors on stdout; the last line usually says what went wrong.
+    let detail = [result.standardError, result.standardOutput].lazy
+      .compactMap { $0.split(separator: "\n").last { !$0.trimmingCharacters(in: .whitespaces).isEmpty } }
+      .first.map { String($0.trimmingCharacters(in: .whitespaces).prefix(240)) }
+    return .failed(detail.map { "\($0) (exit \(result.exitCode))" } ?? "Exit status \(result.exitCode).")
   }
 
   public static func check(

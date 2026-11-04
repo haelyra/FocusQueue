@@ -107,7 +107,7 @@ public enum WalkthroughStep: String, CaseIterable, Codable, Sendable {
     case .agents:
       "QChat and each task's orchestrator use this provider. New agents start with it too, and you can change it per launch."
     case .signIn:
-      "Focus Queue runs each provider's own CLI, so agents bill to the subscription you already pay for. Sign in only to the ones you want."
+      "Focus Queue runs each provider's own CLI, so agents bill to the subscription you already pay for. Sign in to at least one; skip the others."
     case .project:
       "A project ties tasks to one repository. Click Add project and follow the setup."
     case .launchAgent:

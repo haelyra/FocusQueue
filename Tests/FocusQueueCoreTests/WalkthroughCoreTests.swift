@@ -91,11 +91,59 @@ struct ProviderAccountsTests {
       let script = ProviderAccounts.statusScript(for: provider)
       #expect(script.hasPrefix("command -v \(provider.executableName) "))
       #expect(script.contains("|| exit 127; command \(provider.executableName) "))
-      #expect(ProviderAccounts.loginScript(for: provider).hasPrefix("command \(provider.executableName) "))
+      #expect(ProviderAccounts.loginScript(for: provider).contains("elif command \(provider.executableName) "))
       #expect(ProviderAccounts.state(for: provider, result: result(127)) == .notInstalled)
     }
-    #expect(ProviderAccounts.loginScript(for: .claude).hasPrefix("command claude auth login;"))
-    #expect(ProviderAccounts.loginScript(for: .codex).hasPrefix("command codex login;"))
+    #expect(ProviderAccounts.loginScript(for: .claude).contains("elif command claude auth login; then"))
+    #expect(ProviderAccounts.loginScript(for: .codex).contains("elif command codex login; then"))
+  }
+
+  /// Runs the sign-in script against a stub CLI and returns what the window shows.
+  private func runLogin(_ provider: AgentProvider, stub: String?) async throws -> String {
+    let bin = FileManager.default.temporaryDirectory.appendingPathComponent("login-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: bin) }
+    if let stub {
+      let file = bin.appendingPathComponent(provider.executableName)
+      try Data("#!/bin/sh\n\(stub)\n".utf8).write(to: file)
+      try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+    }
+    let script = "PATH=\(bin.path):/usr/bin:/bin; " + ProviderAccounts.loginScript(for: provider) + " </dev/null"
+    let output = try await FoundationProcessRunner().run(.init(
+      executable: "/bin/zsh", arguments: ["-fc", script], timeoutSeconds: 10))
+    return output.standardOutput
+  }
+
+  @Test("The sign-in window reports success, failure, or a missing CLI instead of always saying finished")
+  func loginOutcome() async throws {
+    #expect(try await runLogin(.codex, stub: "exit 0").contains("Signed in to Codex."))
+    let failed = try await runLogin(.codex, stub: "exit 3")
+    #expect(failed.contains("did not finish (exit 3)"))
+    #expect(!failed.contains("Signed in"))
+    #expect(try await runLogin(.claude, stub: nil).contains("The claude CLI is not installed"))
+  }
+
+  @Test("A failed check shows the CLI's own last line, from stdout when stderr is empty")
+  func failureDetail() {
+    #expect(ProviderAccounts.state(for: .kimi, result: result(2, "loading\nError: config unreadable\n"))
+      == .failed("Error: config unreadable (exit 2)"))
+    #expect(ProviderAccounts.state(for: .kimi, result: result(2)) == .failed("Exit status 2."))
+  }
+
+  @Test("The queue stays gated until one provider is signed in")
+  func gate() {
+    var states: [AgentProvider: ProviderAccountState] = [.claude: .signedOut, .codex: .notInstalled]
+    #expect(!ProviderAccounts.signInRequired(states), "Kimi has not been checked yet")
+    states[.kimi] = .checking
+    #expect(!ProviderAccounts.signInRequired(states))
+    states[.kimi] = .signedOut
+    #expect(ProviderAccounts.signInRequired(states))
+    #expect(!ProviderAccounts.canContinueUnverified(states))
+    states[.kimi] = .failed("The status check timed out.")
+    #expect(ProviderAccounts.signInRequired(states))
+    #expect(ProviderAccounts.canContinueUnverified(states))
+    states[.codex] = .signedIn
+    #expect(!ProviderAccounts.signInRequired(states))
   }
 
   @Test("Claude reads loggedIn from auth status even with profile noise")

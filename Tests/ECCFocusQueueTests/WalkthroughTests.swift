@@ -6,10 +6,12 @@ import Testing
 @Suite("First-run walkthrough")
 @MainActor
 struct WalkthroughTests {
-  private func freshModel() async -> (QueueViewModel, AppPaths, URL) {
+  private func freshModel(
+    accounts: @escaping @Sendable (AgentProvider) async -> ProviderAccountState = { _ in .signedIn }
+  ) async -> (QueueViewModel, AppPaths, URL) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("walkthrough \(UUID().uuidString)")
     let paths = AppPaths.live(environment: ["FOCUS_QUEUE_SUPPORT_DIR": root.path])
-    let model = QueueViewModel(paths: paths)
+    let model = QueueViewModel(paths: paths, checkProviderAccount: accounts)
     await model.bootstrap()
     await model.bootstrapTail?.value
     return (model, paths, root)
@@ -31,11 +33,43 @@ struct WalkthroughTests {
       let config = try? JSONDecoder().decode(AppConfiguration.self, from: Data(contentsOf: paths.configurationFile))
       if config?.setupCompleted == true { break }
     }
-    restarted = QueueViewModel(paths: paths)
+    restarted = QueueViewModel(paths: paths, checkProviderAccount: { _ in .signedIn })
     await restarted?.bootstrap()
     await restarted?.bootstrapTail?.value
     #expect(restarted?.walkthrough == nil)
     #expect(restarted?.isSetupPresented == false)
+  }
+
+  @Test("With no provider signed in, finishing the tour leaves the queue gated until one signs in")
+  func signInGate() async throws {
+    let signedIn = SignedInProviders()
+    let (model, _, root) = await freshModel(accounts: { provider in
+      await signedIn.contains(provider) ? .signedIn : .signedOut
+    })
+    defer { try? FileManager.default.removeItem(at: root) }
+    #expect(!model.requiresProviderSignIn, "The tour shows its own sign-in step")
+    model.finishWalkthrough()
+    for _ in 0..<40 where !model.requiresProviderSignIn { try await Task.sleep(for: .milliseconds(50)) }
+    #expect(model.requiresProviderSignIn)
+    model.requestNewTask()
+    #expect(model.newTaskRequest == nil)
+
+    await signedIn.insert(.codex)
+    await model.refreshProviderAccounts()
+    #expect(!model.requiresProviderSignIn)
+    model.requestNewTask()
+    #expect(model.newTaskRequest != nil)
+  }
+
+  @Test("A check that cannot run lets the user continue past the gate")
+  func unverifiedGate() async throws {
+    let (model, _, root) = await freshModel(accounts: { $0 == .claude ? .failed("timed out") : .notInstalled })
+    defer { try? FileManager.default.removeItem(at: root) }
+    model.finishWalkthrough()
+    for _ in 0..<40 where !model.requiresProviderSignIn { try await Task.sleep(for: .milliseconds(50)) }
+    #expect(model.requiresProviderSignIn)
+    model.continueWithoutVerifiedSignIn()
+    #expect(!model.requiresProviderSignIn)
   }
 
   @Test("Back and Next walk every step, and Next on the last step finishes")
@@ -91,4 +125,10 @@ struct WalkthroughTests {
     #expect(model.walkthrough?.step == .welcome)
     #expect(model.panelMode == .expanded)
   }
+}
+
+private actor SignedInProviders {
+  private var providers: Set<AgentProvider> = []
+  func contains(_ provider: AgentProvider) -> Bool { providers.contains(provider) }
+  func insert(_ provider: AgentProvider) { providers.insert(provider) }
 }

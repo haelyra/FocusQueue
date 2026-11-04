@@ -263,8 +263,8 @@ def path_within(path, root):
 def reject_application_support(path, support):
     default_support = Path.home() / "Library/Application Support/ECC Focus Queue"
     if path_within(path, support) or path_within(path, default_support):
-        raise EntryError("Coding workspaces cannot be stored in ECC Focus Queue Application Support. "
-                         "Choose a source checkout under Documents or another project directory.")
+        raise EntryError("Agents cannot work inside Focus Queue's data folder. "
+                         "Choose a project folder outside it, or start from your home directory.")
 
 
 def reject_coding_location(path, support):

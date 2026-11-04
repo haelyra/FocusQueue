@@ -647,10 +647,14 @@ final class QueueViewModel {
     // New agents branch from the task's canonical project repository. An
     // existing agent worktree belongs only to that agent and must never become
     // the source checkout for the next one-click launch.
+    // Focus Queue's data folder holds queue files, not code: a project without
+    // its own folder (Other, the starter queue) starts agents in the home directory.
     return [context?.projectRepositoryPath, ticketProject?.repositoryPath,
             context?.repositoryPath, ticketProject?.workspacePath,
-            ticket.worktree, context?.worktreePath]
-      .compactMap { $0 }.first { !$0.isEmpty } ?? config.workspacePath
+            ticket.worktree, context?.worktreePath, config.workspacePath]
+      .compactMap { $0 }
+      .first { !$0.isEmpty && !TaskWorktreeManager.isApplicationSupportPath($0, storeRoot: paths.supportDirectory) }
+      ?? FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
   }
   @discardableResult
   func saveProject(_ project: ProjectDefinition) async -> Bool {
@@ -3527,9 +3531,14 @@ final class QueueViewModel {
           subtask.parentSubtaskID = context.canonicalSubtaskID(parentSubtaskID)
           subtask.tracksCompletion = false
         }
+        // The home directory is the fallback for projects without a folder; a
+        // dotfiles repository there must never be forked into a worktree.
+        let isHome = URL(fileURLWithPath: repositoryPath).standardizedFileURL.path
+          == FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
         subtask.workspace = try await taskWorktreeManager.provisionAgent(ticketID: ticket.id,
           subtaskID: subtask.id, path: repositoryPath,
-          policy: workspacePolicy ?? (createWorktree ? .isolatedCleanCheckout : .existingCheckout),
+          policy: isHome ? .existingCheckout
+            : workspacePolicy ?? (createWorktree ? .isolatedCleanCheckout : .existingCheckout),
           store: taskContextStore)
         if let previous {
           subtask.parentSubtaskID = previous.parentSubtaskID

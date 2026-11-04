@@ -748,7 +748,7 @@ with open({str(record)!r}, "a") as stream: stream.write(json.dumps(sys.argv[1:])
         self.initialize_repository(source)
 
         with mock.patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(
-                ENTRY.EntryError, "Application Support"):
+                ENTRY.EntryError, "data folder"):
             ENTRY.begin_tracking(["--cd", str(source), "fix bug"], "new", None, self.support)
         receipt = json.loads(next((self.support / "tracking/launches").glob("*.json")).read_text())
         self.assertEqual(receipt["phase"], "blocked")
@@ -767,7 +767,7 @@ with open({str(record)!r}, "a") as stream: stream.write(json.dumps(sys.argv[1:])
             "id":"agent", "sessionID":self.session_id, "workspace":{"path":str(saved)}}]}))
 
         with mock.patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(
-                ENTRY.EntryError, "Application Support"):
+                ENTRY.EntryError, "data folder"):
             ENTRY.begin_tracking(["resume", self.session_id], "resume", self.session_id, self.support)
 
     def test_managed_resume_requires_repository_identity_fields(self):

@@ -828,18 +828,24 @@ public actor TaskWorktreeManager {
             "Managed workspace metadata could not be inspected safely: \(path)")
     }
 
-    private func rejectApplicationSupport(_ path: String, storeRoot: URL? = nil) throws {
+    /// Whether a path lies in Focus Queue's own data folder, which holds queue
+    /// files rather than source checkouts.
+    public nonisolated static func isApplicationSupportPath(_ path: String, storeRoot: URL? = nil) -> Bool {
         let candidate = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
         var roots = [FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/ECC Focus Queue", isDirectory: true)]
         if let storeRoot { roots.append(storeRoot) }
-        guard !roots.contains(where: {
+        return roots.contains(where: {
             let root = $0.standardizedFileURL.resolvingSymlinksInPath()
             return candidate.path.caseInsensitiveCompare(root.path) == .orderedSame
                 || candidate.path.lowercased().hasPrefix(root.path.lowercased() + "/")
-        }) else {
+        })
+    }
+
+    private func rejectApplicationSupport(_ path: String, storeRoot: URL? = nil) throws {
+        guard !Self.isApplicationSupportPath(path, storeRoot: storeRoot) else {
             throw TaskContextError.unsafeWorktree(
-                "Coding workspaces cannot be stored in ECC Focus Queue Application Support. Choose a source checkout under Documents or another project directory.")
+                "Agents cannot work inside Focus Queue's data folder. Choose a project folder outside it, or leave the project without a folder to start in your home directory.")
         }
     }
 

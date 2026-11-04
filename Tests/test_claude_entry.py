@@ -667,7 +667,7 @@ with open({str(record)!r}, "a") as stream: stream.write(json.dumps(sys.argv[1:])
         self.initialize_repository(source)
 
         with self.working_directory(source), mock.patch.dict(os.environ, {}, clear=True), \
-                self.assertRaisesRegex(ENTRY.EntryError, "Application Support"):
+                self.assertRaisesRegex(ENTRY.EntryError, "data folder"):
             ENTRY.begin_tracking(["fix bug"], "new", None, self.support)
         receipt = json.loads(next((self.support / "tracking/launches").glob("*.json")).read_text())
         self.assertEqual(receipt["phase"], "blocked")

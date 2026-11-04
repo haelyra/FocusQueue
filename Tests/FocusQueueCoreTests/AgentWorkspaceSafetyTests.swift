@@ -203,7 +203,7 @@ struct AgentWorkspaceSafetyTests {
                 store: TaskContextStore(root: fixture.support))
             Issue.record("Application Support repository was accepted")
         } catch {
-            #expect(error.localizedDescription.contains("Application Support"))
+            #expect(error.localizedDescription.contains("data folder"))
         }
     }
 
@@ -223,7 +223,7 @@ struct AgentWorkspaceSafetyTests {
                 store: TaskContextStore(root: fixture.support))
             Issue.record("Application Support workspace was accepted")
         } catch {
-            #expect(error.localizedDescription.contains("Application Support"))
+            #expect(error.localizedDescription.contains("data folder"))
         }
     }
 

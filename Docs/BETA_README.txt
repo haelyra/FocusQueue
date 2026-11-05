@@ -1,4 +1,4 @@
-Focus Queue 0.3.4 public beta
+Focus Queue 0.3.5 public beta
 
 Requires an Apple silicon Mac with macOS 14 or later, Homebrew and at least one agent
 CLI (Claude Code, Codex or Kimi Code) signed in with your own subscription. macOS

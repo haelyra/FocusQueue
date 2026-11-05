@@ -55,6 +55,9 @@ public struct AgentPlacementCapsule: Codable, Equatable, Sendable {
     public var taskPlanPath: String?
     public var taskLogPath: String?
     public var taskDataPath: String? = nil
+    /// Saved facts every agent in this project follows. Both files exist once placement returns.
+    public var projectDataPath: String? = nil
+    public var userDataPath: String? = nil
     public var capsulePath: String
     public var reason: String?
     /// The launch objective, retained so app-side discovery can name and bind
@@ -222,7 +225,9 @@ public actor AgentPlacementResolver {
             repositoryRemote: project.remote, workspacePath: request.cwd, branch: workspace?.branch,
             tmuxName: request.tmuxName, tmuxPaneID: request.tmuxPaneID,
             projectPlanPath: projectPlan.path, taskPlanPath: context?.planPath,
-            taskLogPath: context?.agentLogURL.path, taskDataPath: context?.dataURL.path, capsulePath: capsuleURL.path,
+            taskLogPath: context?.agentLogURL.path, taskDataPath: context?.dataURL.path,
+            projectDataPath: projectPlan.deletingLastPathComponent().appendingPathComponent("data.md").path,
+            userDataPath: root.appendingPathComponent("user/data.md").path, capsulePath: capsuleURL.path,
             reason: ambiguousPath
                 ? "The working directory matches more than one project. Choose a task or project before writing."
                 : conflictingPath

@@ -395,6 +395,41 @@ with open({str(record)!r}, "a") as stream: stream.write(json.dumps(sys.argv[1:])
         self.assertNotEqual(result["name"], old["name"])
         self.assertIn(old, json.loads((self.root / "panes.json").read_text()))
 
+    def data_helper(self, output, status=0):
+        helper = self.root / f"data-helper-{uuid.uuid4()}"
+        helper.write_text(f"#!/bin/sh\ncat <<'EOF'\n{output}\nEOF\nexit {status}\n")
+        helper.chmod(0o755)
+        return helper
+
+    def test_saved_facts_become_developer_instructions_that_codex_can_parse(self):
+        home = self.root / "home"
+        (home / ".codex").mkdir(parents=True)
+        helper = self.data_helper("Project data (/p/data.md):\n- End with 🐡 and \"quotes\".")
+        arguments = ENTRY.shared_data_arguments(["hello"], helper, "acme", home)
+        self.assertEqual((arguments[0], arguments[2:]), ("-c", ["hello"]))
+        key, value = arguments[1].split("=", 1)
+        self.assertEqual(key, "developer_instructions")
+        self.assertIn("- End with 🐡 and \"quotes\".", json.loads(value))
+        self.assertTrue(value.isprintable())
+
+    def test_saved_facts_leave_a_launch_alone_when_nothing_should_change(self):
+        home = self.root / "home"
+        (home / ".codex").mkdir(parents=True)
+        facts = "Project data (/p/data.md):\n- Use gray."
+        helper = self.data_helper(facts)
+        unchanged = [
+            (["hi"], self.data_helper(""), "acme"),
+            (["hi"], self.data_helper(facts, status=1), "acme"),
+            (["hi"], self.root / "missing", "acme"),
+            (["hi"], helper, None),
+            ([f"brief\n{facts}\nmore"], self.data_helper(facts), "acme"),
+            (["-c", "developer_instructions=\"mine\"", "hi"], self.data_helper(facts), "acme"),
+        ]
+        for arguments, candidate, project in unchanged:
+            self.assertEqual(ENTRY.shared_data_arguments(arguments, candidate, project, home), arguments)
+        (home / ".codex/config.toml").write_text('developer_instructions = "mine"\n')
+        self.assertEqual(ENTRY.shared_data_arguments(["hi"], self.data_helper(facts), "acme", home), ["hi"])
+
     def invoke_main(self, arguments, environment=None, interactive=True, adapter=None):
         class ExecCaptured(Exception):
             pass
@@ -595,7 +630,8 @@ with open({str(record)!r}, "a") as stream: stream.write(json.dumps(sys.argv[1:])
                 path, args = self.invoke_main(["hello"], environment, interactive)
                 self.assertEqual(args, ["/bin/bash", str(self.adapter), str(self.wrapper), "--", "--yolo",
                                         "--no-daemon", "--cd", str(Path.cwd().resolve()), "hello"])
-        self.assertTrue(all(call == ["intake-changed"] or call[:1] == ["placement"] for call in self.calls()))
+        self.assertTrue(all(call == ["intake-changed"] or call[:1] == ["placement"] or call[:2] == ["data", "show"]
+                            for call in self.calls()))
         self.assertEqual(len(list((self.support / "tracking/launches").glob("*.json"))), 3)
 
     def test_managed_tmux_bypass_persists_exact_current_reference(self):

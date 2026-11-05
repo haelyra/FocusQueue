@@ -817,7 +817,21 @@ class Installer:
         self.preflight()
         with installation_lock(self.support, self.home):
             result = self._install_locked()
+        result["dataFiles"] = self.ensure_data_files()
         return result
+
+    def ensure_data_files(self):
+        """Give every project its data file now, even when the app is not started.
+
+        The app and placement repair a missing file later, so a failure here never fails the install.
+        """
+        environment = {**os.environ, "FOCUS_QUEUE_SUPPORT_DIR": str(self.support)}
+        try:
+            result = subprocess.run([str(self.helper), "data", "ensure"], capture_output=True, text=True,
+                                    timeout=30, env=environment)
+        except (OSError, subprocess.SubprocessError) as error:
+            return f"skipped: {error}"
+        return "ensured" if result.returncode == 0 else f"skipped: {result.stderr.strip()[:200]}"
 
     def _install_locked(self):
         self.preflight()

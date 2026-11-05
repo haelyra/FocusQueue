@@ -8,6 +8,10 @@ public enum AgentHookStatus {
     /// the agent's inherited `FOCUS_QUEUE_*` environment to find its record.
     public static let claudeCommand = "\"$HOME/.local/bin/focus-queue-session\" status-event --provider claude"
 
+    /// Adds saved project data to the conversation, so unlike the status hooks it must run
+    /// synchronously: an async hook's output never reaches the turn.
+    public static let claudeDataCommand = "\"$HOME/.local/bin/focus-queue-session\" data-event --provider claude"
+
     /// Events that change what the agent is doing. Notification fires for many
     /// reasons; only a permission or input dialog means the agent is waiting.
     static let claudeEvents: [(event: String, matcher: String?)] = [
@@ -31,6 +35,9 @@ public enum AgentHookStatus {
                 if let matcher { group["matcher"] = matcher }
                 hooks[event] = [group]
             }
+            let data: [String: Any] = ["type": "command", "command": claudeDataCommand, "timeout": 10]
+            hooks["UserPromptSubmit"] = [["hooks": [handler, data]]]
+            hooks["SessionStart"] = [["matcher": "clear|compact", "hooks": [data]]]
             settings["hooks"] = hooks
         }
         guard !settings.isEmpty,

@@ -45,7 +45,8 @@ enum SessionRegistrationError: Error, LocalizedError {
                 print("Status hooks: status-event --provider claude|codex|kimi (reads one provider hook payload on stdin; exits 0 silently)")
                 print("UI Canvas: canvas open <file.html> [--viewport mobile|desktop|custom|WxH] [--title <text>] | canvas await <file.html> [--reply <msg>] | canvas typing <file.html> [--state thinking|typing|idle] | canvas end <file.html> | canvas list|pending (native ecc-ui-canvas; same JSON)")
                 print("Data placement: data-placement status|on|off (automatic native prompt capture; off by default)")
-                print("Scoped data: data ensure | data place <user|project|task> <target-id> <one-or-two-sentence fact>")
+                print("Scoped data: data ensure | data show <project-id> | data place <user|project|task> <target-id> <one-or-two-sentence fact>")
+                print("Data hook: data-event --provider claude (reads one provider hook payload on stdin; prints saved project data the session has not seen; exits 0)")
                 print("Completion cleanup: cleanup <TASK-ID> | cleanup --completed | cleanup --orphans | cleanup --purge, each with optional --dry-run (stops tmux, stages worktrees in .worktrees/.trash for 7 days, archives unmerged work under refs/focus-queue/archive/, deletes merged local and remote branches)")
                 print("Persistent terminals: tmux list | tmux start <name> [--cwd <directory>] [-- <command> ...] | tmux start-agent <TASK-ID> <AGENT-ID> [--cwd <directory>] -- <command> ... | tmux attach <name> | tmux ssh-command <user@host> <name>")
                 print("Task layouts: tmux panes <name> | tmux arrange <name> | tmux manual <name> | tmux save | tmux restore | tmux persistence")
@@ -63,6 +64,7 @@ enum SessionRegistrationError: Error, LocalizedError {
             else if arguments.first == "register-event" { try await registerEvent(arguments: arguments) }
             else if arguments.first == "status-event" { await statusEvent(arguments: arguments) }
             else if arguments.first == "data-placement" { try await dataPlacement(arguments: arguments) }
+            else if arguments.first == "data-event" { await dataEvent(arguments: arguments) }
             else if arguments.first == "data" { try await dataCommand(arguments: arguments) }
             else if arguments.first == "canvas" {
                 let environment = ProcessInfo.processInfo.environment
@@ -900,6 +902,27 @@ enum SessionRegistrationError: Error, LocalizedError {
         }
     }
 
+    /// The data-hook path. Like `status-event` it never fails the agent's turn: any
+    /// problem means no output, and the session gets the facts on its next prompt.
+    private static func dataEvent(arguments: [String]) async {
+        guard arguments.count == 3, arguments[1] == "--provider",
+              let provider = AgentProvider(rawValue: arguments[2]) else { return }
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["FOCUS_QUEUE_EXTRACTION_CHILD"] != "1",
+              let data = try? FileHandle.standardInput.readToEnd(), data.count <= 1_048_576,
+              let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let name = payload["hook_event_name"] as? String else { return }
+        let root = supportDirectory(environment: environment)
+        guard let config = try? loadConfiguration(from: root) else { return }
+        let taskID = environment["FOCUS_QUEUE_TASK_ID"].flatMap { $0.isEmpty ? nil : $0 }
+        let projectID = PromptExtraction.projectID(environment: environment, taskID: taskID,
+                                                   configuration: config, root: root)
+        guard let context = SharedDataDelivery.context(payload: payload, provider: provider.rawValue,
+                                                       projectID: projectID, root: root),
+              let output = SharedDataDelivery.claudeHookOutput(event: name, context: context) else { return }
+        FileHandle.standardOutput.write(output)
+    }
+
     private static func registerEvent(arguments: [String]) async throws {
         if ProcessInfo.processInfo.environment["FOCUS_QUEUE_EXTRACTION_CHILD"] == "1" {
             try emit(["status": "ignored"])
@@ -1009,7 +1032,8 @@ enum SessionRegistrationError: Error, LocalizedError {
                                               environment: [String: String], root: URL, config: AppConfiguration) {
         guard config.dataPlacementEnabled != false,
               environment["FOCUS_QUEUE_EXTRACTION_CHILD"] != "1",
-              let prompt = rawPrompt?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let prompt = rawPrompt.map({ PromptExtraction.userText(of: $0) })?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
               !prompt.isEmpty, prompt.count <= PromptExtraction.promptLimit,
               let projectID else { return }
         let script = root.appendingPathComponent("automation/Scripts/focus_queue_extractor.py")
@@ -1057,6 +1081,11 @@ enum SessionRegistrationError: Error, LocalizedError {
         let root = supportDirectory(environment: ProcessInfo.processInfo.environment)
         if arguments == ["data", "ensure"] {
             try emit(ScopedDataPlacement.ensure(root: root, configuration: loadConfiguration(from: root)))
+            return
+        }
+        if arguments.count == 3, arguments[1] == "show" {
+            // Facts for a provider that takes them at launch; prints nothing when there are none.
+            print(TaskContext.sharedDataBlock(root: root, projectID: arguments[2]) ?? "", terminator: "")
             return
         }
         guard arguments.count == 5, arguments[1] == "place" else {
@@ -1270,6 +1299,8 @@ enum SessionRegistrationError: Error, LocalizedError {
             }
             object["agentLogPath"] = context.agentLogURL.path
             object["dataPath"] = context.dataURL.path
+            object["userDataPath"] = context.userDataURL.path
+            object["projectDataPath"] = context.projectDataURL?.path
             let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
             recordAgentCommand("context", output: String(decoding: data, as: UTF8.self))
             FileHandle.standardOutput.write(data)

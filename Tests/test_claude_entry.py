@@ -168,16 +168,23 @@ with open({str(record)!r}, "a") as stream: stream.write(json.dumps(sys.argv[1:])
         arguments = ENTRY.prompt_hook_arguments(["Fix the hotkey"], self.helper, home)
         self.assertEqual(arguments[0], "--settings")
         self.assertEqual(arguments[2:], ["Fix the hotkey"])
-        hook = json.loads(arguments[1])["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+        self.assertIs(json.loads(arguments[1])["disableAllHooks"], False)
+        settings = json.loads(arguments[1])["hooks"]
+        hook, data = settings["UserPromptSubmit"][0]["hooks"]
         self.assertEqual(hook["command"],
                          shlex.quote(str(self.helper)) + " register-event --provider claude >/dev/null")
+        self.assertEqual(data["command"], shlex.quote(str(self.helper)) + " data-event --provider claude")
+        self.assertNotIn("async", data)
+        self.assertEqual(settings["SessionStart"], [{"matcher": "clear|compact", "hooks": [data]}])
         self.assertEqual(ENTRY.initial_prompt(arguments), "Fix the hotkey")
         # The user's own settings and an installed global hook are never doubled.
         own = ["--settings", "/tmp/mine.json", "Fix the hotkey"]
         self.assertEqual(ENTRY.prompt_hook_arguments(own, self.helper, home), own)
         (home / ".claude/settings.json").write_text(json.dumps({"hooks": {"UserPromptSubmit": [
             {"hooks": [{"type": "command", "command": hook["command"]}]}]}}))
-        self.assertEqual(ENTRY.prompt_hook_arguments(["hi"], self.helper, home), ["hi"])
+        # The global hook only registers, so saved data still needs its own hook.
+        global_hook = ENTRY.prompt_hook_arguments(["hi"], self.helper, home)
+        self.assertEqual(json.loads(global_hook[1])["hooks"]["UserPromptSubmit"][0]["hooks"], [data])
         self.assertEqual(ENTRY.prompt_hook_arguments(["hi"], self.root / "missing", home), ["hi"])
 
     def test_repository_identity_accepts_macos_tmp_alias_only_for_same_inode(self):

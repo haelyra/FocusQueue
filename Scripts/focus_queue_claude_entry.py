@@ -939,29 +939,37 @@ def usage_command(wrapper, flags, arguments):
 
 
 def prompt_hook_arguments(arguments, helper, home=None):
-    """Add a per-launch UserPromptSubmit hook so each prompt reaches Focus Queue.
+    """Add per-launch hooks so each prompt reaches Focus Queue and saved data reaches Claude.
 
-    The hook registers the session and starts background data extraction without
-    editing the user's global Claude settings. It uses the global installer's exact
-    command, so it is skipped when that hook is installed, and it never replaces
-    settings the user passed for this launch.
+    The register hook records the session and starts background data extraction. The data
+    hook gives this session the project's saved facts. Neither edits the user's global
+    Claude settings. The register hook uses the global installer's exact command, so it
+    is skipped when that hook is installed, and this never replaces settings the user
+    passed for this launch.
     """
     if (not Path(helper).is_file() or "--bare" in arguments
             or any(value == "--settings" or value.startswith("--settings=") for value in arguments)):
         return arguments
     command = shlex.quote(str(helper)) + " register-event --provider claude >/dev/null"
+    data = {"type": "command", "timeout": 10,
+            "command": shlex.quote(str(helper)) + " data-event --provider claude"}
+    prompt_hooks = [data]
+    registered = False
     try:
         installed = json.loads((Path(home or Path.home()) / ".claude/settings.json").read_text())
         entries = installed.get("hooks", {}).get("UserPromptSubmit", [])
-        if any(isinstance(hook, dict) and hook.get("command") == command
-               for entry in entries if isinstance(entry, dict)
-               for hook in entry.get("hooks", []) if isinstance(entry.get("hooks"), list)):
-            return arguments
+        registered = any(isinstance(hook, dict) and hook.get("command") == command
+                         for entry in entries if isinstance(entry, dict)
+                         for hook in entry.get("hooks", []) if isinstance(entry.get("hooks"), list))
     except (OSError, ValueError, AttributeError):
         pass
-    settings = {"hooks": {"UserPromptSubmit": [{"hooks": [{
-        "type": "command", "command": command, "timeout": 10,
-        "statusMessage": "Track this session in Focus Queue"}]}]}}
+    if not registered:
+        prompt_hooks.insert(0, {"type": "command", "command": command, "timeout": 10,
+                                "statusMessage": "Track this session in Focus Queue"})
+    # Like an app launch, this agent needs its hooks even when the user's settings turn hooks off.
+    settings = {"disableAllHooks": False,
+                "hooks": {"UserPromptSubmit": [{"hooks": prompt_hooks}],
+                          "SessionStart": [{"matcher": "clear|compact", "hooks": [data]}]}}
     return ["--settings", json.dumps(settings, separators=(",", ":")), *arguments]
 
 

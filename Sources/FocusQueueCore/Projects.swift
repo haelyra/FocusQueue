@@ -268,7 +268,31 @@ public struct ProjectContextStore: Sendable {
             try Data((markdown + "\n").utf8).write(to: url, options: .withoutOverwriting)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         }
+        try ensureData(projectID: project.id)
         return url
+    }
+
+    /// Starts the project's and the user's data files blank, so every path an agent
+    /// is given resolves. Prompt extraction appends facts later; existing files stay as they are.
+    public func ensureData(projectID: String) throws {
+        let project = try planURL(projectID: projectID).deletingLastPathComponent()
+            .appendingPathComponent("data.md")
+        for url in [project, root.appendingPathComponent("user/data.md")] {
+            let directory = url.deletingLastPathComponent()
+            guard (try? directory.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
+                  (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else {
+                throw TaskContextError.commandFailed("Data storage is redirected.")
+            }
+            guard !FileManager.default.fileExists(atPath: url.path) else { continue }
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+            do {
+                try Data().write(to: url, options: .withoutOverwriting)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            } catch CocoaError.fileWriteFileExists {
+                // A concurrent writer got there first, and its facts win.
+            }
+        }
     }
 
     /// Project documents: the known ones in reading order, then any other

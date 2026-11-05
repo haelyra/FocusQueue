@@ -60,8 +60,13 @@ struct AgentHookStatusTests {
         #expect(settings["disableAllHooks"] as? Bool == false)
         #expect((settings["enabledPlugins"] as? [String: Bool]) == ["ecc@ecc": false])
         let hooks = try #require(settings["hooks"] as? [String: [[String: Any]]])
-        #expect(Set(hooks.keys) == ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
+        #expect(Set(hooks.keys) == ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
             "PermissionRequest", "Notification", "Stop", "StopFailure"])
+        // The data hook must be synchronous, or its context never reaches the turn.
+        let promptHooks = try #require(hooks["UserPromptSubmit"]?.first?["hooks"] as? [[String: Any]])
+        #expect(promptHooks.map { $0["command"] as? String } == [AgentHookStatus.claudeCommand, AgentHookStatus.claudeDataCommand])
+        #expect(promptHooks[1]["async"] == nil)
+        #expect(hooks["SessionStart"]?.first?["matcher"] as? String == "clear|compact")
         let handler = try #require((hooks["Stop"]?.first?["hooks"] as? [[String: Any]])?.first)
         #expect(handler["async"] as? Bool == true)
         #expect(handler["command"] as? String == AgentHookStatus.claudeCommand)

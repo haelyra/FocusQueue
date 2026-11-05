@@ -138,6 +138,20 @@ class InstallerTests(unittest.TestCase):
             ["/usr/bin/codesign"],
         )
 
+    def test_install_ensures_data_files_in_this_support_folder(self):
+        done = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(MODULE.subprocess, "run", return_value=done) as run:
+            self.assertEqual(self.installer.ensure_data_files(), "ensured")
+        self.assertEqual(run.call_args.args[0], [str(self.installer.helper), "data", "ensure"])
+        self.assertEqual(run.call_args.kwargs["env"]["FOCUS_QUEUE_SUPPORT_DIR"], str(self.installer.support))
+
+    def test_data_file_failure_never_fails_the_install(self):
+        failed = subprocess.CompletedProcess([], 1, "", "nope\n")
+        with mock.patch.object(MODULE.subprocess, "run", return_value=failed):
+            self.assertEqual(self.installer.ensure_data_files(), "skipped: nope")
+        with mock.patch.object(MODULE.subprocess, "run", side_effect=OSError("missing")):
+            self.assertEqual(self.installer.ensure_data_files(), "skipped: missing")
+
     def test_first_install_records_source_provenance_in_v2_receipt(self):
         self.installer.install()
 

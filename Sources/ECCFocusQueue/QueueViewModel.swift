@@ -749,6 +749,7 @@ final class QueueViewModel {
     await configurationSaveTask?.value
     try await configurationRepository.save(next)
     config = next
+    _ = try projectContextStore.ensurePlan(for: project)
     lastContextRefresh = nil
     await refresh()
   }
@@ -1030,6 +1031,7 @@ final class QueueViewModel {
       }
       try await configurationRepository.save(updated)
       config = updated
+      for project in updated.projects { _ = try projectContextStore.ensurePlan(for: project) }
       setupError = nil
       isSetupPresented = false
       createStarterIngestionConfiguration()

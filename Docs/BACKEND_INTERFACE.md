@@ -34,6 +34,8 @@ overridable with `FOCUS_QUEUE_SUPPORT_DIR` (used by tests to isolate state). Key
 | `tasks/<TICKET>/context.json` | `TaskContext` — subtasks, workspaces, tmux refs, per-task state |
 | `tasks/<TICKET>/plan.md` | Task plan (Markdown) |
 | `tasks/<TICKET>/agent-log.md` | Append-only agent log |
+| `user/data.md`, `projects/<id>/data.md` | Saved user and project facts; created blank with the project's plan, at install, and at app start, then delivered to every agent in the project (see `data-event`) |
+| `tracking/data-delivery/<sha256>` | Digest of the shared data each provider session last received; pruned after 30 days |
 | `tasks/<TICKET>/data.md` | Cached task facts and test data; created blank at task initialization and shown in the task's Evidence and links, map Context slots, capsule, and agent prompts |
 | `tasks/<TICKET>/archive/snapshot-*` | Context snapshots (max 100) |
 | `agent-registrations/<sha256>.json` | Session registration inbox |
@@ -150,7 +152,7 @@ Sets/replaces the agent's display title and assignment description. Hook-indepen
 ### 3.2 Placement
 
 **`focus-queue-session placement [--prompt <text>] [--task <ID>] [--launch <UUID>] [--cwd <path>] [--no-create]`**
-Runs the deterministic placement resolver and writes a capsule to `tracking/placements/<launch-uuid>.json`. The capsule (`AgentPlacementCapsule`) is the agent's source of truth: `projectID, taskPrefix, taskID?, agentID?, provider, workspacePath, branch?, tmuxName?, tmuxPaneID?, projectPlanPath, taskPlanPath?, taskLogPath?, taskDataPath?, status (placed|project-inbox|blocked-conflict)`.
+Runs the deterministic placement resolver and writes a capsule to `tracking/placements/<launch-uuid>.json`. The capsule (`AgentPlacementCapsule`) is the agent's source of truth: `projectID, projectDataPath, userDataPath, taskPrefix, taskID?, agentID?, provider, workspacePath, branch?, tmuxName?, tmuxPaneID?, projectPlanPath, taskPlanPath?, taskLogPath?, taskDataPath?, status (placed|project-inbox|blocked-conflict)`.
 
 **Rule: read your capsule (`$FOCUS_QUEUE_AGENT_CONTEXT`) before any source edit. Stop on `blocked-conflict`.**
 
@@ -164,7 +166,11 @@ The Router agent, its `route inspect` / `route start` commands, the in-app compo
 
 **`data place <user|project|task> <target-id> <fact>`** — appends one short fact to `user/data.md`, `projects/<id>/data.md`, or `tasks/<ID>/data.md`. The command verifies active project or open task identity, limits the fact to 200 characters and two sentences, rejects symlink destinations, and returns `{scope,targetID,path,added}`. An identical line returns `added: false`. Use `task create` for deferred work; the extractor calls these commands after validating the model proposal. New projects get an empty `data.md`. **`data-placement on|off|status`** switches prompt extraction; it is on unless the user turned it off.
 
-**`data ensure`** — creates empty `user/data.md` and `projects/<id>/data.md` files for every active project. It preserves existing contents and returns `{created,existing}` path lists. Run it after adding a project or when provisioning an existing catalog. Append concise facts with `data place user user "<fact>"` or `data place project <id> "<fact>"`; this command only creates the files.
+**`data ensure`** — creates empty `user/data.md` and `projects/<id>/data.md` files for every active project. It preserves existing contents and returns `{created,existing}` path lists. The installer runs it, and every path that prepares a project plan creates the same files, so a manual run is only needed to repair a catalog. Append concise facts with `data place user user "<fact>"` or `data place project <id> "<fact>"`; this command only creates the files.
+
+**`data show <PROJECT-ID>`** — prints the project's saved user and project facts in the form a launch brief inlines them, or nothing when there are none. The Codex entry passes them to a launch as `developer_instructions`, unless the brief already carries them or the user set their own.
+
+**`data-event --provider claude`** — the shared-data hook. It reads one hook payload from stdin, always exits 0, and prints Claude `additionalContext` JSON when the session has not seen the current facts. It runs synchronously on `UserPromptSubmit` and on `SessionStart` for `clear|compact`, in every app and shell launch. A prompt that already contains the facts, such as a launch brief, counts as delivered. Other providers read saved facts through their brief, launch arguments, or the capsule's `userDataPath` and `projectDataPath`, so a running Codex or Kimi agent sees a new fact at its next launch.
 
 **`task rename <TASK-ID> <title...>`** — revision-checked rename.
 **`task priority <TASK-ID> critical|high|medium|low`** — validated enum.

@@ -10,6 +10,14 @@ public enum PromptExtraction {
     public static let promptLimit = 4_000
     static let claimLifetime: TimeInterval = 86_400
 
+    /// An app launch's first prompt is the user's words followed by the Focus Queue brief.
+    /// Only the user's words are extraction input: the brief would push the prompt past the
+    /// limit and repeat facts that are already saved.
+    public static func userText(of prompt: String) -> String {
+        guard let brief = prompt.range(of: "\n\n[Focus Queue] ") else { return prompt }
+        return String(prompt[..<brief.lowerBound])
+    }
+
     /// Claims one provider session's prompt. Returns false when another hook already claimed it.
     public static func claim(provider: String, sessionID: String?, prompt: String,
                              root: URL, now: Date = Date()) -> Bool {
@@ -22,7 +30,7 @@ public enum PromptExtraction {
                               O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else { return false }
         close(descriptor)
-        prune(directory, keeping: name, now: now)
+        prune(directory, keeping: name, now: now, lifetime: claimLifetime)
         return true
     }
 
@@ -46,13 +54,13 @@ public enum PromptExtraction {
         return owners.count == 1 ? owners[0].id : nil
     }
 
-    private static func prune(_ directory: URL, keeping current: String, now: Date) {
+    static func prune(_ directory: URL, keeping current: String, now: Date, lifetime: TimeInterval) {
         let keys: Set<URLResourceKey> = [.contentModificationDateKey]
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: Array(keys)) else { return }
         for entry in entries where entry.lastPathComponent != current {
             if let modified = try? entry.resourceValues(forKeys: keys).contentModificationDate,
-               now.timeIntervalSince(modified) > claimLifetime {
+               now.timeIntervalSince(modified) > lifetime {
                 try? FileManager.default.removeItem(at: entry)
             }
         }

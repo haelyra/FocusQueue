@@ -77,6 +77,8 @@ func leanDetailedBrief() async throws {
         .replacingOccurrences(of: plan, with: "").replacingOccurrences(of: projectBody, with: "")
         .replacingOccurrences(of: context.planPath, with: "").replacingOccurrences(of: context.dataURL.path, with: "")
         .replacingOccurrences(of: context.contextDirectory.path, with: "")
+        .replacingOccurrences(of: context.userDataURL.path, with: "")
+        .replacingOccurrences(of: context.projectDataURL!.path, with: "")
     #expect(procedure.utf8.count < 1_150, "Procedure is \(procedure.utf8.count) bytes")
 }
 

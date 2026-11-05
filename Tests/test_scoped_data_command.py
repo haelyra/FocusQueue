@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import uuid
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -85,6 +86,44 @@ class ScopedDataCommandTests(unittest.TestCase):
         self.assertEqual(append.returncode, 0, append.stderr)
         self.assertEqual((self.root / "projects/focus-queue/data.md").read_text(),
                          "- Keep scoped data concise.\n")
+
+    def test_show_prints_saved_facts_and_rejects_a_bad_project(self):
+        empty = self.run_command("data", "show", "space-site")
+        self.assertEqual((empty.returncode, empty.stdout), (0, ""))
+        self.run_command("data", "place", "project", "space-site", "Use gray.")
+        shown = self.run_command("data", "show", "space-site")
+        self.assertIn("- Use gray.", shown.stdout)
+        self.assertEqual(self.run_command("data", "show", "../outside").stdout, "")
+
+    def test_placement_gives_a_new_project_its_data_and_the_capsule_its_paths(self):
+        launch = str(uuid.uuid4())
+        workspace = self.root / "space-site"
+        workspace.mkdir()
+        result = self.run_command("placement", "--launch", launch, "--cwd", str(workspace),
+                                  "--task", "WEB-001", "--no-create")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        capsule = json.loads(result.stdout)
+        self.assertEqual(capsule["projectDataPath"], str(self.root / "projects/space-site/data.md"))
+        self.assertEqual(capsule["userDataPath"], str(self.root / "user/data.md"))
+        self.assertEqual(Path(capsule["projectDataPath"]).read_bytes(), b"")
+        self.assertEqual(Path(capsule["userDataPath"]).read_bytes(), b"")
+
+    def test_data_event_delivers_saved_facts_once_and_only_to_a_placed_agent(self):
+        self.run_command("data", "place", "project", "space-site", "Use gray.")
+        payload = json.dumps({"hook_event_name": "UserPromptSubmit", "session_id": "s-1", "prompt": "Go"})
+        def event(environment):
+            return subprocess.run([str(CLI), "data-event", "--provider", "claude"], text=True, input=payload,
+                                  capture_output=True, env=dict(os.environ, FOCUS_QUEUE_SUPPORT_DIR=str(self.root),
+                                                                **environment))
+        placed = {"FOCUS_QUEUE_TASK_ID": "WEB-001", "FOCUS_QUEUE_AGENT_CONTEXT": ""}
+        outside = {key: "" for key in ("FOCUS_QUEUE_TASK_ID", "FOCUS_QUEUE_AGENT_CONTEXT")}
+        self.assertEqual((event(outside).returncode, event(outside).stdout), (0, ""))
+        first = event(placed)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        output = json.loads(first.stdout)["hookSpecificOutput"]
+        self.assertEqual(output["hookEventName"], "UserPromptSubmit")
+        self.assertIn("- Use gray.", output["additionalContext"])
+        self.assertEqual(event(placed).stdout, "")
 
     def test_ensure_rejects_symlinked_project_directory(self):
         outside = self.root / "outside"

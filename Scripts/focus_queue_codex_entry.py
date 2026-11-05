@@ -964,6 +964,36 @@ def daemon_default_flags(flags, mode, environment):
     return [*flags, "--no-daemon"]
 
 
+def shared_data_arguments(arguments, helper, project_id, home=None):
+    """Give this launch the project's saved facts as developer instructions.
+
+    Codex hooks need the user's review, so a launch cannot add one. An app launch whose
+    brief already carries the facts, and a user's own developer instructions, stay as
+    they are.
+    """
+    if not project_id or not Path(helper).is_file():
+        return arguments
+    if any("developer_instructions" in value for value in arguments):
+        return arguments
+    try:
+        config = (Path(home or Path.home()) / ".codex/config.toml").read_text()
+        if re.search(r"^\s*developer_instructions\s*=", config, re.MULTILINE):
+            return arguments
+    except (OSError, ValueError):
+        pass
+    try:
+        result = subprocess.run([str(helper), "data", "show", project_id], capture_output=True,
+                                text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return arguments
+    facts = result.stdout.strip()
+    if result.returncode or not facts or any(facts in value for value in arguments):
+        return arguments
+    instructions = "Focus Queue saved data for this project. Follow these standing instructions:\n" + facts
+    # JSON string escapes are valid TOML; ASCII escaping would split emoji into invalid surrogates.
+    return ["-c", "developer_instructions=" + json.dumps(instructions, ensure_ascii=False), *arguments]
+
+
 def start(helper, name, command, *, prompt=None, support=None, task_id=None, agent_id=None):
     if task_id is not None or agent_id is not None:
         if not (isinstance(task_id, str) and isinstance(agent_id, str)
@@ -1067,6 +1097,7 @@ def main(argv=None):
     prompt_usage.record_instruction_files(Path(intake["cwd"]), "codex",
         run_id=os.environ.get("FOCUS_QUEUE_USAGE_RUN_ID") or intake["launchID"],
         task_id=placement.get("taskID"), support=support)
+    arguments = shared_data_arguments(arguments, options.helper, placement.get("projectID"))
     command = usage_command(options.usage_wrapper,
                             daemon_default_flags(options.default_flag, mode, os.environ), arguments)
     os.chdir(intake["cwd"])

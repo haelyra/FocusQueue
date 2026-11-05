@@ -539,19 +539,35 @@ public struct TaskContext: Codable, Equatable, Sendable {
         return parts
     }
 
+    /// A file with no facts yet still gets its path, so the agent knows where saved facts live.
     private func scopedDataLines(includeTask: Bool = true) -> [String] {
         var lines: [String] = []
-        if let data = Self.inlineDocument(atPath: userDataURL.path, limit: 2_000) {
-            lines += ["User data (\(userDataURL.path)):", data]
-        }
-        if let projectDataURL,
-           let data = Self.inlineDocument(atPath: projectDataURL.path, limit: 3_000) {
-            lines += ["Project data (\(projectDataURL.path)):", data]
+        for (label, url, facts) in Self.sharedData(user: userDataURL, project: projectDataURL) {
+            lines += facts.map { ["\(label) (\(url.path)):", $0] } ?? ["\(label): \(url.path)"]
         }
         if includeTask, let data = Self.inlineDocument(atPath: dataURL.path, limit: 2_000) {
             lines += ["Task data (\(dataURL.path)):", data]
         }
         return lines
+    }
+
+    /// User and project data, the facts shared by every agent in a project.
+    private static func sharedData(user: URL, project: URL?) -> [(label: String, url: URL, facts: String?)] {
+        var documents = [(label: "User data", url: user, facts: inlineDocument(atPath: user.path, limit: 2_000))]
+        if let project {
+            documents.append((label: "Project data", url: project,
+                              facts: inlineDocument(atPath: project.path, limit: 3_000)))
+        }
+        return documents
+    }
+
+    /// The saved facts in the exact form a launch brief inlines them, or nil when there are none yet.
+    public static func sharedDataBlock(root: URL, projectID: String) -> String? {
+        guard let plan = try? ProjectContextStore(root: root).planURL(projectID: projectID) else { return nil }
+        let project = plan.deletingLastPathComponent().appendingPathComponent("data.md")
+        let lines = sharedData(user: root.appendingPathComponent("user/data.md"), project: project)
+            .flatMap { document in document.facts.map { ["\(document.label) (\(document.url.path)):", $0] } ?? [] }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
     /// Identity lines shared by both prompt modes. Assignment text is repeated only when it says
@@ -625,7 +641,10 @@ public struct TaskContext: Codable, Equatable, Sendable {
 
         Task data (tasks/<TASK-ID>/data.md)
         - \(dataWritingRule)
-        - Record only information owned by this task. A project-wide preference belongs in project context; a separate deferred deliverable belongs in its own task.
+        - Record only information owned by this task. A project-wide preference belongs in project data (`data place project <PROJECT-ID> "fact"`); a separate deferred deliverable belongs in its own task.
+
+        Saved facts
+        - User and project data (the capsule's `userDataPath` and `projectDataPath`) hold standing instructions for every agent in the project. Read and follow them before acting.
 
         Workspace and scope
         - Your assigned workspace is immutable; a different checkout requires a new agent assignment. `workspace <TASK-ID> <AGENT-ID> <absolute-path>` only records the first assignment or refreshes metadata for the same path.

@@ -204,7 +204,10 @@ public struct ProjectCreationTransaction: Sendable {
         sourceData: sourceData,
         destinationDashboard: destinationDashboard,
         destinationOrder: destinationOrder)
-      return try apply(prepared)
+      let receipt = try apply(prepared)
+      // The move is committed; bootstrap and placement repair a document this misses.
+      _ = try? ProjectContextStore(root: supportDirectory).ensurePlan(for: receipt.project)
+      return receipt
     }
   }
 

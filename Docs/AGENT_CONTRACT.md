@@ -32,6 +32,7 @@ Projects own unique 2 to 5 character task prefixes. Focus Queue uses `FOC-###`; 
 ## Documents and reports
 
 - Project `plan.md`: concise project-only practices, commands, and repeated mistake-prevention rules. Read from the capsule's `projectPlanPath`.
+- User and project `data.md`: saved standing instructions for every agent in the project. Read them from the capsule's `userDataPath` and `projectDataPath` and follow them. Both files exist from project creation and may be empty.
 - Task `plan.md`: goal, scope, success criteria, implementation outline, current focus, next step, and links. Read on association and before edits. Exclude decision history and verbose evidence.
 - `agent-log.md`: timestamped decisions, configuration, progress detail, research/evidence links, and handoffs. Read relevant entries on demand. Append with `focus-queue-session log <TASK-ID> <AGENT-ID> "entry"`.
 - Supporting artifacts: store beside task context and link from the plan or log. Context lives outside disposable worktrees.

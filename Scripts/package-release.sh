@@ -15,7 +15,7 @@ package_root="$package_stage/Focus Queue Beta"
 /bin/cp "$script_dir/focus_queue_install.py" "$package_root/Resources/"
 /bin/cp "$project_dir/Docs/BETA_README.txt" "$package_root/README.txt"
 /bin/chmod 755 "$package_root/Install.command" "$package_root/Uninstall.command"
-archive="$project_dir/dist/FocusQueue-0.3.2-beta-$(/usr/bin/uname -m).zip"
+archive="$project_dir/dist/FocusQueue-0.3.3-beta-$(/usr/bin/uname -m).zip"
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$package_root" "$archive"
 (
   cd "$project_dir/dist"

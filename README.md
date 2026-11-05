@@ -30,12 +30,12 @@ These steps were tested on a clean macOS 26.6 Apple silicon Mac.
 
 ### 2. Download and install
 
-1. Download `FocusQueue-0.3.2-beta-arm64.zip` from the
+1. Download `FocusQueue-0.3.3-beta-arm64.zip` from the
    [latest release](https://github.com/haelyra/FocusQueue/releases).
 2. In Terminal, unpack it and run the installer:
    ```sh
    cd ~/Downloads
-   ditto -x -k FocusQueue-0.3.2-beta-arm64.zip .
+   ditto -x -k FocusQueue-0.3.3-beta-arm64.zip .
    xattr -dr com.apple.quarantine "Focus Queue Beta"
    "Focus Queue Beta/Install.command" --desktop
    ```
@@ -43,7 +43,7 @@ These steps were tested on a clean macOS 26.6 Apple silicon Mac.
    lets the app open. Run it only on a ZIP you downloaded from this repository.
 
 The installer puts the app in `~/Applications/Focus Queue.app`, the
-`focus-queue-session` helper in `~/.local/bin`, and a Desktop shortcut. It does not
+`focus-queue-session` helper and Q chat launchers in `~/.local/bin`, and a Desktop shortcut. It does not
 need GitHub access. Add `--login` to start Focus Queue at login, or `--check` for a
 read-only preflight.
 

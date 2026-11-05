@@ -20,13 +20,18 @@ from typing import Any
 import focus_queue_morning as morning
 import focus_queue_prompt_usage as prompt_usage
 from focus_queue_lock import acquire_exclusive_file_lock
+from focus_queue_provider_cli import find_cli
 
 
 SUPPORT_DIRECTORY = Path.home() / "Library/Application Support/ECC Focus Queue"
 DEFAULT_RUNTIME = SUPPORT_DIRECTORY / "agent"
 DEFAULT_PROOF_DIRECTORY = SUPPORT_DIRECTORY / "connector-proofs"
 DEFAULT_MAIL_COMMAND_DIRECTORY = SUPPORT_DIRECTORY / "connector-commands"
-DEFAULT_CODEX = Path("/opt/homebrew/bin/codex")
+TRUSTED_CODEX_CANDIDATES = (
+    Path("/opt/homebrew/bin/codex"),
+    Path("/usr/local/bin/codex"),
+    Path.home() / ".local/bin/codex",
+)
 NO_TOOLS_MODEL = "gpt-5.5"
 NO_TOOLS_MODEL_PREFERENCES = (
     NO_TOOLS_MODEL,
@@ -91,9 +96,14 @@ def stop_process_group(process: subprocess.Popen[str], *, grace_seconds: float =
 
 
 def resolve_codex() -> str:
-    if DEFAULT_CODEX.is_file() and os.access(DEFAULT_CODEX, os.X_OK):
-        return str(DEFAULT_CODEX)
-    raise CodexHarnessError(f"The trusted Codex CLI is not installed at {DEFAULT_CODEX}")
+    executable = find_cli("codex", TRUSTED_CODEX_CANDIDATES)
+    if executable:
+        return executable
+    raise CodexHarnessError(
+        "The Codex CLI was not found at "
+        + " or ".join(str(candidate) for candidate in TRUSTED_CODEX_CANDIDATES)
+        + " or on your shell's PATH"
+    )
 
 
 def run_codex_capability_probe(

@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -299,9 +300,20 @@ AUTOMATION_FILES = (
     "Scripts/focus_queue_triage.py",
     "Scripts/focus_queue_extractor.py",
     "Scripts/focus_queue_prompt_usage.py",
+    "Scripts/focus_queue_provider_cli.py",
     "Scripts/focus-queue-mail.js",
     "Config/task-proposals.schema.json",
 )
+# Q chat runs these from ~/.local/bin. Each one starts a harness in the automation payload.
+CHAT_HARNESSES = (
+    ("focus-queue-codex", "focus_queue_codex.py"),
+    ("focus-queue-claude", "focus_queue_claude.py"),
+    ("focus-queue-kimi", "focus_queue_kimi.py"),
+)
+
+
+def chat_launcher_text(script):
+    return f'#!/bin/sh\nexec /usr/bin/python3 {shlex.quote(str(script))} "$@"\n'
 
 
 def digest(path):
@@ -498,7 +510,7 @@ def ensure_prerequisites(install, *, brew_candidates=HOMEBREW_CANDIDATES,
 
 
 class Installer:
-    def __init__(self, bundle, home, *, login=False, desktop=False, start=True):
+    def __init__(self, bundle, home, *, login=False, desktop=False, start=True, unattended=False):
         self.bundle = bundle.absolute()
         self.home = home.absolute()
         self.support = self.home / "Library/Application Support" / LEGACY_PRODUCT
@@ -522,20 +534,47 @@ class Installer:
         self.codex_usage_renderer = self.support / "shell/focus_queue_codex_bar.js"
         self.codex_usage_license = self.support / "shell/AgentUsageBar-LICENSE.txt"
         self.fq_files = [self.support / "shell" / name for name in FQ_SHELL_FILES]
+        self.chat_launchers = {self.home / ".local/bin" / name: self.automation / "Scripts" / script
+                               for name, script in CHAT_HARNESSES}
         self.login, self.shortcut, self.start = login, desktop, start
+        # The app's Install update button runs this with no one at a terminal. Reading
+        # Documents or Desktop then raises a macOS permission prompt in the app's name,
+        # and a refusal would stop the update, so an unattended run stays out of both.
+        self.unattended = unattended
         self.service = f"gui/{os.getuid()}/{IDENTIFIER}"
         self.legacy_shortcut_owned = False
         self.source_provenance = None
 
     def prompt_files(self):
-        """(global file, legacy file, bundled payload, label) for each agent's contract block."""
-        return ((self.codex_prompt, self.legacy_codex_prompt, "CODEX_GLOBAL_INSTRUCTIONS.md", "Codex"),
-                (self.claude_prompt, self.legacy_claude_prompt, "CLAUDE_GLOBAL_INSTRUCTIONS.md", "Claude"))
+        """(global file, legacy file, bundled payload, label) for each agent's contract block.
+
+        The legacy file is None in an unattended run, which leaves Documents alone.
+        """
+        return ((self.codex_prompt, None if self.unattended else self.legacy_codex_prompt,
+                 "CODEX_GLOBAL_INSTRUCTIONS.md", "Codex"),
+                (self.claude_prompt, None if self.unattended else self.legacy_claude_prompt,
+                 "CLAUDE_GLOBAL_INSTRUCTIONS.md", "Claude"))
+
+    def owns_chat_launcher(self, launcher, script):
+        """True when the path is free or already holds exactly what this installer writes.
+
+        Anything else there is the user's, and it stays untouched.
+        """
+        if launcher.is_symlink():
+            return False
+        return not launcher.exists() or (
+            launcher.is_file() and launcher.read_bytes() == chat_launcher_text(script).encode())
+
+    def chat_launcher_plan(self):
+        owned = [launcher for launcher, script in self.chat_launchers.items()
+                 if self.owns_chat_launcher(launcher, script)]
+        return {"installed": [str(launcher) for launcher in owned],
+                "preserved": [str(launcher) for launcher in self.chat_launchers if launcher not in owned]}
 
     def prompt_plan(self, target, legacy, label):
         """Validates the legacy file's markers and describes the change for the preflight report."""
         plan = f"merge app-owned block into {target}; preserve personal instructions"
-        if prompt_block(read_text_or_empty(legacy), label=label) is not None:
+        if legacy is not None and prompt_block(read_text_or_empty(legacy), label=label) is not None:
             plan += f"; move the block out of {legacy}, keeping its other text"
         return plan
 
@@ -561,7 +600,8 @@ class Installer:
         prompt_plans = {}
         for target, legacy, resource, label in self.prompt_files():
             safe_destination(target, self.home)
-            safe_destination(legacy, self.home)
+            if legacy is not None:
+                safe_destination(legacy, self.home)
             payload = self.bundle / "Contents/Resources" / resource
             validate_bundle_member(self.bundle, payload)
             if not payload.is_file() or payload.is_symlink():
@@ -660,23 +700,24 @@ class Installer:
             ):
                 raise ValueError(f"Existing login service is unrecognized: {self.agent}")
             self.login = True
-        self.legacy_shortcut_owned = (
-            self.legacy_desktop.is_symlink()
-            and self.legacy_desktop.readlink() == self.legacy_app
-        )
-        if self.legacy_shortcut_owned:
-            self.shortcut = True
-            safe_destination(self.legacy_desktop.parent / "ownership-check", self.home)
-        if self.desktop.is_symlink():
-            if self.desktop.readlink() == self.app:
+        if not self.unattended:
+            self.legacy_shortcut_owned = (
+                self.legacy_desktop.is_symlink()
+                and self.legacy_desktop.readlink() == self.legacy_app
+            )
+            if self.legacy_shortcut_owned:
                 self.shortcut = True
-                safe_destination(self.desktop.parent / "ownership-check", self.home)
+                safe_destination(self.legacy_desktop.parent / "ownership-check", self.home)
+            if self.desktop.is_symlink():
+                if self.desktop.readlink() == self.app:
+                    self.shortcut = True
+                    safe_destination(self.desktop.parent / "ownership-check", self.home)
+                elif self.shortcut:
+                    raise ValueError(f"Desktop shortcut belongs to another target: {self.desktop}")
             elif self.shortcut:
-                raise ValueError(f"Desktop shortcut belongs to another target: {self.desktop}")
-        elif self.shortcut:
-            safe_destination(self.desktop, self.home)
-            if self.desktop.exists():
-                raise ValueError(f"Desktop item already exists: {self.desktop}")
+                safe_destination(self.desktop, self.home)
+                if self.desktop.exists():
+                    raise ValueError(f"Desktop item already exists: {self.desktop}")
         if self.manifest.exists():
             value = json.loads(self.manifest.read_text())
             if value.get("product") != IDENTIFIER or value.get("version") not in (1, 2):
@@ -716,6 +757,7 @@ class Installer:
                 "launchAtLogin": self.login, "desktopShortcut": self.shortcut,
                 "configuration": "preserve existing; first launch offers setup",
                 "companions": "app-owned automation updated; companion launch agents unchanged",
+                "chatLaunchers": self.chat_launcher_plan(),
                 "codexInstructions": prompt_plans["Codex"],
                 "claudeInstructions": prompt_plans["Claude"],
                 "signature": "verified (does not imply notarization)"}
@@ -841,13 +883,20 @@ class Installer:
                     (staged_app / "Contents/Resources" / resource).read_text(), label=label))
                 staged_prompt.chmod(target.stat().st_mode & 0o777 if target.exists() else 0o600)
                 planned.append((staged_prompt, target))
-                legacy_original = legacy.read_bytes() if legacy.exists() else b""
+                legacy_original = legacy.read_bytes() if legacy is not None and legacy.exists() else b""
                 if prompt_block(legacy_original.decode(), label=label) is not None:
                     original_prompts[legacy] = legacy_original
                     staged_legacy = stage / f"{label.lower()}-legacy-instructions.md"
                     staged_legacy.write_text(remove_agent_prompt(legacy_original.decode(), label=label))
                     staged_legacy.chmod(legacy.stat().st_mode & 0o777)
                     planned.append((staged_legacy, legacy))
+            chat_launchers = self.chat_launcher_plan()
+            for launcher, script in self.chat_launchers.items():
+                if str(launcher) in chat_launchers["installed"] and not launcher.exists():
+                    staged_launcher = stage / launcher.name
+                    staged_launcher.write_text(chat_launcher_text(script))
+                    staged_launcher.chmod(0o755)
+                    planned.append((staged_launcher, launcher))
             # Refresh an already configured entry without changing aliases, flags or hook trust.
             original_entry = self.codex_entry.read_bytes() if self.codex_entry.exists() else None
             original_usage_wrapper = (self.codex_usage_wrapper.read_bytes()
@@ -902,6 +951,12 @@ class Installer:
                 staged_link = stage / "desktop-link"
                 staged_link.symlink_to(self.app)
                 planned.append((staged_link, self.desktop))
+            # An unattended run never looks at the Desktop, so the shortcut it found
+            # recorded stays recorded for uninstall.
+            kept_artifacts = []
+            if self.unattended and self.manifest.exists():
+                kept_artifacts = [item for item in json.loads(self.manifest.read_text()).get("artifacts", [])
+                                  if item.get("path") == str(self.desktop)]
             manifest = {"version": MANIFEST_VERSION, "product": IDENTIFIER,
                 "installedAt": utc_timestamp(),
                 "sourceProvenance": self.source_provenance,
@@ -915,7 +970,14 @@ class Installer:
                               for source, target in planned if target not in {
                                   *original_prompts, self.codex_entry,
                                   self.codex_usage_wrapper,
-                                  self.codex_usage_renderer, self.codex_usage_license, *self.fq_files}],
+                                  self.codex_usage_renderer, self.codex_usage_license, *self.fq_files,
+                                  *self.chat_launchers}] + kept_artifacts,
+                # Apart from artifacts because Uninstall.command from 0.3.2 and earlier
+                # rejects any artifact path it does not know.
+                "chatLaunchers": [{"path": str(launcher),
+                                   "sha256": hashlib.sha256(chat_launcher_text(script).encode()).hexdigest()}
+                                  for launcher, script in self.chat_launchers.items()
+                                  if str(launcher) in chat_launchers["installed"]],
                 "managedSettings": [{"path": str(self.codex_prompt), "ownership": "delimited-block-only"},
                     {"path": str(self.claude_prompt), "ownership": "delimited-block-only"},
                     # Only the app's block was ever removed here; the rest stays the user's.
@@ -927,7 +989,7 @@ class Installer:
                     {"path": str(self.codex_usage_license), "ownership": "configured-entry-support"},
                     *({"path": str(path), "ownership": "configured-entry-support"}
                       for path in self.fq_files if original_fq[self.fq_files[0]] is not None)],
-                "launchAtLogin": self.login, "desktopShortcut": self.shortcut}
+                "launchAtLogin": self.login, "desktopShortcut": self.shortcut or bool(kept_artifacts)}
             staged_manifest = stage / "manifest.json"
             staged_manifest.write_text(json.dumps(manifest, indent=2) + "\n")
             staged_manifest.chmod(0o600)
@@ -991,6 +1053,7 @@ class Installer:
             (backup / "recovery.json").write_text(json.dumps(recovery, indent=2) + "\n")
             return {"status": "installed", "application": str(self.app), "backupDirectory": str(backup),
                     "manifest": str(self.manifest), "started": self.start,
+                    "chatLaunchers": chat_launchers,
                     "legacyApplicationMigrated": legacy_application_migrated}
         except BaseException:
             shutdown_error = None
@@ -1071,6 +1134,14 @@ def _uninstall_locked(installer, home, *, check, stop):
             elif not path.is_file() or digest(path) != item["sha256"]:
                 raise ValueError(f"Installed file changed; retained: {path}")
         targets.append(path)
+    for item in manifest.get("chatLaunchers", []):
+        path = Path(item["path"])
+        if path not in installer.chat_launchers:
+            raise ValueError(f"Manifest path is outside the app installation: {path}")
+        safe_destination(path.parent / "ownership-check", home)
+        # An edited launcher is the user's now, so it stays and uninstall carries on.
+        if path.is_file() and not path.is_symlink() and digest(path) == item.get("sha256"):
+            targets.append(path)
     # The app owns only its delimited block in the agents' instruction files.
     prompts = []
     for path, _, _, label in installer.prompt_files():
@@ -1146,6 +1217,9 @@ def main():
     parser.add_argument("--login", action="store_true", help="Enable login launch; existing choice is retained.")
     parser.add_argument("--desktop", action="store_true", help="Add a Desktop shortcut.")
     parser.add_argument("--no-start", action="store_true", help="Install files without stopping or starting services.")
+    parser.add_argument(
+        "--unattended", action="store_true",
+        help="Run for the app's Install update button: leave Documents and Desktop alone and add no tools.")
     args = parser.parse_args()
     try:
         if args.write_provenance is not None:
@@ -1165,9 +1239,10 @@ def main():
             return 0
         if args.bundle is None:
             parser.error("--bundle is required for installation")
-        installer = Installer(args.bundle, Path.home(), login=args.login, desktop=args.desktop, start=not args.no_start)
+        installer = Installer(args.bundle, Path.home(), login=args.login, desktop=args.desktop,
+                              start=not args.no_start, unattended=args.unattended)
         # Before the app install, so the app finds tmux on its first launch.
-        prerequisites = ensure_prerequisites(install=not args.check)
+        prerequisites = ensure_prerequisites(install=not args.check and not args.unattended)
         result = installer.preflight() if args.check else installer.install()
         print(json.dumps({**result, "prerequisites": prerequisites}, indent=2))
         return 0

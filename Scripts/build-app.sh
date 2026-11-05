@@ -39,7 +39,7 @@ for script in \
   focus_queue_morning.py focus_queue_codex.py focus_queue_claude.py focus_queue_kimi.py \
   focus_queue_lock.py focus_queue_mail.py focus_queue_gmail.py \
   focus_queue_discord.py focus_queue_slack.py focus_queue_connectors.py focus_queue_triage.py \
-  focus_queue_extractor.py focus_queue_prompt_usage.py \
+  focus_queue_extractor.py focus_queue_prompt_usage.py focus_queue_provider_cli.py \
   focus-queue-mail.js; do
   /bin/cp "$project_dir/Scripts/$script" "$automation_resources/Scripts/$script"
 done
@@ -55,8 +55,8 @@ info_plist="$bundle_path/Contents/Info.plist"
 /usr/bin/plutil -insert CFBundleInfoDictionaryVersion -string 6.0 "$info_plist"
 /usr/bin/plutil -insert CFBundleName -string "$product_name" "$info_plist"
 /usr/bin/plutil -insert CFBundlePackageType -string APPL "$info_plist"
-/usr/bin/plutil -insert CFBundleShortVersionString -string 0.3.2 "$info_plist"
-/usr/bin/plutil -insert CFBundleVersion -string 5 "$info_plist"
+/usr/bin/plutil -insert CFBundleShortVersionString -string 0.3.3 "$info_plist"
+/usr/bin/plutil -insert CFBundleVersion -string 6 "$info_plist"
 /usr/bin/plutil -insert LSMinimumSystemVersion -string 14.0 "$info_plist"
 /usr/bin/plutil -insert LSUIElement -bool true "$info_plist"
 /usr/bin/plutil -insert NSHighResolutionCapable -bool true "$info_plist"

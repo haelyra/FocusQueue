@@ -176,6 +176,8 @@ final class QueueViewModel {
   /// Sign-in windows still open, by provider. One at a time per provider.
   private(set) var signInAttempts: [AgentProvider: SignInAttempt] = [:]
   private var signInStartedAt: [AgentProvider: Date] = [:]
+  /// Providers whose sign-out is still running.
+  private(set) var providersSigningOut: Set<AgentProvider> = []
   /// One report per provider per launch, so a retry loop cannot flood the tracker.
   private var reportedSignInFailures: Set<AgentProvider> = []
   private(set) var canSwitchMonitor = false
@@ -218,6 +220,7 @@ final class QueueViewModel {
   @ObservationIgnored private var lastMaintenanceAt: Date?
   @ObservationIgnored private let maintenanceEnabled: Bool
   @ObservationIgnored private let checkProviderAccount: @Sendable (AgentProvider) async -> ProviderAccountState
+  @ObservationIgnored private let signOutProviderAccount: @Sendable (AgentProvider) async -> String?
   @ObservationIgnored private let fileSignInFailure: @Sendable (SignInFailureContext) async -> SignInFailureReporter.Delivery
   private(set) var subtaskActivityRevision = 0
   /// Agents whose tmux or WezTerm pane the last refresh confirmed alive.
@@ -415,6 +418,9 @@ final class QueueViewModel {
     checkProviderAccount: @escaping @Sendable (AgentProvider) async -> ProviderAccountState = {
       await ProviderAccounts.check($0)
     },
+    signOutProviderAccount: @escaping @Sendable (AgentProvider) async -> String? = {
+      await ProviderAccounts.signOut($0)
+    },
     fileSignInFailure: @escaping @Sendable (SignInFailureContext) async -> SignInFailureReporter.Delivery = {
       await SignInFailureReporter.file($0)
     },
@@ -436,6 +442,7 @@ final class QueueViewModel {
     }
     self.locateExistingAgent = locateExistingAgent
     self.checkProviderAccount = checkProviderAccount
+    self.signOutProviderAccount = signOutProviderAccount
     self.fileSignInFailure = fileSignInFailure
     self.taskContextStore = TaskContextStore(root: paths.supportDirectory)
     self.reportHistoryRepository = JSONDailyReportHistoryRepository(runtimeDirectory: paths.ingestionRuntimeDirectory)
@@ -5479,6 +5486,19 @@ final class QueueViewModel {
   func isSigningIn(_ provider: AgentProvider) -> Bool {
     guard signInAttempts[provider] != nil, let started = signInStartedAt[provider] else { return false }
     return Date().timeIntervalSince(started) < 120
+  }
+
+  /// Signs the provider's CLI out on this Mac. The status check decides the
+  /// result, because a CLI can exit cleanly and leave the account signed in.
+  func signOut(from provider: AgentProvider) async {
+    guard providersSigningOut.insert(provider).inserted else { return }
+    defer { providersSigningOut.remove(provider) }
+    let failure = await signOutProviderAccount(provider)
+    let state = await checkProviderAccount(provider)
+    providerAccounts[provider] = state
+    walkthroughMessage = state == .signedOut
+      ? "Signed out of \(provider.displayName)."
+      : "Could not sign out of \(provider.displayName)" + (failure.map { ": \($0)" } ?? ".")
   }
 
   func signIn(to provider: AgentProvider) async {

@@ -606,11 +606,13 @@ struct ProviderSignInGate: View {
 }
 
 /// Each provider's sign-in state with Sign in and Install actions. Used by the
-/// tour, the sign-in gate, and Settings.
+/// tour, the sign-in gate, and Settings. Only Settings offers Sign out.
 struct WalkthroughSignInContent: View {
   let model: QueueViewModel
+  var allowsSignOut = false
   @State private var pending: Set<AgentProvider> = []
   @State private var refreshing = false
+  @State private var signOutCandidate: AgentProvider?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -642,6 +644,16 @@ struct WalkthroughSignInContent: View {
           .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
       }
     }
+    .confirmationDialog(
+      signOutCandidate.map { "Sign out of \($0.displayName)?" } ?? "",
+      isPresented: Binding(get: { signOutCandidate != nil }, set: { if !$0 { signOutCandidate = nil } }),
+      presenting: signOutCandidate
+    ) { provider in
+      Button("Sign out", role: .destructive) { Task { await model.signOut(from: provider) } }
+      Button("Cancel", role: .cancel) {}
+    } message: { provider in
+      Text("This signs the \(provider.executableName) CLI out everywhere on this Mac, including your terminals. Agents using it stop working until you sign in again.")
+    }
     .task { if model.providerAccounts.isEmpty { await model.refreshProviderAccounts() } }
     .task {
       // Re-check providers with an open sign-in window until they finish, and
@@ -671,6 +683,13 @@ struct WalkthroughSignInContent: View {
   @ViewBuilder private func action(_ provider: AgentProvider, _ state: ProviderAccountState?) -> some View {
     switch state {
     case .signedIn:
+      if allowsSignOut {
+        let signingOut = model.providersSigningOut.contains(provider)
+        Button(signingOut ? "Signing out…" : "Sign out") { signOutCandidate = provider }
+          .controlSize(.small).disabled(signingOut)
+          .accessibilityLabel("Sign out of \(provider.displayName)")
+          .help("Signs the \(provider.executableName) CLI out on this Mac")
+      }
       Label("Signed in", systemImage: "checkmark.circle.fill").labelStyle(.iconOnly)
         .font(.system(size: 18)).foregroundStyle(.green)
         .accessibilityLabel("\(provider.displayName) signed in")

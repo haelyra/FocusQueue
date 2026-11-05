@@ -1,4 +1,4 @@
-Focus Queue 0.3.2 public beta
+Focus Queue 0.3.3 public beta
 
 Requires an Apple silicon Mac with macOS 14 or later, Homebrew, a terminal (Ghostty,
 WezTerm or Terminal.app) and at least one agent CLI (Claude Code, Codex or Kimi Code)
@@ -22,11 +22,11 @@ It adds Focus Queue's agent instructions, as one marked block, to ~/.claude/CLAU
 and ~/.codex/AGENTS.md, keeping your own text in those files. A block that an older
 version put in ~/Documents/CLAUDE.md or ~/Documents/AGENTS.md moves there.
 
-It installs the app to ~/Applications and the focus-queue-session helper to ~/.local/bin, preserves
-your existing configuration, and keeps backups before replacing a previous version.
-It does not need GitHub access. Use --check for a read-only preflight, --login for
-launch at login, and --desktop for a Desktop shortcut. Existing login and shortcut
-choices are retained.
+It installs the app to ~/Applications, and the focus-queue-session helper and Q chat
+launchers to ~/.local/bin. It preserves your existing configuration and keeps backups
+before replacing a previous version. It does not need GitHub access. Use --check for a
+read-only preflight, --login for launch at login, and --desktop for a Desktop shortcut.
+Existing login and shortcut choices are retained.
 
 The first launch opens a walkthrough: choose your terminal and agent, sign in, then
 create a project. Settings > Projects > Open setup wizard reopens setup at any time.

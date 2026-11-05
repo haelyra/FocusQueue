@@ -1645,10 +1645,10 @@ struct QueueSettingsView: View {
           groupHeading("Agents")
           settingsSection(
             title: "Sign-in",
-            detail: "Agents run through each provider's own CLI and your subscription. Check who is signed in, or sign in to another provider."
+            detail: "Agents run through each provider's own CLI and your subscription. Check who is signed in, sign in to another provider, or sign out."
           ) {
             VStack(alignment: .leading, spacing: 10) {
-              WalkthroughSignInContent(model: model)
+              WalkthroughSignInContent(model: model, allowsSignOut: true)
               Toggle("Report failed sign-ins to the beta tracker", isOn: Binding(
                 get: { model.reportsSignInFailures }, set: { model.setReportsSignInFailures($0) }))
               Text("When a sign-in fails, Focus Queue files a GitHub issue with the error, the CLI version, and your Mac and app versions. Paths, emails and tokens are removed. Issues on this repository are public.")

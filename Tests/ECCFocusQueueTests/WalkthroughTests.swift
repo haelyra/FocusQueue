@@ -40,6 +40,47 @@ struct WalkthroughTests {
     #expect(restarted?.isSetupPresented == false)
   }
 
+  private func signOutModel(
+    accounts: @escaping @Sendable (AgentProvider) async -> ProviderAccountState,
+    signOut: @escaping @Sendable (AgentProvider) async -> String?
+  ) async -> (QueueViewModel, URL) {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("sign out \(UUID().uuidString)")
+    let model = QueueViewModel(paths: AppPaths.live(environment: ["FOCUS_QUEUE_SUPPORT_DIR": root.path]),
+                               checkProviderAccount: accounts, signOutProviderAccount: signOut)
+    await model.bootstrap()
+    await model.bootstrapTail?.value
+    return (model, root)
+  }
+
+  @Test("Signing out updates the card from a fresh status check")
+  func signOutSucceeds() async {
+    let signedIn = SignedInProviders()
+    await signedIn.insert(.codex)
+    let (model, root) = await signOutModel(
+      accounts: { await signedIn.contains($0) ? .signedIn : .signedOut },
+      signOut: { await signedIn.remove($0); return nil })
+    defer { try? FileManager.default.removeItem(at: root) }
+    await model.refreshProviderAccounts()
+    #expect(model.providerAccounts[.codex] == .signedIn)
+    await model.signOut(from: .codex)
+    #expect(model.providerAccounts[.codex] == .signedOut)
+    #expect(model.walkthroughMessage == "Signed out of Codex.")
+    #expect(model.providersSigningOut.isEmpty)
+  }
+
+  @Test("A sign-out that leaves the account signed in is reported, even when the CLI exited cleanly")
+  func signOutFails() async {
+    let (model, root) = await signOutModel(accounts: { _ in .signedIn }, signOut: { _ in "keychain locked (exit 1)" })
+    defer { try? FileManager.default.removeItem(at: root) }
+    await model.signOut(from: .claude)
+    #expect(model.providerAccounts[.claude] == .signedIn)
+    #expect(model.walkthroughMessage == "Could not sign out of Claude: keychain locked (exit 1)")
+    let (silent, silentRoot) = await signOutModel(accounts: { _ in .signedIn }, signOut: { _ in nil })
+    defer { try? FileManager.default.removeItem(at: silentRoot) }
+    await silent.signOut(from: .kimi)
+    #expect(silent.walkthroughMessage == "Could not sign out of Kimi.")
+  }
+
   @Test("With no provider signed in, finishing the tour leaves the queue gated until one signs in")
   func signInGate() async throws {
     let signedIn = SignedInProviders()
@@ -131,4 +172,5 @@ private actor SignedInProviders {
   private var providers: Set<AgentProvider> = []
   func contains(_ provider: AgentProvider) -> Bool { providers.contains(provider) }
   func insert(_ provider: AgentProvider) { providers.insert(provider) }
+  func remove(_ provider: AgentProvider) { providers.remove(provider) }
 }

@@ -59,6 +59,23 @@ public enum ProviderAccounts {
       + "printf 'Press Return to close this window.'; read _; fi"
   }
 
+  /// Signs out through the provider's own CLI, so the sign-out applies to its
+  /// terminals too. Kimi has no logout command, but its ACP server has a logout
+  /// request; stdin stays open long enough for the server to finish it.
+  public static func logoutScript(for provider: AgentProvider) -> String {
+    let name = provider.executableName
+    let logout = switch provider {
+    case .claude: "command claude auth logout"
+    case .codex: "command codex logout"
+    case .kimi:
+      "{ printf '%s\\n' "
+        + "'{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":1,\"clientCapabilities\":{}}}' "
+        + "'{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"logout\",\"params\":{}}'; "
+        + "sleep 5; } | command kimi acp >/dev/null"
+    }
+    return "command -v \(name) >/dev/null 2>&1 || exit 127; \(logout)"
+  }
+
   /// True once every provider's check has finished and none is signed in.
   /// No agent can run then, so the queue stays behind the sign-in screen.
   public static func signInRequired(_ states: [AgentProvider: ProviderAccountState]) -> Bool {
@@ -114,11 +131,15 @@ public enum ProviderAccounts {
         return configured ? .signedIn : .signedOut
       }
     }
-    // Some CLIs report errors on stdout; the last line usually says what went wrong.
+    return .failed(failureDetail(result))
+  }
+
+  /// Some CLIs report errors on stdout; the last line usually says what went wrong.
+  private static func failureDetail(_ result: ProcessResult) -> String {
     let detail = [result.standardError, result.standardOutput].lazy
       .compactMap { $0.split(separator: "\n").last { !$0.trimmingCharacters(in: .whitespaces).isEmpty } }
       .first.map { String($0.trimmingCharacters(in: .whitespaces).prefix(240)) }
-    return .failed(detail.map { "\($0) (exit \(result.exitCode))" } ?? "Exit status \(result.exitCode).")
+    return detail.map { "\($0) (exit \(result.exitCode))" } ?? "Exit status \(result.exitCode)."
   }
 
   public static func check(
@@ -132,6 +153,21 @@ public enum ProviderAccounts {
       return state(for: provider, result: result)
     } catch {
       return .failed(error.localizedDescription)
+    }
+  }
+
+  /// Returns nil when the CLI finished the sign-out, otherwise what went wrong.
+  public static func signOut(
+    _ provider: AgentProvider,
+    runner: any ProcessRunning = FoundationProcessRunner(),
+    shell: String = InteractiveAgentShell.executable()
+  ) async -> String? {
+    do {
+      let result = try await runner.run(ProcessSpecification(
+        executable: shell, arguments: ["-lic", logoutScript(for: provider)], timeoutSeconds: 30))
+      return result.succeeded ? nil : failureDetail(result)
+    } catch {
+      return error.localizedDescription
     }
   }
 

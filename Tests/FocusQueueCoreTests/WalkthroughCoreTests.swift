@@ -98,6 +98,49 @@ struct ProviderAccountsTests {
     #expect(ProviderAccounts.loginScript(for: .codex).contains("else command codex login; fq_status=$?"))
   }
 
+  @Test("Sign-out uses each provider's own CLI and bypasses shell wrappers")
+  func logoutScripts() {
+    #expect(ProviderAccounts.logoutScript(for: .claude).hasSuffix("|| exit 127; command claude auth logout"))
+    #expect(ProviderAccounts.logoutScript(for: .codex).hasSuffix("|| exit 127; command codex logout"))
+    let kimi = ProviderAccounts.logoutScript(for: .kimi)
+    #expect(kimi.hasPrefix("command -v kimi "))
+    #expect(kimi.contains("\"method\":\"logout\""))
+    #expect(kimi.hasSuffix("| command kimi acp >/dev/null"))
+  }
+
+  /// Runs the sign-out script against a stub CLI and returns what the app sees.
+  private func runLogout(_ provider: AgentProvider, stub: String?) async throws -> ProcessResult {
+    let bin = FileManager.default.temporaryDirectory.appendingPathComponent("logout-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: bin) }
+    if let stub {
+      let file = bin.appendingPathComponent(provider.executableName)
+      try Data("#!/bin/sh\n\(stub)\n".utf8).write(to: file)
+      try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+    }
+    return try await FoundationProcessRunner().run(.init(
+      executable: "/bin/zsh", arguments: ["-fc", "PATH=\(bin.path):/usr/bin:/bin; " + ProviderAccounts.logoutScript(for: provider)],
+      timeoutSeconds: 15))
+  }
+
+  @Test("A sign-out script runs the CLI's subcommand and reports a missing CLI")
+  func logoutOutcome() async throws {
+    let ran = try await runLogout(.codex, stub: "echo \"args=$*\"")
+    #expect(ran.succeeded)
+    #expect(ran.standardOutput.contains("args=logout"))
+    let claude = try await runLogout(.claude, stub: "echo \"args=$*\"")
+    #expect(claude.standardOutput.contains("args=auth logout"))
+    #expect(try await runLogout(.codex, stub: nil).exitCode == 127)
+  }
+
+  @Test("signOut returns nil on success and the CLI's last line on failure")
+  func signOutResult() async {
+    let succeeded = ScriptedRunner([result(0)])
+    #expect(await ProviderAccounts.signOut(.codex, runner: succeeded, shell: "/bin/zsh") == nil)
+    let failed = ScriptedRunner([result(1, "", "noise\nkeychain locked\n")])
+    #expect(await ProviderAccounts.signOut(.codex, runner: failed, shell: "/bin/zsh") == "keychain locked (exit 1)")
+  }
+
   /// Runs the sign-in script against a stub CLI and returns what the window shows.
   private func runLogin(_ provider: AgentProvider, stub: String?,
                         attempt: SignInAttempt? = nil) async throws -> String {

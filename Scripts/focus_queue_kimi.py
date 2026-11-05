@@ -33,6 +33,7 @@ import focus_queue_claude as claude_harness
 import focus_queue_morning as morning
 import focus_queue_prompt_usage as prompt_usage
 from focus_queue_lock import acquire_exclusive_file_lock
+from focus_queue_provider_cli import find_cli
 
 
 DEFAULT_RUNTIME = claude_harness.SUPPORT_DIRECTORY / "agent-kimi"
@@ -50,12 +51,13 @@ class KimiHarnessError(RuntimeError):
 
 
 def resolve_kimi() -> str:
-    for candidate in TRUSTED_KIMI_CANDIDATES:
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
+    executable = find_cli("kimi", TRUSTED_KIMI_CANDIDATES)
+    if executable:
+        return executable
     raise KimiHarnessError(
-        "The trusted Kimi CLI is not installed at "
+        "The Kimi CLI was not found at "
         + " or ".join(str(candidate) for candidate in TRUSTED_KIMI_CANDIDATES)
+        + " or on your shell's PATH"
     )
 
 

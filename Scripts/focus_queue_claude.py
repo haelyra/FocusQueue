@@ -19,6 +19,7 @@ from typing import Any
 import focus_queue_morning as morning
 import focus_queue_prompt_usage as prompt_usage
 from focus_queue_lock import acquire_exclusive_file_lock
+from focus_queue_provider_cli import find_cli
 
 
 SUPPORT_DIRECTORY = Path.home() / "Library/Application Support/ECC Focus Queue"
@@ -58,12 +59,13 @@ def stop_process_group(process: subprocess.Popen[str], *, grace_seconds: float =
 
 
 def resolve_claude() -> str:
-    for candidate in TRUSTED_CLAUDE_CANDIDATES:
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
+    executable = find_cli("claude", TRUSTED_CLAUDE_CANDIDATES)
+    if executable:
+        return executable
     raise ClaudeHarnessError(
-        "The trusted Claude CLI is not installed at "
+        "The Claude CLI was not found at "
         + " or ".join(str(candidate) for candidate in TRUSTED_CLAUDE_CANDIDATES)
+        + " or on your shell's PATH"
     )
 
 

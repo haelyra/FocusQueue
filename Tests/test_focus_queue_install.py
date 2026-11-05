@@ -33,6 +33,7 @@ class InstallerTests(unittest.TestCase):
         "Scripts/focus_queue_triage.py",
         "Scripts/focus_queue_extractor.py",
         "Scripts/focus_queue_prompt_usage.py",
+        "Scripts/focus_queue_provider_cli.py",
         "Scripts/focus-queue-mail.js",
         "Config/task-proposals.schema.json",
     )
@@ -926,6 +927,87 @@ class InstallerTests(unittest.TestCase):
         result = next_install.preflight()
         self.assertTrue(result["launchAtLogin"])
         self.assertTrue(result["desktopShortcut"])
+
+    def launcher(self, name):
+        return self.home / ".local/bin" / name
+
+    def test_install_creates_the_q_chat_launchers_the_app_runs(self):
+        result = self.installer.install()
+        self.assertEqual(len(result["chatLaunchers"]["installed"]), 3)
+        for name, script in MODULE.CHAT_HARNESSES:
+            launcher = self.launcher(name)
+            self.assertTrue(os.access(launcher, os.X_OK), launcher)
+            target = self.installer.automation / "Scripts" / script
+            self.assertTrue(target.is_file(), target)
+            self.assertEqual(
+                launcher.read_text(), f"#!/bin/sh\nexec /usr/bin/python3 '{target}' \"$@\"\n")
+
+    def test_update_from_a_release_without_launchers_adds_them(self):
+        self.installer.install()
+        for name, _ in MODULE.CHAT_HARNESSES:
+            self.launcher(name).unlink()
+        MODULE.Installer(self.bundle, self.home, start=False).install()
+        for name, _ in MODULE.CHAT_HARNESSES:
+            self.assertTrue(os.access(self.launcher(name), os.X_OK))
+
+    def test_a_personal_launcher_is_kept_and_does_not_stop_the_install(self):
+        personal = self.launcher("focus-queue-codex")
+        personal.parent.mkdir(parents=True)
+        personal.write_text("#!/bin/sh\nexec my-codex-wrapper \"$@\"\n")
+        linked = self.launcher("focus-queue-kimi")
+        linked.symlink_to(personal)
+        result = self.installer.install()
+        self.assertEqual(personal.read_text(), "#!/bin/sh\nexec my-codex-wrapper \"$@\"\n")
+        self.assertTrue(linked.is_symlink())
+        self.assertEqual(sorted(result["chatLaunchers"]["preserved"]), sorted([str(personal), str(linked)]))
+        manifest = json.loads(self.installer.manifest.read_text())
+        self.assertEqual([item["path"] for item in manifest["chatLaunchers"]],
+                         [str(self.launcher("focus-queue-claude"))])
+
+    def test_a_failed_install_removes_the_launchers_it_added(self):
+        self.installer.start = True
+        with mock.patch.object(self.installer, "stop"), \
+             mock.patch.object(self.installer, "start_app", side_effect=RuntimeError("launch failed")):
+            with self.assertRaises(RuntimeError):
+                self.installer.install()
+        for name, _ in MODULE.CHAT_HARNESSES:
+            self.assertFalse(self.launcher(name).exists())
+
+    def test_uninstall_removes_unchanged_launchers_and_keeps_edited_ones(self):
+        self.installer.install()
+        edited = self.launcher("focus-queue-codex")
+        edited.write_text("#!/bin/sh\necho mine\n")
+        result = MODULE.uninstall(self.home, stop=False)
+        self.assertEqual(edited.read_text(), "#!/bin/sh\necho mine\n")
+        self.assertFalse(self.launcher("focus-queue-claude").exists())
+        self.assertFalse(self.launcher("focus-queue-kimi").exists())
+        self.assertIn(str(self.launcher("focus-queue-claude")), result["paths"])
+
+    def test_launchers_stay_out_of_artifacts_so_older_uninstallers_still_run(self):
+        self.installer.install()
+        manifest = json.loads(self.installer.manifest.read_text())
+        recorded = {item["path"] for item in manifest["artifacts"]}
+        self.assertFalse(recorded.intersection(str(path) for path in self.installer.chat_launchers))
+
+    def test_unattended_update_never_opens_documents_or_desktop(self):
+        self.installer.shortcut = True
+        self.installer.install()
+        shortcut = self.installer.desktop
+        documents = self.home / "Documents"
+        documents.mkdir(exist_ok=True)
+        (documents / "AGENTS.md").write_text("personal\n")
+        for folder in (documents, shortcut.parent):
+            folder.chmod(0o000)
+            self.addCleanup(folder.chmod, 0o755)
+        with self.assertRaises(PermissionError):
+            MODULE.Installer(self.bundle, self.home, start=False).preflight()
+        updater = MODULE.Installer(self.bundle, self.home, start=False, unattended=True)
+        self.assertEqual(updater.install()["status"], "installed")
+        manifest = json.loads(self.installer.manifest.read_text())
+        self.assertTrue(manifest["desktopShortcut"])
+        self.assertIn(str(shortcut), [item["path"] for item in manifest["artifacts"]])
+        shortcut.parent.chmod(0o755)
+        self.assertEqual(shortcut.readlink(), self.installer.app)
 
     def test_uninstall_retains_data_and_rejects_changed_files_or_manifest_escape(self):
         self.installer.install()

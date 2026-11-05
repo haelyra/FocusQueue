@@ -16,11 +16,11 @@ enum TerminalFocusModeError: Error, LocalizedError {
         case .applicationUnavailable(let name):
             "\(name) did not become available after the terminal was activated."
         case .focusedWindowUnavailable:
-            "The active WezTerm window could not be identified."
+            "The active terminal window could not be identified."
         case .windowFrameUnavailable:
-            "The active WezTerm window position could not be read."
+            "The active terminal window position could not be read."
         case .windowMoveFailed:
-            "The active WezTerm window could not be centered."
+            "The active terminal window could not be centered."
         }
     }
 }

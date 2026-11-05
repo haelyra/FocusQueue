@@ -219,6 +219,12 @@ final class QueueViewModel {
   @ObservationIgnored private var maintenanceSignatures: [String: String] = [:]
   @ObservationIgnored private var lastMaintenanceAt: Date?
   @ObservationIgnored private let maintenanceEnabled: Bool
+  /// What the installed Codex offers this account; nil until it has been read.
+  var codexCatalog: CodexCatalog?
+  /// Models Codex refused during this run, even though it listed them.
+  var unavailableCodexModels: Set<String> = []
+  @ObservationIgnored private let loadCodexCatalog: @Sendable () async -> CodexCatalog?
+  @ObservationIgnored private let isWezTermInstalled: @Sendable (String) -> Bool
   @ObservationIgnored private let checkProviderAccount: @Sendable (AgentProvider) async -> ProviderAccountState
   @ObservationIgnored private let signOutProviderAccount: @Sendable (AgentProvider) async -> String?
   @ObservationIgnored private let fileSignInFailure: @Sendable (SignInFailureContext) async -> SignInFailureReporter.Delivery
@@ -421,6 +427,8 @@ final class QueueViewModel {
     signOutProviderAccount: @escaping @Sendable (AgentProvider) async -> String? = {
       await ProviderAccounts.signOut($0)
     },
+    loadCodexCatalog: @escaping @Sendable () async -> CodexCatalog? = { nil },
+    isWezTermInstalled: @escaping @Sendable (String) -> Bool = { _ in true },
     fileSignInFailure: @escaping @Sendable (SignInFailureContext) async -> SignInFailureReporter.Delivery = {
       await SignInFailureReporter.file($0)
     },
@@ -443,6 +451,8 @@ final class QueueViewModel {
     self.locateExistingAgent = locateExistingAgent
     self.checkProviderAccount = checkProviderAccount
     self.signOutProviderAccount = signOutProviderAccount
+    self.loadCodexCatalog = loadCodexCatalog
+    self.isWezTermInstalled = isWezTermInstalled
     self.fileSignInFailure = fileSignInFailure
     self.taskContextStore = TaskContextStore(root: paths.supportDirectory)
     self.reportHistoryRepository = JSONDailyReportHistoryRepository(runtimeDirectory: paths.ingestionRuntimeDirectory)
@@ -787,6 +797,7 @@ final class QueueViewModel {
       config = try await configurationRepository.loadOrCreate(default: SetupEnvironment.starter(supportDirectory: paths.supportDirectory))
       let needsSetup = firstRun || config.setupCompleted == false
       configurationIsLoaded = true
+      adoptInstalledTerminal()
       localState = try await stateStore.load()
       // A new install gets the walkthrough, which covers terminal setup; the
       // setup wizard stays available from Settings.
@@ -808,6 +819,13 @@ final class QueueViewModel {
     if walkthrough == nil {
       Task { @MainActor [weak self] in await self?.refreshProviderAccounts() }
     }
+  }
+
+  /// WezTerm is optional. Earlier versions chose it by default even when it was
+  /// not installed, so that choice moves to macOS Terminal, which every Mac has.
+  private func adoptInstalledTerminal() {
+    guard config.wezTerm.terminalApp == .wezTerm, !isWezTermInstalled(config.wezTerm.executable) else { return }
+    setManagedTerminal(.terminal)
   }
 
   /// Read-only disk load so agent boxes render before any reconciliation runs.
@@ -1963,7 +1981,7 @@ final class QueueViewModel {
     let deferredTicketIDs = localState.deferredTicketIDs.filter { scopedTaskIDs.contains($0) }
     let scopedMessage: String
     let provider = defaultAgentProvider
-    let chatModel = Self.normalizedChatOption(config.chatModel(for: provider))
+    let chatModel = effectiveChatModel(for: provider)
     let chatEffort = Self.normalizedChatOption(config.chatEffort(for: provider))
     var agentConfiguration = config.verifier
     agentConfiguration.executable = config.chatExecutable(for: provider)
@@ -2033,6 +2051,9 @@ final class QueueViewModel {
           model: chatModel,
           effort: chatEffort
         )
+        if provider == .codex, let refused = CodexCatalog.unavailableModel(in: reply.log) {
+          self.unavailableCodexModels.insert(refused)
+        }
         self.appendChat(QueueChatMessage(role: .agent, text: reply.message), ticketID: ticketID)
         // The agent edits the queue, dashboards, and settings through the CLI.
         // Show its saved result now so the reply and the queue agree.
@@ -2781,7 +2802,7 @@ final class QueueViewModel {
         let reply = try await agent.send(
           message: prompt, dashboardPath: config.dashboardPath, workspace: workspace,
           visibleOrder: openTickets.map(\.id), deferredTicketIDs: [], configuration: configuration,
-          model: creator?.model ?? Self.normalizedChatOption(config.chatModel(for: provider)),
+          model: creator?.model ?? effectiveChatModel(for: provider),
           effort: creator?.effort ?? Self.normalizedChatOption(config.chatEffort(for: provider)))
         try Task.checkCancellation()
         try uiCanvasStore.reply(taskID: ticketID, key: key, text: reply.message)
@@ -3402,7 +3423,8 @@ final class QueueViewModel {
           }
           let runtime = try await taskAgentLauncher.startManagedSession(context: context, subtask: assignment,
             supportDirectory: paths.supportDirectory, tmuxExecutable: executable,
-            usageBarEnabled: config.agentUsageBarEnabled)
+            usageBarEnabled: config.agentUsageBarEnabled,
+            codexSupportsNoDaemon: await codexSupportsNoDaemon(for: assignment.provider))
           // A resumed conversation is sent no prompt, so it waits for input.
           taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
             ticketID: ticket.id, subtaskID: assignment.id, tmux: runtime,
@@ -3476,7 +3498,7 @@ final class QueueViewModel {
       ? (promptDescription.isEmpty ? (includePrompt ? title : "") : promptDescription)
       : suppliedDescription).prefix(2_000))
     guard useTmux || !config.wezTerm.terminalApp.requiresTmux else {
-      actionMessages[ticket.id] = "\(config.wezTerm.terminalApp.displayName) requires tmux for reliable agent launch and recall. Configure tmux or select WezTerm."
+      actionMessages[ticket.id] = "Agents run in tmux, which is not installed. Install it with brew install tmux, then try again."
       completion?(false)
       return
     }
@@ -3525,7 +3547,8 @@ final class QueueViewModel {
           runtimeMode: useTmux ? .tmux : .terminal)
         subtask.initialPrompt = initialPrompt
         subtask.tracksCompletion = tracksCompletion
-        let selectedModel = modelName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let selectedModel = (modelName?.trimmingCharacters(in: .whitespacesAndNewlines))
+          .flatMap { isUsableModel($0, for: provider) ? $0 : nil }
         let selectedEffort = effort?.trimmingCharacters(in: .whitespacesAndNewlines)
         var launchConfiguration = AgentLaunchConfiguration(
           model: selectedModel?.isEmpty == false ? selectedModel : nil,
@@ -3588,7 +3611,7 @@ final class QueueViewModel {
           }
           let expectedName = try TmuxController.taskSessionName(taskID: ticket.id)
           actionMessages[ticket.id] =
-            "Starting \(provider.displayName) in tmux session \(expectedName). Waiting for the final pane process before opening WezTerm…"
+            "Starting \(provider.displayName) in tmux session \(expectedName). Waiting for the final pane process before opening \(terminalName)…"
           await recordAgentLaunch(
             subtask, ticketID: ticket.id, phase: "tmux-create", outcome: "started",
             message: "Requested one new tmux session.",
@@ -3596,7 +3619,8 @@ final class QueueViewModel {
           let tmux = try await taskAgentLauncher.startManagedSession(
             context: context, subtask: subtask, supportDirectory: paths.supportDirectory,
             includePrompt: includePrompt, tmuxExecutable: tmuxExecutable,
-            usageBarEnabled: config.agentUsageBarEnabled)
+            usageBarEnabled: config.agentUsageBarEnabled,
+            codexSupportsNoDaemon: await codexSupportsNoDaemon(for: provider))
           runtimeStarted = true
           phase = "saving the confirmed tmux process"
           taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
@@ -3615,7 +3639,7 @@ final class QueueViewModel {
               "pane": tmux.paneID, "panePID": String(tmux.panePID), "terminal": tmux.tty,
             ])
           if opensTerminal {
-            phase = "opening the WezTerm view"
+            phase = "opening the \(terminalName) view"
             _ = try await terminalController.openAgentRuntime(
               subtask, taskID: ticket.id, taskTitle: ticket.title,
               configuration: config.wezTerm)
@@ -3694,12 +3718,12 @@ final class QueueViewModel {
                 "\(result.message) The provider process registered while tmux was still confirming its pane."
             } catch {
               actionMessages[ticket.id] =
-                "The provider process is running and registered in tmux session \(saved.name), but WezTerm did not open its view. Click the subtask to retry. \(error.localizedDescription)"
+                "The provider process is running and registered in tmux session \(saved.name), but \(terminalName) did not open its view. Click the subtask to retry. \(error.localizedDescription)"
             }
             return
           }
           let detail =
-            "tmux accepted session \(name), but its pane process and terminal device were still changing after \(attempts) checks. The agent may be running. Focus Queue will not create another process. Click this subtask to retry opening the saved session."
+            "tmux accepted session \(name), but Focus Queue could not confirm its process after \(attempts) checks. Last check: \(lastDetail) The agent may be running. Focus Queue will not create another process. Click this subtask to retry opening the saved session."
           taskContexts[ticket.id] = try? await taskContextStore.updateProgress(
             ticketID: ticket.id, subtaskID: subtask.id, status: .working,
             summary: detail)
@@ -3732,7 +3756,7 @@ final class QueueViewModel {
         }
         actionMessages[ticket.id] = !runtimeStarted
           ? "Agent did not start. \(error.localizedDescription)\(assignment == nil ? "" : " Open the agent's launch log for details.")"
-          : "The agent process started, but WezTerm did not open its view. Click the subtask to retry the exact saved process. \(error.localizedDescription) Open the document icon for the full launch log."
+          : "The agent process started, but \(terminalName) did not open its view. Click the subtask to retry the exact saved process. \(error.localizedDescription) Open the document icon for the full launch log."
       }
     }
   }
@@ -3808,7 +3832,27 @@ final class QueueViewModel {
   /// A configured default model; nil launches the provider without `--model`.
   /// The configured model, else the provider's standard one; never empty.
   func defaultAgentModel(for provider: AgentProvider) -> String? {
-    config.agentModel(for: provider)
+    config.agentModel(for: provider).flatMap { isUsableModel($0, for: provider) ? $0 : nil }
+  }
+
+  private var terminalName: String { config.wezTerm.terminalApp.displayName }
+
+  /// False for a Codex model this account does not offer. The picker hides it,
+  /// and a saved choice falls back to the account's default until it returns.
+  func isUsableModel(_ model: String, for provider: AgentProvider) -> Bool {
+    guard provider == .codex else { return true }
+    return !unavailableCodexModels.contains(model) && codexCatalog?.offers(model) != false
+  }
+
+  /// The chat model that will run; nil uses the provider's default.
+  func effectiveChatModel(for provider: AgentProvider) -> String? {
+    Self.normalizedChatOption(config.chatModel(for: provider)).flatMap { isUsableModel($0, for: provider) ? $0 : nil }
+  }
+
+  private func codexSupportsNoDaemon(for provider: AgentProvider) async -> Bool {
+    guard provider == .codex else { return true }
+    if codexCatalog == nil { codexCatalog = await loadCodexCatalog() }
+    return codexCatalog?.supportsNoDaemon ?? true
   }
 
   func defaultAgentEffort(for provider: AgentProvider) -> String? {
@@ -3818,8 +3862,12 @@ final class QueueViewModel {
   /// Concrete models only: an older config's "Default" entry named no model.
   func agentModelChoices(for provider: AgentProvider) -> [AgentModelChoice] {
     let configured = config.agentModelChoices
-    return (configured.isEmpty ? AppConfiguration.defaultAgentModelChoices : configured)
+    let choices = (configured.isEmpty ? AppConfiguration.defaultAgentModelChoices : configured)
       .filter { $0.provider == provider && $0.model != nil }
+    guard provider == .codex else { return choices }
+    return (codexCatalog?.choices(from: choices) ?? choices).filter {
+      !unavailableCodexModels.contains($0.model ?? "")
+    }
   }
 
   func setDefaultAgentProvider(_ provider: AgentProvider) {
@@ -4159,7 +4207,7 @@ final class QueueViewModel {
 
   func focusTerminal(for ticket: DashboardTicket) {
     let directory = defaultRepository(for: ticket)
-    actionMessages[ticket.id] = "Finding a matching WezTerm pane…"
+    actionMessages[ticket.id] = "Opening \(terminalName)…"
     Task {
       do {
         let result = try await terminalController.focusOrSpawn(
@@ -5416,6 +5464,10 @@ final class QueueViewModel {
       for await (provider, state) in group { providerAccounts[provider] = state }
     }
     await collectSignInOutcomes()
+    if providers.contains(.codex), providerAccounts[.codex]?.isSignedIn == true,
+       let catalog = await loadCodexCatalog() {
+      codexCatalog = catalog
+    }
   }
 
   var reportsSignInFailures: Bool { localState.reportsSignInFailures != false }

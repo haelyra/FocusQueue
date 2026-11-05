@@ -18,10 +18,8 @@ These steps were tested on a clean macOS 26.6 Apple silicon Mac.
 - [Homebrew](https://brew.sh). The installer uses it to add tmux, and the GitHub CLI
   (`gh`) for beta reports, if they are missing. If Apple's Command Line Tools (`git`,
   `python3`) are missing, the installer opens Apple's installer; run it again afterwards.
-- A terminal. Focus Queue supports Ghostty, WezTerm and Terminal.app; Ghostty is the simplest:
-  ```sh
-  brew install --cask ghostty
-  ```
+- Nothing extra for your terminal. Focus Queue uses macOS Terminal by default. Ghostty and
+  WezTerm also work if you already have them.
 - At least one agent CLI on your own subscription. Claude Code:
   ```sh
   curl -fsSL https://claude.ai/install.sh | bash
@@ -30,12 +28,12 @@ These steps were tested on a clean macOS 26.6 Apple silicon Mac.
 
 ### 2. Download and install
 
-1. Download `FocusQueue-0.3.3-beta-arm64.zip` from the
+1. Download `FocusQueue-0.3.4-beta-arm64.zip` from the
    [latest release](https://github.com/haelyra/FocusQueue/releases).
 2. In Terminal, unpack it and run the installer:
    ```sh
    cd ~/Downloads
-   ditto -x -k FocusQueue-0.3.3-beta-arm64.zip .
+   ditto -x -k FocusQueue-0.3.4-beta-arm64.zip .
    xattr -dr com.apple.quarantine "Focus Queue Beta"
    "Focus Queue Beta/Install.command" --desktop
    ```

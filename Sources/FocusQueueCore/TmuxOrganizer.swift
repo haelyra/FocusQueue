@@ -368,6 +368,11 @@ extension TmuxController {
           try? await reflowUnlocked(name: name, executable: executable, force: false)
           return current
         }
+      } catch TmuxError.stopped {
+        // tmux confirmed the pane is gone, so more checks cannot find it. The
+        // receipt goes too, or it would block the retry.
+        try? removeLaunchReceipt(taskID: taskID, subtaskID: subtaskID)
+        throw TmuxError.exitedAtLaunch
       } catch {
         stable = 0; previous = nil; detail = error.localizedDescription
       }

@@ -17,6 +17,71 @@ struct WalkthroughTests {
     return (model, paths, root)
   }
 
+  private func model(
+    wezTermInstalled: Bool = true, catalog: CodexCatalog? = nil
+  ) async throws -> (QueueViewModel, AppPaths, URL) {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("terminal \(UUID().uuidString)")
+    let paths = AppPaths.live(environment: ["FOCUS_QUEUE_SUPPORT_DIR": root.path])
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    // Older installs saved WezTerm as the default terminal.
+    var saved = SetupEnvironment.starter(supportDirectory: root)
+    saved.wezTerm = .init(executable: "/nonexistent/wezterm", applicationName: "WezTerm")
+    try SetupEnvironment.createStarterWorkspace(supportDirectory: root)
+    try JSONEncoder().encode(saved).write(to: paths.configurationFile)
+    let model = QueueViewModel(paths: paths, checkProviderAccount: { _ in .signedIn },
+      loadCodexCatalog: { catalog }, isWezTermInstalled: { _ in wezTermInstalled })
+    await model.bootstrap()
+    await model.bootstrapTail?.value
+    return (model, paths, root)
+  }
+
+  @Test("A saved WezTerm choice moves to macOS Terminal on a Mac without WezTerm, and stays moved")
+  func missingWezTermMigrates() async throws {
+    let (model, paths, root) = try await model(wezTermInstalled: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    #expect(model.config.wezTerm.terminalApp == .terminal)
+    var saved: AppConfiguration?
+    for _ in 0..<40 {
+      try await Task.sleep(for: .milliseconds(100))
+      saved = try? JSONDecoder().decode(AppConfiguration.self, from: Data(contentsOf: paths.configurationFile))
+      if saved?.wezTerm.terminalApp == .terminal { break }
+    }
+    #expect(saved?.wezTerm.terminalApp == .terminal)
+  }
+
+  @Test("WezTerm stays selected when it is installed")
+  func installedWezTermStays() async throws {
+    let (model, _, root) = try await model(wezTermInstalled: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    #expect(model.config.wezTerm.terminalApp == .wezTerm)
+  }
+
+  @Test("A saved model this Codex account lacks is hidden and is not sent")
+  func unavailableModelFallsBack() async throws {
+    let (model, _, root) = try await model(catalog: CodexCatalog(models: ["gpt-5.6-sol"]))
+    defer { try? FileManager.default.removeItem(at: root) }
+    model.setChatModel("gpt-6-luna", for: .codex)
+    await model.refreshProviderAccounts()
+    #expect(model.config.chatModels[.codex] == "gpt-6-luna", "The saved choice returns if the CLI is updated")
+    #expect(model.effectiveChatModel(for: .codex) == nil)
+    #expect(!model.agentModelChoices(for: .codex).contains { $0.model == "gpt-6-luna" })
+    #expect(model.defaultAgentModel(for: .codex) == nil, "The standard model is not on this account either")
+    model.setChatModel("gpt-5.6-sol", for: .codex)
+    #expect(model.effectiveChatModel(for: .codex) == "gpt-5.6-sol")
+  }
+
+  @Test("A model Codex refuses mid-run leaves the picker")
+  func refusedModelIsHidden() async throws {
+    let (model, _, root) = try await model()
+    defer { try? FileManager.default.removeItem(at: root) }
+    model.setChatModel("gpt-6-luna", for: .codex)
+    #expect(model.effectiveChatModel(for: .codex) == "gpt-6-luna")
+    model.unavailableCodexModels.insert("gpt-6-luna")
+    #expect(model.effectiveChatModel(for: .codex) == nil)
+    #expect(!model.agentModelChoices(for: .codex).contains { $0.model == "gpt-6-luna" })
+    #expect(model.agentModelChoices(for: .claude).isEmpty == false)
+  }
+
   @Test("Skipping ends the tour for good and completes first-run setup")
   func skipPersists() async throws {
     let (model, paths, root) = await freshModel()

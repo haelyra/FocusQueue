@@ -124,6 +124,12 @@ final class WorkspaceMapModel {
         guard let nvim = SetupEnvironment.executable("nvim") else {
             throw MapError.unavailable("Neovim was not found. Install nvim or choose VS Code from Code viewer.")
         }
+        guard configuration.terminalApp.usesWezTermCLI else {
+            try await TerminalCommandLauncher.open(
+                [nvim] + MapOpenAction.neovimArguments(path: url.path),
+                configuration: configuration, runner: runner)
+            return
+        }
         let connection = try await WezTermConnection.resolve(configuration: configuration, runner: runner)
         guard connection.result.succeeded else {
             throw MapError.unavailable("Open WezTerm, then retry opening this file in read-only Neovim.")

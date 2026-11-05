@@ -488,7 +488,7 @@ private struct WalkthroughTerminalContent: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
-      ForEach(ManagedTerminalApp.allCases) { app in
+      ForEach(ManagedTerminalApp.choices(wezTermInstalled: installed[.wezTerm] != nil)) { app in
         WalkthroughChoiceRow(isSelected: selected == app, isEnabled: installed[app] != nil) {
           model.setManagedTerminal(app)
         } icon: {
@@ -501,7 +501,7 @@ private struct WalkthroughTerminalContent: View {
         } content: {
           HStack(spacing: 6) {
             Text(app.displayName).font(.system(size: 13, weight: .semibold))
-            if app == .wezTerm { WalkthroughBadge(text: "Most features", tone: .accent) }
+            if app == .terminal { WalkthroughBadge(text: "Built in", tone: .accent) }
           }
           Text(app.summary).font(.system(size: 11)).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -515,7 +515,7 @@ private struct WalkthroughTerminalContent: View {
         WalkthroughNote(systemImage: "checkmark.circle", text: "tmux found at \(tmuxPath). Agents keep running when you close their window.")
       } else {
         WalkthroughNote(systemImage: "exclamationmark.triangle",
-          text: "Install tmux (brew install tmux) so agents keep running when their window closes. Ghostty and macOS Terminal need it.")
+          text: "Install tmux (brew install tmux). Agents run in it, so they keep running when their window closes.")
       }
     }
     .onAppear {
@@ -553,7 +553,7 @@ private struct WalkthroughAgentsContent: View {
         }
       }
       Picker("QChat model", selection: Binding(
-        get: { model.config.chatModel(for: provider) ?? "" },
+        get: { model.effectiveChatModel(for: provider) ?? "" },
         set: { model.setChatModel($0, for: provider) }
       )) {
         ForEach(model.agentModelChoices(for: provider)) { choice in

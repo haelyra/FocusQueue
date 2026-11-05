@@ -472,6 +472,44 @@ class FocusQueueCodexTests(unittest.TestCase):
             self.assertTrue(run.call_args.kwargs["lean"])
             self.assertFalse((root / "runtime" / "sessions.json").exists())
 
+    def chat_with(self, root, side_effect, **options):
+        prompt = root / "prompt.txt"
+        prompt.write_text("Hello", encoding="utf-8")
+        arguments = argparse.Namespace(
+            runtime=root / "runtime", session="queue", workspace=root, prompt_file=prompt,
+            timeout=60, fresh=True, model="gpt-6-luna", **options)
+        output, errors = io.StringIO(), io.StringIO()
+        with mock.patch.object(MODULE, "run_codex", side_effect=side_effect) as run, \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            status = MODULE.chat(arguments)
+        return status, run, output.getvalue(), errors.getvalue()
+
+    def test_chat_retries_on_the_default_model_when_codex_refuses_one(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            refused = MODULE.CodexModelRejected("The 'gpt-6-luna' model is not supported")
+            status, run, output, errors = self.chat_with(Path(temporary), [refused, ("pong", None)])
+        self.assertEqual(status, 0)
+        self.assertEqual([call.kwargs["model"] for call in run.call_args_list], ["gpt-6-luna", None])
+        self.assertIn("gpt-6-luna isn't available on this Codex account", output)
+        self.assertIn("pong", output)
+        self.assertIn("focus-queue-model-unavailable: gpt-6-luna", errors)
+
+    def test_chat_does_not_retry_an_unrelated_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(MODULE.CodexHarnessError):
+                self.chat_with(Path(temporary), MODULE.CodexHarnessError("usage limit reached"))
+
+    def test_failure_message_reads_the_last_codex_error_event(self):
+        stdout = "\n".join([
+            '{"type":"thread.started","thread_id":"x"}',
+            '{"type":"item.completed","item":{"type":"error","message":"Model metadata not found"}}',
+            '{"type":"error","message":"first"}',
+            'not json',
+            '{"type":"turn.failed","error":{"message":"The model is not supported"}}',
+        ])
+        self.assertEqual(MODULE.failure_message(stdout), "The model is not supported")
+        self.assertIsNone(MODULE.failure_message("plain text"))
+
     def test_fresh_chat_runs_lean_without_saving_a_thread(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

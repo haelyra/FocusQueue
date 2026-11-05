@@ -74,7 +74,15 @@ LEAN_CHAT_DISABLED_FEATURES = (
 )
 
 
+# The app reads this line to hide a model Codex refused for this account.
+MODEL_UNAVAILABLE_MARKER = "focus-queue-model-unavailable:"
+
+
 class CodexHarnessError(RuntimeError):
+    pass
+
+
+class CodexModelRejected(CodexHarnessError):
     pass
 
 
@@ -770,14 +778,47 @@ def run_codex(
                 support=Path(os.environ["FOCUS_QUEUE_SUPPORT_DIR"]) if os.environ.get("FOCUS_QUEUE_SUPPORT_DIR") else runtime.parent)
 
         if process.returncode != 0:
-            detail = (stderr or stdout).strip()
-            raise CodexHarnessError(f"Codex exited with code {process.returncode}: {detail[:1200]}")
+            failure = failure_message(stdout)
+            detail = failure or (stderr or stdout).strip()
+            error_type = (
+                CodexModelRejected if model and failure and model in failure else CodexHarnessError
+            )
+            raise error_type(f"Codex exited with code {process.returncode}: {detail[:1200]}")
         if not reply_path.exists():
             raise CodexHarnessError("Codex completed without a final response")
         reply = reply_path.read_text(encoding="utf-8").strip()
         if not reply:
             raise CodexHarnessError("Codex returned an empty final response")
         return reply, parse_thread_id(stdout)
+
+
+def failure_message(stdout: str) -> str | None:
+    """Codex reports a failed turn as JSON events; the last one has the reason."""
+    message = None
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "error":
+            message = event.get("message") or message
+        elif event.get("type") == "turn.failed" and isinstance(event.get("error"), dict):
+            message = event["error"].get("message") or message
+    return str(message) if message else None
+
+
+def run_chat_turn(**options: Any) -> tuple[str, str | None]:
+    """Answers on the account's default model when Codex refuses the chosen one."""
+    model = options.get("model")
+    try:
+        return run_codex(**options)
+    except CodexModelRejected:
+        print(f"{MODEL_UNAVAILABLE_MARKER} {model}", file=sys.stderr)
+        reply, thread = run_codex(**{**options, "model": None})
+        note = f"{model} isn't available on this Codex account, so this reply used your default model."
+        return f"{note}\n\n{reply}", thread
 
 
 def chat(arguments: argparse.Namespace) -> int:
@@ -798,7 +839,7 @@ def chat(arguments: argparse.Namespace) -> int:
         if reader or getattr(arguments, "fresh", False):
             # The app sends its own short recap, so a fresh turn neither resumes
             # nor saves a session mapping whose history would grow every turn.
-            reply, _ = run_codex(
+            reply, _ = run_chat_turn(
                 prompt=prompt,
                 workspace=arguments.workspace,
                 runtime=runtime,
@@ -819,7 +860,7 @@ def chat(arguments: argparse.Namespace) -> int:
             print(reply)
             return 0
         try:
-            reply, observed_thread = run_codex(
+            reply, observed_thread = run_chat_turn(
                 prompt=prompt,
                 workspace=arguments.workspace,
                 runtime=runtime,
@@ -846,7 +887,7 @@ def chat(arguments: argparse.Namespace) -> int:
                 raise
             sessions.pop(arguments.session, None)
             morning.write_private_json(state_path, state)
-            reply, observed_thread = run_codex(
+            reply, observed_thread = run_chat_turn(
                 prompt=prompt,
                 workspace=arguments.workspace,
                 runtime=runtime,

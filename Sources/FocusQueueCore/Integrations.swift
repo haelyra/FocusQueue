@@ -656,6 +656,16 @@ public actor WezTermController: WezTermControlling {
         taskTitle: String = "",
         configuration: WezTermConfiguration
     ) async throws -> TerminalActionResult {
+        // Only WezTerm has panes to find; the others open the folder in a new window.
+        guard configuration.terminalApp.usesWezTermCLI else {
+            let shell = InteractiveAgentShell.executable()
+            try await TerminalCommandLauncher.open(
+                [shell, "-c", "builtin cd -- \"$1\" && exec \"$2\" -l", "focus-queue-terminal", directory, shell],
+                configuration: configuration,
+                titles: Self.managedTitles(taskID: taskID, taskTitle: taskTitle),
+                supportDirectory: supportDirectory, runner: runner)
+            return .spawned(paneID: nil)
+        }
         let listResult = try await listPanes(using: configuration)
 
         let panes: [WezTermPane]
@@ -870,9 +880,19 @@ public actor WezTermController: WezTermControlling {
 
         let directory = try await managedDirectory(
             workingDirectory, runtime: runtime, reference: live)
-        let result = try await locateOrAttachManagedRuntime(
-            live, taskID: taskID, directory: directory,
-            taskTitle: taskTitle, configuration: configuration, runtime: runtime)
+        let result: TerminalActionResult
+        do {
+            result = try await locateOrAttachManagedRuntime(
+                live, taskID: taskID, directory: directory,
+                taskTitle: taskTitle, configuration: configuration, runtime: runtime)
+        } catch ProcessRunnerError.executableMissing(let path) where path == configuration.executable {
+            // The saved choice is WezTerm, but it is not on this Mac.
+            var builtIn = configuration
+            builtIn.applicationName = ManagedTerminalApp.terminal.applicationName
+            result = try await ManagedTerminalLauncher.open(
+                reference: live, titles: Self.managedTitles(taskID: taskID, taskTitle: taskTitle),
+                configuration: builtIn, supportDirectory: supportDirectory, runner: runner)
+        }
         // Opening a desktop view is not allowed to weaken runtime identity.
         // If the pane changed during launch, report that exact conflict.
         _ = try await runtime.verify(live)
@@ -2048,12 +2068,16 @@ public actor WezTermController: WezTermControlling {
     }
 
     private func listPanes(using configuration: WezTermConfiguration) async throws -> ProcessResult {
-        try await runner.run(ProcessSpecification(
-            executable: configuration.executable,
-            arguments: WezTermConnection.paneArguments(for: configuration),
-            environment: configuration.cliEnvironment,
-            timeoutSeconds: 10
-        ))
+        do {
+            return try await runner.run(ProcessSpecification(
+                executable: configuration.executable,
+                arguments: WezTermConnection.paneArguments(for: configuration),
+                environment: configuration.cliEnvironment,
+                timeoutSeconds: 10
+            ))
+        } catch ProcessRunnerError.executableMissing {
+            return WezTermConnection.noPanes
+        }
     }
 
     private static func decodePanes(from result: ProcessResult) throws -> [WezTermPane] {

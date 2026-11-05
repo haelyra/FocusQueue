@@ -8,6 +8,8 @@ public enum WezTermConnection {
   private static let pinnedPaneArguments = ["cli", "--no-auto-start", "list", "--format", "json"]
   private static let maximumCandidates = 12
   static let probeTimeoutSeconds = 2
+  /// WezTerm is optional. Without its CLI there are simply no panes to find.
+  static let noPanes = ProcessResult(exitCode: 0, standardOutput: "[]", standardError: "", timedOut: false)
 
   public static func resolve(
     configuration: WezTermConfiguration,
@@ -25,9 +27,14 @@ public enum WezTermConnection {
         requested.socketPath = defaultCandidateSockets().first
       }
     }
-    let direct = try await runner.run(ProcessSpecification(
-      executable: requested.executable, arguments: paneArguments(for: requested),
-      environment: requested.cliEnvironment, timeoutSeconds: probeTimeoutSeconds))
+    let direct: ProcessResult
+    do {
+      direct = try await runner.run(ProcessSpecification(
+        executable: requested.executable, arguments: paneArguments(for: requested),
+        environment: requested.cliEnvironment, timeoutSeconds: probeTimeoutSeconds))
+    } catch ProcessRunnerError.executableMissing {
+      return (requested, noPanes)
+    }
     if hasValidPanes(direct) || direct.timedOut {
       // The CLI may have created its default mux during the initial probe.
       if !direct.timedOut, requested.socketPath == nil, candidateSockets == nil,

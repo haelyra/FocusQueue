@@ -29,18 +29,18 @@ APP_EXECUTABLES = {
 # Each dependency group requires at least one tool. Detection is never authentication
 # or compatibility verification, and a capability choice authorizes no execution.
 CAPABILITIES = {
-    "terminal_sessions": ("Associate and revisit WezTerm sessions", (("wezterm",),), "No window movement during setup."),
+    "terminal_sessions": ("Associate and revisit terminal sessions", (("tmux", "wezterm"),), "No window movement during setup."),
     "persistent_sessions": ("Keep new sessions in tmux", (("tmux",),), "Implemented on the local Mac; sessions survive client disconnects while the host and server remain alive."),
     "remote_reconnect": ("Reconnect over SSH and Tailscale", (("tmux",), ("tailscale",)), "Command generation is implemented. SSH server access, known host keys and cross-device reachability require separate configuration."),
     "agent_chat": ("Answer queue questions with Codex", (("codex",), ("python3",)), "Agent execution can spend tokens; budgets require separate configuration."),
-    "agent_launch": ("Launch task agents", (("wezterm",), ("codex", "claude")), "Provider sign-in and installed versions remain unverified."),
+    "agent_launch": ("Launch task agents", (("tmux", "wezterm"), ("codex", "claude", "kimi")), "Provider sign-in and installed versions remain unverified."),
     "daily_reports": ("Schedule source reviews", (("codex",), ("python3",)), "Requires explicit source scopes, schedule, and token budget."),
     "mail_connector": ("Read a selected Apple Mail or Gmail account", (("python3",),), "Requires provider configuration and explicit account authorization; no inbox access in this preview."),
     "discord_connector": ("Read selected Discord server channels", (("python3",),), "Requires an authorized bot account and verified channel scope."),
     "telegram_connector": ("Configure Telegram coverage", (), "Personal inbox integration remains unavailable; archive coverage must be labeled separately."),
     "github_connector": ("Read selected GitHub repositories", (("gh",),), "Requires explicit account and repository selection."),
     "login_launch": ("Start the queue at login", (), "The managed installer supports --login; this preview creates no service."),
-    "terminal_focus": ("Reposition terminal windows for task focus", (("wezterm",),), "Optional Accessibility permission; no permission request or window movement here."),
+    "terminal_focus": ("Reposition terminal windows for task focus", (), "Optional Accessibility permission; no permission request or window movement here."),
     "desktop_shortcut": ("Add a Desktop launcher", (), "An existing Desktop item must be preserved."),
 }
 

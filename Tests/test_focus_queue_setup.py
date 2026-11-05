@@ -69,6 +69,14 @@ class SetupPreviewTests(unittest.TestCase):
             self.assertIsNone(tool["version"])
             self.assertFalse(sentinel.exists())
 
+    def test_agent_launch_needs_tmux_and_a_provider_but_not_wezterm(self):
+        groups = MODULE.CAPABILITIES["agent_launch"][1]
+        self.assertTrue(any("tmux" in group for group in groups))
+        self.assertFalse(any(group == ("wezterm",) for group in groups))
+        self.assertEqual(MODULE.CAPABILITIES["terminal_focus"][1], ())
+        for name, (_, requirements, _) in MODULE.CAPABILITIES.items():
+            self.assertNotIn(("wezterm",), requirements, name)
+
     def test_app_executables_and_symlinked_binaries_are_only_candidates(self):
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)

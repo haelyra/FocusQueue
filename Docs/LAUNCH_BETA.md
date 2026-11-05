@@ -1,6 +1,6 @@
 # Launch handoff: macOS private beta
 
-TL;DR: Install and first-run setup now support a fresh macOS account. New agents can run inside tmux and reconnect through ordinary SSH over Tailscale. WezTerm has desktop integration; other terminals have command-line access. Treat this as a private beta candidate until the manual connection and distribution gates below pass.
+TL;DR: Install and first-run setup now support a fresh macOS account. New agents can run inside tmux and reconnect through ordinary SSH over Tailscale. macOS Terminal is the default and needs no install. Ghostty and WezTerm are optional; WezTerm adds pane browsing. Treat this as a private beta candidate until the manual connection and distribution gates below pass.
 
 ## The recovered work and current support
 

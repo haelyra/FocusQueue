@@ -1143,7 +1143,7 @@ struct QueueAgentChatView: View {
         let provider = model.defaultAgentProvider
         QueueChatAgentMenus(
           provider: provider,
-          model: model.config.chatModel(for: provider),
+          model: model.effectiveChatModel(for: provider),
           effort: model.config.chatEffort(for: provider),
           modelChoices: model.agentModelChoices(for: provider),
           setProvider: model.setDefaultAgentProvider,
@@ -1760,7 +1760,7 @@ struct QueueSettingsView: View {
           groupHeading("Window and shortcuts")
           settingsSection(
             title: "Appearance",
-            detail: "Dark uses your WezTerm #1A1D23 background color. Accent colors change status, priority, sync, and review colors."
+            detail: "Dark uses a #1A1D23 background color. Accent colors change status, priority, sync, and review colors."
           ) {
             VStack(alignment: .leading, spacing: 10) {
               Picker("Appearance", selection: appearanceBinding) {
@@ -2144,7 +2144,9 @@ private struct TerminalAppSetting: View {
         get: { selected },
         set: { model.setManagedTerminal($0) }
       )) {
-        ForEach(ManagedTerminalApp.allCases) { Text($0.displayName).tag($0) }
+        ForEach(ManagedTerminalApp.choices(wezTermInstalled: installed.contains(.wezTerm) || selected == .wezTerm)) {
+          Text($0.displayName).tag($0)
+        }
       }.pickerStyle(.segmented).labelsHidden()
       Text("\(selected.summary) Your own \(selected.displayName) settings apply. Takes effect the next time you open an agent.")
         .font(.caption).foregroundStyle(.secondary)

@@ -1,8 +1,8 @@
-Focus Queue 0.3.3 public beta
+Focus Queue 0.3.4 public beta
 
-Requires an Apple silicon Mac with macOS 14 or later, Homebrew, a terminal (Ghostty,
-WezTerm or Terminal.app) and at least one agent CLI (Claude Code, Codex or Kimi Code)
-signed in with your own subscription. Full steps:
+Requires an Apple silicon Mac with macOS 14 or later, Homebrew and at least one agent
+CLI (Claude Code, Codex or Kimi Code) signed in with your own subscription. macOS
+Terminal is all you need; Ghostty and WezTerm are optional. Full steps:
 https://github.com/haelyra/FocusQueue#install-beta-testers
 
 This beta has an ad hoc signature and is not notarized. Clear the download flag

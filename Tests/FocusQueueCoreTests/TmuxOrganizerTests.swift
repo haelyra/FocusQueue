@@ -2,6 +2,25 @@ import Foundation
 import Testing
 @testable import FocusQueueCore
 
+/// The real runner, except the pane dies just before its first identity check,
+/// as an agent does when its CLI exits at startup.
+private actor PaneKillingRunner: ProcessRunning {
+  private let base = FoundationProcessRunner()
+  private var killed = false
+
+  func run(_ specification: ProcessSpecification) async throws -> ProcessResult {
+    if !killed, let command = specification.arguments.firstIndex(of: "display-message"),
+       let target = specification.arguments.last(where: { $0.hasPrefix("%") }) {
+      killed = true
+      _ = try await base.run(ProcessSpecification(
+        executable: specification.executable,
+        arguments: Array(specification.arguments[..<command]) + ["kill-pane", "-t", target],
+        environment: specification.environment))
+    }
+    return try await base.run(specification)
+  }
+}
+
 @Suite("Task tmux organizer")
 struct TmuxOrganizerTests {
   @Test("Organizer locks reject redirected and writable temporary objects")
@@ -302,6 +321,40 @@ struct TmuxOrganizerTests {
       "A pane with an agent label must lead with it instead of the task title reference")
   }
 
+  @Test("An agent that dies at launch fails fast, with the true reason, and can be retried",
+    .enabled(if: SetupEnvironment.executable("tmux") != nil))
+  func agentDiesAtLaunch() async throws {
+    let executable = try #require(SetupEnvironment.executable("tmux"))
+    let server = "fq-exit-test-" + UUID().uuidString.lowercased()
+    let controller = TmuxController(runner: PaneKillingRunner(), serverName: server)
+    let taskID = "TEST-" + UUID().uuidString
+    defer {
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: executable)
+      process.arguments = ["-L", server, "kill-server"]
+      process.environment = ["TMUX_TMPDIR": "/tmp", "PATH": "/usr/bin:/bin"]
+      process.standardError = FileHandle.nullDevice
+      try? process.run(); process.waitUntilExit()
+    }
+    let clock = ContinuousClock()
+    let started = clock.now
+    await #expect(throws: TmuxError.self) {
+      do {
+        _ = try await controller.startAgent(taskID: taskID, subtaskID: "agent-1", directory: "/tmp",
+          command: ["/bin/sleep", "600"], executable: executable)
+      } catch TmuxError.exitedAtLaunch {
+        throw TmuxError.exitedAtLaunch
+      } catch {
+        Issue.record("Expected exitedAtLaunch, got \(error)")
+        throw error
+      }
+    }
+    #expect(clock.now - started < .seconds(10), "A dead pane must not wait out all 120 checks")
+    let retry = try await controller.startAgent(taskID: taskID, subtaskID: "agent-1", directory: "/tmp",
+      command: ["/bin/sleep", "600"], executable: executable)
+    #expect(retry.paneID.hasPrefix("%"))
+  }
+
   @Test("Live agents share one task session across four-pane window tabs and survive removal",
     .enabled(if: SetupEnvironment.executable("tmux") != nil))
   func liveTaskLayout() async throws {
@@ -326,13 +379,13 @@ struct TmuxOrganizerTests {
     }
     // Real upgrades already have legacy sessions. A bare target is interpreted
     // as a window by list-panes, which used to abort every first task launch.
-    try await command(["-f", "/dev/null", "new-session", "-d", "-s", "fq-legacy-agent", "/bin/sleep", "90"])
+    try await command(["-f", "/dev/null", "new-session", "-d", "-s", "fq-legacy-agent", "/bin/sleep", "600"])
     #expect(try await controller.panes(name: name, executable: executable).isEmpty)
     var references: [TmuxSessionReference] = []
     for index in 0..<9 {
       references.append(try await controller.startAgent(
         taskID: taskID, subtaskID: "agent-\(index)", taskTitle: "Task banner title",
-        directory: "/tmp", command: ["/bin/sleep", "90"], executable: executable))
+        directory: "/tmp", command: ["/bin/sleep", "600"], executable: executable))
     }
     #expect(Set(references.map(\.name)) == [name])
     #expect(Set(references.map(\.paneID)).count == 9)
@@ -348,7 +401,7 @@ struct TmuxOrganizerTests {
         references[8], taskID: "ECC-OTHER", subtaskID: "agent-8", executable: executable)
     }
     await #expect(throws: TmuxError.self) {
-      try await controller.startAgent(taskID: taskID, subtaskID: "agent-8", directory: "/tmp", command: ["/bin/sleep", "90"], executable: executable)
+      try await controller.startAgent(taskID: taskID, subtaskID: "agent-8", directory: "/tmp", command: ["/bin/sleep", "600"], executable: executable)
     }
     var panes = try await controller.panes(name: name, executable: executable)
     try await controller.select(references[8])
@@ -438,7 +491,7 @@ struct TmuxOrganizerTests {
 
     let resumed = try await controller.startAgent(
       taskID: taskID, subtaskID: completedAgent.id, directory: "/tmp",
-      command: ["/bin/sleep", "90"], executable: executable)
+      command: ["/bin/sleep", "600"], executable: executable)
     #expect(resumed.name == name)
     let afterResume = try await controller.panes(name: name, executable: executable)
     #expect(afterResume.filter { !$0.subtaskID.isEmpty }.count == 8)
@@ -465,12 +518,12 @@ struct TmuxOrganizerTests {
     }
     do {
       _ = try await controller.startAgent(taskID: taskID, subtaskID: "agent", directory: "/tmp",
-        command: ["/bin/sleep", "90"], executable: executable)
+        command: ["/bin/sleep", "600"], executable: executable)
       Issue.record("The dropped tagging response should leave a recoverable launch")
     } catch TmuxError.startedButUnconfirmed { }
     await #expect(throws: TmuxError.self) {
       try await controller.startAgent(taskID: taskID, subtaskID: "agent", directory: "/tmp",
-        command: ["/bin/sleep", "90"], executable: executable)
+        command: ["/bin/sleep", "600"], executable: executable)
     }
     #expect(try await controller.panes(name: name, executable: executable).count == 1)
     let recovered = try await controller.inspectAgent(taskID: taskID, subtaskID: "agent", executable: executable)
@@ -500,7 +553,7 @@ struct TmuxOrganizerTests {
     }
     func makeCollision(taskID: String, owner: String?) async throws -> String {
       let name = try TmuxController.taskSessionName(taskID: taskID)
-      try await raw(["new-session", "-d", "-s", name, "/bin/sleep", "90"])
+      try await raw(["new-session", "-d", "-s", name, "/bin/sleep", "600"])
       if let owner { try await raw(["set-option", "-t", name, "@focus-queue-task", owner]) }
       return name
     }
@@ -509,7 +562,7 @@ struct TmuxOrganizerTests {
       let name = try await makeCollision(taskID: taskID, owner: owner)
       await #expect(throws: TmuxError.self) {
         try await controller.startAgent(taskID: taskID, subtaskID: UUID().uuidString.lowercased(),
-          directory: "/tmp", command: ["/bin/sleep", "90"], executable: executable)
+          directory: "/tmp", command: ["/bin/sleep", "600"], executable: executable)
       }
       await #expect(throws: TmuxError.self) {
         try await controller.inspectAgent(taskID: taskID, subtaskID: "agent",
@@ -521,7 +574,7 @@ struct TmuxOrganizerTests {
     let ownedName = try await makeCollision(taskID: ownedTask, owner: ownedTask.uppercased())
     let reference = try await controller.startAgent(taskID: ownedTask,
       subtaskID: UUID().uuidString.lowercased(), directory: "/tmp",
-      command: ["/bin/sleep", "90"], executable: executable)
+      command: ["/bin/sleep", "600"], executable: executable)
     #expect(reference.name == ownedName)
     #expect(try await controller.panes(name: ownedName, executable: executable).count == 2)
   }
@@ -545,9 +598,9 @@ struct TmuxOrganizerTests {
     try FileManager.default.createSymbolicLink(at: helper, withDestinationURL: installedHelper)
     #expect(FileManager.default.isExecutableFile(atPath: helper.path))
     let first = try await controller.startAgent(taskID: taskID, subtaskID: "one", directory: root.path,
-      command: ["/bin/sleep", "90"], executable: executable)
+      command: ["/bin/sleep", "600"], executable: executable)
     let second = try await controller.startAgent(taskID: taskID, subtaskID: "two", directory: root.path,
-      command: ["/bin/sleep", "90"], executable: executable)
+      command: ["/bin/sleep", "600"], executable: executable)
     let input = Pipe()
     let client = Process()
     defer {

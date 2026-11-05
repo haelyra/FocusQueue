@@ -10,7 +10,7 @@ import Testing
   let subtask = TaskSubtask(title: "Fix `quotes` and $HOME")
   let args = try TaskAgentLauncher.command(context: context, subtask: subtask,
     supportDirectory: URL(fileURLWithPath: "/tmp/support"))
-  #expect(args.contains("builtin cd -- \"$1\" || exit 72; shift; codex \"$@\""))
+  #expect(args.contains { $0.hasPrefix("builtin cd -- \"$1\" || exit 72; shift; codex \"$@\"; ") })
   #expect(args.last?.contains("Fix `quotes` and $HOME") == true)
   #expect(args.contains("FOCUS_QUEUE_SUBTASK_ID=\(subtask.id)"))
   #expect(args.contains("/tmp/task with spaces"))
@@ -65,8 +65,13 @@ import Testing
         let captured = result.standardOutput.split(separator: "\0", omittingEmptySubsequences: false).dropLast().map(String.init)
         #expect(captured.first == (provider == .codex ? "alias" : "function"))
         // Claude's status hooks arrive as one `--settings` JSON value ahead of the shared flags.
-        let leading = provider == .codex ? ["--no-daemon"]
-          : provider == .claude ? ["--settings", AgentHookStatus.claudeSettings(pluginOverrides: [:], statusHooks: true)!] : []
+        var leading: [String] = []
+        if provider == .codex {
+          leading = ["--no-daemon"] + TaskAgentLauncher.codexWorkspaceArguments(directory: root.path)
+          leading += ["--add-dir", root.path]
+        } else if provider == .claude {
+          leading = ["--settings", AgentHookStatus.claudeSettings(pluginOverrides: [:], statusHooks: true)!]
+        }
         #expect(Array(captured.dropFirst().prefix(leading.count + 2)) == leading + ["--add-dir", context.contextDirectory.path])
         if provider != .codex { #expect(!captured.contains("--no-daemon")) }
         if includePrompt { #expect(captured.last?.contains(hostile) == true) }
@@ -153,9 +158,11 @@ func exactCodexResumeRecipe() async throws {
   #expect(result.succeeded, "\(result.standardError)")
   let arguments = result.standardOutput.split(separator: "\0", omittingEmptySubsequences: false)
     .dropLast().map(String.init)
-  #expect(arguments == ["resume", sessionID, "--cd", root.path, "--no-daemon",
-    "--model", "gpt-test", "-c", "model_reasoning_effort=high",
-    "--add-dir", context.contextDirectory.path])
+  var expected: [String] = ["resume", sessionID, "--cd", root.path, "--no-daemon",
+    "--model", "gpt-test", "-c", "model_reasoning_effort=high"]
+  expected += TaskAgentLauncher.codexWorkspaceArguments(directory: root.path)
+  expected += ["--add-dir", root.path, "--add-dir", context.contextDirectory.path]
+  #expect(arguments == expected)
 }
 
 @Test("Only explicit Codex sub-agent metadata names a parent thread")
@@ -507,4 +514,69 @@ func batchedRuntimeAttentionSharesListingAndSkipsFreshHeartbeats() async throws 
   #expect(calls.filter { $0.arguments.contains("list-panes") && !$0.arguments.contains("#{pane_id} #{pane_title}") }.count == 1)
   #expect(calls.filter { $0.arguments.contains("#{pane_id} #{pane_title}") }.count == 1)
   #expect(calls.filter { $0.arguments.contains("capture-pane") }.count == 1)
+}
+
+private func codexLaunch(_ directory: String, supportsNoDaemon: Bool = true) throws -> [String] {
+  let context = TaskContext(ticketID: "ECC-1", title: "Launch", summary: "", successCriteria: "",
+    planPath: "/tmp/plan.md", worktreePath: directory, updatedAt: Date())
+  var subtask = TaskSubtask(title: "Agent", provider: .codex)
+  subtask.includeInitializationPrompt = false
+  return try TaskAgentLauncher.command(context: context, subtask: subtask,
+    supportDirectory: URL(fileURLWithPath: "/tmp/fq support"), codexSupportsNoDaemon: supportsNoDaemon)
+}
+
+@Test("A Codex launch sets the permissions --add-dir needs on a fresh config")
+func codexLaunchWorksOnFreshConfig() throws {
+  let launch = try codexLaunch("/tmp/repo/.worktrees/foc-1/agents/a b")
+  let directory = try #require(launch.firstIndex(of: "--add-dir"))
+  let sandbox = try #require(launch.firstIndex(of: "sandbox_mode=\"workspace-write\""))
+  #expect(launch[sandbox - 1] == "-c")
+  #expect(sandbox < directory, "Codex must see the sandbox before it applies --add-dir")
+  #expect(launch.contains("projects={\"/tmp/repo/.worktrees/foc-1/agents/a b\"={trust_level=\"trusted\"}}"))
+  #expect(launch.contains("/tmp/fq support"), "Agents write their status through the support folder")
+}
+
+@Test("A quote in the workspace path cannot break out of the TOML value")
+func codexTrustEscapesThePath() {
+  #expect(TaskAgentLauncher.codexWorkspaceArguments(directory: #"/tmp/a"b\c"#).last
+    == #"projects={"/tmp/a\"b\\c"={trust_level="trusted"}}"#)
+}
+
+@Test("Older Codex CLIs are not sent --no-daemon")
+func olderCodexSkipsNoDaemon() throws {
+  #expect(try codexLaunch("/tmp/repo").contains("--no-daemon"))
+  #expect(try !codexLaunch("/tmp/repo", supportsNoDaemon: false).contains("--no-daemon"))
+}
+
+@Suite("Startup failure hold")
+struct StartupFailureHoldTests {
+  /// Runs the real script in a real shell, with Return already pressed.
+  private func run(exit status: Int32, shell: String) throws -> (status: Int32, output: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: shell)
+    process.arguments = ["-c", "(exit \(status)); " + InteractiveAgentShell.startupFailureHold(.codex)]
+    let input = Pipe(), output = Pipe()
+    process.standardInput = input
+    process.standardOutput = output
+    try process.run()
+    input.fileHandleForWriting.write(Data("\n".utf8))
+    try input.fileHandleForWriting.close()
+    process.waitUntilExit()
+    let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    return (process.terminationStatus, text)
+  }
+
+  @Test("An early failure explains itself and keeps the exit status", arguments: ["/bin/zsh", "/bin/bash"])
+  func failureHolds(shell: String) throws {
+    let result = try run(exit: 2, shell: shell)
+    #expect(result.status == 2)
+    #expect(result.output.contains("Codex stopped right after it started (exit 2)"))
+  }
+
+  @Test("A clean exit and Ctrl-C close without a message", arguments: [Int32(0), Int32(130)])
+  func normalExitsClose(status: Int32) throws {
+    let result = try run(exit: status, shell: "/bin/zsh")
+    #expect(result.status == status)
+    #expect(result.output.isEmpty)
+  }
 }

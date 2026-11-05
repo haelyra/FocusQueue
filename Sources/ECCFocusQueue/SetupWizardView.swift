@@ -63,6 +63,11 @@ struct SetupWizardView: View {
     }
   }
 
+  private var wezTermOffered: Bool {
+    SetupEnvironment.wezTermInstalled(saved: draft.wezTerm.executable)
+      || !draft.wezTerm.terminalApp.requiresTmux
+  }
+
   private var terminals: some View {
     VStack(alignment: .leading, spacing: 12) {
       ForEach(SetupEnvironment.terminalCapabilities, id: \.name) { item in
@@ -72,11 +77,15 @@ struct SetupWizardView: View {
         }
       }
       Picker("Managed session terminal", selection: $draft.wezTerm.applicationName) {
-        ForEach(ManagedTerminalApp.allCases) { Text($0.displayName).tag($0.applicationName) }
+        ForEach(ManagedTerminalApp.choices(wezTermInstalled: wezTermOffered)) {
+          Text($0.displayName).tag($0.applicationName)
+        }
       }
-      Text("Open agent always launches a fresh terminal view attached to the exact verified tmux pane. Ghostty and macOS Terminal require tmux; direct pane browsing remains a WezTerm-only feature.")
+      Text("Open agent always launches a fresh terminal view attached to the exact verified tmux pane. macOS Terminal works with nothing else installed; agents run in tmux.")
         .font(.caption).foregroundStyle(.secondary)
-      TextField("WezTerm executable", text: $draft.wezTerm.executable)
+      if !draft.wezTerm.terminalApp.requiresTmux {
+        TextField("WezTerm executable", text: $draft.wezTerm.executable)
+      }
       Button("Install command-line helper") {
         do {
           guard let executable = Bundle.main.executableURL else { return }
@@ -89,7 +98,7 @@ struct SetupWizardView: View {
         ? "\(draft.wezTerm.terminalApp.displayName) is selected for managed agent recall."
         : FileManager.default.isExecutableFile(atPath: draft.wezTerm.executable)
           ? "WezTerm executable detected. Live connection is checked when used."
-          : "Install WezTerm or select Ghostty or macOS Terminal for managed agent recall.")
+          : "WezTerm was not found. Select macOS Terminal to continue.")
         .font(.caption).foregroundStyle(.secondary)
       Label("Optional tmux persistence", systemImage: "rectangle.stack.badge.play")
         .font(.headline)

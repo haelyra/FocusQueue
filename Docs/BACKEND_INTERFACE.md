@@ -212,7 +212,7 @@ These manage the per-agent slots inside `tasks/<TICKET>/context.json`:
 |---|---|
 | `runtime locate <provider> <session-id>` | Is this provider session alive? → `status (running\|stopped\|unknown), processID, tmux identity` |
 | `runtime repair <TASK> <SUBTASK>` | Repair a broken runtime record |
-| `diagnose <TASK>` | Read-only WezTerm/socket inspection |
+| `diagnose <TASK>` | Read-only WezTerm/socket inspection; reports zero panes when WezTerm is not installed |
 | `reconcile <TASK> [--no-cleanup]` | Repair task documents, write a receipt |
 | `cleanup <TASK> [--dry-run]` | Completion cleanup for one task: kill its tmux sessions, archive unmerged or uncommitted work under `refs/focus-queue/archive/`, stage its worktrees in `.worktrees/.trash`, delete its local branches and merged remote branches, stage `archive/` and `maintenance-history/`. Writes `tasks/<TASK>/cleanup.json`. |
 | `cleanup --completed [--orphans] [--dry-run]` | Backfill: run completion cleanup for every resolved or cancelled ticket; `--orphans` also retires managed worktrees and `focus-queue/*` branches no open ticket owns (a worktree any process uses is kept). Every project dashboard must load. |

@@ -37,7 +37,10 @@ import UserNotifications
 {
   private let paths = AppPaths.live()
   private let programLog = ProgramLogStore()
-  private lazy var model = QueueViewModel(paths: paths, programLog: programLog)
+  private lazy var model = QueueViewModel(
+    paths: paths, programLog: programLog,
+    loadCodexCatalog: { await CodexCatalog.load() },
+    isWezTermInstalled: { SetupEnvironment.wezTermInstalled(saved: $0) })
   private lazy var dailyReportApprovalRepository = JSONDailyReportApprovalRepository(
     url: paths.dailyReportApprovalFile
   )

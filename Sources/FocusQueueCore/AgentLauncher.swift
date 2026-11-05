@@ -24,8 +24,21 @@ public enum InteractiveAgentShell {
       script = "builtin cd -- \"$1\" || exit 72; shift; "
       positional.append(workingDirectory)
     }
-    script += "\(provider.executableName) \"$@\""
+    script += "\(provider.executableName) \"$@\"; " + startupFailureHold(provider)
     return [executable(preferred: shellPath), "-lic", script, "focus-queue-agent"] + positional + arguments
+  }
+
+  /// A CLI that fails at startup would close its pane and lose its error. The
+  /// shell stays instead, so the terminal shows the CLI's own message. A clean
+  /// exit, Ctrl-C (130), or a later failure closes as usual, and the hour limit
+  /// stops a background launch from keeping a pane forever.
+  static func startupFailureHold(_ provider: AgentProvider) -> String {
+    let name = provider.displayName.replacingOccurrences(of: "'", with: "")
+    return "fq_status=$?; "
+      + "if [ \"$fq_status\" -ne 0 ] && [ \"$fq_status\" -ne 130 ] && [ \"$SECONDS\" -lt 20 ]; then "
+      + "printf '\\n\(name) stopped right after it started (exit %s). Its error is above.\\n"
+      + "Press Return to close this window.' \"$fq_status\"; read -r -t 3600 _; fi; "
+      + "exit \"$fq_status\""
   }
 }
 
@@ -146,13 +159,15 @@ public actor TaskAgentLauncher {
                              includePrompt: Bool = true, shellPath: String? = nil,
                              usageBarEnabled: Bool = true, codexRoot: URL? = nil,
                              pastesPrompt: Bool = false, statusHooks: Bool = true,
-                             usageRunID: String? = nil) throws -> [String] {
+                             usageRunID: String? = nil,
+                             codexSupportsNoDaemon: Bool = true) throws -> [String] {
     guard let directory = (subtask.workspace?.path ?? context.worktreePath), directory.hasPrefix("/") else {
       throw TaskContextError.unsafeWorktree("Choose a task worktree before launching an agent.")
     }
     // Managed Codex sessions run without the shared app-server daemon so the
     // pane keeps its own rollout writer lock, session identity, and environment.
-    var providerArguments: [String] = subtask.provider == .codex ? ["--no-daemon"] : []
+    // Codex 0.155 and older reject the flag and have no daemon to opt out of.
+    var providerArguments: [String] = subtask.provider == .codex && codexSupportsNoDaemon ? ["--no-daemon"] : []
     if let model = subtask.launchConfiguration?.model?.trimmingCharacters(in: .whitespacesAndNewlines),
        !model.isEmpty {
       providerArguments += ["--model", model]
@@ -163,6 +178,10 @@ public actor TaskAgentLauncher {
     }
     providerArguments += subtask.provider.pluginArguments(
       overrides: subtask.launchConfiguration?.pluginOverrides ?? [:], statusHooks: statusHooks)
+    if subtask.provider == .codex {
+      providerArguments += codexWorkspaceArguments(directory: directory)
+        + ["--add-dir", supportDirectory.path]
+    }
     providerArguments += ["--add-dir", context.contextDirectory.path]
     if let sessionID = subtask.sessionID {
       guard subtask.provider.isValidSessionID(sessionID) else {
@@ -198,6 +217,19 @@ public actor TaskAgentLauncher {
     }
     return focusEnvironment + InteractiveAgentShell.command(provider: subtask.provider, arguments: providerArguments,
           shellPath: shellPath, workingDirectory: directory)
+  }
+
+  /// A fresh Codex config runs an unknown folder read-only, and there Codex
+  /// exits at once because `--add-dir` has nothing to apply to. Workspace-write
+  /// keeps the sandbox on. Each worktree is a new folder, so its trust prompt
+  /// would also block a launch; this trust lasts for the run and is not saved.
+  /// These are config values, so a `--yolo` wrapper still wins. The whole
+  /// `projects` table is set because `-c` keys split on the dots in `.worktrees`.
+  static func codexWorkspaceArguments(directory: String) -> [String] {
+    let path = directory.replacingOccurrences(of: "\\", with: "\\\\")
+      .replacingOccurrences(of: "\"", with: "\\\"")
+    return ["-c", "sandbox_mode=\"workspace-write\"",
+            "-c", "projects={\"\(path)\"={trust_level=\"trusted\"}}"]
   }
 
   /// The text a fresh launch starts with; a resumed conversation gets none.
@@ -573,7 +605,7 @@ public actor TaskAgentLauncher {
   public func startManagedSession(
     context: TaskContext, subtask: TaskSubtask, supportDirectory: URL,
     includePrompt: Bool = true, tmuxExecutable: String,
-    usageBarEnabled: Bool = true
+    usageBarEnabled: Bool = true, codexSupportsNoDaemon: Bool = true
   ) async throws -> TmuxSessionReference {
     if let workspace = subtask.workspace { try await TaskWorktreeManager().validate(workspace) }
     if subtask.tmux != nil, subtask.sessionID == nil {
@@ -587,7 +619,8 @@ public actor TaskAgentLauncher {
     let command = try Self.command(
       context: context, subtask: subtask, supportDirectory: supportDirectory,
       includePrompt: includePrompt, usageBarEnabled: usageBarEnabled,
-      pastesPrompt: pastedPrompt != nil, usageRunID: usageRunID)
+      pastesPrompt: pastedPrompt != nil, usageRunID: usageRunID,
+      codexSupportsNoDaemon: codexSupportsNoDaemon)
     let persistence = FileManager.default.isExecutableFile(atPath: tmuxExecutable)
       ? try TmuxPersistence.prepare(executable: tmuxExecutable, serverName: tmuxServerName,
           supportDirectory: supportDirectory) : nil

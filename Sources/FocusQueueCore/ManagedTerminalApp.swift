@@ -4,11 +4,16 @@ import Foundation
 /// Desktop terminals that can open an agent's tmux pane. The configuration
 /// stores the application name; this type gives each one its behavior.
 public enum ManagedTerminalApp: String, CaseIterable, Identifiable, Sendable {
-  case wezTerm = "WezTerm"
-  case ghostty = "Ghostty"
   case terminal = "Terminal"
+  case ghostty = "Ghostty"
+  case wezTerm = "WezTerm"
 
   public var id: String { rawValue }
+
+  /// WezTerm is optional, so a Mac without it is never offered it.
+  public static func choices(wezTermInstalled: Bool) -> [ManagedTerminalApp] {
+    allCases.filter { $0 != .wezTerm || wezTermInstalled }
+  }
 
   /// Unknown names keep the WezTerm path, which was the only one before.
   public init(applicationName: String) {
@@ -38,9 +43,8 @@ public enum ManagedTerminalApp: String, CaseIterable, Identifiable, Sendable {
 
   public var downloadURL: URL? {
     switch self {
-    case .wezTerm: URL(string: "https://wezterm.org/install/macos.html")
     case .ghostty: URL(string: "https://ghostty.org/download")
-    case .terminal: nil
+    case .wezTerm, .terminal: nil
     }
   }
 
@@ -48,7 +52,7 @@ public enum ManagedTerminalApp: String, CaseIterable, Identifiable, Sendable {
     switch self {
     case .wezTerm: "Opens agents in tabs and lets Focus Queue find and label existing panes."
     case .ghostty: "Opens each agent's tmux pane in a new Ghostty window."
-    case .terminal: "Built into macOS. Opens each agent's tmux pane in a new window."
+    case .terminal: "Built into macOS, so there is nothing to install. Opens each agent's tmux pane in a new window."
     }
   }
 
@@ -102,6 +106,12 @@ public enum TerminalCommandLauncher {
       executable: "/usr/bin/open", arguments: arguments, timeoutSeconds: 15))
     guard result.succeeded else {
       if let commandFile { try? FileManager.default.removeItem(at: commandFile) }
+      if app == .wezTerm, result.standardError.contains("Unable to find application") {
+        var builtIn = configuration
+        builtIn.applicationName = ManagedTerminalApp.terminal.applicationName
+        return try await open(command, configuration: builtIn, titles: titles,
+                              supportDirectory: supportDirectory, runner: runner)
+      }
       let detail = result.timedOut ? "terminal launch timed out" : String(result.standardError.prefix(800))
       throw WezTermError.actionFailed("\(app.displayName) could not open: \(detail)")
     }

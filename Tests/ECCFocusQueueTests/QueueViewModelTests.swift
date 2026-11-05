@@ -273,7 +273,8 @@ struct QueueViewModelTests {
     ) { started = $0 }
 
     #expect(started == false)
-    #expect(model.actionMessages["ECC-101"]?.contains("requires tmux") == true)
+    #expect(model.actionMessages["ECC-101"]?.contains("brew install tmux") == true)
+    #expect(model.actionMessages["ECC-101"]?.contains("WezTerm") == false)
     #expect(await launcher.commands.isEmpty)
     #expect(model.launchingTaskIDs.isEmpty)
   }

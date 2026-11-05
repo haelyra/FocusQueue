@@ -51,6 +51,73 @@ private final class SocketFixtures {
 
 @Suite("WezTerm connection recovery")
 struct WezTermConnectionTests {
+  @Test("A Mac without WezTerm has no panes, not an error")
+  func missingExecutableMeansNoPanes() async throws {
+    let missing = WezTermConfiguration(executable: "/nonexistent/wezterm-\(UUID().uuidString)")
+    let connection = try await WezTermConnection.resolve(configuration: missing, runner: FoundationProcessRunner())
+    #expect(connection.result.succeeded)
+    #expect(connection.result.standardOutput == "[]")
+    let controller = WezTermController(runner: FoundationProcessRunner(), candidateSockets: [])
+    #expect(try await controller.listAttachablePanes(configuration: missing).isEmpty)
+    #expect(try await controller.listRunningAgents(configuration: missing).isEmpty)
+  }
+
+  @Test("The task terminal button opens macOS Terminal and never runs wezterm")
+  func terminalButtonSkipsWezTerm() async throws {
+    let runner = ConnectionProbeRunner([ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false)])
+    let controller = WezTermController(runner: runner, candidateSockets: [])
+    let result = try await controller.focusOrSpawn(
+      directory: "/tmp", taskID: "ECC-1", taskTitle: "Task",
+      configuration: .init(executable: "/nonexistent/wezterm", applicationName: "Terminal"))
+    #expect(result == .spawned(paneID: nil))
+    let calls = await runner.specifications
+    #expect(calls.map(\.executable) == ["/usr/bin/open"])
+    #expect(calls.first?.arguments.first == "-a")
+    #expect(calls.first?.arguments.contains("Terminal") == true)
+  }
+
+  @Test("A saved WezTerm choice opens macOS Terminal when the app is gone")
+  func missingWezTermAppFallsBack() async throws {
+    let runner = ConnectionProbeRunner([
+      ProcessResult(exitCode: 1, standardOutput: "",
+        standardError: "Unable to find application named 'WezTerm'", timedOut: false),
+      ProcessResult(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
+    ])
+    let support = FileManager.default.temporaryDirectory.appendingPathComponent("fq-open-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: support) }
+    try await TerminalCommandLauncher.open(["/usr/bin/true"], configuration: .init(executable: "/nonexistent/wezterm"),
+      supportDirectory: support, runner: runner)
+    let calls = await runner.specifications
+    #expect(calls.count == 2)
+    #expect(calls.last?.arguments.prefix(2) == ["-a", "Terminal"])
+  }
+
+  @Test("Terminal is offered first and WezTerm only when it is installed")
+  func terminalChoices() {
+    #expect(ManagedTerminalApp.choices(wezTermInstalled: false) == [.terminal, .ghostty])
+    #expect(ManagedTerminalApp.choices(wezTermInstalled: true) == [.terminal, .ghostty, .wezTerm])
+    #expect(ManagedTerminalApp.wezTerm.downloadURL == nil)
+  }
+
+  @Test("A new install picks macOS Terminal unless WezTerm is there")
+  func starterTerminal() throws {
+    let home = FileManager.default.temporaryDirectory.appendingPathComponent("fq-home-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: home) }
+    let bin = home.appendingPathComponent(".local/bin")
+    try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+    let support = home.appendingPathComponent("support")
+    // A machine with a system WezTerm cannot show the empty case.
+    if SetupEnvironment.executable("wezterm", home: home) == nil {
+      #expect(SetupEnvironment.starter(supportDirectory: support, home: home).wezTerm.terminalApp == .terminal)
+      #expect(!SetupEnvironment.wezTermInstalled(saved: "/nonexistent/wezterm", home: home))
+    }
+    let wezterm = bin.appendingPathComponent("wezterm")
+    try Data("#!/bin/sh\n".utf8).write(to: wezterm)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wezterm.path)
+    #expect(SetupEnvironment.starter(supportDirectory: support, home: home).wezTerm.terminalApp == .wezTerm)
+    #expect(SetupEnvironment.wezTermInstalled(saved: nil, home: home))
+  }
+
   @Test("Task labels retry until the tmux client attaches")
   func taskLabelsRetryAfterClientAttach() async throws {
     let paneJSON = #"[{"window_id":12,"tab_id":21,"pane_id":41,"cwd":"file:///tmp/worktree","tty_name":"/dev/ttys028"}]"#

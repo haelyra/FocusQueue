@@ -16,6 +16,7 @@ public enum TmuxError: Error, LocalizedError {
   case stopped
   case unavailable(String)
   case startedButUnconfirmed(name: String, executable: String, attempts: Int, lastDetail: String)
+  case exitedAtLaunch
   case changed
   public var mayHaveStarted: Bool {
     if case .startedButUnconfirmed = self { return true }
@@ -28,6 +29,8 @@ public enum TmuxError: Error, LocalizedError {
     case .unavailable(let detail): "tmux could not open the agent session: \(detail)"
     case .startedButUnconfirmed(let name, _, let attempts, let lastDetail):
       "tmux created session \(name), but Focus Queue could not confirm its final pane process and terminal device after \(attempts) checks. The agent may still be starting, so Focus Queue will not create a duplicate. Last check: \(lastDetail)"
+    case .exitedAtLaunch:
+      "The agent's command line tool closed as soon as it started, so nothing is running. Try again. If it closes again, run the tool in Terminal to see why."
     case .changed:
       "The saved tmux session no longer has the same server, pane process, and terminal device. Focus Queue did not start a replacement."
     }
@@ -170,6 +173,12 @@ public actor TmuxController {
         $0.range(of: isPane ? "^%[0-9]+$" : "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$", options: .regularExpression) != nil
       }
       if probe.succeeded, valid, !identities.contains(isPane ? target : name) { throw TmuxError.stopped }
+      // The server outlives its last session (`exit-empty off`) and then has
+      // nothing to enumerate, so this answer is as authoritative as an empty list.
+      if !probe.succeeded, !probe.timedOut,
+         ["no server running", "no current target", "no sessions"].contains(where: probe.standardError.contains) {
+        throw TmuxError.stopped
+      }
       throw error
     }
   }

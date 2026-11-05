@@ -11,13 +11,21 @@ public enum SetupEnvironment {
     return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
   }
 
+  /// True when WezTerm is on this Mac, at the saved path or a usual one.
+  public static func wezTermInstalled(saved: String? = nil,
+                                      home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Bool {
+    saved.map(FileManager.default.isExecutableFile(atPath:)) == true || executable("wezterm", home: home) != nil
+  }
+
   public static func starter(supportDirectory: URL,
                              home: URL = FileManager.default.homeDirectoryForCurrentUser) -> AppConfiguration {
+    let wezTerm = executable("wezterm", home: home)
     var configuration = AppConfiguration(appName: "Focus Queue",
       dashboardPath: supportDirectory.appendingPathComponent("workspace/dashboard.json").path,
       workspacePath: supportDirectory.appendingPathComponent("workspace").path,
       defaultPlacement: .upperLeft, refreshIntervalSeconds: 2, dailyRoutines: [],
-      wezTerm: .init(executable: executable("wezterm", home: home) ?? "/Applications/WezTerm.app/Contents/MacOS/wezterm"),
+      wezTerm: .init(executable: wezTerm ?? "/Applications/WezTerm.app/Contents/MacOS/wezterm",
+        applicationName: (wezTerm == nil ? ManagedTerminalApp.terminal : .wezTerm).applicationName),
       verifier: .init(enabled: false, executable: home.appendingPathComponent(".local/bin/focus-queue-codex").path,
         sessionName: "focus-queue-verifier"))
     configuration.setupCompleted = false
@@ -76,9 +84,9 @@ public enum SetupEnvironment {
   }
 
   public static let terminalCapabilities: [(name: String, support: String)] = [
-    ("WezTerm", "Deterministic managed-session recall, pane browsing and direct-session control."),
-    ("Terminal.app", "Deterministic managed-session recall through a private one-use command file."),
-    ("Ghostty", "Deterministic managed-session recall in a new window attached to the tmux pane."),
+    ("Terminal.app", "Built into macOS and the default. Deterministic managed-session recall through a private one-use command file."),
+    ("Ghostty", "Optional. Deterministic managed-session recall in a new window attached to the tmux pane."),
+    ("WezTerm", "Optional. Adds pane browsing and direct-session control when it is installed."),
     ("iTerm2, kitty", "Use the session helper inside the terminal to create and attach tmux sessions. Automated desktop opening is not configured."),
     ("VS Code / Cursor terminals", "The tmux command-line path is available inside integrated terminals. Editor pane discovery is not implemented."),
     ("SSH clients", "Reconnect to tmux on the original Mac. Tailscale supplies private network access; SSH access must be configured separately.")

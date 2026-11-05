@@ -89,6 +89,8 @@ public struct VerifierConfiguration: Codable, Equatable, Sendable {
   public var forkSourceSessionID: String?
   /// Runtime-only document Q&A with a fresh session and read/search tools.
   public var documentReader: Bool?
+  /// Runtime-only one-call document edit: no tools, and the app applies the reply.
+  public var documentEditor: Bool?
 
   public init(
     enabled: Bool,

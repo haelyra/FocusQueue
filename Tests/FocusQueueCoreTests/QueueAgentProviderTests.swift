@@ -46,6 +46,27 @@ func documentReaderProviderArguments() async throws {
   }
 }
 
+@Test("Document editors get no queue prompt, no extra directories, and no mail evidence check")
+func documentEditorProviderArguments() async throws {
+  for provider in AgentProvider.allCases {
+    let runner = QueueAgentRecordingRunner()
+    let agent = HarnessQueueAgent(provider: provider, runner: runner)
+    var configuration = chatConfiguration(executable: "/mock/\(provider.rawValue)")
+    configuration.documentEditor = true
+    configuration.forkSourceSessionID = "must-not-fork"
+    configuration.writableDirectories = ["/must-not-write"]
+    let prompt = "Document text.\n\nUser request:\nAdd a note about my inbox and email."
+    let reply = try await agent.send(message: prompt, dashboardPath: "/dashboard", workspace: "/tmp",
+      visibleOrder: [], deferredTicketIDs: [], configuration: configuration, model: "small", effort: "low")
+    let invocation = try #require(await runner.specifications.first)
+    #expect(invocation.arguments.contains("--editor") && invocation.arguments.contains("--fresh"))
+    #expect(!invocation.arguments.contains("--reader"))
+    #expect(!invocation.arguments.contains("--fork-from") && !invocation.arguments.contains("--writable-dir"))
+    #expect(await runner.prompts == [prompt])
+    #expect(reply.message == "ok")
+  }
+}
+
 private func chatConfiguration(executable: String) -> VerifierConfiguration {
   VerifierConfiguration(
     enabled: true,

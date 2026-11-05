@@ -491,6 +491,33 @@ class FocusQueueClaudeTests(unittest.TestCase):
         self.assertIn(str(root), [command[i + 1] for i, v in enumerate(command) if v == "--add-dir"])
         self.assertEqual(captured["kwargs"]["cwd"], str(root / "runtime" / "lean-chat"))
 
+    def test_editor_is_one_tool_free_call_with_no_extra_context(self):
+        captured = {}
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            MODULE, "resolve_claude", return_value="/usr/bin/claude"
+        ), mock.patch.object(
+            MODULE.subprocess, "Popen", fake_process(captured, envelope("done"))
+        ):
+            root = Path(temporary)
+            prompt = root / "prompt.txt"
+            prompt.write_text("Edit the document.")
+            arguments = argparse.Namespace(runtime=root / "runtime", session="editor", workspace=root,
+                prompt_file=prompt, timeout=10, editor=True, context_dir=root, writable_dirs=[root],
+                fork_from="must-not-fork")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(MODULE.chat(arguments), 0)
+            lean_directory = str(root / "runtime" / "lean-chat")
+            self.assertFalse((root / "runtime" / "sessions.json").exists())
+        command = captured["command"]
+        self.assertEqual(command[command.index("--tools") + 1], "")
+        self.assertEqual(command[command.index("--setting-sources") + 1], "")
+        self.assertEqual(command[command.index("--system-prompt") + 1], MODULE.EDITOR_SYSTEM_PROMPT)
+        self.assertIn("--no-session-persistence", command)
+        self.assertNotIn("--add-dir", command)
+        self.assertNotIn("--permission-mode", command)
+        self.assertNotIn("--resume", command)
+        self.assertEqual(captured["kwargs"]["cwd"], lean_directory)
+
     def test_reader_has_only_read_and_search_tools(self):
         captured = {}
         with tempfile.TemporaryDirectory() as temporary, mock.patch.object(

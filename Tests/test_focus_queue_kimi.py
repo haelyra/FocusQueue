@@ -231,6 +231,29 @@ class FocusQueueKimiTests(unittest.TestCase):
             fork.assert_not_called()
             self.assertFalse((root / "runtime" / "sessions.json").exists())
 
+    def test_editor_profile_has_no_tools_and_never_forks_or_saves(self):
+        captured = {}
+        stdout = stream_lines(assistant_event("answer", session_id=SESSION_ID))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prompt = root / "prompt.txt"
+            prompt.write_text("Edit the document.")
+            arguments = argparse.Namespace(runtime=root / "runtime", session="editor", workspace=root,
+                prompt_file=prompt, timeout=10, editor=True, fork_from="must-not-fork")
+            with mock.patch.object(MODULE, "resolve_kimi", return_value="/usr/bin/kimi"), \
+                    mock.patch.object(MODULE, "newest_workspace_session", return_value=None), \
+                    mock.patch.object(MODULE, "fork_session") as fork, \
+                    mock.patch.object(MODULE.subprocess, "Popen", fake_process(captured, stdout)), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(MODULE.chat(arguments), 0)
+            command = captured["command"]
+            profile = Path(command[command.index("--agent-file") + 1]).read_text()
+            self.assertIn("name: focus-queue-document-editor", profile)
+            self.assertNotIn("Bash", profile)
+            self.assertNotIn("--session", command)
+            fork.assert_not_called()
+            self.assertFalse((root / "runtime" / "sessions.json").exists())
+
     def test_chat_persists_a_named_session_in_private_state(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

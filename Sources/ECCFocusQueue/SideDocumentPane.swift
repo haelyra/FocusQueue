@@ -399,7 +399,8 @@ struct DocumentConversationView: View {
                     isResponding: model.isResponding,
                     canSend: model.isLoaded && !model.isClearing,
                     sendLabel: model.route.kind == .ephemeralReader ? "Ask the ephemeral reader"
-                        : model.route.kind == .creatorFork ? "Send to a fork of the creating agent" : "Send to a new agent",
+                        : model.route.kind == .creatorFork ? "Send to a fork of the creating agent"
+                        : model.usesEditor ? "Send to the document editor" : "Send to a new agent",
                     stopLabel: "Stop the document agent response",
                     selection: model.selection,
                     clearSelection: { model.selection = nil },
@@ -414,7 +415,7 @@ struct DocumentConversationView: View {
         if route.kind == .ephemeralReader { return "READER · \(route.provider.displayName.uppercased())" }
         return route.kind == .creatorFork
             ? "CREATOR FORK · \(route.provider.displayName.uppercased())"
-            : "NEW AGENT · \(route.provider.displayName.uppercased())"
+            : "\(model.usesEditor ? "EDITOR" : "NEW AGENT") · \(route.provider.displayName.uppercased())"
     }
 
     private var progressText: String {
@@ -422,7 +423,7 @@ struct DocumentConversationView: View {
         if route.kind == .ephemeralReader { return "The document reader is replying" }
         return route.kind == .creatorFork
             ? "The creating agent's fork is replying"
-            : "New \(route.provider.displayName) agent is replying"
+            : model.usesEditor ? "The document editor is replying" : "New \(route.provider.displayName) agent is replying"
     }
 
     private var settingsBar: some View {
@@ -444,7 +445,7 @@ struct DocumentConversationView: View {
                 Text("Ephemeral reader").tag(DocumentChatRoute.Kind.ephemeralReader)
                 Text("Creating agent fork").tag(DocumentChatRoute.Kind.creatorFork)
                     .disabled(model.creator == nil && model.route.kind != .creatorFork)
-                Text("New agent").tag(DocumentChatRoute.Kind.newAgent)
+                Text(model.isEditableDocument ? "Document editor" : "New agent").tag(DocumentChatRoute.Kind.newAgent)
             }
             .font(.caption)
             .disabled(!model.canChooseProvider || model.isResponding)
@@ -507,6 +508,7 @@ struct DocumentConversationView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(route.kind == .ephemeralReader ? "To an ephemeral \(route.provider.displayName) reader" : isFork
                     ? "To the creating agent · \(route.provider.displayName) fork"
+                    : model.usesEditor ? "To the \(route.provider.displayName) document editor"
                     : "To a new \(route.provider.displayName) agent")
                     .font(.system(size: 11.5, weight: .semibold))
                     .lineLimit(2)
@@ -545,6 +547,9 @@ struct DocumentConversationView: View {
             return model.lockedRoute == nil
                 ? "\(agent) wrote this document. Messages go to a fork of its conversation, so its terminal is not interrupted. Each message re-reads that whole conversation, so even a short question can use hundreds of thousands of tokens."
                 : "Continues a fork of \(agent), which wrote this document. Each message re-reads its whole conversation."
+        }
+        if model.usesEditor {
+            return "Makes basic edits to this document in one step, sending only the selected lines when it can. It cannot run commands or read other files. For that, use a creating-agent fork."
         }
         if model.lockedRoute != nil { return "This conversation started with a new agent." }
         if model.isResolvingCreator && model.creator == nil { return "Looking for the agent that created this document…" }

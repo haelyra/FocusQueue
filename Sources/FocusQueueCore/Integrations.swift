@@ -2685,9 +2685,12 @@ public actor HarnessQueueAgent: QueueAgentChatting {
         let runID = UUID().uuidString
         let source = Self.documentRuntimeArguments(configuration).isEmpty ? "queue_chat" : "document_chat"
         let isReader = configuration.documentReader == true
-        let forkSource = isReader ? nil : configuration.forkSourceSessionID.flatMap { $0.isEmpty ? nil : $0 }
+        let isEditor = configuration.documentEditor == true
+        // Readers and editors never touch the queue, so neither gets queue actions or evidence checks.
+        let isDocumentOnly = isReader || isEditor
+        let forkSource = isDocumentOnly ? nil : configuration.forkSourceSessionID.flatMap { $0.isEmpty ? nil : $0 }
         // A forked agent keeps its own identity and instructions; only the queue agent gets the queue prompt.
-        let prompt = forkSource != nil || isReader ? message : QueueAgentPrompt.build(
+        let prompt = forkSource != nil || isDocumentOnly ? message : QueueAgentPrompt.build(
             provider: provider,
             message: message,
             dashboardPath: dashboardPath,
@@ -2724,6 +2727,7 @@ public actor HarnessQueueAgent: QueueAgentChatting {
         // exception: its value is the source conversation it continues.
         if forkSource == nil { arguments.append("--fresh") }
         if isReader { arguments.append("--reader") }
+        if isEditor { arguments.append("--editor") }
         arguments += [
             "--session", Self.resolvedSessionName(for: configuration, provider: provider),
             "--workspace", workspace,
@@ -2734,7 +2738,7 @@ public actor HarnessQueueAgent: QueueAgentChatting {
         if let contextDirectory = configuration.contextDirectory {
             arguments.append(contentsOf: ["--context-dir", contextDirectory])
         }
-        for directory in configuration.writableDirectories ?? [] where !isReader && !directory.isEmpty {
+        for directory in configuration.writableDirectories ?? [] where !isDocumentOnly && !directory.isEmpty {
             arguments.append(contentsOf: ["--writable-dir", directory])
         }
         if let requestedModel, !requestedModel.isEmpty {
@@ -2776,7 +2780,7 @@ public actor HarnessQueueAgent: QueueAgentChatting {
         }
         let evidence = QueueAgentEvidenceVerifier(files: files, provider: provider)
         var verifiedOutput = output
-        if !isReader && QueueAgentEvidenceVerifier.requiresMailEvidence(request) {
+        if !isDocumentOnly && QueueAgentEvidenceVerifier.requiresMailEvidence(request) {
             if QueueAgentEvidenceVerifier.isBlockedMailResponse(verifiedOutput) {
                 preservePrivateFailureLog(log)
                 throw QueueAgentError.failed(provider, Self.safeFailureDetail(
@@ -2791,7 +2795,7 @@ public actor HarnessQueueAgent: QueueAgentChatting {
                 requestStartedAt: requestStartedAt
             )
         }
-        if !isReader && QueueAgentEvidenceVerifier.requiresDiscordEvidence(request) {
+        if !isDocumentOnly && QueueAgentEvidenceVerifier.requiresDiscordEvidence(request) {
             verifiedOutput = try evidence.verifyDiscordEvidence(
                 in: verifiedOutput,
                 for: request,

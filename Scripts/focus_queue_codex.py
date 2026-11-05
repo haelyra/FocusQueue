@@ -835,7 +835,8 @@ def chat(arguments: argparse.Namespace) -> int:
         prior_thread = str(sessions.get(arguments.session, "")) or None
         fork_from = None if prior_thread else getattr(arguments, "fork_from", None)
         prompt = arguments.prompt_file.read_text(encoding="utf-8")
-        reader = getattr(arguments, "reader", False)
+        # An editor needs no writes of its own: the app applies the edits it returns.
+        reader = getattr(arguments, "reader", False) or getattr(arguments, "editor", False)
         if reader or getattr(arguments, "fresh", False):
             # The app sends its own short recap, so a fresh turn neither resumes
             # nor saves a session mapping whose history would grow every turn.
@@ -951,6 +952,8 @@ def main() -> int:
     chat_parser.add_argument("--session", required=True)
     chat_parser.add_argument("--fresh", action="store_true",
                              help="Run a one-off turn without resuming or saving a session")
+    chat_parser.add_argument("--editor", action="store_true",
+                             help="Run one read-only document edit; the app applies the reply")
     chat_parser.add_argument("--reader", action="store_true",
                              help="Run an ephemeral read-only document question")
     chat_parser.add_argument("--workspace", type=Path, required=True)

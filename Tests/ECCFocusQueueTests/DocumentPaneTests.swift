@@ -32,6 +32,23 @@ private actor RoutingTestAgent: QueueAgentChatting {
     func reset(configuration: VerifierConfiguration) async throws { resets += 1 }
 }
 
+/// Returns scripted replies in order and records each request.
+private actor ScriptedEditorAgent: QueueAgentChatting {
+    struct Request: Sendable { let message: String; let configuration: VerifierConfiguration }
+    private(set) var requests: [Request] = []
+    private var replies: [String]
+    private var sendHook: (@Sendable () -> Void)?
+    init(replies: [String]) { self.replies = replies }
+    func onSend(_ hook: @escaping @Sendable () -> Void) { sendHook = hook }
+    func send(message: String, dashboardPath: String, workspace: String, visibleOrder: [String],
+              deferredTicketIDs: [String], configuration: VerifierConfiguration, model: String?, effort: String?) async throws -> QueueAgentReply {
+        requests.append(.init(message: message, configuration: configuration))
+        sendHook?()
+        return .init(message: replies.isEmpty ? "" : replies.removeFirst(), log: "")
+    }
+    func reset(configuration: VerifierConfiguration) async throws {}
+}
+
 @MainActor
 private final class RoutingTestCreator {
     var liveWorkspace: String? = "/live/agent"
@@ -225,7 +242,8 @@ struct DocumentPaneTests {
         let requests = await agent.requests
         #expect(requests.count == 2)
         #expect(Set(requests.map { $0.0 }).count == 2)
-        #expect(requests.allSatisfy { $0.1.contains("Instruction sentinel") && $0.1.contains(context.planPath) && $0.1.contains("ECC-901") })
+        // The editor sends the document only: no plan, no instruction tree, no task card.
+        #expect(requests.allSatisfy { !$0.1.contains("Instruction sentinel") && !$0.1.contains(context.planPath) && !$0.1.contains("ECC-901") })
         #expect(first.isResponding && second.isResponding)
         for request in requests.reversed() { await agent.finish(request.0, message: request.1.contains("First document sentinel") ? "First reply" : "Second reply") }
         for _ in 0..<200 {
@@ -327,12 +345,118 @@ struct DocumentPaneTests {
         restored.send()
         try await waitForReply(restored)
         let fresh = try #require(await agents[.kimi]!.requests.first)
-        #expect(fresh.configuration.forkSourceSessionID == nil)
+        #expect(fresh.configuration.forkSourceSessionID == nil && fresh.configuration.documentEditor == true)
         #expect(fresh.model == "kimi-code/k3" && fresh.workspace == root.path)
         #expect(!fresh.message.hasPrefix(DocumentConversation.forkPreamble))
         #expect(restored.lockedRoute?.kind == .newAgent && !restored.canChooseProvider)
         restored.setNewAgentProvider(.codex)
         #expect(restored.route.provider == .kimi)
+    }
+
+    /// A started editor chat on `name`, with a scripted reply per model call.
+    @MainActor
+    private func editorChat(_ root: URL, name: String, text: String, replies: [String]) async throws -> (DocumentConversation, URL, ScriptedEditorAgent) {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let context = try await TaskContextStore(root: root).ensureContext(ticket: .init(id: "ECC-905", title: "Editor", status: "open", summary: "Edit"))
+        let document = root.appendingPathComponent(name)
+        try Data(text.utf8).write(to: document)
+        let agent = ScriptedEditorAgent(replies: replies)
+        let chat = DocumentConversation(document: document, subject: .init(kind: .task(context)), support: root,
+            services: DocumentChatServices(agent: { _ in agent }, executable: { _ in "/bin/editor" },
+                resolveCreator: { _ in nil }, modelChoices: { _ in [] }),
+            configuration: SetupEnvironment.starter(supportDirectory: root).verifier, dashboardPath: "/dashboard",
+            workspace: root.path, provider: .claude)
+        await chat.load()
+        chat.setRecipient(.newAgent)
+        return (chat, document, agent)
+    }
+
+    @MainActor
+    private func sendAndWait(_ chat: DocumentConversation, _ request: String) async throws {
+        chat.draft = request; chat.send()
+        for _ in 0..<500 where chat.isResponding { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(!chat.isResponding)
+    }
+
+    private static let longTable = "# Plan\n\n| Area | Decision |\n| --- | --- |\n| Desktop packaging matrix | Pending |\n| Editing language subset | Pending |\n\n"
+        + String(repeating: "Unrelated planning prose about other things entirely.\n", count: 130)
+
+    private func cellSelection(_ document: URL) -> PlanCanvasSelection {
+        PlanCanvasSelection(kind: .text, documentPath: document.path, selector: "td", tag: "td", excerpt: "Editing language subset")
+    }
+
+    @Test("The editor applies one reply to the document and keeps its permissions")
+    func editorAppliesEdits() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("document-editor-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reply = #"{"reply":"Recorded B.","edits":[{"line":6,"find":"Pending","replace":"B"}],"needsFullDocument":false}"#
+        let (chat, document, agent) = try await editorChat(root, name: "plan.md", text: Self.longTable, replies: [reply])
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: document.path)
+        chat.selection = cellSelection(document)
+        try await sendAndWait(chat, "B")
+        #expect(chat.messages.last?.text == "Recorded B.")
+        #expect(try String(contentsOf: document, encoding: .utf8) == Self.longTable.replacingOccurrences(of: "subset | Pending", with: "subset | B"))
+        let permissions = try FileManager.default.attributesOfItem(atPath: document.path)[.posixPermissions] as? Int
+        #expect(permissions == 0o644)
+        let requests = await agent.requests
+        #expect(requests.count == 1 && requests[0].configuration.documentEditor == true)
+        // The excerpt carries the row and header, not the rest of a long document.
+        #expect(requests[0].message.contains("6\t| Editing language subset | Pending |"))
+        #expect(requests[0].message.contains("3\t| Area | Decision |"))
+        #expect(!requests[0].message.contains("Unrelated planning prose"))
+        #expect(requests[0].message.hasSuffix("User request:\nB"))
+    }
+
+    @Test("The editor asks for the whole document once when an excerpt is too little")
+    func editorEscalatesOnce() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("document-editor-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let more = #"{"reply":"","edits":[],"needsFullDocument":true}"#
+        let (chat, document, agent) = try await editorChat(root, name: "plan.md", text: Self.longTable, replies: [more, more])
+        chat.selection = cellSelection(document)
+        try await sendAndWait(chat, "Rewrite every row")
+        let requests = await agent.requests
+        #expect(requests.count == 2)
+        #expect(!requests[0].message.contains("Unrelated planning prose") && requests[1].message.contains("Unrelated planning prose"))
+        #expect(chat.messages.last?.text == "I could not make that change from this document.")
+        #expect(try String(contentsOf: document, encoding: .utf8) == Self.longTable)
+    }
+
+    @Test("The editor changes nothing when an edit fails or the file moved on")
+    func editorRefusesUnsafeEdits() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("document-editor-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let wrong = #"{"reply":"Claimed success","edits":[{"line":1,"find":"Missing","replace":"x"}]}"#
+        let (chat, document, _) = try await editorChat(root, name: "plan.md", text: "# Plan\n", replies: [wrong])
+        try await sendAndWait(chat, "Change it")
+        #expect(chat.messages.last?.text.hasPrefix("I made no changes") == true)
+        #expect(try String(contentsOf: document, encoding: .utf8) == "# Plan\n")
+
+        let moved = root.appendingPathComponent("moved")
+        let good = #"{"reply":"Claimed success","edits":[{"line":1,"find":"Plan","replace":"Roadmap"}]}"#
+        let (raced, racedDocument, racedAgent) = try await editorChat(moved, name: "plan.md", text: "# Plan\n", replies: [good])
+        await racedAgent.onSend { try? Data("# Someone else\n".utf8).write(to: racedDocument) }
+        try await sendAndWait(raced, "Change it")
+        #expect(raced.messages.last?.text.hasPrefix("The document changed") == true)
+        #expect(try String(contentsOf: racedDocument, encoding: .utf8) == "# Someone else\n")
+    }
+
+    @Test("A document past the size limit tells the editor it is only partly shown")
+    func editorLabelsTruncation() async {
+        let lines = Array(repeating: String(repeating: "x", count: 1_000), count: 60)
+        let prompt = await DocumentContextReader().editorPrompt(lines: lines, window: nil, selection: nil, request: "Edit", history: [])
+        #expect(prompt.contains("First 47 of 60 lines of the document"))
+    }
+
+    @Test("A PDF keeps a full agent because it has no lines to edit")
+    func pdfSkipsTheEditor() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("document-editor-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (chat, _, agent) = try await editorChat(root, name: "report.pdf", text: "not really a pdf", replies: ["Plain answer"])
+        #expect(!chat.usesEditor && !chat.isEditableDocument)
+        try await sendAndWait(chat, "Summarize")
+        #expect(await agent.requests.first?.configuration.documentEditor != true)
+        #expect(chat.messages.last?.text == "Plain answer")
     }
 
     @Test("Reader defaults to a small model, includes task sources, and preserves the creator-model option")

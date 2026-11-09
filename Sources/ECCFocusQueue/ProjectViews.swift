@@ -267,6 +267,8 @@ struct ProjectSettingsSection: View {
                     Button("Edit") { editor = project }.controlSize(.small)
                 }
                 Divider()
+                DevelopmentProcessSettingsRow(model: model, projectID: project.id)
+                Divider()
                 ProjectFilesSection(model: model, projectID: project.id)
             } else {
                 Text("Add a project to organize tasks by repository.").foregroundStyle(.secondary)
@@ -285,6 +287,31 @@ struct ProjectSettingsSection: View {
             // A newly added project becomes the one shown; a removed one falls back.
             if let added = new.first(where: { !old.contains($0) }) { projectID = added }
             else if !new.contains(projectID) { projectID = new.first ?? "" }
+        }
+    }
+}
+
+/// The Settings row for a project's development process. The toggle writes
+/// development.json beside the project plan; the Project tab tracks the phases.
+struct DevelopmentProcessSettingsRow: View {
+    let model: QueueViewModel
+    let projectID: String
+    @State private var enabled = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Toggle("Development process", isOn: Binding(
+                get: { enabled },
+                set: { value in
+                    enabled = value
+                    model.setDevelopmentProcessEnabled(value, for: projectID)
+                }))
+            Text("Track planning, scaffolding, module implementation, QA, and release for this project. Agents see the current phase in their launch briefs.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .onChange(of: projectID, initial: true) {
+            enabled = model.developmentProcessEnabled(for: projectID)
         }
     }
 }

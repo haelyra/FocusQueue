@@ -765,6 +765,14 @@ final class QueueViewModel {
 
   var configurationURL: URL { paths.configurationFile }
   var projectContextStore: ProjectContextStore { ProjectContextStore(root: paths.supportDirectory) }
+  var developmentProcessStore: DevelopmentProcessStore {
+    DevelopmentProcessStore(root: paths.supportDirectory)
+  }
+  /// The selected project's development process, nil when disabled or absent.
+  /// Reloaded with the task contexts so agent edits to development.json appear.
+  private(set) var developmentProcess: DevelopmentProcess?
+  /// Set from the last development-process mutation; surfaced in the Project tab.
+  private(set) var developmentProcessError: String?
   var projects: [ProjectConfiguration] { config.projects }
   var selectedProject: ProjectConfiguration? { config.selectedProject }
   var windowSnapshot: WindowSnapshot? { localState.window }
@@ -1069,6 +1077,7 @@ final class QueueViewModel {
       await captureDurableDashboard(merged)
     }
     taskContexts = await availableTaskContexts()
+    reloadDevelopmentProcess()
     if refreshInFlight {
       projectRefreshPending = true
     } else {
@@ -1117,6 +1126,7 @@ final class QueueViewModel {
       documentConversations.removeAll()
       lastContextRefresh = nil
       lastDurableDashboard = nil
+      reloadDevelopmentProcess()
       await captureDurableDashboard(snapshot.document)
       if refreshInFlight {
         projectRefreshPending = true
@@ -2030,7 +2040,16 @@ final class QueueViewModel {
       let catalog = config.projects.map { project in
         "- \(project.name) (\(project.id)): dashboard \(project.dashboardPath); workspace \(project.workspacePath)"
       }.joined(separator: "\n")
-      let scope = "Selected project: \(projectScopeName) (\(selectedProjectID ?? ProjectCatalog.otherID)). Selected task IDs: \(projectTickets.map(\.id).joined(separator: ", ")).\nConfigured projects, all readable without changing the UI selection:\n\(catalog)\n"
+      var scope = "Selected project: \(projectScopeName) (\(selectedProjectID ?? ProjectCatalog.otherID)). Selected task IDs: \(projectTickets.map(\.id).joined(separator: ", ")).\nConfigured projects, all readable without changing the UI selection:\n\(catalog)\n"
+      // The orchestrator routes work to the current phase, so it needs the
+      // same process state the launch briefs carry. The All-projects scope
+      // spans projects with different phases, so no single one applies.
+      if let process = developmentProcess, !showsAllProjects {
+        let pending = process.pendingSteps.map(\.title).prefix(3).joined(separator: ", ")
+        scope += "Development process for \(projectScopeName): \(process.currentPhase.title) phase"
+          + (pending.isEmpty ? " (all steps accepted)." : "; next steps: \(pending).")
+          + " \(DevelopmentProcessCatalog.brief(for: process.currentPhase))\n"
+      }
       scopedMessage = scope + "Read the dashboard for the project named in the user's request. Preserve projectID and unknown fields on edits to the selected dashboard." + request
     }
     queueChatTask = Task { [weak self] in
@@ -2416,6 +2435,7 @@ final class QueueViewModel {
   private func refreshTaskContexts() async {
     guard lastContextRefresh == nil || Date().timeIntervalSince(lastContextRefresh!) >= 2 else { return }
     lastContextRefresh = Date()
+    reloadDevelopmentProcess()
     let tickets = dashboard.tickets
     let baseline = taskContexts
     let snapshot = await taskContextStore.refreshContexts(
@@ -2536,6 +2556,89 @@ final class QueueViewModel {
       await captureDurableContexts(Array(taskContexts.values))
     }
     await captureDurableState(localState)
+  }
+
+  /// Loads the selected project's development process off disk. A missing or
+  /// disabled file publishes nil; a malformed one keeps the last good state.
+  func reloadDevelopmentProcess() {
+    guard let projectID = selectedProject?.id else {
+      if developmentProcess != nil { developmentProcess = nil }
+      return
+    }
+    do {
+      let loaded = try developmentProcessStore.load(projectID: projectID)
+      let visible = loaded?.enabled == true ? loaded : nil
+      if developmentProcess != visible { developmentProcess = visible }
+    } catch {
+      developmentProcessError = "Development process: \(error.localizedDescription)"
+    }
+  }
+
+  /// One development-process mutation: run the store edit, publish the result,
+  /// and surface any error in the Project tab instead of failing silently.
+  private func mutateDevelopmentProcess(
+    _ mutation: (DevelopmentProcessStore, String) throws -> DevelopmentProcess
+  ) {
+    guard let projectID = selectedProject?.id else { return }
+    do {
+      let updated = try mutation(developmentProcessStore, projectID)
+      // A disabled process stays on disk but leaves the tab and briefs.
+      developmentProcess = updated.enabled ? updated : nil
+      developmentProcessError = nil
+    } catch {
+      developmentProcessError = error.localizedDescription
+    }
+  }
+
+  func setDevelopmentProcessEnabled(_ enabled: Bool) {
+    mutateDevelopmentProcess { try $0.setEnabled(enabled, projectID: $1) }
+  }
+
+  func setDevelopmentPhase(_ phase: DevelopmentPhase) {
+    mutateDevelopmentProcess { try $0.setPhase(phase, projectID: $1) }
+  }
+
+  func setDevelopmentStepStatus(_ status: DevelopmentStepStatus, stepID: String) {
+    mutateDevelopmentProcess { try $0.setStepStatus(status, stepID: stepID, projectID: $1) }
+  }
+
+  func addDevelopmentModule(name: String, file: String?) {
+    mutateDevelopmentProcess { try $0.addModule(name: name, file: file, projectID: $1) }
+  }
+
+  /// Sequential by design: the store rejects module N+1 before module N.
+  func acceptDevelopmentModuleCriteria(moduleID: String) {
+    mutateDevelopmentProcess { try $0.acceptCriteria(moduleID: moduleID, projectID: $1) }
+  }
+
+  func setDevelopmentModuleImplemented(_ implemented: Bool, moduleID: String) {
+    mutateDevelopmentProcess {
+      try $0.setModuleImplemented(implemented, moduleID: moduleID, projectID: $1)
+    }
+  }
+
+  func setDevelopmentModuleQAAccepted(_ accepted: Bool, moduleID: String) {
+    mutateDevelopmentProcess {
+      try $0.setModuleQAAccepted(accepted, moduleID: moduleID, projectID: $1)
+    }
+  }
+
+  func dismissDevelopmentProcessError() { developmentProcessError = nil }
+
+  /// Settings shows any project, not just the selected one; these keyed
+  /// accessors keep that row independent of the Project tab's published state.
+  func developmentProcessEnabled(for projectID: String) -> Bool {
+    (try? developmentProcessStore.load(projectID: projectID))??.enabled ?? false
+  }
+
+  func setDevelopmentProcessEnabled(_ enabled: Bool, for projectID: String) {
+    do {
+      let updated = try developmentProcessStore.setEnabled(enabled, projectID: projectID)
+      if projectID == selectedProject?.id { developmentProcess = updated.enabled ? updated : nil }
+      developmentProcessError = nil
+    } catch {
+      developmentProcessError = error.localizedDescription
+    }
   }
 
   func openPlan(for ticket: DashboardTicket, sourceURL: URL? = nil) {

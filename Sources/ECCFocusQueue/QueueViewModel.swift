@@ -4025,10 +4025,13 @@ final class QueueViewModel {
       title = "\(baseTitle) \(index)"
       index += 1
     }
+    // A task created without an agent saved its prompt for this launch; the +
+    // creator promises the card's New Agent starts with it.
+    let savedPrompt = savedInitialPrompt(for: ticket)
     launchAgent(
       for: ticket, title: title, provider: provider,
-      repositoryPath: defaultRepository(for: ticket), assignmentDescription: "",
-      includePrompt: false, useTmux: true, initialPrompt: nil, tracksCompletion: true,
+      repositoryPath: defaultRepository(for: ticket), assignmentDescription: savedPrompt ?? "",
+      includePrompt: savedPrompt != nil, useTmux: true, initialPrompt: savedPrompt, tracksCompletion: true,
       subtaskID: subtaskID, modelName: model, effort: effort,
       workspacePolicy: .isolatedCommittedSnapshot,
       completion: completion)

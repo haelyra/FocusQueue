@@ -761,7 +761,9 @@ struct NewTaskAgentView: View {
   @State private var repository = ""
   @State private var modelName = ""
   @State private var effort = ""
-  @State private var includePrompt = false
+  // On, matching the other launch surfaces: off opens the agent at an empty
+  // input and even drops the typed work description.
+  @State private var includePrompt = true
   @State private var assignmentID = UUID().uuidString
   @State private var workspacePreview = WorkspacePreviewModel()
   @State private var isStarting = false
@@ -958,7 +960,6 @@ struct NewTaskAgentView: View {
         }
       }
       .onAppear {
-        includePrompt = false
         if let targetSubtask {
           assignmentID = targetSubtask.id
           title = targetSubtask.title

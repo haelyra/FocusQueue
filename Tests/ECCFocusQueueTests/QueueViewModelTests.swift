@@ -1945,6 +1945,51 @@ struct QueueViewModelTests {
     #expect(!launchCommands.contains { $0.contains("Prepare the task context") })
   }
 
+  @Test("The card's New Agent sends the task's saved initial prompt to its first agent")
+  func oneClickAgentSendsSavedInitialPrompt() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let repository = externalWorkspace(for: fixture.root, suffix: "saved-prompt-repo")
+    defer { try? FileManager.default.removeItem(at: repository) }
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    let git = FoundationProcessRunner()
+    for arguments in [["init", "-q"], ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+      "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Fixture", "--allow-empty"]] {
+      #expect(try await git.run(.init(executable: "/usr/bin/git", arguments: arguments,
+        workingDirectory: repository.path)).succeeded)
+    }
+    var configuration = try JSONDecoder().decode(
+      AppConfiguration.self, from: Data(contentsOf: fixture.paths.configurationFile))
+    configuration.workspacePath = repository.path
+    configuration.projects[0].workspacePath = repository.path
+    configuration.projects[0].repositoryPath = repository.path
+    configuration.tmuxExecutable = "/usr/bin/true"
+    try await JSONConfigurationRepository(url: fixture.paths.configurationFile).save(configuration)
+    let savedPrompt = "Ship the saved initial prompt to the first agent."
+    _ = try await TaskContextStore(root: fixture.root).saveInitialPrompt(
+      savedPrompt, ticket: fixture.tickets[0], project: configuration.projects[0])
+    let agentID = "33333333-3333-4333-8333-333333333333"
+    let runner = ManagedResumeRunner(taskID: "ECC-101", agentID: agentID)
+    let terminal = ManagedResumeRecorder()
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(), terminalController: terminal,
+      taskAgentLauncher: TaskAgentLauncher(runner: runner, tmuxServerName: "saved-prompt-test"))
+
+    #expect(model.savedInitialPrompt(for: fixture.tickets[0]) == savedPrompt)
+    model.launchDefaultAgent(for: fixture.tickets[0], subtaskID: agentID)
+    try await eventually(maxAttempts: 1_000) { model.launchingTaskIDs.isEmpty }
+
+    let agent = try #require(model.subtasks(for: "ECC-101").first { $0.id == agentID })
+    #expect(agent.initialPrompt == savedPrompt)
+    #expect(agent.assignmentDescription == savedPrompt)
+    #expect(agent.includeInitializationPrompt)
+    #expect(model.savedInitialPrompt(for: fixture.tickets[0]) == nil,
+      "Only the first agent is offered the saved prompt")
+    let launchCommands = await runner.commands.map(\.arguments).flatMap { $0 }
+    #expect(launchCommands.contains { $0.contains(savedPrompt) },
+      "The saved prompt must reach the provider launch arguments")
+  }
+
   @Test("New Agent menu choices pick the provider, name the agent, and pass the launch configuration")
   func oneClickAgentModelChoice() async throws {
     let fixture = try await Fixture()

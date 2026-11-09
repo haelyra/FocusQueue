@@ -53,16 +53,27 @@ func liveManagedProviderSanity() async throws {
       var sessionID: String?
       var capture = ""
       do {
-        try await liveEventually("Codex did not reach an empty ready input: \(label)", seconds: 90) {
+        try await liveEventually("Codex did not reach a ready input: \(label)", seconds: 90) {
           sessionID = try await launcher.identify(subtask: subtask, configuration: model.config.wezTerm)
           capture = try await fixture.tmux(["capture-pane", "-p", "-S", "-200", "-t", reference.paneID])
+          // The banner scrolls off the alt-screen once a long initialization
+          // transcript renders; the composer placeholder only shows when the
+          // TUI is loaded and idle, regardless of scroll position.
           return sessionID.flatMap(UUID.init(uuidString:)) != nil
-            && capture.contains("OpenAI Codex")
+            && capture.contains("Ask Codex to do anything")
         }
         if !initialize {
           #expect(!capture.contains(userPrompt), "A promptless launch must not submit its saved description")
           _ = try await fixture.tmux(["send-keys", "-t", reference.paneID, "-l", userPrompt])
-          _ = try await fixture.tmux(["send-keys", "-t", reference.paneID, "Enter"])
+          // Codex 0.165+ reads machine-speed literal input as a paste burst and
+          // folds an immediate Enter into the draft instead of submitting, so
+          // retry Enter until the composer clears back to its placeholder.
+          for _ in 0..<5 {
+            try await Task.sleep(for: .seconds(2))
+            _ = try await fixture.tmux(["send-keys", "-t", reference.paneID, "Enter"])
+            let screen = try await fixture.tmux(["capture-pane", "-p", "-t", reference.paneID])
+            if screen.contains("Ask Codex to do anything") { break }
+          }
         }
         try await liveEventually("Codex did not answer the first user prompt: \(label)", seconds: 90) {
           capture = try await fixture.tmux(["capture-pane", "-p", "-S", "-200", "-t", reference.paneID])
@@ -158,7 +169,10 @@ func liveManagedProviderSanity() async throws {
       try await liveEventually("Stopped Codex conversation was not resumed: \(label)", seconds: 90) {
         let identity = try await launcher.identify(subtask: resumed, configuration: model.config.wezTerm)
         let output = try await fixture.tmux(["capture-pane", "-p", "-S", "-200", "-t", successor.paneID])
-        return identity == nativeID && output.contains("OpenAI Codex") && output.contains("SANITY_OK")
+        // Long transcripts push the banner off the alt-screen; the composer
+        // placeholder proves the TUI is up while SANITY_OK proves the resume.
+        return identity == nativeID && output.contains("Ask Codex to do anything")
+          && output.contains("SANITY_OK")
       }
       #expect(await terminal.opened.last == successor)
       print("LIVE_AGENT_SANITY resumed \(label), session=\(nativeID), oldPane=\(reference.paneID), newPane=\(successor.paneID), conversation=unchanged")
@@ -233,9 +247,46 @@ func liveKimiNewAgentRegistration() async throws {
   #expect(try await launcher.identify(subtask: subtask, configuration: model.config.wezTerm)
     == subtask.sessionID)
   #expect(await terminal.opened.last == reference)
-  print("LIVE_KIMI_NEW_AGENT passed session=\(nativeID), pane=\(reference.paneID), prompt=\(marker)")
+  // The TUI footer shows the session profile's base effort, not the value
+  // KIMI_MODEL_THINKING_EFFORT forces, so the wire log is the only honest
+  // record of the effort each request actually ran with.
+  var requestEfforts: [String] = []
+  try await liveEventually("Kimi wire log recorded no model requests", seconds: 30) {
+    requestEfforts = kimiRequestEfforts(sessionID: nativeID)
+    return !requestEfforts.isEmpty
+  }
+  #expect(requestEfforts.allSatisfy { $0 == "high" },
+    "Every Kimi request must run at the chosen effort; got \(requestEfforts)")
+  print("LIVE_KIMI_NEW_AGENT passed session=\(nativeID), pane=\(reference.paneID), prompt=\(marker), requestEfforts=\(requestEfforts)")
   await terminal.detachAll()
   try await launcher.closeRuntime(subtask: subtask, configuration: model.config.wezTerm)
+}
+
+/// The effort of every `llm.request` in a live Kimi session's wire log, read
+/// from the session directory kimi writes under its data root.
+private func kimiRequestEfforts(sessionID: String) -> [String] {
+  let home = ProcessInfo.processInfo.environment["KIMI_CODE_HOME"]
+    .map { URL(fileURLWithPath: $0) }
+    ?? FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent(".kimi-code", isDirectory: true)
+  let sessions = home.appendingPathComponent("sessions", isDirectory: true)
+  guard let enumerator = FileManager.default.enumerator(at: sessions, includingPropertiesForKeys: nil)
+  else { return [] }
+  let pattern = #""thinkingEffort":"([a-z]+)""#
+  for case let wireFile as URL in enumerator {
+    guard wireFile.lastPathComponent == "wire.jsonl",
+          wireFile.deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().lastPathComponent == sessionID,
+          let contents = try? String(contentsOf: wireFile, encoding: .utf8)
+    else { continue }
+    return contents.split(separator: "\n").compactMap { line in
+      guard line.contains(#""type":"llm.request""#), line.contains(#""kind":"loop""#),
+            let match = line.range(of: pattern, options: .regularExpression)
+      else { return nil }
+      return String(line[match].dropFirst(#""thinkingEffort":""#.count).dropLast())
+    }
+  }
+  return []
 }
 
 @MainActor

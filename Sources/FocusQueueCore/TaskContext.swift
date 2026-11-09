@@ -514,25 +514,24 @@ public struct TaskContext: Codable, Equatable, Sendable {
         "Save every file meant for the user under \(contextDirectory.path)/evidence, not the worktree Docs folder; the task card announces each new file there."
     }
 
-    /// Projects that enable the development process get its current phase injected
-    /// into every brief. development.json sits beside the project plan, so the path
-    /// derives from projectPlanPath without touching config.json.
+    /// At most one line, specific to this task. The steward and task status keep the
+    /// process current outside agent sessions, so agents carry only what changes their
+    /// behavior: the phase rule and, when linked, their own step. A task the steward
+    /// marked outside the process gets nothing.
     public func developmentProcessLines() -> [String] {
         guard let process = developmentProcessState() else { return [] }
-        let phase = process.currentPhase
-        var lines = ["Development process (\(DevelopmentProcessStore.fileName)): "
-            + "\(phase.title) phase. \(DevelopmentProcessCatalog.brief(for: phase))"]
-        if let step = process.currentStep {
-            let note = process.steps[step.id]?.note
-            lines.append("Current step: \(step.title) — \(step.summary)"
-                + (note.map { " Note: \($0)" } ?? ""))
+        let link = process.links[ticketID.uppercased()]
+        if let link, link.step == nil { return [] }
+        // A linked task follows its own step's phase, which may run ahead of the tracker.
+        let phase = link?.phase ?? process.currentPhase
+        var focus = phase.title
+        if let link, let stepID = link.step, let step = DevelopmentProcessCatalog.step(id: stepID, in: phase) {
+            focus += ", step \(step.title)"
+            if let moduleID = link.moduleID, let module = process.modules.first(where: { $0.id == moduleID }) {
+                focus += ", module \(module.name)"
+            }
         }
-        let unaccepted = process.modules.filter { !$0.criteriaAccepted }
-        if !unaccepted.isEmpty {
-            lines.append("Module success criteria awaiting sequential human acceptance: "
-                + unaccepted.map(\.name).joined(separator: ", ") + ".")
-        }
-        return lines
+        return ["Development process (\(focus)): \(DevelopmentProcessCatalog.brief(for: phase))"]
     }
 
     /// The process state for this task's project, or nil when the project has not

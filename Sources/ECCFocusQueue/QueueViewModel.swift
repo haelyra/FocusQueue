@@ -773,6 +773,10 @@ final class QueueViewModel {
   private(set) var developmentProcess: DevelopmentProcess?
   /// Set from the last development-process mutation; surfaced in the Project tab.
   private(set) var developmentProcessError: String?
+  /// The project whose background steward pass is running, if any.
+  private(set) var developmentStewardProjectID: String?
+  @ObservationIgnored private var lastDevelopmentStewardCheck: Date?
+  @ObservationIgnored var developmentStewardRunner: DevelopmentStewardRunner?
   var projects: [ProjectConfiguration] { config.projects }
   var selectedProject: ProjectConfiguration? { config.selectedProject }
   var windowSnapshot: WindowSnapshot? { localState.window }
@@ -1697,6 +1701,7 @@ final class QueueViewModel {
         }
       }
       await runStaleAgentSweepIfDue()
+      runDevelopmentStewardIfDue()
       if userInitiated || lastReportRefresh == nil || Date().timeIntervalSince(lastReportRefresh!) >= 30 {
         lastReportRefresh = Date()
         if !isDailyReportRunning {
@@ -2048,7 +2053,8 @@ final class QueueViewModel {
         let pending = process.pendingSteps.map(\.title).prefix(3).joined(separator: ", ")
         scope += "Development process for \(projectScopeName): \(process.currentPhase.title) phase"
           + (pending.isEmpty ? " (all steps accepted)." : "; next steps: \(pending).")
-          + " \(DevelopmentProcessCatalog.brief(for: process.currentPhase))\n"
+          + " \(DevelopmentProcessCatalog.brief(for: process.currentPhase))"
+          + " Change links, steps, or the phase with `focus-queue-session development`, never by editing development.json.\n"
       }
       scopedMessage = scope + "Read the dashboard for the project named in the user's request. Preserve projectID and unknown fields on edits to the selected dashboard." + request
     }
@@ -2592,6 +2598,7 @@ final class QueueViewModel {
 
   func setDevelopmentProcessEnabled(_ enabled: Bool) {
     mutateDevelopmentProcess { try $0.setEnabled(enabled, projectID: $1) }
+    if enabled { lastDevelopmentStewardCheck = nil; runDevelopmentStewardIfDue() }
   }
 
   func setDevelopmentPhase(_ phase: DevelopmentPhase) {
@@ -2625,6 +2632,102 @@ final class QueueViewModel {
 
   func dismissDevelopmentProcessError() { developmentProcessError = nil }
 
+  /// Keeps every enabled project's process current without any agent's help.
+  /// Each check (at most every 30 s, or on demand) reconciles step and module
+  /// status from task status with no model call, then starts at most one
+  /// background placement-model pass for a project whose new tasks or files
+  /// changed its steward signature. `force` runs that pass for one project now.
+  func runDevelopmentStewardIfDue(force projectID: String? = nil, now: Date = Date()) {
+    guard projectID != nil || lastDevelopmentStewardCheck == nil
+      || now.timeIntervalSince(lastDevelopmentStewardCheck!) >= 30 else { return }
+    lastDevelopmentStewardCheck = now
+    let store = developmentProcessStore
+    for project in config.projects where project.archivedAt == nil {
+      guard projectID == nil || projectID == project.id,
+            let loaded = try? store.load(projectID: project.id), loaded.enabled else { continue }
+      let tickets = developmentTickets(for: project)
+      var process = loaded
+      if process.reconcile(tickets: tickets, now: now) {
+        process = (try? store.mutate(projectID: project.id) { $0.reconcile(tickets: tickets, now: now) })
+          ?? process
+      }
+      guard developmentStewardProjectID == nil, config.placementModelEnabled != false,
+            let directory = try? store.url(projectID: project.id).deletingLastPathComponent()
+      else { continue }
+      let files = DevelopmentSteward.projectFiles(directory: directory)
+      let signature = DevelopmentSteward.signature(process: process, tickets: tickets, files: files)
+      guard projectID == project.id || DevelopmentSteward.isDue(process: process, signature: signature, now: now)
+      else { continue }
+      let candidates = DevelopmentSteward.candidates(process: process, tickets: tickets)
+      if candidates.isEmpty && files.isEmpty && projectID == nil {
+        // Nothing a model could link or cite; remember the state without a call.
+        _ = try? store.mutate(projectID: project.id) {
+          $0.steward = DevelopmentStewardRun(signature: signature, ranAt: now,
+            model: $0.steward?.model, summary: "No tasks or files to review.")
+        }
+        continue
+      }
+      startDevelopmentSteward(project: project, tickets: tickets)
+    }
+    reloadDevelopmentProcess()
+  }
+
+  /// Runs the Project tab's Sync button: the selected project's pass, now.
+  func syncDevelopmentProcess() {
+    guard let projectID = selectedProject?.id else { return }
+    guard config.placementModelEnabled != false else {
+      developmentProcessError = "Sync uses the placement model, which is off in Settings. Task status still updates linked steps."
+      return
+    }
+    runDevelopmentStewardIfDue(force: projectID)
+  }
+
+  private func startDevelopmentSteward(project: ProjectConfiguration, tickets: [DevelopmentTicket]) {
+    let provider = config.placementProvider ?? config.defaultAgentProvider
+      ?? config.agentProviderFallbackOrder.first ?? .claude
+    let installed = paths.supportDirectory.appendingPathComponent("shell/focus_queue_placement.py")
+    let script = [ScriptTaskPlacementSuggester.bundledScript(), installed].compactMap { $0 }
+      .first { FileManager.default.isReadableFile(atPath: $0.path) } ?? installed
+    let runner = developmentStewardRunner ?? DevelopmentStewardRunner(
+      script: script,
+      environment: ScriptTaskPlacementSuggester.environment(
+        supportDirectory: paths.supportDirectory, home: FileManager.default.homeDirectoryForCurrentUser))
+    let store = developmentProcessStore
+    developmentStewardProjectID = project.id
+    Task { [weak self] in
+      do {
+        try await DevelopmentSteward.runPass(projectID: project.id, projectName: project.name, store: store,
+                                             tickets: tickets, provider: provider, runner: runner)
+      } catch {
+        self?.developmentProcessError = "Development steward: \(error.localizedDescription)"
+      }
+      self?.developmentStewardProjectID = nil
+      self?.reloadDevelopmentProcess()
+    }
+  }
+
+  /// The project's tasks from its dashboard on disk, so projects other than the
+  /// selected one stay current too.
+  private func developmentTickets(for project: ProjectConfiguration) -> [DevelopmentTicket] {
+    if project.id == selectedProject?.id, !dashboard.tickets.isEmpty {
+      return dashboard.tickets.map(DevelopmentTicket.init)
+    }
+    guard let data = try? Data(contentsOf: URL(fileURLWithPath: project.dashboardPath)),
+          let document = try? JSONDecoder().decode(DashboardDocument.self, from: data) else { return [] }
+    return document.tickets.map(DevelopmentTicket.init)
+  }
+
+  /// Open tasks the steward placed in a later phase than the selected project's
+  /// tracker; the Project tab offers the phase move, it never happens on its own.
+  var developmentTasksAhead: (phase: DevelopmentPhase, taskIDs: [String])? {
+    developmentProcess?.tasksAhead(tickets: dashboard.tickets.map(DevelopmentTicket.init))
+  }
+
+  /// The selected project's dashboard ticket for a linked task ID, if any.
+  func developmentTicket(_ taskID: String) -> DashboardTicket? {
+    dashboard.tickets.first { $0.id.caseInsensitiveCompare(taskID) == .orderedSame }
+  }
+
   /// Settings shows any project, not just the selected one; these keyed
   /// accessors keep that row independent of the Project tab's published state.
   func developmentProcessEnabled(for projectID: String) -> Bool {
@@ -2636,6 +2739,7 @@ final class QueueViewModel {
       let updated = try developmentProcessStore.setEnabled(enabled, projectID: projectID)
       if projectID == selectedProject?.id { developmentProcess = updated.enabled ? updated : nil }
       developmentProcessError = nil
+      if enabled { lastDevelopmentStewardCheck = nil; runDevelopmentStewardIfDue() }
     } catch {
       developmentProcessError = error.localizedDescription
     }

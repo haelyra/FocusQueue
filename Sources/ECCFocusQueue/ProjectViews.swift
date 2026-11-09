@@ -306,7 +306,7 @@ struct DevelopmentProcessSettingsRow: View {
                     enabled = value
                     model.setDevelopmentProcessEnabled(value, for: projectID)
                 }))
-            Text("Track planning, scaffolding, module implementation, QA, and release for this project. Agents see the current phase in their launch briefs.")
+            Text("Track planning, scaffolding, module implementation, QA, and release for this project. The placement model keeps it current in the background; agents get one line naming their step.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }

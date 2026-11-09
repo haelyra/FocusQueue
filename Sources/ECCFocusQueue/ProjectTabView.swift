@@ -41,9 +41,11 @@ struct ProjectTabView: View {
                         detail: model.developmentProcess?.currentPhase.title ?? "off")
       if let process = model.developmentProcess {
         phaseStepper(process)
+        stewardLine(process, projectID: project.id)
+        if let ahead = model.developmentTasksAhead { aheadNotice(ahead.phase, taskIDs: ahead.taskIDs) }
         VStack(alignment: .leading, spacing: 6) {
           ForEach(process.currentSteps) { step in
-            stepRow(step, status: process.status(of: step))
+            stepRow(step, status: process.status(of: step), process: process)
           }
         }
         if let error = model.developmentProcessError {
@@ -57,7 +59,7 @@ struct ProjectTabView: View {
           .font(.caption).foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       } else {
-        Text("Track concept → planning → scaffolding → modules → QA → release for this project. Agents see the current phase in their launch briefs; module success criteria are accepted in order.")
+        Text("Track concept → planning → scaffolding → modules → QA → release for this project. The placement model links new tasks and files to steps in the background, task status moves linked steps, and you accept each step. Agents get one line naming their step.")
           .font(.caption).foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
         Button {
@@ -105,7 +107,72 @@ struct ProjectTabView: View {
     }
   }
 
-  private func stepRow(_ step: DevelopmentStep, status: DevelopmentStepStatus) -> some View {
+  /// Who keeps the tracker current, when it last ran, and a manual Sync.
+  private func stewardLine(_ process: DevelopmentProcess, projectID: String) -> some View {
+    let running = model.developmentStewardProjectID == projectID
+    let run = process.steward
+    return HStack(alignment: .firstTextBaseline, spacing: 6) {
+      Group {
+        if running {
+          ProgressView().controlSize(.mini)
+        } else {
+          Image(systemName: run?.error == nil ? "wand.and.stars" : "exclamationmark.triangle")
+            .foregroundStyle(run?.error == nil ? Color.secondary : Color.orange)
+        }
+      }
+      .font(.system(size: 10)).frame(width: 14)
+      Text(stewardCaption(run, running: running))
+        .font(.caption).foregroundStyle(run?.error == nil ? Color.secondary : Color.orange)
+        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+      Spacer(minLength: 4)
+      Button {
+        model.syncDevelopmentProcess()
+      } label: {
+        Label("Sync", systemImage: "arrow.triangle.2.circlepath").font(.system(size: 11, weight: .semibold))
+      }
+      .buttonStyle(.borderless).controlSize(.small)
+      .disabled(model.developmentStewardProjectID != nil)
+      .help("Link new tasks and project files to steps now with the placement model")
+      .accessibilityLabel("Sync development process from tasks and files")
+    }
+  }
+
+  /// The tracker is behind the work: open tasks serve a later phase's steps.
+  private func aheadNotice(_ phase: DevelopmentPhase, taskIDs: [String]) -> some View {
+    VStack(alignment: .leading, spacing: 5) {
+      HStack(alignment: .firstTextBaseline, spacing: 6) {
+        Image(systemName: "forward.end").foregroundStyle(Color.accentColor).font(.system(size: 10))
+        Text("\(taskIDs.count) open task\(taskIDs.count == 1 ? " is" : "s are") \(phase.title) work.")
+          .font(.caption.weight(.semibold))
+        Spacer(minLength: 4)
+        Button("Move to \(phase.title)") { model.setDevelopmentPhase(phase) }
+          .buttonStyle(.bordered).controlSize(.mini)
+          .help("Advance the tracker; steps you have not accepted stay as they are")
+      }
+      linkedTasks(taskIDs)
+    }
+    .padding(8)
+    .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+  }
+
+  private func stewardCaption(_ run: DevelopmentStewardRun?, running: Bool) -> String {
+    if running { return "Reviewing new tasks and files…" }
+    guard let run else { return "Updates itself from task status and project files." }
+    let when = run.ranAt.formatted(.relative(presentation: .named))
+    if let error = run.error { return "Last sync failed \(when): \(error)" }
+    let model = run.model.map { " · \($0)" } ?? ""
+    return "Synced \(when)\(model). \(run.summary ?? "")"
+  }
+
+  private func stepRow(_ step: DevelopmentStep, status: DevelopmentStepStatus,
+                       process: DevelopmentProcess) -> some View {
+    let state = process.steps[step.id]
+    let linked = process.linkedTaskIDs(step: step.id)
+    return stepRowContent(step, status: status, state: state, linked: linked)
+  }
+
+  private func stepRowContent(_ step: DevelopmentStep, status: DevelopmentStepStatus,
+                              state: DevelopmentStepState?, linked: [String]) -> some View {
     HStack(alignment: .top, spacing: 8) {
       Button {
         model.setDevelopmentStepStatus(status.next, stepID: step.id)
@@ -130,11 +197,44 @@ struct ProjectTabView: View {
             .font(.system(size: 10, design: .monospaced))
             .foregroundStyle(.tertiary).lineLimit(1)
         }
+        if let note = state?.note, !note.isEmpty {
+          Label(note, systemImage: state?.isAutomatic == true ? "wand.and.stars" : "person")
+            .labelStyle(.titleAndIcon)
+            .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+            .help(state?.source == .steward ? "Evidence from the background steward"
+              : state?.source == .tasks ? "Derived from linked task status" : "Your note")
+        }
+        if !linked.isEmpty { linkedTasks(linked) }
       }
       Spacer(minLength: 4)
       Text(status.label.uppercased())
         .font(.system(size: 9, weight: .bold)).tracking(0.5)
         .foregroundStyle(.secondary)
+    }
+  }
+
+  /// Task IDs that serve a step; each opens its plan in split view.
+  private func linkedTasks(_ ids: [String]) -> some View {
+    HStack(spacing: 4) {
+      ForEach(ids.prefix(6), id: \.self) { id in
+        let ticket = model.developmentTicket(id)
+        Button {
+          if let ticket { model.openPlan(for: ticket) }
+        } label: {
+          Text(id)
+            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(Color.primary.opacity(ticket?.isOpen == false ? 0.04 : 0.08), in: Capsule())
+            .foregroundStyle(ticket?.isOpen == false ? Color.secondary : Color.accentColor)
+        }
+        .buttonStyle(.plain)
+        .disabled(ticket == nil)
+        .help(ticket.map { "\($0.title) (\($0.status)). Opens its plan." } ?? id)
+        .accessibilityLabel("Open task \(id)")
+      }
+      if ids.count > 6 {
+        Text("+\(ids.count - 6)").font(.caption2).foregroundStyle(.secondary)
+      }
     }
   }
 

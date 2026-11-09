@@ -25,7 +25,10 @@ func catalogCoversPhases() {
     #expect(planning.first { $0.id == "modules" }?.summary.contains("success criteria") == true)
 
     #expect(DevelopmentProcessCatalog.steps(in: .phase0).map(\.id) == ["scaffolding", "phase0-qa"])
-    #expect(DevelopmentProcessCatalog.steps(in: .implementation).map(\.id) == ["modules", "module-qa"])
+    #expect(DevelopmentProcessCatalog.steps(in: .implementation).map(\.id) == ["build", "module-qa"])
+    // Step state is keyed by ID alone, so no ID may repeat across phases.
+    let ids = DevelopmentPhase.allCases.flatMap { DevelopmentProcessCatalog.steps(in: $0).map(\.id) }
+    #expect(Set(ids).count == ids.count)
     #expect(DevelopmentProcessCatalog.steps(in: .prerelease).map(\.id) == ["beta", "latency"])
     #expect(DevelopmentProcessCatalog.steps(in: .release).map(\.id) == ["security", "staging", "deployment"])
 }
@@ -79,9 +82,10 @@ func stepStatusFlow() throws {
     for step in DevelopmentProcessCatalog.steps(in: .planning) {
         process = try store.setStepStatus(.accepted, stepID: step.id, projectID: projectID)
     }
-    #expect(process.phaseIsAccepted)
-    process = try store.setPhase(.phase0, projectID: projectID)
+    // Accepting the last Planning step advances the project to Phase 0.
     #expect(process.currentPhase == .phase0 && !process.phaseIsAccepted)
+    process = try store.setPhase(.planning, projectID: projectID)
+    #expect(process.phaseIsAccepted)
 }
 
 @Test("Module criteria acceptance is sequential")

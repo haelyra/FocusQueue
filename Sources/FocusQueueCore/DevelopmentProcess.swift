@@ -4,6 +4,10 @@ import Foundation
 /// The state lives in `development.json` beside the project's plan; a file with
 /// `enabled == true` is the feature flag, so launch briefs read it straight from the
 /// project folder without a config round-trip.
+///
+/// Updates happen outside working agents: the human accepts steps in the Project tab,
+/// task status raises linked steps deterministically (`reconcile`), and the placement
+/// model links new tasks and files to steps in the background (`DevelopmentSteward`).
 public enum DevelopmentPhase: String, Codable, CaseIterable, Sendable {
     case planning, phase0, implementation, prerelease, release
 
@@ -28,6 +32,25 @@ public enum DevelopmentStepStatus: String, Codable, CaseIterable, Sendable {
     case pending, inProgress, done, accepted
 
     public var isComplete: Bool { self == .done || self == .accepted }
+
+    /// Automatic updates only raise a step; this order defines "raise".
+    public var rank: Int {
+        switch self {
+        case .pending: 0
+        case .inProgress: 1
+        case .done: 2
+        case .accepted: 3
+        }
+    }
+}
+
+/// Who last changed a step or link. Automatic sources never override a human.
+public enum DevelopmentUpdateSource: String, Codable, Sendable {
+    case human
+    /// Derived from linked task status, no model involved.
+    case tasks
+    /// Proposed by the background placement-model steward.
+    case steward
 }
 
 /// One step in the static catalog. State lives in `DevelopmentStepState`; the catalog
@@ -46,11 +69,70 @@ public struct DevelopmentStep: Equatable, Sendable, Identifiable {
 
 public struct DevelopmentStepState: Codable, Equatable, Sendable {
     public var status: DevelopmentStepStatus
+    /// Human note, or the evidence an automatic source cited.
     public var note: String?
     public var updatedAt: Date
+    /// nil in files written before automatic updates existed; read as human.
+    public var source: DevelopmentUpdateSource?
 
-    public init(status: DevelopmentStepStatus = .pending, note: String? = nil, updatedAt: Date = Date()) {
-        self.status = status; self.note = note; self.updatedAt = updatedAt
+    public init(status: DevelopmentStepStatus = .pending, note: String? = nil, updatedAt: Date = Date(),
+                source: DevelopmentUpdateSource? = .human) {
+        self.status = status; self.note = note; self.updatedAt = updatedAt; self.source = source
+    }
+
+    public var isAutomatic: Bool { source == .tasks || source == .steward }
+}
+
+/// Which step (and optionally module) a task serves. A nil step records that the
+/// task is outside the process, so its agents get no process line at all.
+public struct DevelopmentTaskLink: Codable, Equatable, Sendable {
+    public var phase: DevelopmentPhase
+    public var step: String?
+    public var moduleID: String?
+    public var source: DevelopmentUpdateSource
+    public var updatedAt: Date
+
+    public init(phase: DevelopmentPhase, step: String?, moduleID: String? = nil,
+                source: DevelopmentUpdateSource, updatedAt: Date = Date()) {
+        self.phase = phase; self.step = step; self.moduleID = moduleID
+        self.source = source; self.updatedAt = updatedAt
+    }
+}
+
+/// The last background steward pass. The signature covers only what needs a model
+/// (unlinked tasks, project files, phase), so ordinary status changes never re-run it.
+public struct DevelopmentStewardRun: Codable, Equatable, Sendable {
+    public var signature: String
+    public var ranAt: Date
+    public var model: String?
+    public var error: String?
+    public var summary: String?
+
+    public init(signature: String, ranAt: Date = Date(), model: String? = nil,
+                error: String? = nil, summary: String? = nil) {
+        self.signature = signature; self.ranAt = ranAt; self.model = model
+        self.error = error; self.summary = summary
+    }
+}
+
+/// The task facts the process needs, independent of the dashboard schema.
+public struct DevelopmentTicket: Equatable, Sendable {
+    public var id: String
+    public var title: String
+    public var summary: String
+    public var status: String
+    public var isOpen: Bool
+    public var updatedAt: String?
+
+    public init(id: String, title: String, summary: String = "", status: String, isOpen: Bool,
+                updatedAt: String? = nil) {
+        self.id = id.uppercased(); self.title = title; self.summary = summary
+        self.status = status; self.isOpen = isOpen; self.updatedAt = updatedAt
+    }
+
+    public init(_ ticket: DashboardTicket) {
+        self.init(id: ticket.id, title: ticket.title, summary: ticket.summary, status: ticket.status,
+                  isOpen: ticket.isOpen, updatedAt: ticket.updatedAt)
     }
 }
 
@@ -85,14 +167,37 @@ public struct DevelopmentProcess: Codable, Equatable, Sendable {
     /// State per catalog step id; a missing entry means pending.
     public var steps: [String: DevelopmentStepState]
     public var modules: [DevelopmentModule]
+    /// Task ID (uppercase) → the step it serves.
+    public var links: [String: DevelopmentTaskLink]
+    public var steward: DevelopmentStewardRun?
     public var updatedAt: Date
 
     public init(enabled: Bool = true, currentPhase: DevelopmentPhase = .planning,
                 steps: [String: DevelopmentStepState] = [:], modules: [DevelopmentModule] = [],
+                links: [String: DevelopmentTaskLink] = [:], steward: DevelopmentStewardRun? = nil,
                 schemaVersion: Int = DevelopmentProcess.currentSchemaVersion, updatedAt: Date = Date()) {
         self.schemaVersion = schemaVersion; self.enabled = enabled
         self.currentPhase = currentPhase; self.steps = steps; self.modules = modules
+        self.links = links; self.steward = steward
         self.updatedAt = updatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, enabled, currentPhase, steps, modules, links, steward, updatedAt
+    }
+
+    /// Every field is optional on read, so files from earlier builds and partial
+    /// hand-written files decode instead of failing the Project tab.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? Self.currentSchemaVersion
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        currentPhase = try container.decodeIfPresent(DevelopmentPhase.self, forKey: .currentPhase) ?? .planning
+        steps = try container.decodeIfPresent([String: DevelopmentStepState].self, forKey: .steps) ?? [:]
+        modules = try container.decodeIfPresent([DevelopmentModule].self, forKey: .modules) ?? []
+        links = try container.decodeIfPresent([String: DevelopmentTaskLink].self, forKey: .links) ?? [:]
+        steward = try container.decodeIfPresent(DevelopmentStewardRun.self, forKey: .steward)
+        updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
     }
 
     public func status(of step: DevelopmentStep) -> DevelopmentStepStatus {
@@ -116,6 +221,76 @@ public struct DevelopmentProcess: Codable, Equatable, Sendable {
 
     public var phaseIsAccepted: Bool {
         currentSteps.allSatisfy { status(of: $0) == .accepted }
+    }
+
+    /// Open linked tasks that belong to a phase after the current one: the
+    /// tracker is behind the real work. The phase itself stays a human move.
+    public func tasksAhead(tickets: [DevelopmentTicket]) -> (phase: DevelopmentPhase, taskIDs: [String])? {
+        let open = Set(tickets.filter(\.isOpen).map(\.id))
+        let order = DevelopmentPhase.allCases
+        guard let current = order.firstIndex(of: currentPhase) else { return nil }
+        let ahead = links.filter { taskID, link in
+            link.step != nil && open.contains(taskID)
+                && (order.firstIndex(of: link.phase) ?? 0) > current
+        }
+        guard let nearest = ahead.values.map(\.phase).min(by: {
+            (order.firstIndex(of: $0) ?? 0) < (order.firstIndex(of: $1) ?? 0)
+        }) else { return nil }
+        return (nearest, ahead.filter { $0.value.phase == nearest }.keys.sorted())
+    }
+
+    /// Task IDs linked to a current-phase step, sorted for stable display.
+    public func linkedTaskIDs(step stepID: String) -> [String] {
+        links.filter { $0.value.phase == currentPhase && $0.value.step == stepID }.keys.sorted()
+    }
+
+    public func linkedTaskIDs(module moduleID: String) -> [String] {
+        links.filter { $0.value.moduleID == moduleID }.keys.sorted()
+    }
+
+    /// Raises a current-phase step without ever lowering it or reaching `accepted`,
+    /// which stays a human decision. A step a human reset to pending holds there.
+    /// Returns whether anything changed.
+    @discardableResult
+    public mutating func raise(stepID: String, to status: DevelopmentStepStatus,
+                               source: DevelopmentUpdateSource, note: String?, now: Date = Date()) -> Bool {
+        guard status != .accepted, source != .human,
+              DevelopmentProcessCatalog.step(id: stepID, in: currentPhase) != nil else { return false }
+        let existing = steps[stepID]
+        if let existing, !existing.isAutomatic, existing.status == .pending { return false }
+        guard status.rank > (existing?.status ?? .pending).rank else { return false }
+        steps[stepID] = DevelopmentStepState(status: status, note: note ?? existing?.note,
+                                             updatedAt: now, source: source)
+        return true
+    }
+
+    /// Deterministic progress from linked tasks: an open linked task makes its step
+    /// active; once every linked task is closed the step is done and its modules are
+    /// implemented. Links to tasks that no longer exist are dropped. No model call.
+    @discardableResult
+    public mutating func reconcile(tickets: [DevelopmentTicket], now: Date = Date()) -> Bool {
+        let byID = Dictionary(tickets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var changed = false
+        for taskID in links.keys where byID[taskID] == nil {
+            links.removeValue(forKey: taskID); changed = true
+        }
+        for step in currentSteps {
+            let linked = linkedTaskIDs(step: step.id).compactMap { byID[$0] }
+            guard !linked.isEmpty else { continue }
+            let open = linked.filter(\.isOpen)
+            let target: DevelopmentStepStatus = open.isEmpty ? .done : .inProgress
+            let evidence = open.isEmpty
+                ? "Linked tasks closed: \(linked.map(\.id).joined(separator: ", "))."
+                : "Linked tasks open: \(open.map(\.id).joined(separator: ", "))."
+            if raise(stepID: step.id, to: target, source: .tasks, note: evidence, now: now) { changed = true }
+        }
+        for index in modules.indices where !modules[index].implemented {
+            let linked = linkedTaskIDs(module: modules[index].id).compactMap { byID[$0] }
+            if !linked.isEmpty, linked.allSatisfy({ !$0.isOpen }) {
+                modules[index].implemented = true; changed = true
+            }
+        }
+        return changed
     }
 }
 
@@ -152,7 +327,8 @@ public enum DevelopmentProcessCatalog {
             ]
         case .implementation:
             return [
-                DevelopmentStep(id: "modules", title: "Module implementation",
+                // Distinct from Planning's "modules": step state is keyed by ID alone.
+                DevelopmentStep(id: "build", title: "Module implementation",
                     summary: "Parallel module work; blockers are collected and re-triaged with the user."),
                 DevelopmentStep(id: "module-qa", title: "Module QA",
                     summary: "Justify each module's completion; the human verifies."),
@@ -178,6 +354,11 @@ public enum DevelopmentProcessCatalog {
 
     public static func step(id: String, in phase: DevelopmentPhase) -> DevelopmentStep? {
         steps(in: phase).first { $0.id == id }
+    }
+
+    /// Step IDs are unique across phases, so an ID alone names its phase.
+    public static func phase(ofStep id: String) -> DevelopmentPhase? {
+        DevelopmentPhase.allCases.first { step(id: id, in: $0) != nil }
     }
 
     /// Guidance injected into agent briefs while the phase runs. Concise, action-first.
@@ -210,7 +391,7 @@ extension DevelopmentProcessError: LocalizedError {
         case .outOfOrderAcceptance(let module, let blockedBy):
             "Accept \(blockedBy)'s success criteria before \(module)'s; modules are reviewed in order."
         case .unknownModule(let id): "No module with id \(id)."
-        case .unknownStep(let id): "No step with id \(id) in the current phase."
+        case .unknownStep(let id): "No step with id \(id) in this phase."
         }
     }
 }
@@ -238,12 +419,39 @@ public struct DevelopmentProcessStore: Sendable {
     @discardableResult
     public func ensure(projectID: String) throws -> DevelopmentProcess {
         if let existing = try load(projectID: projectID) { return existing }
-        let process = DevelopmentProcess()
-        try save(process, projectID: projectID)
-        return process
+        return try mutate(projectID: projectID) { _ in }
     }
 
     public func save(_ process: DevelopmentProcess, projectID: String) throws {
+        let url = try validatedURL(projectID: projectID)
+        var stamped = process
+        stamped.updatedAt = Date()
+        try ProjectFileLock.withLock(file: url) { try write(stamped, to: url) }
+    }
+
+    /// The single write path: load, edit, and write under one lock, so the app,
+    /// the CLI, and the background steward never drop each other's changes.
+    /// A missing file starts from the default (enabled) process.
+    @discardableResult
+    public func mutate(projectID: String,
+                       _ body: (inout DevelopmentProcess) throws -> Void) throws -> DevelopmentProcess {
+        let url = try validatedURL(projectID: projectID)
+        return try ProjectFileLock.withLock(file: url) {
+            let existed = FileManager.default.fileExists(atPath: url.path)
+            // A malformed file throws here and is never overwritten.
+            var process = existed
+                ? try JSONDecoder().decode(DevelopmentProcess.self, from: Data(contentsOf: url))
+                : DevelopmentProcess()
+            let original = process
+            try body(&process)
+            guard process != original || !existed else { return process }
+            process.updatedAt = Date()
+            try write(process, to: url)
+            return process
+        }
+    }
+
+    private func validatedURL(projectID: String) throws -> URL {
         let url = try url(projectID: projectID)
         let directory = url.deletingLastPathComponent()
         guard (try? directory.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
@@ -252,84 +460,105 @@ public struct DevelopmentProcessStore: Sendable {
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700])
-        var copy = process
-        copy.updatedAt = Date()
+        return url
+    }
+
+    /// Caller holds the lock and has stamped `updatedAt`, so the value a mutation
+    /// returns is exactly what is on disk.
+    private func write(_ process: DevelopmentProcess, to url: URL) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        let data = try encoder.encode(copy)
-        try ProjectFileLock.withLock(file: url) {
-            try data.write(to: url, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-        }
+        try encoder.encode(process).write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
     public func setEnabled(_ enabled: Bool, projectID: String) throws -> DevelopmentProcess {
-        var process = (try load(projectID: projectID)) ?? DevelopmentProcess(enabled: enabled)
-        process.enabled = enabled
-        try save(process, projectID: projectID)
-        return process
+        try mutate(projectID: projectID) { $0.enabled = enabled }
     }
 
+    /// A human status change. Accepting the last step of a phase advances the
+    /// project to the next phase, so the tracker never waits on an extra click.
     public func setStepStatus(_ status: DevelopmentStepStatus, stepID: String,
                               projectID: String, note: String? = nil) throws -> DevelopmentProcess {
-        var process = try ensure(projectID: projectID)
-        guard DevelopmentProcessCatalog.step(id: stepID, in: process.currentPhase) != nil else {
-            throw DevelopmentProcessError.unknownStep(stepID)
+        try mutate(projectID: projectID) { process in
+            guard DevelopmentProcessCatalog.step(id: stepID, in: process.currentPhase) != nil else {
+                throw DevelopmentProcessError.unknownStep(stepID)
+            }
+            process.steps[stepID] = DevelopmentStepState(status: status, note: note, source: .human)
+            if status == .accepted, process.phaseIsAccepted, let next = process.currentPhase.next {
+                process.currentPhase = next
+            }
         }
-        process.steps[stepID] = DevelopmentStepState(status: status, note: note)
-        try save(process, projectID: projectID)
-        return process
     }
 
     public func setPhase(_ phase: DevelopmentPhase, projectID: String) throws -> DevelopmentProcess {
-        var process = try ensure(projectID: projectID)
-        process.currentPhase = phase
-        try save(process, projectID: projectID)
-        return process
+        try mutate(projectID: projectID) { $0.currentPhase = phase }
     }
 
     public func addModule(name: String, file: String?, projectID: String) throws -> DevelopmentProcess {
-        var process = try ensure(projectID: projectID)
-        process.modules.append(DevelopmentModule(name: name, file: file))
-        try save(process, projectID: projectID)
-        return process
+        try mutate(projectID: projectID) { $0.modules.append(DevelopmentModule(name: name, file: file)) }
+    }
+
+    /// A human link: the steward never overrides it. A nil step marks the task as
+    /// outside the process. `module` matches a module name or ID.
+    public func link(taskID: String, step: String?, module: String? = nil,
+                     projectID: String) throws -> DevelopmentProcess {
+        try mutate(projectID: projectID) { process in
+            var phase = process.currentPhase
+            if let step {
+                guard let owner = DevelopmentProcessCatalog.phase(ofStep: step) else {
+                    throw DevelopmentProcessError.unknownStep(step)
+                }
+                phase = owner
+            }
+            var moduleID: String?
+            if let module, !module.isEmpty {
+                guard let match = process.modules.first(where: {
+                    $0.id == module || $0.name.caseInsensitiveCompare(module) == .orderedSame
+                }) else { throw DevelopmentProcessError.unknownModule(module) }
+                moduleID = match.id
+            }
+            process.links[taskID.uppercased()] = DevelopmentTaskLink(
+                phase: phase, step: step, moduleID: moduleID, source: .human)
+        }
+    }
+
+    public func unlink(taskID: String, projectID: String) throws -> DevelopmentProcess {
+        try mutate(projectID: projectID) { $0.links.removeValue(forKey: taskID.uppercased()) }
     }
 
     /// Sequential acceptance: a module's criteria can be accepted only after every
     /// module listed before it.
     public func acceptCriteria(moduleID: String, projectID: String) throws -> DevelopmentProcess {
-        var process = try ensure(projectID: projectID)
-        guard let index = process.modules.firstIndex(where: { $0.id == moduleID }) else {
-            throw DevelopmentProcessError.unknownModule(moduleID)
+        try mutate(projectID: projectID) { process in
+            guard let index = process.modules.firstIndex(where: { $0.id == moduleID }) else {
+                throw DevelopmentProcessError.unknownModule(moduleID)
+            }
+            if let blocker = process.modules[..<index].first(where: { !$0.criteriaAccepted }) {
+                throw DevelopmentProcessError.outOfOrderAcceptance(
+                    module: process.modules[index].name, blockedBy: blocker.name)
+            }
+            process.modules[index].criteriaAccepted = true
         }
-        if let blocker = process.modules[..<index].first(where: { !$0.criteriaAccepted }) {
-            throw DevelopmentProcessError.outOfOrderAcceptance(
-                module: process.modules[index].name, blockedBy: blocker.name)
-        }
-        process.modules[index].criteriaAccepted = true
-        try save(process, projectID: projectID)
-        return process
     }
 
     public func setModuleImplemented(_ implemented: Bool, moduleID: String,
                                      projectID: String) throws -> DevelopmentProcess {
-        var process = try ensure(projectID: projectID)
-        guard let index = process.modules.firstIndex(where: { $0.id == moduleID }) else {
-            throw DevelopmentProcessError.unknownModule(moduleID)
+        try mutate(projectID: projectID) { process in
+            guard let index = process.modules.firstIndex(where: { $0.id == moduleID }) else {
+                throw DevelopmentProcessError.unknownModule(moduleID)
+            }
+            process.modules[index].implemented = implemented
         }
-        process.modules[index].implemented = implemented
-        try save(process, projectID: projectID)
-        return process
     }
 
     public func setModuleQAAccepted(_ accepted: Bool, moduleID: String,
                                     projectID: String) throws -> DevelopmentProcess {
-        var process = try ensure(projectID: projectID)
-        guard let index = process.modules.firstIndex(where: { $0.id == moduleID }) else {
-            throw DevelopmentProcessError.unknownModule(moduleID)
+        try mutate(projectID: projectID) { process in
+            guard let index = process.modules.firstIndex(where: { $0.id == moduleID }) else {
+                throw DevelopmentProcessError.unknownModule(moduleID)
+            }
+            process.modules[index].qaAccepted = accepted
         }
-        process.modules[index].qaAccepted = accepted
-        try save(process, projectID: projectID)
-        return process
     }
 }

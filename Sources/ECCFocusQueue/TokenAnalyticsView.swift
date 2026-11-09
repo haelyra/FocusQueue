@@ -726,6 +726,10 @@ struct TokenStep {
   static let modelCalls: [TokenStep] = [
     TokenStep(source: "placement", title: "Task placement",
               detail: "Matches a new request to an open task or proposes a new one.", color: Palette.slot(0)),
+    // Shares a slot with the removed completion review, whose rows are historical only.
+    TokenStep(source: "development", title: "Development steward",
+              detail: "Links a project's new tasks and files to development-process steps, outside agent sessions.",
+              color: Palette.slot(6)),
     TokenStep(source: "queue_chat", title: "Queue Chat",
               detail: "App instructions and queue state sent with each Queue Chat message.", color: Palette.slot(1)),
     TokenStep(source: "document_chat", title: "Document chat",

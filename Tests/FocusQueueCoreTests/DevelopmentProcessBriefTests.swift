@@ -27,31 +27,53 @@ func noProcessNoLines() async throws {
     #expect(!prompt.contains("Development process"))
 }
 
-@Test("Enabled projects inject phase, step, and pending module criteria into both briefs")
-func enabledProcessInjects() async throws {
+@Test("An unlinked task gets one phase line in both briefs, and no module or step detail")
+func enabledProcessInjectsOneLine() async throws {
     let (root, project) = try briefFixture()
     defer { try? FileManager.default.removeItem(at: root) }
     let store = DevelopmentProcessStore(root: root)
-    var process = try store.setStepStatus(.inProgress, stepID: "modules", projectID: project.id,
+    _ = try store.setStepStatus(.inProgress, stepID: "modules", projectID: project.id,
         note: "Auth and sync are drafted")
-    process = try store.addModule(name: "Auth", file: "modules/auth.md", projectID: project.id)
-    process = try store.addModule(name: "Sync", file: "modules/sync.md", projectID: project.id)
-    try store.save(process, projectID: project.id)
+    _ = try store.addModule(name: "Auth", file: "modules/auth.md", projectID: project.id)
+    _ = try store.addModule(name: "Sync", file: "modules/sync.md", projectID: project.id)
 
     let context = try await TaskContextStore(root: root).ensureContext(ticket: briefTicket, project: project)
     let lines = context.developmentProcessLines()
-    #expect(lines.count == 3)
-    #expect(lines[0].contains("development.json") && lines[0].contains("Planning phase"))
-    #expect(lines[0].contains("planning artifacts"))
-    #expect(lines[1].contains("Current step: Module design files"))
-    #expect(lines[1].contains("Auth and sync are drafted"))
-    #expect(lines[2].contains("Auth, Sync"))
+    #expect(lines == ["Development process (Planning): "
+        + DevelopmentProcessCatalog.brief(for: .planning)])
 
     let agent = TaskSubtask(title: "Build login")
-    let prompt = context.agentPrompt(subtask: agent)
-    #expect(prompt.contains("Development process (development.json): Planning phase"))
-    let bootstrap = context.agentBootstrap(subtask: agent)
-    #expect(bootstrap.contains("Development process (development.json): Planning phase"))
+    #expect(context.agentPrompt(subtask: agent).contains("Development process (Planning): "))
+    #expect(context.agentBootstrap(subtask: agent).contains("Development process (Planning): "))
+    #expect(!context.agentPrompt(subtask: agent).contains("Auth, Sync"))
+}
+
+@Test("A linked task names its own step and module in one line")
+func linkedTaskNamesItsStep() async throws {
+    let (root, project) = try briefFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = DevelopmentProcessStore(root: root)
+    _ = try store.addModule(name: "Auth", file: nil, projectID: project.id)
+    _ = try store.link(taskID: "dem-001", step: "modules", module: "auth", projectID: project.id)
+
+    let context = try await TaskContextStore(root: root).ensureContext(ticket: briefTicket, project: project)
+    #expect(context.developmentProcessLines() == ["Development process (Planning, step Module design files, "
+        + "module Auth): " + DevelopmentProcessCatalog.brief(for: .planning)])
+    // A task linked to a later phase's step follows that phase's rule.
+    _ = try store.link(taskID: "DEM-001", step: "scaffolding", projectID: project.id)
+    #expect(context.developmentProcessLines() == ["Development process (Phase 0, step Scaffolding & environment): "
+        + DevelopmentProcessCatalog.brief(for: .phase0)])
+}
+
+@Test("A task marked outside the process gets no process line")
+func outsideTaskGetsNothing() async throws {
+    let (root, project) = try briefFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    _ = try DevelopmentProcessStore(root: root).link(taskID: "DEM-001", step: nil, projectID: project.id)
+    let context = try await TaskContextStore(root: root).ensureContext(ticket: briefTicket, project: project)
+    #expect(context.developmentProcessState() != nil)
+    #expect(context.developmentProcessLines().isEmpty)
+    #expect(!context.agentPrompt(subtask: TaskSubtask(title: "Build login")).contains("Development process"))
 }
 
 @Test("A disabled process file stays out of briefs")
@@ -64,17 +86,3 @@ func disabledProcessSilent() async throws {
     #expect(!context.agentPrompt(subtask: TaskSubtask(title: "Build login")).contains("Development process"))
 }
 
-@Test("After criteria acceptance the module reminder disappears")
-func acceptedModulesNotReminded() async throws {
-    let (root, project) = try briefFixture()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let store = DevelopmentProcessStore(root: root)
-    let process = try store.addModule(name: "Auth", file: nil, projectID: project.id)
-    let auth = try #require(process.modules.first)
-    _ = try store.acceptCriteria(moduleID: auth.id, projectID: project.id)
-
-    let context = try await TaskContextStore(root: root).ensureContext(ticket: briefTicket, project: project)
-    let lines = context.developmentProcessLines()
-    #expect(lines.contains { $0.contains("Development process") })
-    #expect(!lines.contains { $0.contains("awaiting sequential human acceptance") })
-}

@@ -13,7 +13,7 @@ enum SessionRegistrationError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .usage:
-            "Usage: focus-queue-session intake-changed | data ensure | data place <user|project|task> <target-id> <fact> | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|pin <TASK-ID>|unpin <TASK-ID>|reset | task create <PROJECT-ID> <title> <summary> | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | cleanup <TASK-ID>|--completed|--orphans|--purge [--dry-run] | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | pause <TASK-ID> <SUBTASK-ID> | resume <TASK-ID> <SUBTASK-ID> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
+            "Usage: focus-queue-session intake-changed | data ensure | data place <user|project|task> <target-id> <fact> | development <PROJECT-ID> show|link <TASK-ID> <step-id|none> [module]|unlink <TASK-ID>|step <step-id> <pending|inProgress|done|accepted>|phase <planning|phase0|implementation|prerelease|release>|sync | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|pin <TASK-ID>|unpin <TASK-ID>|reset | task create <PROJECT-ID> <title> <summary> | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | cleanup <TASK-ID>|--completed|--orphans|--purge [--dry-run] | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | pause <TASK-ID> <SUBTASK-ID> | resume <TASK-ID> <SUBTASK-ID> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
         case .missingSessionIdentity:
             "No Codex, Claude, or Kimi session ID was found in the environment or current WezTerm pane."
         case .missingManagedRuntime:
@@ -45,6 +45,7 @@ enum SessionRegistrationError: Error, LocalizedError {
                 print("Status hooks: status-event --provider claude|codex|kimi (reads one provider hook payload on stdin; exits 0 silently)")
                 print("UI Canvas: canvas open <file.html> [--viewport mobile|desktop|custom|WxH] [--title <text>] | canvas await <file.html> [--reply <msg>] | canvas typing <file.html> [--state thinking|typing|idle] | canvas end <file.html> | canvas list|pending (native ecc-ui-canvas; same JSON)")
                 print("Data placement: data-placement status|on|off (automatic native prompt capture; off by default)")
+                print("Development process: development <PROJECT-ID> show | link <TASK-ID> <step-id|none> [module] | unlink <TASK-ID> | step <step-id> <pending|inProgress|done|accepted> | phase <planning|phase0|implementation|prerelease|release> | sync (locked edits of development.json; the app's steward and task status keep it current otherwise)")
                 print("Scoped data: data ensure | data show <project-id> | data place <user|project|task> <target-id> <one-or-two-sentence fact>")
                 print("Data hook: data-event --provider claude (reads one provider hook payload on stdin; prints saved project data the session has not seen; exits 0)")
                 print("Completion cleanup: cleanup <TASK-ID> | cleanup --completed | cleanup --orphans | cleanup --purge, each with optional --dry-run (stops tmux, stages worktrees in .worktrees/.trash for 7 days, archives unmerged work under refs/focus-queue/archive/, deletes merged local and remote branches)")
@@ -66,6 +67,7 @@ enum SessionRegistrationError: Error, LocalizedError {
             else if arguments.first == "data-placement" { try await dataPlacement(arguments: arguments) }
             else if arguments.first == "data-event" { await dataEvent(arguments: arguments) }
             else if arguments.first == "data" { try await dataCommand(arguments: arguments) }
+            else if arguments.first == "development" { try await developmentCommand(arguments: arguments) }
             else if arguments.first == "canvas" {
                 let environment = ProcessInfo.processInfo.environment
                 try await UICanvasCommand.run(arguments: arguments,
@@ -1061,6 +1063,63 @@ enum SessionRegistrationError: Error, LocalizedError {
         } catch {
             try? input.fileHandleForWriting.close()
         }
+    }
+
+    /// Locked edits of a project's development.json, for the human and QChat.
+    /// Links made here are human links, which the background steward never overrides.
+    private static func developmentCommand(arguments: [String]) async throws {
+        guard arguments.count >= 3 else { throw SessionRegistrationError.usage }
+        let root = supportDirectory(environment: ProcessInfo.processInfo.environment)
+        let configuration = try loadConfiguration(from: root)
+        let projectID = arguments[1]
+        guard let project = configuration.projects.first(where: { $0.id == projectID && $0.archivedAt == nil }) else {
+            throw TaskContextError.commandFailed("Unknown or archived project \(projectID).")
+        }
+        let store = DevelopmentProcessStore(root: root)
+        let process: DevelopmentProcess
+        switch (arguments[2], arguments.count) {
+        case ("show", 3):
+            guard let loaded = try store.load(projectID: project.id) else {
+                throw TaskContextError.commandFailed("\(project.name) has no development process. Enable it in the Project tab or Settings.")
+            }
+            process = loaded
+        case ("link", 5), ("link", 6):
+            let taskID = arguments[3].uppercased()
+            let dashboard = URL(fileURLWithPath: project.dashboardPath)
+            let tickets = (try? JSONDecoder().decode(DashboardDocument.self, from: Data(contentsOf: dashboard)))?.tickets ?? []
+            guard tickets.contains(where: { $0.id.caseInsensitiveCompare(taskID) == .orderedSame }) else {
+                throw TaskContextError.commandFailed("\(taskID) is not a task in \(project.name).")
+            }
+            let step = arguments[4].lowercased() == "none" ? nil : arguments[4]
+            process = try store.link(taskID: taskID, step: step, module: arguments.count == 6 ? arguments[5] : nil,
+                                     projectID: project.id)
+        case ("unlink", 4):
+            process = try store.unlink(taskID: arguments[3], projectID: project.id)
+        case ("step", 5):
+            guard let status = DevelopmentStepStatus(rawValue: arguments[4]) else { throw SessionRegistrationError.usage }
+            process = try store.setStepStatus(status, stepID: arguments[3], projectID: project.id)
+        case ("phase", 4):
+            guard let phase = DevelopmentPhase(rawValue: arguments[3]) else { throw SessionRegistrationError.usage }
+            process = try store.setPhase(phase, projectID: project.id)
+        case ("sync", 3):
+            // The same pass the app runs in the background, on demand.
+            let environment = ProcessInfo.processInfo.environment
+            let script = environment["FOCUS_QUEUE_PLACEMENT_SCRIPT"].map { URL(fileURLWithPath: $0) }
+                ?? root.appendingPathComponent("shell/focus_queue_placement.py")
+            var childEnvironment = environment
+            childEnvironment["FOCUS_QUEUE_SUPPORT_DIR"] = root.path
+            let dashboard = URL(fileURLWithPath: project.dashboardPath)
+            let tickets = ((try? JSONDecoder().decode(DashboardDocument.self, from: Data(contentsOf: dashboard)))?
+                .tickets ?? []).map(DevelopmentTicket.init)
+            let provider = configuration.placementProvider ?? configuration.defaultAgentProvider
+                ?? configuration.agentProviderFallbackOrder.first ?? .claude
+            process = try await DevelopmentSteward.runPass(
+                projectID: project.id, projectName: project.name, store: store, tickets: tickets,
+                provider: provider, runner: DevelopmentStewardRunner(script: script, environment: childEnvironment))
+        default:
+            throw SessionRegistrationError.usage
+        }
+        try emit(process)
     }
 
     private static func dataPlacement(arguments: [String]) async throws {

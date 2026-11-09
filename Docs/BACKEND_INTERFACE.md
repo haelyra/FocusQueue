@@ -230,6 +230,14 @@ These manage the per-agent slots inside `tasks/<TICKET>/context.json`:
 **`projects list` · `projects recover` · `projects create --id <id> --name <name> --workspace <abs-path> --from <project-id> --task <TASK-ID> [--task ...]`**
 `create` is transactional and posts the project-catalog-change notification so the running app reloads `config.json`. This is the *only* safe way to add a project while the app runs.
 
+**`development <PROJECT-ID> show | link <TASK-ID> <step-id|none> [module] | unlink <TASK-ID> | step <step-id> <pending|inProgress|done|accepted> | phase <planning|phase0|implementation|prerelease|release> | sync`**
+Locked edits of `projects/<id>/development.json`, the per-project development process (FOC-117). Every write is one read-modify-write under the project file lock; a malformed file throws and is never overwritten. `link` records a *human* link (a step from any phase, or `none` for work outside the process) that the steward never overrides; the task must exist in that project's dashboard. `step … accepted` is the human acceptance; accepting the last step of a phase advances the phase. `sync` runs the same steward pass the app runs.
+
+The process updates itself outside agent sessions:
+1. **Task status (no model).** On each app refresh (at most every 30 s), an open linked task makes its step active; when every linked task is closed the step is done and linked modules are implemented. Automatic updates only raise a step, never accept it, and a human reset to pending holds.
+2. **Steward (placement model).** When a project's *signature* changes (a new unlinked task, a new Markdown file in the project folder or `modules/`, a module, or the phase), the app runs `focus_queue_placement.py develop` once (at most every 120 s; failures retry after 30 min). The prompt carries the step catalog, unlinked tasks, and file headings. The reply proposes links and step evidence, which the app validates and applies. It uses the placement provider, model, and effort, and Settings › Placement › model off disables it. Usage is recorded under the `development` source.
+3. **Agents** get at most one brief line naming their own step's phase rule (`Development process (Phase 0, step Scaffolding & environment): …`), or none when the task is linked outside the process.
+
 ### 3.9 Library (durable history)
 
 `library migrate | status | task <TASK-ID> | document <TASK-ID> <file.md> [guide|architecture|reference] | export <dest> | restore <src>` — append-mostly cross-device history under `library/`.
@@ -458,6 +466,10 @@ focus-queue-session placement --prompt "<objective>" --cwd "$PWD"
 focus-queue-session task rename   <TASK-ID> <title...>
 focus-queue-session task priority <TASK-ID> critical|high|medium|low
 focus-queue-session task status   <TASK-ID> <status>     # ⚠ unvalidated
+
+# Development process (projects that enable it)
+focus-queue-session development <PROJECT-ID> show|sync
+focus-queue-session development <PROJECT-ID> link <TASK-ID> <step-id|none> [module]
 
 # Diagnostics
 focus-queue-session context <TASK> | plan <TASK> | diagnose <TASK>

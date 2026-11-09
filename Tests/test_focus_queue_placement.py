@@ -525,5 +525,106 @@ class ModelPlacementTests(unittest.TestCase):
         self.assertIn(f"defaultPlacementTimeoutSeconds = {PLACEMENT.DEFAULT_TIMEOUT_SECONDS}", swift)
 
 
+
+
+class DevelopmentStewardTests(unittest.TestCase):
+    """`develop`: the background steward's one call, on the placement model settings."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="placement develop test ")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.fixture = PlacementFixture(self.root, tickets=())
+        self.calls = []
+
+    def environment(self, **extra):
+        return {**self.fixture.environment, "FOCUS_QUEUE_PLACEMENT_CLAUDE_EXECUTABLE": "/fake/claude",
+                "FOCUS_QUEUE_PLACEMENT_CODEX_EXECUTABLE": "/fake/codex",
+                "CLAUDE_CODE_SESSION_ID": "parent", "FOCUS_QUEUE_TASK_ID": "X-1", **extra}
+
+    def runner(self, stdout):
+        def run(command, stdin, cwd, environment, timeout):
+            self.calls.append({"command": command, "stdin": stdin, "environment": environment,
+                               "timeout": timeout, "cwd": cwd})
+            return stdout(command, cwd) if callable(stdout) else stdout
+        return run
+
+    def test_claude_call_uses_the_development_schema_and_returns_the_proposal(self):
+        answer = {"links": [{"taskID": "KAI-4", "step": "prd", "module": None}, "junk"],
+                  "steps": [{"step": "prd", "status": "done", "evidence": "prd.md"}]}
+        stdout = json.dumps({"type": "result", "is_error": False, "result": "",
+                             "structured_output": answer, "usage": {"input_tokens": 900}})
+        result = PLACEMENT.develop("Project: Kairos. Tasks to link: KAI-4", provider="claude",
+                                   environment=self.environment(), runner=self.runner(stdout))
+        self.assertEqual(result["links"], [{"taskID": "KAI-4", "step": "prd", "module": None}])
+        self.assertEqual(result["steps"], answer["steps"])
+        self.assertEqual(result["model"], "claude/haiku")
+        call = self.calls[0]
+        command = call["command"]
+        self.assertEqual(command[:4], ["/fake/claude", "-p", "--model", "haiku"])
+        self.assertEqual(json.loads(command[command.index("--json-schema") + 1]), PLACEMENT.DEVELOPMENT_SCHEMA)
+        self.assertEqual(command[command.index("--system-prompt") + 1], PLACEMENT.DEVELOPMENT_SYSTEM_PROMPT)
+        self.assertEqual(command[command.index("--tools") + 1], "")
+        self.assertIn("Tasks to link: KAI-4", call["stdin"])
+        self.assertGreaterEqual(call["timeout"], PLACEMENT.DEVELOPMENT_MINIMUM_TIMEOUT_SECONDS)
+        self.assertNotIn("CLAUDE_CODE_SESSION_ID", call["environment"])
+        self.assertFalse(any(key.startswith("FOCUS_QUEUE_") for key in call["environment"]))
+
+    def test_codex_writes_the_development_schema_file(self):
+        def reply(command, cwd):
+            Path(cwd, "answer.json").write_text(json.dumps({"links": [], "steps": []}))
+            self.assertEqual(json.loads(Path(cwd, "schema.json").read_text()), PLACEMENT.DEVELOPMENT_SCHEMA)
+            return ""
+        result = PLACEMENT.develop("prompt", provider="codex", environment=self.environment(),
+                                   runner=self.runner(reply))
+        self.assertEqual(result["model"], "codex/gpt-6-luna")
+        self.assertEqual(result["links"], [])
+
+    def test_placement_model_off_refuses_without_a_call(self):
+        config = json.loads(self.fixture.config_path.read_text())
+        config["placementModelEnabled"] = False
+        self.fixture.config_path.write_text(json.dumps(config))
+        with self.assertRaises(PLACEMENT.PlacementError):
+            PLACEMENT.develop("prompt", provider="claude", environment=self.environment(),
+                              runner=self.runner("{}"))
+        self.assertEqual(self.calls, [])
+
+    def test_empty_or_oversized_prompts_are_refused(self):
+        for message in ("  ", "x" * (PLACEMENT.DEVELOPMENT_MESSAGE_LIMIT + 1)):
+            with self.assertRaises(PLACEMENT.PlacementError):
+                PLACEMENT.develop(message, provider="claude", environment=self.environment(),
+                                  runner=self.runner("{}"))
+        self.assertEqual(self.calls, [])
+
+    def test_cli_reads_the_message_file_and_exits_three_when_the_model_is_off(self):
+        config = json.loads(self.fixture.config_path.read_text())
+        config["placementModelEnabled"] = False
+        self.fixture.config_path.write_text(json.dumps(config))
+        message = self.root / "message.txt"
+        message.write_text("prompt")
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT), "develop", "--provider", "claude", "--message-file", str(message)],
+            env={**os.environ, **self.fixture.environment}, capture_output=True, text=True, timeout=30)
+        self.assertEqual(completed.returncode, 3)
+        self.assertIn("placement model is off", completed.stderr)
+
+    def test_cli_returns_the_proposal_through_a_fake_claude(self):
+        claude = self.root / "claude"
+        fake_cli(claude, json.dumps({"type": "result", "is_error": False, "result": "",
+                                     "structured_output": {"links": [], "steps": [
+                                         {"step": "concept", "status": "inProgress", "evidence": "KAI-1"}]}}))
+        message = self.root / "message.txt"
+        message.write_text("prompt")
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT), "develop", "--provider", "claude", "--message-file", str(message)],
+            env={**os.environ, **self.fixture.environment,
+                 "FOCUS_QUEUE_PLACEMENT_CLAUDE_EXECUTABLE": str(claude)},
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["steps"][0]["step"], "concept")
+        self.assertEqual(result["model"], "claude/haiku")
+
+
 if __name__ == "__main__":
     unittest.main()

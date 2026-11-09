@@ -69,6 +69,10 @@ struct QueueView: View {
     .onChange(of: model.requiresProviderSignIn) { _, required in
       if required { model.setPanelMode(.expanded) }
     }
+    .onChange(of: model.showsAllProjects) { _, all in
+      // The Project tab is per-project; the All view has no single project to show.
+      if all, selectedTab == .project { selectedTab = .focus }
+    }
     .sheet(isPresented: $showsSessions) { SessionBrowserView(model: model) }
     .sheet(isPresented: $showsFeedback) { FeedbackSheet() }
     .sheet(item: Binding(
@@ -236,6 +240,8 @@ struct QueueView: View {
       case .agent:
         QueueAgentChatView(
           model: model, draft: $queueAgentDraft, focusRequest: model.queueChatFocusRequest)
+      case .project:
+        ProjectTabView(model: model)
       }
     }
   }
@@ -777,6 +783,20 @@ struct QueueView: View {
         .fixedSize()
         .accessibilityLabel("Working project: \(model.projectScopeName)")
         .help("Choose the working project; All shows every project including Other")
+        Button {
+          withAnimation(.easeInOut(duration: 0.18)) { selectedTab = .project }
+        } label: {
+          Image(systemName: selectedTab == .project ? "folder.fill" : "folder")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(selectedTab == .project ? Color.accentColor : Color.secondary)
+        }
+        .buttonStyle(.plain).minimumHitTarget(width: 30, height: 34)
+        .accessibilityLabel(
+          "Open \(model.selectedProject?.name ?? "project") project tab"
+        )
+        .help("Project context, development process, and progress")
+        .disabled(model.showsAllProjects || model.selectedProject == nil)
+        .opacity(model.showsAllProjects || model.selectedProject == nil ? 0.4 : 1)
         Spacer()
         Text(headerCountLabel).font(
           .system(size: 11, weight: .semibold).monospacedDigit()
@@ -997,6 +1017,8 @@ struct QueueView: View {
     case .focus: "\(model.openTickets.count) active tasks"
     case .completed: "\(model.completedTodayTickets.count) today"
     case .agent: model.isQueueAgentResponding ? "Codex working" : "Codex ready"
+    case .project:
+      model.developmentProcess.map { "\($0.currentPhase.title) phase" } ?? "Project"
     }
   }
 
@@ -1075,6 +1097,9 @@ private enum QueueTab: Hashable {
   case focus
   case completed
   case agent
+  /// Project context, development process, and progress. Opened from the
+  /// button beside the project title, not from the crowded segmented picker.
+  case project
 }
 
 struct QueueAgentChatView: View {

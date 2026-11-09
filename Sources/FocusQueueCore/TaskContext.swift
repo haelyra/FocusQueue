@@ -462,6 +462,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
                   Self.dataWritingRule]
         lines += scopedDataLines()
         lines.append("Read relevant saved facts before acting.")
+        lines += developmentProcessLines()
         lines.append(artifactInstruction)
         lines.append("Register with `focus-queue-session attach`, then report with `focus-queue-session progress|complete`. Rules: `focus-queue-session rules`.")
         return lines.joined(separator: "\n")
@@ -484,6 +485,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
         if let project = Self.inlineDocument(atPath: projectPlanPath, limit: 1_500) {
             lines.append("About the project: \(project)")
         }
+        lines += developmentProcessLines()
         lines += scopedDataLines(includeTask: false)
         if let plan = Self.inlineDocument(atPath: planPath, limit: 4_000, prompt: trimmed ?? "") {
             lines += ["Task plan (\(planPath)):", plan]
@@ -510,6 +512,39 @@ public struct TaskContext: Codable, Equatable, Sendable {
     /// context folder, so a file saved only in the worktree never reaches the user.
     private var artifactInstruction: String {
         "Save every file meant for the user under \(contextDirectory.path)/evidence, not the worktree Docs folder; the task card announces each new file there."
+    }
+
+    /// Projects that enable the development process get its current phase injected
+    /// into every brief. development.json sits beside the project plan, so the path
+    /// derives from projectPlanPath without touching config.json.
+    public func developmentProcessLines() -> [String] {
+        guard let process = developmentProcessState() else { return [] }
+        let phase = process.currentPhase
+        var lines = ["Development process (\(DevelopmentProcessStore.fileName)): "
+            + "\(phase.title) phase. \(DevelopmentProcessCatalog.brief(for: phase))"]
+        if let step = process.currentStep {
+            let note = process.steps[step.id]?.note
+            lines.append("Current step: \(step.title) — \(step.summary)"
+                + (note.map { " Note: \($0)" } ?? ""))
+        }
+        let unaccepted = process.modules.filter { !$0.criteriaAccepted }
+        if !unaccepted.isEmpty {
+            lines.append("Module success criteria awaiting sequential human acceptance: "
+                + unaccepted.map(\.name).joined(separator: ", ") + ".")
+        }
+        return lines
+    }
+
+    /// The process state for this task's project, or nil when the project has not
+    /// enabled the development process. Disabled files count as absent.
+    public func developmentProcessState() -> DevelopmentProcess? {
+        guard let projectPlanPath, !projectPlanPath.isEmpty else { return nil }
+        let url = URL(fileURLWithPath: projectPlanPath).deletingLastPathComponent()
+            .appendingPathComponent(DevelopmentProcessStore.fileName)
+        guard let data = try? Data(contentsOf: url),
+              let process = try? JSONDecoder().decode(DevelopmentProcess.self, from: data),
+              process.enabled else { return nil }
+        return process
     }
 
     /// Character counts for the documents actually inlined by the detailed launch brief.

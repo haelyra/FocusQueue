@@ -40,7 +40,7 @@ flowchart TB
 | `devplan` | `devplan.md` | AI outline | Creates tasks from it and checks leaves off | [devplan-guideline.md](devplan-guideline.md) |
 | `contract` | `agent-contract.md`, `orchestration.md` | Bundled generator | Reads and signs both | `Config/contract-generator-prompt.md` in the Focus Queue repository (shipped in FOC-117) |
 
-`technical-design.md` is not yet a catalog artifact. The [integration handoff](fq-integration-handoff.md) proposes adding it.
+`technical-design.md` joins the `prd` step when a project turns on Planning guidelines. A project's `artifactNames` map can point it at an older file name.
 
 ## How a guideline runs
 
@@ -75,7 +75,7 @@ Question round format (guidelines with a question round):
 
 ## Sign-off tracker
 
-Haelyra signs off each guideline here until Focus Queue ships guideline sign-off (see the [handoff](fq-integration-handoff.md)). Haelyra approved the whole set for integration on 2026-11-10 ("Looks good"); per-file sign-off moves into the app once R7 ships.
+Haelyra approved the whole set for integration on 2026-11-10 ("Looks good"). In-app sign-off of owner edits is deferred; until it ships, this table is the record.
 
 | Guideline | Signed off | Notes |
 |---|---|---|

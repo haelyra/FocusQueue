@@ -8,11 +8,11 @@ enum DevelopmentGuidelineFiles {
         "README.md": #"""
 # Planning-phase guidelines
 
-**Status:** draft for Haelyra's sign-off, 2026-11-10 (KAI-016). Generic across projects; Kairos's planning files are the worked examples.
+**Status:** experimental (2026-11-10). Turn it on per project: project settings, Development process, Planning guidelines.
 
 - **What:** one guideline per Planning file. Each holds the file's format, a generator prompt, a self-check, and an owner review checklist.
 - **Why:** Focus Queue's development process names the Planning files but not their shape. Without a shared format, each agent invents one, and owner review takes longer.
-- **How:** the Project tab (or an agent linked to the step) fills a guideline's placeholders and runs its prompt. The owner then reviews the draft in the document viewer and marks it reviewed.
+- **How:** an agent linked to a Planning step gets one brief line naming the step's guideline. It fills the placeholders and follows the prompt; the owner reviews the draft and marks it reviewed.
 
 ## Planning flow
 
@@ -46,14 +46,14 @@ flowchart TB
 | `prd` | `technical-design.md` | AI solidifies choices | Ratifies each open decision | [technical-design-guideline.md](technical-design-guideline.md) |
 | `modules` | `modules/<id>-<slug>.md` | AI, one file per module | Accepts each module's success criteria, in order | [module-guideline.md](module-guideline.md) |
 | `devplan` | `devplan.md` | AI outline | Creates tasks from it and checks leaves off | [devplan-guideline.md](devplan-guideline.md) |
-| `contract` | `agent-contract.md`, `orchestration.md` | Bundled generator | Reads and signs both | `Config/contract-generator-prompt.md` in the Focus Queue repository (shipped in FOC-117) |
+| `contract` | `agent-contract.md`, `orchestration.md` | Bundled generator | Reads and signs both | The bundled contract generator: Project tab, Agent contracts, Generate |
 
 `technical-design.md` joins the `prd` step when a project turns on Planning guidelines. A project's `artifactNames` map can point it at an older file name.
 
 ## How a guideline runs
 
-1. **Fill.** The caller fills the placeholders in the guideline's Inputs table. `{{CONVENTIONS}}` is always the block below.
-2. **Ask.** Guidelines with a question round return a question form first. The owner answers, and the caller reruns with `{{ANSWERS}}` filled. At most three rounds.
+1. **Fill.** The agent fills the placeholders in the guideline's Inputs table. `{{CONVENTIONS}}` is always the block below.
+2. **Ask.** Guidelines with a question round return a question form first. The owner answers, and the agent continues with `{{ANSWERS}}` filled. At most three rounds.
 3. **Draft.** The prompt writes the file in the guideline's format and runs its self-check.
 4. **Review.** The owner reads the draft against the guideline's review checklist and clicks "Mark reviewed".
 5. **Regenerate.** A rerun with `{{EXISTING}}` keeps the owner's wording and flags only lines that break a rule.
@@ -81,47 +81,17 @@ Question round format (guidelines with a question round):
 - End with one free-text "Overrides" question. Record every answer, with its date, in the file's questions table.
 ```
 
-## Sign-off tracker
-
-Haelyra approved the whole set for integration on 2026-11-10 ("Looks good"). In-app sign-off of owner edits is deferred; until it ships, this table is the record.
-
-| Guideline | Signed off | Notes |
-|---|---|---|
-| [README conventions](#shared-conventions) | [x] | Approved as a set, 2026-11-10 |
-| [concept](concept-guideline.md) | [x] | Approved as a set, 2026-11-10 |
-| [research](research-guideline.md) | [x] | Approved as a set, 2026-11-10 |
-| [design](design-guideline.md) | [x] | Approved as a set, 2026-11-10 |
-| [prd](prd-guideline.md) | [x] | Approved as a set, 2026-11-10 |
-| [technical design](technical-design-guideline.md) | [x] | Approved as a set, 2026-11-10 |
-| [module](module-guideline.md) | [x] | Approved as a set, 2026-11-10 |
-| [devplan](devplan-guideline.md) | [x] | Approved as a set, 2026-11-10 |
-
-## Kairos conformance
-
-How Kairos's current Planning files compare with these guidelines. Gaps are fixed only after sign-off.
-
-| File | State | Gap against its guideline |
-|---|---|---|
-| `concept.md`, `research.md`, `design.md` | Drafted to these guidelines (KAI-016) | None known |
-| `prd.md` | Finalized 2026-11-05 | No user-flow chart; workflows carry no FC trace column |
-| `technical-design-master-plan.md` | Ratified 2026-11-05 | Name differs from `technical-design.md`; D1-D5 not yet merged (KAI-005) |
-| `devplan.md` (mirror of `docs/development-plan-outline.md`) | Draft outline | No leaf checkboxes, no dependency chart, no triage table, no task titles |
-| `modules/` | Six KAI-005 drafts on an unmerged branch | No one-line description, no Debug logs section; none registered in `development.json` |
-| `agent-contract.md`, `orchestration.md` | Signed 2026-11-10 | None |
-
 """#,
         "concept-guideline.md": #"""
 # Concept declaration guideline
 
-**Status:** draft for sign-off, 2026-11-10 (KAI-016).
+**Status:** experimental (2026-11-10). Shown when a project turns on Planning guidelines.
 
 - **What:** the format and generator prompt for `concept.md`, the project's one-page statement of the main idea and its functional criteria.
 - **Why:** every later planning file traces to these criteria. A vague concept shows up later as scope drift and untestable gates.
 - **How:** the AI asks clarifying questions first, then drafts from the owner's answers and any existing notes. The owner marks the draft reviewed.
 
 **Step:** `concept`. **Produces:** `concept.md`. **Owner gate:** answers the question form, then marks the file reviewed.
-
-**Example:** Kairos `docs/concept.md`.
 
 ## Format
 
@@ -211,15 +181,13 @@ Step 4. Run the self-check below and fix every failure before returning.
         "research-guideline.md": #"""
 # Research compendium guideline
 
-**Status:** draft for sign-off, 2026-11-10 (KAI-016).
+**Status:** experimental (2026-11-10). Shown when a project turns on Planning guidelines.
 
 - **What:** the format and generator prompt for `research.md`, the compendium of evidence behind every design choice.
 - **Why:** the design and technical design cite this file. Without dated, typed evidence, an owner cannot tell a measured fact from a recalled one.
 - **How:** owner and AI work together. The AI proposes research questions; the owner adds sources and priorities. The AI then gathers evidence and puts options to the owner.
 
 **Step:** `research` (with `design.md`). **Produces:** `research.md`. **Owner gate:** edits the questions, picks options, marks the file reviewed.
-
-**Example:** Kairos `docs/research.md`.
 
 ## Format
 
@@ -301,15 +269,13 @@ Then run the self-check below and fix every failure before returning.
         "design-guideline.md": #"""
 # System design guideline
 
-**Status:** draft for sign-off, 2026-11-10 (KAI-016).
+**Status:** experimental (2026-11-10). Shown when a project turns on Planning guidelines.
 
 - **What:** the format and generator prompt for `design.md`, the explicit system design in writing and one flow chart.
 - **Why:** the owner should be able to judge the architecture in one sitting, before the technical design adds exact versions, endpoints, and budgets.
 - **How:** the AI condenses the research into components, flows, and invariants. Each component becomes a future module and each flow a future pipeline.
 
 **Step:** `research` (with `research.md`). **Produces:** `design.md`. **Owner gate:** marks the file reviewed.
-
-**Example:** Kairos `docs/design.md`.
 
 ## Format
 
@@ -393,15 +359,13 @@ Steps:
         "prd-guideline.md": #"""
 # Product requirements guideline
 
-**Status:** draft for sign-off, 2026-11-10 (KAI-016).
+**Status:** experimental (2026-11-10). Shown when a project turns on Planning guidelines.
 
 - **What:** the format and generator prompt for `prd.md`, the product scope and testable requirements of the first release.
 - **Why:** the technical design solidifies choices to meet these requirements, and module success criteria refine them. A requirement that cannot be tested cannot gate a phase.
 - **How:** the AI turns the concept's functional criteria into workflows, MVP items, and numbered requirements. The technical design is then written to meet them, in the same step.
 
 **Step:** `prd` (with the technical design). **Produces:** `prd.md`. **Owner gate:** marks the file reviewed.
-
-**Example:** Kairos `prd.md`.
 
 ## Format
 
@@ -485,15 +449,13 @@ Steps:
         "technical-design-guideline.md": #"""
 # Technical design guideline
 
-**Status:** draft for sign-off, 2026-11-10 (KAI-016).
+**Status:** experimental (2026-11-10). Shown when a project turns on Planning guidelines.
 
 - **What:** the format and generator prompt for `technical-design.md`, the master specification of modules, pipelines, gates, and decisions.
 - **Why:** module files are spawned from it and must never contradict it. Every choice in it is either final or explicitly open, with an owner and a gate.
 - **How:** the AI solidifies the design and research into exact choices. It lists each still-open decision with options for the owner to ratify, then links out to module files as they appear.
 
 **Step:** `prd` (with `prd.md`). **Produces:** `technical-design.md`. **Owner gate:** ratifies each open decision, then marks the file reviewed.
-
-**Example:** Kairos `docs/technical-design-master-plan.md`.
 
 ## Format
 
@@ -585,15 +547,13 @@ Run the self-check and fix every failure before returning.
         "module-guideline.md": #"""
 # Module design guideline
 
-**Status:** draft for sign-off, 2026-11-10 (KAI-016).
+**Status:** experimental (2026-11-10). Shown when a project turns on Planning guidelines.
 
 - **What:** the format and generator prompt for the per-module design files. Each holds a one-line description, foundation, I/O, success criteria, and debug logs.
 - **Why:** each module file is the contract its implementer builds and its reviewer tests against. The owner accepts each module's success criteria in order, so the criteria must be exact.
 - **How:** the AI spawns one file per technical-design module, in dependency order. It specifies I/O to implementation depth for the next phase and marks later content with its owning phase.
 
 **Step:** `modules`. **Produces:** `modules/<id>-<slug>.md`, for example `modules/m6-context-scoped-data.md`. **Owner gate:** accepts each module's success criteria in the Project tab, in listed order.
-
-**Example:** KAI-005's six Phase 0 drafts (they predate this guideline; see the README's conformance table)
 
 ## Format
 
@@ -712,15 +672,13 @@ Steps:
         "devplan-guideline.md": #"""
 # Development plan guideline
 
-**Status:** draft for sign-off, 2026-11-10 (KAI-016).
+**Status:** experimental (2026-11-10). Shown when a project turns on Planning guidelines.
 
 - **What:** the format and generator prompt for `devplan.md`: a rough phase outline, a dependency tree, task triage, and a ready-to-create task set.
 - **Why:** the owner creates tasks from this file and checks them off. Each leaf must therefore be one task with a measurable gate and explicit dependencies.
 - **How:** the AI breaks the technical design's phases into leaves and orders them by dependency. It proposes a task title and summary for each leaf. The plan stays a draft that changes as phases land.
 
 **Step:** `devplan`. **Produces:** `devplan.md`. **Owner gate:** creates tasks from leaves and checks each leaf off when its task closes.
-
-**Example:** Kairos `docs/development-plan-outline.md`, mirrored as `devplan.md` (it predates this guideline; see the README's conformance table)
 
 ## Format
 

@@ -1,14 +1,12 @@
 # Technical design guideline
 
-**Status:** draft for sign-off, 2026-11-10 (KAI-016).
+**Status:** experimental (2026-11-10). Shown when a project turns on Planning guidelines.
 
 - **What:** the format and generator prompt for `technical-design.md`, the master specification of modules, pipelines, gates, and decisions.
 - **Why:** module files are spawned from it and must never contradict it. Every choice in it is either final or explicitly open, with an owner and a gate.
 - **How:** the AI solidifies the design and research into exact choices. It lists each still-open decision with options for the owner to ratify, then links out to module files as they appear.
 
 **Step:** `prd` (with `prd.md`). **Produces:** `technical-design.md`. **Owner gate:** ratifies each open decision, then marks the file reviewed.
-
-**Example:** Kairos `docs/technical-design-master-plan.md`.
 
 ## Format
 

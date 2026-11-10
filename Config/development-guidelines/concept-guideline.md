@@ -1,14 +1,12 @@
 # Concept declaration guideline
 
-**Status:** draft for sign-off, 2026-11-10 (KAI-016).
+**Status:** experimental (2026-11-10). Shown when a project turns on Planning guidelines.
 
 - **What:** the format and generator prompt for `concept.md`, the project's one-page statement of the main idea and its functional criteria.
 - **Why:** every later planning file traces to these criteria. A vague concept shows up later as scope drift and untestable gates.
 - **How:** the AI asks clarifying questions first, then drafts from the owner's answers and any existing notes. The owner marks the draft reviewed.
 
 **Step:** `concept`. **Produces:** `concept.md`. **Owner gate:** answers the question form, then marks the file reviewed.
-
-**Example:** Kairos `docs/concept.md`.
 
 ## Format
 

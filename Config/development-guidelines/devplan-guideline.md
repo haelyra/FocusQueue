@@ -1,14 +1,12 @@
 # Development plan guideline
 
-**Status:** draft for sign-off, 2026-11-10 (KAI-016).
+**Status:** experimental (2026-11-10). Shown when a project turns on Planning guidelines.
 
 - **What:** the format and generator prompt for `devplan.md`: a rough phase outline, a dependency tree, task triage, and a ready-to-create task set.
 - **Why:** the owner creates tasks from this file and checks them off. Each leaf must therefore be one task with a measurable gate and explicit dependencies.
 - **How:** the AI breaks the technical design's phases into leaves and orders them by dependency. It proposes a task title and summary for each leaf. The plan stays a draft that changes as phases land.
 
 **Step:** `devplan`. **Produces:** `devplan.md`. **Owner gate:** creates tasks from leaves and checks each leaf off when its task closes.
-
-**Example:** Kairos `docs/development-plan-outline.md`, mirrored as `devplan.md` (it predates this guideline; see the README's conformance table)
 
 ## Format
 

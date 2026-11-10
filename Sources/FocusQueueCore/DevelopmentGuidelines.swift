@@ -155,7 +155,7 @@ extension DevelopmentProcessStore {
         if !trimmed.isEmpty {
             guard !trimmed.hasPrefix("/"), !trimmed.split(separator: "/").contains(".."),
                   trimmed.lowercased().hasSuffix(".md") else {
-                throw TaskContextError.commandFailed("Use a Markdown file name inside the project folder, such as technical-design-master-plan.md.")
+                throw TaskContextError.commandFailed("Use a Markdown file name inside the project folder, such as architecture.md.")
             }
         }
         return try mutate(projectID: projectID) { process in

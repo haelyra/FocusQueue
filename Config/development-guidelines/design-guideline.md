@@ -1,14 +1,12 @@
 # System design guideline
 
-**Status:** draft for sign-off, 2026-11-10 (KAI-016).
+**Status:** experimental (2026-11-10). Shown when a project turns on Planning guidelines.
 
 - **What:** the format and generator prompt for `design.md`, the explicit system design in writing and one flow chart.
 - **Why:** the owner should be able to judge the architecture in one sitting, before the technical design adds exact versions, endpoints, and budgets.
 - **How:** the AI condenses the research into components, flows, and invariants. Each component becomes a future module and each flow a future pipeline.
 
 **Step:** `research` (with `research.md`). **Produces:** `design.md`. **Owner gate:** marks the file reviewed.
-
-**Example:** Kairos `docs/design.md`.
 
 ## Format
 

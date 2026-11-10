@@ -1,14 +1,12 @@
 # Product requirements guideline
 
-**Status:** draft for sign-off, 2026-11-10 (KAI-016).
+**Status:** experimental (2026-11-10). Shown when a project turns on Planning guidelines.
 
 - **What:** the format and generator prompt for `prd.md`, the product scope and testable requirements of the first release.
 - **Why:** the technical design solidifies choices to meet these requirements, and module success criteria refine them. A requirement that cannot be tested cannot gate a phase.
 - **How:** the AI turns the concept's functional criteria into workflows, MVP items, and numbered requirements. The technical design is then written to meet them, in the same step.
 
 **Step:** `prd` (with the technical design). **Produces:** `prd.md`. **Owner gate:** marks the file reviewed.
-
-**Example:** Kairos `prd.md`.
 
 ## Format
 

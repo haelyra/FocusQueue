@@ -1,14 +1,12 @@
 # Research compendium guideline
 
-**Status:** draft for sign-off, 2026-11-10 (KAI-016).
+**Status:** experimental (2026-11-10). Shown when a project turns on Planning guidelines.
 
 - **What:** the format and generator prompt for `research.md`, the compendium of evidence behind every design choice.
 - **Why:** the design and technical design cite this file. Without dated, typed evidence, an owner cannot tell a measured fact from a recalled one.
 - **How:** owner and AI work together. The AI proposes research questions; the owner adds sources and priorities. The AI then gathers evidence and puts options to the owner.
 
 **Step:** `research` (with `design.md`). **Produces:** `research.md`. **Owner gate:** edits the questions, picks options, marks the file reviewed.
-
-**Example:** Kairos `docs/research.md`.
 
 ## Format
 

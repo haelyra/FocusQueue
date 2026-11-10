@@ -28,6 +28,24 @@ func guidelinesMatchConfig() throws {
     }
 }
 
+@Test("The bundle is project-agnostic: no project names, owners, task IDs, or personal paths")
+func guidelinesAreProjectAgnostic() throws {
+    // Hash names look like task IDs but are technical terms.
+    let allowed: Set<String> = ["SHA-256", "SHA-384", "SHA-512"]
+    let taskID = try NSRegularExpression(pattern: #"\b[A-Z][A-Z0-9]{1,5}-\d{2,5}\b"#)
+    for name in DevelopmentGuidelines.fileNames {
+        let text = try #require(DevelopmentGuidelines.text(name))
+        let lowered = text.lowercased()
+        for word in ["kairos", "haelyra", "/users/", "mac16"] {
+            #expect(!lowered.contains(word), "\(name) contains project-specific text: \(word)")
+        }
+        let ids = taskID.matches(in: text, range: NSRange(text.startIndex..., in: text))
+            .compactMap { Range($0.range, in: text).map { String(text[$0]) } }
+            .filter { !allowed.contains($0) }
+        #expect(ids.isEmpty, "\(name) names task IDs: \(ids)")
+    }
+}
+
 @Test("Prompts come from each guideline's Prompt block with the shared conventions filled")
 func guidelinePromptsFillConventions() throws {
     #expect(DevelopmentGuidelines.conventions.hasPrefix("Conventions for every planning file:"))

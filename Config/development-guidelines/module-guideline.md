@@ -1,14 +1,12 @@
 # Module design guideline
 
-**Status:** draft for sign-off, 2026-11-10 (KAI-016).
+**Status:** experimental (2026-11-10). Shown when a project turns on Planning guidelines.
 
 - **What:** the format and generator prompt for the per-module design files. Each holds a one-line description, foundation, I/O, success criteria, and debug logs.
 - **Why:** each module file is the contract its implementer builds and its reviewer tests against. The owner accepts each module's success criteria in order, so the criteria must be exact.
 - **How:** the AI spawns one file per technical-design module, in dependency order. It specifies I/O to implementation depth for the next phase and marks later content with its owning phase.
 
 **Step:** `modules`. **Produces:** `modules/<id>-<slug>.md`, for example `modules/m6-context-scoped-data.md`. **Owner gate:** accepts each module's success criteria in the Project tab, in listed order.
-
-**Example:** KAI-005's six Phase 0 drafts (they predate this guideline; see the README's conformance table)
 
 ## Format
 

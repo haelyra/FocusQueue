@@ -74,10 +74,25 @@ public struct DevelopmentStepState: Codable, Equatable, Sendable {
     public var updatedAt: Date
     /// nil in files written before automatic updates existed; read as human.
     public var source: DevelopmentUpdateSource?
+    /// Artifact file names the human checked off in the document viewer.
+    public var checkedArtifacts: [String]
 
     public init(status: DevelopmentStepStatus = .pending, note: String? = nil, updatedAt: Date = Date(),
-                source: DevelopmentUpdateSource? = .human) {
+                source: DevelopmentUpdateSource? = .human, checkedArtifacts: [String] = []) {
         self.status = status; self.note = note; self.updatedAt = updatedAt; self.source = source
+        self.checkedArtifacts = checkedArtifacts
+    }
+
+    private enum CodingKeys: String, CodingKey { case status, note, updatedAt, source, checkedArtifacts }
+
+    /// Files written before artifact reviews lack the key; read them as unchecked.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        status = try container.decode(DevelopmentStepStatus.self, forKey: .status)
+        note = try container.decodeIfPresent(String.self, forKey: .note)
+        updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
+        source = try container.decodeIfPresent(DevelopmentUpdateSource.self, forKey: .source)
+        checkedArtifacts = try container.decodeIfPresent([String].self, forKey: .checkedArtifacts) ?? []
     }
 
     public var isAutomatic: Bool { source == .tasks || source == .steward }
@@ -260,7 +275,8 @@ public struct DevelopmentProcess: Codable, Equatable, Sendable {
         if let existing, !existing.isAutomatic, existing.status == .pending { return false }
         guard status.rank > (existing?.status ?? .pending).rank else { return false }
         steps[stepID] = DevelopmentStepState(status: status, note: note ?? existing?.note,
-                                             updatedAt: now, source: source)
+                                             updatedAt: now, source: source,
+                                             checkedArtifacts: existing?.checkedArtifacts ?? [])
         return true
     }
 
@@ -361,6 +377,12 @@ public enum DevelopmentProcessCatalog {
         DevelopmentPhase.allCases.first { step(id: id, in: $0) != nil }
     }
 
+    /// The catalog step that produces a file name, across all phases, so the
+    /// document viewer can offer a review toggle even after the phase moved on.
+    public static func step(forArtifact fileName: String) -> DevelopmentStep? {
+        DevelopmentPhase.allCases.lazy.flatMap { steps(in: $0) }.first { $0.artifacts.contains(fileName) }
+    }
+
     /// Guidance injected into agent briefs while the phase runs. Concise, action-first.
     public static func brief(for phase: DevelopmentPhase) -> String {
         switch phase {
@@ -383,6 +405,8 @@ public enum DevelopmentProcessError: Error, Equatable {
     case outOfOrderAcceptance(module: String, blockedBy: String)
     case unknownModule(String)
     case unknownStep(String)
+    /// A document cannot be checked off before it exists.
+    case missingArtifact(String)
 }
 
 extension DevelopmentProcessError: LocalizedError {
@@ -392,6 +416,7 @@ extension DevelopmentProcessError: LocalizedError {
             "Accept \(blockedBy)'s success criteria before \(module)'s; modules are reviewed in order."
         case .unknownModule(let id): "No module with id \(id)."
         case .unknownStep(let id): "No step with id \(id) in this phase."
+        case .missingArtifact(let file): "\(file) does not exist yet; create the document before checking it off."
         }
     }
 }
@@ -478,16 +503,59 @@ public struct DevelopmentProcessStore: Sendable {
 
     /// A human status change. Accepting the last step of a phase advances the
     /// project to the next phase, so the tracker never waits on an extra click.
+    /// Document check-offs survive status changes: the documents stay reviewed.
     public func setStepStatus(_ status: DevelopmentStepStatus, stepID: String,
                               projectID: String, note: String? = nil) throws -> DevelopmentProcess {
         try mutate(projectID: projectID) { process in
             guard DevelopmentProcessCatalog.step(id: stepID, in: process.currentPhase) != nil else {
                 throw DevelopmentProcessError.unknownStep(stepID)
             }
-            process.steps[stepID] = DevelopmentStepState(status: status, note: note, source: .human)
+            let checked = process.steps[stepID]?.checkedArtifacts ?? []
+            process.steps[stepID] = DevelopmentStepState(status: status, note: note, source: .human,
+                                                         checkedArtifacts: checked)
             if status == .accepted, process.phaseIsAccepted, let next = process.currentPhase.next {
                 process.currentPhase = next
             }
+        }
+    }
+
+    /// A step artifact lives beside the project plan. Artifact names come from
+    /// the catalog, so this never addresses a path outside the project folder.
+    public func artifactURL(projectID: String, artifact: String) throws -> URL {
+        try url(projectID: projectID).deletingLastPathComponent().appendingPathComponent(artifact)
+    }
+
+    /// A human document check-off from the Project tab's document viewer. When
+    /// every artifact of the step exists on disk and is checked off, the step
+    /// is marked done; acceptance and phase moves stay explicit human clicks.
+    /// Unchecking never lowers the status: the marker is the user's control.
+    public func setArtifactChecked(_ checked: Bool, stepID: String, artifact: String,
+                                   projectID: String) throws -> DevelopmentProcess {
+        guard let step = DevelopmentProcessCatalog.step(forArtifact: artifact), step.id == stepID else {
+            throw DevelopmentProcessError.unknownStep(stepID)
+        }
+        let artifactExists = try FileManager.default.fileExists(
+            atPath: artifactURL(projectID: projectID, artifact: artifact).path)
+        if checked, !artifactExists {
+            throw DevelopmentProcessError.missingArtifact(artifact)
+        }
+        return try mutate(projectID: projectID) { process in
+            var state = process.steps[stepID] ?? DevelopmentStepState()
+            state.checkedArtifacts.removeAll { $0 == artifact }
+            if checked { state.checkedArtifacts.append(artifact) }
+            state.source = state.source ?? .human
+            let allChecked = !step.artifacts.isEmpty
+                && step.artifacts.allSatisfy { state.checkedArtifacts.contains($0) }
+            if checked, allChecked, !state.status.isComplete,
+               step.artifacts.allSatisfy({
+                   (try? artifactURL(projectID: projectID, artifact: $0))
+                       .map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+               }) {
+                state.status = .done
+                state.note = "All documents reviewed."
+                state.source = .human
+            }
+            process.steps[stepID] = state
         }
     }
 

@@ -147,3 +147,60 @@ func phaseBriefs() {
     #expect(DevelopmentProcessCatalog.brief(for: .planning).contains("planning artifacts"))
     #expect(DevelopmentProcessCatalog.brief(for: .implementation).contains("success criteria"))
 }
+
+@Test("Checking off every existing artifact marks the step done; partial check-offs do not")
+func artifactCheckOffCompletesStep() throws {
+    let (root, projectID) = try processFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = DevelopmentProcessStore(root: root)
+    let directory = try store.url(projectID: projectID).deletingLastPathComponent()
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    for name in ["research.md", "design.md"] {
+        try Data("# \(name)\n".utf8).write(to: directory.appendingPathComponent(name))
+    }
+
+    // One of two documents reviewed: the step stays pending.
+    var process = try store.setArtifactChecked(true, stepID: "research", artifact: "research.md", projectID: projectID)
+    #expect(process.status(of: DevelopmentProcessCatalog.step(id: "research", in: .planning)!) == .pending)
+    #expect(process.steps["research"]?.checkedArtifacts == ["research.md"])
+
+    // The second document completes the step with a human-sourced note.
+    process = try store.setArtifactChecked(true, stepID: "research", artifact: "design.md", projectID: projectID)
+    #expect(process.status(of: DevelopmentProcessCatalog.step(id: "research", in: .planning)!) == .done)
+    #expect(process.steps["research"]?.note == "All documents reviewed.")
+    #expect(process.steps["research"]?.isAutomatic == false)
+
+    // Unchecking keeps the status; reopening the step is the marker's job.
+    process = try store.setArtifactChecked(false, stepID: "research", artifact: "design.md", projectID: projectID)
+    #expect(process.status(of: DevelopmentProcessCatalog.step(id: "research", in: .planning)!) == .done)
+    #expect(process.steps["research"]?.checkedArtifacts == ["research.md"])
+
+    // Check-offs survive status changes and automatic raises.
+    process = try store.setStepStatus(.pending, stepID: "research", projectID: projectID)
+    #expect(process.steps["research"]?.checkedArtifacts == ["research.md"])
+    #expect(process.steps["research"]?.status == .pending)
+    var mutable = process
+    let raisedFromHumanReset = mutable.raise(stepID: "research", to: .inProgress, source: .tasks, note: nil)
+    #expect(raisedFromHumanReset == false,
+            "A human reset to pending holds against automatic raises")
+    mutable.steps["research"]?.source = .steward
+    let raisedBySteward = mutable.raise(stepID: "research", to: .done, source: .steward, note: "evidence")
+    #expect(raisedBySteward)
+    #expect(mutable.steps["research"]?.checkedArtifacts == ["research.md"])
+
+    // Checking a document that does not exist is rejected.
+    #expect(throws: DevelopmentProcessError.missingArtifact("prd.md")) {
+        _ = try store.setArtifactChecked(true, stepID: "prd", artifact: "prd.md", projectID: projectID)
+    }
+    // A document that belongs to a different step is rejected.
+    #expect(throws: DevelopmentProcessError.unknownStep("prd")) {
+        _ = try store.setArtifactChecked(true, stepID: "prd", artifact: "design.md", projectID: projectID)
+    }
+}
+
+@Test("Step state files written before artifact reviews decode as unchecked")
+func stepStateDecodesWithoutCheckedArtifacts() throws {
+    let json = #"{"status": "done", "note": "older file", "updatedAt": 815948870.78, "source": "human"}"#
+    let state = try JSONDecoder().decode(DevelopmentStepState.self, from: Data(json.utf8))
+    #expect(state.status == .done && state.checkedArtifacts == [] && state.source == .human)
+}

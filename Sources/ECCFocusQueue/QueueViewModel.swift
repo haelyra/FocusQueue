@@ -2632,6 +2632,42 @@ final class QueueViewModel {
 
   func dismissDevelopmentProcessError() { developmentProcessError = nil }
 
+  /// The development-process artifact a viewer document belongs to, so the
+  /// document pane can offer its review toggle. Only project-scoped documents
+  /// inside the project folder of an enabled process qualify.
+  func developmentArtifactReview(for document: URL) -> DevelopmentArtifactReview? {
+    guard case .project(let projectID) = documentViewerScope,
+          let step = DevelopmentProcessCatalog.step(forArtifact: document.lastPathComponent),
+          let artifactURL = try? developmentProcessStore.artifactURL(
+            projectID: projectID, artifact: document.lastPathComponent),
+          artifactURL.standardizedFileURL == document.standardizedFileURL,
+          let process = try? developmentProcessStore.load(projectID: projectID),
+          process.enabled
+    else { return nil }
+    return DevelopmentArtifactReview(projectID: projectID, stepID: step.id, stepTitle: step.title,
+      artifact: document.lastPathComponent,
+      checked: process.steps[step.id]?.checkedArtifacts.contains(document.lastPathComponent) ?? false)
+  }
+
+  /// The document check-off in the viewer; auto-completes the step once every
+  /// artifact exists and is reviewed. Publishes the selected project's process.
+  func setDevelopmentArtifactChecked(_ checked: Bool, review: DevelopmentArtifactReview) {
+    do {
+      let updated = try developmentProcessStore.setArtifactChecked(
+        checked, stepID: review.stepID, artifact: review.artifact, projectID: review.projectID)
+      if review.projectID == selectedProject?.id { developmentProcess = updated.enabled ? updated : nil }
+      developmentProcessError = nil
+    } catch {
+      developmentProcessError = error.localizedDescription
+    }
+  }
+
+  /// Where a step artifact of the selected project lives, beside its plan.
+  func developmentArtifactURL(_ artifact: String) -> URL? {
+    guard let projectID = selectedProject?.id else { return nil }
+    return try? developmentProcessStore.artifactURL(projectID: projectID, artifact: artifact)
+  }
+
   /// Keeps every enabled project's process current without any agent's help.
   /// Each check (at most every 30 s, or on demand) reconciles step and module
   /// status from task status with no model call, then starts at most one
@@ -6296,4 +6332,14 @@ struct UICanvasRequest: Equatable {
   let id = UUID()
   let ticketID: String
   let key: String
+}
+
+/// The development-process step artifact a viewer document belongs to, with
+/// the human's check-off state. Drives the document pane's review toggle.
+struct DevelopmentArtifactReview: Equatable {
+  let projectID: String
+  let stepID: String
+  let stepTitle: String
+  let artifact: String
+  let checked: Bool
 }

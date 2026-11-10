@@ -167,15 +167,14 @@ struct ProjectTabView: View {
   private func stepRow(_ step: DevelopmentStep, status: DevelopmentStepStatus,
                        process: DevelopmentProcess) -> some View {
     let state = process.steps[step.id]
-    let linked = process.linkedTaskIDs(step: step.id)
-    return stepRowContent(step, status: status, state: state, linked: linked)
+    return stepRowContent(step, status: status, state: state)
   }
 
   private func stepRowContent(_ step: DevelopmentStep, status: DevelopmentStepStatus,
-                              state: DevelopmentStepState?, linked: [String]) -> some View {
+                              state: DevelopmentStepState?) -> some View {
     HStack(alignment: .top, spacing: 8) {
       Button {
-        model.setDevelopmentStepStatus(status.next, stepID: step.id)
+        model.setDevelopmentStepStatus(status.completeAdvance, stepID: step.id)
       } label: {
         Image(systemName: status.systemImage)
           .font(.system(size: 15, weight: .semibold))
@@ -186,16 +185,19 @@ struct ProjectTabView: View {
           .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .accessibilityLabel("\(step.title): \(status.label). Activate to mark \(status.next.label.lowercased()).")
+      .contextMenu {
+        Button("Mark incomplete", systemImage: "arrow.uturn.backward") {
+          model.setDevelopmentStepStatus(.pending, stepID: step.id)
+        }
+      }
+      .accessibilityLabel("\(step.title): \(status.label). Activate to mark \(status.completeAdvance.label.lowercased()).")
       .help(status.help)
       VStack(alignment: .leading, spacing: 2) {
         Text(step.title).font(.system(size: 12, weight: .semibold))
         Text(step.summary).font(.caption).foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
         if !step.artifacts.isEmpty {
-          Text(step.artifacts.joined(separator: " · "))
-            .font(.system(size: 10, design: .monospaced))
-            .foregroundStyle(.tertiary).lineLimit(1)
+          artifactChips(step, state: state)
         }
         if let note = state?.note, !note.isEmpty {
           Label(note, systemImage: state?.isAutomatic == true ? "wand.and.stars" : "person")
@@ -204,12 +206,43 @@ struct ProjectTabView: View {
             .help(state?.source == .steward ? "Evidence from the background steward"
               : state?.source == .tasks ? "Derived from linked task status" : "Your note")
         }
-        if !linked.isEmpty { linkedTasks(linked) }
       }
       Spacer(minLength: 4)
       Text(status.label.uppercased())
         .font(.system(size: 9, weight: .bold)).tracking(0.5)
         .foregroundStyle(.secondary)
+    }
+  }
+
+  /// One clickable chip per step document: opens the file in the document
+  /// viewer, where the review toggle checks it off. Green once reviewed,
+  /// accent while awaiting review, dimmed until the file exists.
+  private func artifactChips(_ step: DevelopmentStep, state: DevelopmentStepState?) -> some View {
+    HStack(spacing: 6) {
+      ForEach(step.artifacts, id: \.self) { artifact in
+        let checked = state?.checkedArtifacts.contains(artifact) ?? false
+        let url = model.developmentArtifactURL(artifact)
+        let exists = url.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+        Button {
+          if let url, exists, let projectID = project?.id {
+            model.openDocumentViewer(url, scope: .project(projectID))
+          }
+        } label: {
+          Label(artifact, systemImage: checked ? "checkmark.circle.fill" : exists ? "doc.fill" : "doc")
+            .labelStyle(.titleAndIcon)
+            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+            .padding(.horizontal, 6).padding(.vertical, 3)
+            .background(checked ? Color.green.opacity(0.14) : Color.primary.opacity(exists ? 0.08 : 0.03),
+                        in: Capsule())
+            .foregroundStyle(checked ? Color.green : exists ? Color.accentColor : Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .disabled(!exists)
+        .help(checked ? "Reviewed. Click to open."
+              : exists ? "Click to open, then mark it reviewed in the viewer."
+              : "Not created yet.")
+        .accessibilityLabel("\(artifact), \(checked ? "reviewed" : exists ? "not reviewed" : "missing")")
+      }
     }
   }
 
@@ -414,13 +447,12 @@ private struct ProjectTabHeading: View {
 }
 
 extension DevelopmentStepStatus {
-  /// Tap cycles forward: pending → in progress → done → accepted.
-  var next: DevelopmentStepStatus {
+  /// Click moves toward complete: pending or active → done → accepted.
+  /// Right-click on the marker offers "Mark incomplete".
+  var completeAdvance: DevelopmentStepStatus {
     switch self {
-    case .pending: .inProgress
-    case .inProgress: .done
-    case .done: .accepted
-    case .accepted: .accepted
+    case .pending, .inProgress: .done
+    case .done, .accepted: .accepted
     }
   }
 
@@ -444,10 +476,10 @@ extension DevelopmentStepStatus {
 
   var help: String {
     switch self {
-    case .pending: "Pending. Click to mark active."
-    case .inProgress: "In progress. Click to mark done."
-    case .done: "Done. Click to record human acceptance."
-    case .accepted: "Accepted by human review."
+    case .pending: "Pending. Click to mark complete; right-click keeps it pending."
+    case .inProgress: "In progress. Click to mark complete; right-click to mark incomplete."
+    case .done: "Done. Click to record human acceptance; right-click to mark incomplete."
+    case .accepted: "Accepted by human review. Right-click to mark incomplete."
     }
   }
 }

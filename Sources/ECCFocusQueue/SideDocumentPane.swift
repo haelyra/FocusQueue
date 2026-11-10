@@ -201,6 +201,15 @@ enum DocumentFileWriter {
     }
 }
 
+/// The development-process review toggle for a document that is a step
+/// artifact. `set` persists the human's check-off; when every artifact of the
+/// step is reviewed, the step is marked complete.
+struct DocumentArtifactReview {
+    let stepTitle: String
+    let checked: Bool
+    let set: (Bool) -> Void
+}
+
 struct SideDocumentPane: View {
     let queue: QueueViewModel
     /// The task ID or project name the document is viewed under.
@@ -211,6 +220,8 @@ struct SideDocumentPane: View {
     let discuss: (PlanCanvasSelectionAction) -> Void
     /// Called when the header title starts a drag, so the container can preview a split.
     var dragStarted: (URL) -> Void = { _ in }
+    /// Present when the document is a development-process step artifact.
+    var artifactReview: DocumentArtifactReview?
     @State private var find = DocumentFindState()
 
     private var store: DocumentContentStore { queue.documentContentStore }
@@ -231,6 +242,20 @@ struct SideDocumentPane: View {
                     .lineLimit(1)
                     .documentDrag(document, started: dragStarted)
                 Spacer()
+                if let artifactReview {
+                    Button {
+                        artifactReview.set(!artifactReview.checked)
+                    } label: {
+                        Label(artifactReview.checked ? "Reviewed" : "Mark reviewed",
+                              systemImage: artifactReview.checked ? "checkmark.seal.fill" : "seal")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(artifactReview.checked ? Color.green : Color.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("\(artifactReview.stepTitle): checking off every document of a step marks it complete. Right-click the step marker in the Project tab to reopen it.")
+                    .accessibilityLabel(artifactReview.checked
+                        ? "Reviewed: \(document.lastPathComponent)" : "Mark \(document.lastPathComponent) reviewed")
+                }
                 if case .pdf = entry.content {
                     Button { queue.togglePDFDarkMode() } label: {
                         Image(systemName: queue.isPDFDarkMode ? "moon.fill" : "moon")

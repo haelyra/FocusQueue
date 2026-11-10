@@ -59,6 +59,22 @@ struct ProjectTabTests {
     model.setDevelopmentPhase(.phase0)
     #expect(model.developmentProcess?.currentPhase == .phase0)
 
+    // Step documents render as clickable chips: reviewed, present, missing.
+    model.setDevelopmentPhase(.planning)
+    let projectDirectory = try DevelopmentProcessStore(root: root).url(projectID: project.id)
+      .deletingLastPathComponent()
+    for name in ["concept.md", "research.md"] {
+      try Data("# \(name)\n".utf8).write(to: projectDirectory.appendingPathComponent(name))
+    }
+    model.setDevelopmentArtifactChecked(true, review: try #require({
+      model.openDocumentViewer(projectDirectory.appendingPathComponent("concept.md"),
+                               scope: .project(project.id))
+      return model.developmentArtifactReview(
+        for: projectDirectory.appendingPathComponent("concept.md"))
+    }()))
+    model.closeDocumentViewer()
+    #expect(model.developmentProcess?.steps["concept"]?.status == .done)
+
     // The tab and the settings row render.
     let tab = render(ProjectTabView(model: model), size: NSSize(width: 420, height: 700), name: "project-tab")
     #expect(tab.fittingSize.width > 0)
@@ -71,6 +87,44 @@ struct ProjectTabTests {
     #expect(model.developmentProcess == nil)
     #expect(FileManager.default.fileExists(atPath: url.path))
     #expect(try DevelopmentProcessStore(root: root).load(projectID: project.id)?.enabled == false)
+  }
+
+  @Test("The viewer offers a review toggle for step artifacts and check-off completes the step")
+  func artifactReviewFlow() async throws {
+    let (model, root) = try await bootstrappedModel()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let project = try #require(model.selectedProject)
+    model.setDevelopmentProcessEnabled(true)
+    let directory = try DevelopmentProcessStore(root: root).url(projectID: project.id)
+      .deletingLastPathComponent()
+    let prd = directory.appendingPathComponent("prd.md")
+    try Data("# PRD\n".utf8).write(to: prd)
+
+    // Only the matching document inside the project folder gets a toggle.
+    model.openDocumentViewer(prd, scope: .project(project.id))
+    let review = try #require(model.developmentArtifactReview(for: prd))
+    #expect(review.stepID == "prd" && review.artifact == "prd.md" && !review.checked)
+    let outsider = root.appendingPathComponent("prd.md")
+    try Data("# unrelated\n".utf8).write(to: outsider)
+    #expect(model.developmentArtifactReview(for: outsider) == nil)
+    #expect(model.developmentArtifactReview(
+      for: directory.appendingPathComponent("plan.md")) == nil)
+
+    // Checking the only document of the step marks the step done.
+    model.setDevelopmentArtifactChecked(true, review: review)
+    #expect(model.developmentProcess?.steps["prd"]?.checkedArtifacts == ["prd.md"])
+    #expect(model.developmentProcess?.steps["prd"]?.status == .done)
+    #expect(model.developmentArtifactReview(for: prd)?.checked == true)
+
+    // Task-scoped viewing never offers the toggle.
+    model.openDocumentViewer(prd, scope: .task("FOC-1"))
+    #expect(model.developmentArtifactReview(for: prd) == nil)
+
+    // The viewer renders with the review toggle for the artifact.
+    model.openDocumentViewer(prd, scope: .project(project.id))
+    let inspector = render(DocumentViewerInspector(model: model),
+                           size: NSSize(width: 900, height: 500), name: "document-viewer-review")
+    #expect(inspector.fittingSize.width > 0)
   }
 
   @Test("QueueView renders with the project button beside the title")

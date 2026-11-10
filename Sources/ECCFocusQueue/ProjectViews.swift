@@ -494,7 +494,12 @@ struct DocumentViewerInspector: View {
                       let conversation = model.documentConversation(for: document, scope: scope) else { return }
                 conversation.discuss(action)
             },
-            dragStarted: { draggedTab = $0 })
+            dragStarted: { draggedTab = $0 },
+            artifactReview: model.developmentArtifactReview(for: document).map { review in
+                DocumentArtifactReview(stepTitle: review.stepTitle, checked: review.checked) {
+                    model.setDevelopmentArtifactChecked($0, review: review)
+                }
+            })
     }
 
     private var tabBar: some View {

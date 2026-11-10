@@ -81,6 +81,7 @@ Agents receive and consume identity through environment variables. These are the
 | `FOCUS_QUEUE_SUBTASK_ID` | managed launch | Subtask (agent slot) ID |
 | `FOCUS_QUEUE_LAUNCH_ID` | entry wrapper | Launch UUID → placement capsule path |
 | `FOCUS_QUEUE_AGENT_CONTEXT` | entry wrapper | Direct path to the placement capsule JSON |
+| `FOCUS_QUEUE_AGENT_ROLE` | shell (`--role`) or app launch | `coding` (default), `research`, or `orchestrator`. Orchestrator launches skip worktree isolation and receive the project's signed orchestrator contract instead of the engineering one |
 | `FOCUS_QUEUE_TMUX_NAME` | managed tmux | Owning tmux session name |
 | `FOCUS_QUEUE_PROJECT_ID` | queue commands | Scope guard for `queue` mutations |
 | `FOCUS_QUEUE_PROVIDER` | entry wrapper | `codex` / `claude` / `kimi` |
@@ -152,7 +153,7 @@ Sets/replaces the agent's display title and assignment description. Hook-indepen
 ### 3.2 Placement
 
 **`focus-queue-session placement [--prompt <text>] [--task <ID>] [--launch <UUID>] [--cwd <path>] [--no-create]`**
-Runs the deterministic placement resolver and writes a capsule to `tracking/placements/<launch-uuid>.json`. The capsule (`AgentPlacementCapsule`) is the agent's source of truth: `projectID, projectDataPath, userDataPath, taskPrefix, taskID?, agentID?, provider, workspacePath, branch?, tmuxName?, tmuxPaneID?, projectPlanPath, taskPlanPath?, taskLogPath?, taskDataPath?, status (placed|project-inbox|blocked-conflict)`.
+Runs the deterministic placement resolver and writes a capsule to `tracking/placements/<launch-uuid>.json`. The capsule (`AgentPlacementCapsule`) is the agent's source of truth: `projectID, projectDataPath, userDataPath, agentRole, agentContractPath?, taskPrefix, taskID?, agentID?, provider, workspacePath, branch?, tmuxName?, tmuxPaneID?, projectPlanPath, taskPlanPath?, taskLogPath?, taskDataPath?, status (placed|project-inbox|blocked-conflict)`.
 
 **Rule: read your capsule (`$FOCUS_QUEUE_AGENT_CONTEXT`) before any source edit. Stop on `blocked-conflict`.**
 
@@ -239,6 +240,15 @@ The process updates itself outside agent sessions:
 1. **Task status (no model).** On each app refresh (at most every 30 s), an open linked task makes its step active; when every linked task is closed the step is done and linked modules are implemented. Automatic updates only raise a step, never accept it, and a human reset to pending holds.
 2. **Steward (placement model).** When a project's *signature* changes (a new unlinked task, a new Markdown file in the project folder or `modules/`, a module, or the phase), the app runs `focus_queue_placement.py develop` once (at most every 120 s; failures retry after 30 min). The prompt carries the step catalog, unlinked tasks, and file headings. The reply proposes links and step evidence, which the app validates and applies. It uses the placement provider, model, and effort, and Settings › Placement › model off disables it. Usage is recorded under the `development` source.
 3. **Agents** get at most one brief line naming their own step's phase rule (`Development process (Phase 0, step Scaffolding & environment): …`), or none when the task is linked outside the process.
+
+**`contract show <PROJECT-ID> <engineering|orchestrator> · contract propose <PROJECT-ID> <role> <file.md> · contract generate <PROJECT-ID>`**
+Role-scoped agent contracts (FOC-117), beside the project plan: `agent-contract.md` (engineering agents) and `orchestration.md` (agents that plan, assign, review, and close tasks). Only text the owner signed off reaches agents.
+- **Sign-off.** `development.json` keeps `contracts.<role> = {sha256, signedAt, signedBy, text}`. The Project tab's *Agent contracts* row (every phase) opens each file in the document viewer, where *Sign off* signs exactly the text shown, and any save in the viewer (*Save & sign off*) signs the saved text. Signing checks the document off in the Planning `contract` step. A file with no sign-off is `unsigned` and never injected.
+- **Pending changes.** When the file's hash differs from the signed hash (an agent, the generator, or an outside editor wrote it), agents keep getting the signed `text` and the chip shows *changes pending sign-off*. A draft (`<name>.draft.md`, from `propose` or Regenerate) replaces the live file only when the owner signs it off; right-click a chip to discard a draft or revoke a sign-off.
+- **Injection.** Each role gets only its signed `## Essentials` section (or the whole body when the file has no sections), capped between whole rules at 1,500 characters (1,600 for the orchestrator, its generator limit, so Essentials that pass lint are never cut), with relative links made absolute, plus one path line for the other role's signed contract. Engineering launches carry it in the launch brief right after user and project data, and the prompt hook (`data-event`) and `data show` deliver the same block to shell launches and resumed sessions. Task chat and project-scoped QChat carry the orchestrator contract on every turn; All-projects QChat carries neither. `inlinedAgentContextCharacters` reports `engineering_contract` or `orchestration_contract`.
+- **Role.** `launchConfiguration.role` (`orchestrator`, else engineering), set by New Agent's *Role* picker, `--role coding|research|orchestrator` on the `claude` and `codex` shell entries, or `FOCUS_QUEUE_AGENT_ROLE`. App launches export `FOCUS_QUEUE_AGENT_ROLE=orchestrator` for orchestrator agents, and the capsule records `agentRole` and, once signed, `agentContractPath`.
+- **Generate.** `contract generate` (or *Generate*/*Regenerate* in the tab) fills `Config/contract-generator-prompt.md` with the project name, owner (the repository's git author), existing step artifacts and the repository documents they link, what agents already receive, and the current files, then runs one read-only reader turn on the QChat provider and model (usage source `contract_generator`). A contract with no file is written in place, unsigned; an existing one gets a `.draft.md`. `contract-review.md` holds the deterministic lint (two sections, rule and character caps, sentences of 25 words or fewer, no phase, task ID, date, version, section number, platform, command, or emphasis words, links that resolve) and the generator's review notes. Lint warns and never blocks.
+- **`propose`** stores a draft and raises one `approval` attention on the calling agent (`$FOCUS_QUEUE_TASK_ID`/`$FOCUS_QUEUE_SUBTASK_ID`). There is no CLI sign-off: only the owner signs, in the app.
 
 ### 3.9 Library (durable history)
 
@@ -472,6 +482,9 @@ focus-queue-session task status   <TASK-ID> <status>     # ⚠ unvalidated
 # Development process (projects that enable it)
 focus-queue-session development <PROJECT-ID> show|sync
 focus-queue-session development <PROJECT-ID> link <TASK-ID> <step-id|none> [module]
+focus-queue-session contract show <PROJECT-ID> engineering|orchestrator   # what that role receives
+focus-queue-session contract propose <PROJECT-ID> <role> <file.md>       # draft + owner attention
+focus-queue-session contract generate <PROJECT-ID>                       # drafts both; owner signs off in the app
 
 # Diagnostics
 focus-queue-session context <TASK> | plan <TASK> | diagnose <TASK>

@@ -2642,6 +2642,7 @@ public actor HarnessQueueAgent: QueueAgentChatting {
     /// Document requests use separate harness lock/state directories, so a
     /// hidden central conversation cannot serialize or time out a document chat.
     public static func documentRuntimeArguments(_ configuration: VerifierConfiguration) -> [String] {
+        if let runtime = configuration.runtimeDirectory, runtime.hasPrefix("/") { return ["--runtime", runtime] }
         guard configuration.sessionName.range(of: #"^ecc-focus-queue-task-[A-Za-z0-9_-]+-document-[a-f0-9]{16}$"#, options: .regularExpression) != nil,
               let context = configuration.contextDirectory else { return [] }
         let directory = URL(fileURLWithPath: context).appendingPathComponent("document-agents")
@@ -2683,7 +2684,8 @@ public actor HarnessQueueAgent: QueueAgentChatting {
             .appendingPathComponent("focus-queue-chat-usage-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: usageURL) }
         let runID = UUID().uuidString
-        let source = Self.documentRuntimeArguments(configuration).isEmpty ? "queue_chat" : "document_chat"
+        let source = configuration.usageSource
+            ?? (Self.documentRuntimeArguments(configuration).isEmpty ? "queue_chat" : "document_chat")
         let isReader = configuration.documentReader == true
         let isEditor = configuration.documentEditor == true
         // Readers and editors never touch the queue, so neither gets queue actions or evidence checks.

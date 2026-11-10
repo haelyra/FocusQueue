@@ -52,6 +52,55 @@ class EntryError(RuntimeError):
     pass
 
 
+ROLE_VALUES = {"coding": "coding", "engineering": "coding", "research": "research",
+               "orchestrator": "orchestrator"}
+
+
+def take_role_option(arguments):
+    """`--role coding|research|orchestrator` belongs to Focus Queue, not the provider.
+
+    It picks the signed project contract the agent receives (orchestrator agents
+    get the orchestrator contract) and is exported as FOCUS_QUEUE_AGENT_ROLE for
+    placement and prompt hooks. Only options before `--` count; the rest pass through.
+    """
+    remaining = []
+    index = 0
+    role = None
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            remaining.extend(arguments[index:])
+            break
+        if argument == "--role" or argument.startswith("--role="):
+            if argument == "--role":
+                if index + 1 >= len(arguments):
+                    raise EntryError("--role needs a value: coding, research, or orchestrator.")
+                value = arguments[index + 1]
+                index += 2
+            else:
+                value = argument.split("=", 1)[1]
+                index += 1
+            role = ROLE_VALUES.get(value.strip().lower())
+            if role is None:
+                raise EntryError("--role must be coding, research, or orchestrator.")
+            continue
+        if argument in VALUE_OPTIONS and index + 1 < len(arguments):
+            remaining.extend(arguments[index:index + 2])
+            index += 2
+            continue
+        remaining.append(argument)
+        index += 1
+    if role:
+        os.environ["FOCUS_QUEUE_AGENT_ROLE"] = role
+    return remaining
+
+
+def role_environment():
+    """The managed pane gets only the variables it is handed, so the role travels explicitly."""
+    role = os.environ.get("FOCUS_QUEUE_AGENT_ROLE")
+    return [f"FOCUS_QUEUE_AGENT_ROLE={role}"] if role in {"research", "orchestrator"} else []
+
+
 def invocation(arguments, *, classify_agents=False):
     """Return interactive kind and an explicit resume UUID, without interpreting prompts."""
     mode = "new"
@@ -1005,7 +1054,7 @@ def start(helper, name, command, *, prompt=None, support=None, task_id=None, age
         launch = ["tmux", "start", name]
     reference = run_json(helper, [*launch, "--cwd", os.getcwd(), "--",
         "/usr/bin/env", "FOCUS_QUEUE_RUNTIME_MODE=tmux", "FOCUS_QUEUE_PROVIDER=codex",
-        "FOCUS_QUEUE_MANAGED_TMUX=1", *command])
+        "FOCUS_QUEUE_MANAGED_TMUX=1", *role_environment(), *command])
     validate_reference(reference)
     if support is not None:
         try:
@@ -1067,6 +1116,7 @@ def main(argv=None):
     arguments = options.arguments
     if arguments[:1] == ["--"]:
         arguments = arguments[1:]
+    arguments = take_role_option(arguments)
     mode, session_id = invocation(arguments, classify_agents=True)
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
     bypass = (os.environ.get("FOCUS_QUEUE_RUNTIME_MODE") in {"tmux", "terminal"} or

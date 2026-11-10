@@ -488,6 +488,8 @@ final class QueueViewModel {
       ?? AgentLaunchLogger(supportDirectory: paths.supportDirectory)
     self.connectorDiagnosticsRunner = connectorDiagnosticsRunner
     self.agentActivityObserver = agentActivityObserver
+    // An owner's save of a contract in the viewer is the sign-off: edits go live at once.
+    documentContentStore.didSave = { [weak self] url, text in self?.agentContractSaved(url, text: text) }
   }
 
   var openTickets: [DashboardTicket] {
@@ -775,6 +777,10 @@ final class QueueViewModel {
   private(set) var developmentProcessError: String?
   /// The project whose background steward pass is running, if any.
   private(set) var developmentStewardProjectID: String?
+  /// The selected project's agent contracts, refreshed with the process.
+  private(set) var developmentContracts: [AgentContractStatus] = []
+  /// The project whose contract generator is running, if any.
+  private(set) var contractGenerationProjectID: String?
   @ObservationIgnored private var lastDevelopmentStewardCheck: Date?
   @ObservationIgnored var developmentStewardRunner: DevelopmentStewardRunner?
   var projects: [ProjectConfiguration] { config.projects }
@@ -2040,7 +2046,9 @@ final class QueueViewModel {
         Apply changes only when requested.
 
         """
-      scopedMessage = taskScope + "Project: \(context.projectName ?? context.projectID ?? "Unassigned"). " + contextScope + request
+      // Task chat is the task's orchestrator: it carries the signed orchestrator contract.
+      scopedMessage = taskScope + "Project: \(context.projectName ?? context.projectID ?? "Unassigned"). " + contextScope
+        + (orchestratorContractScope(projectID: context.projectID) ?? "") + request
     } else {
       let catalog = config.projects.map { project in
         "- \(project.name) (\(project.id)): dashboard \(project.dashboardPath); workspace \(project.workspacePath)"
@@ -2055,6 +2063,7 @@ final class QueueViewModel {
           + (pending.isEmpty ? " (all steps accepted)." : "; next steps: \(pending).")
           + " \(DevelopmentProcessCatalog.brief(for: process.currentPhase))"
           + " Change links, steps, or the phase with `focus-queue-session development`, never by editing development.json.\n"
+        scope += orchestratorContractScope(projectID: selectedProjectID) ?? ""
       }
       scopedMessage = scope + "Read the dashboard for the project named in the user's request. Preserve projectID and unknown fields on edits to the selected dashboard." + request
     }
@@ -2578,6 +2587,7 @@ final class QueueViewModel {
     } catch {
       developmentProcessError = "Development process: \(error.localizedDescription)"
     }
+    reloadDevelopmentContracts()
   }
 
   /// One development-process mutation: run the store edit, publish the result,
@@ -2594,6 +2604,7 @@ final class QueueViewModel {
     } catch {
       developmentProcessError = error.localizedDescription
     }
+    reloadDevelopmentContracts()
   }
 
   func setDevelopmentProcessEnabled(_ enabled: Bool) {
@@ -2636,7 +2647,9 @@ final class QueueViewModel {
   /// document pane can offer its review toggle. Only project-scoped documents
   /// inside the project folder of an enabled process qualify.
   func developmentArtifactReview(for document: URL) -> DevelopmentArtifactReview? {
-    guard case .project(let projectID) = documentViewerScope,
+    // Contracts are checked off by signing them; see `developmentContractControl`.
+    guard AgentContractRole(fileName: document.lastPathComponent) == nil,
+          case .project(let projectID) = documentViewerScope,
           let step = DevelopmentProcessCatalog.step(forArtifact: document.lastPathComponent),
           let artifactURL = try? developmentProcessStore.artifactURL(
             projectID: projectID, artifact: document.lastPathComponent),
@@ -2666,6 +2679,137 @@ final class QueueViewModel {
   func developmentArtifactURL(_ artifact: String) -> URL? {
     guard let projectID = selectedProject?.id else { return nil }
     return try? developmentProcessStore.artifactURL(projectID: projectID, artifact: artifact)
+  }
+
+  // MARK: - Agent contracts
+
+  /// Refreshes the selected project's contract states from disk: sign-off, pending
+  /// edits, drafts, and lint. Runs with every process reload and contract action.
+  func reloadDevelopmentContracts() {
+    guard let projectID = selectedProject?.id, let process = developmentProcess else {
+      if !developmentContracts.isEmpty { developmentContracts = [] }
+      return
+    }
+    let statuses = AgentContractRole.allCases.compactMap {
+      try? developmentProcessStore.contractStatus(role: $0, projectID: projectID, process: process)
+    }
+    if statuses != developmentContracts { developmentContracts = statuses }
+  }
+
+  /// Opens a contract for review: the live file, beside its draft when one waits.
+  func openAgentContract(_ status: AgentContractStatus) {
+    guard let projectID = selectedProject?.id else { return }
+    let live = FileManager.default.fileExists(atPath: status.fileURL.path)
+    if live { openDocumentViewer(status.fileURL, scope: .project(projectID)) }
+    if status.hasDraft {
+      if live { documentViewer.open(status.draftURL, in: .secondary) }
+      else { openDocumentViewer(status.draftURL, scope: .project(projectID)) }
+    }
+  }
+
+  /// Drafts both contracts with the bundled prompt as one read-only turn on the
+  /// QChat provider, then opens the drafts with the lint and review notes beside them.
+  func generateAgentContracts() {
+    guard let project = selectedProject, developmentProcess != nil, contractGenerationProjectID == nil else { return }
+    let provider = defaultAgentProvider
+    let model = effectiveChatModel(for: provider)
+    let effort = Self.normalizedChatOption(config.chatEffort(for: provider))
+    let generator = AgentContractGenerator(root: paths.supportDirectory, agent: queueAgentFactory(provider))
+    let configuration = config
+    contractGenerationProjectID = project.id
+    developmentProcessError = nil
+    Task { [weak self] in
+      do {
+        let result = try await generator.generate(
+          project: project, configuration: configuration, provider: provider, model: model, effort: effort)
+        guard let self else { return }
+        self.contractGenerationProjectID = nil
+        self.reloadDevelopmentContracts()
+        guard self.selectedProject?.id == project.id, let first = result.files.first else { return }
+        self.openDocumentViewer(first, scope: .project(project.id))
+        for file in result.files.dropFirst() { self.documentViewer.open(file, in: .primary) }
+        self.documentViewer.select(first)
+        self.documentViewer.open(result.reviewURL, in: .secondary)
+      } catch {
+        self?.contractGenerationProjectID = nil
+        self?.developmentProcessError = "Contract generator: \(error.localizedDescription)"
+      }
+    }
+  }
+
+  /// The sign-off control for a contract or its draft open in the viewer, in any
+  /// scope: the file's folder names the project. Nil for every other document.
+  func developmentContractControl(for document: URL) -> DevelopmentContractControl? {
+    guard let role = AgentContractRole(fileName: document.lastPathComponent) else { return nil }
+    let directory = document.deletingLastPathComponent().standardizedFileURL
+    guard let project = config.projects.first(where: {
+            (try? developmentProcessStore.contractDirectory(projectID: $0.id))?.standardizedFileURL == directory
+          }),
+          let process = try? developmentProcessStore.load(projectID: project.id), process.enabled
+    else { return nil }
+    let isDraft = document.lastPathComponent == role.draftFileName
+    let status = AgentContract.status(role: role, directory: directory, signoff: process.contracts[role.rawValue])
+    let text = documentContentStore.loadedText(for: document)
+      ?? (try? String(contentsOf: document, encoding: .utf8)) ?? ""
+    return DevelopmentContractControl(
+      projectID: project.id, role: role, isDraft: isDraft, state: status.state,
+      lint: AgentContract.lint(text, role: role, directory: directory))
+  }
+
+  /// Signs off exactly the text the viewer shows; a draft replaces the live file.
+  func signAgentContract(_ control: DevelopmentContractControl, document: URL) {
+    guard let text = documentContentStore.loadedText(for: document) else {
+      developmentProcessError = "Wait for \(document.lastPathComponent) to load, then sign it off."
+      return
+    }
+    signAgentContract(control, document: document, text: text)
+  }
+
+  private func signAgentContract(_ control: DevelopmentContractControl, document: URL, text: String) {
+    do {
+      let updated = control.isDraft
+        ? try developmentProcessStore.promoteContractDraft(role: control.role, text: text, projectID: control.projectID)
+        : try developmentProcessStore.signContract(role: control.role, text: text, projectID: control.projectID)
+      if control.projectID == selectedProject?.id { developmentProcess = updated.enabled ? updated : nil }
+      developmentProcessError = nil
+      if control.isDraft, let live = try? developmentProcessStore.contractDirectory(projectID: control.projectID)
+        .appendingPathComponent(control.role.fileName) {
+        // The draft is gone; show the live contract it became.
+        documentViewer.close(document)
+        if isDocumentViewerPresented { documentViewer.open(live, in: .primary) }
+        documentContentStore.reload(live)
+      }
+    } catch {
+      developmentProcessError = error.localizedDescription
+    }
+    reloadDevelopmentContracts()
+  }
+
+  /// A save in the viewer is the owner's edit, so it signs off the saved text.
+  private func agentContractSaved(_ url: URL, text: String) {
+    guard let control = developmentContractControl(for: url) else { return }
+    signAgentContract(control, document: url, text: text)
+  }
+
+  func revokeAgentContract(_ role: AgentContractRole) {
+    mutateDevelopmentProcess { try $0.revokeContract(role: role, projectID: $1) }
+  }
+
+  func discardAgentContractDraft(_ status: AgentContractStatus) {
+    guard let projectID = selectedProject?.id else { return }
+    do { try developmentProcessStore.discardContractDraft(role: status.role, projectID: projectID) }
+    catch { developmentProcessError = error.localizedDescription }
+    if documentViewer.tabs.contains(status.draftURL) { documentViewer.close(status.draftURL) }
+    reloadDevelopmentContracts()
+  }
+
+  /// The project's signed orchestrator contract for a chat turn, or nil.
+  func orchestratorContractScope(projectID: String?) -> String? {
+    guard let projectID, let process = try? developmentProcessStore.load(projectID: projectID), process.enabled,
+          let directory = try? developmentProcessStore.contractDirectory(projectID: projectID),
+          let injection = AgentContract.injection(role: .orchestrator, directory: directory, process: process)
+    else { return nil }
+    return injection.lines.joined(separator: "\n") + "\n"
   }
 
   /// Keeps every enabled project's process current without any agent's help.
@@ -3733,6 +3877,7 @@ final class QueueViewModel {
     modelName: String? = nil, effort: String? = nil,
     workspacePolicy: AgentWorkspacePolicy? = nil,
     pluginOverrides: [String: Bool] = [:],
+    role: AgentContractRole = .engineering,
     opensTerminal: Bool = true,
     completion: (@MainActor (Bool) -> Void)? = nil
   ) {
@@ -3798,7 +3943,8 @@ final class QueueViewModel {
         var launchConfiguration = AgentLaunchConfiguration(
           model: selectedModel?.isEmpty == false ? selectedModel : nil,
           effort: selectedEffort?.isEmpty == false ? selectedEffort : nil,
-          pluginOverrides: pluginOverrides.isEmpty ? nil : pluginOverrides)
+          pluginOverrides: pluginOverrides.isEmpty ? nil : pluginOverrides,
+          role: role == .orchestrator ? AgentContractRole.orchestrator.rawValue : nil)
         if let parentSubtaskID {
           guard let parent = context.subtasks.first(where: { $0.id == parentSubtaskID }), parent.status != .completed else {
             throw TaskContextError.commandFailed("This subtask is already completed or no longer exists.")
@@ -3825,6 +3971,7 @@ final class QueueViewModel {
             launchConfiguration.model = launchConfiguration.model ?? saved.model
             launchConfiguration.effort = launchConfiguration.effort ?? saved.effort
             launchConfiguration.pluginOverrides = launchConfiguration.pluginOverrides ?? saved.pluginOverrides
+            launchConfiguration.role = launchConfiguration.role ?? saved.role
           }
         }
         // Agents started by the retired router already own a capsule under their route ID.
@@ -4020,7 +4167,7 @@ final class QueueViewModel {
           launchID: launchID, cwd: workspace,
           prompt: subtask.initialPrompt ?? subtask.assignmentDescription,
           explicitTaskID: ticket.id, assignmentID: subtask.id, provider: subtask.provider,
-          createTaskIfNeeded: false),
+          createTaskIfNeeded: false, role: subtask.launchConfiguration?.role),
         configuration: config)
       await recordAgentLaunch(
         subtask, ticketID: ticket.id, phase: "placement", outcome: capsule.status.rawValue,
@@ -6342,4 +6489,13 @@ struct DevelopmentArtifactReview: Equatable {
   let stepTitle: String
   let artifact: String
   let checked: Bool
+}
+
+/// The sign-off control the document viewer shows for a contract or its draft.
+struct DevelopmentContractControl: Equatable {
+  let projectID: String
+  let role: AgentContractRole
+  let isDraft: Bool
+  let state: AgentContractState
+  let lint: [AgentContractLintIssue]
 }

@@ -234,7 +234,9 @@ struct SideDocumentPane: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
+        // Contracts and their drafts are signed off here; the control names the project by folder.
+        let contract = queue.developmentContractControl(for: document)
+        return VStack(spacing: 8) {
             HStack {
                 Label(document.isFileURL ? document.lastPathComponent : (document.host ?? "Document"),
                       systemImage: document.pathExtension.lowercased() == "pdf" ? "doc.richtext" : "doc.text")
@@ -242,6 +244,7 @@ struct SideDocumentPane: View {
                     .lineLimit(1)
                     .documentDrag(document, started: dragStarted)
                 Spacer()
+                if let contract { contractSignoff(contract) }
                 if let artifactReview {
                     Button {
                         artifactReview.set(!artifactReview.checked)
@@ -265,11 +268,14 @@ struct SideDocumentPane: View {
                         .accessibilityValue(queue.isPDFDarkMode ? "On" : "Off")
                 }
                 if let editSession {
-                    Button("Save") { _ = store.saveEdit(document) }
+                    Button(contract == nil ? "Save" : "Save & sign off") { _ = store.saveEdit(document) }
                         .buttonStyle(.borderedProminent).controlSize(.small)
                         .disabled(editSession.draft == editSession.baseline)
                         .keyboardShortcut("s", modifiers: .command)
-                        .help("Save to this file and return to the preview")
+                        .help(contract == nil ? "Save to this file and return to the preview"
+                              : contract?.isDraft == true
+                              ? "Save this draft, replace the live contract with it, and sign it off"
+                              : "Save and sign off: the next launch or chat turn gets this version")
                 }
                 if document.isFileURL, store.loadedText(for: document) != nil {
                     Button {
@@ -292,6 +298,7 @@ struct SideDocumentPane: View {
                     .help(editSession == nil ? "Close this document viewer" : "Save and close this document viewer")
             }
             DocumentMetadataStrip(url: document, taskID: scopeLabel, revision: entry.revision)
+            if let contract, !contract.lint.isEmpty { contractLint(contract.lint) }
             // The viewer stays mounted under the editor, so saving reveals a rendered
             // preview instead of building a new web view that paints white first.
             ZStack {
@@ -303,6 +310,48 @@ struct SideDocumentPane: View {
             }
         }
         .task(id: document.absoluteString) { store.ensureLoaded(document) }
+    }
+
+    /// Signed and current shows as live; anything else offers the one-click sign-off.
+    @ViewBuilder private func contractSignoff(_ contract: DevelopmentContractControl) -> some View {
+        if !contract.isDraft, contract.state == .live {
+            Label("Live", systemImage: "checkmark.seal.fill")
+                .font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.green)
+                .help("Signed off. \(contract.role.title) agents get its Essentials on their next launch or chat turn.")
+                .accessibilityLabel("\(contract.role.title) contract is signed off and live")
+        } else {
+            Button {
+                queue.signAgentContract(contract, document: document)
+            } label: {
+                Label(contract.isDraft ? "Sign off draft" : contract.state == .pending ? "Sign off changes" : "Sign off",
+                      systemImage: "signature")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .buttonStyle(.bordered).controlSize(.small)
+            .disabled(editSession != nil)
+            .help(contract.isDraft
+                  ? "Replace the live \(contract.role.fileName) with this draft and sign it off"
+                  : contract.state == .pending
+                  ? "This file changed after sign-off; agents still get the signed version. Sign off the text shown here to make it live."
+                  : "Not signed off, so no agent gets it yet. Sign off the text shown here to make it live.")
+            .accessibilityLabel("Sign off \(document.lastPathComponent)")
+        }
+    }
+
+    /// Lint warns and never blocks: the owner decides.
+    private func contractLint(_ issues: [AgentContractLintIssue]) -> some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(issues) { issue in
+                    Text(issue.text).font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        } label: {
+            Label("\(issues.count) lint warning\(issues.count == 1 ? "" : "s")", systemImage: "exclamationmark.triangle")
+                .font(.caption.weight(.semibold)).foregroundStyle(.orange)
+        }
+        .accessibilityLabel("\(issues.count) contract lint warnings")
     }
 
     @ViewBuilder private var viewer: some View {

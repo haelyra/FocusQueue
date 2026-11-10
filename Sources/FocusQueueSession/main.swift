@@ -13,7 +13,7 @@ enum SessionRegistrationError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .usage:
-            "Usage: focus-queue-session intake-changed | data ensure | data place <user|project|task> <target-id> <fact> | development <PROJECT-ID> show|link <TASK-ID> <step-id|none> [module]|unlink <TASK-ID>|step <step-id> <pending|inProgress|done|accepted>|phase <planning|phase0|implementation|prerelease|release>|sync | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|pin <TASK-ID>|unpin <TASK-ID>|reset | task create <PROJECT-ID> <title> <summary> | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | cleanup <TASK-ID>|--completed|--orphans|--purge [--dry-run] | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | pause <TASK-ID> <SUBTASK-ID> | resume <TASK-ID> <SUBTASK-ID> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
+            "Usage: focus-queue-session intake-changed | data ensure | data place <user|project|task> <target-id> <fact> | development <PROJECT-ID> show|link <TASK-ID> <step-id|none> [module]|unlink <TASK-ID>|step <step-id> <pending|inProgress|done|accepted>|phase <planning|phase0|implementation|prerelease|release>|sync | contract show <PROJECT-ID> <engineering|orchestrator> | contract propose <PROJECT-ID> <engineering|orchestrator> <file.md> | contract generate <PROJECT-ID> | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|pin <TASK-ID>|unpin <TASK-ID>|reset | task create <PROJECT-ID> <title> <summary> | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | cleanup <TASK-ID>|--completed|--orphans|--purge [--dry-run] | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | pause <TASK-ID> <SUBTASK-ID> | resume <TASK-ID> <SUBTASK-ID> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
         case .missingSessionIdentity:
             "No Codex, Claude, or Kimi session ID was found in the environment or current WezTerm pane."
         case .missingManagedRuntime:
@@ -46,6 +46,7 @@ enum SessionRegistrationError: Error, LocalizedError {
                 print("UI Canvas: canvas open <file.html> [--viewport mobile|desktop|custom|WxH] [--title <text>] | canvas await <file.html> [--reply <msg>] | canvas typing <file.html> [--state thinking|typing|idle] | canvas end <file.html> | canvas list|pending (native ecc-ui-canvas; same JSON)")
                 print("Data placement: data-placement status|on|off (automatic native prompt capture; off by default)")
                 print("Development process: development <PROJECT-ID> show | link <TASK-ID> <step-id|none> [module] | unlink <TASK-ID> | step <step-id> <pending|inProgress|done|accepted> | phase <planning|phase0|implementation|prerelease|release> | sync (locked edits of development.json; the app's steward and task status keep it current otherwise)")
+                print("Agent contracts: contract show <PROJECT-ID> <engineering|orchestrator> (what that role's agents receive) | contract propose <PROJECT-ID> <role> <file.md> (stores a draft and asks the owner to sign it off) | contract generate <PROJECT-ID> (drafts both from the plan documents). Only the owner signs off, in the Project tab.")
                 print("Scoped data: data ensure | data show <project-id> | data place <user|project|task> <target-id> <one-or-two-sentence fact>")
                 print("Data hook: data-event --provider claude (reads one provider hook payload on stdin; prints saved project data the session has not seen; exits 0)")
                 print("Completion cleanup: cleanup <TASK-ID> | cleanup --completed | cleanup --orphans | cleanup --purge, each with optional --dry-run (stops tmux, stages worktrees in .worktrees/.trash for 7 days, archives unmerged work under refs/focus-queue/archive/, deletes merged local and remote branches)")
@@ -68,6 +69,7 @@ enum SessionRegistrationError: Error, LocalizedError {
             else if arguments.first == "data-event" { await dataEvent(arguments: arguments) }
             else if arguments.first == "data" { try await dataCommand(arguments: arguments) }
             else if arguments.first == "development" { try await developmentCommand(arguments: arguments) }
+            else if arguments.first == "contract" { try await contractCommand(arguments: arguments) }
             else if arguments.first == "canvas" {
                 let environment = ProcessInfo.processInfo.environment
                 try await UICanvasCommand.run(arguments: arguments,
@@ -484,7 +486,8 @@ enum SessionRegistrationError: Error, LocalizedError {
             inheritedTaskID: environment["FOCUS_QUEUE_TASK_ID"],
             assignmentID: environment["FOCUS_QUEUE_SUBTASK_ID"], provider: provider,
             sessionID: identity?.1, tmuxName: environment["FOCUS_QUEUE_TMUX_NAME"],
-            tmuxPaneID: environment["TMUX_PANE"], createTaskIfNeeded: createTask),
+            tmuxPaneID: environment["TMUX_PANE"], createTaskIfNeeded: createTask,
+            role: environment["FOCUS_QUEUE_AGENT_ROLE"]),
             configuration: try loadConfiguration(from: root))
         try emit(capsule)
         notifyContextChanged()
@@ -920,7 +923,8 @@ enum SessionRegistrationError: Error, LocalizedError {
         let projectID = PromptExtraction.projectID(environment: environment, taskID: taskID,
                                                    configuration: config, root: root)
         guard let context = SharedDataDelivery.context(payload: payload, provider: provider.rawValue,
-                                                       projectID: projectID, root: root),
+                                                       projectID: projectID, root: root,
+                                                       role: AgentContractRole(launchRole: environment["FOCUS_QUEUE_AGENT_ROLE"])),
               let output = SharedDataDelivery.claudeHookOutput(event: name, context: context) else { return }
         FileHandle.standardOutput.write(output)
     }
@@ -1122,6 +1126,83 @@ enum SessionRegistrationError: Error, LocalizedError {
         try emit(process)
     }
 
+    /// `contract show <project> <role>` prints what that role's agents receive;
+    /// `contract propose <project> <role> <file>` stores a draft and asks the owner
+    /// to sign it off; `contract generate <project>` drafts both from the plan
+    /// documents. Only the owner signs off, in the app.
+    private static func contractCommand(arguments: [String]) async throws {
+        guard arguments.count >= 3 else { throw SessionRegistrationError.usage }
+        let environment = ProcessInfo.processInfo.environment
+        let root = supportDirectory(environment: environment)
+        let configuration = try loadConfiguration(from: root)
+        guard let project = configuration.projects.first(where: { $0.id == arguments[2] && $0.archivedAt == nil }) else {
+            throw TaskContextError.commandFailed("Unknown or archived project \(arguments[2]).")
+        }
+        let store = DevelopmentProcessStore(root: root)
+        guard let process = try store.load(projectID: project.id), process.enabled else {
+            throw TaskContextError.commandFailed("\(project.name) has no development process. Enable it in the Project tab first.")
+        }
+        func role(_ value: String) throws -> AgentContractRole {
+            switch value.lowercased() {
+            case "engineering", "engineer", "coding": return .engineering
+            case "orchestrator", "orchestration": return .orchestrator
+            default: throw SessionRegistrationError.usage
+            }
+        }
+        switch (arguments[1], arguments.count) {
+        case ("show", 4):
+            let role = try role(arguments[3])
+            let status = try store.contractStatus(role: role, projectID: project.id, process: process)
+            guard let injection = AgentContract.injection(
+                    role: role, directory: try store.contractDirectory(projectID: project.id), process: process),
+                  process.contracts[role.rawValue] != nil else {
+                throw TaskContextError.commandFailed("\(project.name) has no signed \(role.rawValue) contract (\(role.fileName) is \(status.state.rawValue)). The owner signs it off in the Project tab.")
+            }
+            print(injection.lines.joined(separator: "\n"))
+        case ("propose", 5):
+            let role = try role(arguments[3])
+            let source = URL(fileURLWithPath: arguments[4])
+            let size = (try? source.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            guard size <= 64_000, let text = try? String(contentsOf: source, encoding: .utf8),
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw TaskContextError.commandFailed("\(source.path) must be a UTF-8 Markdown file under 64 KB.")
+            }
+            let draft = try store.proposeContract(role: role, text: text, projectID: project.id)
+            let lint = AgentContract.lint(text, role: role, directory: draft.deletingLastPathComponent())
+            var attention = false
+            if let taskID = environment["FOCUS_QUEUE_TASK_ID"], !taskID.isEmpty,
+               let agentID = environment["FOCUS_QUEUE_SUBTASK_ID"], !agentID.isEmpty {
+                let updated = try await TaskContextStore(root: root).reportAttention(
+                    ticketID: taskID, subtaskID: agentID, attention: .approval,
+                    summary: "\(role.title) contract draft for \(project.name) awaits your sign-off: open \(role.fileName) in the Project tab. Draft: \(draft.path)",
+                    result: false)
+                await mirrorContext(updated, root: root)
+                attention = true
+            }
+            notifyContextChanged()
+            try emit(["draft": draft.path, "role": role.rawValue, "attentionRaised": attention ? "yes" : "no (no task identity in the environment)",
+                      "lint": lint.map(\.text).joined(separator: "\n")])
+        case ("generate", 3):
+            let provider = configuration.defaultAgentProvider ?? configuration.agentProviderFallbackOrder.first ?? .codex
+            let agent: any QueueAgentChatting = switch provider {
+            case .codex: CodexQueueAgent()
+            case .claude: ClaudeQueueAgent()
+            case .kimi: KimiQueueAgent()
+            }
+            let model = configuration.chatModel(for: provider)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let effort = configuration.chatEffort(for: provider)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let result = try await AgentContractGenerator(root: root, agent: agent).generate(
+                project: project, configuration: configuration, provider: provider,
+                model: model?.isEmpty == false ? model : nil, effort: effort?.isEmpty == false ? effort : nil)
+            notifyContextChanged()
+            try emit(["files": result.files.map(\.path).joined(separator: "\n"), "review": result.reviewURL.path,
+                      "model": result.model,
+                      "lint": AgentContractRole.allCases.map { "\($0.fileName): \(result.lint[$0]?.count ?? 0) warnings" }.joined(separator: "; ")])
+        default:
+            throw SessionRegistrationError.usage
+        }
+    }
+
     private static func dataPlacement(arguments: [String]) async throws {
         guard arguments.count == 2, ["on", "off", "status"].contains(arguments[1]) else {
             throw SessionRegistrationError.usage
@@ -1144,7 +1225,9 @@ enum SessionRegistrationError: Error, LocalizedError {
         }
         if arguments.count == 3, arguments[1] == "show" {
             // Facts for a provider that takes them at launch; prints nothing when there are none.
-            print(TaskContext.sharedDataBlock(root: root, projectID: arguments[2]) ?? "", terminator: "")
+            // The launching shell's role picks which signed project contract follows them.
+            let role = AgentContractRole(launchRole: ProcessInfo.processInfo.environment["FOCUS_QUEUE_AGENT_ROLE"])
+            print(TaskContext.sharedDataBlock(root: root, projectID: arguments[2], role: role) ?? "", terminator: "")
             return
         }
         guard arguments.count == 5, arguments[1] == "place" else {

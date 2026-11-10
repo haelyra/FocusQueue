@@ -880,5 +880,39 @@ with open({str(record)!r}, "a") as stream: stream.write(json.dumps(sys.argv[1:])
         self.assertFalse((home / "Library/Application Support/ECC Focus Queue/shell").exists())
 
 
+class RoleOptionTests(unittest.TestCase):
+    """`--role` is Focus Queue's own option: it never reaches the provider."""
+
+    def setUp(self):
+        self.saved = os.environ.pop("FOCUS_QUEUE_AGENT_ROLE", None)
+
+    def tearDown(self):
+        os.environ.pop("FOCUS_QUEUE_AGENT_ROLE", None)
+        if self.saved is not None:
+            os.environ["FOCUS_QUEUE_AGENT_ROLE"] = self.saved
+
+    def test_role_is_removed_and_exported(self):
+        remaining = ENTRY.take_role_option(["--model", "x", "--role", "orchestrator", "plan the phase"])
+        self.assertEqual(remaining, ["--model", "x", "plan the phase"])
+        self.assertEqual(os.environ["FOCUS_QUEUE_AGENT_ROLE"], "orchestrator")
+        self.assertEqual(ENTRY.role_environment(), ["FOCUS_QUEUE_AGENT_ROLE=orchestrator"])
+
+    def test_equals_form_and_engineering_alias(self):
+        self.assertEqual(ENTRY.take_role_option(["--role=engineering"]), [])
+        self.assertEqual(os.environ["FOCUS_QUEUE_AGENT_ROLE"], "coding")
+        self.assertEqual(ENTRY.role_environment(), [])
+
+    def test_text_after_double_dash_and_option_values_pass_through(self):
+        arguments = ["--model", "--role", "--", "--role", "orchestrator"]
+        self.assertEqual(ENTRY.take_role_option(arguments), arguments)
+        self.assertNotIn("FOCUS_QUEUE_AGENT_ROLE", os.environ)
+
+    def test_unknown_or_missing_role_is_refused(self):
+        with self.assertRaises(ENTRY.EntryError):
+            ENTRY.take_role_option(["--role", "admin"])
+        with self.assertRaises(ENTRY.EntryError):
+            ENTRY.take_role_option(["--role"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -198,6 +198,11 @@ public actor TaskAgentLauncher {
             "FOCUS_QUEUE_USAGE_BAR=\(usageBarEnabled ? "on" : "off")",
             "FOCUS_QUEUE_PROVIDER=\(subtask.provider.rawValue)",
             "FOCUS_QUEUE_SUBTASK_ID=\(subtask.id)", "FOCUS_QUEUE_TASK_ID=\(context.ticketID)"]
+    // Prompt hooks and placement read the role from the environment, so a resumed
+    // or cleared orchestrator conversation keeps its orchestrator contract.
+    if subtask.launchConfiguration?.contractRole == .orchestrator {
+      focusEnvironment.append("FOCUS_QUEUE_AGENT_ROLE=orchestrator")
+    }
     if let usageRunID { focusEnvironment.append("FOCUS_QUEUE_USAGE_RUN_ID=\(usageRunID)") }
     focusEnvironment.append("FOCUS_QUEUE_RUNTIME_MODE=\(subtask.runtimeMode?.rawValue ?? "legacy")")
     if subtask.provider == .kimi {

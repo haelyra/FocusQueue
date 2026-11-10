@@ -18,17 +18,19 @@ public struct AgentPlacementRequest: Sendable {
     public var tmuxName: String?
     public var tmuxPaneID: String?
     public var createTaskIfNeeded: Bool
+    /// The launch role (`coding`, `research`, `orchestrator`); nil reads the assigned agent's.
+    public var role: String?
 
     public init(launchID: String, cwd: String, prompt: String? = nil,
                 explicitTaskID: String? = nil, inheritedTaskID: String? = nil,
                 assignmentID: String? = nil, provider: AgentProvider = .codex,
                 sessionID: String? = nil, tmuxName: String? = nil,
-                tmuxPaneID: String? = nil, createTaskIfNeeded: Bool = true) {
+                tmuxPaneID: String? = nil, createTaskIfNeeded: Bool = true, role: String? = nil) {
         self.launchID = launchID; self.cwd = cwd; self.prompt = prompt
         self.explicitTaskID = explicitTaskID; self.inheritedTaskID = inheritedTaskID
         self.assignmentID = assignmentID; self.provider = provider; self.sessionID = sessionID
         self.tmuxName = tmuxName; self.tmuxPaneID = tmuxPaneID
-        self.createTaskIfNeeded = createTaskIfNeeded
+        self.createTaskIfNeeded = createTaskIfNeeded; self.role = role
     }
 }
 
@@ -63,6 +65,10 @@ public struct AgentPlacementCapsule: Codable, Equatable, Sendable {
     /// The launch objective, retained so app-side discovery can name and bind
     /// the agent even when provider hooks are not installed.
     public var promptHint: String?
+    /// `engineering` or `orchestrator`: which signed project contract this agent follows.
+    public var agentRole: String? = nil
+    /// That contract's file, present once the owner signed it off.
+    public var agentContractPath: String? = nil
 }
 
 public struct AgentPlacementCapsuleStore: Sendable {
@@ -234,7 +240,17 @@ public actor AgentPlacementResolver {
                 ? "The task and working directory identify different projects. Open the task's repository before writing."
                 : context == nil ? "Project identified. Waiting for a task objective." : nil,
             promptHint: prompt.isEmpty ? nil : String(prompt.prefix(4_000)))
-        try AgentPlacementCapsuleStore(root: root).save(capsule)
-        return capsule
+        var placed = capsule
+        let assigned = request.assignmentID.flatMap { id in context?.subtasks.first { $0.id == id } }
+        let role = AgentContractRole(launchRole: request.role ?? assigned?.launchConfiguration?.role)
+        placed.agentRole = role.rawValue
+        let projectDirectory = projectPlan.deletingLastPathComponent()
+        if let data = try? Data(contentsOf: projectDirectory.appendingPathComponent(DevelopmentProcessStore.fileName)),
+           let process = try? JSONDecoder().decode(DevelopmentProcess.self, from: data),
+           process.enabled, process.contracts[role.rawValue] != nil {
+            placed.agentContractPath = projectDirectory.appendingPathComponent(role.fileName).path
+        }
+        try AgentPlacementCapsuleStore(root: root).save(placed)
+        return placed
     }
 }

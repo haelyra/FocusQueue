@@ -91,6 +91,11 @@ public struct VerifierConfiguration: Codable, Equatable, Sendable {
   public var documentReader: Bool?
   /// Runtime-only one-call document edit: no tools, and the app applies the reply.
   public var documentEditor: Bool?
+  /// Runtime-only harness state directory, so a long one-off run (the contract
+  /// generator) never holds the central chat's session lock.
+  public var runtimeDirectory: String?
+  /// Runtime-only prompt-usage source name; nil keeps queue_chat or document_chat.
+  public var usageSource: String?
 
   public init(
     enabled: Bool,

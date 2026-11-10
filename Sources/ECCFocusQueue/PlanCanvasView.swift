@@ -764,6 +764,7 @@ struct NewTaskAgentView: View {
   // On, matching the other launch surfaces: off opens the agent at an empty
   // input and even drops the typed work description.
   @State private var includePrompt = true
+  @State private var role: AgentContractRole = .engineering
   @State private var assignmentID = UUID().uuidString
   @State private var workspacePreview = WorkspacePreviewModel()
   @State private var isStarting = false
@@ -797,10 +798,11 @@ struct NewTaskAgentView: View {
     subtask.workspace = proposedWorkspace
     subtask.initialPrompt = prompt
     if !modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      || !effort.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      || !effort.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || role == .orchestrator {
       subtask.launchConfiguration = AgentLaunchConfiguration(
         model: modelName.trimmingCharacters(in: .whitespacesAndNewlines),
-        effort: effort.trimmingCharacters(in: .whitespacesAndNewlines))
+        effort: effort.trimmingCharacters(in: .whitespacesAndNewlines),
+        role: role == .orchestrator ? role.rawValue : nil)
     }
     return context.agentPrompt(subtask: subtask)
   }
@@ -888,6 +890,16 @@ struct NewTaskAgentView: View {
             Text("Source: \(sourceWorkspace.branch ?? "unknown") at \(String((sourceWorkspace.baseCommit ?? "").prefix(8)))")
               .font(.caption).foregroundStyle(.secondary)
           }
+          Picker("Role", selection: $role) {
+            Text("Engineering").tag(AgentContractRole.engineering)
+            Text("Orchestrator").tag(AgentContractRole.orchestrator)
+          }
+          .pickerStyle(.segmented)
+          .accessibilityLabel("Agent role")
+          Text(role == .orchestrator
+            ? "Gets the project's signed orchestrator contract instead of the engineering one, and plans, assigns, reviews, and closes work."
+            : "Gets the project's signed engineering contract, if the project has one.")
+            .font(.caption).foregroundStyle(.secondary)
           Toggle("Include detailed task instructions", isOn: $includePrompt)
           Text("Task identity remains in the launch environment. When this is off, the agent opens at an empty input. Turning it on adds the full assignment and reporting instructions.")
             .font(.caption).foregroundStyle(.secondary)
@@ -930,7 +942,7 @@ struct NewTaskAgentView: View {
             allowProjectRepositoryMismatch: allowsOtherRepository,
             parentSubtaskID: nil, createAssignment: false,
             modelName: modelName, effort: effort,
-            workspacePolicy: .isolatedCommittedSnapshot) { started in
+            workspacePolicy: .isolatedCommittedSnapshot, role: role) { started in
               isStarting = false
               if started { dismiss() }
               else { launchError = model.actionMessages[ticket.id] ?? "Agent could not start. Check the workspace and try again." }

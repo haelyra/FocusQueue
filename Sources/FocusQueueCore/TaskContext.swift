@@ -65,17 +65,24 @@ public struct AgentLaunchConfiguration: Codable, Equatable, Sendable {
     public var launchID: String?
     /// Installed plugins switched on or off for this agent only, by plugin ID.
     public var pluginOverrides: [String: Bool]?
+    /// Launch role, as the shell entries name it: nil or `coding` is an engineering
+    /// agent; `orchestrator` gets the project's orchestrator contract instead.
+    public var role: String?
 
     public init(routeID: String? = nil, model: String? = nil, effort: String? = nil,
                 providerVersion: String? = nil, launchID: String? = nil,
-                pluginOverrides: [String: Bool]? = nil) {
+                pluginOverrides: [String: Bool]? = nil, role: String? = nil) {
         self.routeID = routeID
         self.model = model
         self.effort = effort
         self.providerVersion = providerVersion
         self.launchID = launchID
         self.pluginOverrides = pluginOverrides
+        self.role = role
     }
+
+    /// The contract this agent follows.
+    public var contractRole: AgentContractRole { AgentContractRole(launchRole: role) }
 }
 
 public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
@@ -460,7 +467,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
         lines += briefHeader(subtask: subtask, prompt: prompt)
         lines += ["Task plan: \(planPath) (read before acting). Task data: \(dataURL.path). Agent log: \(agentLogURL.path).",
                   Self.dataWritingRule]
-        lines += scopedDataLines()
+        lines += scopedDataLines(subtask: subtask)
         lines.append("Read relevant saved facts before acting.")
         lines += developmentProcessLines()
         lines.append(artifactInstruction)
@@ -486,7 +493,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
             lines.append("About the project: \(project)")
         }
         lines += developmentProcessLines()
-        lines += scopedDataLines(includeTask: false)
+        lines += scopedDataLines(includeTask: false, subtask: subtask)
         if let plan = Self.inlineDocument(atPath: planPath, limit: 4_000, prompt: trimmed ?? "") {
             lines += ["Task plan (\(planPath)):", plan]
         } else {
@@ -570,15 +577,31 @@ public struct TaskContext: Codable, Equatable, Sendable {
            let value = Self.inlineDocument(atPath: projectDataURL.path, limit: 3_000) {
             parts["project_data"] = value.count
         }
+        if let contract = agentContractInjection(subtask: subtask), contract.inlinedCharacters > 0 {
+            parts[contract.role == .engineering ? "engineering_contract" : "orchestration_contract"] =
+                contract.inlinedCharacters
+        }
         return parts
     }
 
+    /// The signed contract for this agent's role, or nil when the project has no
+    /// enabled process or no signed contract.
+    public func agentContractInjection(subtask: TaskSubtask) -> AgentContractInjection? {
+        guard let process = developmentProcessState(), let projectPlanPath, !projectPlanPath.isEmpty else { return nil }
+        return AgentContract.injection(
+            role: subtask.launchConfiguration?.contractRole ?? .engineering,
+            directory: URL(fileURLWithPath: projectPlanPath).deletingLastPathComponent(), process: process)
+    }
+
     /// A file with no facts yet still gets its path, so the agent knows where saved facts live.
-    private func scopedDataLines(includeTask: Bool = true) -> [String] {
+    private func scopedDataLines(includeTask: Bool = true, subtask: TaskSubtask? = nil) -> [String] {
         var lines: [String] = []
         for (label, url, facts) in Self.sharedData(user: userDataURL, project: projectDataURL) {
             lines += facts.map { ["\(label) (\(url.path)):", $0] } ?? ["\(label): \(url.path)"]
         }
+        // Directly after the shared facts, in the exact form `sharedDataBlock` uses,
+        // so the prompt hook sees the launch brief already carries them.
+        if let subtask, let contract = agentContractInjection(subtask: subtask) { lines += contract.lines }
         if includeTask, let data = Self.inlineDocument(atPath: dataURL.path, limit: 2_000) {
             lines += ["Task data (\(dataURL.path)):", data]
         }
@@ -596,11 +619,19 @@ public struct TaskContext: Codable, Equatable, Sendable {
     }
 
     /// The saved facts in the exact form a launch brief inlines them, or nil when there are none yet.
-    public static func sharedDataBlock(root: URL, projectID: String) -> String? {
+    /// With a role, the project's signed contract for that role follows the facts, as in the brief.
+    public static func sharedDataBlock(root: URL, projectID: String, role: AgentContractRole? = nil) -> String? {
         guard let plan = try? ProjectContextStore(root: root).planURL(projectID: projectID) else { return nil }
-        let project = plan.deletingLastPathComponent().appendingPathComponent("data.md")
-        let lines = sharedData(user: root.appendingPathComponent("user/data.md"), project: project)
+        let directory = plan.deletingLastPathComponent()
+        let project = directory.appendingPathComponent("data.md")
+        var lines = sharedData(user: root.appendingPathComponent("user/data.md"), project: project)
             .flatMap { document in document.facts.map { ["\(document.label) (\(document.url.path)):", $0] } ?? [] }
+        if let role,
+           let data = try? Data(contentsOf: directory.appendingPathComponent(DevelopmentProcessStore.fileName)),
+           let process = try? JSONDecoder().decode(DevelopmentProcess.self, from: data), process.enabled,
+           let contract = AgentContract.injection(role: role, directory: directory, process: process) {
+            lines += contract.lines
+        }
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 

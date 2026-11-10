@@ -10,13 +10,14 @@ public enum SharedDataDelivery {
     static let receiptLifetime: TimeInterval = 30 * 86_400
 
     /// The context to add to this hook event, or nil when the session is already current.
+    /// `role` adds that role's signed project contract after the facts, matching the launch brief.
     public static func context(payload: [String: Any], provider: String, projectID: String?,
-                               root: URL, now: Date = Date()) -> String? {
+                               root: URL, role: AgentContractRole? = nil, now: Date = Date()) -> String? {
         guard let projectID, (payload["agent_id"] as? String)?.isEmpty != false,
               let session = payload["session_id"] as? String, !session.isEmpty else { return nil }
         let event = payload["hook_event_name"] as? String
         guard event == "UserPromptSubmit" || event == "SessionStart" else { return nil }
-        let facts = TaskContext.sharedDataBlock(root: root, projectID: projectID) ?? ""
+        let facts = TaskContext.sharedDataBlock(root: root, projectID: projectID, role: role) ?? ""
         let digest = SHA256.hash(data: Data(facts.utf8)).map { String(format: "%02x", $0) }.joined()
         let receipt = receiptURL(provider: provider, session: session, root: root)
         // A cleared or compacted conversation has lost whatever it was given.

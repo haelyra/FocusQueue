@@ -33,6 +33,8 @@ final class DocumentContentStore {
     private var watchers: [URL: DispatchSourceFileSystemObject] = [:]
     private let entryLimit = 24
     private let load: @Sendable (URL) async throws -> SideDocumentContent
+    /// Called after an in-app edit replaced a file, with the saved text.
+    @ObservationIgnored var didSave: ((URL, String) -> Void)?
 
     init(load: @escaping @Sendable (URL) async throws -> SideDocumentContent = { try await SideDocumentLoader().load($0) }) {
         self.load = load
@@ -80,6 +82,7 @@ final class DocumentContentStore {
             entries[url] = saved
             editSessions[url] = nil
             reload(url)
+            didSave?(url, session.draft)
             return true
         } catch {
             editSessions[url]?.saveError = error.localizedDescription

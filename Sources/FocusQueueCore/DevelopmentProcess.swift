@@ -185,20 +185,24 @@ public struct DevelopmentProcess: Codable, Equatable, Sendable {
     /// Task ID (uppercase) → the step it serves.
     public var links: [String: DevelopmentTaskLink]
     public var steward: DevelopmentStewardRun?
+    /// Role (`engineering`, `orchestrator`) → the owner's sign-off of that agent
+    /// contract. Only signed text reaches agents; see `AgentContract`.
+    public var contracts: [String: AgentContractSignoff]
     public var updatedAt: Date
 
     public init(enabled: Bool = true, currentPhase: DevelopmentPhase = .planning,
                 steps: [String: DevelopmentStepState] = [:], modules: [DevelopmentModule] = [],
                 links: [String: DevelopmentTaskLink] = [:], steward: DevelopmentStewardRun? = nil,
+                contracts: [String: AgentContractSignoff] = [:],
                 schemaVersion: Int = DevelopmentProcess.currentSchemaVersion, updatedAt: Date = Date()) {
         self.schemaVersion = schemaVersion; self.enabled = enabled
         self.currentPhase = currentPhase; self.steps = steps; self.modules = modules
-        self.links = links; self.steward = steward
+        self.links = links; self.steward = steward; self.contracts = contracts
         self.updatedAt = updatedAt
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, enabled, currentPhase, steps, modules, links, steward, updatedAt
+        case schemaVersion, enabled, currentPhase, steps, modules, links, steward, contracts, updatedAt
     }
 
     /// Every field is optional on read, so files from earlier builds and partial
@@ -212,6 +216,7 @@ public struct DevelopmentProcess: Codable, Equatable, Sendable {
         modules = try container.decodeIfPresent([DevelopmentModule].self, forKey: .modules) ?? []
         links = try container.decodeIfPresent([String: DevelopmentTaskLink].self, forKey: .links) ?? [:]
         steward = try container.decodeIfPresent(DevelopmentStewardRun.self, forKey: .steward)
+        contracts = try container.decodeIfPresent([String: AgentContractSignoff].self, forKey: .contracts) ?? [:]
         updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
     }
 
@@ -540,23 +545,38 @@ public struct DevelopmentProcessStore: Sendable {
             throw DevelopmentProcessError.missingArtifact(artifact)
         }
         return try mutate(projectID: projectID) { process in
-            var state = process.steps[stepID] ?? DevelopmentStepState()
-            state.checkedArtifacts.removeAll { $0 == artifact }
-            if checked { state.checkedArtifacts.append(artifact) }
-            state.source = state.source ?? .human
-            let allChecked = !step.artifacts.isEmpty
-                && step.artifacts.allSatisfy { state.checkedArtifacts.contains($0) }
-            if checked, allChecked, !state.status.isComplete,
-               step.artifacts.allSatisfy({
-                   (try? artifactURL(projectID: projectID, artifact: $0))
-                       .map { FileManager.default.fileExists(atPath: $0.path) } ?? false
-               }) {
-                state.status = .done
-                state.note = "All documents reviewed."
-                state.source = .human
+            if checked {
+                try checkOffArtifact(artifact, in: &process, projectID: projectID)
+            } else {
+                var state = process.steps[stepID] ?? DevelopmentStepState()
+                state.checkedArtifacts.removeAll { $0 == artifact }
+                state.source = state.source ?? .human
+                process.steps[stepID] = state
             }
-            process.steps[stepID] = state
         }
+    }
+
+    /// Checks a step document off inside a mutation. When every document of the
+    /// step exists and is checked off, the step is marked done.
+    func checkOffArtifact(_ artifact: String, in process: inout DevelopmentProcess,
+                          projectID: String) throws {
+        guard let step = DevelopmentProcessCatalog.step(forArtifact: artifact) else {
+            throw DevelopmentProcessError.unknownStep(artifact)
+        }
+        var state = process.steps[step.id] ?? DevelopmentStepState()
+        if !state.checkedArtifacts.contains(artifact) { state.checkedArtifacts.append(artifact) }
+        state.source = state.source ?? .human
+        let allChecked = step.artifacts.allSatisfy { state.checkedArtifacts.contains($0) }
+        if allChecked, !state.status.isComplete,
+           step.artifacts.allSatisfy({
+               (try? artifactURL(projectID: projectID, artifact: $0))
+                   .map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+           }) {
+            state.status = .done
+            state.note = "All documents reviewed."
+            state.source = .human
+        }
+        process.steps[step.id] = state
     }
 
     public func setPhase(_ phase: DevelopmentPhase, projectID: String) throws -> DevelopmentProcess {

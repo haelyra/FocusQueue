@@ -48,6 +48,7 @@ struct ProjectTabView: View {
             stepRow(step, status: process.status(of: step), process: process)
           }
         }
+        contractsRow(projectID: project.id)
         if let error = model.developmentProcessError {
           HStack(spacing: 6) {
             Text(error).font(.caption).foregroundStyle(.orange).lineLimit(2)
@@ -196,7 +197,10 @@ struct ProjectTabView: View {
         Text(step.title).font(.system(size: 12, weight: .semibold))
         Text(step.summary).font(.caption).foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
-        if !step.artifacts.isEmpty {
+        if step.id == "contract" {
+          Text("Generate, edit, and sign off both in Agent contracts below.")
+            .font(.caption2).foregroundStyle(.secondary)
+        } else if !step.artifacts.isEmpty {
           artifactChips(step, state: state)
         }
         if let note = state?.note, !note.isEmpty {
@@ -244,6 +248,112 @@ struct ProjectTabView: View {
         .accessibilityLabel("\(artifact), \(checked ? "reviewed" : exists ? "not reviewed" : "missing")")
       }
     }
+  }
+
+  /// The project's engineering and orchestrator contracts, in every phase. Only
+  /// signed text reaches agents: engineering launches get agent-contract.md, task
+  /// chat, project QChat, and orchestrator launches get orchestration.md.
+  private func contractsRow(projectID: String) -> some View {
+    let statuses = model.developmentContracts
+    let generating = model.contractGenerationProjectID == projectID
+    let anyFile = statuses.contains { $0.state != .missing || $0.hasDraft }
+    return VStack(alignment: .leading, spacing: 5) {
+      HStack(alignment: .firstTextBaseline, spacing: 6) {
+        Image(systemName: "signature").font(.system(size: 10)).foregroundStyle(.secondary).frame(width: 14)
+        Text("Agent contracts").font(.system(size: 12, weight: .semibold))
+        Spacer(minLength: 4)
+        if generating {
+          ProgressView().controlSize(.mini)
+          Text("Drafting…").font(.caption).foregroundStyle(.secondary)
+        } else {
+          Button {
+            model.generateAgentContracts()
+          } label: {
+            Label(anyFile ? "Regenerate" : "Generate", systemImage: "wand.and.stars")
+              .font(.system(size: 11, weight: .semibold))
+          }
+          .buttonStyle(.borderless).controlSize(.small)
+          .disabled(model.contractGenerationProjectID != nil)
+          .help(anyFile
+            ? "Draft new versions beside the current files with your QChat model. The live contracts change only when you sign off."
+            : "Draft both contracts from the planning documents with your QChat model, then review and sign off.")
+          .accessibilityLabel(anyFile ? "Regenerate agent contracts" : "Generate agent contracts")
+        }
+      }
+      HStack(spacing: 6) {
+        ForEach(statuses, id: \.role) { status in contractChip(status) }
+        if let review = model.developmentArtifactURL(AgentContract.reviewFileName),
+           FileManager.default.fileExists(atPath: review.path) {
+          Button {
+            model.openDocumentViewer(review, scope: .project(projectID))
+          } label: {
+            Label("Review notes", systemImage: "list.bullet.clipboard")
+              .font(.system(size: 10, weight: .semibold))
+          }
+          .buttonStyle(.borderless)
+          .help("Lint results and the generator's notes from the last generation")
+        }
+      }
+      Text("Signed contracts reach agents by role: engineering launches get the engineering contract; task chat, project QChat, and orchestrator launches get the orchestrator contract. Saving one in the viewer signs it off.")
+        .font(.caption2).foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .padding(8)
+    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+  }
+
+  private func contractChip(_ status: AgentContractStatus) -> some View {
+    let (label, image, color): (String, String, Color) = switch status.state {
+    case .live: ("live", "checkmark.seal.fill", .green)
+    case .pending: ("changes pending sign-off", "exclamationmark.circle.fill", .orange)
+    case .unsigned: ("not signed off", "signature", .accentColor)
+    case .missing: (status.hasDraft ? "draft only" : "missing", status.hasDraft ? "doc.badge.ellipsis" : "doc", .secondary)
+    }
+    let openable = status.hasDraft || FileManager.default.fileExists(atPath: status.fileURL.path)
+    return Button {
+      model.openAgentContract(status)
+    } label: {
+      HStack(spacing: 4) {
+        Image(systemName: image)
+        Text(status.role.fileName).font(.system(size: 10, weight: .semibold, design: .monospaced))
+        Text("· \(label)").font(.system(size: 10, weight: .medium))
+        if status.hasDraft, status.state != .missing {
+          Text("· draft").font(.system(size: 10, weight: .medium)).foregroundStyle(Color.accentColor)
+        }
+        if !status.lint.isEmpty {
+          Text("· \(status.lint.count) lint").font(.system(size: 10, weight: .medium)).foregroundStyle(.orange)
+        }
+      }
+      .padding(.horizontal, 6).padding(.vertical, 3)
+      .background(color.opacity(status.state == .missing ? 0.04 : 0.12), in: Capsule())
+      .foregroundStyle(color)
+    }
+    .buttonStyle(.plain)
+    .disabled(!openable)
+    .contextMenu {
+      if status.hasDraft {
+        Button("Discard draft", systemImage: "trash") { model.discardAgentContractDraft(status) }
+      }
+      if status.signoff != nil {
+        Button("Revoke sign-off", systemImage: "xmark.seal") { model.revokeAgentContract(status.role) }
+      }
+    }
+    .help(contractHelp(status))
+    .accessibilityLabel("\(status.role.title) contract, \(label)\(status.hasDraft ? ", draft waiting" : "")")
+  }
+
+  private func contractHelp(_ status: AgentContractStatus) -> String {
+    var lines: [String] = []
+    switch status.state {
+    case .live: lines.append("Signed off\(status.signoff.map { " " + $0.signedAt.formatted(.relative(presentation: .named)) } ?? ""). \(status.role.title) agents get its Essentials.")
+    case .pending: lines.append("Changed after sign-off; agents still get the signed version. Open it and sign off to make the change live.")
+    case .unsigned: lines.append("No agent gets it until you sign it off. Open it, edit if needed, then sign off.")
+    case .missing: lines.append(status.hasDraft ? "Only a draft exists. Open it and sign it off." : "Not written yet. Generate drafts both contracts.")
+    }
+    if status.hasDraft, status.state != .missing { lines.append("A draft waits beside it; opening shows both side by side.") }
+    lines += status.lint.prefix(6).map { "Lint: \($0.text)" }
+    if status.lint.count > 6 { lines.append("… \(status.lint.count - 6) more lint warnings") }
+    return lines.joined(separator: "\n")
   }
 
   /// Task IDs that serve a step; each opens its plan in split view.

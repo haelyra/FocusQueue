@@ -127,8 +127,11 @@ public enum DevelopmentSteward {
             let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
             for name in names.sorted() {
                 let lowered = name.lowercased()
+                // Contract drafts and generator notes churn on every regeneration
+                // and never decide a step, so they never trigger a model pass.
                 guard lowered.hasSuffix(".md") || lowered.hasSuffix(".markdown"),
-                      lowered != "data.md", !name.hasPrefix(".") else { continue }
+                      lowered != "data.md", !name.hasPrefix("."), !lowered.hasSuffix(".draft.md"),
+                      lowered != AgentContract.reviewFileName else { continue }
                 let url = folder.appendingPathComponent(name)
                 guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
                 let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0

@@ -65,11 +65,17 @@ public struct DevelopmentStep: Equatable, Sendable, Identifiable {
     public let guideline: String?
     /// Documents the step produces only while the project uses planning guidelines.
     public let guidelineArtifacts: [String]
+    /// An experimental step is tracked and shown but never gates the phase: it is
+    /// not required for phase acceptance, never the current step, and never listed
+    /// as a next step. Its documents can start as stubs and fill in later phases.
+    public let isExperimental: Bool
 
     public init(id: String, title: String, summary: String, artifacts: [String] = [],
-                guideline: String? = nil, guidelineArtifacts: [String] = []) {
+                guideline: String? = nil, guidelineArtifacts: [String] = [],
+                isExperimental: Bool = false) {
         self.id = id; self.title = title; self.summary = summary; self.artifacts = artifacts
         self.guideline = guideline; self.guidelineArtifacts = guidelineArtifacts
+        self.isExperimental = isExperimental
     }
 }
 
@@ -241,21 +247,26 @@ public struct DevelopmentProcess: Codable, Equatable, Sendable {
 
     public var currentSteps: [DevelopmentStep] { DevelopmentProcessCatalog.steps(in: currentPhase) }
 
-    /// Steps that are not yet accepted, per phase; drives the tab and briefs.
+    /// The current phase's steps that gate it; experimental steps never do.
+    public var gatingSteps: [DevelopmentStep] { currentSteps.filter { !$0.isExperimental } }
+
+    /// Gating steps that are not yet accepted; drives the tab and briefs.
     public var pendingSteps: [DevelopmentStep] {
-        currentSteps.filter { status(of: $0) != .accepted }
+        gatingSteps.filter { status(of: $0) != .accepted }
     }
 
     /// The step to present as current: the active one when a human has marked
     /// it, otherwise the first step that is neither done nor accepted.
+    /// Experimental steps are never current, so they cannot hold a phase back.
     public var currentStep: DevelopmentStep? {
-        let steps = currentSteps
+        let steps = gatingSteps
         if let active = steps.first(where: { status(of: $0) == .inProgress }) { return active }
         return steps.first { !status(of: $0).isComplete }
     }
 
+    /// Every gating step is accepted. Experimental steps may stay open.
     public var phaseIsAccepted: Bool {
-        currentSteps.allSatisfy { status(of: $0) == .accepted }
+        gatingSteps.allSatisfy { status(of: $0) == .accepted }
     }
 
     /// Open linked tasks that belong to a phase after the current one: the
@@ -347,8 +358,8 @@ public enum DevelopmentProcessCatalog {
                     artifacts: ["prd.md"], guideline: "prd-guideline.md",
                     guidelineArtifacts: ["technical-design.md"]),
                 DevelopmentStep(id: "modules", title: "Module design files",
-                    summary: "One file per feature: purpose, I/O endpoints and schemas, success criteria, debug logs. Accept each module's success criteria in order.",
-                    guideline: "module-guideline.md"),
+                    summary: "Experimental, optional: one file per module, started as a stub and filled to implementation depth in the phase that builds it. Never blocks the phase.",
+                    guideline: "module-guideline.md", isExperimental: true),
                 DevelopmentStep(id: "devplan", title: "Development plan",
                     summary: "Rough outline with a dependency tree; the human creates and checks off tasks.",
                     artifacts: ["devplan.md"], guideline: "devplan-guideline.md"),
@@ -592,7 +603,9 @@ public struct DevelopmentProcessStore: Sendable {
         var state = process.steps[step.id] ?? DevelopmentStepState()
         if !state.checkedArtifacts.contains(artifact) { state.checkedArtifacts.append(artifact) }
         state.source = state.source ?? .human
-        let artifacts = process.artifacts(of: step)
+        // Guideline-only documents (technical-design.md) are experimental, so
+        // they never hold the step back: the catalog documents decide "done".
+        let artifacts = step.artifacts.isEmpty ? process.artifacts(of: step) : step.artifacts
         let allChecked = artifacts.allSatisfy { state.checkedArtifacts.contains($0) }
         if allChecked, !state.status.isComplete,
            artifacts.allSatisfy({ [process] in

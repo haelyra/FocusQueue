@@ -175,7 +175,18 @@ struct ProjectTabView: View {
       .accessibilityLabel("\(step.title): \(status.label). Activate to mark \(status.completeAdvance.label.lowercased()).")
       .help(status.help)
       VStack(alignment: .leading, spacing: 2) {
-        Text(step.title).font(.system(size: 12, weight: .semibold))
+        HStack(spacing: 6) {
+          Text(step.title).font(.system(size: 12, weight: .semibold))
+          if step.isExperimental {
+            Text("EXPERIMENTAL · OPTIONAL")
+              .font(.system(size: 8, weight: .bold)).tracking(0.4)
+              .padding(.horizontal, 5).padding(.vertical, 1.5)
+              .foregroundStyle(Color.purple)
+              .background(Color.purple.opacity(0.12), in: Capsule())
+              .help("Tracked but never required: the phase can be accepted while this step stays open.")
+              .accessibilityLabel("Experimental, optional step")
+          }
+        }
         Text(step.summary).font(.caption).foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
         if step.id == "contract" {
@@ -378,7 +389,7 @@ struct ProjectTabView: View {
           title: "Modules",
           detail: "\(process.modules.filter(\.criteriaAccepted).count)/\(process.modules.count) accepted")
         if process.modules.isEmpty {
-          Text("No modules yet. Module design files land in Planning; success criteria are accepted in order.")
+          Text("No modules yet. Optional and experimental: add a module when its design file starts, even as a stub. Success criteria are accepted in order and never block a phase.")
             .font(.caption).foregroundStyle(.secondary)
         }
         ForEach(process.modules) { module in

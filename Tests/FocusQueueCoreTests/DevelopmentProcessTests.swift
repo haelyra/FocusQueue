@@ -22,7 +22,9 @@ func catalogCoversPhases() {
     let planning = DevelopmentProcessCatalog.steps(in: .planning)
     #expect(planning.map(\.id) == ["concept", "research", "prd", "modules", "devplan", "contract"])
     #expect(planning.first { $0.id == "concept" }?.artifacts == ["concept.md"])
-    #expect(planning.first { $0.id == "modules" }?.summary.contains("success criteria") == true)
+    #expect(planning.filter(\.isExperimental).map(\.id) == ["modules"])
+    #expect(DevelopmentPhase.allCases.flatMap { DevelopmentProcessCatalog.steps(in: $0) }
+        .filter(\.isExperimental).map(\.id) == ["modules"])
 
     #expect(DevelopmentProcessCatalog.steps(in: .phase0).map(\.id) == ["scaffolding", "phase0-qa"])
     #expect(DevelopmentProcessCatalog.steps(in: .implementation).map(\.id) == ["build", "module-qa"])
@@ -203,4 +205,27 @@ func stepStateDecodesWithoutCheckedArtifacts() throws {
     let json = #"{"status": "done", "note": "older file", "updatedAt": 815948870.78, "source": "human"}"#
     let state = try JSONDecoder().decode(DevelopmentStepState.self, from: Data(json.utf8))
     #expect(state.status == .done && state.checkedArtifacts == [] && state.source == .human)
+}
+
+@Test("The experimental modules step never gates Planning: it is skipped as current step and for phase acceptance")
+func experimentalModulesStepDoesNotGate() throws {
+    let (root, projectID) = try processFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = DevelopmentProcessStore(root: root)
+
+    // An in-progress modules step is never presented as current or as a next step.
+    var process = try store.setStepStatus(.inProgress, stepID: "modules", projectID: projectID)
+    #expect(process.currentStep?.id == "concept")
+    #expect(!process.pendingSteps.map(\.id).contains("modules"))
+    #expect(process.gatingSteps.map(\.id) == ["concept", "research", "prd", "devplan", "contract"])
+
+    // Accepting every other Planning step advances to Phase 0 with modules still open,
+    // and with an unaccepted module registered.
+    _ = try store.addModule(name: "Core", file: nil, projectID: projectID)
+    for id in ["concept", "research", "prd", "devplan", "contract"] {
+        process = try store.setStepStatus(.accepted, stepID: id, projectID: projectID)
+    }
+    #expect(process.currentPhase == .phase0)
+    #expect(process.steps["modules"]?.status == .inProgress)
+    #expect(process.modules.first?.criteriaAccepted == false)
 }

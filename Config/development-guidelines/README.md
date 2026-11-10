@@ -14,15 +14,16 @@ flowchart TB
   R["research.md<br/>evidence compendium"]
   D["design.md<br/>system design and flow chart"]
   P["prd.md and technical design<br/>AI solidifies choices"]
-  M["modules/*.md<br/>one file per module"]
+  M["modules/*.md<br/>optional, one stub per module"]
   V["devplan.md<br/>outline, dependency tree, task set"]
   K["agent-contract.md and orchestration.md"]
   Z["Phase 0"]
   C -->|"owner answers questions"| R
   R -->|"owner picks options"| D
   D --> P
-  P -->|"owner ratifies decisions"| M
-  M -->|"owner accepts criteria in order"| V
+  P -->|"owner ratifies decisions"| V
+  P -.->|"optional, experimental"| M
+  M -.->|"filled per phase"| V
   V -->|"owner creates and checks off tasks"| K
   K -->|"owner signs both"| Z
 ```
@@ -36,11 +37,13 @@ flowchart TB
 | `research` | `design.md` | AI from research | Marks reviewed | [design-guideline.md](design-guideline.md) |
 | `prd` | `prd.md` | AI | Marks reviewed | [prd-guideline.md](prd-guideline.md) |
 | `prd` | `technical-design.md` | AI solidifies choices | Ratifies each open decision | [technical-design-guideline.md](technical-design-guideline.md) |
-| `modules` | `modules/<id>-<slug>.md` | AI, one file per module | Accepts each module's success criteria, in order | [module-guideline.md](module-guideline.md) |
+| `modules` (optional) | `modules/<id>-<slug>.md` | AI, one stub per module, filled per phase | Optional: accepts each module's success criteria, in order | [module-guideline.md](module-guideline.md) |
 | `devplan` | `devplan.md` | AI outline | Creates tasks from it and checks leaves off | [devplan-guideline.md](devplan-guideline.md) |
 | `contract` | `agent-contract.md`, `orchestration.md` | Bundled generator | Reads and signs both | The bundled contract generator: Project tab, Agent contracts, Generate |
 
 `technical-design.md` joins the `prd` step when a project turns on Planning guidelines. A project's `artifactNames` map can point it at an older file name.
+
+**Non-blocking.** Guideline-only documents and the `modules` step never gate a phase. Planning is accepted once its other steps are accepted. Reviewing `prd.md` alone completes the `prd` step; `technical-design.md` is reviewed when it exists. Module files start as stubs and fill in during the phase that builds each module.
 
 ## How a guideline runs
 

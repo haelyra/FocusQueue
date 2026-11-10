@@ -1,12 +1,26 @@
 # Module design guideline
 
-**Status:** experimental (2026-11-10). Shown when a project turns on Planning guidelines.
+**Status:** experimental and optional (2026-11-10). Shown when a project turns on Planning guidelines. Module files never block a phase.
 
 - **What:** the format and generator prompt for the per-module design files. Each holds a one-line description, foundation, I/O, success criteria, and debug logs.
 - **Why:** each module file is the contract its implementer builds and its reviewer tests against. The owner accepts each module's success criteria in order, so the criteria must be exact.
-- **How:** the AI spawns one file per technical-design module, in dependency order. It specifies I/O to implementation depth for the next phase and marks later content with its owning phase.
+- **How:** the AI spawns one stub per technical-design module, in dependency order. A file reaches implementation depth only when the phase that builds its module starts; later content stays a heading with its owning phase.
 
-**Step:** `modules`. **Produces:** `modules/<id>-<slug>.md`, for example `modules/m6-context-scoped-data.md`. **Owner gate:** accepts each module's success criteria in the Project tab, in listed order.
+**Step:** `modules` (optional). **Produces:** `modules/<id>-<slug>.md`, for example `modules/m6-context-scoped-data.md`. **Owner gate:** optional; accepts each module's success criteria in the Project tab, in listed order. Neither the step nor acceptance blocks a phase.
+
+## Distribution and maturity
+
+- **One file per module, not per task or feature.** Module IDs come from the technical design's §3. Several tasks can serve one module; a task links to it with `focus-queue-session development <PROJECT-ID> link <TASK-ID> <step-id> <module-id>`.
+- **Location.** The project folder, under `modules/`. A repository copy, when the project keeps one, is the source of truth.
+- **Fill just in time.** Software plans change, so depth follows the work, not the calendar. The file's **Status** line names its maturity:
+
+| Maturity | When | Filled sections | Rule |
+|---|---|---|---|
+| `stub` | The module is registered, usually in Planning | Header, §1 Foundation purpose, §7 open questions | Every other section is a heading only |
+| `phase-ready` | The first task of the phase that builds the module starts | Everything that phase builds or tests, to implementation depth | No "TBD" in that phase's content |
+| `criteria accepted` | The owner accepts §5 | Unchanged | Criteria freeze; changes need a logged reason |
+
+A stub is a valid file. Phase-ready content is written by the task that implements the module, before it writes code.
 
 ## Format
 
@@ -14,7 +28,7 @@
 # M<n>: <Module name>
 
 **One line:** <what the module does, at most 20 words>
-**Status:** <draft | criteria accepted> <date> (<task ID>). **Phase:** <phase that implements it>
+**Status:** <stub | phase-ready | criteria accepted> <date> (<task ID>). **Phase:** <phase that implements it>
 **Authority:** the technical design wins until amended. Proposals live in <amendment register link>.
 **Depends on:** <module links> · **Consumers:** <tasks or modules that read this file, and which sections>
 
@@ -79,7 +93,7 @@
 | `{{MODULE}}` | Module ID and name from the technical design |
 | `{{TECHNICAL_DESIGN}}` | Path of the technical design; read its module, pipeline, MVP, and budget sections |
 | `{{NEIGHBORS}}` | Paths of module files this one depends on or feeds. May be empty |
-| `{{PHASE}}` | The phase whose work this file must specify to implementation depth |
+| `{{PHASE}}` | The phase whose work this file must specify to implementation depth. Empty writes a stub |
 | `{{CONSUMERS}}` | Task IDs or modules that will build or test against this file. May be empty |
 | `{{EXISTING}}` | The current module file when regenerating. May be empty |
 | `{{CONVENTIONS}}` | The shared conventions block |
@@ -95,7 +109,7 @@ Read the {{MODULE}} entry, the pipelines it joins, the MVP gates that name it, a
 
 Steps:
 1. Write the one-line description: what the module does, observable from outside, at most 20 words.
-2. Specify {{PHASE}} content to implementation depth: every endpoint with request, response, and errors; every schema typed; every event with its ordering guarantee. A cold implementer must be able to build it without asking a question.
+2. If {{PHASE}} is empty, write a stub: the header, §1 purpose, and §7 open questions, with every other section as a heading. Set Status to stub and skip to step 8. Otherwise specify {{PHASE}} content to implementation depth: every endpoint with request, response, and errors; every schema typed; every event with its ordering guarantee. A cold implementer must be able to build it without asking a question.
 3. Mark content that a later phase owns with a heading and its phase. Do not design it.
 4. Write success criteria with ID, threshold, method, suite, when, and source. Map every technical-design gate that names {{MODULE}} to at least one criterion.
 5. Write the debug logs section: the events an implementer emits, their fields, and which events prove which criterion.
@@ -108,7 +122,8 @@ Steps:
 ## Self-check
 
 - The one line has at most 20 words and names an observable function.
-- No "TBD" in {{PHASE}} content.
+- A stub fills only the header, §1 purpose, and §7; other sections are headings.
+- A phase-ready file has no "TBD" in {{PHASE}} content.
 - Every endpoint, schema, and event used is defined here or linked to a neighbor.
 - Every failure row has a criterion; every criterion has threshold, method, suite, when, and source.
 - Every technical-design gate naming the module maps to a criterion; every technical-design bullet maps to a section.

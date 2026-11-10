@@ -154,8 +154,9 @@ func artifactNamesResolveCheckOff() throws {
     #expect(process.catalogArtifact(forFile: "prd.md") == "prd.md")
     #expect(process.catalogArtifact(forFile: "notes.md") == nil)
 
+    // The experimental technical design never holds the step back: prd.md alone completes it.
     process = try store.setArtifactChecked(true, stepID: "prd", artifact: "prd.md", projectID: project.id)
-    #expect(process.steps["prd"]?.status != .done)  // technical-design.md is still unreviewed
+    #expect(process.steps["prd"]?.status == .done)
     process = try store.setArtifactChecked(true, stepID: "prd", artifact: "technical-design.md", projectID: project.id)
     #expect(process.steps["prd"]?.status == .done)
     #expect(process.steps["prd"]?.checkedArtifacts == ["prd.md", "technical-design.md"])

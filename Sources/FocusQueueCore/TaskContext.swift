@@ -535,7 +535,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
         let phase = link?.phase ?? process.currentPhase
         var focus = phase.title
         if let link, let stepID = link.step, let step = DevelopmentProcessCatalog.step(id: stepID, in: phase) {
-            focus += ", step \(step.title)"
+            focus += ", step \(step.title)" + (step.isExperimental ? " (experimental, optional)" : "")
             if let moduleID = link.moduleID, let module = process.modules.first(where: { $0.id == moduleID }) {
                 focus += ", module \(module.name)"
             }

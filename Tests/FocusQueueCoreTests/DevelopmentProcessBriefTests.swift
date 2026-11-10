@@ -57,7 +57,7 @@ func linkedTaskNamesItsStep() async throws {
     _ = try store.link(taskID: "dem-001", step: "modules", module: "auth", projectID: project.id)
 
     let context = try await TaskContextStore(root: root).ensureContext(ticket: briefTicket, project: project)
-    #expect(context.developmentProcessLines() == ["Development process (Planning, step Module design files, "
+    #expect(context.developmentProcessLines() == ["Development process (Planning, step Module design files (experimental, optional), "
         + "module Auth): " + DevelopmentProcessCatalog.brief(for: .planning)])
     // A task linked to a later phase's step follows that phase's rule.
     _ = try store.link(taskID: "DEM-001", step: "scaffolding", projectID: project.id)

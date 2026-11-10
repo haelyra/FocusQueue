@@ -3800,6 +3800,10 @@ private struct TaskAgentRow: View {
           model.openLaunchDiagnostics(for: agent)
         }
         .disabled(!model.hasLaunchDiagnostics(for: agent))
+        Button("Close terminal window", systemImage: "macwindow.badge.minus") {
+          model.closeAgentTerminalWindow(agent, for: ticket)
+        }
+        .disabled(!model.canCloseTerminalWindow(agent))
         Divider()
         Button("Archive agent…", systemImage: "archivebox") {
           isConfirmingArchive = true
@@ -3812,7 +3816,7 @@ private struct TaskAgentRow: View {
       .fixedSize()
       .minimumHitTarget()
       .accessibilityLabel("More options for agent \(agent.title)")
-      .help("Open, edit, complete, inspect, or archive this agent")
+      .help("Open, edit, complete, inspect, close the window of, or archive this agent")
     }
     .padding(9)
     .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
@@ -3821,6 +3825,16 @@ private struct TaskAgentRow: View {
         .stroke(Color.primary.opacity(0.12), lineWidth: 1)
     }
     .padding(.vertical, 2)
+    .contextMenu {
+      Button("Open agent", systemImage: "terminal") {
+        model.openSubtask(agent, for: ticket)
+      }
+      .disabled(isOpening)
+      Button("Close terminal window", systemImage: "macwindow.badge.minus") {
+        model.closeAgentTerminalWindow(agent, for: ticket)
+      }
+      .disabled(!model.canCloseTerminalWindow(agent))
+    }
     .sheet(isPresented: $isEditing) {
       SubtaskEditorSheet(subtask: agent) { title, explanation in
         model.updateSubtask(agent, for: ticket, title: title, explanation: explanation)

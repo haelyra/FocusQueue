@@ -237,6 +237,97 @@ struct SetupAndTmuxTests {
     }
   }
 
+  @Test("Detaching clients closes the window view and leaves the session running")
+  func detachClients() async throws {
+    let line = "fq-window\t123\t1000\t%1\t124\t/dev/ttys099\t0\n"
+    let reference = try #require(TmuxController.decode(line, executable: "/usr/local/bin/tmux").first)
+    let runner = TmuxSequenceRunner([
+      .init(exitCode: 0, standardOutput: line, standardError: "", timedOut: false),
+      .init(exitCode: 0, standardOutput: "/dev/ttys001\n/dev/ttys002\n", standardError: "", timedOut: false),
+      .init(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
+    ])
+    let detached = try await TmuxController(runner: runner).detachClients(for: reference)
+    #expect(detached == 2)
+    let calls = await runner.calls
+    #expect(calls.count == 3)
+    #expect(calls[2].arguments.suffix(3) == ["detach-client", "-s", "=fq-window"])
+  }
+
+  @Test("A stale open window detaches nothing and is not an error")
+  func detachClientsWithoutClients() async throws {
+    let line = "fq-window\t123\t1000\t%1\t124\t/dev/ttys099\t0\n"
+    let reference = try #require(TmuxController.decode(line, executable: "/usr/local/bin/tmux").first)
+    let runner = TmuxSequenceRunner([
+      .init(exitCode: 0, standardOutput: line, standardError: "", timedOut: false),
+      .init(exitCode: 0, standardOutput: "", standardError: "", timedOut: false),
+    ])
+    let detached = try await TmuxController(runner: runner).detachClients(for: reference)
+    #expect(detached == 0)
+    let calls = await runner.calls
+    #expect(calls.count == 2)
+    #expect(calls.contains { $0.arguments.contains("detach-client") } == false)
+  }
+
+  @Test("A failed detach keeps the window reportable as an error")
+  func detachClientsFailure() async throws {
+    let line = "fq-window\t123\t1000\t%1\t124\t/dev/ttys099\t0\n"
+    let reference = try #require(TmuxController.decode(line, executable: "/usr/local/bin/tmux").first)
+    let runner = TmuxSequenceRunner([
+      .init(exitCode: 0, standardOutput: line, standardError: "", timedOut: false),
+      .init(exitCode: 0, standardOutput: "/dev/ttys001\n", standardError: "", timedOut: false),
+      .init(exitCode: 1, standardOutput: "", standardError: "no current client", timedOut: false),
+    ])
+    await #expect(throws: TmuxError.self) {
+      try await TmuxController(runner: runner).detachClients(for: reference)
+    }
+  }
+
+  @Test("Detaching a pty client ends its attach process but keeps the pane alive",
+    .enabled(if: SetupEnvironment.executable("tmux") != nil))
+  func detachClientsLive() async throws {
+    let executable = try #require(SetupEnvironment.executable("tmux"))
+    let server = "fq-detach-\(UUID().uuidString.lowercased())"
+    let runner = FoundationProcessRunner()
+    let controller = TmuxController(runner: runner, serverName: server,
+      confirmationAttempts: 10, confirmationDelayMilliseconds: 10,
+      requiredStableObservations: 1)
+    let reference = try await controller.start(
+      name: "fq-detach-test", directory: "/tmp",
+      command: ["/bin/sleep", "30"], executable: executable)
+    defer {
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: executable)
+      process.arguments = ["-L", server, "kill-server"]
+      process.environment = ["PATH": "/usr/bin:/bin", "TMUX_TMPDIR": "/tmp"]
+      process.standardOutput = FileHandle.nullDevice
+      process.standardError = FileHandle.nullDevice
+      try? process.run()
+      process.waitUntilExit()
+    }
+    // `script` gives the attach a pty, standing in for a Terminal, Ghostty, or
+    // WezTerm window: each runs exactly this kind of client.
+    let attach = Process()
+    attach.executableURL = URL(fileURLWithPath: "/usr/bin/script")
+    attach.arguments = ["-q", "/dev/null", executable, "-L", server, "attach-session", "-t", "=\(reference.name)"]
+    attach.environment = ["PATH": "/usr/bin:/bin", "TMUX_TMPDIR": "/tmp", "TERM": "xterm-256color"]
+    attach.standardOutput = FileHandle.nullDevice
+    attach.standardError = FileHandle.nullDevice
+    try attach.run()
+    var attached = false
+    for _ in 0..<40 {
+      if try await controller.clientTTYs(for: reference).count == 1 { attached = true; break }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+    #expect(attached)
+
+    let detached = try await controller.detachClients(for: reference)
+    #expect(detached == 1)
+    attach.waitUntilExit()
+    #expect(try await controller.clientTTYs(for: reference).isEmpty)
+    // The pane process survives its window closing.
+    #expect(try await controller.verify(reference) == reference)
+  }
+
   @Test("A disposable tmux execution survives a control client disconnect", .enabled(if: SetupEnvironment.executable("tmux") != nil))
   func disconnect() async throws {
     let executable = try #require(SetupEnvironment.executable("tmux"))

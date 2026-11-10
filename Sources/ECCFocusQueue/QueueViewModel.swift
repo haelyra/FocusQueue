@@ -5134,6 +5134,29 @@ final class QueueViewModel {
     }
   }
 
+  /// Closing the window detaches its tmux client; the agent keeps running and
+  /// Open brings the window back. Only tmux-backed agents apply: a direct
+  /// WezTerm pane is the conversation, so closing it would end the agent.
+  func canCloseTerminalWindow(_ subtask: TaskSubtask) -> Bool {
+    subtask.tmux != nil && subtask.hasAgent && subtask.agentRemovedAt == nil
+  }
+
+  func closeAgentTerminalWindow(_ subtask: TaskSubtask, for ticket: DashboardTicket) {
+    guard canCloseTerminalWindow(subtask) else { return }
+    Task {
+      do {
+        let detached = try await taskAgentLauncher.detachWindowClients(subtask: subtask)
+        actionMessages[ticket.id] = detached > 0
+          ? "Closed \(subtask.title)'s terminal window. The agent keeps running; open it again anytime."
+          : "\(subtask.title) had no terminal window attached. Its session is still running; open it to view it again."
+      } catch TmuxError.stopped {
+        actionMessages[ticket.id] = "\(subtask.title)'s session has already stopped, so there is no window to close."
+      } catch {
+        actionMessages[ticket.id] = error.localizedDescription
+      }
+    }
+  }
+
   /// Pause and Resume drive the provider TUI through its managed tmux pane;
   /// WezTerm-only and external agents keep their own terminal controls.
   func canPause(_ subtask: TaskSubtask) -> Bool {

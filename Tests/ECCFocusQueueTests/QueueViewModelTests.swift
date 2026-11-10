@@ -108,6 +108,33 @@ struct QueueViewModelTests {
     #expect(await launcher.commands.isEmpty)
   }
 
+  @Test("Close terminal window detaches the tmux client and keeps the agent running")
+  func closeAgentTerminalWindowDetachesOnly() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let runner = DetachWindowRunner()
+    let model = await fixture.model(agent: ControlledQueueAgent(),
+      taskAgentLauncher: TaskAgentLauncher(runner: runner))
+    let tmux = try #require(TmuxController.decode(
+      "fq-close-window|123|1000|%7|124|/dev/ttys099|0\n", executable: "/test/tmux").first)
+    let agent = TaskSubtask(id: "windowed-worker", title: "Windowed agent",
+      sessionID: UUID().uuidString, tmux: tmux)
+    #expect(model.canCloseTerminalWindow(agent))
+    // A direct WezTerm pane is the conversation itself; it offers no close.
+    #expect(model.canCloseTerminalWindow(
+      TaskSubtask(title: "Direct", runtimeMode: .terminal, terminalPaneID: 42)) == false)
+    #expect(model.canCloseTerminalWindow(
+      TaskSubtask(title: "No runtime", runtimeMode: nil)) == false)
+
+    model.closeAgentTerminalWindow(agent, for: fixture.tickets[0])
+    try await eventually {
+      model.actionMessages["ECC-101"]?.contains("keeps running") == true
+    }
+    let calls = await runner.calls
+    #expect(calls.contains { $0.arguments.suffix(3) == ["detach-client", "-s", "=fq-close-window"] })
+    #expect(calls.contains { $0.arguments.contains("kill-pane") } == false)
+  }
+
   @Test("A hidden panel skips external agent discovery, and reveal refreshes immediately")
   func hiddenPanelSkipsHeavyLanes() async throws {
     let fixture = try await Fixture()
@@ -4774,6 +4801,25 @@ private actor DiscoveryCounter {
   private(set) var count = 0
   func record() { count += 1 }
   func reset() { count = 0 }
+}
+
+private actor DetachWindowRunner: ProcessRunning {
+  private(set) var calls: [ProcessSpecification] = []
+  func run(_ specification: ProcessSpecification) throws -> ProcessResult {
+    calls.append(specification)
+    if specification.arguments.contains("display-message") {
+      return .init(exitCode: 0,
+        standardOutput: "fq-close-window|123|1000|%7|124|/dev/ttys099|0\n",
+        standardError: "", timedOut: false)
+    }
+    if specification.arguments.contains("list-clients") {
+      return .init(exitCode: 0, standardOutput: "/dev/ttys030\n", standardError: "", timedOut: false)
+    }
+    if specification.arguments.contains("detach-client") {
+      return .init(exitCode: 0, standardOutput: "", standardError: "", timedOut: false)
+    }
+    throw TestFailure.unexpectedExternalAction
+  }
 }
 
 private actor DirectCreationRunner: ProcessRunning {

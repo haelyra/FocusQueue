@@ -134,7 +134,7 @@ struct PlanCanvasView: View {
           .font(.caption.weight(.semibold))
           .buttonStyle(.borderedProminent)
           .tint(.accentColor)
-          if model.isQueueAgentResponding && model.respondingTicketID == ticket.id {
+          if model.isChatResponding(ticketID: ticket.id) {
             ProgressView().controlSize(.mini)
             Text("Central conversation is still working").font(.caption).foregroundStyle(.secondary)
           }

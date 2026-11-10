@@ -18,7 +18,7 @@ from typing import Any
 
 import focus_queue_morning as morning
 import focus_queue_prompt_usage as prompt_usage
-from focus_queue_lock import acquire_exclusive_file_lock
+from focus_queue_lock import acquire_exclusive_file_lock, release_file_lock
 from focus_queue_provider_cli import find_cli
 
 
@@ -390,11 +390,13 @@ def run_claude(
             raise SystemExit(143)
 
         previous_handler = signal.signal(signal.SIGTERM, terminate_child)
+        # Closing the QChat tmux window hangs up the harness; stop the provider too.
+        previous_hangup = signal.signal(signal.SIGHUP, terminate_child)
         stdout = ""
         stderr = ""
         try:
             try:
-                stdout, stderr = process.communicate(input=prompt, timeout=timeout)
+                stdout, stderr = process.communicate(input=prompt, timeout=timeout or None)
             except subprocess.TimeoutExpired as error:
                 stop_process_group(process)
                 stdout, stderr = process.communicate()
@@ -414,6 +416,7 @@ def run_claude(
                 raise ClaudeHarnessError(f"Claude exceeded the {timeout}-second run budget") from error
         finally:
             signal.signal(signal.SIGTERM, previous_handler)
+            signal.signal(signal.SIGHUP, previous_hangup)
 
         write_run_diagnostic(
             runtime,
@@ -498,6 +501,9 @@ def chat(arguments: argparse.Namespace) -> int:
         reader = getattr(arguments, "reader", False)
         editor = getattr(arguments, "editor", False)
         if reader or editor or getattr(arguments, "fresh", False):
+            # A fresh turn never reads or writes sessions.json, so it releases the
+            # lock and parallel QChat tabs run concurrently instead of queueing.
+            release_file_lock(lock)
             # The app sends its own short recap, so a fresh turn neither resumes
             # nor saves a provider session whose history would grow every turn.
             reply, _ = run_claude(
@@ -642,7 +648,8 @@ def main() -> int:
     )
     chat_parser.add_argument("--prompt-file", type=Path, required=True)
     chat_parser.add_argument("--usage-file", type=Path)
-    chat_parser.add_argument("--timeout", type=int, default=120)
+    chat_parser.add_argument("--timeout", type=int, default=120,
+                             help="Run budget in seconds; 0 runs until the provider finishes")
     chat_parser.add_argument("--model", help="Override the chat model slug")
     chat_parser.add_argument("--effort", help="Override the chat effort level")
     chat_parser.add_argument(
@@ -672,8 +679,9 @@ def main() -> int:
     reset_parser = subparsers.add_parser("reset")
     reset_parser.add_argument("--session", required=True)
     arguments = parser.parse_args()
-    if not (10 <= getattr(arguments, "timeout", 120) <= 900):
-        parser.error("timeout must be between 10 and 900 seconds")
+    timeout = getattr(arguments, "timeout", 120)
+    if not (timeout == 0 or 10 <= timeout <= 900):
+        parser.error("timeout must be 0 (no limit) or between 10 and 900 seconds")
     try:
         if arguments.command == "chat":
             return chat(arguments)

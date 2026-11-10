@@ -18,7 +18,8 @@ struct QueueView: View {
   @State private var focusDropIsTargeted = false
   @State private var restButtonDropIsTargeted = false
   @State private var restSectionDropIsTargeted = false
-  @State private var queueAgentDraft = ""
+  /// Unsent QChat drafts by tab, so switching tabs keeps each draft.
+  @State private var queueAgentDrafts: [String: String] = [:]
   @State private var taskAgentDrafts: [String: String] = [:]
   @State private var showsSessions = false
   @State private var showsFeedback = false
@@ -171,7 +172,7 @@ struct QueueView: View {
           .help("Close Queue chat side panel")
         }
         QueueAgentChatView(
-          model: model, draft: $queueAgentDraft, focusRequest: model.queueChatFocusRequest)
+          model: model, draft: queueAgentDraft, focusRequest: model.queueChatFocusRequest)
       }
       .frame(minWidth: 320, idealWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
     } else if let update = model.presentedAgentUpdate {
@@ -188,6 +189,13 @@ struct QueueView: View {
         set: { taskAgentDrafts[ticket.id] = $0 }
       )).id(ticket.id)
     }
+  }
+
+  private var queueAgentDraft: Binding<String> {
+    let tabID = model.activeQueueChatTabID
+    return Binding(
+      get: { queueAgentDrafts[tabID] ?? "" },
+      set: { queueAgentDrafts[tabID] = $0 })
   }
 
   /// Puts the queue screen and tab a walkthrough step points at on screen.
@@ -239,7 +247,7 @@ struct QueueView: View {
         completedQueueContent
       case .agent:
         QueueAgentChatView(
-          model: model, draft: $queueAgentDraft, focusRequest: model.queueChatFocusRequest)
+          model: model, draft: queueAgentDraft, focusRequest: model.queueChatFocusRequest)
       case .project:
         ProjectTabView(model: model)
       }
@@ -1016,7 +1024,10 @@ struct QueueView: View {
     switch selectedTab {
     case .focus: "\(model.openTickets.count) active tasks"
     case .completed: "\(model.completedTodayTickets.count) today"
-    case .agent: model.isQueueAgentResponding ? "Codex working" : "Codex ready"
+    case .agent:
+      model.isQueueAgentResponding
+        ? "\(model.defaultAgentProvider.displayName) working"
+        : "\(model.defaultAgentProvider.displayName) ready"
     case .project:
       model.developmentProcess.map { "\($0.currentPhase.title) phase" } ?? "Project"
     }
@@ -1113,14 +1124,15 @@ struct QueueAgentChatView: View {
   @State private var showsClearConfirmation = false
   @Environment(\.colorScheme) private var colorScheme
 
-  private var messages: [QueueChatMessage] { model.chatMessages(ticketID: ticketID) }
-  private var isRespondingHere: Bool {
-    model.isQueueAgentResponding && model.respondingTicketID == ticketID
-  }
+  /// The QChat tab this view shows; task chat has none.
+  private var tabID: String? { ticketID == nil ? model.activeQueueChatTabID : nil }
+  private var messages: [QueueChatMessage] { model.chatMessages(ticketID: ticketID, tabID: tabID) }
+  private var isRespondingHere: Bool { model.isChatResponding(ticketID: ticketID, tabID: tabID) }
 
   var body: some View {
     GeometryReader { geometry in
       VStack(spacing: 10) {
+        if ticketID == nil { QueueChatTabStrip(model: model) }
         chatSettingsBar
         if ticketID == nil {
           Text(model.showsAllProjects ? "All projects" : "All projects · Active: \(model.projectScopeName)")
@@ -1128,9 +1140,11 @@ struct QueueAgentChatView: View {
         }
         QueueChatTranscript(
           messages: messages,
-          emptyText: "Discuss this task, refine its success criteria, or ask for a plan update. Decisions stay with the task.",
+          emptyText: ticketID == nil
+            ? "Ask about order, request task changes, or hand off longer work. Each tab is its own session and runs until it finishes."
+            : "Discuss this task, refine its success criteria, or ask for a plan update. Decisions stay with the task.",
           agentLabel: ticketID == nil ? "QCHAT" : "ORCHESTRATOR",
-          progressText: isRespondingHere ? "\(model.defaultAgentProvider.displayName) is checking the queue" : nil)
+          progressText: isRespondingHere ? "\(model.defaultAgentProvider.displayName) is working. It runs until finished; Stop ends it." : nil)
 
         QueueChatComposer(
           draft: $draft,
@@ -1140,7 +1154,7 @@ struct QueueAgentChatView: View {
           placeholder: ticketID == nil ? "Ask about order or request a task change" : "Discuss this task or update its plan",
           accessibilityLabel: "Message the queue agent",
           isResponding: isRespondingHere,
-          canSend: !model.isQueueAgentResponding && !model.reportIsRunning,
+          canSend: !isRespondingHere && !model.reportIsRunning,
           sendLabel: "Send message to queue agent",
           stopLabel: "Stop the queue agent response",
           notice: model.reportIsRunning ? "Chat resumes when the daily report finishes. Your draft stays here." : nil,
@@ -1148,11 +1162,11 @@ struct QueueAgentChatView: View {
           clearSelection: { canvasSelection?.wrappedValue = nil },
           clearSelectionLabel: "Clear plan canvas selection",
           onSend: send,
-          onStop: model.cancelQueueAgentMessage)
+          onStop: { model.cancelQueueAgentMessage(ticketID: ticketID, tabID: tabID) })
       }
     }
     .task { focusComposer() }
-    .onChange(of: model.isQueueAgentResponding) { _, isResponding in
+    .onChange(of: isRespondingHere) { _, isResponding in
       if !isResponding { focusComposer() }
     }
     .onChange(of: focusRequest) { _, _ in focusComposer() }
@@ -1175,11 +1189,19 @@ struct QueueAgentChatView: View {
           setModel: { model.setChatModel($0, for: provider) },
           setEffort: { model.setChatEffort($0, for: provider) })
         Spacer(minLength: 0)
+        Button { model.openQueueChatSession(ticketID: ticketID, tabID: tabID) } label: {
+          Image(systemName: "terminal")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open this chat's session in the terminal")
+        .help("Open this chat's tmux session in the terminal to watch its turns")
         Button("Clear Chat") { showsClearConfirmation = true }
           .font(.caption)
           .foregroundStyle(.secondary)
           .buttonStyle(.plain)
-          .help("Erase this conversation and start a fresh session")
+          .help("Erase this conversation and close its session")
       }
     }
     .confirmationDialog(
@@ -1188,21 +1210,22 @@ struct QueueAgentChatView: View {
       titleVisibility: .visible
     ) {
       Button("Clear Conversation", role: .destructive) {
-        model.clearQueueChat(ticketID: ticketID)
+        model.clearQueueChat(ticketID: ticketID, tabID: tabID)
       }
       Button("Cancel", role: .cancel) {}
     } message: {
       Text(
-        "The transcript is erased and the next message starts a fresh \(model.defaultAgentProvider.displayName) session."
+        "The transcript is erased, its session closes and stops any running reply, and the next message starts a fresh \(model.defaultAgentProvider.displayName) session."
       )
     }
   }
 
   private func send() {
     let message = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !message.isEmpty, !model.isQueueAgentResponding else { return }
+    guard !message.isEmpty, !isRespondingHere else { return }
     let selection = canvasSelection?.wrappedValue
-    if model.sendQueueAgentMessage(message, ticketID: ticketID, canvasSelection: selection) {
+    if model.sendQueueAgentMessage(
+      message, ticketID: ticketID, tabID: tabID, canvasSelection: selection) {
       draft = ""
       canvasSelection?.wrappedValue = nil
     }
@@ -1216,6 +1239,88 @@ struct QueueAgentChatView: View {
     Task { @MainActor in
       await Task.yield()
       composerIsFocused = true
+    }
+  }
+}
+
+/// QChat tabs: each is its own conversation and tmux session. Tabs run in
+/// parallel; closing one stops its reply and closes its session.
+struct QueueChatTabStrip: View {
+  let model: QueueViewModel
+  @State private var pendingClose: QueueChatTab?
+
+  var body: some View {
+    HStack(spacing: 6) {
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 4) {
+          ForEach(model.queueChatTabs) { tab in tabButton(tab) }
+        }
+      }
+      Button { model.addQueueChatTab() } label: {
+        Image(systemName: "plus").font(.system(size: 12, weight: .semibold))
+      }
+      .buttonStyle(.plain)
+      .minimumHitTarget(width: 26, height: 26)
+      .accessibilityLabel("New chat tab")
+      .help("New chat tab with its own session")
+    }
+    .confirmationDialog(
+      "Close \(pendingClose?.title ?? "this chat")?",
+      isPresented: Binding(get: { pendingClose != nil }, set: { if !$0 { pendingClose = nil } }),
+      titleVisibility: .visible
+    ) {
+      Button("Close Chat", role: .destructive) {
+        if let tab = pendingClose { model.closeQueueChatTab(tab.id) }
+        pendingClose = nil
+      }
+      Button("Cancel", role: .cancel) { pendingClose = nil }
+    } message: {
+      Text("Its transcript is erased and its session closes, stopping any running reply.")
+    }
+  }
+
+  private func tabButton(_ tab: QueueChatTab) -> some View {
+    let isActive = tab.id == model.activeQueueChatTabID
+    let isResponding = model.isChatResponding(ticketID: nil, tabID: tab.id)
+    return HStack(spacing: 5) {
+      Button { model.selectQueueChatTab(tab.id) } label: {
+        HStack(spacing: 5) {
+          if isResponding {
+            ProgressView().controlSize(.mini)
+          }
+          Text(tab.title)
+            .font(.system(size: 12, weight: isActive ? .semibold : .regular))
+            .lineLimit(1)
+        }
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel(isResponding ? "\(tab.title), working" : tab.title)
+      .accessibilityAddTraits(isActive ? .isSelected : [])
+      .help(isResponding ? "Working: runs until finished" : tab.title)
+      if model.queueChatTabs.count > 1 {
+        Button { requestClose(tab) } label: {
+          Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .accessibilityLabel("Close \(tab.title)")
+        .help("Close this chat and its session")
+      }
+    }
+    .padding(.horizontal, 9)
+    .frame(height: 26)
+    .background(
+      RoundedRectangle(cornerRadius: 7)
+        .fill(isActive ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.08)))
+  }
+
+  private func requestClose(_ tab: QueueChatTab) {
+    if model.chatMessages(ticketID: nil, tabID: tab.id).contains(where: { $0.role == .user })
+      || model.isChatResponding(ticketID: nil, tabID: tab.id) {
+      pendingClose = tab
+    } else {
+      model.closeQueueChatTab(tab.id)
     }
   }
 }

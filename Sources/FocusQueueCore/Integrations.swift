@@ -2273,6 +2273,16 @@ public protocol QueueAgentChatting: Sendable {
         effort: String?
     ) async throws -> QueueAgentReply
     func reset(configuration: VerifierConfiguration) async throws
+    /// Collects a QChat turn that kept running in tmux while the app was closed.
+    func resume(_ turn: QueueChatTurn) async throws -> QueueAgentReply
+}
+
+extension QueueAgentChatting {
+    /// Agents that never run in tmux cannot recover a turn; it reports as interrupted.
+    public func resume(_ turn: QueueChatTurn) async throws -> QueueAgentReply {
+        QueueChatSessions.discard(turn)
+        throw QueueChatSessionError.interrupted
+    }
 }
 
 public enum QueueAgentError: Error, LocalizedError {
@@ -2677,12 +2687,6 @@ public actor HarnessQueueAgent: QueueAgentChatting {
         effort: String? = nil
     ) async throws -> QueueAgentReply {
 
-        let promptURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("focus-queue-chat-\(UUID().uuidString).txt")
-        defer { try? FileManager.default.removeItem(at: promptURL) }
-        let usageURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("focus-queue-chat-usage-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: usageURL) }
         let runID = UUID().uuidString
         let source = configuration.usageSource
             ?? (Self.documentRuntimeArguments(configuration).isEmpty ? "queue_chat" : "document_chat")
@@ -2700,7 +2704,25 @@ public actor HarnessQueueAgent: QueueAgentChatting {
             visibleOrder: visibleOrder,
             deferredTicketIDs: deferredTicketIDs
         )
-        try files.write(Data(prompt.utf8), to: promptURL)
+        let request = QueueAgentPrompt.userRequest(in: message)
+        // A QChat turn runs in its conversation's tmux session with no run
+        // budget; its files live with the turn so a reply survives an app restart.
+        let chatTurn = isDocumentOnly ? nil : try configuration.chatTurn.map { target in
+            try QueueChatSessions.prepare(
+                target: target, provider: provider, prompt: prompt, request: request, model: model,
+                usageSource: source, runID: runID, supportDirectory: configuration.supportDirectory)
+        }
+        let promptURL = chatTurn?.promptURL ?? FileManager.default.temporaryDirectory
+            .appendingPathComponent("focus-queue-chat-\(UUID().uuidString).txt")
+        let usageURL = chatTurn?.usageURL ?? FileManager.default.temporaryDirectory
+            .appendingPathComponent("focus-queue-chat-usage-\(UUID().uuidString).json")
+        defer {
+            if chatTurn == nil {
+                try? FileManager.default.removeItem(at: promptURL)
+                try? FileManager.default.removeItem(at: usageURL)
+            }
+        }
+        if chatTurn == nil { try files.write(Data(prompt.utf8), to: promptURL) }
         if let support = configuration.supportDirectory {
             PromptUsageMetrics.record(PromptUsageEvent(source: source, component: "app_context",
                 provider: provider.rawValue, model: model,
@@ -2715,9 +2737,9 @@ public actor HarnessQueueAgent: QueueAgentChatting {
             }
         }
 
-        let requestStartedAt = Date()
-        let request = QueueAgentPrompt.userRequest(in: message)
-        let runTimeoutSeconds = Self.runTimeoutSeconds(
+        let requestStartedAt = chatTurn?.startedAt ?? Date()
+        // Zero tells the harness to run until the provider finishes.
+        let runTimeoutSeconds = chatTurn != nil ? 0 : Self.runTimeoutSeconds(
             for: request,
             configuredTimeoutSeconds: configuration.timeoutSeconds
         )
@@ -2750,14 +2772,49 @@ public actor HarnessQueueAgent: QueueAgentChatting {
             arguments.append(contentsOf: ["--effort", requestedEffort])
         }
         if let forkSource { arguments.append(contentsOf: ["--fork-from", forkSource]) }
-        let result = try await runner.run(ProcessSpecification(
+        let specification = ProcessSpecification(
             executable: configuration.executable,
             arguments: arguments,
             workingDirectory: workspace,
             environment: configuration.agentEnvironment,
             timeoutSeconds: runTimeoutSeconds + 15
-        ))
-        if let support = configuration.supportDirectory,
+        )
+        if let chatTurn {
+            // An app quit skips this cleanup, which leaves the manifest for `resume`.
+            defer { QueueChatSessions.discard(chatTurn) }
+            let result = try await QueueChatSessions(runner: runner, serverName: chatTurn.serverName ?? QueueChatSessions.serverName)
+                .run(chatTurn, specification: specification)
+            return try finish(
+                result: result, request: request, requestStartedAt: requestStartedAt,
+                runTimeoutSeconds: runTimeoutSeconds, isDocumentOnly: false, usageURL: usageURL,
+                source: source, model: model, runID: runID, supportDirectory: configuration.supportDirectory)
+        }
+        let result = try await runner.run(specification)
+        return try finish(
+            result: result, request: request, requestStartedAt: requestStartedAt,
+            runTimeoutSeconds: runTimeoutSeconds, isDocumentOnly: isDocumentOnly, usageURL: usageURL,
+            source: source, model: model, runID: runID, supportDirectory: configuration.supportDirectory)
+    }
+
+    /// Collects a QChat turn that was still running when the app last quit.
+    /// The turn's files are removed once its reply or failure is returned.
+    public func resume(_ turn: QueueChatTurn) async throws -> QueueAgentReply {
+        defer { QueueChatSessions.discard(turn) }
+        let result = try await QueueChatSessions(runner: runner, serverName: turn.serverName ?? QueueChatSessions.serverName)
+            .wait(for: turn)
+        return try finish(
+            result: result, request: turn.request, requestStartedAt: turn.startedAt,
+            runTimeoutSeconds: 0, isDocumentOnly: false, usageURL: turn.usageURL,
+            source: turn.usageSource, model: turn.model, runID: turn.runID,
+            supportDirectory: turn.supportDirectory)
+    }
+
+    private func finish(
+        result: ProcessResult, request: String, requestStartedAt: Date, runTimeoutSeconds: Int,
+        isDocumentOnly: Bool, usageURL: URL, source: String, model: String?, runID: String,
+        supportDirectory: String?
+    ) throws -> QueueAgentReply {
+        if let support = supportDirectory,
            let data = try? Data(contentsOf: usageURL),
            let usage = try? JSONSerialization.jsonObject(with: data) as? [String: Int] {
             PromptUsageMetrics.record(PromptUsageEvent(
@@ -2964,6 +3021,10 @@ public actor CodexQueueAgent: QueueAgentChatting {
     public func reset(configuration: VerifierConfiguration) async throws {
         try await harness.reset(configuration: configuration)
     }
+
+    public func resume(_ turn: QueueChatTurn) async throws -> QueueAgentReply {
+        try await harness.resume(turn)
+    }
 }
 
 public actor ClaudeQueueAgent: QueueAgentChatting {
@@ -3003,6 +3064,10 @@ public actor ClaudeQueueAgent: QueueAgentChatting {
     public func reset(configuration: VerifierConfiguration) async throws {
         try await harness.reset(configuration: configuration)
     }
+
+    public func resume(_ turn: QueueChatTurn) async throws -> QueueAgentReply {
+        try await harness.resume(turn)
+    }
 }
 
 public actor KimiQueueAgent: QueueAgentChatting {
@@ -3041,5 +3106,9 @@ public actor KimiQueueAgent: QueueAgentChatting {
 
     public func reset(configuration: VerifierConfiguration) async throws {
         try await harness.reset(configuration: configuration)
+    }
+
+    public func resume(_ turn: QueueChatTurn) async throws -> QueueAgentReply {
+        try await harness.resume(turn)
     }
 }

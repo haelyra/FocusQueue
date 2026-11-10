@@ -23,3 +23,17 @@ def acquire_exclusive_file_lock(handle: IO[Any]) -> None:
     import fcntl
 
     fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+
+
+def release_file_lock(handle: IO[Any]) -> None:
+    """Release a lock taken by acquire_exclusive_file_lock before the handle closes."""
+    if os.name == "nt":
+        import msvcrt
+
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)

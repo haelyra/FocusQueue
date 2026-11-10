@@ -96,14 +96,14 @@ struct AgentUpdateView: View {
           }
         }.frame(maxWidth: .infinity, alignment: .leading)
       }
-      if model.isQueueAgentResponding && model.respondingTicketID == update.ticketID {
+      if model.isChatResponding(ticketID: update.ticketID) {
         ProgressView("Waiting for the agent response…").controlSize(.small)
       }
       HStack {
         TextField("Ask about this update", text: $draft).textFieldStyle(.roundedBorder)
           .onSubmit(send)
         Button("Send", action: send)
-          .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isQueueAgentResponding || model.reportIsRunning)
+          .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isChatResponding(ticketID: update.ticketID) || model.reportIsRunning)
       }
     }.padding(14).frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
       .background(.background, in: RoundedRectangle(cornerRadius: 14))
@@ -113,7 +113,7 @@ struct AgentUpdateView: View {
   }
 
   private func send() {
-    guard !model.isQueueAgentResponding, !model.reportIsRunning,
+    guard !model.isChatResponding(ticketID: update.ticketID), !model.reportIsRunning,
           !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     model.sendQueueAgentMessage("Regarding the update \"\(update.title)\": \(update.summary)\n\n\(draft)", ticketID: update.ticketID)
     draft = ""

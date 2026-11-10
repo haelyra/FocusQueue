@@ -566,6 +566,68 @@ class FocusQueueClaudeTests(unittest.TestCase):
             state = json.loads((runtime / "sessions.json").read_text())
             self.assertEqual(state["sessions"], {"queue": "old"})
 
+    def test_fresh_chat_releases_the_session_lock_so_tabs_run_in_parallel(self):
+        import fcntl
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prompt = root / "prompt.txt"
+            prompt.write_text("Reply safely.", encoding="utf-8")
+            runtime = root / "runtime"
+            arguments = argparse.Namespace(
+                runtime=runtime, session="queue", workspace=root,
+                prompt_file=prompt, timeout=0, fresh=True,
+            )
+            observed = {}
+
+            def run_while_probing_lock(**_kwargs):
+                with (runtime / "sessions.lock").open("a+") as other:
+                    try:
+                        fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        observed["free"] = True
+                    except BlockingIOError:
+                        observed["free"] = False
+                return ("Parallel reply", None)
+
+            with mock.patch.object(
+                MODULE, "run_claude", side_effect=run_while_probing_lock
+            ), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(MODULE.chat(arguments), 0)
+            self.assertTrue(observed["free"])
+
+    def test_zero_timeout_runs_until_the_provider_finishes(self):
+        captured = {}
+
+        class NoBudgetProcess(fake_process(captured, envelope("done"))):
+            def communicate(self, input=None, **kwargs):
+                captured["timeout"] = kwargs.get("timeout", "missing")
+                return super().communicate(input=input, **kwargs)
+
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            MODULE, "resolve_claude", return_value="/usr/bin/claude"
+        ), mock.patch.object(MODULE.subprocess, "Popen", NoBudgetProcess):
+            root = Path(temporary)
+            reply, _ = MODULE.run_claude(
+                prompt="long request", workspace=root, runtime=root / "runtime", timeout=0,
+                sandbox="workspace-write", session_id=None, output_schema=None,
+            )
+        self.assertEqual(reply, "done")
+        self.assertIsNone(captured["timeout"])
+
+    def test_chat_accepts_a_zero_timeout_but_rejects_other_out_of_range_values(self):
+        for value, accepted in [("0", True), ("5", False), ("901", False)]:
+            argv = ["focus_queue_claude.py", "chat", "--session", "s", "--workspace", "/tmp",
+                    "--prompt-file", "/nonexistent", "--timeout", value]
+            with mock.patch.object(sys, "argv", argv), mock.patch.object(
+                MODULE, "chat", return_value=0
+            ) as chat, contextlib.redirect_stderr(io.StringIO()):
+                if accepted:
+                    self.assertEqual(MODULE.main(), 0)
+                    self.assertEqual(chat.call_args.args[0].timeout, 0)
+                else:
+                    with self.assertRaises(SystemExit):
+                        MODULE.main()
+
     def test_schema_validator_enforces_the_supported_subset(self):
         definitions = {
             "link": {

@@ -353,11 +353,18 @@ rewrite of the scheduler or report engine.
   evidence links, next action, and definition of done.
 - A Completed tab for today's resolved and cancelled tasks, with lazily paged
   access to older completions and a documented path to a source-backed archive.
-- A Queue chat tab backed by the persistent `ecc-focus-queue-codex-v1` Codex
-  thread. It can explain order, answer task questions, and perform explicitly
-  requested wording or link changes before the dashboard refreshes. Unsent
-  drafts survive tab changes for the life of the app, and the composer grows
-  upward for long messages while preserving transcript space.
+- A Queue chat (QChat) panel with multiple chat tabs. It can explain order,
+  answer task questions, and perform explicitly requested changes before the
+  dashboard refreshes. Each tab is its own conversation and runs its turns in
+  its own tmux session (`fq-qchat-<tab>`) on a dedicated server
+  (`tmux -L ecc-focus-queue-qchat`), so tabs work in parallel. A turn has no
+  time limit: it runs until the provider finishes or you press Stop, and a
+  reply that finishes while the app is closed appears when it reopens. Clear
+  Chat or closing a tab closes that session, the way completing a task closes
+  its tmux session. The terminal button opens the session to watch its turns.
+  Task chat runs the same way in `fq-qchat-task-<id>`, with no worktree or
+  branch. Unsent drafts survive tab changes for the life of the app, and the
+  composer grows upward for long messages while preserving transcript space.
 - Verified read-only Queue chat access through the selected Apple Mail or Gmail
   provider, including search and full-message read. Apple Mail also supports an
   explicit open operation. Gmail uses provider-native OAuth and automatic token

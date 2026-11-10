@@ -2425,7 +2425,8 @@ struct QueueViewModelTests {
     model.sendQueueAgentMessage(
       "Keep the task decision", ticketID: "ECC-101", canvasSelection: selection)
     try await eventually { await agent.hasPendingReply }
-    #expect(model.respondingTicketID == "ECC-101")
+    #expect(model.isChatResponding(ticketID: "ECC-101"))
+    #expect(!model.isChatResponding(ticketID: nil))
     model.openPlan(for: fixture.tickets[1])
     try await eventually { model.presentedPlanMarkdown.contains("ECC-102") }
     await agent.reply("Decision recorded for task one")
@@ -2499,6 +2500,124 @@ struct QueueViewModelTests {
       "Prefer the highest priority tasks", "Queue preference recorded"
     ])
     #expect(restarted.taskChatMessages.isEmpty)
+  }
+
+  @Test("QChat tabs run turns in parallel, each in its own tmux session and transcript")
+  func queueChatTabsRunInParallel() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let agent = TabbedQueueAgent()
+    let model = await fixture.model(agent: ControlledQueueAgent(), queueAgentFactory: { _ in agent })
+    // The fixture pre-caches its Codex agent; Claude goes through the factory.
+    model.setDefaultAgentProvider(.claude)
+    #expect(model.queueChatTabs.map(\.id) == [QueueChatTab.mainID])
+
+    #expect(model.sendQueueAgentMessage("Audit every project plan for stale steps"))
+    try await eventually { await agent.pendingKeys == ["tab:main"] }
+    let second = model.addQueueChatTab()
+    #expect(model.activeQueueChatTabID == second)
+    #expect(model.queueChatTabs.last?.title == "Chat 2")
+    // The first tab is still working; the new tab sends without waiting for it.
+    #expect(model.sendQueueAgentMessage("Summarize ECC-101"))
+    try await eventually { await agent.pendingKeys.count == 2 }
+    #expect(model.isChatResponding(ticketID: nil, tabID: QueueChatTab.mainID))
+    #expect(model.isChatResponding(ticketID: nil, tabID: second))
+    #expect(!model.sendQueueAgentMessage("A second message in a busy tab"))
+    #expect(model.queueChatTabs.last?.title == "Summarize ECC-101")
+
+    let targets = await agent.targets
+    #expect(Set(targets.map(\.sessionName)) == ["fq-qchat-main", "fq-qchat-\(second)"])
+    // Tests never share the live app's QChat tmux server.
+    #expect(targets.allSatisfy { $0.serverName != QueueChatSessions.serverName })
+    #expect(targets.allSatisfy { $0.rootDirectory == fixture.paths.supportDirectory.appendingPathComponent("qchat").path })
+
+    await agent.reply("tab:main", "Plans audited")
+    try await eventually { !model.isChatResponding(ticketID: nil, tabID: QueueChatTab.mainID) }
+    #expect(model.chatMessages(ticketID: nil, tabID: QueueChatTab.mainID).last?.text == "Plans audited")
+    #expect(!model.chatMessages(ticketID: nil, tabID: second).contains { $0.text == "Plans audited" })
+    #expect(model.isChatResponding(ticketID: nil, tabID: second))
+    await agent.reply("tab:\(second)", "ECC-101 summary")
+    try await eventually { !model.isQueueAgentResponding }
+    #expect(model.chatMessages(ticketID: nil, tabID: second).map(\.text) == ["Summarize ECC-101", "ECC-101 summary"])
+
+    let store = QueueConversationStore(root: fixture.paths.supportDirectory)
+    try await eventually { try await store.load(tabID: second)?.count == 2 }
+    try await eventually { try await store.loadTabs()?.count == 2 }
+    let restarted = await fixture.model(agent: ControlledQueueAgent(), queueAgentFactory: { _ in agent })
+    // Each tab takes its name from its first request.
+    #expect(restarted.queueChatTabs.map(\.title) == ["Audit every project plan for", "Summarize ECC-101"])
+    #expect(restarted.chatMessages(ticketID: nil, tabID: second).last?.text == "ECC-101 summary")
+  }
+
+  @Test("Closing a QChat tab stops its turn and removes its transcript")
+  func closingQueueChatTabStopsTurn() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let agent = TabbedQueueAgent()
+    let model = await fixture.model(agent: ControlledQueueAgent(), queueAgentFactory: { _ in agent })
+    // The fixture pre-caches its Codex agent; Claude goes through the factory.
+    model.setDefaultAgentProvider(.claude)
+    let tab = model.addQueueChatTab()
+    #expect(model.sendQueueAgentMessage("Run a long cleanup"))
+    try await eventually { await agent.pendingKeys == ["tab:\(tab)"] }
+    let store = QueueConversationStore(root: fixture.paths.supportDirectory)
+    try await eventually { try await store.load(tabID: tab)?.isEmpty == false }
+
+    model.closeQueueChatTab(tab)
+    #expect(model.queueChatTabs.map(\.id) == [QueueChatTab.mainID])
+    #expect(model.activeQueueChatTabID == QueueChatTab.mainID)
+    try await eventually { await agent.cancelledKeys == ["tab:\(tab)"] }
+    try await eventually { !model.isQueueAgentResponding }
+    try await eventually { try await store.load(tabID: tab) == nil }
+    // The last tab is cleared instead of closed.
+    model.closeQueueChatTab(QueueChatTab.mainID)
+    #expect(model.queueChatTabs.map(\.id) == [QueueChatTab.mainID])
+    #expect(model.chatMessages(ticketID: nil).isEmpty)
+  }
+
+  @Test("Task chat runs in its own task-named QChat session")
+  func taskChatUsesTaskSession() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let agent = TabbedQueueAgent()
+    let model = await fixture.model(agent: ControlledQueueAgent(), queueAgentFactory: { _ in agent })
+    // The fixture pre-caches its Codex agent; Claude goes through the factory.
+    model.setDefaultAgentProvider(.claude)
+    #expect(model.sendQueueAgentMessage("Refine success criteria", ticketID: "ECC-101"))
+    #expect(model.sendQueueAgentMessage("Queue question"))
+    try await eventually { await agent.pendingKeys.count == 2 }
+    #expect(Set(await agent.targets.map(\.sessionName)) == ["fq-qchat-task-ecc-101", "fq-qchat-main"])
+    await agent.reply("task:ECC-101", "Criteria refined")
+    await agent.reply("tab:main", "Answered")
+    try await eventually { !model.isQueueAgentResponding }
+    #expect(model.chatMessages(ticketID: "ECC-101").last?.text == "Criteria refined")
+  }
+
+  @Test("A QChat turn that outlived the app reaches its tab after restart")
+  func queueChatRecoversTurnAfterRestart() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let root = fixture.paths.supportDirectory.appendingPathComponent("qchat")
+    let target = QueueChatTurnTarget(
+      conversation: "tab:main", sessionName: "fq-qchat-main", rootDirectory: root.path,
+      tmuxExecutable: nil, serverName: "unused")
+    _ = try QueueChatSessions.prepare(
+      target: target, provider: .claude, prompt: "p", request: "Reorganize the queue", model: nil,
+      usageSource: "queue_chat", runID: "run", supportDirectory: nil)
+    let orphan = QueueChatTurnTarget(
+      conversation: "tab:closed-tab", sessionName: "fq-qchat-closed-tab", rootDirectory: root.path,
+      tmuxExecutable: nil, serverName: "unused")
+    _ = try QueueChatSessions.prepare(
+      target: orphan, provider: .claude, prompt: "p", request: "Gone", model: nil,
+      usageSource: "queue_chat", runID: "run", supportDirectory: nil)
+    let agent = TabbedQueueAgent()
+    let model = await fixture.model(agent: ControlledQueueAgent(), queueAgentFactory: { _ in agent })
+    // The fixture pre-caches its Codex agent; Claude goes through the factory.
+    model.setDefaultAgentProvider(.claude)
+    try await eventually { !model.isQueueAgentResponding }
+    #expect(model.chatMessages(ticketID: nil).last?.text == "Recovered: Reorganize the queue")
+    #expect(await agent.resumedRequests == ["Reorganize the queue"])
+    #expect(QueueChatSessions.pendingTurns(root: root).isEmpty)
   }
 
   @Test("A damaged conversation or draft does not prevent task details loading", arguments: ["conversation.json", "plan-draft.json"])
@@ -5097,6 +5216,46 @@ private actor ControlledQueueAgent: QueueAgentChatting {
   func failPending(_ error: any Error = CancellationError()) {
     pending?.resume(throwing: error)
     pending = nil
+  }
+}
+
+/// Holds one pending reply per conversation so tabs can run in parallel.
+private actor TabbedQueueAgent: QueueAgentChatting {
+  private var pending: [String: CheckedContinuation<QueueAgentReply, any Error>] = [:]
+  private(set) var targets: [QueueChatTurnTarget] = []
+  private(set) var cancelledKeys: [String] = []
+  private(set) var resumedRequests: [String] = []
+  var pendingKeys: Set<String> { Set(pending.keys) }
+
+  func send(message: String, dashboardPath: String, workspace: String, visibleOrder: [String],
+    deferredTicketIDs: [String], configuration: VerifierConfiguration,
+    model: String?, effort: String?) async throws -> QueueAgentReply {
+    let target = try #require(configuration.chatTurn)
+    targets.append(target)
+    let key = target.conversation
+    return try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { pending[key] = $0 }
+    } onCancel: {
+      Task { await self.cancel(key) }
+    }
+  }
+
+  func reset(configuration: VerifierConfiguration) async throws {}
+
+  func resume(_ turn: QueueChatTurn) async throws -> QueueAgentReply {
+    resumedRequests.append(turn.request)
+    QueueChatSessions.discard(turn)
+    return QueueAgentReply(message: "Recovered: \(turn.request)", log: "")
+  }
+
+  func reply(_ key: String, _ message: String) {
+    pending.removeValue(forKey: key)?.resume(returning: QueueAgentReply(message: message, log: ""))
+  }
+
+  private func cancel(_ key: String) {
+    guard let continuation = pending.removeValue(forKey: key) else { return }
+    cancelledKeys.append(key)
+    continuation.resume(throwing: CancellationError())
   }
 }
 

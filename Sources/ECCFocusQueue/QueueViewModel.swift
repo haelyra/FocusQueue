@@ -192,15 +192,23 @@ final class QueueViewModel {
       }
     }
   }
-  private(set) var queueChatMessages: [QueueChatMessage] = [
-    QueueChatMessage(
-      role: .agent,
-      text:
-        "The Queue agent can explain your task order and help with explicitly requested task changes when configured. The app orders tasks by priority and recency, plus your local drag overrides. Optional message sources need separate account setup and verified retrieval evidence. Basic queue viewing and terminal setup work independently of this agent."
-    )
+  static let queueChatGreeting = QueueChatMessage(
+    role: .agent,
+    text:
+      "The Queue agent can explain your task order and help with explicitly requested task changes when configured. The app orders tasks by priority and recency, plus your local drag overrides. Optional message sources need separate account setup and verified retrieval evidence. Basic queue viewing and terminal setup work independently of this agent."
+  )
+  /// QChat tabs, each its own conversation and tmux session.
+  private(set) var queueChatTabs: [QueueChatTab] = [.main]
+  private(set) var activeQueueChatTabID = QueueChatTab.mainID
+  private(set) var queueChatTabMessages: [String: [QueueChatMessage]] = [
+    QueueChatTab.mainID: [QueueViewModel.queueChatGreeting]
   ]
-  private(set) var isQueueAgentResponding = false
-  private(set) var respondingTicketID: String?
+  /// The active QChat tab's transcript.
+  var queueChatMessages: [QueueChatMessage] { queueChatTabMessages[activeQueueChatTabID] ?? [] }
+  /// Conversations with a turn in flight. Tabs and task chats run in parallel.
+  private(set) var respondingConversations: Set<QueueChatConversation> = []
+  /// True while any chat turn runs; app-wide work such as the daily report waits for it.
+  var isQueueAgentResponding: Bool { !respondingConversations.isEmpty }
   private(set) var taskChatMessages: [String: [QueueChatMessage]] = [:]
   private(set) var taskContexts: [String: TaskContext] = [:]
   /// Files agents saved in each open task's context folder, newest first.
@@ -343,7 +351,7 @@ final class QueueViewModel {
   @ObservationIgnored private var refreshTask: Task<Void, Never>?
   @ObservationIgnored private var windowSaveTask: Task<Void, Never>?
   @ObservationIgnored private var localStateSaveTask: Task<Void, Never>?
-  @ObservationIgnored private var queueChatTask: Task<Void, Never>?
+  @ObservationIgnored private var chatTasks: [QueueChatConversation: Task<Void, Never>] = [:]
   @ObservationIgnored private var documentConversations: [String: DocumentConversation] = [:]
   @ObservationIgnored private var configurationSaveTask: Task<Void, Never>?
   @ObservationIgnored private var lastRecurringPRRefresh: Date?
@@ -944,9 +952,7 @@ final class QueueViewModel {
       }
       // Preserve the prior task associations before registration can move them.
       await captureDurableState(localState)
-      if let saved = try await conversationStore.load(ticketID: nil), !saved.isEmpty {
-        queueChatMessages = saved
-      }
+      try await loadQueueChatTabs()
       isRecoveredDailyReportRunning = try await reportHistoryRepository.reconcileInactiveRuns()
       // The first refresh retains report history; capturing it here delayed
       // that refresh and every queue update behind it.
@@ -1966,11 +1972,12 @@ final class QueueViewModel {
 
   @discardableResult
   func sendQueueAgentMessage(
-    _ rawMessage: String, ticketID: String? = nil,
+    _ rawMessage: String, ticketID: String? = nil, tabID: String? = nil,
     canvasSelection: PlanCanvasSelection? = nil
   ) -> Bool {
     let message = rawMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !message.isEmpty, !isQueueAgentResponding else { return false }
+    let conversation = chatConversation(ticketID: ticketID, tabID: tabID)
+    guard !message.isEmpty, !respondingConversations.contains(conversation) else { return false }
     guard !reportIsRunning else {
       dailyReportRunMessage = "Wait for the daily report to finish before editing the queue."
       return false
@@ -1979,19 +1986,19 @@ final class QueueViewModel {
     // Each turn runs in a fresh provider session; this bounded recap replaces
     // the resumed history that grew with every tool result (FOC-075).
     let recap = QueueChatContext.recap(
-      chatMessages(ticketID: ticketID).map { (role: $0.role.rawValue, text: $0.text) })
+      messages(in: conversation).map { (role: $0.role.rawValue, text: $0.text) })
+    nameQueueChatTabIfNeeded(conversation, from: message)
     appendChat(
       QueueChatMessage(role: .user, text: message, canvasSelection: canvasSelection),
-      ticketID: ticketID)
-    isQueueAgentResponding = true
-    respondingTicketID = ticketID
+      to: conversation)
+    respondingConversations.insert(conversation)
     if ticketID == nil,
       let reportRequest = DailyReportChatCommand.parse(
         message,
         enabledPlatforms: config.dailyReport.enabledPlatforms
       )
     {
-      runDailyReportFromChat(reportRequest)
+      runDailyReportFromChat(reportRequest, conversation: conversation)
       return true
     }
     let visibleOrder = openTickets.map(\.id)
@@ -2009,6 +2016,9 @@ final class QueueViewModel {
     var agentConfiguration = config.verifier
     agentConfiguration.executable = config.chatExecutable(for: provider)
     agentConfiguration.supportDirectory = paths.supportDirectory.path
+    // The turn runs in this conversation's tmux session with no run budget, so
+    // long requests finish and survive an app restart (FOC-120).
+    agentConfiguration.chatTurn = chatTurnTarget(for: conversation)
     // Central QChat can inspect every configured project. Task chat retains its
     // task's project scope for task-specific helpers.
     agentConfiguration.projectScopeID = ticketID.map { id in
@@ -2067,12 +2077,9 @@ final class QueueViewModel {
       }
       scopedMessage = scope + "Read the dashboard for the project named in the user's request. Preserve projectID and unknown fields on edits to the selected dashboard." + request
     }
-    queueChatTask = Task { [weak self] in
+    chatTasks[conversation] = Task { [weak self] in
       guard let self else { return }
-      defer {
-        self.isQueueAgentResponding = false
-        self.respondingTicketID = nil
-      }
+      defer { self.finishChatTurn(conversation) }
       do {
         for id in scopedTaskIDs.filter({ self.taskContexts[$0] != nil }) {
           self.taskContexts[id] = try await self.taskContextStore.reconcileSubtasks(ticketID: id)
@@ -2090,24 +2097,53 @@ final class QueueViewModel {
         if provider == .codex, let refused = CodexCatalog.unavailableModel(in: reply.log) {
           self.unavailableCodexModels.insert(refused)
         }
-        self.appendChat(QueueChatMessage(role: .agent, text: reply.message), ticketID: ticketID)
-        // The agent edits the queue, dashboards, and settings through the CLI.
-        // Show its saved result now so the reply and the queue agree.
-        _ = await self.reloadConfigurationFromDisk()
-        self.reloadQueueOrder()
-        await self.refreshSoon()
-        await self.reloadPresentedPlan()
-        if self.dailyReport == nil {
-          await self.reloadDailyReport()
-        }
+        self.appendChat(QueueChatMessage(role: .agent, text: reply.message), to: conversation)
+        await self.reloadAfterChatReply()
       } catch is CancellationError {
         // User-cancelled; the defer above already reset the chat state.
       } catch {
         self.appendChat(
-          QueueChatMessage(role: .agent, text: error.localizedDescription), ticketID: ticketID)
+          QueueChatMessage(role: .agent, text: error.localizedDescription), to: conversation)
       }
     }
     return true
+  }
+
+  /// The agent edits the queue, dashboards, and settings through the CLI.
+  /// Show its saved result now so the reply and the queue agree.
+  private func reloadAfterChatReply() async {
+    _ = await reloadConfigurationFromDisk()
+    reloadQueueOrder()
+    await refreshSoon()
+    await reloadPresentedPlan()
+    if dailyReport == nil {
+      await reloadDailyReport()
+    }
+  }
+
+  private func finishChatTurn(_ conversation: QueueChatConversation) {
+    respondingConversations.remove(conversation)
+    chatTasks[conversation] = nil
+  }
+
+  /// Task chat for a ticket; otherwise the given QChat tab, or the active one.
+  func chatConversation(ticketID: String?, tabID: String? = nil) -> QueueChatConversation {
+    if let ticketID { return .task(ticketID) }
+    return .tab(tabID ?? activeQueueChatTabID)
+  }
+
+  func isChatResponding(ticketID: String?, tabID: String? = nil) -> Bool {
+    respondingConversations.contains(chatConversation(ticketID: ticketID, tabID: tabID))
+  }
+
+  private var queueChatRoot: URL { paths.supportDirectory.appendingPathComponent("qchat") }
+
+  private func chatTurnTarget(for conversation: QueueChatConversation) -> QueueChatTurnTarget {
+    QueueChatTurnTarget(
+      conversation: conversation.key, sessionName: conversation.tmuxSessionName,
+      rootDirectory: queueChatRoot.path,
+      tmuxExecutable: config.tmuxExecutable ?? SetupEnvironment.executable("tmux"),
+      serverName: QueueChatSessions.serverName(supportDirectory: paths.supportDirectory))
   }
 
   func queueAgent(for provider: AgentProvider) -> any QueueAgentChatting {
@@ -2123,16 +2159,20 @@ final class QueueViewModel {
     return trimmed.flatMap { $0.isEmpty ? nil : $0 }
   }
 
-  func cancelQueueAgentMessage() {
-    queueChatTask?.cancel()
+  /// Stops the conversation's running turn and closes its tmux window.
+  func cancelQueueAgentMessage(ticketID: String? = nil, tabID: String? = nil) {
+    chatTasks[chatConversation(ticketID: ticketID, tabID: tabID)]?.cancel()
   }
 
   /// Clears the visible transcript, the saved conversation that feeds the next
-  /// turn's recap, and every provider's harness session and saved transcript,
-  /// so the next message starts with no prior history.
-  func clearQueueChat(ticketID: String?) {
-    if respondingTicketID == ticketID { queueChatTask?.cancel() }
-    if let ticketID { taskChatMessages[ticketID] = [] } else { queueChatMessages = [] }
+  /// turn's recap, the conversation's tmux session, and every provider's
+  /// harness session and saved transcript, so the next message starts with no
+  /// prior history.
+  func clearQueueChat(ticketID: String?, tabID: String? = nil) {
+    let conversation = chatConversation(ticketID: ticketID, tabID: tabID)
+    chatTasks[conversation]?.cancel()
+    setMessages([], in: conversation)
+    let closeSession = closeChatSession(conversation)
     let provider = defaultAgentProvider
     let resets = AgentProvider.allCases.map { candidate in
       var resetConfiguration = config.verifier
@@ -2148,11 +2188,12 @@ final class QueueViewModel {
       }
       return (candidate, queueAgent(for: candidate), resetConfiguration)
     }
-    let scope = "conversation-\(ticketID ?? "queue")"
+    let scope = durableScope(conversation)
     Task { [weak self] in
       guard let self else { return }
+      await closeSession()
       do {
-        try await self.conversationStore.save([], ticketID: ticketID)
+        try await self.saveMessages([], in: conversation)
         self.recordDurableError(nil, scope: scope)
       } catch {
         self.recordDurableError(error, scope: scope)
@@ -2167,6 +2208,170 @@ final class QueueViewModel {
           // An inactive provider may not be installed; its stale session is harmless.
         }
       }
+    }
+  }
+
+  /// Closes the conversation's tmux session, like completing a task closes its
+  /// task session, and drops any turn files it left behind.
+  private func closeChatSession(_ conversation: QueueChatConversation) -> @Sendable () async -> Void {
+    let target = chatTurnTarget(for: conversation)
+    let root = queueChatRoot
+    return {
+      await QueueChatSessions(serverName: target.serverName)
+        .close(sessionName: target.sessionName, executable: target.tmuxExecutable)
+      for turn in QueueChatSessions.pendingTurns(root: root) where turn.conversation == target.conversation {
+        QueueChatSessions.discard(turn)
+      }
+    }
+  }
+
+  // MARK: QChat tabs
+
+  func selectQueueChatTab(_ id: String) {
+    guard queueChatTabs.contains(where: { $0.id == id }), activeQueueChatTabID != id else { return }
+    activeQueueChatTabID = id
+    UserDefaults.standard.set(id, forKey: Self.activeQueueChatTabKey)
+    queueChatFocusRequest += 1
+  }
+
+  /// Opens a new, empty QChat tab with its own session and selects it.
+  @discardableResult
+  func addQueueChatTab() -> String {
+    var id = String(UUID().uuidString.lowercased().prefix(8))
+    while queueChatTabs.contains(where: { $0.id == id }) {
+      id = String(UUID().uuidString.lowercased().prefix(8))
+    }
+    queueChatTabs.append(QueueChatTab(
+      id: id, title: QueueChatTab.nextDefaultTitle(existing: queueChatTabs), titleIsAutomatic: true))
+    queueChatTabMessages[id] = []
+    saveQueueChatTabs()
+    selectQueueChatTab(id)
+    return id
+  }
+
+  /// Closes a tab: stops its turn, closes its tmux session, and deletes its
+  /// transcript. The last tab is cleared instead, so QChat always has one.
+  func closeQueueChatTab(_ id: String) {
+    guard let index = queueChatTabs.firstIndex(where: { $0.id == id }) else { return }
+    guard queueChatTabs.count > 1 else {
+      clearQueueChat(ticketID: nil, tabID: id)
+      return
+    }
+    let conversation = QueueChatConversation.tab(id)
+    chatTasks[conversation]?.cancel()
+    let closeSession = closeChatSession(conversation)
+    queueChatTabs.remove(at: index)
+    queueChatTabMessages[id] = nil
+    if activeQueueChatTabID == id {
+      let neighbor = queueChatTabs[min(index, queueChatTabs.count - 1)].id
+      activeQueueChatTabID = neighbor
+      UserDefaults.standard.set(neighbor, forKey: Self.activeQueueChatTabKey)
+    }
+    saveQueueChatTabs()
+    // Turns are fresh provider runs, so no harness session needs a reset; the
+    // tab's tmux session and transcript are all it owns.
+    Task { [weak self, conversationStore] in
+      await closeSession()
+      do { try await conversationStore.removeTab(id) } catch {
+        self?.loadError = "Could not delete the closed chat: \(error.localizedDescription)"
+      }
+    }
+  }
+
+  /// Opens a terminal attached to the conversation's tmux session, where its
+  /// activity log and any running turn are visible.
+  func openQueueChatSession(ticketID: String? = nil, tabID: String? = nil) {
+    let target = chatTurnTarget(for: chatConversation(ticketID: ticketID, tabID: tabID))
+    let configuration = config.wezTerm
+    let title = ticketID.map { "\($0) chat" }
+      ?? queueChatTabs.first { $0.id == (tabID ?? activeQueueChatTabID) }.map { "QChat · \($0.title)" }
+      ?? "QChat"
+    let support = paths.supportDirectory
+    Task { [weak self] in
+      do {
+        let command = try await QueueChatSessions(serverName: target.serverName).attachCommand(target: target)
+        try await TerminalCommandLauncher.open(
+          command, configuration: configuration,
+          titles: .init(tab: title, window: title), supportDirectory: support)
+      } catch {
+        self?.loadError = "Could not open the chat session: \(error.localizedDescription)"
+      }
+    }
+  }
+
+  static let activeQueueChatTabKey = "qchatActiveTab"
+
+  private func nameQueueChatTabIfNeeded(_ conversation: QueueChatConversation, from message: String) {
+    guard case .tab(let id) = conversation,
+      let index = queueChatTabs.firstIndex(where: { $0.id == id }),
+      queueChatTabs[index].titleIsAutomatic,
+      !(queueChatTabMessages[id] ?? []).contains(where: { $0.role == .user }),
+      let title = QueueChatTab.title(from: message)
+    else { return }
+    queueChatTabs[index].title = title
+    queueChatTabs[index].titleIsAutomatic = false
+    saveQueueChatTabs()
+  }
+
+  private func saveQueueChatTabs() {
+    let tabs = queueChatTabs
+    Task { [weak self, conversationStore] in
+      do { try await conversationStore.saveTabs(tabs) } catch {
+        self?.loadError = "Could not save chat tabs: \(error.localizedDescription)"
+      }
+    }
+  }
+
+  /// Restores the tabs and transcripts, then collects any turn that kept
+  /// running in tmux while the app was closed.
+  private func loadQueueChatTabs() async throws {
+    let tabs = (try? await conversationStore.loadTabs()).flatMap { $0.isEmpty ? nil : $0 } ?? [.main]
+    var messages: [String: [QueueChatMessage]] = [:]
+    for tab in tabs {
+      let saved = try await conversationStore.load(tabID: tab.id)
+      if let saved, !saved.isEmpty {
+        messages[tab.id] = saved
+      } else {
+        messages[tab.id] = tab.id == QueueChatTab.mainID ? [Self.queueChatGreeting] : []
+      }
+    }
+    queueChatTabs = tabs
+    queueChatTabMessages = messages
+    let savedActive = UserDefaults.standard.string(forKey: Self.activeQueueChatTabKey)
+    activeQueueChatTabID = tabs.first { $0.id == savedActive }?.id ?? tabs[0].id
+    recoverQueueChatTurns()
+  }
+
+  private func recoverQueueChatTurns() {
+    for turn in QueueChatSessions.pendingTurns(root: queueChatRoot) {
+      guard let conversation = QueueChatConversation(key: turn.conversation),
+        !respondingConversations.contains(conversation),
+        conversationExists(conversation)
+      else {
+        QueueChatSessions.discard(turn)
+        continue
+      }
+      respondingConversations.insert(conversation)
+      chatTasks[conversation] = Task { [weak self] in
+        guard let self else { return }
+        defer { self.finishChatTurn(conversation) }
+        do {
+          let reply = try await self.queueAgent(for: turn.provider).resume(turn)
+          self.appendChat(QueueChatMessage(role: .agent, text: reply.message), to: conversation)
+          await self.reloadAfterChatReply()
+        } catch is CancellationError {
+        } catch {
+          self.appendChat(
+            QueueChatMessage(role: .agent, text: error.localizedDescription), to: conversation)
+        }
+      }
+    }
+  }
+
+  private func conversationExists(_ conversation: QueueChatConversation) -> Bool {
+    switch conversation {
+    case .tab(let id): queueChatTabs.contains { $0.id == id }
+    case .task: true
     }
   }
 
@@ -2428,21 +2633,53 @@ final class QueueViewModel {
       effort: Self.normalizedChatOption(agent.launchConfiguration?.effort))
   }
 
-  func chatMessages(ticketID: String?) -> [QueueChatMessage] {
-    guard let ticketID else { return queueChatMessages }
-    return taskChatMessages[ticketID] ?? []
+  func chatMessages(ticketID: String?, tabID: String? = nil) -> [QueueChatMessage] {
+    messages(in: chatConversation(ticketID: ticketID, tabID: tabID))
   }
 
-  private func appendChat(_ message: QueueChatMessage, ticketID: String?) {
-    if let ticketID { taskChatMessages[ticketID, default: []].append(message) }
-    else { queueChatMessages.append(message) }
-    let snapshot = chatMessages(ticketID: ticketID)
+  func messages(in conversation: QueueChatConversation) -> [QueueChatMessage] {
+    switch conversation {
+    case .task(let id): taskChatMessages[id] ?? []
+    case .tab(let id): queueChatTabMessages[id] ?? []
+    }
+  }
+
+  private func setMessages(_ messages: [QueueChatMessage], in conversation: QueueChatConversation) {
+    switch conversation {
+    case .task(let id): taskChatMessages[id] = messages
+    case .tab(let id): queueChatTabMessages[id] = messages
+    }
+  }
+
+  private func saveMessages(_ messages: [QueueChatMessage], in conversation: QueueChatConversation) async throws {
+    switch conversation {
+    case .task(let id): try await conversationStore.save(messages, ticketID: id)
+    case .tab(let id): try await conversationStore.save(messages, tabID: id)
+    }
+  }
+
+  /// Durable-error scope; the main tab keeps the original queue scope.
+  private func durableScope(_ conversation: QueueChatConversation) -> String {
+    switch conversation {
+    case .task(let id): "conversation-\(id)"
+    case .tab(let id): id == QueueChatTab.mainID ? "conversation-queue" : "conversation-tab-\(id)"
+    }
+  }
+
+  /// Appends to the conversation that sent the turn, even after the user
+  /// switched tabs. A reply for a closed tab is dropped with the tab.
+  private func appendChat(_ message: QueueChatMessage, to conversation: QueueChatConversation) {
+    guard conversationExists(conversation) else { return }
+    var updated = messages(in: conversation)
+    updated.append(message)
+    setMessages(updated, in: conversation)
+    let scope = durableScope(conversation)
     Task {
       do {
-        try await conversationStore.save(snapshot, ticketID: ticketID)
-        recordDurableError(nil, scope: "conversation-\(ticketID ?? "queue")")
+        try await saveMessages(updated, in: conversation)
+        recordDurableError(nil, scope: scope)
       } catch let error as ConversationArchiveError {
-        recordDurableError(error, scope: "conversation-\(ticketID ?? "queue")")
+        recordDurableError(error, scope: scope)
       } catch { loadError = "Could not save conversation: \(error.localizedDescription)" }
     }
   }
@@ -6413,31 +6650,25 @@ final class QueueViewModel {
       .contains(where: normalized.contains) ? .error : .info
   }
 
-  private func runDailyReportFromChat(_ request: DailyReportRunRequest) {
+  private func runDailyReportFromChat(
+    _ request: DailyReportRunRequest, conversation: QueueChatConversation
+  ) {
     let priorReportID = dailyReport?.runID
-    queueChatTask = Task { [weak self] in
+    chatTasks[conversation] = Task { [weak self] in
       guard let self else { return }
-      defer {
-        self.isQueueAgentResponding = false
-        self.respondingTicketID = nil
-        let snapshot = self.queueChatMessages
-        Task {
-          do { try await self.conversationStore.save(snapshot, ticketID: nil) }
-          catch { self.loadError = "Could not save report conversation: \(error.localizedDescription)" }
-        }
-      }
+      defer { self.finishChatTurn(conversation) }
       guard self.dailyReportRunHandler != nil else {
-        self.queueChatMessages.append(QueueChatMessage(
+        self.appendChat(QueueChatMessage(
           role: .agent,
           text: "Daily report automation is unavailable in this app session."
-        ))
+        ), to: conversation)
         return
       }
       guard let report = await self.dispatchDailyReport(request) else {
-        self.queueChatMessages.append(QueueChatMessage(
+        self.appendChat(QueueChatMessage(
           role: .agent,
           text: self.dailyReportRunMessage ?? "The requested daily report did not complete."
-        ))
+        ), to: conversation)
         return
       }
       let requiredPlatforms = request.comprehensive
@@ -6451,16 +6682,16 @@ final class QueueViewModel {
         report.mode == (request.recheck ? .recheck : .unseenOnly),
         actualPlatformNames == requiredPlatformNames
       else {
-        self.queueChatMessages.append(QueueChatMessage(
+        self.appendChat(QueueChatMessage(
           role: .agent,
           text: self.dailyReportRunMessage ?? "The requested daily report did not complete."
-        ))
+        ), to: conversation)
         return
       }
-      self.queueChatMessages.append(QueueChatMessage(
+      self.appendChat(QueueChatMessage(
         role: .agent,
         text: Self.dailyReportChatSummary(report)
-      ))
+      ), to: conversation)
       await self.refresh()
     }
   }

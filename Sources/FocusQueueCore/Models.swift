@@ -96,6 +96,9 @@ public struct VerifierConfiguration: Codable, Equatable, Sendable {
   public var runtimeDirectory: String?
   /// Runtime-only prompt-usage source name; nil keeps queue_chat or document_chat.
   public var usageSource: String?
+  /// Runtime-only QChat target: the turn runs in this conversation's tmux
+  /// session with no run budget instead of as a timed child process.
+  public var chatTurn: QueueChatTurnTarget?
 
   public init(
     enabled: Bool,

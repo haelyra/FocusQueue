@@ -270,6 +270,8 @@ Role-scoped agent contracts (FOC-117), beside the project plan: `agent-contract.
 
 Managed agent sessions are named `fq-<subtaskID>` on the dedicated `ecc-focus-queue` tmux server; task-shared sessions are `fq-task-<task-id>`; unmanaged inbox sessions are `fq-codex-*` / `fq-claude-*`. `attach*` ends in `execv` and requires a TTY.
 
+QChat runs on its own server, `ecc-focus-queue-qchat` (a support folder other than the installed app's gets `ecc-focus-queue-qchat-<hash>`). Each QChat tab owns session `fq-qchat-<tab>` and each task chat owns `fq-qchat-task-<task-id>`; there is no worktree or branch. The session's first window tails `<support>/qchat/sessions/<name>/activity.log`, and every turn runs the provider harness with `--timeout 0` (no run budget) in its own `turn-<id>` window. A turn's manifest, prompt, and output live in `<support>/qchat/turns/<id>/` until the app collects the reply, including after an app restart. Closing the turn window (Stop) sends the harness SIGHUP/SIGTERM, which stops the provider. Clear Chat and closing a tab kill the session. Tabs are listed in `<support>/qchat/tabs.json`; the first tab keeps `queue-conversation.json`, other tabs save `qchat/tabs/<id>/conversation.json`.
+
 ### 3.11 Misc
 
 **`intake-changed`** — emits `{"status":"notified"}` and posts the change notification.
@@ -278,10 +280,10 @@ Managed agent sessions are named `fq-<subtaskID>` on the dedicated `ecc-focus-qu
 
 ## 4. Provider harness CLIs
 
-Installed at `~/.local/bin/focus-queue-codex|claude|kimi`. All three share one contract: global `--runtime <dir>`, subcommands `chat | run | reset`, timeout validated to 10–900 s (exit 2 on invalid), failures exit 1 with `<Provider> Queue harness failed: ...`.
+Installed at `~/.local/bin/focus-queue-codex|claude|kimi`. All three share one contract: global `--runtime <dir>`, subcommands `chat | run | reset`, timeout validated to 0 (no limit, used by QChat turns) or 10–900 s (exit 2 on invalid), failures exit 1 with `<Provider> Queue harness failed: ...`.
 
 **`chat --session <name> --workspace <dir> --prompt-file <path> [--timeout 120] [--model M] [--effort E] [--context-dir D] [--writable-dir D]*`**
-Persistent per-session conversation. Session map at `<runtime>/sessions.json` under `sessions.lock`; stale sessions auto-retry with a fresh session. Default runtimes: `agent-claude/`, `agent/`, `agent-kimi/` under the support dir.
+Persistent per-session conversation. Session map at `<runtime>/sessions.json` under `sessions.lock`; stale sessions auto-retry with a fresh session. `--fresh`, `--reader`, and `--editor` turns never touch the map, so they release the lock before running and parallel QChat tabs do not queue behind each other. Default runtimes: `agent-claude/`, `agent/`, `agent-kimi/` under the support dir.
 
 **`run --workspace <dir> --prompt-file <path> [--sandbox read-only|workspace-write] [--output-schema <json>] [--usage-file <path>] [--disable-tools] [--model M] [--effort E] [--label L]`**
 One-shot headless run. With `--output-schema`, the reply is validated against the schema with one correction retry; the validated JSON is printed. `--usage-file` receives token counts. Every run writes prompt-free `<runtime>/latest-run.json` diagnostics.

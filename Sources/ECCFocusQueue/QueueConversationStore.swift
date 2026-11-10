@@ -57,6 +57,49 @@ actor QueueConversationStore {
     try write(JSONEncoder().encode(Array(messages.suffix(500))), to: url)
   }
 
+  /// The QChat tab list; nil before any tab was saved, which means one main tab.
+  func loadTabs() throws -> [QueueChatTab]? {
+    let url = tabsURL
+    guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+    return try JSONDecoder().decode([QueueChatTab].self, from: Data(contentsOf: url))
+  }
+
+  func saveTabs(_ tabs: [QueueChatTab]) throws {
+    try write(JSONEncoder().encode(tabs), to: tabsURL)
+  }
+
+  /// The main tab keeps the original queue transcript file and its durable
+  /// archive; every other tab saves beside the tab list.
+  func load(tabID: String) throws -> [QueueChatMessage]? {
+    guard tabID != QueueChatTab.mainID else { return try load(ticketID: nil) }
+    let url = try tabLocation(tabID)
+    guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+    return try JSONDecoder().decode([QueueChatMessage].self, from: Data(contentsOf: url))
+  }
+
+  func save(_ messages: [QueueChatMessage], tabID: String) async throws {
+    guard tabID != QueueChatTab.mainID else { return try await save(messages, ticketID: nil) }
+    try write(JSONEncoder().encode(Array(messages.suffix(500))), to: tabLocation(tabID))
+  }
+
+  func removeTab(_ tabID: String) throws {
+    guard tabID != QueueChatTab.mainID else { return }
+    let directory = try tabLocation(tabID).deletingLastPathComponent()
+    if FileManager.default.fileExists(atPath: directory.path) {
+      try FileManager.default.removeItem(at: directory)
+    }
+  }
+
+  private var tabsURL: URL { root.appendingPathComponent("qchat").appendingPathComponent("tabs.json") }
+
+  private func tabLocation(_ tabID: String) throws -> URL {
+    guard tabID.range(of: "^[A-Za-z0-9_-]{1,40}$", options: .regularExpression) != nil else {
+      throw CocoaError(.fileWriteInvalidFileName)
+    }
+    return root.appendingPathComponent("qchat").appendingPathComponent("tabs")
+      .appendingPathComponent(tabID).appendingPathComponent("conversation.json")
+  }
+
   private func write(_ data: Data, to url: URL) throws {
     try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
       withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])

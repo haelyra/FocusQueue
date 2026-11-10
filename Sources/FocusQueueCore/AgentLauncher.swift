@@ -576,6 +576,17 @@ public actor TaskAgentLauncher {
     return .direct(.init(paneID: completionPane, socketPath: connection.configuration.socketPath))
   }
 
+  /// Closes only the terminal windows viewing the agent's tmux session; the
+  /// session and its provider keep running. Returns the number of attached
+  /// clients detached, so callers can report a window that was already closed.
+  /// Direct WezTerm panes have no separate window to close: the pane is the
+  /// conversation, so only closeRuntime applies to them.
+  public func detachWindowClients(subtask: TaskSubtask) async throws -> Int {
+    guard let tmux = subtask.tmux else { return 0 }
+    return try await TmuxController(runner: runner, serverName: tmuxServerName)
+      .detachClients(for: tmux)
+  }
+
   /// Close only a verified runtime; a reused terminal identity is never sufficient.
   public func closeRuntime(subtask: TaskSubtask, configuration: WezTermConfiguration) async throws {
     if let tmux = subtask.tmux {

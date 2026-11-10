@@ -244,6 +244,24 @@ public actor TmuxController {
     return Set(result.standardOutput.split(separator: "\n").map(String.init).filter { $0.hasPrefix("/dev/") })
   }
 
+  /// Detaches every client viewing the session, which closes the terminal
+  /// windows Focus Queue opened for it without touching the session: each
+  /// window only ran an attach client, and Terminal's launch watcher, Ghostty,
+  /// and WezTerm each close their window once that client exits. Returns the
+  /// number of clients found, so a stale "open" window (zero) is a report, not
+  /// an error.
+  @discardableResult
+  public func detachClients(for reference: TmuxSessionReference) async throws -> Int {
+    _ = try await verify(reference)
+    let clients = try await clientTTYs(for: reference)
+    guard !clients.isEmpty else { return 0 }
+    let result = try await run(reference.executable, ["detach-client", "-s", "=\(reference.name)"])
+    guard result.succeeded else {
+      throw TmuxError.unavailable("Could not close the agent's terminal window.")
+    }
+    return clients.count
+  }
+
   public func workingDirectory(for reference: TmuxSessionReference) async throws -> String {
     _ = try await verify(reference)
     let result = try await run(reference.executable, [

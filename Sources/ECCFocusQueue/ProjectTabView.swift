@@ -42,7 +42,6 @@ struct ProjectTabView: View {
       if let process = model.developmentProcess {
         phaseStepper(process)
         stewardLine(process, projectID: project.id)
-        if let ahead = model.developmentTasksAhead { aheadNotice(ahead.phase, taskIDs: ahead.taskIDs) }
         VStack(alignment: .leading, spacing: 6) {
           ForEach(process.currentSteps) { step in
             stepRow(step, status: process.status(of: step), process: process)
@@ -138,24 +137,6 @@ struct ProjectTabView: View {
     }
   }
 
-  /// The tracker is behind the work: open tasks serve a later phase's steps.
-  private func aheadNotice(_ phase: DevelopmentPhase, taskIDs: [String]) -> some View {
-    VStack(alignment: .leading, spacing: 5) {
-      HStack(alignment: .firstTextBaseline, spacing: 6) {
-        Image(systemName: "forward.end").foregroundStyle(Color.accentColor).font(.system(size: 10))
-        Text("\(taskIDs.count) open task\(taskIDs.count == 1 ? " is" : "s are") \(phase.title) work.")
-          .font(.caption.weight(.semibold))
-        Spacer(minLength: 4)
-        Button("Move to \(phase.title)") { model.setDevelopmentPhase(phase) }
-          .buttonStyle(.bordered).controlSize(.mini)
-          .help("Advance the tracker; steps you have not accepted stay as they are")
-      }
-      linkedTasks(taskIDs)
-    }
-    .padding(8)
-    .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-  }
-
   private func stewardCaption(_ run: DevelopmentStewardRun?, running: Bool) -> String {
     if running { return "Reviewing new tasks and files…" }
     guard let run else { return "Updates itself from task status and project files." }
@@ -218,11 +199,12 @@ struct ProjectTabView: View {
     }
   }
 
-  /// One clickable chip per step document: opens the file in the document
+  /// One clickable chip per step document, stacked one per line so each file
+  /// is easy to scan and find: opens the file in the document
   /// viewer, where the review toggle checks it off. Green once reviewed,
   /// accent while awaiting review, dimmed until the file exists.
   private func artifactChips(_ step: DevelopmentStep, state: DevelopmentStepState?) -> some View {
-    HStack(spacing: 6) {
+    VStack(alignment: .leading, spacing: 4) {
       ForEach(step.artifacts, id: \.self) { artifact in
         let checked = state?.checkedArtifacts.contains(artifact) ?? false
         let url = model.developmentArtifactURL(artifact)
@@ -354,31 +336,6 @@ struct ProjectTabView: View {
     lines += status.lint.prefix(6).map { "Lint: \($0.text)" }
     if status.lint.count > 6 { lines.append("… \(status.lint.count - 6) more lint warnings") }
     return lines.joined(separator: "\n")
-  }
-
-  /// Task IDs that serve a step; each opens its plan in split view.
-  private func linkedTasks(_ ids: [String]) -> some View {
-    HStack(spacing: 4) {
-      ForEach(ids.prefix(6), id: \.self) { id in
-        let ticket = model.developmentTicket(id)
-        Button {
-          if let ticket { model.openPlan(for: ticket) }
-        } label: {
-          Text(id)
-            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-            .padding(.horizontal, 6).padding(.vertical, 2)
-            .background(Color.primary.opacity(ticket?.isOpen == false ? 0.04 : 0.08), in: Capsule())
-            .foregroundStyle(ticket?.isOpen == false ? Color.secondary : Color.accentColor)
-        }
-        .buttonStyle(.plain)
-        .disabled(ticket == nil)
-        .help(ticket.map { "\($0.title) (\($0.status)). Opens its plan." } ?? id)
-        .accessibilityLabel("Open task \(id)")
-      }
-      if ids.count > 6 {
-        Text("+\(ids.count - 6)").font(.caption2).foregroundStyle(.secondary)
-      }
-    }
   }
 
   // MARK: - Modules

@@ -2897,17 +2897,6 @@ final class QueueViewModel {
     return document.tickets.map(DevelopmentTicket.init)
   }
 
-  /// Open tasks the steward placed in a later phase than the selected project's
-  /// tracker; the Project tab offers the phase move, it never happens on its own.
-  var developmentTasksAhead: (phase: DevelopmentPhase, taskIDs: [String])? {
-    developmentProcess?.tasksAhead(tickets: dashboard.tickets.map(DevelopmentTicket.init))
-  }
-
-  /// The selected project's dashboard ticket for a linked task ID, if any.
-  func developmentTicket(_ taskID: String) -> DashboardTicket? {
-    dashboard.tickets.first { $0.id.caseInsensitiveCompare(taskID) == .orderedSame }
-  }
-
   /// Settings shows any project, not just the selected one; these keyed
   /// accessors keep that row independent of the Project tab's published state.
   func developmentProcessEnabled(for projectID: String) -> Bool {

@@ -277,7 +277,11 @@ struct SideDocumentPane: View {
                               ? "Save this draft, replace the live contract with it, and sign it off"
                               : "Save and sign off: the next launch or chat turn gets this version")
                 }
-                if document.isFileURL, store.loadedText(for: document) != nil {
+                if document.isFileURL, queue.isBundledGuideline(document) {
+                    Label("Bundled · read-only", systemImage: "lock")
+                        .font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                        .help("A bundled planning guideline. Owner edits and sign-off for guidelines are not built yet.")
+                } else if document.isFileURL, store.loadedText(for: document) != nil {
                     Button {
                         if editSession != nil { store.discardEdit(document) }
                         else { store.beginEditing(document) }

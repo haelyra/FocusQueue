@@ -2650,16 +2650,18 @@ final class QueueViewModel {
     // Contracts are checked off by signing them; see `developmentContractControl`.
     guard AgentContractRole(fileName: document.lastPathComponent) == nil,
           case .project(let projectID) = documentViewerScope,
-          let step = DevelopmentProcessCatalog.step(forArtifact: document.lastPathComponent),
+          let process = try? developmentProcessStore.load(projectID: projectID), process.enabled,
+          // A project may keep a catalog document under its own name (`artifactNames`).
+          let artifact = process.catalogArtifact(forFile: document.lastPathComponent),
+          let step = DevelopmentProcessCatalog.step(
+            forArtifact: artifact, includingGuidelineArtifacts: process.usesPlanningGuidelines),
           let artifactURL = try? developmentProcessStore.artifactURL(
-            projectID: projectID, artifact: document.lastPathComponent),
-          artifactURL.standardizedFileURL == document.standardizedFileURL,
-          let process = try? developmentProcessStore.load(projectID: projectID),
-          process.enabled
+            projectID: projectID, artifact: artifact, process: process),
+          artifactURL.standardizedFileURL == document.standardizedFileURL
     else { return nil }
     return DevelopmentArtifactReview(projectID: projectID, stepID: step.id, stepTitle: step.title,
-      artifact: document.lastPathComponent,
-      checked: process.steps[step.id]?.checkedArtifacts.contains(document.lastPathComponent) ?? false)
+      artifact: artifact,
+      checked: process.steps[step.id]?.checkedArtifacts.contains(artifact) ?? false)
   }
 
   /// The document check-off in the viewer; auto-completes the step once every
@@ -2678,7 +2680,39 @@ final class QueueViewModel {
   /// Where a step artifact of the selected project lives, beside its plan.
   func developmentArtifactURL(_ artifact: String) -> URL? {
     guard let projectID = selectedProject?.id else { return nil }
-    return try? developmentProcessStore.artifactURL(projectID: projectID, artifact: artifact)
+    return try? developmentProcessStore.artifactURL(projectID: projectID, artifact: artifact,
+                                                    process: developmentProcess)
+  }
+
+  // MARK: - Planning guidelines (experimental)
+
+  /// Opens a bundled planning guideline, installed read-only under the support folder.
+  func openDevelopmentGuideline(_ name: String) {
+    guard let projectID = selectedProject?.id else { return }
+    do {
+      openDocumentViewer(try DevelopmentGuidelines.url(name, root: paths.supportDirectory), scope: .project(projectID))
+    } catch {
+      developmentProcessError = "Planning guideline: \(error.localizedDescription)"
+    }
+  }
+
+  /// Bundled guidelines are read-only: owner overrides and sign-off are not built yet.
+  func isBundledGuideline(_ url: URL) -> Bool {
+    DevelopmentGuidelines.isInstalledGuideline(url, root: paths.supportDirectory)
+  }
+
+  func planningGuidelinesEnabled(for projectID: String) -> Bool {
+    (try? developmentProcessStore.load(projectID: projectID))??.usesPlanningGuidelines ?? false
+  }
+
+  func setPlanningGuidelinesEnabled(_ enabled: Bool, for projectID: String) {
+    do {
+      let updated = try developmentProcessStore.setPlanningGuidelines(enabled, projectID: projectID)
+      if projectID == selectedProject?.id { developmentProcess = updated.enabled ? updated : nil }
+      developmentProcessError = nil
+    } catch {
+      developmentProcessError = error.localizedDescription
+    }
   }
 
   // MARK: - Agent contracts

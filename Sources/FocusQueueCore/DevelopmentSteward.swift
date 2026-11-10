@@ -169,7 +169,8 @@ public enum DevelopmentSteward {
             "Current-phase steps (id | status | title: deliverable | expected files):",
         ]
         for step in process.currentSteps {
-            let artifacts = step.artifacts.isEmpty ? "-" : step.artifacts.joined(separator: ", ")
+            let files = process.artifacts(of: step).map(process.fileName(forArtifact:))
+            let artifacts = files.isEmpty ? "-" : files.joined(separator: ", ")
             lines.append("\(step.id) | \(process.status(of: step).rawValue) | \(step.title): \(step.summary) | \(artifacts)")
         }
         lines.append("Other phases' steps (id | phase | title), for tasks that belong to another phase:")

@@ -470,6 +470,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
         lines += scopedDataLines(subtask: subtask)
         lines.append("Read relevant saved facts before acting.")
         lines += developmentProcessLines()
+        lines += planningGuidelineLines()
         lines.append(artifactInstruction)
         lines.append("Register with `focus-queue-session attach`, then report with `focus-queue-session progress|complete`. Rules: `focus-queue-session rules`.")
         return lines.joined(separator: "\n")
@@ -493,6 +494,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
             lines.append("About the project: \(project)")
         }
         lines += developmentProcessLines()
+        lines += planningGuidelineLines()
         lines += scopedDataLines(includeTask: false, subtask: subtask)
         if let plan = Self.inlineDocument(atPath: planPath, limit: 4_000, prompt: trimmed ?? "") {
             lines += ["Task plan (\(planPath)):", plan]
@@ -539,6 +541,21 @@ public struct TaskContext: Codable, Equatable, Sendable {
             }
         }
         return ["Development process (\(focus)): \(DevelopmentProcessCatalog.brief(for: phase))"]
+    }
+
+    /// One pointer line for a task linked to a Planning step of a project that uses
+    /// the experimental planning guidelines: which guideline governs which file.
+    /// The guideline text stays on disk, never in the brief.
+    public func planningGuidelineLines() -> [String] {
+        guard let process = developmentProcessState(), process.usesPlanningGuidelines,
+              let link = process.links[ticketID.uppercased()], link.phase == .planning,
+              let stepID = link.step, let step = DevelopmentProcessCatalog.step(id: stepID, in: .planning)
+        else { return [] }
+        let targets = process.guidelineTargets(of: step, moduleID: link.moduleID)
+        let root = contextDirectory.deletingLastPathComponent().deletingLastPathComponent()
+        guard !targets.isEmpty, let directory = try? DevelopmentGuidelines.install(root: root) else { return [] }
+        let parts = targets.map { "\(directory.appendingPathComponent($0.guideline).path) for \($0.file)" }
+        return ["Follow " + parts.joined(separator: " and ") + "."]
     }
 
     /// The process state for this task's project, or nil when the project has not

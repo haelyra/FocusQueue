@@ -524,9 +524,9 @@ public struct AgentContractGenerator: Sendable {
         let plan = directory.appendingPathComponent("plan.md")
         var sources = [plan]
         sources += DevelopmentPhase.allCases.flatMap { DevelopmentProcessCatalog.steps(in: $0) }
-            .flatMap(\.artifacts)
+            .flatMap { process?.artifacts(of: $0) ?? $0.artifacts }
             .filter { AgentContractRole(fileName: $0) == nil }
-            .map { directory.appendingPathComponent($0) }
+            .map { directory.appendingPathComponent(process?.fileName(forArtifact: $0) ?? $0) }
         sources = sources.filter { FileManager.default.fileExists(atPath: $0.path) }
         var docs: [String] = []
         // Repository documents the plan and step artifacts link to lead: the plan

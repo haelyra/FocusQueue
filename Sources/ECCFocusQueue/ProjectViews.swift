@@ -297,6 +297,7 @@ struct DevelopmentProcessSettingsRow: View {
     let model: QueueViewModel
     let projectID: String
     @State private var enabled = false
+    @State private var guidelines = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -309,9 +310,26 @@ struct DevelopmentProcessSettingsRow: View {
             Text("Track planning, scaffolding, module implementation, QA, and release for this project. The placement model keeps it current in the background; agents get one line naming their step.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Toggle("Planning guidelines", isOn: Binding(
+                    get: { guidelines },
+                    set: { value in
+                        guidelines = value
+                        model.setPlanningGuidelinesEnabled(value, for: projectID)
+                    }))
+                Text("Experimental").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 7).padding(.vertical, 2)
+                    .background(.primary.opacity(0.07), in: Capsule())
+            }
+            .padding(.top, 4)
+            .disabled(!enabled)
+            Text("Shows each Planning step's guideline (format, prompt, self-check, review checklist), adds technical-design.md to the PRD step, and points agents linked to a Planning step at the guideline in one line.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .onChange(of: projectID, initial: true) {
             enabled = model.developmentProcessEnabled(for: projectID)
+            guidelines = model.planningGuidelinesEnabled(for: projectID)
         }
     }
 }

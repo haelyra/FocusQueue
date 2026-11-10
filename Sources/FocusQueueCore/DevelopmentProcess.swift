@@ -61,9 +61,15 @@ public struct DevelopmentStep: Equatable, Sendable, Identifiable {
     public let summary: String
     /// Files the step produces, relative to the project directory.
     public let artifacts: [String]
+    /// The planning guideline for the step (experimental; see `DevelopmentGuidelines`).
+    public let guideline: String?
+    /// Documents the step produces only while the project uses planning guidelines.
+    public let guidelineArtifacts: [String]
 
-    public init(id: String, title: String, summary: String, artifacts: [String] = []) {
+    public init(id: String, title: String, summary: String, artifacts: [String] = [],
+                guideline: String? = nil, guidelineArtifacts: [String] = []) {
         self.id = id; self.title = title; self.summary = summary; self.artifacts = artifacts
+        self.guideline = guideline; self.guidelineArtifacts = guidelineArtifacts
     }
 }
 
@@ -188,6 +194,12 @@ public struct DevelopmentProcess: Codable, Equatable, Sendable {
     /// Role (`engineering`, `orchestrator`) → the owner's sign-off of that agent
     /// contract. Only signed text reaches agents; see `AgentContract`.
     public var contracts: [String: AgentContractSignoff]
+    /// Experimental planning guidelines (KAI-016). Nil is off, and keeps the file,
+    /// the tab, and briefs exactly as before the feature existed.
+    public var planningGuidelines: Bool?
+    /// Catalog document → this project's own file name, for projects whose
+    /// documents predate the catalog names. Applies only with guidelines on.
+    public var artifactNames: [String: String]?
     public var updatedAt: Date
 
     public init(enabled: Bool = true, currentPhase: DevelopmentPhase = .planning,
@@ -202,7 +214,8 @@ public struct DevelopmentProcess: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, enabled, currentPhase, steps, modules, links, steward, contracts, updatedAt
+        case schemaVersion, enabled, currentPhase, steps, modules, links, steward, contracts
+        case planningGuidelines, artifactNames, updatedAt
     }
 
     /// Every field is optional on read, so files from earlier builds and partial
@@ -217,6 +230,8 @@ public struct DevelopmentProcess: Codable, Equatable, Sendable {
         links = try container.decodeIfPresent([String: DevelopmentTaskLink].self, forKey: .links) ?? [:]
         steward = try container.decodeIfPresent(DevelopmentStewardRun.self, forKey: .steward)
         contracts = try container.decodeIfPresent([String: AgentContractSignoff].self, forKey: .contracts) ?? [:]
+        planningGuidelines = try container.decodeIfPresent(Bool.self, forKey: .planningGuidelines)
+        artifactNames = try container.decodeIfPresent([String: String].self, forKey: .artifactNames)
         updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
     }
 
@@ -323,18 +338,20 @@ public enum DevelopmentProcessCatalog {
             return [
                 DevelopmentStep(id: "concept", title: "Concept declaration",
                     summary: "Functional criteria and main idea; the AI asks clarifying questions.",
-                    artifacts: ["concept.md"]),
+                    artifacts: ["concept.md"], guideline: "concept-guideline.md"),
                 DevelopmentStep(id: "research", title: "Research & system design",
                     summary: "Evidence compendium, then an explicit system design with a flow chart.",
-                    artifacts: ["research.md", "design.md"]),
+                    artifacts: ["research.md", "design.md"], guideline: "research-guideline.md"),
                 DevelopmentStep(id: "prd", title: "Technical design & PRD",
                     summary: "Solidified technical and design choices, linked docs, and a flow chart.",
-                    artifacts: ["prd.md"]),
+                    artifacts: ["prd.md"], guideline: "prd-guideline.md",
+                    guidelineArtifacts: ["technical-design.md"]),
                 DevelopmentStep(id: "modules", title: "Module design files",
-                    summary: "One file per feature: purpose, I/O endpoints and schemas, success criteria, debug logs. Accept each module's success criteria in order."),
+                    summary: "One file per feature: purpose, I/O endpoints and schemas, success criteria, debug logs. Accept each module's success criteria in order.",
+                    guideline: "module-guideline.md"),
                 DevelopmentStep(id: "devplan", title: "Development plan",
                     summary: "Rough outline with a dependency tree; the human creates and checks off tasks.",
-                    artifacts: ["devplan.md"]),
+                    artifacts: ["devplan.md"], guideline: "devplan-guideline.md"),
                 DevelopmentStep(id: "contract", title: "Agent contract & orchestration",
                     summary: "Project system prompt for engineering agents plus orchestrator guidelines; the human reads both.",
                     artifacts: ["agent-contract.md", "orchestration.md"]),
@@ -384,8 +401,10 @@ public enum DevelopmentProcessCatalog {
 
     /// The catalog step that produces a file name, across all phases, so the
     /// document viewer can offer a review toggle even after the phase moved on.
-    public static func step(forArtifact fileName: String) -> DevelopmentStep? {
-        DevelopmentPhase.allCases.lazy.flatMap { steps(in: $0) }.first { $0.artifacts.contains(fileName) }
+    public static func step(forArtifact fileName: String, includingGuidelineArtifacts: Bool = false) -> DevelopmentStep? {
+        DevelopmentPhase.allCases.lazy.flatMap { steps(in: $0) }.first {
+            $0.artifacts.contains(fileName) || (includingGuidelineArtifacts && $0.guidelineArtifacts.contains(fileName))
+        }
     }
 
     /// Guidance injected into agent briefs while the phase runs. Concise, action-first.
@@ -530,21 +549,27 @@ public struct DevelopmentProcessStore: Sendable {
         try url(projectID: projectID).deletingLastPathComponent().appendingPathComponent(artifact)
     }
 
+    /// The project's file for a catalog document, through its `artifactNames` map.
+    public func artifactURL(projectID: String, artifact: String, process: DevelopmentProcess?) throws -> URL {
+        try artifactURL(projectID: projectID, artifact: process?.fileName(forArtifact: artifact) ?? artifact)
+    }
+
     /// A human document check-off from the Project tab's document viewer. When
     /// every artifact of the step exists on disk and is checked off, the step
     /// is marked done; acceptance and phase moves stay explicit human clicks.
     /// Unchecking never lowers the status: the marker is the user's control.
     public func setArtifactChecked(_ checked: Bool, stepID: String, artifact: String,
                                    projectID: String) throws -> DevelopmentProcess {
-        guard let step = DevelopmentProcessCatalog.step(forArtifact: artifact), step.id == stepID else {
-            throw DevelopmentProcessError.unknownStep(stepID)
-        }
-        let artifactExists = try FileManager.default.fileExists(
-            atPath: artifactURL(projectID: projectID, artifact: artifact).path)
-        if checked, !artifactExists {
-            throw DevelopmentProcessError.missingArtifact(artifact)
-        }
         return try mutate(projectID: projectID) { process in
+            guard let step = DevelopmentProcessCatalog.step(
+                    forArtifact: artifact, includingGuidelineArtifacts: process.usesPlanningGuidelines),
+                  step.id == stepID else {
+                throw DevelopmentProcessError.unknownStep(stepID)
+            }
+            let file = try artifactURL(projectID: projectID, artifact: artifact, process: process)
+            if checked, !FileManager.default.fileExists(atPath: file.path) {
+                throw DevelopmentProcessError.missingArtifact(process.fileName(forArtifact: artifact))
+            }
             if checked {
                 try checkOffArtifact(artifact, in: &process, projectID: projectID)
             } else {
@@ -560,16 +585,18 @@ public struct DevelopmentProcessStore: Sendable {
     /// step exists and is checked off, the step is marked done.
     func checkOffArtifact(_ artifact: String, in process: inout DevelopmentProcess,
                           projectID: String) throws {
-        guard let step = DevelopmentProcessCatalog.step(forArtifact: artifact) else {
+        guard let step = DevelopmentProcessCatalog.step(
+                forArtifact: artifact, includingGuidelineArtifacts: process.usesPlanningGuidelines) else {
             throw DevelopmentProcessError.unknownStep(artifact)
         }
         var state = process.steps[step.id] ?? DevelopmentStepState()
         if !state.checkedArtifacts.contains(artifact) { state.checkedArtifacts.append(artifact) }
         state.source = state.source ?? .human
-        let allChecked = step.artifacts.allSatisfy { state.checkedArtifacts.contains($0) }
+        let artifacts = process.artifacts(of: step)
+        let allChecked = artifacts.allSatisfy { state.checkedArtifacts.contains($0) }
         if allChecked, !state.status.isComplete,
-           step.artifacts.allSatisfy({
-               (try? artifactURL(projectID: projectID, artifact: $0))
+           artifacts.allSatisfy({ [process] in
+               (try? artifactURL(projectID: projectID, artifact: $0, process: process))
                    .map { FileManager.default.fileExists(atPath: $0.path) } ?? false
            }) {
             state.status = .done

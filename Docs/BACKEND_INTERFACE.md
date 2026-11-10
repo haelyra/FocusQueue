@@ -241,6 +241,16 @@ The process updates itself outside agent sessions:
 2. **Steward (placement model).** When a project's *signature* changes (a new unlinked task, a new Markdown file in the project folder or `modules/`, a module, or the phase), the app runs `focus_queue_placement.py develop` once (at most every 120 s; failures retry after 30 min). The prompt carries the step catalog, unlinked tasks, and file headings. The reply proposes links and step evidence, which the app validates and applies. It uses the placement provider, model, and effort, and Settings › Placement › model off disables it. Usage is recorded under the `development` source.
 3. **Agents** get at most one brief line naming their own step's phase rule (`Development process (Phase 0, step Scaffolding & environment): …`), or none when the task is linked outside the process.
 
+**`development <PROJECT-ID> guidelines on|off · artifact <catalog-file> <project-file|default> · module add <name> [file]`** — experimental planning guidelines (KAI-016 → FOC-117)
+Off by default per project (`planningGuidelines` in `development.json`, also the *Planning guidelines* toggle under *Development process* in Settings, badged Experimental). Off, nothing changes: the file gains no keys, the PRD step lists only `prd.md`, briefs gain no line, and `artifact`/`module` refuse.
+- **Bundle.** `Config/development-guidelines/` holds the README (flow, step table, shared conventions) and seven guidelines: concept, research, design, prd, technical design, module, devplan. All eight are compiled in (`DevelopmentGuidelineFiles`, drift-tested) and install read-only to `<support>/development-guidelines/`. `DevelopmentGuidelines.prompt(_:)` returns a guideline's Prompt block with `{{CONVENTIONS}}` filled.
+- **Catalog.** `DevelopmentStep.guideline` names each Planning step's guideline (`contract` keeps the contract generator). With guidelines on, the `prd` step also expects `technical-design.md`.
+- **Tab.** Each Planning step row gains Guideline chips that open the installed guideline, read-only, in the document viewer.
+- **Names.** `artifact <catalog-file> <project-file>` records `artifactNames` (for example `technical-design.md` → `technical-design-master-plan.md`); chips, the viewer's review toggle, check-off, and the steward resolve through it. `default` removes the mapping.
+- **Brief.** A task linked to a Planning step gets one line, `Follow <support>/development-guidelines/<guideline> for <file>.`, naming both files for two-document steps and the module's file (or `modules/<id>-<slug>.md`) for `modules`. The guideline text is never inlined.
+- **Modules.** `module add` registers a module with ID `m<N>` and file `modules/<id>-<slug>.md` unless given; `show` lists `modules`.
+- **Not built yet:** per-file Generate/Regenerate, owner overrides with sign-off (`user/development-guidelines/`), and lint of generated files.
+
 **`contract show <PROJECT-ID> <engineering|orchestrator> · contract propose <PROJECT-ID> <role> <file.md> · contract generate <PROJECT-ID>`**
 Role-scoped agent contracts (FOC-117), beside the project plan: `agent-contract.md` (engineering agents) and `orchestration.md` (agents that plan, assign, review, and close tasks). Only text the owner signed off reaches agents.
 - **Sign-off.** `development.json` keeps `contracts.<role> = {sha256, signedAt, signedBy, text}`. The Project tab's *Agent contracts* row (every phase) opens each file in the document viewer, where *Sign off* signs exactly the text shown, and any save in the viewer (*Save & sign off*) signs the saved text. Signing checks the document off in the Planning `contract` step. A file with no sign-off is `unsigned` and never injected.
@@ -482,6 +492,8 @@ focus-queue-session task status   <TASK-ID> <status>     # ⚠ unvalidated
 # Development process (projects that enable it)
 focus-queue-session development <PROJECT-ID> show|sync
 focus-queue-session development <PROJECT-ID> link <TASK-ID> <step-id|none> [module]
+focus-queue-session development <PROJECT-ID> guidelines on|off              # experimental planning guidelines
+focus-queue-session development <PROJECT-ID> module add <name> [file]       # needs guidelines on
 focus-queue-session contract show <PROJECT-ID> engineering|orchestrator   # what that role receives
 focus-queue-session contract propose <PROJECT-ID> <role> <file.md>       # draft + owner attention
 focus-queue-session contract generate <PROJECT-ID>                       # drafts both; owner signs off in the app

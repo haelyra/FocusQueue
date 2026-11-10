@@ -149,11 +149,11 @@ struct ProjectTabView: View {
   private func stepRow(_ step: DevelopmentStep, status: DevelopmentStepStatus,
                        process: DevelopmentProcess) -> some View {
     let state = process.steps[step.id]
-    return stepRowContent(step, status: status, state: state)
+    return stepRowContent(step, status: status, state: state, process: process)
   }
 
   private func stepRowContent(_ step: DevelopmentStep, status: DevelopmentStepStatus,
-                              state: DevelopmentStepState?) -> some View {
+                              state: DevelopmentStepState?, process: DevelopmentProcess) -> some View {
     HStack(alignment: .top, spacing: 8) {
       Button {
         model.setDevelopmentStepStatus(status.completeAdvance, stepID: step.id)
@@ -181,8 +181,11 @@ struct ProjectTabView: View {
         if step.id == "contract" {
           Text("Generate, edit, and sign off both in Agent contracts below.")
             .font(.caption2).foregroundStyle(.secondary)
-        } else if !step.artifacts.isEmpty {
-          artifactChips(step, state: state)
+        } else if !process.artifacts(of: step).isEmpty {
+          artifactChips(step, state: state, process: process)
+        }
+        if process.usesPlanningGuidelines, !step.guidelines().isEmpty {
+          guidelineChips(step)
         }
         if let note = state?.note, !note.isEmpty {
           Label(note, systemImage: state?.isAutomatic == true ? "wand.and.stars" : "person")
@@ -203,11 +206,13 @@ struct ProjectTabView: View {
   /// is easy to scan and find: opens the file in the document
   /// viewer, where the review toggle checks it off. Green once reviewed,
   /// accent while awaiting review, dimmed until the file exists.
-  private func artifactChips(_ step: DevelopmentStep, state: DevelopmentStepState?) -> some View {
+  private func artifactChips(_ step: DevelopmentStep, state: DevelopmentStepState?,
+                             process: DevelopmentProcess) -> some View {
     VStack(alignment: .leading, spacing: 4) {
-      ForEach(step.artifacts, id: \.self) { artifact in
+      ForEach(process.artifacts(of: step), id: \.self) { artifact in
         let checked = state?.checkedArtifacts.contains(artifact) ?? false
         let url = model.developmentArtifactURL(artifact)
+        let file = process.fileName(forArtifact: artifact)
         let exists = url.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
         Button {
           if let url, exists, let projectID = project?.id {
@@ -224,10 +229,36 @@ struct ProjectTabView: View {
         }
         .buttonStyle(.plain)
         .disabled(!exists)
-        .help(checked ? "Reviewed. Click to open."
+        .help((checked ? "Reviewed. Click to open."
               : exists ? "Click to open, then mark it reviewed in the viewer."
-              : "Not created yet.")
+              : "Not created yet.") + (file == artifact ? "" : " This project keeps it as \(file)."))
         .accessibilityLabel("\(artifact), \(checked ? "reviewed" : exists ? "not reviewed" : "missing")")
+      }
+    }
+  }
+
+  /// Experimental: the planning guideline for each of the step's files, opened
+  /// read-only in the document viewer. Shown only for projects that opt in.
+  private func guidelineChips(_ step: DevelopmentStep) -> some View {
+    let names = step.guidelines()
+    return HStack(spacing: 6) {
+      ForEach(names, id: \.self) { name in
+        Button {
+          model.openDevelopmentGuideline(name)
+        } label: {
+          Label(names.count == 1 ? "Guideline"
+                  : name.replacingOccurrences(of: "-guideline.md", with: "").replacingOccurrences(of: "-", with: " ")
+                    + " guideline",
+                systemImage: "book.closed")
+            .labelStyle(.titleAndIcon)
+            .font(.system(size: 10, weight: .semibold))
+            .padding(.horizontal, 6).padding(.vertical, 3)
+            .background(Color.purple.opacity(0.10), in: Capsule())
+            .foregroundStyle(Color.purple)
+        }
+        .buttonStyle(.plain)
+        .help("Open \(name): the file's format, generator prompt, self-check, and your review checklist. Experimental.")
+        .accessibilityLabel("Open \(name)")
       }
     }
   }

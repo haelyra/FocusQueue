@@ -196,6 +196,9 @@ public struct DevelopmentProcess: Codable, Equatable, Sendable {
     public var modules: [DevelopmentModule]
     /// Task ID (uppercase) → the step it serves.
     public var links: [String: DevelopmentTaskLink]
+    /// Task ID (uppercase) → the task IDs it waits on. Human-set; drives the
+    /// phase view's dependency order and the dependency line on each card.
+    public var dependencies: [String: [String]]
     public var steward: DevelopmentStewardRun?
     /// Role (`engineering`, `orchestrator`) → the owner's sign-off of that agent
     /// contract. Only signed text reaches agents; see `AgentContract`.
@@ -210,17 +213,19 @@ public struct DevelopmentProcess: Codable, Equatable, Sendable {
 
     public init(enabled: Bool = true, currentPhase: DevelopmentPhase = .planning,
                 steps: [String: DevelopmentStepState] = [:], modules: [DevelopmentModule] = [],
-                links: [String: DevelopmentTaskLink] = [:], steward: DevelopmentStewardRun? = nil,
+                links: [String: DevelopmentTaskLink] = [:], dependencies: [String: [String]] = [:],
+                steward: DevelopmentStewardRun? = nil,
                 contracts: [String: AgentContractSignoff] = [:],
                 schemaVersion: Int = DevelopmentProcess.currentSchemaVersion, updatedAt: Date = Date()) {
         self.schemaVersion = schemaVersion; self.enabled = enabled
         self.currentPhase = currentPhase; self.steps = steps; self.modules = modules
-        self.links = links; self.steward = steward; self.contracts = contracts
+        self.links = links; self.dependencies = dependencies
+        self.steward = steward; self.contracts = contracts
         self.updatedAt = updatedAt
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, enabled, currentPhase, steps, modules, links, steward, contracts
+        case schemaVersion, enabled, currentPhase, steps, modules, links, dependencies, steward, contracts
         case planningGuidelines, artifactNames, updatedAt
     }
 
@@ -234,6 +239,7 @@ public struct DevelopmentProcess: Codable, Equatable, Sendable {
         steps = try container.decodeIfPresent([String: DevelopmentStepState].self, forKey: .steps) ?? [:]
         modules = try container.decodeIfPresent([DevelopmentModule].self, forKey: .modules) ?? []
         links = try container.decodeIfPresent([String: DevelopmentTaskLink].self, forKey: .links) ?? [:]
+        dependencies = try container.decodeIfPresent([String: [String]].self, forKey: .dependencies) ?? [:]
         steward = try container.decodeIfPresent(DevelopmentStewardRun.self, forKey: .steward)
         contracts = try container.decodeIfPresent([String: AgentContractSignoff].self, forKey: .contracts) ?? [:]
         planningGuidelines = try container.decodeIfPresent(Bool.self, forKey: .planningGuidelines)
@@ -294,6 +300,52 @@ public struct DevelopmentProcess: Codable, Equatable, Sendable {
         links.filter { $0.value.moduleID == moduleID }.keys.sorted()
     }
 
+    /// The phase the queue groups a task under: its linked step's phase, or
+    /// nil when the task is unlinked or marked outside the process.
+    public func phase(ofTask taskID: String) -> DevelopmentPhase? {
+        guard let link = links[taskID.uppercased()], link.step != nil else { return nil }
+        return link.phase
+    }
+
+    /// The task IDs `taskID` waits on, in stored order.
+    public func prerequisites(of taskID: String) -> [String] {
+        dependencies[taskID.uppercased()] ?? []
+    }
+
+    /// Validated in-place edit behind `DevelopmentProcessStore.setDependencies`.
+    public mutating func setDependencies(taskID: String, prerequisites: [String]) throws {
+        let taskID = taskID.uppercased()
+        var unique: [String] = []
+        for raw in prerequisites {
+            let id = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            guard !id.isEmpty, !unique.contains(id) else { continue }
+            guard id != taskID else { throw DevelopmentProcessError.dependencyCycle([taskID, taskID]) }
+            unique.append(id)
+        }
+        var next = dependencies
+        if unique.isEmpty { next.removeValue(forKey: taskID) } else { next[taskID] = unique }
+        if let cycle = Self.cycle(in: next, from: taskID) {
+            throw DevelopmentProcessError.dependencyCycle(cycle)
+        }
+        dependencies = next
+    }
+
+    /// The first cycle reachable from `start`, as a closed path, or nil.
+    static func cycle(in graph: [String: [String]], from start: String) -> [String]? {
+        var path: [String] = []
+        var finished: Set<String> = []
+        func visit(_ node: String) -> [String]? {
+            if let index = path.firstIndex(of: node) { return Array(path[index...]) + [node] }
+            guard !finished.contains(node) else { return nil }
+            path.append(node)
+            for next in graph[node] ?? [] { if let found = visit(next) { return found } }
+            path.removeLast()
+            finished.insert(node)
+            return nil
+        }
+        return visit(start)
+    }
+
     /// Raises a current-phase step without ever lowering it or reaching `accepted`,
     /// which stays a human decision. A step a human reset to pending holds there.
     /// Returns whether anything changed.
@@ -320,6 +372,12 @@ public struct DevelopmentProcess: Codable, Equatable, Sendable {
         var changed = false
         for taskID in links.keys where byID[taskID] == nil {
             links.removeValue(forKey: taskID); changed = true
+        }
+        for (taskID, prerequisites) in dependencies {
+            let kept = byID[taskID] == nil ? [] : prerequisites.filter { byID[$0] != nil }
+            guard kept != prerequisites else { continue }
+            if kept.isEmpty { dependencies.removeValue(forKey: taskID) } else { dependencies[taskID] = kept }
+            changed = true
         }
         for step in currentSteps {
             let linked = linkedTaskIDs(step: step.id).compactMap { byID[$0] }
@@ -442,6 +500,8 @@ public enum DevelopmentProcessError: Error, Equatable {
     case unknownStep(String)
     /// A document cannot be checked off before it exists.
     case missingArtifact(String)
+    /// A dependency edit would make tasks wait on each other; the closed path.
+    case dependencyCycle([String])
 }
 
 extension DevelopmentProcessError: LocalizedError {
@@ -452,6 +512,10 @@ extension DevelopmentProcessError: LocalizedError {
         case .unknownModule(let id): "No module with id \(id)."
         case .unknownStep(let id): "No step with id \(id) in this phase."
         case .missingArtifact(let file): "\(file) does not exist yet; create the document before checking it off."
+        case .dependencyCycle(let path):
+            path.count == 2 && path[0] == path[1]
+                ? "\(path[0]) cannot depend on itself."
+                : "Dependencies would form a cycle: \(path.joined(separator: " → "))."
         }
     }
 }
@@ -653,6 +717,16 @@ public struct DevelopmentProcessStore: Sendable {
 
     public func unlink(taskID: String, projectID: String) throws -> DevelopmentProcess {
         try mutate(projectID: projectID) { $0.links.removeValue(forKey: taskID.uppercased()) }
+    }
+
+    /// A human dependency edit: `taskID` waits on `prerequisites`, replacing any
+    /// earlier list. An empty list clears it. Self-references and cycles throw,
+    /// so the phase view always has a valid order.
+    public func setDependencies(taskID: String, prerequisites: [String],
+                                projectID: String) throws -> DevelopmentProcess {
+        try mutate(projectID: projectID) { process in
+            try process.setDependencies(taskID: taskID, prerequisites: prerequisites)
+        }
     }
 
     /// Sequential acceptance: a module's criteria can be accepted only after every

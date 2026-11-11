@@ -129,7 +129,9 @@ public struct QueueOrderStore: Sendable {
         now: Date = Date()
     ) -> [DashboardTicket] {
         switch mode {
-        case .manual:
+        case .manual, .phase:
+            // Phase order starts from the priority baseline; `prioritizingPins`
+            // with a process then groups by phase and dependency.
             return tickets
         case .recentActivity:
             // Ticket edits are excluded: dashboard syncs touch updatedAt without
@@ -181,7 +183,104 @@ public struct QueueOrderStore: Sendable {
     /// Pinned tasks form a durable top tier ordered by the newest pin first.
     /// The automatic order remains the stable tie-breaker and controls all
     /// unpinned tasks.
+    /// With `phases`, pins lead only within their phase: the phase and
+    /// dependency order wins over a pin.
     public static func prioritizingPins(
+        _ tickets: [DashboardTicket], pinnedAtByTicketID: [String: Date],
+        phases: DevelopmentProcess? = nil
+    ) -> [DashboardTicket] {
+        let pinned = pinningFirst(tickets, pinnedAtByTicketID: pinnedAtByTicketID)
+        guard let phases else { return pinned }
+        return phaseOrdered(pinned, process: phases)
+    }
+
+    /// The queue's phase groups, in display order. Tasks not yet linked by the
+    /// steward come after the phases; tasks marked outside the process come last.
+    public enum PhaseGroup: Hashable, Comparable, Sendable {
+        case phase(DevelopmentPhase)
+        case unphased
+        case outsideProcess
+
+        public init(taskID: String, process: DevelopmentProcess) {
+            switch process.links[taskID.uppercased()] {
+            case .none: self = .unphased
+            case .some(let link) where link.step == nil: self = .outsideProcess
+            case .some(let link): self = .phase(link.phase)
+            }
+        }
+
+        var rank: Int {
+            switch self {
+            case .phase(let phase): DevelopmentPhase.allCases.firstIndex(of: phase) ?? 0
+            case .unphased: DevelopmentPhase.allCases.count
+            case .outsideProcess: DevelopmentPhase.allCases.count + 1
+            }
+        }
+
+        public static func < (left: Self, right: Self) -> Bool { left.rank < right.rank }
+
+        public var title: String {
+            switch self {
+            case .phase(let phase): phase.title
+            case .unphased: "No phase yet"
+            case .outsideProcess: "Outside the process"
+            }
+        }
+    }
+
+    /// Groups tasks by phase, then orders each phase so a task follows the
+    /// tasks it depends on. Ties keep the incoming order, so an order that
+    /// already satisfies both rules is returned unchanged; manual moves within
+    /// a phase therefore stick. Dependencies across phases or on tasks not in
+    /// the list never reorder anything. A cycle (only possible in a
+    /// hand-edited file) falls back to the incoming order for its members.
+    public static func phaseOrdered(
+        _ tickets: [DashboardTicket], process: DevelopmentProcess
+    ) -> [DashboardTicket] {
+        let groups = tickets.map { PhaseGroup(taskID: $0.id, process: process) }
+        let order = tickets.indices.sorted {
+            groups[$0] != groups[$1] ? groups[$0] < groups[$1] : $0 < $1
+        }
+        var result: [DashboardTicket] = []
+        var start = 0
+        while start < order.count {
+            var end = start
+            while end < order.count, groups[order[end]] == groups[order[start]] { end += 1 }
+            let members = Array(order[start..<end])
+            result += dependencyOrdered(members.map { tickets[$0] }, process: process)
+            start = end
+        }
+        return result
+    }
+
+    /// Kahn's algorithm, always taking the earliest ready task.
+    static func dependencyOrdered(
+        _ tickets: [DashboardTicket], process: DevelopmentProcess
+    ) -> [DashboardTicket] {
+        let indexByID = Dictionary(tickets.enumerated().map { ($0.element.id.uppercased(), $0.offset) },
+                                   uniquingKeysWith: { first, _ in first })
+        var waiting = Array(repeating: 0, count: tickets.count)
+        var dependents = Array(repeating: [Int](), count: tickets.count)
+        for (index, ticket) in tickets.enumerated() {
+            let prerequisites = Set(process.prerequisites(of: ticket.id).compactMap { indexByID[$0] })
+            for prerequisite in prerequisites where prerequisite != index {
+                waiting[index] += 1
+                dependents[prerequisite].append(index)
+            }
+        }
+        var emitted = Array(repeating: false, count: tickets.count)
+        var result: [DashboardTicket] = []
+        while result.count < tickets.count {
+            let next = tickets.indices.first { !emitted[$0] && waiting[$0] == 0 }
+                ?? tickets.indices.first { !emitted[$0] }!
+            emitted[next] = true
+            result.append(tickets[next])
+            for dependent in dependents[next] { waiting[dependent] -= 1 }
+        }
+        return result
+    }
+
+    private static func pinningFirst(
         _ tickets: [DashboardTicket], pinnedAtByTicketID: [String: Date]
     ) -> [DashboardTicket] {
         tickets.enumerated().sorted { left, right in
@@ -206,6 +305,7 @@ public struct QueueOrderStore: Sendable {
         deferredTicketIDs: [String],
         mode: QueueActivitySortMode,
         contexts: [TaskContext],
+        phases: DevelopmentProcess? = nil,
         now: Date = Date()
     ) -> [DashboardTicket] {
         let promptDates = Dictionary(contexts.compactMap { context in
@@ -226,7 +326,8 @@ public struct QueueOrderStore: Sendable {
             lastPromptAtByTicketID: promptDates,
             lastOutputAtByTicketID: outputDates,
             now: now)
-        return prioritizingPins(activity, pinnedAtByTicketID: pinnedDates)
+        return prioritizingPins(activity, pinnedAtByTicketID: pinnedDates,
+                                phases: mode == .phase ? phases : nil)
     }
 
     @discardableResult

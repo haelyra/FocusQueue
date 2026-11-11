@@ -331,7 +331,7 @@ struct QueueView: View {
         focusHeading(resultCount: search?.tickets.count)
           .walkthroughAnchor(.search)
         Menu {
-          ForEach(QueueActivitySortMode.allCases.filter { $0 != .manual }) { mode in
+          ForEach(model.availableQueueSortModes) { mode in
             Button { model.setQueueActivitySortMode(mode) } label: {
               if model.queueActivitySortMode == mode {
                 Label(mode.displayName, systemImage: "checkmark")
@@ -387,7 +387,7 @@ struct QueueView: View {
           }
         }
       } else {
-        ForEach(shownTickets) { ticket in TicketCard(ticket: ticket, model: model) }
+        QueueTicketList(tickets: shownTickets, previous: nil, model: model)
       }
     }
     .onChange(of: taskSearchIsFocused) { _, focused in
@@ -938,7 +938,7 @@ struct QueueView: View {
             .dropDestination(for: String.self) { ticketIDs, _ in
               moveTicketsToRest(ticketIDs)
             } isTargeted: { restSectionDropIsTargeted = $0 }
-            ForEach(remainingTickets) { ticket in TicketCard(ticket: ticket, model: model) }
+            QueueTicketList(tickets: remainingTickets, previous: focusTickets.last, model: model)
           }
         }
       }
@@ -2303,6 +2303,74 @@ private struct TerminalAppSetting: View {
   }
 }
 
+/// Open task cards. In phase order, a heading opens each phase and a short
+/// rail joins a card to the card above when it waits on that task.
+private struct QueueTicketList: View {
+  let tickets: [DashboardTicket]
+  /// The card shown just before this list, so a split list keeps one heading.
+  let previous: DashboardTicket?
+  let model: QueueViewModel
+  @Environment(\.queueAccentStyle) private var accentStyle
+
+  var body: some View {
+    let phases = model.queueActivitySortMode == .phase ? model.queuePhaseProcess : nil
+    ForEach(Array(tickets.enumerated()), id: \.element.id) { index, ticket in
+      let above = index > 0 ? tickets[index - 1] : previous
+      let group = phases.map { QueueOrderStore.PhaseGroup(taskID: ticket.id, process: $0) }
+      let groupAbove = phases.flatMap { process in above.map { QueueOrderStore.PhaseGroup(taskID: $0.id, process: process) } }
+      if let group, group != groupAbove {
+        PhaseHeading(title: group.title, count: phaseCount(group, phases: phases))
+      }
+      TicketCard(ticket: ticket, model: model)
+        .overlay(alignment: .topLeading) {
+          if let phases, let above, group == groupAbove,
+             phases.prerequisites(of: ticket.id).contains(above.id.uppercased()) {
+            DependencyRail(color: QueueAccentPalette.color(.info, style: accentStyle))
+              .padding(.leading, 31).offset(y: -15)
+              .accessibilityLabel("\(ticket.id) waits on \(above.id)")
+          }
+        }
+    }
+  }
+
+  private func phaseCount(_ group: QueueOrderStore.PhaseGroup, phases: DevelopmentProcess?) -> Int {
+    guard let phases else { return 0 }
+    return model.openTickets.filter { QueueOrderStore.PhaseGroup(taskID: $0.id, process: phases) == group }.count
+  }
+}
+
+private struct PhaseHeading: View {
+  let title: String
+  let count: Int
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Text(title.uppercased()).font(.system(size: 10, weight: .bold)).tracking(0.7)
+      Rectangle().fill(.quaternary).frame(height: 1)
+      Text("\(count)").font(.system(size: 10, weight: .semibold).monospacedDigit())
+    }
+    .foregroundStyle(.secondary)
+    .padding(.horizontal, 6).padding(.top, 4)
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.isHeader)
+  }
+}
+
+/// Bridges the 10-point gap between two cards, under the completion
+/// circles: the lower task waits on the upper one.
+private struct DependencyRail: View {
+  let color: Color
+
+  var body: some View {
+    VStack(spacing: 0) {
+      Rectangle().fill(color).frame(width: 2, height: 15)
+      Image(systemName: "arrowtriangle.down.fill").font(.system(size: 8)).foregroundStyle(color)
+    }
+    .frame(width: 8, height: 22)
+    .allowsHitTesting(false)
+  }
+}
+
 private struct SectionHeading: View {
   let title: String
   let detail: String
@@ -3207,6 +3275,22 @@ private struct TicketCard: View {
     ) {
       Task { await model.setTicketPinned(ticket, pinned: !model.isTicketPinned(ticket.id)) }
     }
+    if model.phaseProcess(for: ticket) != nil {
+      Menu("Depends on", systemImage: "arrow.turn.down.right") {
+        let candidates = model.prerequisiteCandidates(for: ticket)
+        if candidates.isEmpty { Text("No other open tasks") }
+        ForEach(candidates) { candidate in
+          let isOn = model.dependsOn(ticket, prerequisite: candidate)
+          Button { model.setDependency(ticket, on: candidate, enabled: !isOn) } label: {
+            if isOn {
+              Label("\(candidate.id) · \(candidate.title)", systemImage: "checkmark")
+            } else {
+              Text("\(candidate.id) · \(candidate.title)")
+            }
+          }
+        }
+      }
+    }
     Divider()
     Button("Mark as complete", systemImage: "checkmark.circle") { completeWithAnimation() }
     .disabled(isChecked)
@@ -3316,6 +3400,8 @@ private struct TicketCard: View {
         HStack(spacing: 6) {
           if recurringProgress?.openCount == 0 {
             StatusPill(text: "No open PRs", color: .secondary)
+          } else if let phaseGroup {
+            phaseMenu(phaseGroup)
           } else {
             Menu {
               ForEach(TaskFieldChoices.priorities, id: \.self) { priority in
@@ -3370,6 +3456,8 @@ private struct TicketCard: View {
           }
           if TaskTriagePolicy.hasHardDeadline(ticket) { TaskDeadlinePill(ticket: ticket) }
         }
+        let prerequisites = model.openPrerequisites(of: ticket)
+        if !prerequisites.isEmpty { dependencyLine(prerequisites) }
         if !isCollapsedToTitle, !ticket.briefSummary.isEmpty {
           Text(ticket.briefSummary).font(.system(size: 13)).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
@@ -3746,8 +3834,77 @@ private struct TicketCard: View {
     isChecked ? QueueAccentPalette.color(.success, style: accentStyle) : .secondary
   }
 
+  /// Non-nil when the task's project uses the development process: the card
+  /// then shows a phase marker instead of the criticality marker.
+  private var phaseGroup: QueueOrderStore.PhaseGroup? { model.phaseGroup(for: ticket) }
+
+  /// Earlier phases still open are overdue, the current phase is active, and
+  /// later phases, unphased, and outside-process tasks stay quiet.
+  private func phaseColor(_ group: QueueOrderStore.PhaseGroup) -> Color {
+    guard case .phase(let phase) = group,
+          let current = model.phaseProcess(for: ticket)?.currentPhase else { return .secondary }
+    let order = DevelopmentPhase.allCases
+    let index = order.firstIndex(of: phase) ?? 0, currentIndex = order.firstIndex(of: current) ?? 0
+    if index < currentIndex { return QueueAccentPalette.color(.warning, style: accentStyle) }
+    if index == currentIndex { return QueueAccentPalette.color(.info, style: accentStyle) }
+    return .secondary
+  }
+
+  private func phaseMenu(_ group: QueueOrderStore.PhaseGroup) -> some View {
+    let link = model.phaseProcess(for: ticket)?.links[ticket.id.uppercased()]
+    return Menu {
+      ForEach(DevelopmentPhase.allCases, id: \.self) { phase in
+        Menu(phase.title) {
+          ForEach(DevelopmentProcessCatalog.steps(in: phase)) { step in
+            Button { model.setDevelopmentStep(ticket, step: step.id) } label: {
+              if link?.step == step.id {
+                Label(step.title, systemImage: "checkmark")
+              } else {
+                Text(step.title)
+              }
+            }
+          }
+        }
+      }
+      Divider()
+      Button { model.setDevelopmentStep(ticket, step: nil) } label: {
+        if group == .outsideProcess {
+          Label("Outside the process", systemImage: "checkmark")
+        } else {
+          Text("Outside the process")
+        }
+      }
+    } label: {
+      StatusPill(text: group.title, color: phaseColor(group))
+    }
+    .menuStyle(.borderlessButton)
+    .menuIndicator(.hidden)
+    .fixedSize()
+    .accessibilityLabel("Phase: \(group.title)")
+    .help(link?.step.flatMap { step in
+      DevelopmentProcessCatalog.step(id: step, in: link!.phase).map { "Step: \($0.title). Click to change the phase and step." }
+    } ?? "Click to set the development phase and step")
+  }
+
+  /// The open tasks this one waits on, in queue order.
+  private func dependencyLine(_ prerequisites: [DashboardTicket]) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 5) {
+      Image(systemName: "arrow.turn.down.right").font(.system(size: 10, weight: .semibold))
+      Text("Waits on").font(.system(size: 11, weight: .semibold))
+      ForEach(Array(prerequisites.enumerated()), id: \.element.id) { index, prerequisite in
+        if index > 0 { Image(systemName: "arrow.right").font(.system(size: 8, weight: .bold)) }
+        Text(prerequisite.id).font(.system(size: 11, weight: .bold, design: .monospaced))
+          .help(prerequisite.title)
+      }
+    }
+    .foregroundStyle(.secondary)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("Waits on " + prerequisites.map(\.id).joined(separator: ", "))
+  }
+
   private var priorityColor: Color {
     if recurringProgress?.openCount == 0 { return .secondary }
+    if let phaseGroup { return phaseColor(phaseGroup) }
     return switch ticket.priority.lowercased() {
     case "critical": QueueAccentPalette.color(.danger, style: accentStyle)
     case "high": QueueAccentPalette.color(.warning, style: accentStyle)

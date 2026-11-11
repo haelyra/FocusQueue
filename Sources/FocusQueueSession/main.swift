@@ -13,7 +13,7 @@ enum SessionRegistrationError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .usage:
-            "Usage: focus-queue-session intake-changed | data ensure | data place <user|project|task> <target-id> <fact> | development <PROJECT-ID> show|link <TASK-ID> <step-id|none> [module]|unlink <TASK-ID>|step <step-id> <pending|inProgress|done|accepted>|phase <planning|phase0|implementation|prerelease|release>|sync|guidelines on|off|artifact <catalog-file> <project-file|default>|module add <name> [modules/<id>-<slug>.md] | contract show <PROJECT-ID> <engineering|orchestrator> | contract propose <PROJECT-ID> <engineering|orchestrator> <file.md> | contract generate <PROJECT-ID> | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|pin <TASK-ID>|unpin <TASK-ID>|reset | task create <PROJECT-ID> <title> <summary> | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | cleanup <TASK-ID>|--completed|--orphans|--purge [--dry-run] | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | pause <TASK-ID> <SUBTASK-ID> | resume <TASK-ID> <SUBTASK-ID> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
+            "Usage: focus-queue-session intake-changed | data ensure | data place <user|project|task> <target-id> <fact> | development <PROJECT-ID> show|link <TASK-ID> <step-id|none> [module]|unlink <TASK-ID>|depends <TASK-ID> [<PREREQUISITE-ID> ...]|step <step-id> <pending|inProgress|done|accepted>|phase <planning|phase0|implementation|prerelease|release>|sync|guidelines on|off|artifact <catalog-file> <project-file|default>|module add <name> [modules/<id>-<slug>.md] | contract show <PROJECT-ID> <engineering|orchestrator> | contract propose <PROJECT-ID> <engineering|orchestrator> <file.md> | contract generate <PROJECT-ID> | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|pin <TASK-ID>|unpin <TASK-ID>|reset | task create <PROJECT-ID> <title> <summary> | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | cleanup <TASK-ID>|--completed|--orphans|--purge [--dry-run] | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | pause <TASK-ID> <SUBTASK-ID> | resume <TASK-ID> <SUBTASK-ID> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
         case .missingSessionIdentity:
             "No Codex, Claude, or Kimi session ID was found in the environment or current WezTerm pane."
         case .missingManagedRuntime:
@@ -184,12 +184,17 @@ enum SessionRegistrationError: Error, LocalizedError {
         }
         let contextStore = TaskContextStore(root: root)
         var contexts = try await contextStore.loadAvailableForDiscovery()
+        // Phase order needs one shown project with an enabled development
+        // process; the app resolves the saved mode the same way.
+        let phases = showsAllProjects ? nil : config.selectedProjectID.flatMap {
+            (try? DevelopmentProcessStore(root: root).load(projectID: $0)) ?? nil
+        }.flatMap { $0.enabled ? $0 : nil }
         let currentMode: QueueActivitySortMode
         if state.queueActivitySortMode == .manual {
             currentMode = .recentActivity
             state.queueActivitySortMode = currentMode
         } else {
-            currentMode = state.queueActivitySortMode ?? .recentActivity
+            currentMode = (state.queueActivitySortMode ?? .recentActivity).resolved(hasPhases: phases != nil)
         }
 
         func presentation(_ contexts: [TaskContext]) throws -> (
@@ -202,14 +207,16 @@ enum SessionRegistrationError: Error, LocalizedError {
                 dashboard.tickets,
                 deferredTicketIDs: state.deferredTicketIDs,
                 mode: currentMode,
-                contexts: contexts)
+                contexts: contexts,
+                phases: phases)
             let automaticIDs = automatic.map(\.id)
             guard let override = try store.applicableOrder(
                 automaticIDs: automaticIDs, sortMode: currentMode)
             else { return (automatic, automatic) }
             let manuallyOrdered = QueueOrderStore.orderedTickets(automatic, savedIDs: override)
             return (automatic, QueueOrderStore.prioritizingPins(
-                manuallyOrdered, pinnedAtByTicketID: pinnedDates))
+                manuallyOrdered, pinnedAtByTicketID: pinnedDates,
+                phases: currentMode == .phase ? phases : nil))
         }
 
         var projection = try presentation(contexts)
@@ -1100,6 +1107,17 @@ enum SessionRegistrationError: Error, LocalizedError {
                                      projectID: project.id)
         case ("unlink", 4):
             process = try store.unlink(taskID: arguments[3], projectID: project.id)
+        case ("depends", 4...):
+            // `depends <task> [<prerequisite>...]` replaces the list; none clears it.
+            let dashboard = URL(fileURLWithPath: project.dashboardPath)
+            let known = Set(((try? JSONDecoder().decode(DashboardDocument.self, from: Data(contentsOf: dashboard)))?
+                .tickets ?? []).map { $0.id.uppercased() })
+            let taskIDs = arguments[3...].map { $0.uppercased() }
+            if let unknown = taskIDs.first(where: { !known.contains($0) }) {
+                throw TaskContextError.commandFailed("\(unknown) is not a task in \(project.name).")
+            }
+            process = try store.setDependencies(taskID: taskIDs[0], prerequisites: Array(taskIDs.dropFirst()),
+                                                projectID: project.id)
         case ("step", 5):
             guard let status = DevelopmentStepStatus(rawValue: arguments[4]) else { throw SessionRegistrationError.usage }
             process = try store.setStepStatus(status, stepID: arguments[3], projectID: project.id)

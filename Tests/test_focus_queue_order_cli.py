@@ -184,3 +184,47 @@ class QueueOrderCLITests(unittest.TestCase):
             _, stderr = process.communicate(timeout=10)
             self.assertEqual(process.returncode, 0, stderr)
         self.assertEqual(self.command("list"), ["ECC-040", "ECC-035", "ECC-029"])
+
+    def development(self, *arguments, expected=0):
+        result = subprocess.run([str(BINARY), "development", "ecc", *arguments], capture_output=True, text=True,
+            env={**os.environ, "FOCUS_QUEUE_SUPPORT_DIR": str(self.root)}, timeout=10)
+        self.assertEqual(result.returncode, expected, result.stderr)
+        return json.loads(result.stdout) if expected == 0 else result.stderr
+
+    def enable_phases(self, enabled=True):
+        config = json.loads((self.root / "config.json").read_text())
+        config["focusQueueProjects"] = [{"id": "ecc", "name": "ECC", "taskPrefix": "ECC",
+            "dashboardPath": str(self.dashboard), "workspacePath": str(self.root), "repositoryPath": ""}]
+        config["focusQueueSelectedProjectID"] = "ecc"
+        (self.root / "config.json").write_text(json.dumps(config))
+        project = self.root / "projects" / "ecc"
+        project.mkdir(parents=True, exist_ok=True)
+        (project / "plan.md").write_text("# ECC\n")
+        (project / "development.json").write_text(json.dumps({"enabled": enabled, "currentPhase": "phase0"}))
+        state = json.loads((self.root / "state.json").read_text())
+        state.update(queueSortMode="phase", deferredTicketIDs=[])
+        (self.root / "state.json").write_text(json.dumps(state))
+
+    def test_phase_order_groups_phases_and_follows_dependencies(self):
+        self.enable_phases()
+        self.assertEqual(self.command("list"), ["ECC-029", "ECC-035", "ECC-040"])
+        self.development("link", "ECC-040", "scaffolding")
+        self.development("link", "ECC-029", "build")
+        self.development("link", "ECC-035", "build")
+        self.assertEqual(self.command("list"), ["ECC-040", "ECC-029", "ECC-035"])
+        process = self.development("depends", "ECC-029", "ECC-035")
+        self.assertEqual(process["dependencies"], {"ECC-029": ["ECC-035"]})
+        self.assertEqual(self.command("list"), ["ECC-040", "ECC-035", "ECC-029"])
+        self.assertIn("cycle", self.development("depends", "ECC-035", "ECC-029", expected=1))
+        self.assertIn("not a task", self.development("depends", "ECC-035", "ECC-999", expected=1))
+        # A move that breaks dependency order snaps back; clearing the list frees it.
+        self.assertEqual(self.command("move", "ECC-029", "before", "ECC-035"), ["ECC-040", "ECC-035", "ECC-029"])
+        self.development("depends", "ECC-029")
+        self.command("reset")
+        self.assertEqual(self.command("list"), ["ECC-040", "ECC-029", "ECC-035"])
+
+    def test_phase_order_falls_back_without_an_enabled_process(self):
+        self.enable_phases(enabled=False)
+        self.development("link", "ECC-040", "scaffolding")
+        self.assertEqual(self.command("list"), ["ECC-029", "ECC-035", "ECC-040"])
+        self.assertEqual(json.loads((self.root / "state.json").read_text())["queueSortMode"], "phase")

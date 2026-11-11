@@ -512,6 +512,7 @@ final class QueueViewModel {
     var lastOutputAt: [String: Date]
     var pinnedAt: [String: Date]
     var mode: QueueActivitySortMode
+    var phases: DevelopmentProcess?
     var override: QueueOrderDocument?
     var activityHour: Int?
   }
@@ -534,7 +535,8 @@ final class QueueViewModel {
     let lastOutputAt = taskContexts.compactMapValues { context in
       context.subtasks.compactMap { $0.lastOutputAt ?? $0.resultAt }.max()
     }
-    let mode = localState.queueActivitySortMode ?? .recentActivity
+    let mode = queueActivitySortMode
+    let phases = mode == .phase ? queuePhaseProcess : nil
     let pinnedAt = taskContexts.compactMapValues(\.pinnedAt)
     // Tasks leave the recent-activity window with time alone, so the memo
     // re-sorts at least hourly in that mode.
@@ -549,6 +551,7 @@ final class QueueViewModel {
       lastOutputAt: lastOutputAt,
       pinnedAt: pinnedAt,
       mode: mode,
+      phases: phases,
       override: queueOverride,
       activityHour: activityHour)
     return openTicketsMemo.value(for: key) {
@@ -561,7 +564,7 @@ final class QueueViewModel {
         lastPromptAtByTicketID: key.lastPromptAt,
         lastOutputAtByTicketID: key.lastOutputAt)
       let automatic = QueueOrderStore.prioritizingPins(
-        activityOrdered, pinnedAtByTicketID: key.pinnedAt)
+        activityOrdered, pinnedAtByTicketID: key.pinnedAt, phases: key.phases)
       let automaticOpenIDs = automatic.filter(\.isOpen).map(\.id)
       guard let override = key.override,
             override.applies(to: automaticOpenIDs, sortMode: key.mode)
@@ -576,7 +579,7 @@ final class QueueViewModel {
       // Placement can reorder only the unpinned tier. A move targeting a
       // pinned task is therefore a visible no-op and never changes pin order.
       return QueueOrderStore.prioritizingPins(
-        manuallyOrdered, pinnedAtByTicketID: key.pinnedAt)
+        manuallyOrdered, pinnedAtByTicketID: key.pinnedAt, phases: key.phases)
     }
   }
 
@@ -781,6 +784,9 @@ final class QueueViewModel {
   /// The selected project's development process, nil when disabled or absent.
   /// Reloaded with the task contexts so agent edits to development.json appear.
   private(set) var developmentProcess: DevelopmentProcess?
+  /// Enabled development processes of every project, for phase markers in the
+  /// all-projects view. Reloaded with the task contexts.
+  private(set) var phaseProcessesByProjectID: [String: DevelopmentProcess] = [:]
   /// Set from the last development-process mutation; surfaced in the Project tab.
   private(set) var developmentProcessError: String?
   /// The project whose background steward pass is running, if any.
@@ -1743,12 +1749,97 @@ final class QueueViewModel {
     }
   }
 
+  /// The mode the queue sorts by now. A saved phase order applies only while
+  /// a single project with an enabled development process is shown.
   var queueActivitySortMode: QueueActivitySortMode {
-    localState.queueActivitySortMode ?? .recentActivity
+    (localState.queueActivitySortMode ?? .recentActivity).resolved(hasPhases: queuePhaseProcess != nil)
+  }
+
+  /// The shown project's development process when the queue can use phases:
+  /// one project selected and its process enabled. Nil means criticality only.
+  var queuePhaseProcess: DevelopmentProcess? {
+    showsAllProjects ? nil : developmentProcess
+  }
+
+  /// Sort modes the menu offers; phase order only where phases exist.
+  var availableQueueSortModes: [QueueActivitySortMode] {
+    QueueActivitySortMode.allCases.filter {
+      $0 != .manual && ($0 != .phase || queuePhaseProcess != nil)
+    }
+  }
+
+  /// Phase markers replace priority markers wherever the task's project uses
+  /// the development process, in any sort mode.
+  func phaseProcess(for ticket: DashboardTicket) -> DevelopmentProcess? {
+    guard let process = queuePhaseProcess ?? phaseProcessesByProjectID[project(for: ticket)?.id ?? ""]
+    else { return nil }
+    return process
+  }
+
+  func phaseGroup(for ticket: DashboardTicket) -> QueueOrderStore.PhaseGroup? {
+    phaseProcess(for: ticket).map { QueueOrderStore.PhaseGroup(taskID: ticket.id, process: $0) }
+  }
+
+  /// The open tasks this task waits on, in queue order, then any others.
+  func openPrerequisites(of ticket: DashboardTicket) -> [DashboardTicket] {
+    guard let process = phaseProcess(for: ticket) else { return [] }
+    let ids = Set(process.prerequisites(of: ticket.id))
+    guard !ids.isEmpty else { return [] }
+    return dashboard.tickets.filter { $0.isOpen && ids.contains($0.id.uppercased()) }
+      .sorted { (openTicketPosition[$0.id] ?? .max) < (openTicketPosition[$1.id] ?? .max) }
+  }
+
+  private var openTicketPosition: [String: Int] {
+    Dictionary(openTickets.enumerated().map { ($0.element.id, $0.offset) },
+               uniquingKeysWith: { first, _ in first })
+  }
+
+  /// Other open tasks in the same project, offered as prerequisites.
+  func prerequisiteCandidates(for ticket: DashboardTicket) -> [DashboardTicket] {
+    let projectID = project(for: ticket)?.id
+    return allOpenTickets.filter { $0.id != ticket.id && project(for: $0)?.id == projectID }
+  }
+
+  func dependsOn(_ ticket: DashboardTicket, prerequisite: DashboardTicket) -> Bool {
+    phaseProcess(for: ticket)?.prerequisites(of: ticket.id).contains(prerequisite.id.uppercased()) == true
+  }
+
+  /// Adds or removes one prerequisite through the locked process store.
+  func setDependency(_ ticket: DashboardTicket, on prerequisite: DashboardTicket, enabled: Bool) {
+    guard let projectID = project(for: ticket)?.id, let process = phaseProcess(for: ticket) else { return }
+    var ids = process.prerequisites(of: ticket.id)
+    if enabled { ids.append(prerequisite.id) } else { ids.removeAll { $0 == prerequisite.id.uppercased() } }
+    do {
+      let updated = try developmentProcessStore.setDependencies(
+        taskID: ticket.id, prerequisites: ids, projectID: projectID)
+      publishPhaseProcess(updated, projectID: projectID)
+      actionMessages[ticket.id] = enabled
+        ? "\(ticket.id) now waits on \(prerequisite.id)." : "\(ticket.id) no longer waits on \(prerequisite.id)."
+    } catch {
+      actionMessages[ticket.id] = error.localizedDescription
+    }
+  }
+
+  /// Links a task to a development step, or marks it outside the process.
+  func setDevelopmentStep(_ ticket: DashboardTicket, step: String?) {
+    guard let projectID = project(for: ticket)?.id else { return }
+    do {
+      let updated = try developmentProcessStore.link(taskID: ticket.id, step: step, projectID: projectID)
+      publishPhaseProcess(updated, projectID: projectID)
+    } catch {
+      actionMessages[ticket.id] = error.localizedDescription
+    }
+  }
+
+  private func publishPhaseProcess(_ updated: DevelopmentProcess, projectID: String) {
+    let visible = updated.enabled ? updated : nil
+    if projectID == selectedProject?.id, developmentProcess != visible { developmentProcess = visible }
+    if phaseProcessesByProjectID[projectID] != visible { phaseProcessesByProjectID[projectID] = visible }
   }
 
   var queueActivitySortCaption: String {
     switch queueActivitySortMode {
+    case .phase: "Development phase first · then dependency order"
     case .recentActivity: "Active in the last 2 days first · then by priority"
     case .recentInteraction: "Last task interaction first · deadlines cycle the rest"
     case .recentOutput: "Latest agent output first · deadlines cycle the rest"
@@ -1847,7 +1938,7 @@ final class QueueViewModel {
 
   func setQueueActivitySortMode(_ mode: QueueActivitySortMode) {
     let normalized = mode == .manual ? QueueActivitySortMode.recentActivity : mode
-    guard queueActivitySortMode != normalized else { return }
+    guard (localState.queueActivitySortMode ?? .recentActivity) != normalized else { return }
     localState.queueActivitySortMode = normalized
     try? queueOrderStore.reset()
     savedQueueOverride = nil
@@ -2813,6 +2904,7 @@ final class QueueViewModel {
   /// Loads the selected project's development process off disk. A missing or
   /// disabled file publishes nil; a malformed one keeps the last good state.
   func reloadDevelopmentProcess() {
+    reloadPhaseProcesses()
     guard let projectID = selectedProject?.id else {
       if developmentProcess != nil { developmentProcess = nil }
       return
@@ -2825,6 +2917,20 @@ final class QueueViewModel {
       developmentProcessError = "Development process: \(error.localizedDescription)"
     }
     reloadDevelopmentContracts()
+  }
+
+  /// Phase markers in the all-projects view read each project's process.
+  /// Single-project scope uses `developmentProcess` alone, so it skips the reads.
+  private func reloadPhaseProcesses() {
+    var loaded: [String: DevelopmentProcess] = [:]
+    if showsAllProjects {
+      for project in config.projects where project.archivedAt == nil {
+        if let process = try? developmentProcessStore.load(projectID: project.id), process.enabled {
+          loaded[project.id] = process
+        }
+      }
+    }
+    if phaseProcessesByProjectID != loaded { phaseProcessesByProjectID = loaded }
   }
 
   /// One development-process mutation: run the store edit, publish the result,

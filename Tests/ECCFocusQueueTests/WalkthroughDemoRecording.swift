@@ -141,6 +141,39 @@ struct WalkthroughDemoRecording {
   }
 }
 
+extension WalkthroughDemoRecording {
+  /// Phase order (FOC-121): phase markers, phase headings, the dependency
+  /// line, and the rail between a task and the task it waits on.
+  @Test("Record phase order on an example project", .enabled(if: output != nil))
+  func recordPhaseOrder() async throws {
+    let demo = try await DemoEnvironment(name: "phase-order")
+    defer { demo.cleanUp() }
+    let model = demo.model
+    model.finishWalkthrough()
+    let project = try await demo.addExampleProject()
+    try await demo.seedExampleTasks(project: project)
+    for _ in 0..<6 where model.openTickets.isEmpty {
+      try await Task.sleep(for: .milliseconds(700))
+      await model.refresh(userInitiated: true)
+    }
+    let recorder = FrameRecorder(model: model, directory: demo.frames,
+      desktop: NSSize(width: 470, height: 1500), scale: 2)
+    await recorder.hold(0.2)                     // criticality markers, no phases
+
+    let store = model.developmentProcessStore
+    _ = try store.mutate(projectID: project.id) { $0.currentPhase = .implementation }
+    _ = try store.link(taskID: "HAB-2", step: "scaffolding", projectID: project.id)
+    _ = try store.link(taskID: "HAB-1", step: "build", projectID: project.id)
+    _ = try store.link(taskID: "HAB-3", step: "build", projectID: project.id)
+    _ = try store.setDependencies(taskID: "HAB-1", prerequisites: ["HAB-3"], projectID: project.id)
+    model.reloadDevelopmentProcess()
+    #expect(model.availableQueueSortModes.contains(.phase))
+    model.setQueueActivitySortMode(.phase)
+    #expect(model.openTickets.map(\.id) == ["HAB-2", "HAB-3", "HAB-1"])
+    await recorder.hold(0.2)                     // phase order
+  }
+}
+
 /// A scratch support directory with a booted queue and its frame folder.
 @MainActor
 private struct DemoEnvironment {

@@ -189,6 +189,8 @@ There is no `task show` or generic `task set <field>`.
 **`queue list` · `queue reset` · `queue move <TASK-ID> top|bottom|before <ID>|after <ID>` · `queue reorder <TASK-ID>...`**
 Scoped by `FOCUS_QUEUE_PROJECT_ID`. Writes `queue-order/order-<b64(project)>.json` under `order.lock`. `queue reset` restores priority order. Emits `{"order": [...]}`.
 
+The saved sort mode `phase` (*Phase order*, FOC-121) applies only while one project is shown and its development process is enabled; elsewhere it resolves to recent activity in both the app and this command. Phase order groups tasks by their linked step's phase (Planning → Phase N), then unlinked tasks, then tasks outside the process. Within a group a task follows the tasks it depends on (`development … depends`); ties keep the priority order, pins lead within their phase, and a manual move sticks unless it breaks phase or dependency order.
+
 ### 3.6 Subtask (agent) lifecycle
 
 These manage the per-agent slots inside `tasks/<TICKET>/context.json`:
@@ -231,8 +233,8 @@ These manage the per-agent slots inside `tasks/<TICKET>/context.json`:
 **`projects list` · `projects recover` · `projects create --id <id> --name <name> --workspace <abs-path> --from <project-id> --task <TASK-ID> [--task ...]`**
 `create` is transactional and posts the project-catalog-change notification so the running app reloads `config.json`. This is the *only* safe way to add a project while the app runs.
 
-**`development <PROJECT-ID> show | link <TASK-ID> <step-id|none> [module] | unlink <TASK-ID> | step <step-id> <pending|inProgress|done|accepted> | phase <planning|phase0|implementation|prerelease|release> | sync`**
-Locked edits of `projects/<id>/development.json`, the per-project development process (FOC-117). Every write is one read-modify-write under the project file lock; a malformed file throws and is never overwritten. `link` records a *human* link (a step from any phase, or `none` for work outside the process) that the steward never overrides; the task must exist in that project's dashboard. `step … accepted` is the human acceptance; accepting the last step of a phase advances the phase. `sync` runs the same steward pass the app runs.
+**`development <PROJECT-ID> show | link <TASK-ID> <step-id|none> [module] | unlink <TASK-ID> | depends <TASK-ID> [<PREREQUISITE-ID> ...] | step <step-id> <pending|inProgress|done|accepted> | phase <planning|phase0|implementation|prerelease|release> | sync`**
+Locked edits of `projects/<id>/development.json`, the per-project development process (FOC-117). Every write is one read-modify-write under the project file lock; a malformed file throws and is never overwritten. `link` records a *human* link (a step from any phase, or `none` for work outside the process) that the steward never overrides; the task must exist in that project's dashboard. `depends` replaces the task's prerequisite list in `dependencies` (task → task IDs it waits on); no IDs clears it, and a self-reference or cycle is refused. Reconcile drops entries for tasks that left the dashboard. `step … accepted` is the human acceptance; accepting the last step of a phase advances the phase. `sync` runs the same steward pass the app runs.
 
 The Project tab turns each step's catalog documents into clickable chips that open in the document viewer, where a review toggle checks the document off (`checkedArtifacts` on the step state). When every artifact of a step exists in the project folder and is reviewed, the app marks the step done; clicking the step marker completes it and right-clicking reopens it. Status changes and automatic raises preserve the check-offs.
 

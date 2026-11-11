@@ -1859,9 +1859,23 @@ public enum QueueActivitySortMode: String, Codable, CaseIterable, Identifiable, 
   case recentInteraction
   case recentOutput
   case triage
+  /// Development phase, then dependency order. Offered only for a single
+  /// project whose development process is enabled; elsewhere it resolves to
+  /// `recentActivity` (see `resolved(hasPhases:)`).
+  case phase
   case manual
 
   public var id: String { rawValue }
+
+  /// The mode the queue actually sorts by. Phase order needs a project with
+  /// phases, so the app, the CLI, and saved overrides all agree on the fallback.
+  public func resolved(hasPhases: Bool) -> QueueActivitySortMode {
+    switch self {
+    case .manual: .recentActivity
+    case .phase where !hasPhases: .recentActivity
+    default: self
+    }
+  }
 
   public var displayName: String {
     switch self {
@@ -1869,6 +1883,7 @@ public enum QueueActivitySortMode: String, Codable, CaseIterable, Identifiable, 
     case .recentInteraction: "Recent interaction"
     case .recentOutput: "Recent output"
     case .triage: "Triage deadlines"
+    case .phase: "Phase order"
     case .manual: "Manual order"
     }
   }
@@ -2078,8 +2093,9 @@ public struct LocalState: Codable, Equatable, Sendable {
       try container.decodeIfPresent([TaskAgentSession].self, forKey: .agentSessions) ?? []
     viewedTicketIDs = try container.decodeIfPresent(Set<String>.self, forKey: .viewedTicketIDs)
     viewedTicketSources = try container.decodeIfPresent(Set<String>.self, forKey: .viewedTicketSources)
-    let decodedQueueMode = try container.decodeIfPresent(
-      QueueActivitySortMode.self, forKey: .queueActivitySortMode)
+    // A mode from a newer build falls back to the default instead of failing the load.
+    let decodedQueueMode = (try? container.decodeIfPresent(
+      QueueActivitySortMode.self, forKey: .queueActivitySortMode)) ?? nil
     // Manual ordering is now a temporary per-snapshot override. Normalize the
     // retired persisted mode once without converting old arrays into pins.
     queueActivitySortMode = decodedQueueMode == .manual ? .recentActivity : decodedQueueMode

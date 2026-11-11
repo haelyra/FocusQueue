@@ -735,6 +735,10 @@ public struct TaskContext: Codable, Equatable, Sendable {
 
         UI Canvas
         - To preview a UI mockup, use `canvas open|await|typing|end <file.html>` in place of `ecc-ui-canvas`: same arguments and JSON, and it opens as a tab in this task's plan viewer instead of a browser.
+
+        Parsing JSON output
+        - Read `focus-queue-session` JSON with `jq` or a script file. `/usr/bin/python3` is 3.9, which rejects a backslash inside f-string braces, so an escaped `python3 -c` one-liner such as `f"{d[\\"id\\"]}"` is a SyntaxError. Bind values to names first, or use `%` formatting.
+        - Never send a parser's stderr to /dev/null in a watcher or check. A syntax error then looks like "nothing changed".
         """
         if let mapHelper {
             rules += """

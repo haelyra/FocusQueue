@@ -113,7 +113,8 @@ func leanAgentRules() {
     let rules = TaskContext.agentRules(mapHelper: "/Apps/focus-queue-map")
     for required in ["attach", "progress queued|working|idle|blocked", "attention approval|question", "result \"summary\"",
                      "complete \"", "log \"entry\"", "Progress checklist", "immutable", "Push only when the user authorizes",
-                     "'/Apps/focus-queue-map' scope <TASK-ID> <AGENT-ID>"] {
+                     "'/Apps/focus-queue-map' scope <TASK-ID> <AGENT-ID>",
+                     "/usr/bin/python3` is 3.9", "Never send a parser's stderr to /dev/null"] {
         #expect(rules.contains(required), "Missing rule: \(required)")
     }
     #expect(!TaskContext.agentRules(mapHelper: nil).contains("Map scope"))

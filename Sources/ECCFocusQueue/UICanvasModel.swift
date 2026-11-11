@@ -341,6 +341,42 @@ final class UICanvasModel {
     }
   }
 
+  /// Save without finishing: writes the DOM the human sees straight back into
+  /// the mockup file, so longer editing sessions survive breaks. The session
+  /// stays open and nothing is queued for the agent.
+  func saveEdits() async {
+    guard !isEnded, !isSending, let webView, let fileURL else { return }
+    isSending = true
+    sendStatus = "Saving to \(fileURL.lastPathComponent)…"
+    defer { isSending = false }
+    do {
+      let result = try await webView.callAsyncJavaScript(
+        "return window.__eccUiCanvasExport ? window.__eccUiCanvasExport() : null",
+        arguments: [:], in: nil, contentWorld: .defaultClient)
+      let snapshot = UICanvasJSON(any: result)
+      guard let html = snapshot["html"]?.string else {
+        sendStatus = "The preview is still loading. Try again in a moment."
+        return
+      }
+      let exported = UICanvasEditSummary.normalized(snapshot["edits"]?.array ?? edits)
+      let viewport = UICanvasViewport(
+        preset: preset, width: Int(renderedViewport.width.rounded()), height: Int(renderedViewport.height.rounded()))
+      _ = try UICanvasStore.writeExport(artifact: fileURL, html: html, edits: exported, viewport: viewport, kind: "save")
+      try UICanvasStore.writeArtifact(fileURL, html: html)
+      // The file now holds every edit, so the preview's pending log starts over.
+      command(["type": "uc:forget"])
+      edits = []
+      canUndo = false
+      canRedo = false
+      artifactStamp = modificationDate(fileURL)
+      sendStatus = "Saved to \(fileURL.lastPathComponent). The session stays open."
+      savePendingEdits()
+      refresh()
+    } catch {
+      sendStatus = "Save failed (\(error.localizedDescription))."
+    }
+  }
+
   /// Apply to file (`edits`) or Save and Finish (`finish`): exports the DOM the
   /// human sees plus the edit log next to the mockup, then queues the item.
   func sendEdits(finish: Bool) async {

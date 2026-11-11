@@ -210,6 +210,54 @@ struct UICanvasTests {
     #expect(exported.contains("document.body.dataset.ran"), "The mockup's own script stays in the export")
   }
 
+  @Test("Save writes the edits into the mockup file itself and keeps the session open")
+  func saveWithoutFinish() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("ui-canvas-save-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let mockup = root.appendingPathComponent("card.html")
+    try Data("""
+      <!doctype html><html><head><title>Card</title><style>
+      body{margin:0;font-family:sans-serif} #cta{background:#22c55e;color:#fff}
+      </style></head><body>
+      <article id="card"><button id="cta">Start trial</button></article>
+      </body></html>
+      """.utf8).write(to: mockup)
+    let store = UICanvasStore(root: root)
+    guard case .opened(let session) = try store.open(
+      file: mockup.path, taskID: "FOC-125", title: "Card", viewport: nil, reopen: false, agentName: "Claude Code")
+    else { Issue.record("open refused"); return }
+
+    let model = UICanvasModel(store: store, taskID: "FOC-125", key: session.key)
+    let coordinator = UICanvasWebStage.Coordinator(model: model)
+    let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+                         configuration: UICanvasWebStage.configuration(coordinator: coordinator))
+    view.navigationDelegate = coordinator
+    defer { UICanvasWebStage.dismantleNSView(view, coordinator: coordinator) }
+    model.attach(view)
+    try await eventually { model.renderedViewport.width > 0 }
+
+    model.select("#cta")
+    try await eventually { model.selection?.selector == "#cta" }
+    model.setStyle("background-color", "#ff0000")
+    try await eventually { model.liveEditCount == 1 }
+
+    await model.saveEdits()
+
+    let saved = try String(contentsOf: mockup, encoding: .utf8)
+    #expect(saved.contains("background-color: rgb(255, 0, 0)"))
+    #expect(!saved.contains("data-ecc-ui-canvas"), "Editor instrumentation never reaches the saved file")
+    #expect(!model.isEnded)
+    #expect(model.edits.isEmpty)
+    #expect(!model.canUndo)
+    let unchanged = try #require(try store.load(taskID: "FOC-125", key: session.key))
+    #expect(unchanged.pendingFeedback.isEmpty, "Save is local: nothing is queued for the agent")
+    #expect(unchanged.status == "open")
+    let exports = UICanvasStore.exportPaths(for: mockup)
+    #expect(FileManager.default.fileExists(atPath: exports.html.path))
+    #expect(FileManager.default.fileExists(atPath: exports.edits.path))
+  }
+
   private func eventually(timeout: Duration = .seconds(8), _ condition: @MainActor () async -> Bool) async throws {
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: timeout)

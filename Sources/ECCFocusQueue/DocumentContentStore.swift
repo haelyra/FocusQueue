@@ -76,7 +76,7 @@ final class DocumentContentStore {
             // Publish the saved text now so the preview renders it directly,
             // instead of showing stale text or a blank page until the reload lands.
             var saved = entries[url] ?? Entry()
-            saved.content = SideDocumentContent.text(session.draft, for: url)
+            saved.content = SideDocumentContent.saved(session.draft, for: url)
             saved.error = nil
             saved.revision += 1
             entries[url] = saved
@@ -111,10 +111,19 @@ final class DocumentContentStore {
     }
 
     /// Text the pane may edit, or nil for non-text content and failed loads.
+    /// Rendered text files (HTML, SVG) read their source from disk; binary
+    /// renders such as PDFs and images have no editable text.
     func loadedText(for url: URL) -> String? {
         switch entries[url]?.content {
-        case .markdown(let text), .text(let text): text
-        default: nil
+        case .markdown(let text), .text(let text):
+            return text
+        case .rendered(let file):
+            guard InAppDocument.editableRenderedExtensions.contains(file.pathExtension.lowercased()),
+                  let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+                  size <= 2_000_000 else { return nil }
+            return try? String(contentsOf: file, encoding: .utf8)
+        default:
+            return nil
         }
     }
 

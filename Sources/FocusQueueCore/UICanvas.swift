@@ -587,6 +587,17 @@ public struct UICanvasStore: Sendable {
         }
     }
 
+    /// Replaces the artifact itself with the human's snapshot. Atomic
+    /// replacement creates a new file; keep the original's permissions.
+    public static func writeArtifact(_ artifact: URL, html: String) throws {
+        guard html.utf8.count <= maximumSnapshotBytes else { throw UICanvasError.snapshotTooLarge }
+        let permissions = try? FileManager.default.attributesOfItem(atPath: artifact.path)[.posixPermissions]
+        try Data(html.utf8).write(to: artifact, options: .atomic)
+        if let permissions {
+            try? FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: artifact.path)
+        }
+    }
+
     /// Writes the human's snapshot and edit log next to the artifact.
     public static func writeExport(artifact: URL, html: String, edits: [UICanvasJSON],
                                    viewport: UICanvasViewport?, kind: String) throws -> (html: URL, edits: URL) {

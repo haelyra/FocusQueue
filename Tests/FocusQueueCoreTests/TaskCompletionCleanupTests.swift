@@ -182,6 +182,162 @@ func completionCleanupPurgesExpiredStaging() async throws {
     #expect(supportTrash.allSatisfy { $0.hasPrefix("foc-904") })
 }
 
+// MARK: - Manifest containment (FILE-01)
+
+/// Stages one expired worktree and returns its manifest and the paths it names.
+private func expiredStaging(_ fixture: CleanupFixture, ticketID: String, unmergedWork: Bool = false) async throws
+    -> (cleanup: TaskCompletionCleanup, url: URL, manifest: StagingManifest, admin: URL) {
+    _ = try await fixture.store.ensureContext(ticket: ticket(ticketID))
+    let (_, workspace) = try await fixture.agent(ticketID, "Expired")
+    if unmergedWork { _ = try await fixture.commit("unmerged.txt", in: workspace) }
+    let cleanup = fixture.cleanup()
+    let report = await cleanup.run(ticketID: ticketID, now: Date().addingTimeInterval(-8 * 24 * 60 * 60))
+    #expect(report.problems.isEmpty, "\(report.problems)")
+    let trash = TaskWorktreeManager.managedRoot(repositoryPath: fixture.repository.path)
+        .appendingPathComponent(TaskWorktreeManager.trashDirectoryName)
+    let name = try #require(fixture.trashEntries().first { $0.hasSuffix(".json") })
+    let url = trash.appendingPathComponent(name)
+    let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+    let manifest = try decoder.decode(StagingManifest.self, from: Data(contentsOf: url))
+    let admin = URL(fileURLWithPath: try #require(manifest.gitAdministration))
+    #expect(admin.deletingLastPathComponent().lastPathComponent == TaskWorktreeManager.retiredAdministrationDirectoryName)
+    #expect(FileManager.default.fileExists(atPath: admin.path))
+    return (cleanup, url, manifest, admin)
+}
+
+private func write(_ manifest: StagingManifest, to url: URL) throws -> Data {
+    let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+    let data = try encoder.encode(manifest)
+    try data.write(to: url, options: .atomic)
+    return data
+}
+
+/// A directory holding a sentinel file that must survive every purge.
+private func victim(_ url: URL) throws -> URL {
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    let sentinel = url.appendingPathComponent("sentinel.txt")
+    try Data("keep".utf8).write(to: sentinel)
+    return sentinel
+}
+
+@Test("A valid expired manifest purges its item, retired Git administration, and manifest exactly once")
+func completionCleanupPurgesRetiredAdministrationOnce() async throws {
+    let fixture = try await CleanupFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let staged = try await expiredStaging(fixture, ticketID: "FOC-910", unmergedWork: true)
+    let archiveRef = try #require(staged.manifest.archiveRef)
+    // Links inside the retired directory are unlinked, never followed.
+    let outside = try victim(fixture.root.appendingPathComponent("linked-target", isDirectory: true))
+    try FileManager.default.createSymbolicLink(at: staged.admin.appendingPathComponent("link-out"),
+        withDestinationURL: outside.deletingLastPathComponent())
+
+    let report = await staged.cleanup.purgeExpiredStagingReport()
+
+    #expect(report.problems.isEmpty, "\(report.problems)")
+    #expect(report.purged.contains(staged.manifest.stagedPath))
+    #expect(!FileManager.default.fileExists(atPath: staged.manifest.stagedPath))
+    #expect(!FileManager.default.fileExists(atPath: staged.admin.path))
+    #expect(!FileManager.default.fileExists(atPath: staged.url.path))
+    #expect(FileManager.default.fileExists(atPath: outside.path))
+    // The retired folder itself and the archived work stay.
+    #expect(FileManager.default.fileExists(atPath: staged.admin.deletingLastPathComponent().path))
+    #expect(try await fixture.git(["rev-parse", archiveRef]) == staged.manifest.archivedCommit)
+    let again = await staged.cleanup.purgeExpiredStagingReport()
+    #expect(again.purged.isEmpty && again.problems.isEmpty)
+}
+
+@Test("A manifest cannot redirect deletion to a substituted, sibling, nested, or traversal path")
+func completionCleanupRefusesSubstitutedAdministration() async throws {
+    let fixture = try await CleanupFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let staged = try await expiredStaging(fixture, ticketID: "FOC-911")
+    let retired = staged.admin.deletingLastPathComponent()
+    let gitDirectory = retired.deletingLastPathComponent()
+    let substitutes: [(String, URL)] = [
+        // The demonstrated attack: same folder name outside any repository.
+        ("outside root", fixture.root.appendingPathComponent("outside/focus-queue-retired-worktrees/victim")),
+        ("Git directory sibling", gitDirectory.appendingPathComponent("victim-sibling")),
+        ("nested entry", staged.admin.appendingPathComponent("logs-victim")),
+    ]
+    for (label, target) in substitutes {
+        let sentinel = try victim(target)
+        var manifest = staged.manifest
+        manifest.gitAdministration = target.path
+        let written = try write(manifest, to: staged.url)
+
+        let report = await staged.cleanup.purgeExpiredStagingReport()
+
+        #expect(FileManager.default.fileExists(atPath: sentinel.path), "\(label) was deleted")
+        #expect(try Data(contentsOf: staged.url) == written, "\(label) manifest changed")
+        #expect(FileManager.default.fileExists(atPath: staged.manifest.stagedPath), "\(label) item was deleted")
+        #expect(!report.purged.contains(staged.manifest.stagedPath))
+        #expect(report.problems.contains { $0.contains(staged.url.path) && $0.contains(target.path) }, "\(label): \(report.problems)")
+    }
+    var traversal = staged.manifest
+    traversal.gitAdministration = retired.path + "/../victim-sibling"
+    _ = try write(traversal, to: staged.url)
+    let report = await staged.cleanup.purgeExpiredStagingReport()
+    #expect(FileManager.default.fileExists(atPath: gitDirectory.appendingPathComponent("victim-sibling/sentinel.txt").path))
+    #expect(report.problems.contains { $0.contains("plain absolute path") })
+    #expect(FileManager.default.fileExists(atPath: staged.url.path))
+
+    // A stale record naming nothing deletes nothing and adds no friction.
+    var stale = staged.manifest
+    stale.gitAdministration = fixture.root.appendingPathComponent("moved/focus-queue-retired-worktrees/gone").path
+    _ = try write(stale, to: staged.url)
+    let purged = await staged.cleanup.purgeExpiredStagingReport()
+    #expect(purged.problems.isEmpty, "\(purged.problems)")
+    #expect(purged.purged.contains(staged.manifest.stagedPath))
+    #expect(!FileManager.default.fileExists(atPath: staged.url.path))
+}
+
+@Test("A symlink at the retired entry or its folder never redirects deletion")
+func completionCleanupRefusesSymlinkedAdministration() async throws {
+    let fixture = try await CleanupFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let staged = try await expiredStaging(fixture, ticketID: "FOC-912")
+    let retired = staged.admin.deletingLastPathComponent()
+    let elsewhere = fixture.root.appendingPathComponent("elsewhere", isDirectory: true)
+    let sentinel = try victim(elsewhere.appendingPathComponent("victim", isDirectory: true))
+
+    // 1. The entry itself is a link out of the retired folder.
+    let link = retired.appendingPathComponent("evil-link")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: sentinel.deletingLastPathComponent())
+    var manifest = staged.manifest
+    manifest.gitAdministration = link.path
+    var written = try write(manifest, to: staged.url)
+    var report = await staged.cleanup.purgeExpiredStagingReport()
+    #expect(FileManager.default.fileExists(atPath: sentinel.path))
+    #expect(try Data(contentsOf: staged.url) == written)
+    #expect(report.problems.contains { $0.contains("symlink") }, "\(report.problems)")
+
+    // 2. A same-named folder outside the repository is a link to the victim's parent.
+    let outside = fixture.root.appendingPathComponent("outside", isDirectory: true)
+    try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+    let outsideRetired = outside.appendingPathComponent(TaskWorktreeManager.retiredAdministrationDirectoryName)
+    try FileManager.default.createSymbolicLink(at: outsideRetired, withDestinationURL: elsewhere)
+    manifest.gitAdministration = outsideRetired.appendingPathComponent("victim").path
+    written = try write(manifest, to: staged.url)
+    report = await staged.cleanup.purgeExpiredStagingReport()
+    #expect(FileManager.default.fileExists(atPath: sentinel.path))
+    #expect(try Data(contentsOf: staged.url) == written)
+
+    // 3. The repository's own retired folder is replaced by a link.
+    let real = retired.deletingLastPathComponent().appendingPathComponent("retired-real")
+    try FileManager.default.moveItem(at: retired, to: real)
+    try FileManager.default.createSymbolicLink(at: retired, withDestinationURL: elsewhere)
+    manifest.gitAdministration = retired.appendingPathComponent("victim").path
+    written = try write(manifest, to: staged.url)
+    report = await staged.cleanup.purgeExpiredStagingReport()
+    #expect(FileManager.default.fileExists(atPath: sentinel.path))
+    #expect(try Data(contentsOf: staged.url) == written)
+    #expect(report.problems.contains { $0.contains("symlink") }, "\(report.problems)")
+    #expect(FileManager.default.fileExists(atPath: staged.manifest.stagedPath))
+    #expect(TaskCompletionCleanup.checkRetiredAdministration(
+        retired.appendingPathComponent("victim").path, repositoryPath: fixture.repository.path)
+        == .refused("is reached through a symlink"))
+}
+
 @Test("The orphan sweep retires workspaces of unknown tasks and keeps open tasks")
 func completionCleanupSweepsOrphans() async throws {
     let fixture = try await CleanupFixture()

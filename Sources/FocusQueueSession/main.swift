@@ -404,8 +404,8 @@ enum SessionRegistrationError: Error, LocalizedError {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .iso8601
         if modes == ["--purge"] {
-            let purged = dryRun ? [] : await cleanup.purgeExpiredStaging()
-            FileHandle.standardOutput.write(try encoder.encode(["purged": purged]))
+            let result = dryRun ? StagingPurgeReport() : await cleanup.purgeExpiredStagingReport()
+            FileHandle.standardOutput.write(try encoder.encode(result))
             FileHandle.standardOutput.write(Data("\n".utf8))
             return
         }

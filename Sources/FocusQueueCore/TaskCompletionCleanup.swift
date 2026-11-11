@@ -98,6 +98,16 @@ public struct TaskCleanupReport: Codable, Equatable, Sendable {
     }
 }
 
+/// What one staging purge deleted, and the manifests it kept and why.
+public struct StagingPurgeReport: Codable, Equatable, Sendable {
+    public var purged: [String] = []
+    public var problems: [String] = []
+
+    public init(purged: [String] = [], problems: [String] = []) {
+        self.purged = purged; self.problems = problems
+    }
+}
+
 /// Marking a task complete authorizes removing its runtime: the tmux session
 /// stops, worktrees move to a 7-day trash, branches are deleted after their work
 /// is integrated or archived, and bulky task history is staged. Plans, logs, and
@@ -135,7 +145,8 @@ public actor TaskCompletionCleanup {
             .appendingPathComponent(ticketID.uppercased(), isDirectory: true)
             .appendingPathComponent(reportName)
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-        return (try? Data(contentsOf: url)).flatMap { try? decoder.decode(TaskCleanupReport.self, from: $0) }
+        return (try? SafeFileRead.data(at: url, limit: FileReadLimits.metadataBytes))
+            .flatMap { try? decoder.decode(TaskCleanupReport.self, from: $0) }
     }
 
     /// `openTicketIDs` limits which other tasks' recorded workspaces are
@@ -264,35 +275,173 @@ public actor TaskCompletionCleanup {
 
     /// Deletes staged items whose retention window has passed.
     public func purgeExpiredStaging(now: Date = Date()) async -> [String] {
-        var folders = [root.appendingPathComponent("trash", isDirectory: true)]
+        await purgeExpiredStagingReport(now: now).purged
+    }
+
+    /// Deletes staged items whose retention window has passed. Agents can write
+    /// manifests, so a recorded Git administration path is deleted only when it
+    /// is one entry of its own repository's retired-administration folder. Any
+    /// other existing target keeps the item and its manifest in place and is
+    /// reported, so a manifest can never redirect deletion.
+    public func purgeExpiredStagingReport(now: Date = Date()) async -> StagingPurgeReport {
+        // A trash folder belongs to the repository it was found under; the
+        // support trash holds task history only and has no repository.
+        var folders: [(folder: URL, repository: String?)] = [(root.appendingPathComponent("trash", isDirectory: true), nil)]
         for repository in await repositories(for: nil) {
             folders += TaskWorktreeManager.managedRoots(repositoryPath: repository)
-                .map { $0.appendingPathComponent(TaskWorktreeManager.trashDirectoryName, isDirectory: true) }
+                .map { ($0.appendingPathComponent(TaskWorktreeManager.trashDirectoryName, isDirectory: true), repository) }
         }
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-        var purged: [String] = []
-        for folder in folders {
+        var report = StagingPurgeReport()
+        for (folder, repository) in folders {
             let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
             for name in names where name.hasSuffix(".json") {
                 let manifestURL = folder.appendingPathComponent(name)
-                guard let data = try? Data(contentsOf: manifestURL),
+                guard let data = try? SafeFileRead.data(at: manifestURL, limit: FileReadLimits.metadataBytes),
                       let manifest = try? decoder.decode(StagingManifest.self, from: data),
                       manifest.purgeAfter <= now else { continue }
                 let item = folder.appendingPathComponent(String(name.dropLast(".json".count)), isDirectory: true)
                 // The manifest names its own item; never follow a path elsewhere.
                 guard manifest.stagedPath == item.path else { continue }
+                var administration: (root: String, leaf: String)?
+                if let recorded = manifest.gitAdministration {
+                    switch Self.checkRetiredAdministration(recorded, repositoryPath: repository) {
+                    case .nothingToDelete: break
+                    case let .delete(root, leaf): administration = (root, leaf)
+                    case let .refused(reason):
+                        report.problems.append(
+                            "Kept \(manifestURL.path) and its staged item: Git administration \(recorded) \(reason).")
+                        continue
+                    }
+                }
                 do {
                     if FileManager.default.fileExists(atPath: item.path) { try FileManager.default.removeItem(at: item) }
-                    if let admin = manifest.gitAdministration,
-                       URL(fileURLWithPath: admin).deletingLastPathComponent().lastPathComponent == "focus-queue-retired-worktrees" {
-                        try? FileManager.default.removeItem(atPath: admin)
+                    if let administration {
+                        do { try Self.removeRetiredAdministration(root: administration.root, leaf: administration.leaf) }
+                        catch { report.problems.append("\(administration.root)/\(administration.leaf): \(error.localizedDescription)") }
                     }
                     try FileManager.default.removeItem(at: manifestURL)
-                    purged.append(item.path)
+                    report.purged.append(item.path)
                 } catch { continue }
             }
         }
-        return purged
+        for problem in report.problems { NSLog("Focus Queue staging purge: %@", problem) }
+        return report
+    }
+
+    // MARK: - Retired Git administration
+
+    /// What a manifest's recorded Git administration path may delete.
+    enum RetiredAdministrationCheck: Equatable {
+        /// Nothing exists at the recorded path, so nothing is deleted there.
+        case nothingToDelete
+        /// One real directory directly inside the canonical retired folder.
+        case delete(root: String, leaf: String)
+        case refused(String)
+    }
+
+    /// Only `<repository>/.git/focus-queue-retired-worktrees/<one entry>` of the
+    /// repository whose trash holds the manifest qualifies, spelled the way
+    /// retirement records it and reached through no symlink. A recorded path
+    /// naming anything else is refused when something exists there; a stale
+    /// record, such as one from a moved repository, names nothing and deletes nothing.
+    static func checkRetiredAdministration(_ recorded: String, repositoryPath: String?) -> RetiredAdministrationCheck {
+        func refuse(_ reason: String) -> RetiredAdministrationCheck {
+            var metadata = stat()
+            if Darwin.lstat(recorded, &metadata) != 0, errno == ENOENT || errno == ENOTDIR { return .nothingToDelete }
+            return .refused(reason)
+        }
+        let components = recorded.split(separator: "/", omittingEmptySubsequences: false)
+        guard recorded.hasPrefix("/"), components.count > 2,
+              !components.dropFirst().contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else {
+            return refuse("is not a plain absolute path")
+        }
+        guard let repositoryPath else { return refuse("was recorded outside a repository's managed trash") }
+        let leaf = String(components[components.count - 1])
+        let parent = components.dropLast().joined(separator: "/")
+        let name = TaskWorktreeManager.retiredAdministrationDirectoryName
+        let common = URL(fileURLWithPath: repositoryPath).standardizedFileURL
+            .appendingPathComponent(".git", isDirectory: true).path
+        guard let realCommon = realPath(common) else { return refuse("has no Git directory at \(common) to belong to") }
+        let root = realCommon + "/" + name
+        // Retirement records Foundation's spelling of the common directory,
+        // which can drop a leading /private that realpath keeps.
+        guard parent == common + "/" + name || parent == root else {
+            return refuse("is not directly inside \(common)/\(name)")
+        }
+        guard realPath(root) == root else { return refuse("is reached through a symlink") }
+        var metadata = stat()
+        guard Darwin.lstat(root + "/" + leaf, &metadata) == 0 else {
+            return errno == ENOENT ? .nothingToDelete : .refused("could not be inspected")
+        }
+        guard metadata.st_mode & S_IFMT == S_IFDIR else { return .refused("is a symlink or file, not a directory") }
+        return .delete(root: root, leaf: leaf)
+    }
+
+    /// Deletes one validated entry relative to a descriptor for its folder, so a
+    /// symlink swapped in after validation is never followed.
+    static func removeRetiredAdministration(root: String, leaf: String) throws {
+        let descriptor = Darwin.open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw TaskContextError.unsafeWorktree("The retired Git administration folder could not be opened safely.")
+        }
+        defer { Darwin.close(descriptor) }
+        var opened = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        var metadata = stat()
+        guard fcntl(descriptor, F_GETPATH, &opened) == 0,
+              String(decoding: opened.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self) == root,
+              Darwin.fstat(descriptor, &metadata) == 0, metadata.st_uid == Darwin.geteuid(),
+              metadata.st_mode & 0o022 == 0 else {
+            throw TaskContextError.unsafeWorktree(
+                "The retired Git administration folder moved, is redirected, or is writable by other users.")
+        }
+        try removeTree(Array(leaf.utf8CString), in: descriptor)
+    }
+
+    /// Removes a directory tree beneath `parent` without following symlinks:
+    /// links inside it are unlinked, never traversed.
+    private static func removeTree(_ name: [CChar], in parent: Int32) throws {
+        func failure() -> TaskContextError {
+            .unsafeWorktree("Retired Git administration could not be removed: \(String(cString: strerror(errno)))")
+        }
+        let descriptor = Darwin.openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            if errno == ENOENT { return }
+            throw failure()
+        }
+        guard let stream = Darwin.fdopendir(descriptor) else {
+            let error = failure()
+            Darwin.close(descriptor)
+            throw error
+        }
+        defer { Darwin.closedir(stream) }
+        var children: [[CChar]] = []
+        while let entry = Darwin.readdir(stream) {
+            var raw = entry.pointee.d_name
+            let length = Int(entry.pointee.d_namlen)
+            let child = withUnsafeBytes(of: &raw) { bytes in bytes.prefix(length).map { CChar(bitPattern: $0) } } + [0]
+            if child == [46, 0] || child == [46, 46, 0] { continue }
+            children.append(child)
+        }
+        for child in children {
+            var metadata = stat()
+            guard Darwin.fstatat(descriptor, child, &metadata, AT_SYMLINK_NOFOLLOW) == 0 else {
+                if errno == ENOENT { continue }
+                throw failure()
+            }
+            if metadata.st_mode & S_IFMT == S_IFDIR {
+                try removeTree(child, in: descriptor)
+            } else if Darwin.unlinkat(descriptor, child, 0) != 0, errno != ENOENT {
+                throw failure()
+            }
+        }
+        if Darwin.unlinkat(parent, name, AT_REMOVEDIR) != 0, errno != ENOENT { throw failure() }
+    }
+
+    private static func realPath(_ path: String) -> String? {
+        guard let resolved = Darwin.realpath(path, nil) else { return nil }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     // MARK: - Per repository

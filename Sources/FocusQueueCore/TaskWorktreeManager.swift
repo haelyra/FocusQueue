@@ -1273,7 +1273,7 @@ public actor TaskWorktreeManager {
         defer { Darwin.close(activeDescriptor) }
         try requireSafeDirectoryDescriptor(activeDescriptor)
 
-        let retainedRootName = "focus-queue-retired-worktrees"
+        let retainedRootName = Self.retiredAdministrationDirectoryName
         if Darwin.mkdirat(commonDescriptor, retainedRootName, 0o700) != 0,
            errno != EEXIST {
             throw TaskContextError.unsafeWorktree(
@@ -1414,6 +1414,9 @@ public actor TaskWorktreeManager {
     ]
     public nonisolated static let archiveRefPrefix = "refs/focus-queue/archive/"
     public nonisolated static let trashDirectoryName = ".trash"
+    /// Inside the repository's Git common directory; holds the Git
+    /// administration of retired worktrees until their staged item is purged.
+    public nonisolated static let retiredAdministrationDirectoryName = "focus-queue-retired-worktrees"
     public nonisolated static let retainedPrefixes = [".focus-queue-retained-", ".focus-queue-removing-"]
 
     public nonisolated static func managedRoots(repositoryPath: String) -> [URL] {

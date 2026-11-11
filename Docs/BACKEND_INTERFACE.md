@@ -225,7 +225,7 @@ These manage the per-agent slots inside `tasks/<TICKET>/context.json`:
 | `reconcile <TASK> [--no-cleanup]` | Repair task documents, write a receipt |
 | `cleanup <TASK> [--dry-run]` | Completion cleanup for one task: kill its tmux sessions, archive unmerged or uncommitted work under `refs/focus-queue/archive/`, stage its worktrees in `.worktrees/.trash`, delete its local branches and merged remote branches, stage `archive/` and `maintenance-history/`. Writes `tasks/<TASK>/cleanup.json`. |
 | `cleanup --completed [--orphans] [--dry-run]` | Backfill: run completion cleanup for every resolved or cancelled ticket; `--orphans` also retires managed worktrees and `focus-queue/*` branches no open ticket owns (a worktree any process uses is kept). Every project dashboard must load. |
-| `cleanup --purge` | Delete staged items whose 7-day `purgeAfter` has passed. The app purges at most every 6 hours. |
+| `cleanup --purge` | Delete staged items whose 7-day `purgeAfter` has passed → `{purged, problems}`. A manifest whose Git administration path is not one entry of its own repository's `.git/focus-queue-retired-worktrees` (or is reached through a symlink) is kept with its item and listed in `problems`. The app purges at most every 6 hours. |
 | `architecture <TASK> [repository-path]` | Generate/update architecture docs |
 
 ### 3.8 Projects

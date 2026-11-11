@@ -306,6 +306,25 @@ final class QueueViewModel {
   private(set) var isDiagnosingConnectors = false
   var expandedTicketIDs: Set<String> = []
 
+  /// Deferred and repeating agent launches from the task creator's schedule
+  /// fields, persisted in the support directory and fired by the refresh loop.
+  private(set) var scheduledLaunches: [ScheduledLaunch] = []
+  @ObservationIgnored private var launchScheduleStore: LaunchScheduleStore {
+    LaunchScheduleStore(supportDirectory: paths.supportDirectory)
+  }
+  @ObservationIgnored private var capacityModelStorage: QueueCapacityModel?
+  /// Shared live capacity feed. Created on first access so the machine is
+  /// sampled only while a view shows the panel.
+  var capacityModel: QueueCapacityModel {
+    if let capacityModelStorage { return capacityModelStorage }
+    let model = QueueCapacityModel(supportDirectory: paths.supportDirectory) { [weak self] in
+      self?.liveRuntimeSubtaskIDs.count ?? 0
+    }
+    capacityModelStorage = model
+    model.start()
+    return model
+  }
+
   @ObservationIgnored private let paths: AppPaths
   @ObservationIgnored private let programLog: ProgramLogStore
   @ObservationIgnored private var lastRecordedProgramLogMessages: [String: String] = [:]
@@ -498,6 +517,7 @@ final class QueueViewModel {
     self.agentActivityObserver = agentActivityObserver
     // An owner's save of a contract in the viewer is the sign-off: edits go live at once.
     documentContentStore.didSave = { [weak self] url, text in self?.agentContractSaved(url, text: text) }
+    scheduledLaunches = LaunchScheduleStore(supportDirectory: paths.supportDirectory).load()
   }
 
   var openTickets: [DashboardTicket] {
@@ -1282,7 +1302,13 @@ final class QueueViewModel {
       guard let ticket = await findTicket(id: ticketID) else {
         return .failed("\(ticketID) is no longer in any dashboard.")
       }
-      if draft.startsAgent { launchDraftAgent(draft, on: ticket, description: description) }
+      if draft.startsAgent {
+        if let schedule = draft.schedule {
+          scheduleDraftAgent(draft, on: ticket, description: description, schedule: schedule)
+          return .scheduled(ticketID: ticket.id, fireAt: Date().addingTimeInterval(schedule.fireInSeconds))
+        }
+        launchDraftAgent(draft, on: ticket, description: description)
+      }
       return .joined(ticketID: ticket.id, launchedAgent: draft.startsAgent)
     }
     guard let project = config.projects.first(where: { $0.id == (draft.projectID ?? config.selectedProjectID) })
@@ -1319,11 +1345,75 @@ final class QueueViewModel {
       dueDate: draft.dueDate, projectID: project.id, next: summary == description ? nil : description)
     else { return .failed(loadError ?? "Could not create the task.") }
     if draft.startsAgent {
+      if let schedule = draft.schedule {
+        scheduleDraftAgent(draft, on: ticket, description: description, schedule: schedule)
+        return .scheduled(ticketID: ticket.id, fireAt: Date().addingTimeInterval(schedule.fireInSeconds))
+      }
       launchDraftAgent(draft, on: ticket, description: description)
     } else {
       await saveInitialPrompt(description, for: ticket)
     }
     return .created(ticketID: ticket.id, launchedAgent: draft.startsAgent)
+  }
+
+  /// The task exists; its agent launch waits for the schedule's first fire.
+  private func scheduleDraftAgent(
+    _ draft: TaskDraft, on ticket: DashboardTicket, description: String, schedule: TaskLaunchSchedule
+  ) {
+    let launch = ScheduledLaunch(
+      fireAt: Date().addingTimeInterval(schedule.fireInSeconds),
+      repeatIntervalSeconds: schedule.repeatIntervalSeconds,
+      ticketID: ticket.id, prompt: description, title: ticket.title, preset: draft.agent)
+    scheduledLaunches.append(launch)
+    persistScheduledLaunches()
+    let timing = launch.repeatIntervalSeconds.map {
+      "repeating every \(Int($0 / 60)) minutes" } ?? "once"
+    programLog.record("Scheduled an agent for \(ticket.id) at \(launch.fireAt) (\(timing))", category: "Tasks")
+  }
+
+  func cancelScheduledLaunch(id: String) {
+    guard scheduledLaunches.contains(where: { $0.id == id }) else { return }
+    scheduledLaunches.removeAll { $0.id == id }
+    persistScheduledLaunches()
+  }
+
+  /// Picks up schedules another app instance wrote to the shared file.
+  func reloadScheduledLaunches() {
+    scheduledLaunches = launchScheduleStore.load()
+  }
+
+  /// Fires every scheduled launch whose time has passed. Repeating entries
+  /// reschedule; one-shot entries and launches whose task vanished are removed.
+  func fireDueScheduledLaunches(now: Date = Date()) async {
+    let due = scheduledLaunches.filter { $0.fireAt <= now }.sorted { $0.fireAt < $1.fireAt }
+    guard !due.isEmpty else { return }
+    for launch in due {
+      guard let ticket = await findTicket(id: launch.ticketID) else {
+        scheduledLaunches.removeAll { $0.id == launch.id }
+        programLog.record(
+          "Dropped a scheduled launch: \(launch.ticketID) is no longer in any dashboard.",
+          category: "Tasks")
+        continue
+      }
+      programLog.record(
+        "Firing a scheduled agent launch for \(ticket.id) (\(ticket.title))", category: "Tasks")
+      launchPromptedAgent(for: ticket, prompt: launch.prompt, title: launch.title, preset: launch.preset)
+      if let next = launch.rescheduled(after: now),
+         let index = scheduledLaunches.firstIndex(where: { $0.id == launch.id }) {
+        scheduledLaunches[index] = next
+      } else {
+        scheduledLaunches.removeAll { $0.id == launch.id }
+      }
+    }
+    persistScheduledLaunches()
+  }
+
+  private func persistScheduledLaunches() {
+    do {
+      try launchScheduleStore.save(scheduledLaunches)
+    } catch {
+      programLog.record("Could not save scheduled launches: \(error.localizedDescription)", category: "Tasks")
+    }
   }
 
   /// The task already exists, so a failed save is reported on its card
@@ -1640,6 +1730,7 @@ final class QueueViewModel {
       let projectID = config.selectedProjectID
       let showingAll = showsAllProjects
       let now = Date()
+      await fireDueScheduledLaunches(now: now)
       let stamp: DashboardFileStamp
       if showingAll {
         stamp = try await allProjectsStamp()
@@ -6807,6 +6898,12 @@ final class QueueViewModel {
           context: context, supportDirectory: support, usageBarEnabled: enabled)
       }
     }
+  }
+
+  func setCapacityPanelEnabled(_ enabled: Bool) {
+    guard config.capacityPanelEnabled != enabled else { return }
+    config.capacityPanelEnabled = enabled
+    persistConfiguration()
   }
 
   private func persistConfiguration() {

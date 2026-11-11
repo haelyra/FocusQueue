@@ -1,6 +1,16 @@
 import FocusQueueCore
 import Foundation
 
+/// A deferred or repeating agent start from the task creator's schedule
+/// fields. Advisory scheduling: the queue fires it on a refresh tick while
+/// the app runs, never exactly on the second.
+struct TaskLaunchSchedule: Equatable, Sendable {
+  /// Seconds from submit until the first launch.
+  var fireInSeconds: TimeInterval
+  /// Repeating launches carry the interval; one-shot launches carry nil.
+  var repeatIntervalSeconds: TimeInterval?
+}
+
 /// Everything the + task creator collects. Blank optional fields are filled by
 /// the placement model; `agent` is ignored when `startsAgent` is false.
 struct TaskDraft: Equatable, Sendable {
@@ -14,6 +24,9 @@ struct TaskDraft: Equatable, Sendable {
   var projectID: String?
   var launchesAgent = true
   var agent: AgentLaunchPreset
+  /// When set and the draft starts an agent, the task is created now and the
+  /// agent launch waits for the schedule.
+  var schedule: TaskLaunchSchedule?
 
   /// An agent starts only when it would start with this prompt. Otherwise the
   /// task is created and the prompt is saved for the first agent launched later.
@@ -52,6 +65,8 @@ enum TaskDraftChoice: Equatable, Sendable {
 enum TaskDraftResult: Equatable, Sendable {
   case created(ticketID: String, launchedAgent: Bool)
   case joined(ticketID: String, launchedAgent: Bool)
+  /// The task exists and its agent launch waits for the schedule.
+  case scheduled(ticketID: String, fireAt: Date)
   case matched(DashboardTicket, TaskPlacementSuggestion)
   case failed(String)
 }

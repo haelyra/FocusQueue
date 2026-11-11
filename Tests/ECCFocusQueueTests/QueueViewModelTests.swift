@@ -4238,6 +4238,72 @@ struct QueueViewModelTests {
     #expect(await suggester.queries.count == 1, "Creating anyway reuses the first suggestion")
   }
 
+  @Test("A scheduled draft creates the task now, launches the agent when due, and reschedules repeats")
+  func taskCreatorSchedulesLaunch() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let repository = try await creatorRepository(for: fixture)
+    defer { try? FileManager.default.removeItem(at: repository) }
+    let suggester = RecordingPlacementSuggester(TaskPlacementSuggestion(
+      status: "new-task", title: "Nightly CI sweep", summary: "Run the suite.",
+      priority: "medium", confidence: 0, model: "claude/haiku"))
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(),
+      terminalController: DirectViewRecorder(root: fixture.root, failReveal: false),
+      taskAgentLauncher: TaskAgentLauncher(runner: DirectCreationRunner(), candidateSockets: []),
+      taskPlacementSuggester: suggester)
+    let draft = TaskDraft(
+      description: "Run the CI suite and report failures.",
+      agent: AgentLaunchPreset(provider: .codex, workspacePolicy: .existingCheckout, useTmux: false),
+      schedule: TaskLaunchSchedule(fireInSeconds: 3_600, repeatIntervalSeconds: 86_400))
+
+    let result = await model.submitTaskDraft(draft)
+    guard case .scheduled(let ticketID, let fireAt) = result else {
+      Issue.record("Unexpected result \(result)")
+      return
+    }
+    #expect(fireAt > Date())
+    #expect(model.projectTickets.contains { $0.id == ticketID }, "The task exists right away")
+    #expect(model.subtasks(for: ticketID).isEmpty, "The agent waits for the schedule")
+    let scheduled = try #require(model.scheduledLaunches.first)
+    #expect(scheduled.ticketID == ticketID)
+    #expect(scheduled.prompt == draft.description)
+    #expect(scheduled.repeatIntervalSeconds == 86_400)
+    let stored = LaunchScheduleStore(supportDirectory: fixture.paths.supportDirectory).load()
+    #expect(stored.count == 1, "The schedule survives an app restart")
+
+    // Not yet due: nothing fires.
+    await model.fireDueScheduledLaunches()
+    #expect(model.subtasks(for: ticketID).isEmpty)
+    #expect(model.scheduledLaunches.count == 1)
+
+    // Due: the agent launches and the repeating entry moves a day out.
+    let dueAt = scheduled.fireAt.addingTimeInterval(1)
+    await model.fireDueScheduledLaunches(now: dueAt)
+    try await eventually { model.launchingTaskIDs.isEmpty }
+    #expect(model.subtasks(for: ticketID).contains { $0.initialPrompt == draft.description })
+    let rescheduled = try #require(model.scheduledLaunches.first)
+    #expect(rescheduled.fireAt == dueAt.addingTimeInterval(86_400))
+    #expect(LaunchScheduleStore(supportDirectory: fixture.paths.supportDirectory).load().count == 1)
+
+    // A one-shot launch is removed after firing.
+    let oneShot = ScheduledLaunch(
+      fireAt: Date(), ticketID: ticketID, prompt: "One more pass", title: "Sweep",
+      preset: AgentLaunchPreset(provider: .codex, useTmux: false))
+    try LaunchScheduleStore(supportDirectory: fixture.paths.supportDirectory)
+      .save([oneShot])
+    await model.reloadScheduledLaunches()
+    await model.fireDueScheduledLaunches()
+    try await eventually { model.launchingTaskIDs.isEmpty }
+    #expect(model.scheduledLaunches.isEmpty)
+    #expect(model.subtasks(for: ticketID).contains { $0.initialPrompt == "One more pass" })
+
+    // Cancelling removes the entry and its file.
+    model.cancelScheduledLaunch(id: rescheduled.id)
+    #expect(model.scheduledLaunches.isEmpty)
+    #expect(LaunchScheduleStore(supportDirectory: fixture.paths.supportDirectory).load().isEmpty)
+  }
+
   @Test("Without a prompted agent the creator always creates a task and saves the prompt for the first agent")
   func taskCreatorWithoutAgentSavesPrompt() async throws {
     let fixture = try await Fixture()

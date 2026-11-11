@@ -499,7 +499,10 @@ performs a read-only preflight of an already built bundle. Use `--login` for a l
 LaunchAgent and `--desktop` for a shortcut. Existing choices are retained on upgrade.
 Mail and scheduled-agent installation are separate developer workflows.
 
-`zsh Scripts/package-release.sh` creates a private-beta ZIP and SHA-256 checksum.
+`zsh Scripts/package-release.sh` creates a private-beta ZIP, its SHA-256 checksum,
+and an Ed25519 `.sig` signed with the publisher key in your login Keychain. The
+in-app updater installs a release only when that signature verifies; see
+`Docs/LAUNCH_BETA.md` for key setup.
 The packaged app can be dragged into Applications and needs neither Xcode nor Python
 for its native setup wizard. Its optional managed installer uses Python.
 Builds use an ad hoc signature unless `ECC_FOCUS_QUEUE_SIGN_IDENTITY` is supplied.

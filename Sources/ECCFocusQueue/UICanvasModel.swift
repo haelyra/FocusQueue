@@ -198,6 +198,13 @@ final class UICanvasModel {
       loadError = "The mockup file no longer exists: \(fileURL.path)"
       return
     }
+    // A saved session is revalidated on every load: a regular file under the size limit.
+    do {
+      try UICanvasArtifactValidation.validate(fileURL)
+    } catch {
+      loadError = error.localizedDescription
+      return
+    }
     loadError = nil
     // Local sibling assets (images, styles) still load; nothing reaches the network.
     OfflineWebContent.load(

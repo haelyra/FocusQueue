@@ -15,6 +15,8 @@ your existing subscriptions, with no API keys.
 **▶ Watch on YouTube:** [1-minute walkthrough](https://youtu.be/vFrn5qzvIQE) ·
 [UI Canvas editor demo](https://youtu.be/iUl8tj6Ly-E)
 
+Want to leave feedback or chat with @haelyra? Leave a GitHub Issue or schedule a quick meeting here! https://calendar.app.google/ChffCt7Cwd6JPL1u6 
+
 ### What it does
 
 - **Task queue.** Tasks show priority, status, a what/why/how summary and live

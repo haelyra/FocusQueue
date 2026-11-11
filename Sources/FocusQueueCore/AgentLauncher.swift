@@ -160,7 +160,8 @@ public actor TaskAgentLauncher {
                              usageBarEnabled: Bool = true, codexRoot: URL? = nil,
                              pastesPrompt: Bool = false, statusHooks: Bool = true,
                              usageRunID: String? = nil,
-                             codexSupportsNoDaemon: Bool = true) throws -> [String] {
+                             codexSupportsNoDaemon: Bool = true,
+                             bypassPermissions: Bool = false) throws -> [String] {
     guard let directory = (subtask.workspace?.path ?? context.worktreePath), directory.hasPrefix("/") else {
       throw TaskContextError.unsafeWorktree("Choose a task worktree before launching an agent.")
     }
@@ -177,9 +178,11 @@ public actor TaskAgentLauncher {
       providerArguments += subtask.provider.effortArguments(effort: effort)
     }
     providerArguments += subtask.provider.pluginArguments(
-      overrides: subtask.launchConfiguration?.pluginOverrides ?? [:], statusHooks: statusHooks)
+      overrides: subtask.launchConfiguration?.pluginOverrides ?? [:], statusHooks: statusHooks,
+      bypassPermissions: bypassPermissions)
+    providerArguments += subtask.provider.interactivePermissionArguments(bypass: bypassPermissions)
     if subtask.provider == .codex {
-      providerArguments += codexWorkspaceArguments(directory: directory)
+      providerArguments += codexWorkspaceArguments(directory: directory, bypassPermissions: bypassPermissions)
         + ["--add-dir", supportDirectory.path]
     }
     providerArguments += ["--add-dir", context.contextDirectory.path]
@@ -230,11 +233,15 @@ public actor TaskAgentLauncher {
   /// would also block a launch; this trust lasts for the run and is not saved.
   /// These are config values, so a `--yolo` wrapper still wins. The whole
   /// `projects` table is set because `-c` keys split on the dots in `.worktrees`.
-  static func codexWorkspaceArguments(directory: String) -> [String] {
+  /// With `bypassPermissions`, the run matches `--yolo`: no approval prompts
+  /// and no sandbox, set through config so a `--yolo` alias cannot collide.
+  static func codexWorkspaceArguments(directory: String, bypassPermissions: Bool = false) -> [String] {
     let path = directory.replacingOccurrences(of: "\\", with: "\\\\")
       .replacingOccurrences(of: "\"", with: "\\\"")
-    return ["-c", "sandbox_mode=\"workspace-write\"",
-            "-c", "projects={\"\(path)\"={trust_level=\"trusted\"}}"]
+    let access = bypassPermissions
+      ? ["-c", "sandbox_mode=\"danger-full-access\"", "-c", "approval_policy=\"never\""]
+      : ["-c", "sandbox_mode=\"workspace-write\""]
+    return access + ["-c", "projects={\"\(path)\"={trust_level=\"trusted\"}}"]
   }
 
   /// The text a fresh launch starts with; a resumed conversation gets none.
@@ -621,7 +628,8 @@ public actor TaskAgentLauncher {
   public func startManagedSession(
     context: TaskContext, subtask: TaskSubtask, supportDirectory: URL,
     includePrompt: Bool = true, tmuxExecutable: String,
-    usageBarEnabled: Bool = true, codexSupportsNoDaemon: Bool = true
+    usageBarEnabled: Bool = true, codexSupportsNoDaemon: Bool = true,
+    bypassPermissions: Bool = false
   ) async throws -> TmuxSessionReference {
     if let workspace = subtask.workspace { try await TaskWorktreeManager().validate(workspace) }
     if subtask.tmux != nil, subtask.sessionID == nil {
@@ -636,7 +644,7 @@ public actor TaskAgentLauncher {
       context: context, subtask: subtask, supportDirectory: supportDirectory,
       includePrompt: includePrompt, usageBarEnabled: usageBarEnabled,
       pastesPrompt: pastedPrompt != nil, usageRunID: usageRunID,
-      codexSupportsNoDaemon: codexSupportsNoDaemon)
+      codexSupportsNoDaemon: codexSupportsNoDaemon, bypassPermissions: bypassPermissions)
     let persistence = FileManager.default.isExecutableFile(atPath: tmuxExecutable)
       ? try TmuxPersistence.prepare(executable: tmuxExecutable, serverName: tmuxServerName,
           supportDirectory: supportDirectory) : nil
@@ -725,7 +733,7 @@ public actor TaskAgentLauncher {
   public func launchDirect(
     context: TaskContext, subtask: TaskSubtask,
     configuration: WezTermConfiguration, supportDirectory: URL,
-    includePrompt: Bool = true
+    includePrompt: Bool = true, bypassPermissions: Bool = false
   ) async throws -> DirectAgentLaunchReceipt {
     if let workspace = subtask.workspace {
       try await TaskWorktreeManager().validate(workspace)
@@ -733,7 +741,7 @@ public actor TaskAgentLauncher {
     let usageRunID = UUID().uuidString
     let command = try Self.command(
       context: context, subtask: subtask, supportDirectory: supportDirectory,
-      includePrompt: includePrompt, usageRunID: usageRunID)
+      includePrompt: includePrompt, usageRunID: usageRunID, bypassPermissions: bypassPermissions)
     var connection = try await processController.resolveConnection(
       configuration: configuration)
     if connection.result.timedOut {

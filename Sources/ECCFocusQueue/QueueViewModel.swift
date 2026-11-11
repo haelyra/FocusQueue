@@ -2107,6 +2107,8 @@ final class QueueViewModel {
     var agentConfiguration = config.verifier
     agentConfiguration.executable = config.chatExecutable(for: provider)
     agentConfiguration.supportDirectory = paths.supportDirectory.path
+    agentConfiguration.bypassPermissions = bypassesPermissions(
+      for: provider, in: ticketID.flatMap { taskContexts[$0] })
     // The turn runs in this conversation's tmux session with no run budget, so
     // long requests finish and survive an app restart (FOC-120).
     agentConfiguration.chatTurn = chatTurnTarget(for: conversation)
@@ -2670,7 +2672,11 @@ final class QueueViewModel {
         guard let self, let ticketID, document.isFileURL else { return nil }
         return await self.documentCreator(path: document.path, ticketID: ticketID, known: known)
       },
-      modelChoices: { [weak self] provider in self?.agentModelChoices(for: provider) ?? [] })
+      modelChoices: { [weak self] provider in self?.agentModelChoices(for: provider) ?? [] },
+      bypassPermissions: { [weak self] provider in
+        guard let self else { return true }
+        return self.bypassesPermissions(for: provider, in: ticketID.flatMap { self.taskContexts[$0] })
+      })
     let conversation = DocumentConversation(document: document, subject: subject, support: paths.supportDirectory,
       services: services, configuration: config.verifier, dashboardPath: dashboardPath,
       workspace: config.workspacePath, provider: provider)
@@ -3539,6 +3545,7 @@ final class QueueViewModel {
         configuration.projectScopeID = dashboard.tickets.first { $0.id == ticketID }?.projectID
           ?? selectedProjectID
         configuration.writableDirectories = [URL(fileURLWithPath: file).deletingLastPathComponent().path]
+        configuration.bypassPermissions = bypassesPermissions(for: provider, in: taskContexts[ticketID])
         let agent = queueAgent(for: provider)
         var prompt = makePrompt(creator)
         let workspace: String
@@ -4179,7 +4186,8 @@ final class QueueViewModel {
           let runtime = try await taskAgentLauncher.startManagedSession(context: context, subtask: assignment,
             supportDirectory: paths.supportDirectory, tmuxExecutable: executable,
             usageBarEnabled: config.agentUsageBarEnabled,
-            codexSupportsNoDaemon: await codexSupportsNoDaemon(for: assignment.provider))
+            codexSupportsNoDaemon: await codexSupportsNoDaemon(for: assignment.provider),
+            bypassPermissions: bypassesPermissions(for: assignment.provider, in: context))
           // A resumed conversation is sent no prompt, so it waits for input.
           taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
             ticketID: ticket.id, subtaskID: assignment.id, tmux: runtime,
@@ -4189,7 +4197,8 @@ final class QueueViewModel {
         } else {
           assignment.runtimeMode = .terminal
           let receipt = try await taskAgentLauncher.launchDirect(context: context, subtask: assignment,
-            configuration: config.wezTerm, supportDirectory: paths.supportDirectory)
+            configuration: config.wezTerm, supportDirectory: paths.supportDirectory,
+            bypassPermissions: bypassesPermissions(for: assignment.provider, in: context))
           taskContexts[ticket.id] = try await taskContextStore.setDirectRuntime(
             ticketID: ticket.id, subtaskID: assignment.id, paneID: receipt.paneID, socketPath: receipt.socketPath,
             status: assignment.sessionID == nil ? .working : .idle)
@@ -4378,7 +4387,8 @@ final class QueueViewModel {
             context: context, subtask: subtask, supportDirectory: paths.supportDirectory,
             includePrompt: includePrompt, tmuxExecutable: tmuxExecutable,
             usageBarEnabled: config.agentUsageBarEnabled,
-            codexSupportsNoDaemon: await codexSupportsNoDaemon(for: provider))
+            codexSupportsNoDaemon: await codexSupportsNoDaemon(for: provider),
+            bypassPermissions: bypassesPermissions(for: provider, in: context))
           runtimeStarted = true
           phase = "saving the confirmed tmux process"
           taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
@@ -4408,7 +4418,8 @@ final class QueueViewModel {
             "Starting \(provider.displayName) directly in a new WezTerm window…"
           let receipt = try await taskAgentLauncher.launchDirect(
             context: context, subtask: subtask, configuration: config.wezTerm,
-            supportDirectory: paths.supportDirectory, includePrompt: includePrompt)
+            supportDirectory: paths.supportDirectory, includePrompt: includePrompt,
+            bypassPermissions: bypassesPermissions(for: provider, in: context))
           runtimeStarted = true
           phase = "saving the direct WezTerm pane"
           taskContexts[ticket.id] = try await taskContextStore.setDirectRuntime(
@@ -4628,6 +4639,30 @@ final class QueueViewModel {
     guard provider == .codex else { return choices }
     return (codexCatalog?.choices(from: choices) ?? choices).filter {
       !unavailableCodexModels.contains($0.model ?? "")
+    }
+  }
+
+  /// The "bypass permissions" choice for a provider, with a task's own choice first.
+  func bypassesPermissions(for provider: AgentProvider, in context: TaskContext?) -> Bool {
+    config.bypassesPermissions(for: provider, taskOverride: context?.bypassPermissions)
+  }
+
+  func setPermissionBypass(_ bypass: Bool, for provider: AgentProvider) {
+    guard config.bypassesPermissions(for: provider) != bypass || config.agentPermissionBypass[provider] == nil
+    else { return }
+    config.agentPermissionBypass[provider] = bypass
+    persistConfiguration()
+  }
+
+  /// nil follows the provider settings. Applies to agents started afterwards.
+  func setTaskPermissionBypass(_ bypass: Bool?, ticketID: String) {
+    guard taskContexts[ticketID]?.bypassPermissions != bypass else { return }
+    Task { @MainActor in
+      do {
+        taskContexts[ticketID] = try await taskContextStore.setPermissionBypass(bypass, ticketID: ticketID)
+      } catch {
+        actionMessages[ticketID] = "Could not save the permission choice: \(error.localizedDescription)"
+      }
     }
   }
 

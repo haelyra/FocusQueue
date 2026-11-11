@@ -253,9 +253,34 @@ class FocusQueueKimiTests(unittest.TestCase):
             profile = Path(command[command.index("--agent-file") + 1]).read_text()
             self.assertIn("name: focus-queue-document-editor", profile)
             self.assertNotIn("Bash", profile)
+            # A blank `tools:` line means every tool to Kimi; `[]` means none (FOC-119).
+            self.assertIn("\ntools: []\n", profile)
             self.assertNotIn("--session", command)
             fork.assert_not_called()
             self.assertFalse((root / "runtime" / "sessions.json").exists())
+
+    def test_chat_without_bypass_reads_only_and_refuses_saved_sessions(self):
+        captured = {}
+        stdout = stream_lines(assistant_event("done", session_id=SESSION_ID))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prompt = root / "prompt.txt"
+            prompt.write_text("tidy the queue")
+            arguments = argparse.Namespace(runtime=root / "runtime", session="queue", workspace=root,
+                prompt_file=prompt, timeout=10, fresh=True, permissions="ask")
+            with mock.patch.object(MODULE, "resolve_kimi", return_value="/usr/bin/kimi"), \
+                    mock.patch.object(MODULE, "newest_workspace_session", return_value=None), \
+                    mock.patch.object(MODULE.subprocess, "Popen", fake_process(captured, stdout)), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(MODULE.chat(arguments), 0)
+            profile = Path(captured["command"][captured["command"].index("--agent-file") + 1]).read_text()
+            self.assertIn("\ntools: Read, Grep, Glob\n", profile)
+            self.assertNotIn("Bash", profile)
+            arguments.fresh = False
+            with mock.patch.object(MODULE, "run_kimi") as run:
+                with self.assertRaisesRegex(MODULE.KimiHarnessError, "bypass permissions on"):
+                    MODULE.chat(arguments)
+                run.assert_not_called()
 
     def test_chat_persists_a_named_session_in_private_state(self):
         with tempfile.TemporaryDirectory() as temporary:

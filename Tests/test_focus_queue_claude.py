@@ -152,6 +152,24 @@ class FocusQueueClaudeTests(unittest.TestCase):
             "99999999-8888-7777-6666-555555555555",
         )
 
+    def test_chat_without_bypass_uses_the_default_permission_mode(self):
+        captured = {}
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            MODULE, "resolve_claude", return_value="/usr/bin/claude"
+        ), mock.patch.object(
+            MODULE.subprocess, "Popen", fake_process(captured, envelope("done"))
+        ), mock.patch.dict(os.environ, {"FOCUS_QUEUE_SUPPORT_DIR": temporary}):
+            root = Path(temporary)
+            prompt = root / "prompt.txt"
+            prompt.write_text("tidy the queue")
+            for mode, expected in (("ask", "default"), ("bypass", "bypassPermissions")):
+                arguments = argparse.Namespace(runtime=root / "runtime", session="queue", workspace=root,
+                    prompt_file=prompt, timeout=10, fresh=True, permissions=mode)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(MODULE.chat(arguments), 0)
+                command = captured["command"]
+                self.assertEqual(command[command.index("--permission-mode") + 1], expected)
+
     def test_chat_persists_a_named_session_in_private_state(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

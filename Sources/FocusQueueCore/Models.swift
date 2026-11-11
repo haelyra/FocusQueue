@@ -99,6 +99,9 @@ public struct VerifierConfiguration: Codable, Equatable, Sendable {
   /// Runtime-only QChat target: the turn runs in this conversation's tmux
   /// session with no run budget instead of as a timed child process.
   public var chatTurn: QueueChatTurnTarget?
+  /// Runtime-only permission choice for this turn; nil keeps the harness
+  /// default (bypass). False asks the harness to run without bypassing.
+  public var bypassPermissions: Bool?
 
   public init(
     enabled: Bool,
@@ -348,6 +351,9 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var defaultAgentEfforts: [AgentProvider: String]
   /// Per-provider QChat models, separate from agent launches; a missing value uses `defaultChatModels`.
   public var chatModels: [AgentProvider: String]
+  /// Per-provider "bypass permissions" choice for agents and chat turns Focus
+  /// Queue starts. A missing provider bypasses, matching earlier releases.
+  public var agentPermissionBypass: [AgentProvider: Bool]
   /// Per-provider QChat efforts; a missing value uses `defaultChatEfforts`.
   public var chatEfforts: [AgentProvider: String]
   /// Chat harness executable overrides; Codex chat keeps using `verifier.executable`.
@@ -461,6 +467,12 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     chatModels[provider] ?? Self.defaultChatModels[provider]
   }
 
+  /// Whether agents and chat turns for `provider` skip permission prompts.
+  /// A task's own choice wins; otherwise the provider setting, which defaults on.
+  public func bypassesPermissions(for provider: AgentProvider, taskOverride: Bool? = nil) -> Bool {
+    taskOverride ?? agentPermissionBypass[provider] ?? true
+  }
+
   /// Kimi has no effort flag, so it never reports one.
   public func chatEffort(for provider: AgentProvider) -> String? {
     guard provider != .kimi else { return nil }
@@ -517,6 +529,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.defaultAgentModels = [:]
     self.defaultAgentEfforts = [:]
     self.chatModels = [:]
+    self.agentPermissionBypass = [:]
     self.chatEfforts = [:]
     self.claudeChatExecutable = nil
     self.kimiChatExecutable = nil
@@ -544,6 +557,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case autoArchiveStaleAgents
     case defaultAgentProvider, defaultAgentModels, defaultAgentEfforts
     case chatModels, chatEfforts
+    case agentPermissionBypass
     case claudeChatExecutable, kimiChatExecutable
     case focusQueueProjects, focusQueueSelectedProjectID, projects, selectedProjectID
   }
@@ -593,6 +607,10 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
       try container.decodeIfPresent([String: String].self, forKey: .defaultAgentEfforts))
     chatModels = Self.providerValues(
       try container.decodeIfPresent([String: String].self, forKey: .chatModels))
+    agentPermissionBypass = (try container.decodeIfPresent([String: Bool].self, forKey: .agentPermissionBypass) ?? [:])
+      .reduce(into: [:]) { values, pair in
+        if let provider = AgentProvider(rawValue: pair.key.lowercased()) { values[provider] = pair.value }
+      }
     chatEfforts = Self.providerValues(
       try container.decodeIfPresent([String: String].self, forKey: .chatEfforts))
     claudeChatExecutable = try container.decodeIfPresent(String.self, forKey: .claudeChatExecutable)
@@ -675,6 +693,11 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encode(Self.rawProviderValues(defaultAgentModels), forKey: .defaultAgentModels)
     try container.encode(Self.rawProviderValues(defaultAgentEfforts), forKey: .defaultAgentEfforts)
     try container.encode(Self.rawProviderValues(chatModels), forKey: .chatModels)
+    if !agentPermissionBypass.isEmpty {
+      try container.encode(
+        Dictionary(uniqueKeysWithValues: agentPermissionBypass.map { ($0.key.rawValue, $0.value) }),
+        forKey: .agentPermissionBypass)
+    }
     try container.encode(Self.rawProviderValues(chatEfforts), forKey: .chatEfforts)
     try container.encodeIfPresent(claudeChatExecutable, forKey: .claudeChatExecutable)
     try container.encodeIfPresent(kimiChatExecutable, forKey: .kimiChatExecutable)
@@ -1695,9 +1718,14 @@ public enum AgentProvider: String, Codable, CaseIterable, Equatable, Sendable {
   /// provider's saved settings. Kimi has no plugin system; Codex drops IDs its
   /// dotted `-c` path cannot address. `statusHooks` adds Claude's Focus Queue
   /// status hooks to the same `--settings` value, the only one Claude reads.
-  public func pluginArguments(overrides: [String: Bool], statusHooks: Bool = false) -> [String] {
+  /// With `bypassPermissions`, Claude's one-time bypass warning is skipped:
+  /// the Focus Queue setting is the user's consent, and an unanswered warning
+  /// would otherwise swallow the pasted prompt.
+  public func pluginArguments(overrides: [String: Bool], statusHooks: Bool = false,
+                              bypassPermissions: Bool = false) -> [String] {
     if self == .claude {
-      return AgentHookStatus.claudeSettings(pluginOverrides: overrides, statusHooks: statusHooks)
+      return AgentHookStatus.claudeSettings(pluginOverrides: overrides, statusHooks: statusHooks,
+                                            skipBypassWarning: bypassPermissions)
         .map { ["--settings", $0] } ?? []
     }
     let ids = overrides.keys.sorted()
@@ -1713,6 +1741,21 @@ public enum AgentProvider: String, Codable, CaseIterable, Equatable, Sendable {
       }.flatMap { ["-c", "plugins.\($0).enabled=\(overrides[$0]! ? "true" : "false")"] }
     case .kimi:
       return []
+    }
+  }
+}
+
+extension AgentProvider {
+  /// Interactive launch flags for the "bypass permissions" setting. Off adds
+  /// nothing, so the provider's own settings (and shell aliases) decide.
+  /// Codex expresses bypass as config values, which never collide with a
+  /// `--yolo` alias the way a repeated flag would; see `codexWorkspaceArguments`.
+  public func interactivePermissionArguments(bypass: Bool) -> [String] {
+    guard bypass else { return [] }
+    switch self {
+    case .claude: return ["--permission-mode", "bypassPermissions"]
+    case .codex: return []
+    case .kimi: return ["--yolo"]
     }
   }
 }

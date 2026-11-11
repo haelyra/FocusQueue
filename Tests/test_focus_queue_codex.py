@@ -456,6 +456,19 @@ class FocusQueueCodexTests(unittest.TestCase):
         self.assertIn(str(root), [command[i + 1] for i, v in enumerate(command) if v == "--add-dir"])
         self.assertIn("resume", command)
 
+    def test_chat_without_bypass_keeps_the_sandbox_offline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prompt = root / "prompt.txt"
+            prompt.write_text("tidy the queue")
+            for mode, expected in (("ask", False), ("bypass", True)):
+                arguments = argparse.Namespace(runtime=root / "runtime", session="queue", workspace=root,
+                    prompt_file=prompt, timeout=10, fresh=True, permissions=mode)
+                with mock.patch.object(MODULE, "run_codex", return_value=("Answer", "thread")) as run, \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(MODULE.chat(arguments), 0)
+                self.assertEqual(run.call_args.kwargs["bypass_permissions"], expected)
+
     def test_reader_is_read_only_and_never_forks_or_saves_a_thread(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -664,6 +677,36 @@ class FocusQueueCodexTests(unittest.TestCase):
                     if disable_tools:
                         self.assertIn("--ephemeral", command)
                         self.assertIn("--strict-config", command)
+
+    def test_workspace_write_network_follows_the_bypass_setting(self):
+        captured = []
+
+        class FakeProcess:
+            returncode = 0
+            pid = 123
+
+            def __init__(self, command, **_kwargs):
+                captured.append(command)
+                Path(command[command.index("--output-last-message") + 1]).write_text("done")
+
+            def communicate(self, **_kwargs):
+                return ("", "")
+
+            def poll(self):
+                return 0
+
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            MODULE, "resolve_codex", return_value="/usr/bin/codex"
+        ), mock.patch.object(MODULE.subprocess, "Popen", FakeProcess):
+            root = Path(temporary)
+            for bypass in (True, False):
+                MODULE.run_codex(
+                    prompt="hi", workspace=root, runtime=root / "runtime", timeout=10,
+                    sandbox="workspace-write", thread_id=None, output_schema=None,
+                    bypass_permissions=bypass,
+                )
+        self.assertIn("sandbox_workspace_write.network_access=true", captured[0])
+        self.assertNotIn("sandbox_workspace_write.network_access=true", captured[1])
 
     def test_prompt_paths_never_become_additional_writable_directories(self):
         captured = {}

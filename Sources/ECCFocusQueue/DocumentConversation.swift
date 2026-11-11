@@ -257,6 +257,7 @@ struct DocumentChatServices: Sendable {
     /// Reads transcripts when `known` is nil; otherwise only rechecks liveness.
     var resolveCreator: @MainActor @Sendable (_ known: DocumentAuthor?) async -> DocumentChatCreator?
     var modelChoices: @MainActor @Sendable (AgentProvider) -> [AgentModelChoice]
+    var bypassPermissions: @MainActor @Sendable (AgentProvider) -> Bool = { _ in true }
 }
 
 actor DocumentChatRouteStore {
@@ -506,6 +507,7 @@ final class DocumentConversation {
         configuration.executable = services.executable(route.provider)
         configuration.forkSourceSessionID = route.kind == .creatorFork ? route.sourceSessionID : nil
         configuration.documentReader = route.kind == .ephemeralReader
+        configuration.bypassPermissions = services.bypassPermissions(route.provider)
         let agent = services.agent(route.provider)
         let workspace = route.workspace ?? self.workspace
         requestTask = Task {

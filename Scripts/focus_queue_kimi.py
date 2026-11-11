@@ -217,6 +217,17 @@ You are a concise assistant running one Focus Queue chat turn on the user's Mac.
 """
 
 
+# Without Focus Queue's permission bypass a chat turn can read and search but
+# not write files or run commands; print mode cannot ask first (FOC-119).
+LEAN_CHAT_READ_ONLY_AGENT = """---
+name: focus-queue-chat-read-only
+description: Focus Queue chat turn with read and search tools only.
+tools: Read, Grep, Glob
+---
+You are a concise assistant running one Focus Queue chat turn on the user's Mac. Follow the instructions in the user message, reading the request by its intent rather than its literal wording. You can read and search files but cannot edit files or run commands; when a request needs a change, say exactly what to change instead. Reply briefly.
+"""
+
+
 READER_AGENT = """---
 name: focus-queue-document-reader
 description: Read documents and answer questions using read-only searches.
@@ -230,7 +241,7 @@ You are an ephemeral document reader. Answer questions using the supplied docume
 EDITOR_AGENT = """---
 name: focus-queue-document-editor
 description: Edit one supplied document in a single reply.
-tools:
+tools: []
 ---
 You edit one document. Follow the user message and reply only in the format it asks for.
 """
@@ -282,7 +293,7 @@ def stream_has_tool_calls(stdout: str) -> bool:
 
 
 def lean_chat_arguments(
-    runtime: Path, workspace: Path, *, reader: bool = False, editor: bool = False
+    runtime: Path, workspace: Path, *, reader: bool = False, editor: bool = False, read_only: bool = False
 ) -> tuple[Path, list[str]]:
     """Working directory and flags for a lean turn: an empty directory keeps
     workspace AGENTS.md files out, an empty skills directory drops the skill
@@ -294,6 +305,7 @@ def lean_chat_arguments(
     agent_name, profile = (
         ("document-editor-agent.md", EDITOR_AGENT) if editor
         else ("document-reader-agent.md", READER_AGENT) if reader
+        else ("lean-chat-read-only-agent.md", LEAN_CHAT_READ_ONLY_AGENT) if read_only
         else ("lean-chat-agent.md", LEAN_CHAT_AGENT)
     )
     agent_file = runtime / agent_name
@@ -356,6 +368,7 @@ def run_kimi(
     lean: bool = False,
     reader: bool = False,
     editor: bool = False,
+    bypass_permissions: bool = True,
     _retried_schema: bool = False,
 ) -> tuple[str, str | None]:
     if context_directory is not None:
@@ -372,7 +385,8 @@ def run_kimi(
         executable = resolve_kimi()
         tool_free_arguments = tool_free_agent_arguments(executable, runtime) if disable_tools else []
         work_directory, lean_arguments = (
-            lean_chat_arguments(runtime, workspace, reader=reader, editor=editor) if lean else (workspace, [])
+            lean_chat_arguments(runtime, workspace, reader=reader, editor=editor,
+                                read_only=not bypass_permissions) if lean else (workspace, [])
         )
         prior_marker = session_marker(newest_workspace_session(executable, work_directory))
         command = [
@@ -550,6 +564,11 @@ def fork_session(source: str, workspace: Path) -> str:
     return match.group(1)
 
 
+def bypass_permissions(arguments: argparse.Namespace) -> bool:
+    """`chat --permissions ask` turns Focus Queue's permission bypass off (FOC-119)."""
+    return getattr(arguments, "permissions", "bypass") != "ask"
+
+
 def chat(arguments: argparse.Namespace) -> int:
     runtime = arguments.runtime.expanduser()
     state_path = runtime / "sessions.json"
@@ -579,6 +598,7 @@ def chat(arguments: argparse.Namespace) -> int:
             # nor saves a session mapping whose history would grow every turn.
             reply, _ = run_kimi(
                 prompt=prompt,
+                bypass_permissions=bypass_permissions(arguments),
                 workspace=arguments.workspace,
                 runtime=runtime,
                 timeout=arguments.timeout,
@@ -597,9 +617,17 @@ def chat(arguments: argparse.Namespace) -> int:
             )
             print(reply)
             return 0
+        if not bypass_permissions(arguments):
+            # A resumed or forked Kimi session cannot load a restricted agent
+            # profile, and print mode never asks before a tool runs (FOC-119).
+            raise KimiHarnessError(
+                "Kimi can only continue a saved conversation with bypass permissions on. "
+                "Turn on bypass for Kimi or this task, or start a new Kimi chat."
+            )
         try:
             reply, observed_session = run_kimi(
                 prompt=prompt,
+                bypass_permissions=bypass_permissions(arguments),
                 workspace=arguments.workspace,
                 runtime=runtime,
                 timeout=arguments.timeout,
@@ -625,6 +653,7 @@ def chat(arguments: argparse.Namespace) -> int:
             morning.write_private_json(state_path, state)
             reply, observed_session = run_kimi(
                 prompt=prompt,
+                bypass_permissions=bypass_permissions(arguments),
                 workspace=arguments.workspace,
                 runtime=runtime,
                 timeout=arguments.timeout,
@@ -682,6 +711,8 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     chat_parser = subparsers.add_parser("chat")
+    chat_parser.add_argument("--permissions", choices=["bypass", "ask"], default="bypass",
+                             help="ask: run without Focus Queue's permission bypass")
     chat_parser.add_argument("--session", required=True)
     chat_parser.add_argument("--fresh", action="store_true",
                              help="Run a one-off turn without resuming or saving a session")

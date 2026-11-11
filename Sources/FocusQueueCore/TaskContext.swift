@@ -388,6 +388,9 @@ public struct TaskContext: Codable, Equatable, Sendable {
     /// path, with the modification date seen. A later edit marks one new again.
     public var reviewedOutputs: [String: Date]? = nil
     public var removedAgentSessionKeys: [String]?
+    /// This task's "bypass permissions" choice for every agent and chat turn
+    /// in it; nil follows each provider's setting.
+    public var bypassPermissions: Bool? = nil
     public var updatedAt: Date
 
     public var contextDirectory: URL { URL(fileURLWithPath: planPath).deletingLastPathComponent() }
@@ -1447,6 +1450,11 @@ public actor TaskContextStore {
                 context.subtasks[index].lastPromptAt = max(context.subtasks[index].lastPromptAt ?? .distantPast, promptAt)
             }
         }
+    }
+
+    /// Saves the task's "bypass permissions" choice; nil follows provider settings.
+    @discardableResult public func setPermissionBypass(_ bypass: Bool?, ticketID: String) throws -> TaskContext {
+        try mutate(ticketID: ticketID) { context in context.bypassPermissions = bypass }
     }
 
     /// Archiving an agent never deletes its assignment, conversation identity, or workspace.

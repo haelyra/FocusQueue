@@ -2752,6 +2752,7 @@ public actor HarnessQueueAgent: QueueAgentChatting {
         if forkSource == nil { arguments.append("--fresh") }
         if isReader { arguments.append("--reader") }
         if isEditor { arguments.append("--editor") }
+        if configuration.bypassPermissions == false { arguments += ["--permissions", "ask"] }
         arguments += [
             "--session", Self.resolvedSessionName(for: configuration, provider: provider),
             "--workspace", workspace,

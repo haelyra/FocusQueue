@@ -291,6 +291,7 @@ def run_claude(
     persist_session: bool = True,
     reader: bool = False,
     editor: bool = False,
+    bypass_permissions: bool = True,
     _retried_schema: bool = False,
 ) -> tuple[str, str | None]:
     if context_directory is not None:
@@ -332,7 +333,9 @@ def run_claude(
                 "--setting-sources", "", "--settings", '{"disableAllHooks":true}',
             ])
         else:
-            command.extend(["--permission-mode", "bypassPermissions"])
+            # Without bypass, Claude's default mode applies: headless turns use
+            # only tools the user's own permission rules allow (FOC-119).
+            command.extend(["--permission-mode", "bypassPermissions" if bypass_permissions else "default"])
             if lean:
                 command.extend([
                     "--tools", LEAN_CHAT_TOOLS, "--strict-mcp-config", "--disable-slash-commands",
@@ -491,6 +494,11 @@ def run_claude(
         return reply, str(envelope.get("session_id") or "") or None
 
 
+def bypass_permissions(arguments: argparse.Namespace) -> bool:
+    """`chat --permissions ask` turns Focus Queue's permission bypass off (FOC-119)."""
+    return getattr(arguments, "permissions", "bypass") != "ask"
+
+
 def chat(arguments: argparse.Namespace) -> int:
     runtime = arguments.runtime.expanduser()
     state_path = runtime / "sessions.json"
@@ -515,6 +523,7 @@ def chat(arguments: argparse.Namespace) -> int:
             # nor saves a provider session whose history would grow every turn.
             reply, _ = run_claude(
                 prompt=prompt,
+                bypass_permissions=bypass_permissions(arguments),
                 workspace=arguments.workspace,
                 runtime=runtime,
                 timeout=arguments.timeout,
@@ -538,6 +547,7 @@ def chat(arguments: argparse.Namespace) -> int:
         try:
             reply, observed_session = run_claude(
                 prompt=prompt,
+                bypass_permissions=bypass_permissions(arguments),
                 workspace=arguments.workspace,
                 runtime=runtime,
                 timeout=arguments.timeout,
@@ -565,6 +575,7 @@ def chat(arguments: argparse.Namespace) -> int:
             morning.write_private_json(state_path, state)
             reply, observed_session = run_claude(
                 prompt=prompt,
+                bypass_permissions=bypass_permissions(arguments),
                 workspace=arguments.workspace,
                 runtime=runtime,
                 timeout=arguments.timeout,
@@ -642,6 +653,8 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     chat_parser = subparsers.add_parser("chat")
+    chat_parser.add_argument("--permissions", choices=["bypass", "ask"], default="bypass",
+                             help="ask: run without Focus Queue's permission bypass")
     chat_parser.add_argument("--session", required=True)
     chat_parser.add_argument("--workspace", type=Path, required=True)
     chat_parser.add_argument("--context-dir", type=Path)

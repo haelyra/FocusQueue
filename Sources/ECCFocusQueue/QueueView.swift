@@ -1820,6 +1820,21 @@ struct QueueSettingsView: View {
             }
           }
           settingsSection(
+            title: "Permissions",
+            detail: "Bypass lets agents and chat turns that Focus Queue starts edit files and run commands without asking first. Turn it off to have agents ask. Each task can override this in its details."
+          ) {
+            VStack(alignment: .leading, spacing: 10) {
+              ForEach(AgentProvider.allCases, id: \.self) { provider in
+                Toggle("Bypass permissions for \(provider.displayName)", isOn: Binding(
+                  get: { model.config.bypassesPermissions(for: provider) },
+                  set: { model.setPermissionBypass($0, for: provider) }))
+              }
+              Text("With bypass off, agent panes use your provider's own permission settings, and chat turns, which cannot stop to ask, are limited: Claude uses only tools your rules allow, Codex runs sandboxed without network, and Kimi can read and search but not edit. Shell aliases that add bypass flags still apply.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+          }
+          settingsSection(
             title: "Task placement",
             detail: "fq places each new agent with one small model call through your own subscription CLI: it joins a matching open task or creates a titled one. A ticket ID in the prompt skips the call."
           ) {

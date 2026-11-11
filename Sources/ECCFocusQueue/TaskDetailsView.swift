@@ -100,6 +100,7 @@ struct TaskDetailsView: View {
         }
         triageCallout
         deadlineEditor
+        permissionsEditor
       }
       .padding(16)
     }
@@ -109,6 +110,30 @@ struct TaskDetailsView: View {
       if let deadline = TaskTriagePolicy.hardDeadline(for: ticket) {
         draftDueDate = deadline
       }
+    }
+  }
+
+  /// The task's "bypass permissions" choice for agents and chat turns started
+  /// afterwards. Following settings uses each provider's own toggle.
+  private var permissionsEditor: some View {
+    let current = model.taskContexts[ticket.id]?.bypassPermissions
+    let defaults = AgentProvider.allCases
+      .map { "\($0.displayName) \(model.config.bypassesPermissions(for: $0) ? "bypasses" : "asks")" }
+      .joined(separator: ", ")
+    return VStack(alignment: .leading, spacing: 6) {
+      Picker("Permissions", selection: Binding<Int>(
+        get: { current == nil ? 0 : (current == true ? 1 : 2) },
+        set: { model.setTaskPermissionBypass($0 == 0 ? nil : $0 == 1, ticketID: ticket.id) }
+      )) {
+        Text("Follow settings").tag(0)
+        Text("Bypass").tag(1)
+        Text("Ask").tag(2)
+      }
+      .pickerStyle(.segmented)
+      .disabled(model.taskContexts[ticket.id] == nil)
+      Text("Applies to agents and chat turns started after a change. Settings: \(defaults).")
+        .font(.caption).foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
     }
   }
 

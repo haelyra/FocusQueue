@@ -46,6 +46,23 @@ func documentReaderProviderArguments() async throws {
   }
 }
 
+@Test("Chat turns without bypass ask every harness to run without its permission bypass")
+func chatPermissionArguments() async throws {
+  for provider in AgentProvider.allCases {
+    for bypass in [true, false, nil] as [Bool?] {
+      let runner = QueueAgentRecordingRunner()
+      let agent = HarnessQueueAgent(provider: provider, runner: runner)
+      var configuration = chatConfiguration(executable: "/mock/\(provider.rawValue)")
+      configuration.bypassPermissions = bypass
+      _ = try await agent.send(message: "User request:\nhi", dashboardPath: "/dashboard", workspace: "/tmp",
+        visibleOrder: [], deferredTicketIDs: [], configuration: configuration, model: nil, effort: nil)
+      let arguments = try #require(await runner.specifications.first).arguments
+      let asks = arguments.firstIndex(of: "--permissions").map { arguments[$0 + 1] == "ask" } ?? false
+      #expect(asks == (bypass == false))
+    }
+  }
+}
+
 @Test("Document editors get no queue prompt, no extra directories, and no mail evidence check")
 func documentEditorProviderArguments() async throws {
   for provider in AgentProvider.allCases {

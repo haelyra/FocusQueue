@@ -607,6 +607,7 @@ def run_codex(
     writable_directories: list[Path] | None = None,
     fork_thread: bool = False,
     lean: bool = False,
+    bypass_permissions: bool = True,
     persist_session: bool = True,
 ) -> tuple[str, str | None]:
     if context_directory is not None:
@@ -644,7 +645,8 @@ def run_codex(
         elif lean:
             for feature in lean_chat_disabled_features(executable):
                 command.extend(["--disable", feature])
-        if sandbox == "workspace-write":
+        # Without bypass the workspace-write sandbox stays offline (FOC-119).
+        if sandbox == "workspace-write" and bypass_permissions:
             command.extend(["-c", "sandbox_workspace_write.network_access=true"])
         command.append("exec")
         if disable_tools:
@@ -824,6 +826,11 @@ def run_chat_turn(**options: Any) -> tuple[str, str | None]:
         return f"{note}\n\n{reply}", thread
 
 
+def bypass_permissions(arguments: argparse.Namespace) -> bool:
+    """`chat --permissions ask` turns Focus Queue's permission bypass off (FOC-119)."""
+    return getattr(arguments, "permissions", "bypass") != "ask"
+
+
 def chat(arguments: argparse.Namespace) -> int:
     runtime = arguments.runtime.expanduser()
     state_path = runtime / "sessions.json"
@@ -848,6 +855,7 @@ def chat(arguments: argparse.Namespace) -> int:
             # nor saves a session mapping whose history would grow every turn.
             reply, _ = run_chat_turn(
                 prompt=prompt,
+                bypass_permissions=bypass_permissions(arguments),
                 workspace=arguments.workspace,
                 runtime=runtime,
                 timeout=arguments.timeout,
@@ -869,6 +877,7 @@ def chat(arguments: argparse.Namespace) -> int:
         try:
             reply, observed_thread = run_chat_turn(
                 prompt=prompt,
+                bypass_permissions=bypass_permissions(arguments),
                 workspace=arguments.workspace,
                 runtime=runtime,
                 timeout=arguments.timeout,
@@ -896,6 +905,7 @@ def chat(arguments: argparse.Namespace) -> int:
             morning.write_private_json(state_path, state)
             reply, observed_thread = run_chat_turn(
                 prompt=prompt,
+                bypass_permissions=bypass_permissions(arguments),
                 workspace=arguments.workspace,
                 runtime=runtime,
                 timeout=arguments.timeout,
@@ -955,6 +965,8 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     chat_parser = subparsers.add_parser("chat")
+    chat_parser.add_argument("--permissions", choices=["bypass", "ask"], default="bypass",
+                             help="ask: run without Focus Queue's permission bypass")
     chat_parser.add_argument("--session", required=True)
     chat_parser.add_argument("--fresh", action="store_true",
                              help="Run a one-off turn without resuming or saving a session")

@@ -23,9 +23,11 @@ public enum AgentHookStatus {
     /// Claude Code honors only the last `--settings` flag, so the launch's plugin
     /// overrides and the status hooks share one value. `disableAllHooks: false`
     /// re-enables hooks for this agent when the user's settings turn them off.
-    public static func claudeSettings(pluginOverrides: [String: Bool], statusHooks: Bool) -> String? {
+    public static func claudeSettings(pluginOverrides: [String: Bool], statusHooks: Bool,
+                                      skipBypassWarning: Bool = false) -> String? {
         var settings: [String: Any] = [:]
         if !pluginOverrides.isEmpty { settings["enabledPlugins"] = pluginOverrides }
+        if skipBypassWarning { settings["skipDangerousModePermissionPrompt"] = true }
         if statusHooks {
             settings["disableAllHooks"] = false
             let handler: [String: Any] = ["type": "command", "command": claudeCommand, "async": true, "timeout": 10]

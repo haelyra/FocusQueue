@@ -607,7 +607,9 @@ struct AppUpdaterTests {
     defer { try? FileManager.default.removeItem(at: root) }
     let script = root.appendingPathComponent("Install.command")
     let marker = root.appendingPathComponent("ran")
-    try Data("#!/bin/zsh\nsleep 1\ntouch '\(marker.path)'\n".utf8).write(to: script)
+    // The installer outlasts the check by a wide margin, so a launcher that
+    // waited for it fails, while process start-up under a busy parallel run does not.
+    try Data("#!/bin/zsh\nsleep 5\ntouch '\(marker.path)'\n".utf8).write(to: script)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
     let started = Date()
     let result = try await FoundationProcessRunner().run(ProcessSpecification(
@@ -616,8 +618,8 @@ struct AppUpdaterTests {
                   script.path, root.appendingPathComponent("install.log").path],
       timeoutSeconds: 15))
     #expect(result.succeeded)
-    #expect(Date().timeIntervalSince(started) < 1, "The launcher must not wait for the installer")
-    for _ in 0..<40 where !FileManager.default.fileExists(atPath: marker.path) {
+    #expect(Date().timeIntervalSince(started) < 4, "The launcher must not wait for the installer")
+    for _ in 0..<100 where !FileManager.default.fileExists(atPath: marker.path) {
       try await Task.sleep(for: .milliseconds(100))
     }
     #expect(FileManager.default.fileExists(atPath: marker.path))

@@ -22,12 +22,14 @@ struct DocumentContextSafetyTests {
         return url
     }
 
-    /// Releases a reader stuck opening `pipes` after the deadline, so a
-    /// regression fails the timing check instead of hanging the suite.
+    /// Releases a reader stuck opening `pipes` after 20 s, so a regression
+    /// fails the timing check instead of hanging the suite. A blocked open
+    /// waits for this release; scheduling delay in a busy parallel run (up to
+    /// about 5 s observed) stays well under the 10 s check.
     private func watchdog(_ pipes: [URL]) -> Task<Void, Never> {
         let paths = pipes.map(\.path)
         return Task.detached {
-            try? await Task.sleep(for: .seconds(3))
+            try? await Task.sleep(for: .seconds(20))
             for path in paths {
                 let writer = Darwin.open(path, O_RDWR | O_NONBLOCK)
                 if writer >= 0 { Darwin.close(writer) }
@@ -52,7 +54,7 @@ struct DocumentContextSafetyTests {
         #expect(DocumentConversation.editableSource(document) == nil)
         #expect(DocumentContextReader.pdfText(pdf, focusPage: nil, limit: 48_000) == nil)
 
-        #expect(Date().timeIntervalSince(started) < 2)
+        #expect(Date().timeIntervalSince(started) < 10, "A pipe open blocked until the watchdog released it")
         #expect(prompt.contains("Source unavailable: \(document.path)"))
         #expect(prompt.hasSuffix("User request:\nSummarize"))
     }

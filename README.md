@@ -1,9 +1,41 @@
 # Focus Queue
 
-A macOS operator panel that projects a local JSON task dashboard into an
-always-on-top, all-Spaces queue. First launch offers a setup wizard with an empty
-queue or an existing workspace. New Agent offers a checked-by-default tmux option so sessions can be reattached from
-another device through SSH over Tailscale while execution stays on the original Mac. It can also launch a terminal-owned session without tmux.
+**One always-on-top queue for every coding agent you run on your Mac.**
+
+Focus Queue is a macOS panel and `focus-queue-session` CLI that organize agent
+work into **projects → tasks → agents**. Each task gets one central plan every
+agent reads. Each agent gets its own git worktree, branch and tmux pane, so
+Claude Code, Codex and Kimi can work in parallel without colliding. It runs on
+your existing subscriptions, with no API keys.
+
+<p align="center">
+  <img src="Docs/media/task-queue.png" width="320" alt="Focus Queue panel showing three example Habit App tasks (HAB-1 to HAB-3) with priority, status, plan and agent rows">
+</p>
+
+**▶ Demo:** [1-minute walkthrough video](Docs/media/walkthrough-demo.mp4) ·
+[UI Canvas video](Docs/media/ui-canvas-demo.mp4)
+
+### What it does
+
+- **Task queue.** Tasks show priority, status, a what/why/how summary and live
+  agent rows. Today's Focus sorts recent work first, then by priority.
+- **Isolated agents.** **+** or **New Agent** creates a worktree and tmux pane,
+  then starts the agent there. Reattach from another device over SSH.
+- **Shared plan and context.** **View Central Plan** keeps every agent on one
+  goal. **View Context** holds files, evidence and the agent log.
+- **UI Canvas editor.** Agents mock up screens as live pages beside the plan.
+  Click to select, edit styles in the inspector, or chat with the agent. Then
+  **Save and Finish** hands your edits back to build.
+- **Clean finish.** Completing a task stops its tmux session, archives
+  unmerged work and cleans up worktrees.
+
+### UI Canvas editor
+
+![UI Canvas demo: selecting and restyling a heading, then asking the agent for a change](Docs/media/ui-canvas-demo.gif)
+
+| Inspect and restyle any element | Ask the agent for a change |
+| --- | --- |
+| ![UI Canvas editor with the Good morning heading selected and the style inspector open](Docs/media/ui-canvas-editor.png) | ![UI Canvas conversation queuing a floating-button request for the agent](Docs/media/ui-canvas-chat.png) |
 
 Focus Queue is in public beta. See [the beta handoff](Docs/LAUNCH_BETA.md)
 for compatibility, reconnect instructions and remaining launch gates.

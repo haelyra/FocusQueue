@@ -348,10 +348,12 @@ struct UICanvasWebStage: NSViewRepresentable {
 
   /// Mockup scripts run (tabs, toggles, animations must work); the editor runs
   /// beside them in the app's isolated content world. The stage is offline:
-  /// `OfflineWebContent` blocks every network request and WebRTC.
+  /// `OfflineWebContent` blocks every network request and WebRTC. Its data
+  /// store persists, so a mockup's own saves (localStorage form answers)
+  /// survive app restarts and breaks between edits.
   static func configuration(coordinator: Coordinator) -> WKWebViewConfiguration {
     let configuration = WKWebViewConfiguration()
-    configuration.websiteDataStore = .nonPersistent()
+    configuration.websiteDataStore = .canvasStage
     configuration.defaultWebpagePreferences.allowsContentJavaScript = true
     OfflineWebContent.configure(configuration, allowsPageScripts: true)
     let controller = configuration.userContentController
@@ -403,6 +405,13 @@ struct UICanvasWebStage: NSViewRepresentable {
     // No alert or confirm handlers: WebKit then shows no modal panels, so a
     // mockup's dialogs can never block the editor.
   }
+}
+
+extension WKWebsiteDataStore {
+  /// The UI Canvas stage's own persistent store, kept apart from the app's
+  /// other web views so mockup state never mixes with document previews.
+  static let canvasStage = WKWebsiteDataStore(
+    forIdentifier: UUID(uuidString: "3F8C2E71-9B4D-4A6F-8C1E-5D2A7B9E0F43")!)
 }
 
 enum UICanvasNavigationPolicy {

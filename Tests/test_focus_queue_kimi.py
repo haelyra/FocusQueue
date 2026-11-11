@@ -19,6 +19,9 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
 
 SESSION_ID = "session_11111111-2222-3333-4444-555555555555"
+KIMI_HELP = mock.Mock(returncode=0, stderr="", stdout=(
+    "  --agent-file <path>           Load an agent definition from a Markdown file\n"
+))
 
 
 def stream_lines(*events: dict) -> str:
@@ -361,7 +364,8 @@ class FocusQueueKimiTests(unittest.TestCase):
                 MODULE, "resolve_kimi", return_value="/usr/bin/kimi"
             ), mock.patch.object(
                 MODULE, "newest_workspace_session", return_value=None
-            ), mock.patch.object(MODULE.subprocess, "Popen", FlakyProcess):
+            ), mock.patch.object(MODULE.subprocess, "run", return_value=KIMI_HELP), \
+                    mock.patch.object(MODULE.subprocess, "Popen", FlakyProcess):
                 reply, _ = MODULE.run_kimi(
                     prompt="classify",
                     workspace=root,
@@ -372,12 +376,51 @@ class FocusQueueKimiTests(unittest.TestCase):
                     output_schema=schema_path,
                     disable_tools=True,
                 )
+            # `tools: []` is Kimi's no-tools allowlist; a blank `tools:` would
+            # allow every tool (FOC-119).
+            agent_file = root / "runtime" / "tool-free-agent.md"
+            self.assertIn("\ntools: []\n", agent_file.read_text())
+            self.assertEqual(agent_file.stat().st_mode & 0o777, 0o600)
 
         self.assertEqual(json.loads(reply), {"version": 1})
         self.assertEqual(len(processes), 2)
-        self.assertNotIn("--add-dir", processes[0].command)
         retry_prompt = processes[1].command[processes[1].command.index("--prompt") + 1]
         self.assertIn("previous reply was rejected", retry_prompt)
+        # Both attempts carry the same flags, with only the prompt changed.
+        for process in processes:
+            self.assertEqual(
+                process.command,
+                ["/usr/bin/kimi", "--prompt", process.command[2], "--output-format", "stream-json",
+                 "--agent-file", str(agent_file)],
+            )
+
+    def test_disable_tools_fails_closed_when_the_cli_cannot_load_agent_files(self):
+        old_help = mock.Mock(returncode=0, stdout="Options:\n  -p, --prompt <prompt>\n", stderr="")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with mock.patch.object(MODULE, "resolve_kimi", return_value="/usr/bin/kimi"), \
+                    mock.patch.object(MODULE.subprocess, "run", return_value=old_help), \
+                    mock.patch.object(MODULE.subprocess, "Popen") as popen, \
+                    self.assertRaisesRegex(MODULE.KimiHarnessError, "Kimi cannot run tool-free requests"):
+                MODULE.run_kimi(prompt="classify", workspace=root, runtime=root / "runtime", timeout=10,
+                                sandbox="read-only", session_id=None, output_schema=None, disable_tools=True)
+            popen.assert_not_called()
+
+    def test_disable_tools_discards_the_reply_when_kimi_calls_a_tool(self):
+        stdout = stream_lines(
+            {"role": "assistant", "tool_calls": [{"type": "function", "function": {"name": "Bash"}}]},
+            {"role": "tool", "tool_call_id": "tool_1", "content": "Command executed successfully."},
+            {"role": "assistant", "content": "{}"},
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with mock.patch.object(MODULE, "resolve_kimi", return_value="/usr/bin/kimi"), \
+                    mock.patch.object(MODULE, "newest_workspace_session", return_value=None), \
+                    mock.patch.object(MODULE.subprocess, "run", return_value=KIMI_HELP), \
+                    mock.patch.object(MODULE.subprocess, "Popen", fake_process({}, stdout)), \
+                    self.assertRaisesRegex(MODULE.KimiHarnessError, "called a tool"):
+                MODULE.run_kimi(prompt="classify", workspace=root, runtime=root / "runtime", timeout=10,
+                                sandbox="read-only", session_id=None, output_schema=None, disable_tools=True)
 
     def test_usage_file_maps_stream_usage_to_the_shared_shape(self):
         stdout = stream_lines(

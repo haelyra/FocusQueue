@@ -10,9 +10,10 @@ Kimi CLI notes (verified against kimi-code 2.1.1 on this machine):
   JSON event per stdout line for programmatic parsing.
 - Kimi has no reasoning-effort flag, so `--effort` is accepted and dropped,
   matching AgentProvider.effortArguments in Sources/FocusQueueCore/Models.swift.
-- Kimi has no switch to disable built-in tools in print mode; `run
-  --disable-tools` therefore relies on the classification prompt's read-only
-  contract, with static deny rules still enforced by the CLI.
+- `run --disable-tools` loads an agent file whose `tools: []` allowlist turns
+  off every built-in and MCP tool (verified on kimi-code 2.5.3: the request
+  carries an empty tool list). A blank `tools:` field allows every tool. The
+  run fails closed when the CLI lacks `--agent-file` or still emits a tool call.
 """
 
 from __future__ import annotations
@@ -235,6 +236,51 @@ You edit one document. Follow the user message and reply only in the format it a
 """
 
 
+# `tools: []` is Kimi's documented "no tools" allowlist; it also matches no
+# MCP tool, so classified third-party text reaches no tools (FOC-119).
+TOOL_FREE_AGENT = """---
+name: focus-queue-tool-free
+description: Answer one Focus Queue request with no tools.
+tools: []
+---
+You answer one request using only the text in the user message. You have no tools, so never claim to have run commands, read files, or changed anything. Follow the user message and reply only in the format it asks for.
+"""
+TOOL_FREE_UNSUPPORTED = "Kimi cannot run tool-free requests"
+
+
+def tool_free_agent_arguments(executable: str, runtime: Path) -> list[str]:
+    """Flags that load the tool-free agent profile. Fails closed before any
+    model call when the installed CLI cannot load agent files."""
+    try:
+        probe = subprocess.run(
+            [executable, "--help"], capture_output=True, text=True, input="", check=False, timeout=10
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise KimiHarnessError(f"{TOOL_FREE_UNSUPPORTED}: could not check the Kimi CLI ({error})") from error
+    if probe.returncode != 0 or "--agent-file" not in probe.stdout:
+        raise KimiHarnessError(
+            f"{TOOL_FREE_UNSUPPORTED}: this Kimi CLI has no --agent-file option. "
+            "Update Kimi Code with `kimi upgrade` or pick another provider."
+        )
+    agent_file = runtime / "tool-free-agent.md"
+    if not agent_file.exists() or agent_file.read_text(encoding="utf-8") != TOOL_FREE_AGENT:
+        agent_file.write_text(TOOL_FREE_AGENT, encoding="utf-8")
+        agent_file.chmod(0o600)
+    return ["--agent-file", str(agent_file)]
+
+
+def stream_has_tool_calls(stdout: str) -> bool:
+    """Print mode streams tool use as `tool_calls` and `role: tool` events."""
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and (event.get("tool_calls") or event.get("role") == "tool"):
+            return True
+    return False
+
+
 def lean_chat_arguments(
     runtime: Path, workspace: Path, *, reader: bool = False, editor: bool = False
 ) -> tuple[Path, list[str]]:
@@ -324,6 +370,7 @@ def run_kimi(
         usage_file.unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(prefix="turn-", dir=runtime):
         executable = resolve_kimi()
+        tool_free_arguments = tool_free_agent_arguments(executable, runtime) if disable_tools else []
         work_directory, lean_arguments = (
             lean_chat_arguments(runtime, workspace, reader=reader, editor=editor) if lean else (workspace, [])
         )
@@ -335,6 +382,7 @@ def run_kimi(
             "--output-format",
             "stream-json",
             *lean_arguments,
+            *tool_free_arguments,
         ]
         allow_extra_directories = sandbox == "workspace-write" and not disable_tools
         if expose_evidence_directories and allow_extra_directories:
@@ -437,6 +485,8 @@ def run_kimi(
         if process.returncode != 0:
             detail = (stderr or stdout).strip()
             raise KimiHarnessError(f"Kimi exited with code {process.returncode}: {detail[:1200]}")
+        if disable_tools and stream_has_tool_calls(stdout):
+            raise KimiHarnessError(f"{TOOL_FREE_UNSUPPORTED}: Kimi called a tool, so the reply was discarded")
         texts, observed_session, _ = parse_stream_events(stdout)
         if observed_session is None:
             latest = session_marker(latest_session)

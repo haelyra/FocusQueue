@@ -34,6 +34,12 @@ READER_TOOLS = "Read,Grep,Glob,WebSearch,WebFetch"
 # reply. Claude Code's default prompt, tool schemas, and CLAUDE.md came to about
 # 10.4k tokens per call against 675 here, and tool steps resent it all (FOC-097).
 EDITOR_SYSTEM_PROMPT = "You edit one document. Follow the user message and reply only in the format it asks for."
+# A `run --disable-tools` call has no built-in tools, MCP servers, skills,
+# slash commands, plugins, settings files, or hooks (FOC-119).
+DISABLED_TOOLS_ARGUMENTS = (
+    "--tools", "", "--strict-mcp-config", "--disable-slash-commands",
+    "--setting-sources", "", "--settings", '{"disableAllHooks":true}',
+)
 TRUSTED_CLAUDE_CANDIDATES = (
     Path.home() / ".local/bin/claude",
     Path("/opt/homebrew/bin/claude"),
@@ -309,9 +315,10 @@ def run_claude(
             "json",
         ]
         if disable_tools:
-            # `claude --help`: --tools "" disables every built-in tool; this is
-            # how a read-only sandbox is approximated for the daily sweep.
-            command.extend(["--tools", ""])
+            # `--tools ""` removes only built-in tools; MCP servers, skills,
+            # plugins, and hooks load separately, so they are all shut out
+            # too and classified third-party text reaches no tools (FOC-119).
+            command.extend(DISABLED_TOOLS_ARGUMENTS)
         elif editor:
             command.extend([
                 "--tools", "", "--strict-mcp-config", "--disable-slash-commands",

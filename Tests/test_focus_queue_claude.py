@@ -36,6 +36,13 @@ def envelope(result: str, session_id: str = "11111111-2222-3333-4444-55555555555
     return json.dumps(payload) + "\n"
 
 
+DISABLED_TOOLS_COMMAND = [
+    "/usr/bin/claude", "-p", "--output-format", "json",
+    "--tools", "", "--strict-mcp-config", "--disable-slash-commands",
+    "--setting-sources", "", "--settings", '{"disableAllHooks":true}',
+]
+
+
 def fake_process(captured, stdout: str, returncode: int = 0, stderr: str = ""):
     class FakeProcess:
         def __init__(self, command, **kwargs):
@@ -279,10 +286,9 @@ class FocusQueueClaudeTests(unittest.TestCase):
                     disable_tools=True,
                 )
 
-            command = captured["command"]
-            self.assertEqual(command[command.index("--tools") + 1], "")
-            self.assertNotIn("--permission-mode", command)
-            self.assertNotIn("--add-dir", command)
+            # Built-in tools, MCP servers, skills, settings files, and hooks
+            # are all off, so classified text reaches no tools (FOC-119).
+            self.assertEqual(captured["command"], DISABLED_TOOLS_COMMAND)
             self.assertEqual(json.loads(reply), payload)
 
     def test_schema_violation_retries_once_with_a_correction(self):
@@ -295,6 +301,7 @@ class FocusQueueClaudeTests(unittest.TestCase):
 
         class FlakyProcess:
             def __init__(self, command, **_kwargs):
+                self.command = command
                 self.returncode = 0
                 self.pid = 123
                 processes.append(self)
@@ -330,6 +337,8 @@ class FocusQueueClaudeTests(unittest.TestCase):
         self.assertEqual(json.loads(reply), {"version": 1})
         self.assertEqual(len(processes), 2)
         self.assertIn("previous reply was rejected", processes[1].prompt)
+        # The schema retry keeps every tool-isolation flag.
+        self.assertEqual([process.command for process in processes], [DISABLED_TOOLS_COMMAND] * 2)
 
     def test_schema_violation_fails_after_one_retry(self):
         schema = {"type": "object", "required": ["version"]}

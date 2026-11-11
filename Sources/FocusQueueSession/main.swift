@@ -274,11 +274,11 @@ enum SessionRegistrationError: Error, LocalizedError {
     private static func taskCommand(arguments: [String]) async throws {
         let root = supportDirectory(environment: ProcessInfo.processInfo.environment)
         let config = try loadConfiguration(from: root)
-        let state = try await JSONLocalStateStore(url: root.appendingPathComponent("state.json")).load()
-        let showsAllProjects = state.showsAllProjects ?? true
-        let dashboardURLs = showsAllProjects
-            ? ProjectCatalog.mergedDashboardURLs(in: config.projects)
-            : [URL(fileURLWithPath: config.dashboardPath)]
+        // Task IDs are unique across projects, so an edit by ID searches every
+        // project's dashboard, the shown one first: an agent's report must not
+        // depend on which project the app is showing.
+        let shown = URL(fileURLWithPath: config.dashboardPath).standardizedFileURL
+        let dashboardURLs = [shown] + ProjectCatalog.mergedDashboardURLs(in: config.projects).filter { $0 != shown }
         let repository = JSONDashboardRepository()
         guard arguments.count >= 3 else { throw SessionRegistrationError.usage }
         let action = arguments[1]

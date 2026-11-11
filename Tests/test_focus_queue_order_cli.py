@@ -89,6 +89,29 @@ class QueueOrderCLITests(unittest.TestCase):
                          ["FOC-002", "FOC-001"])
         self.command("list", project="ecc", expected=1)
 
+    def test_task_edits_reach_a_task_outside_the_project_the_app_shows(self):
+        # An agent's status report must not depend on which project the app shows.
+        config = json.loads((self.root / "config.json").read_text())
+        focus_dashboard = self.root / "focus-dashboard.json"
+        focus_dashboard.write_text(json.dumps({"tickets": [
+            {"id": "FOC-002", "title": "FOC-002", "status": "open", "priority": "low", "summary": "",
+             "projectID": "focus"}]}))
+        config["focusQueueProjects"] = [
+            {"id": "ecc", "name": "ECC", "taskPrefix": "ECC",
+             "dashboardPath": str(self.dashboard), "workspacePath": str(self.root), "repositoryPath": ""},
+            {"id": "focus", "name": "Focus", "taskPrefix": "FOC",
+             "dashboardPath": str(focus_dashboard), "workspacePath": str(self.root), "repositoryPath": ""},
+        ]
+        config["focusQueueSelectedProjectID"] = "ecc"
+        (self.root / "config.json").write_text(json.dumps(config))
+        self.assertEqual(self.task_status("FOC-002", "in-progress"), {"updated": "FOC-002", "status": "in-progress"})
+        self.assertEqual(json.loads(focus_dashboard.read_text())["tickets"][0]["status"], "in-progress")
+        self.assertEqual(self.task_status("ECC-035", "review")["status"], "review")
+        result = subprocess.run([str(BINARY), "task", "status", "FOC-999", "qa"], capture_output=True, text=True,
+            env={**os.environ, "FOCUS_QUEUE_SUPPORT_DIR": str(self.root)}, timeout=10)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("FOC-999", result.stderr)
+
     def test_moves_preserve_other_tasks_and_keep_recent_order_selected(self):
         original_dashboard = self.dashboard.read_bytes()
         self.assertEqual(self.command("list"), ["ECC-035", "ECC-040", "ECC-029"])

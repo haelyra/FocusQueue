@@ -258,6 +258,88 @@ struct UICanvasTests {
     #expect(FileManager.default.fileExists(atPath: exports.edits.path))
   }
 
+  @Test("Form answers entered in interact mode survive reloads and land in the saved file")
+  func formInputPersistence() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("ui-canvas-form-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let mockup = root.appendingPathComponent("intake.html")
+    try Data("""
+      <!doctype html><html><head><title>Intake</title></head><body>
+      <form id="intake">
+        <input id="name" type="text" placeholder="Your name">
+        <input id="secret" type="password">
+        <input id="agree" type="checkbox">
+        <select id="plan"><option value="basic">Basic</option><option value="pro">Pro</option></select>
+        <textarea id="notes"></textarea>
+      </form>
+      </body></html>
+      """.utf8).write(to: mockup)
+    let store = UICanvasStore(root: root)
+    guard case .opened(let session) = try store.open(
+      file: mockup.path, taskID: "FOC-125", title: "Intake", viewport: nil, reopen: false, agentName: "Claude Code")
+    else { Issue.record("open refused"); return }
+
+    let model = UICanvasModel(store: store, taskID: "FOC-125", key: session.key)
+    let coordinator = UICanvasWebStage.Coordinator(model: model)
+    let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+                         configuration: UICanvasWebStage.configuration(coordinator: coordinator))
+    view.navigationDelegate = coordinator
+    defer { UICanvasWebStage.dismantleNSView(view, coordinator: coordinator) }
+    model.attach(view)
+    try await eventually { model.renderedViewport.width > 0 }
+    model.setMode(.interact)
+
+    func fill(_ script: String) async throws {
+      _ = try await view.evaluateJavaScript(script)
+    }
+    try await fill("""
+      (function () {
+        function fire(el, event) { el.dispatchEvent(new Event(event, { bubbles: true })); }
+        var name = document.getElementById('name');
+        name.value = 'Ada'; fire(name, 'input');
+        var secret = document.getElementById('secret');
+        secret.value = 'hunter2'; fire(secret, 'input');
+        var agree = document.getElementById('agree');
+        agree.checked = true; fire(agree, 'change');
+        var plan = document.getElementById('plan');
+        plan.value = 'pro'; fire(plan, 'change');
+        var notes = document.getElementById('notes');
+        notes.value = 'Line one'; fire(notes, 'input');
+      })()
+      """)
+    try await eventually { model.edits.filter { $0["kind"]?.string == "input" }.count == 5 }
+
+    // Password answers persist but never appear in summaries.
+    let secretEdit = try #require(model.edits.first { $0["inputType"]?.string == "password" })
+    #expect(UICanvasEditSummary.summarize(secretEdit).contains("hunter2") == false)
+    #expect(UICanvasEditSummary.summarize(secretEdit).contains("••••••"))
+
+    // A reload (as when the agent rewrites the file) replays the answers. The
+    // marker proves the values are read from the new page, not the old one.
+    _ = try await view.evaluateJavaScript("window.__preReload = true")
+    model.reloadArtifact()
+    try await eventually {
+      let fresh = try? await view.evaluateJavaScript("window.__preReload === undefined") as? Bool
+      guard fresh == true else { return false }
+      let name = try? await view.evaluateJavaScript("document.getElementById('name').value") as? String
+      let agree = try? await view.evaluateJavaScript("document.getElementById('agree').checked") as? Bool
+      let plan = try? await view.evaluateJavaScript("document.getElementById('plan').value") as? String
+      let notes = try? await view.evaluateJavaScript("document.getElementById('notes').value") as? String
+      return name == "Ada" && agree == true && plan == "pro" && notes == "Line one"
+    }
+
+    // Save bakes the answers into the mockup's markup itself.
+    await model.saveEdits()
+    let saved = try String(contentsOf: mockup, encoding: .utf8)
+    #expect(saved.contains(#"value="Ada""#))
+    #expect(saved.contains(#"value="hunter2""#))
+    #expect(saved.contains("checked"))
+    #expect(saved.contains(#"value="pro" selected"#) || saved.contains(#"selected"""#))
+    #expect(saved.contains("Line one"))
+    #expect(!model.isEnded)
+  }
+
   private func eventually(timeout: Duration = .seconds(8), _ condition: @MainActor () async -> Bool) async throws {
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: timeout)

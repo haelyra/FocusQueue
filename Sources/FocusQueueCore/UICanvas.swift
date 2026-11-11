@@ -676,7 +676,7 @@ public struct UICanvasStore: Sendable {
 
 /// One-line descriptions of edits and feedback, matching ECC's wording.
 public enum UICanvasEditSummary {
-    public static let editKinds: Set<String> = ["text", "resize", "move", "nudge", "remove", "style"]
+    public static let editKinds: Set<String> = ["text", "resize", "move", "nudge", "remove", "style", "input"]
 
     /// Keeps only well-formed edits of known kinds and strips editor-private keys.
     public static func normalized(_ edits: [UICanvasJSON]) -> [UICanvasJSON] {
@@ -713,6 +713,19 @@ public enum UICanvasEditSummary {
             return "nudged \(target) by \(number(edit["dx"]) ?? "0")px, \(number(edit["dy"]) ?? "0")px\(stale)"
         case "remove":
             return "removed \(target)\(stale)"
+        case "input":
+            if let checked = edit["after"]?.bool {
+                return "\(checked ? "checked" : "unchecked") \(target)\(stale)"
+            }
+            let value: String
+            if edit["inputType"]?.string == "password" {
+                value = "••••••"
+            } else if let options = edit["after"]?.array {
+                value = "\"\(options.compactMap(\.string).joined(separator: ", "))\""
+            } else {
+                value = "\"\(edit["after"]?.string ?? "")\""
+            }
+            return "filled in \(target) with \(value)\(stale)"
         case "style":
             let property = edit["property"]?.string ?? "style"
             let before = edit["before"]?.string.flatMap { $0.isEmpty ? nil : $0 } ?? "unset"

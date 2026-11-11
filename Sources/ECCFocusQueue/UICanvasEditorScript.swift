@@ -153,7 +153,7 @@ enum UICanvasEditorScript {
   function snippetFor(el) {
     if (!isElement(el)) return '';
     if (el.tagName === 'IMG') return el.getAttribute('alt') || (el.getAttribute('src') || '').split('/').pop().slice(0, 80);
-    if (el.tagName === 'INPUT') return el.getAttribute('placeholder') || el.value || el.type;
+    if (el.tagName === 'INPUT') return (el.type || '').toLowerCase() === 'password' ? 'password' : (el.getAttribute('placeholder') || el.value || el.type);
     return (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120);
   }
   function labelFor(el) {
@@ -403,6 +403,11 @@ enum UICanvasEditorScript {
       edit._el = el;
       return true;
     }
+    if (edit.kind === 'input') {
+      setControlValue(el, edit.after);
+      edit._el = el;
+      return true;
+    }
     return false;
   }
   function revertEdit(edit) {
@@ -415,6 +420,7 @@ enum UICanvasEditorScript {
     }
     if (!el) return false;
     if (edit.kind === 'text') { el.innerHTML = edit._htmlBefore !== undefined ? edit._htmlBefore : edit.before; return true; }
+    if (edit.kind === 'input') { setControlValue(el, edit.before); return true; }
     if (edit.kind === 'resize' || edit.kind === 'nudge' || edit.kind === 'style') { applyInline(el, edit._inlineBefore || {}); return true; }
     if (edit.kind === 'move') {
       if (!edit._fromParent) return false;
@@ -477,6 +483,89 @@ enum UICanvasEditorScript {
     postEdits();
     postSelection();
   }
+
+  // ---- form input tracking -----------------------------------------------------
+  // Answers typed in interact mode live in DOM properties, not attributes, so
+  // nothing else sees them. Each changed control gets one 'input' edit (new
+  // changes update it), replayed after reloads and baked into exports.
+  function controlFor(target) {
+    if (!isElement(target) || isOurs(target)) return null;
+    var tag = target.tagName;
+    if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') return null;
+    if (tag === 'INPUT' && (target.type || '').toLowerCase() === 'file') return null;
+    return target;
+  }
+  function controlValue(el) {
+    var type = (el.type || '').toLowerCase();
+    if (el.tagName === 'SELECT' && el.multiple) {
+      var values = [];
+      for (var i = 0; i < el.options.length; i++) if (el.options[i].selected) values.push(el.options[i].value);
+      return values;
+    }
+    if (type === 'checkbox' || type === 'radio') return el.checked;
+    return el.value;
+  }
+  function controlDefault(el) {
+    var type = (el.type || '').toLowerCase();
+    if (el.tagName === 'SELECT') {
+      if (el.multiple) {
+        var values = [];
+        for (var i = 0; i < el.options.length; i++) if (el.options[i].defaultSelected) values.push(el.options[i].value);
+        return values;
+      }
+      for (var j = 0; j < el.options.length; j++) if (el.options[j].defaultSelected) return el.options[j].value;
+      return el.options.length ? el.options[0].value : '';
+    }
+    if (type === 'checkbox' || type === 'radio') return el.defaultChecked;
+    return el.defaultValue;
+  }
+  function setControlValue(el, value) {
+    var type = (el.type || '').toLowerCase();
+    if (el.tagName === 'SELECT') {
+      if (el.multiple && Array.isArray(value)) {
+        for (var i = 0; i < el.options.length; i++) el.options[i].selected = value.indexOf(el.options[i].value) >= 0;
+        return;
+      }
+      el.value = value == null ? '' : String(value);
+      return;
+    }
+    if (type === 'checkbox' || type === 'radio') { el.checked = Boolean(value); return; }
+    el.value = value == null ? '' : String(value);
+  }
+  function sameValue(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+  function trackInput(el) {
+    var selector = selectorFor(el);
+    var after = controlValue(el);
+    for (var i = edits.length - 1; i >= 0; i--) {
+      var existing = edits[i];
+      if (existing.kind !== 'input' || existing.selector !== selector || existing.stale) continue;
+      existing.after = after;
+      existing.at = new Date().toISOString();
+      existing._el = el;
+      postEdits();
+      return;
+    }
+    var before = controlDefault(el);
+    if (sameValue(before, after)) return;
+    var edit = newEdit('input', el, { before: before, after: after, inputType: el.tagName === 'INPUT' ? (el.type || 'text').toLowerCase() : el.tagName.toLowerCase() });
+    edit._el = el;
+    record(edit);
+  }
+  function trackInputEvent(e) {
+    var el = controlFor(e.target);
+    if (!el) return;
+    // Checking one radio clears its group; record every member's new state.
+    if (el.tagName === 'INPUT' && (el.type || '').toLowerCase() === 'radio') {
+      var radios = document.querySelectorAll('input[type="radio"]');
+      for (var i = 0; i < radios.length; i++) {
+        if (radios[i].name === el.name && radios[i].form === el.form && !isOurs(radios[i])) trackInput(radios[i]);
+      }
+      return;
+    }
+    trackInput(el);
+  }
+  document.addEventListener('input', trackInputEvent, true);
+  document.addEventListener('change', trackInputEvent, true);
 
   // ---- text editing ----------------------------------------------------------
   function startTextEdit(el) {
@@ -771,8 +860,26 @@ enum UICanvasEditorScript {
   }
 
   // ---- export -------------------------------------------------------------------
+  // Form answers live in DOM properties; sync them into attributes first so
+  // the serialized markup holds exactly what the human sees.
+  function bakeFormState() {
+    var controls = document.querySelectorAll('input,textarea,select');
+    for (var i = 0; i < controls.length; i++) {
+      var el = controls[i];
+      if (isOurs(el)) continue;
+      var type = (el.type || '').toLowerCase();
+      if (el.tagName === 'TEXTAREA') { el.textContent = el.value; continue; }
+      if (el.tagName === 'SELECT') {
+        for (var j = 0; j < el.options.length; j++) el.options[j].toggleAttribute('selected', el.options[j].selected);
+        continue;
+      }
+      if (type === 'checkbox' || type === 'radio') el.toggleAttribute('checked', el.checked);
+      else if (type !== 'file') el.setAttribute('value', el.value);
+    }
+  }
   function exportHtml() {
     if (editing) commitTextEdit();
+    bakeFormState();
     var clone = document.documentElement.cloneNode(true);
     var junk = clone.querySelectorAll('[data-ecc-ui-canvas],[data-ecc-plan-canvas]');
     for (var i = 0; i < junk.length; i++) junk[i].remove();

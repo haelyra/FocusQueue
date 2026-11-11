@@ -236,6 +236,9 @@ struct QueueView: View {
   private var queueContent: some View {
     VStack(spacing: QueueChromeMetrics.sectionSpacing) {
       header
+      if model.config.capacityPanelEnabled {
+        CapacityPanelView(capacity: model.capacityModel, scheduledCount: model.scheduledLaunches.count)
+      }
       if model.pendingDailyReportApproval != nil {
         missedReportApprovalBanner
       }
@@ -1900,6 +1903,17 @@ struct QueueSettingsView: View {
               .buttonStyle(.bordered)
               .help("Active task sessions and saved sessions you can recall")
             }
+          }
+          settingsSection(
+            title: "Capacity and scheduling",
+            detail: "A live read of this Mac's CPU, memory, and token use above the queue and in the new task window, with a rough launch recommendation. It is an estimate for orientation only and never blocks a launch."
+          ) {
+            settingToggle(
+              "Capacity panel",
+              detail: "Show live CPU, memory, and 5-hour token estimates plus a cycling launch recommendation above the queue and in the new task window.",
+              isOn: Binding(
+                get: { model.config.capacityPanelEnabled },
+                set: { model.setCapacityPanelEnabled($0) }))
           }
 
           groupHeading("Window and shortcuts")

@@ -20,6 +20,9 @@ struct TaskCreatorSheet: View {
   @State private var doneWhen = ""
   @State private var includesDueDate = false
   @State private var dueDate = Date()
+  @State private var scheduleMode: TaskScheduleMode = .now
+  @State private var scheduleAmount = 1
+  @State private var scheduleUnit: LaunchScheduleUnit = .hours
   @State private var showsAdvanced = false
   @State private var isSubmitting = false
   @State private var match: (ticket: DashboardTicket, suggestion: TaskPlacementSuggestion)?
@@ -43,6 +46,10 @@ struct TaskCreatorSheet: View {
         Text("New task").font(.title2.bold())
         Text("Add to \(project?.name ?? "the selected project")")
           .font(.callout).foregroundStyle(.secondary)
+      }
+
+      if model.config.capacityPanelEnabled {
+        CapacityPanelView(capacity: model.capacityModel, scheduledCount: model.scheduledLaunches.count)
       }
 
       Form {
@@ -83,6 +90,36 @@ struct TaskCreatorSheet: View {
             .font(.caption).foregroundStyle(.secondary)
         }
 
+        if launchesAgent {
+          Section {
+            Picker("Start", selection: $scheduleMode) {
+              Text("Now").tag(TaskScheduleMode.now)
+              Text("Later").tag(TaskScheduleMode.later)
+              Text("Repeating").tag(TaskScheduleMode.repeating)
+            }
+            if scheduleMode != .now {
+              HStack {
+                Stepper(value: $scheduleAmount, in: 1...999) {
+                  Text(scheduleMode == .later
+                    ? "In \(scheduleAmount) \(scheduleUnit.label(scheduleAmount))"
+                    : "Every \(scheduleAmount) \(scheduleUnit.label(scheduleAmount))")
+                }
+                Picker("Unit", selection: $scheduleUnit) {
+                  ForEach(LaunchScheduleUnit.allCases, id: \.self) { unit in
+                    Text(unit.rawValue.capitalized).tag(unit)
+                  }
+                }
+                .labelsHidden().fixedSize()
+              }
+            }
+          } footer: {
+            if scheduleMode != .now {
+              Text("Scheduled launches fire while Focus Queue is running, on the next refresh after their time. The task is created now; the agent starts later. Nothing here blocks a launch; the capacity panel above is a feel, not a limit.")
+                .font(.caption).foregroundStyle(.secondary)
+            }
+          }
+        }
+
         Section {
           DisclosureGroup("Advanced", isExpanded: $showsAdvanced) { advancedOptions }
         }
@@ -99,7 +136,7 @@ struct TaskCreatorSheet: View {
       HStack {
         Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
         Spacer()
-        Button(isSubmitting ? "Placing…" : startsAgent ? "Launch ⌘↩" : "Create task ⌘↩") {
+        Button(isSubmitting ? "Placing…" : startsAgent && scheduleMode != .now ? "Schedule ⌘↩" : startsAgent ? "Launch ⌘↩" : "Create task ⌘↩") {
           submit(.checkForMatch)
         }
         .buttonStyle(.borderedProminent)
@@ -109,7 +146,7 @@ struct TaskCreatorSheet: View {
       }
     }
     .padding(22)
-    .frame(width: 560, height: 680)
+    .frame(width: 560, height: model.config.capacityPanelEnabled ? 840 : 680)
     .onChange(of: description) { _, _ in
       // A suggestion describes the text it saw; edits make it stale.
       cachedSuggestion = nil
@@ -158,17 +195,21 @@ struct TaskCreatorSheet: View {
   }
 
   private func submit(_ choice: TaskDraftChoice) {
+    let schedule: TaskLaunchSchedule? = scheduleMode == .now ? nil : TaskLaunchSchedule(
+      fireInSeconds: LaunchScheduleMath.repeatInterval(amount: scheduleAmount, unit: scheduleUnit),
+      repeatIntervalSeconds: scheduleMode == .repeating
+        ? LaunchScheduleMath.repeatInterval(amount: scheduleAmount, unit: scheduleUnit) : nil)
     let draft = TaskDraft(
       description: description, title: title, displayDescription: displayDescription,
       priority: priority, doneWhen: doneWhen, dueDate: includesDueDate ? dueDate : nil,
-      projectID: projectID, launchesAgent: launchesAgent, agent: agent)
+      projectID: projectID, launchesAgent: launchesAgent, agent: agent, schedule: schedule)
     isSubmitting = true
     message = nil
     Task {
       let result = await model.submitTaskDraft(draft, choice: choice, suggestion: cachedSuggestion)
       isSubmitting = false
       switch result {
-      case .created, .joined:
+      case .created, .joined, .scheduled:
         dismiss()
       case .matched(let ticket, let suggestion):
         cachedSuggestion = suggestion
@@ -178,6 +219,12 @@ struct TaskCreatorSheet: View {
       }
     }
   }
+}
+
+/// The task creator's start choices: immediately, once after a delay, or on a
+/// repeating interval.
+enum TaskScheduleMode: Hashable {
+  case now, later, repeating
 }
 
 /// The card's New Agent sheet: the + task creator's prompt and launch options

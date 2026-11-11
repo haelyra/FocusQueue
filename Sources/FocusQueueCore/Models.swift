@@ -321,6 +321,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var tmuxExecutable: String?
   public var setupCompleted: Bool?
   public var agentUsageBarEnabled: Bool
+  /// Live CPU, memory, and token estimates above the queue and in the task creator.
+  public var capacityPanelEnabled: Bool
   public var agentProviderFallbackOrder: [AgentProvider]
   public var agentEscalationAutoLaunch: Bool
   /// Maximum active agent panes per tmux window tab; nil keeps the default of 4.
@@ -513,6 +515,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.verifier = verifier
     self.dailyReport = dailyReport
     self.agentUsageBarEnabled = true
+    self.capacityPanelEnabled = true
     self.agentProviderFallbackOrder = Self.defaultAgentProviderFallbackOrder
     self.agentEscalationAutoLaunch = true
     self.agentsPerWindow = nil
@@ -547,6 +550,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case appName, dashboardPath, workspacePath, defaultPlacement, refreshIntervalSeconds
     case dailyRoutines, wezTerm, verifier, dailyReport, persistentTerminals, tmuxExecutable, setupCompleted
     case agentUsageBarEnabled
+    case capacityPanelEnabled
     case agentProviderFallbackOrder
     case agentEscalationAutoLaunch
     case agentsPerWindow
@@ -576,6 +580,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     tmuxExecutable = try container.decodeIfPresent(String.self, forKey: .tmuxExecutable)
     setupCompleted = try container.decodeIfPresent(Bool.self, forKey: .setupCompleted)
     agentUsageBarEnabled = try container.decodeIfPresent(Bool.self, forKey: .agentUsageBarEnabled) ?? true
+    capacityPanelEnabled = try container.decodeIfPresent(Bool.self, forKey: .capacityPanelEnabled) ?? true
     // Unknown providers (for example from a newer build) are skipped, never fatal.
     var seenProviders = Set<AgentProvider>()
     let fallbackOrder = (try container.decodeIfPresent([String].self, forKey: .agentProviderFallbackOrder) ?? [])
@@ -677,6 +682,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encodeIfPresent(tmuxExecutable, forKey: .tmuxExecutable)
     try container.encodeIfPresent(setupCompleted, forKey: .setupCompleted)
     try container.encode(agentUsageBarEnabled, forKey: .agentUsageBarEnabled)
+    try container.encode(capacityPanelEnabled, forKey: .capacityPanelEnabled)
     try container.encode(agentProviderFallbackOrder, forKey: .agentProviderFallbackOrder)
     try container.encode(agentEscalationAutoLaunch, forKey: .agentEscalationAutoLaunch)
     try container.encodeIfPresent(agentsPerWindow, forKey: .agentsPerWindow)

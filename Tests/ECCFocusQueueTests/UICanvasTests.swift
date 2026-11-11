@@ -265,7 +265,19 @@ struct UICanvasTests {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let mockup = root.appendingPathComponent("intake.html")
     try Data("""
-      <!doctype html><html><head><title>Intake</title></head><body>
+      <!doctype html><html><head><title>Intake</title>
+      <script>
+      // Like a real interactive mockup: every change joins the page's own
+      // state and is saved to localStorage as you go.
+      window.__seen = [];
+      document.addEventListener('change', function (e) {
+        var t = e.target;
+        var value = t.type === 'checkbox' ? t.checked : t.value;
+        window.__seen.push(t.id + '=' + value);
+        try { localStorage.setItem('answers:' + t.id, String(value)); } catch (err) {}
+      }, true);
+      </script>
+      </head><body>
       <form id="intake">
         <input id="name" type="text" placeholder="Your name">
         <input id="secret" type="password">
@@ -329,6 +341,18 @@ struct UICanvasTests {
       return name == "Ada" && agree == true && plan == "pro" && notes == "Line one"
     }
 
+    // The replay fires real change events, so the page's own scripts absorb
+    // the answers into their state and localStorage, not just the DOM.
+    let seen = try await view.evaluateJavaScript("window.__seen.join('|')") as? String
+    #expect(seen?.contains("name=Ada") == true)
+    #expect(seen?.contains("agree=true") == true)
+    #expect(seen?.contains("plan=pro") == true)
+    #expect(seen?.contains("notes=Line one") == true)
+    #expect(model.edits.filter { $0["kind"]?.string == "input" }.count == 5,
+            "Replayed answers must not duplicate the edit log")
+    let stored = try await view.evaluateJavaScript("localStorage.getItem('answers:name')") as? String
+    #expect(stored == "Ada")
+
     // Save bakes the answers into the mockup's markup itself.
     await model.saveEdits()
     let saved = try String(contentsOf: mockup, encoding: .utf8)
@@ -338,6 +362,49 @@ struct UICanvasTests {
     #expect(saved.contains(#"value="pro" selected"#) || saved.contains(#"selected"""#))
     #expect(saved.contains("Line one"))
     #expect(!model.isEnded)
+  }
+
+  @Test("Mockup localStorage survives web view recreation, as a break between edits requires")
+  func stageStoragePersists() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("ui-canvas-store-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let mockup = root.appendingPathComponent("sheet.html")
+    try Data("<!doctype html><html><head><title>Sheet</title></head><body><p>sheet</p></body></html>".utf8)
+      .write(to: mockup)
+    let store = UICanvasStore(root: root)
+    guard case .opened(let session) = try store.open(
+      file: mockup.path, taskID: "FOC-125", title: "Sheet", viewport: nil, reopen: false, agentName: nil)
+    else { Issue.record("open refused"); return }
+
+    let model = UICanvasModel(store: store, taskID: "FOC-125", key: session.key)
+    let coordinator = UICanvasWebStage.Coordinator(model: model)
+    let configuration = UICanvasWebStage.configuration(coordinator: coordinator)
+    #expect(configuration.websiteDataStore.isPersistent)
+    let first = WKWebView(frame: CGRect(x: 0, y: 0, width: 800, height: 600), configuration: configuration)
+    first.navigationDelegate = coordinator
+    model.attach(first)
+    // The initial about:blank also reports ready, so wait for the mockup itself.
+    try await eventually {
+      (try? await first.evaluateJavaScript("document.title") as? String) == "Sheet"
+    }
+    try await eventually {
+      (try? await first.evaluateJavaScript(
+        "try { localStorage.setItem('answers', 'kept'); 'ok' } catch (e) { String(e) }") as? String) == "ok"
+    }
+    UICanvasWebStage.dismantleNSView(first, coordinator: coordinator)
+
+    // A new web view, as after an app restart, reads the same page state.
+    let second = WKWebView(frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+                           configuration: UICanvasWebStage.configuration(coordinator: coordinator))
+    second.navigationDelegate = coordinator
+    defer { UICanvasWebStage.dismantleNSView(second, coordinator: coordinator) }
+    model.attach(second)
+    try await eventually {
+      (try? await second.evaluateJavaScript("document.title") as? String) == "Sheet"
+    }
+    let kept = try await second.evaluateJavaScript("localStorage.getItem('answers')") as? String
+    #expect(kept == "kept")
   }
 
   private func eventually(timeout: Duration = .seconds(8), _ condition: @MainActor () async -> Bool) async throws {

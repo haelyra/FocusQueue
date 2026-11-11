@@ -404,7 +404,7 @@ enum UICanvasEditorScript {
       return true;
     }
     if (edit.kind === 'input') {
-      setControlValue(el, edit.after);
+      replayControlValue(el, edit.after);
       edit._el = el;
       return true;
     }
@@ -420,7 +420,7 @@ enum UICanvasEditorScript {
     }
     if (!el) return false;
     if (edit.kind === 'text') { el.innerHTML = edit._htmlBefore !== undefined ? edit._htmlBefore : edit.before; return true; }
-    if (edit.kind === 'input') { setControlValue(el, edit.before); return true; }
+    if (edit.kind === 'input') { replayControlValue(el, edit.before); return true; }
     if (edit.kind === 'resize' || edit.kind === 'nudge' || edit.kind === 'style') { applyInline(el, edit._inlineBefore || {}); return true; }
     if (edit.kind === 'move') {
       if (!edit._fromParent) return false;
@@ -533,6 +533,19 @@ enum UICanvasEditorScript {
     el.value = value == null ? '' : String(value);
   }
   function sameValue(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+  // Replay sets the value and fires the events a real change would, so the
+  // page's own scripts absorb the answer into their state (and localStorage).
+  // The suppression flag keeps those synthetic events out of the edit log.
+  var trackingSuppressed = 0;
+  function replayControlValue(el, value) {
+    trackingSuppressed++;
+    try {
+      setControlValue(el, value);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    } catch (_e) { /* replay must never break on a page listener's error */ }
+    trackingSuppressed--;
+  }
   function trackInput(el) {
     var selector = selectorFor(el);
     var after = controlValue(el);
@@ -552,6 +565,7 @@ enum UICanvasEditorScript {
     record(edit);
   }
   function trackInputEvent(e) {
+    if (trackingSuppressed) return;
     var el = controlFor(e.target);
     if (!el) return;
     // Checking one radio clears its group; record every member's new state.

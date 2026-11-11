@@ -17,7 +17,11 @@ final class QueueCapacityModel {
   @ObservationIgnored private let liveAgentCount: @MainActor () -> Int
   @ObservationIgnored private var sampleTask: Task<Void, Never>?
   @ObservationIgnored private var tokensLast5Hours = 0
-  @ObservationIgnored private var samplesSinceTokenLoad = Int.max
+  /// Two-second samples between 5-hour token reloads: about once a minute.
+  nonisolated static let samplesPerTokenReload = 30
+  /// Starts at the threshold so the first sample loads tokens immediately,
+  /// and stays within 0...samplesPerTokenReload so it can never overflow.
+  @ObservationIgnored private(set) var samplesSinceTokenLoad = QueueCapacityModel.samplesPerTokenReload
 
   init(supportDirectory: URL, liveAgentCount: @escaping @MainActor () -> Int) {
     self.supportDirectory = supportDirectory
@@ -45,9 +49,8 @@ final class QueueCapacityModel {
     sampleTask = nil
   }
 
-  private func sample() {
-    samplesSinceTokenLoad += 1
-    if samplesSinceTokenLoad >= 30 {
+  func sample() {
+    if samplesSinceTokenLoad >= Self.samplesPerTokenReload {
       samplesSinceTokenLoad = 0
       let directory = supportDirectory
       Task.detached(priority: .utility) { [weak self] in
@@ -55,6 +58,7 @@ final class QueueCapacityModel {
         await self?.acceptTokens(tokens)
       }
     }
+    samplesSinceTokenLoad += 1
     let reading = monitor.sample(liveAgentCount: liveAgentCount(), tokensLast5Hours: tokensLast5Hours)
     snapshot = reading
     trend = monitor.trend

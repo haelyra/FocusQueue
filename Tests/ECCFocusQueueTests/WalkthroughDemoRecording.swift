@@ -174,6 +174,60 @@ extension WalkthroughDemoRecording {
   }
 }
 
+extension WalkthroughDemoRecording {
+  /// Module files (FOC-122): module design files written to the repository's
+  /// docs/modules show in the Project tab with no registration, Track adds one
+  /// to the in-order review, and the folder grid browses them. Popovers draw in
+  /// their own window, so the grid renders as its own image.
+  @Test("Record module files on an example project", .enabled(if: output != nil))
+  func recordModuleFiles() async throws {
+    let demo = try await DemoEnvironment(name: "module-files")
+    defer { demo.cleanUp() }
+    let model = demo.model
+    model.finishWalkthrough()
+    let project = try await demo.addExampleProject()
+    let folder = URL(fileURLWithPath: project.repositoryPath).appendingPathComponent("docs/modules")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    for (name, text) in [
+      ("m1-habit-store.md", "# M1: Habit store\n\n**One line:** Saves habits and check-ins on the device.\n**Status:** phase-ready\n"),
+      ("m2-reminders.md", "# M2: Reminder scheduler\n\n**One line:** Schedules a nudge before a streak breaks.\n**Status:** stub\n"),
+      ("m3-progress-chart.md", "# M3: Progress chart\n\n**Status:** stub\n"),
+      ("amendments.md", "# Amendment proposals\n"),
+    ] {
+      try Data(text.utf8).write(to: folder.appendingPathComponent(name))
+    }
+    _ = try model.developmentProcessStore.setEnabled(true, projectID: project.id)
+    model.reloadDevelopmentProcess()
+    model.reloadDevelopmentModuleFiles()
+    #expect(model.developmentModuleFiles.map(\.fileName)
+      == ["m1-habit-store.md", "m2-reminders.md", "m3-progress-chart.md", "amendments.md"])
+    model.trackDevelopmentModuleFile(model.developmentModuleFiles[0])
+    #expect(model.developmentProcess?.modules.map(\.id) == ["m1"])
+    #expect(model.developmentModuleFileURL(try #require(model.developmentProcess?.modules.first))?.path
+      == folder.appendingPathComponent("m1-habit-store.md").path)
+
+    try Self.snapshot(ProjectTabView(model: model), size: NSSize(width: 440, height: 1100),
+                      to: demo.frames.appendingPathComponent("project-tab.png"))
+    try Self.snapshot(ModuleFilesGridView(model: model), size: NSSize(width: 360, height: 460),
+                      to: demo.frames.appendingPathComponent("module-files.png"))
+  }
+
+  /// Draws a view offscreen at 2x into a PNG; no window is shown or focused.
+  static func snapshot(_ view: some View, size: NSSize, to url: URL) throws {
+    let window = NSWindow(contentRect: NSRect(x: -9000, y: -9000, width: size.width, height: size.height),
+      styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    let hosting = NSHostingView(rootView: view.frame(width: size.width, height: size.height)
+      .background(Color(nsColor: .windowBackgroundColor)))
+    hosting.frame = NSRect(origin: .zero, size: size)
+    window.contentView = hosting
+    hosting.layoutSubtreeIfNeeded()
+    let rep = try #require(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
+    hosting.cacheDisplay(in: hosting.bounds, to: rep)
+    try #require(rep.representation(using: .png, properties: [:])).write(to: url)
+  }
+}
+
 /// A scratch support directory with a booted queue and its frame folder.
 @MainActor
 private struct DemoEnvironment {

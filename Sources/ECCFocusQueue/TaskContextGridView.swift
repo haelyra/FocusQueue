@@ -68,32 +68,8 @@ struct TaskContextGridView: View {
   }
 
   private func cell(_ item: TaskContextItem) -> some View {
-    let isSelected = selection == item.id
-    return VStack(spacing: 4) {
-      TaskContextThumbnail(item: item).frame(width: 52, height: 52)
-        .overlay(alignment: .topTrailing) {
-          if item.isNew {
-            Circle().fill(Color.accentColor).frame(width: 10, height: 10)
-              .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
-          }
-        }
-      Text(item.title)
-        .font(.system(size: 11))
-        .lineLimit(2)
-        .multilineTextAlignment(.center)
-        .foregroundStyle(isSelected ? Color.white : Color.primary)
-        .padding(.horizontal, 4).padding(.vertical, 1)
-        .background(isSelected ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 4))
-    }
-    .frame(maxWidth: .infinity, minHeight: 92, alignment: .top)
-    .padding(.vertical, 6).padding(.horizontal, 3)
-    .background(
-      isSelected ? Color.accentColor.opacity(0.22) : .clear,
-      in: RoundedRectangle(cornerRadius: 7))
-    .contentShape(RoundedRectangle(cornerRadius: 7))
-    .onTapGesture(count: 2) { open(item) }
-    .simultaneousGesture(TapGesture().onEnded { selection = item.id })
-    .contextMenu {
+    ContextGridCell(item: item, isSelected: selection == item.id,
+                    onSelect: { selection = item.id }, onOpen: { open(item) }) {
       Button("Open", systemImage: "arrow.up.forward.app") { open(item) }
       if case .canvas(let session) = item.target {
         Button("Reconnect agent", systemImage: "arrow.triangle.branch") {
@@ -107,12 +83,6 @@ struct TaskContextGridView: View {
         }
       }
     }
-    .help(item.help)
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel(item.isNew ? "\(item.title), new from agent" : item.title)
-    .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
-    .accessibilityAction { open(item) }
-    .accessibilityHint("Double-click to open.")
   }
 
   private func open(_ item: TaskContextItem) {
@@ -210,6 +180,50 @@ struct TaskContextItem: Identifiable {
   var symbol: String?
   var help: String
   var isNew = false
+}
+
+/// One Finder-style grid cell: the file's thumbnail and title. One click
+/// selects it, a double click opens it, and a right click shows `menu`.
+struct ContextGridCell<Menu: View>: View {
+  let item: TaskContextItem
+  let isSelected: Bool
+  let onSelect: () -> Void
+  let onOpen: () -> Void
+  @ViewBuilder let menu: () -> Menu
+
+  var body: some View {
+    VStack(spacing: 4) {
+      TaskContextThumbnail(item: item).frame(width: 52, height: 52)
+        .overlay(alignment: .topTrailing) {
+          if item.isNew {
+            Circle().fill(Color.accentColor).frame(width: 10, height: 10)
+              .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
+          }
+        }
+      Text(item.title)
+        .font(.system(size: 11))
+        .lineLimit(2)
+        .multilineTextAlignment(.center)
+        .foregroundStyle(isSelected ? Color.white : Color.primary)
+        .padding(.horizontal, 4).padding(.vertical, 1)
+        .background(isSelected ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 4))
+    }
+    .frame(maxWidth: .infinity, minHeight: 92, alignment: .top)
+    .padding(.vertical, 6).padding(.horizontal, 3)
+    .background(
+      isSelected ? Color.accentColor.opacity(0.22) : .clear,
+      in: RoundedRectangle(cornerRadius: 7))
+    .contentShape(RoundedRectangle(cornerRadius: 7))
+    .onTapGesture(count: 2) { onOpen() }
+    .simultaneousGesture(TapGesture().onEnded { onSelect() })
+    .contextMenu { menu() }
+    .help(item.help)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(item.isNew ? "\(item.title), new from agent" : item.title)
+    .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+    .accessibilityAction { onOpen() }
+    .accessibilityHint("Double-click to open.")
+  }
 }
 
 /// Quick Look's thumbnail for a local file, over its Finder icon while it

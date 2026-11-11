@@ -793,6 +793,10 @@ final class QueueViewModel {
   private(set) var developmentStewardProjectID: String?
   /// The selected project's agent contracts, refreshed with the process.
   private(set) var developmentContracts: [AgentContractStatus] = []
+  /// The selected project's module folder: each module's design (I/O) file
+  /// from the repository's docs/modules and the project's modules folder.
+  private(set) var developmentModuleFiles: [DevelopmentModuleFile] = []
+  @ObservationIgnored private var developmentModuleFilesRead: (projectID: String?, at: Date)?
   /// The project whose contract generator is running, if any.
   private(set) var contractGenerationProjectID: String?
   @ObservationIgnored private var lastDevelopmentStewardCheck: Date?
@@ -2913,6 +2917,7 @@ final class QueueViewModel {
     reloadPhaseProcesses()
     guard let projectID = selectedProject?.id else {
       if developmentProcess != nil { developmentProcess = nil }
+      if !developmentModuleFiles.isEmpty { developmentModuleFiles = [] }
       return
     }
     do {
@@ -2922,7 +2927,69 @@ final class QueueViewModel {
     } catch {
       developmentProcessError = "Development process: \(error.localizedDescription)"
     }
+    reloadDevelopmentModuleFiles(force: false)
     reloadDevelopmentContracts()
+  }
+
+  // MARK: - Module files
+
+  /// Rereads the module folder: a directory listing and each file's first 8 KB.
+  /// Background refreshes reread at most every 10 s per project; opening the
+  /// folder, switching projects, or editing the process rereads at once.
+  func reloadDevelopmentModuleFiles(force: Bool = true) {
+    let key = developmentProcess == nil ? nil : selectedProject?.id
+    if !force, key == developmentModuleFilesRead?.projectID,
+       let readAt = developmentModuleFilesRead?.at, Date().timeIntervalSince(readAt) < 10 { return }
+    developmentModuleFilesRead = (key, Date())
+    var files: [DevelopmentModuleFile] = []
+    if key != nil, let project = selectedProject, let directory = developmentProjectDirectory(project.id) {
+      files = DevelopmentModuleFiles.discover(projectDirectory: directory, repositoryPath: project.repositoryPath)
+    }
+    if developmentModuleFiles != files { developmentModuleFiles = files }
+  }
+
+  private func developmentProjectDirectory(_ projectID: String) -> URL? {
+    try? developmentProcessStore.url(projectID: projectID).deletingLastPathComponent()
+  }
+
+  /// The folder Finder opens: the repository's docs/modules when it exists,
+  /// otherwise the project's modules folder.
+  var developmentModuleFolder: URL? {
+    guard let project = selectedProject, let directory = developmentProjectDirectory(project.id) else { return nil }
+    return DevelopmentModuleFiles.primaryFolder(projectDirectory: directory, repositoryPath: project.repositoryPath)
+  }
+
+  /// A registered module's design file, wherever it was written.
+  func developmentModuleFileURL(_ module: DevelopmentModule) -> URL? {
+    guard let project = selectedProject, let directory = developmentProjectDirectory(project.id) else { return nil }
+    return DevelopmentModuleFiles.resolve(module.file, projectDirectory: directory,
+                                          repositoryPath: project.repositoryPath)
+  }
+
+  /// Opens a module file in the side document viewer with the project's chat.
+  func openDevelopmentModuleFile(_ url: URL) {
+    guard let projectID = selectedProject?.id else { return }
+    openDocumentViewer(url, scope: .project(projectID))
+  }
+
+  /// Shows the module folder in Finder, creating the project's modules
+  /// folder when no module folder exists yet.
+  func showDevelopmentModuleFolder() {
+    guard let folder = developmentModuleFolder else { return }
+    do {
+      if !FileManager.default.fileExists(atPath: folder.path) {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o755])
+      }
+      NSWorkspace.shared.open(folder)
+    } catch {
+      developmentProcessError = "Module folder: \(error.localizedDescription)"
+    }
+  }
+
+  /// Appends a discovered module file to the in-order criteria review.
+  func trackDevelopmentModuleFile(_ file: DevelopmentModuleFile) {
+    mutateDevelopmentProcess { try $0.trackModuleFile(file, projectID: $1) }
   }
 
   /// Phase markers in the all-projects view read each project's process.
@@ -2953,6 +3020,7 @@ final class QueueViewModel {
     } catch {
       developmentProcessError = error.localizedDescription
     }
+    reloadDevelopmentModuleFiles()
     reloadDevelopmentContracts()
   }
 

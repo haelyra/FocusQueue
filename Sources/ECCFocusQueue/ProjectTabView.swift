@@ -9,6 +9,8 @@ struct ProjectTabView: View {
   let model: QueueViewModel
   @State private var newModuleName = ""
   @State private var showsModuleComposer = false
+  @State private var showsModuleFiles = false
+  @State private var showsStepModuleFiles = false
 
   private var project: ProjectDefinition? { model.selectedProject }
 
@@ -192,6 +194,8 @@ struct ProjectTabView: View {
         if step.id == "contract" {
           Text("Generate, edit, and sign off both in Agent contracts below.")
             .font(.caption2).foregroundStyle(.secondary)
+        } else if Self.moduleFolderSteps.contains(step.id) {
+          moduleFolderChip()
         } else if !process.artifacts(of: step).isEmpty {
           artifactChips(step, state: state, process: process)
         }
@@ -384,16 +388,29 @@ struct ProjectTabView: View {
 
   @ViewBuilder private func modulesSection(_ project: ProjectDefinition) -> some View {
     if let process = model.developmentProcess {
+      let files = model.developmentModuleFiles
+      let untracked = files.filter { $0.isModule && DevelopmentModuleFiles.module(for: $0, in: process.modules) == nil }
       VStack(alignment: .leading, spacing: 8) {
         ProjectTabHeading(
           title: "Modules",
           detail: "\(process.modules.filter(\.criteriaAccepted).count)/\(process.modules.count) accepted")
-        if process.modules.isEmpty {
+        moduleFolderButton(files)
+        if process.modules.isEmpty && untracked.isEmpty {
           Text("No modules yet. Optional and experimental: add a module when its design file starts, even as a stub. Success criteria are accepted in order and never block a phase.")
             .font(.caption).foregroundStyle(.secondary)
         }
         ForEach(process.modules) { module in
           moduleRow(module, modules: process.modules)
+        }
+        if !untracked.isEmpty {
+          VStack(alignment: .leading, spacing: 4) {
+            Text("Not tracked yet").font(.caption.bold()).foregroundStyle(.secondary)
+            ForEach(untracked) { file in untrackedModuleRow(file) }
+            Text("Track modules in dependency order: success criteria are accepted in the order tracked.")
+              .font(.caption2).foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          .padding(.top, process.modules.isEmpty ? 0 : 4)
         }
         if showsModuleComposer {
           HStack(spacing: 6) {
@@ -423,13 +440,87 @@ struct ProjectTabView: View {
     }
   }
 
+  /// The module folder, browsed like a task's Context: every module's design
+  /// (I/O) file plus shared files, from the repository and the project folder.
+  private func moduleFolderButton(_ files: [DevelopmentModuleFile]) -> some View {
+    let modules = files.filter(\.isModule).count
+    let shared = files.count - modules
+    return Button { showsModuleFiles.toggle() } label: {
+      HStack(spacing: 6) {
+        Label("View Module Files", systemImage: "folder")
+        Spacer(minLength: 4)
+        Text(files.isEmpty ? "empty"
+             : "\(modules) \(modules == 1 ? "module" : "modules")" + (shared > 0 ? " · \(shared) shared" : ""))
+          .font(.caption).foregroundStyle(.secondary)
+      }
+      .frame(maxWidth: .infinity)
+    }
+    .buttonStyle(.bordered).controlSize(.regular)
+    .font(.system(size: 12, weight: .semibold))
+    .help("Browse each module's design file: its I/O contract, success criteria, and debug logs")
+    .accessibilityLabel("View module files, \(modules) modules, \(shared) shared files")
+    .popover(isPresented: $showsModuleFiles, arrowEdge: .trailing) {
+      ModuleFilesGridView(model: model) { showsModuleFiles = false }
+        .frame(width: 360, height: 460)
+    }
+  }
+
+  /// Steps whose work is the module files, at most one per phase, since the
+  /// chips share one popover.
+  static let moduleFolderSteps: Set<String> = ["modules", "phase0-qa", "build"]
+
+  /// The module folder as a step chip, on the step that writes or builds modules.
+  private func moduleFolderChip() -> some View {
+    let count = model.developmentModuleFiles.count
+    return Button { showsStepModuleFiles.toggle() } label: {
+      Label(count == 0 ? "Module files" : "Module files · \(count)", systemImage: "folder")
+        .labelStyle(.titleAndIcon)
+        .font(.system(size: 10, weight: .semibold))
+        .padding(.horizontal, 6).padding(.vertical, 3)
+        .background(Color.primary.opacity(count == 0 ? 0.03 : 0.08), in: Capsule())
+        .foregroundStyle(count == 0 ? Color.secondary : Color.accentColor)
+    }
+    .buttonStyle(.plain)
+    .help("Browse the module folder: each module's design (I/O) file.")
+    .accessibilityLabel("Module files, \(count) items")
+    .popover(isPresented: $showsStepModuleFiles, arrowEdge: .trailing) {
+      ModuleFilesGridView(model: model) { showsStepModuleFiles = false }
+        .frame(width: 360, height: 460)
+    }
+  }
+
+  /// A module design file nobody tracks yet: opens on click; Track adds it to
+  /// the end of the in-order review.
+  private func untrackedModuleRow(_ file: DevelopmentModuleFile) -> some View {
+    HStack(spacing: 8) {
+      Button { model.openDevelopmentModuleFile(file.url) } label: {
+        HStack(spacing: 6) {
+          Image(systemName: "doc.text").foregroundStyle(.secondary).frame(width: 14)
+          Text(file.displayTitle.replacingOccurrences(of: "`", with: ""))
+            .font(.system(size: 12)).lineLimit(1).truncationMode(.tail)
+          Spacer(minLength: 4)
+          Text(file.fileName).font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
+        }
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .help(file.url.path)
+      .accessibilityLabel("Open \(file.displayTitle)")
+      Button("Track") { model.trackDevelopmentModuleFile(file) }
+        .buttonStyle(.bordered).controlSize(.mini)
+        .help("Add \(file.displayTitle) to the in-order success-criteria review")
+        .accessibilityLabel("Track \(file.displayTitle)")
+    }
+  }
+
   private func moduleRow(_ module: DevelopmentModule, modules: [DevelopmentModule]) -> some View {
     let blockedBy = modules.prefix(while: { $0.id != module.id }).first { !$0.criteriaAccepted }
     return VStack(alignment: .leading, spacing: 4) {
       HStack(spacing: 8) {
         Image(systemName: module.criteriaAccepted ? "checkmark.seal.fill" : "seal")
           .foregroundStyle(module.criteriaAccepted ? Color.green : Color.secondary)
-        Text(module.name).font(.system(size: 12, weight: .semibold))
+        Text(Self.moduleTitle(module)).font(.system(size: 12, weight: .semibold))
         Spacer()
         if !module.criteriaAccepted {
           Button("Accept criteria") {
@@ -455,11 +546,34 @@ struct ProjectTabView: View {
       .font(.caption)
       .controlSize(.small)
       if let file = module.file, !file.isEmpty {
-        Text(file).font(.system(size: 10, design: .monospaced))
-          .foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
+        let url = model.developmentModuleFileURL(module)
+        Button { url.map(model.openDevelopmentModuleFile) } label: {
+          Label(url.map { (Self.moduleFileLabel($0)) } ?? file,
+                systemImage: url == nil ? "doc" : "doc.text")
+            .labelStyle(.titleAndIcon)
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(url == nil ? Color.secondary.opacity(0.6) : Color.accentColor)
+            .lineLimit(1).truncationMode(.middle)
+        }
+        .buttonStyle(.plain)
+        .disabled(url == nil)
+        .help(url.map { "Open \($0.path)" } ?? "Not written yet: \(file)")
+        .accessibilityLabel(url == nil ? "\(file), not written yet" : "Open \(file)")
       }
     }
     .padding(.vertical, 2)
+  }
+
+  /// `M6 · Context storage` for catalog IDs; app-added modules keep their name.
+  static func moduleTitle(_ module: DevelopmentModule) -> String {
+    let id = module.id.lowercased()
+    guard id.hasPrefix("m"), id.count > 1, id.dropFirst().allSatisfy(\.isNumber) else { return module.name }
+    return "\(id.uppercased()) · \(module.name.replacingOccurrences(of: "`", with: ""))"
+  }
+
+  /// `docs/modules/m6-context.md` or `modules/m6-context.md`.
+  static func moduleFileLabel(_ url: URL) -> String {
+    ModuleFilesGridView.folderLabel(url.deletingLastPathComponent()) + "/" + url.lastPathComponent
   }
 
   private func addModule() {

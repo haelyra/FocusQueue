@@ -11,7 +11,7 @@
 ## Distribution and maturity
 
 - **One file per module, not per task or feature.** Module IDs come from the technical design's §3. Several tasks can serve one module; a task links to it with `focus-queue-session development <PROJECT-ID> link <TASK-ID> <step-id> <module-id>`.
-- **Location.** The project folder, under `modules/`. A repository copy, when the project keeps one, is the source of truth.
+- **Location.** The repository's `docs/modules/` when the project has a repository, otherwise the project folder's `modules/`. The repository copy is the source of truth. Focus Queue shows both folders in the Project tab's module files, so never copy a file between them.
 - **Fill just in time.** Software plans change, so depth follows the work, not the calendar. The file's **Status** line names its maturity:
 
 | Maturity | When | Filled sections | Rule |

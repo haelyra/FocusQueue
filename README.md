@@ -9,11 +9,11 @@ Claude Code, Codex and Kimi can work in parallel without colliding. It runs on
 your existing subscriptions, with no API keys.
 
 <p align="center">
-  <img src="Docs/media/task-queue.png" width="320" alt="Focus Queue panel showing three example Habit App tasks (HAB-1 to HAB-3) with priority, status, plan and agent rows">
+  <a href="https://youtu.be/vFrn5qzvIQE"><img src="Docs/media/task-queue.png" width="320" alt="Focus Queue panel showing three example Habit App tasks (HAB-1 to HAB-3) with priority, status, plan and agent rows"></a>
 </p>
 
-**▶ Demo:** [1-minute walkthrough video](Docs/media/walkthrough-demo.mp4) ·
-[UI Canvas video](Docs/media/ui-canvas-demo.mp4)
+**▶ Watch on YouTube:** [1-minute walkthrough](https://youtu.be/vFrn5qzvIQE) ·
+[UI Canvas editor demo](https://youtu.be/iUl8tj6Ly-E)
 
 ### What it does
 
@@ -31,7 +31,7 @@ your existing subscriptions, with no API keys.
 
 ### UI Canvas editor
 
-![UI Canvas demo: selecting and restyling a heading, then asking the agent for a change](Docs/media/ui-canvas-demo.gif)
+[![UI Canvas demo: selecting and restyling a heading, then asking the agent for a change](Docs/media/ui-canvas-demo.gif)](https://youtu.be/iUl8tj6Ly-E)
 
 | Inspect and restyle any element | Ask the agent for a change |
 | --- | --- |

@@ -12,6 +12,13 @@ enum SideDocumentContent: Sendable {
     static func text(_ text: String, for url: URL) -> SideDocumentContent {
         ["md", "markdown"].contains(url.pathExtension.lowercased()) ? .markdown(text) : .text(text)
     }
+
+    /// Content to show right after an in-app save: rendered text files keep
+    /// their web preview, everything else shows its saved text.
+    static func saved(_ text: String, for url: URL) -> SideDocumentContent {
+        InAppDocument.editableRenderedExtensions.contains(url.pathExtension.lowercased())
+            ? .rendered(url) : .text(text, for: url)
+    }
 }
 
 actor SideDocumentLoader {
@@ -388,7 +395,7 @@ struct SideDocumentPane: View {
                         findRequest: find.request, findSearchesBackwards: find.searchesBackwards)
                 case .rendered(let resource):
                     ReadOnlyResourceDocument(
-                        url: resource, open: open, findQuery: find.query,
+                        url: resource, open: open, revision: entry.revision, findQuery: find.query,
                         findRequest: find.request, findSearchesBackwards: find.searchesBackwards)
                 }
             } else { ProgressView("Loading document…") }
@@ -648,6 +655,9 @@ struct DocumentConversationView: View {
 struct ReadOnlyResourceDocument: NSViewRepresentable {
     let url: URL
     let open: (URL) -> Void
+    /// The store's content generation; a new one means the file changed on
+    /// disk (an in-app save or an agent's write), so the page reloads.
+    var revision = 0
     var findQuery = ""
     var findRequest = 0
     var findSearchesBackwards = false
@@ -663,8 +673,9 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
     }
     func updateNSView(_ view: WKWebView, context: Context) {
         context.coordinator.open = open
-        if context.coordinator.url != url {
+        if context.coordinator.url != url || context.coordinator.revision != revision {
             context.coordinator.url = url
+            context.coordinator.revision = revision
             context.coordinator.willLoadDocument()
             let requested = url
             OfflineWebContent.load(
@@ -677,6 +688,7 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
     static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) { view.stopLoading(); view.navigationDelegate = nil; view.uiDelegate = nil }
     @MainActor final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var url: URL?
+        var revision = 0
         var open: (URL) -> Void
         private var isDocumentLoaded = false
         private var handledFindRequest = 0

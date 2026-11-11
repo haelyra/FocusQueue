@@ -212,6 +212,9 @@ enum InAppDocument {
     static let textExtensions: Set<String> = [
         "txt", "text", "log", "json", "jsonl", "csv", "tsv", "yaml", "yml", "toml", "xml",
     ]
+    /// Rendered in a web view but still plain text on disk, so the source
+    /// editor can change and save them. PDFs and raster images stay read-only.
+    static let editableRenderedExtensions: Set<String> = ["html", "htm", "svg"]
 
     /// The file to show for a link, or nil when the link should leave the app.
     static func fileURL(for url: URL) -> URL? {

@@ -184,4 +184,43 @@ struct DocumentContentStoreTests {
         #expect(store.editSessions[file]?.saveError != nil)
         #expect(try String(contentsOf: file, encoding: .utf8) == "theirs")
     }
+
+    @Test("Rendered HTML is editable and saving keeps the rendered preview")
+    func renderedHTMLEditing() async throws {
+        let file = try tempFile("<html><body><p>before</p></body></html>", name: "page.html")
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let store = DocumentContentStore()
+        store.ensureLoaded(file)
+        await waitFor { store.entry(for: file).content != nil }
+        guard case .rendered = store.entry(for: file).content else {
+            Issue.record("Expected an HTML file to load as rendered content")
+            return
+        }
+        #expect(store.loadedText(for: file)?.contains("<p>before</p>") == true)
+
+        store.beginEditing(file)
+        store.updateDraft(file, "<html><body><p>after</p></body></html>")
+        #expect(store.saveEdit(file))
+        #expect(try String(contentsOf: file, encoding: .utf8).contains("<p>after</p>"))
+        guard case .rendered = store.entry(for: file).content else {
+            Issue.record("Expected the preview to stay rendered after saving HTML")
+            return
+        }
+    }
+
+    @Test("Rendered SVG is editable; raster images stay read-only")
+    func renderedEditabilityByType() async throws {
+        let svg = try tempFile("<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>", name: "icon.svg")
+        let png = try tempFile("not really a png", name: "photo.png")
+        defer {
+            try? FileManager.default.removeItem(at: svg.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: png.deletingLastPathComponent())
+        }
+        let store = DocumentContentStore()
+        store.ensureLoaded(svg)
+        store.ensureLoaded(png)
+        await waitFor { store.entry(for: svg).content != nil && store.entry(for: png).content != nil }
+        #expect(store.loadedText(for: svg) != nil)
+        #expect(store.loadedText(for: png) == nil)
+    }
 }

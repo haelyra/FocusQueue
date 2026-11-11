@@ -26,7 +26,8 @@ Want to leave feedback or chat with @haelyra? Leave a GitHub Issue or schedule a
 - **Shared plan and context.** **View Central Plan** keeps every agent on one
   goal. **View Context** holds files, evidence and the agent log.
 - **UI Canvas editor.** Agents mock up screens as live pages beside the plan.
-  Click to select, edit styles in the inspector, or chat with the agent. Then
+  Click to select, edit styles in the inspector, or chat with the agent.
+  **Save** writes your edits into the mockup file mid-session, and
   **Save and Finish** hands your edits back to build.
 - **Clean finish.** Completing a task stops its tmux session, archives
   unmerged work and cleans up worktrees.

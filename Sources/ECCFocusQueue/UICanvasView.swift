@@ -60,6 +60,14 @@ struct UICanvasView: View {
         toolButton("arrow.clockwise", "Reload the preview (your edits are re-applied)") { model.reloadArtifact() }
       }
       Button {
+        Task { await model.saveEdits() }
+      } label: {
+        Label("Save", systemImage: "square.and.arrow.down")
+      }
+      .keyboardShortcut("s", modifiers: .command)
+      .disabled(model.isEnded || model.isSending)
+      .help("Write your edits into the mockup file now; the session stays open and the agent is not notified")
+      Button {
         Task { await model.sendEdits(finish: true) }
       } label: {
         Label("Save and Finish", systemImage: "checkmark")
@@ -198,7 +206,7 @@ struct UICanvasView: View {
       if compact {
         EmptyView()
       } else if model.edits.isEmpty {
-        Text("Your changes to the preview collect here. Apply to file asks the agent to bake them into the mockup; Save and Finish hands over the final design.")
+        Text("Your changes to the preview collect here. Save writes them into the mockup file so a break loses nothing; Apply to file asks the agent to bake them in; Save and Finish hands over the final design.")
           .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
       } else {
         ScrollView {

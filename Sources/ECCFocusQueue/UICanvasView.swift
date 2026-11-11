@@ -339,11 +339,13 @@ struct UICanvasWebStage: NSViewRepresentable {
   }
 
   /// Mockup scripts run (tabs, toggles, animations must work); the editor runs
-  /// beside them in the app's isolated content world.
+  /// beside them in the app's isolated content world. The stage is offline:
+  /// `OfflineWebContent` blocks every network request and WebRTC.
   static func configuration(coordinator: Coordinator) -> WKWebViewConfiguration {
     let configuration = WKWebViewConfiguration()
     configuration.websiteDataStore = .nonPersistent()
     configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+    OfflineWebContent.configure(configuration, allowsPageScripts: true)
     let controller = configuration.userContentController
     controller.addUserScript(WKUserScript(
       source: UICanvasEditorScript.source, injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
@@ -378,7 +380,7 @@ struct UICanvasWebStage: NSViewRepresentable {
     }
 
     /// The stage shows one local file. Links and scripted navigations away from
-    /// it are cancelled; subresources and subframes load normally.
+    /// it are cancelled; subframes may only show local content.
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                  decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
       decisionHandler(UICanvasNavigationPolicy.allows(
@@ -398,7 +400,9 @@ struct UICanvasWebStage: NSViewRepresentable {
 enum UICanvasNavigationPolicy {
   static func allows(_ url: URL?, isMainFrame: Bool, isLink: Bool, artifact: URL?) -> Bool {
     guard let url else { return false }
-    guard isMainFrame else { return !isLink }
+    guard isMainFrame else {
+      return !isLink && OfflineWebContent.localSchemes.contains(url.scheme?.lowercased() ?? "")
+    }
     guard !isLink, url.isFileURL, let artifact else { return false }
     return url.standardizedFileURL.path == artifact.standardizedFileURL.path
   }

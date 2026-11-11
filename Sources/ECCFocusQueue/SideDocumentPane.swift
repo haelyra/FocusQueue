@@ -16,7 +16,8 @@ enum SideDocumentContent: Sendable {
 
 actor SideDocumentLoader {
     func load(_ url: URL) throws -> SideDocumentContent {
-        guard url.isFileURL else { return .rendered(url) }
+        // Live web pages are never rendered in the app; they open in the browser.
+        guard url.isFileURL else { throw DocumentPreviewError.message(OfflineWebLinks.notRenderedMessage) }
         let values = try url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
         guard values.isDirectory != true else { throw CocoaError(.fileReadUnsupportedScheme) }
         guard (values.fileSize ?? 0) <= 20_000_000 else {
@@ -641,8 +642,9 @@ struct DocumentConversationView: View {
     }
 }
 
-/// Static local resources and remote links stay inside the side pane. Link
-/// activation always requests another tab. Page scripts and popups are disabled.
+/// Static local resources render offline in the side pane; link activation
+/// always requests another tab, and web links open in the browser. Page
+/// scripts, popups, and every network request are disabled.
 struct ReadOnlyResourceDocument: NSViewRepresentable {
     let url: URL
     let open: (URL) -> Void
@@ -653,6 +655,7 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent(); config.defaultWebpagePreferences.allowsContentJavaScript = false
+        OfflineWebContent.configure(config, allowsPageScripts: false)
         let view = WKWebView(frame: .zero, configuration: config)
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
@@ -663,8 +666,10 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
         if context.coordinator.url != url {
             context.coordinator.url = url
             context.coordinator.willLoadDocument()
-            if url.isFileURL { view.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent()) }
-            else { view.load(URLRequest(url: url)) }
+            let requested = url
+            OfflineWebContent.load(
+                url, readAccess: url.deletingLastPathComponent(), in: view,
+                shouldLoad: { [weak coordinator = context.coordinator] in coordinator?.url == requested })
         }
         context.coordinator.requestFind(
             query: findQuery, request: findRequest, searchesBackwards: findSearchesBackwards, in: view)
@@ -713,8 +718,7 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
             if action.navigationType == .linkActivated, let target = action.request.url {
                 open(target); decisionHandler(.cancel)
             } else if let target = action.request.url,
-                      ["file", "http", "https", "about"].contains(target.scheme ?? ""),
-                      !(target.isFileURL && url?.isFileURL == false),
+                      ["file", "about"].contains(target.scheme ?? ""),
                       action.targetFrame?.isMainFrame != false { decisionHandler(.allow) }
             else { decisionHandler(.cancel) }
         }

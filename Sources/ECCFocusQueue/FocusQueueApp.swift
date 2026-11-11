@@ -81,6 +81,7 @@ import UserNotifications
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.regular)
     programLog.record("Focus Queue launched.", category: "Lifecycle")
+    OfflineWebContent.warmUp()
     DistributedNotificationCenter.default().addObserver(
       self,
       selector: #selector(importAgentRegistration(_:)),

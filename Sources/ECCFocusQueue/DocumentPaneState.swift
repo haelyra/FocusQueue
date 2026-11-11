@@ -1,5 +1,16 @@
+import AppKit
 import Foundation
 import Observation
+
+/// Focus Queue does not render live web pages. A web link opens in the
+/// user's default browser instead of a document tab.
+enum OfflineWebLinks {
+    static let notRenderedMessage = "Web pages open in your browser. Focus Queue only previews local files."
+
+    static func isWebPage(_ url: URL) -> Bool {
+        ["http", "https"].contains(url.scheme?.lowercased() ?? "")
+    }
+}
 
 enum DocumentPaneLocation {
     static func normalized(_ input: URL) -> URL? {
@@ -56,6 +67,8 @@ final class DocumentPaneState {
     var hasSecondaryViewer: Bool { secondaryDocument != nil }
     var centralChatCollapsed = false
     var error: String?
+    /// Where web links go instead of a document tab.
+    @ObservationIgnored var openWebPage: (URL) -> Void = { NSWorkspace.shared.open($0) }
 
     func open(_ url: URL) {
         open(url, in: .primary)
@@ -71,6 +84,10 @@ final class DocumentPaneState {
     func open(_ url: URL, in placement: DocumentPanePlacement) {
         guard let location = DocumentPaneLocation.normalized(url) else {
             error = "This link cannot be displayed as a document."
+            return
+        }
+        if OfflineWebLinks.isWebPage(location) {
+            openWebPage(url)
             return
         }
         if !tabs.contains(location) { tabs.append(location) }

@@ -199,7 +199,14 @@ final class UICanvasModel {
       return
     }
     loadError = nil
-    webView.loadFileURL(fileURL, allowingReadAccessTo: fileURL.deletingLastPathComponent())
+    // Local sibling assets (images, styles) still load; nothing reaches the network.
+    OfflineWebContent.load(
+      fileURL, readAccess: fileURL.deletingLastPathComponent(), in: webView,
+      shouldLoad: { [weak self, weak webView] in
+        guard let self, let webView else { return false }
+        return self.webView === webView && self.fileURL == fileURL
+      },
+      onFailure: { [weak self] error in self?.loadError = error.localizedDescription })
   }
 
   // MARK: Editor bridge

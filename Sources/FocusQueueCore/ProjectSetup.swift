@@ -340,7 +340,16 @@ public struct ProjectSetupService: Sendable {
       guard !payloads.keys.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) else {
         throw Self.error("Two documents share the name \(name). Select one copy or rename the source.")
       }
-      payloads[name] = try Data(contentsOf: url)
+      // The limits above came from metadata; recheck them against the bytes
+      // actually read, which also catches a file growing after the check.
+      let data: Data
+      do { data = try SafeFileRead.data(at: url, limit: 10_000_000, followSymlinks: false) }
+      catch is SafeFileReadError {
+        throw Self.error("Choose a Markdown, text, or PDF document smaller than 10 MB: \(url.lastPathComponent)")
+      }
+      total += data.count - size
+      guard total <= 40_000_000 else { throw Self.error("Choose less than 40 MB of project documentation.") }
+      payloads[name] = data
     }
     return payloads
   }

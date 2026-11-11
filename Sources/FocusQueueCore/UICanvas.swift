@@ -263,6 +263,9 @@ public enum UICanvasPresence: String, Sendable {
 public enum UICanvasError: Error, LocalizedError, Equatable {
     case notHTML(String)
     case missingArtifact(String)
+    case notRegularFile(String)
+    case unreadableArtifact(String)
+    case artifactTooLarge(String)
     case noTask
     case invalidViewport(String)
     case invalidTyping(String)
@@ -275,6 +278,11 @@ public enum UICanvasError: Error, LocalizedError, Equatable {
         case .notHTML(let file):
             "canvas opens self-contained .html mockups; write the component to an .html file first (got \(file))"
         case .missingArtifact(let file): "artifact not found: \(file)"
+        case .notRegularFile(let file):
+            "canvas opens regular .html files; \(file) is a named pipe, device, socket, or folder"
+        case .unreadableArtifact(let file): "artifact cannot be read: \(file)"
+        case .artifactTooLarge(let file):
+            "\(file) is larger than the \(UICanvasArtifactValidation.maximumBytes / (1024 * 1024)) MB canvas limit"
         case .noTask:
             "No task: run inside a Focus Queue agent pane ($FOCUS_QUEUE_TASK_ID) or pass --task <TASK-ID>."
         case .invalidViewport(let value): "viewport must be mobile, desktop, custom, or WxH (got \(value))"
@@ -289,6 +297,36 @@ public enum UICanvasError: Error, LocalizedError, Equatable {
 public enum UICanvasOpenResult: Sendable {
     case opened(UICanvasSession)
     case refused(UICanvasSession)
+}
+
+/// Checks an artifact before the canvas registers or reloads it: an .html or
+/// .htm path that resolves to a readable regular file within the size ceiling.
+/// It never reads the content and never blocks, so the main thread may call it.
+public enum UICanvasArtifactValidation {
+    public static let maximumBytes = FileReadLimits.canvasArtifactBytes
+
+    /// Throws a `UICanvasError` describing why `url` cannot be shown.
+    public static func validate(_ url: URL) throws {
+        try validate(path: url.path, reportedAs: url.path)
+    }
+
+    static func validate(path: String, reportedAs file: String) throws {
+        let canonical = UICanvasStore.canonicalPath(path)
+        guard ["html", "htm"].contains(URL(fileURLWithPath: canonical).pathExtension.lowercased()) else {
+            throw UICanvasError.notHTML(file)
+        }
+        do {
+            try SafeFileRead.validateRegularFile(at: URL(fileURLWithPath: canonical), limit: maximumBytes)
+        } catch SafeFileReadError.notRegularFile {
+            throw UICanvasError.notRegularFile(file)
+        } catch SafeFileReadError.tooLarge {
+            throw UICanvasError.artifactTooLarge(file)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            throw UICanvasError.missingArtifact(file)
+        } catch {
+            throw UICanvasError.unreadableArtifact(file)
+        }
+    }
 }
 
 public struct UICanvasTakeResult: Equatable, Sendable {
@@ -370,8 +408,16 @@ public struct UICanvasStore: Sendable {
 
     public func load(taskID: String, key: String) throws -> UICanvasSession? {
         let url = try sessionURL(taskID: taskID, key: key)
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let data = try sessionData(at: url) else { return nil }
         return try JSONDecoder().decode(UICanvasSession.self, from: data)
+    }
+
+    /// A session's bytes, or nil when it is absent or unreadable. An oversized
+    /// or special file throws, so it is reported and never silently replaced.
+    private func sessionData(at url: URL) throws -> Data? {
+        do { return try SafeFileRead.data(at: url, limit: FileReadLimits.metadataBytes) }
+        catch let error as SafeFileReadError { throw error }
+        catch { return nil }
     }
 
     /// Every readable session for a task, newest first.
@@ -380,7 +426,9 @@ public struct UICanvasStore: Sendable {
               let urls = try? FileManager.default.contentsOfDirectory(
                 at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return [] }
         return urls.filter { $0.pathExtension == "json" }
-            .compactMap { try? JSONDecoder().decode(UICanvasSession.self, from: Data(contentsOf: $0)) }
+            .compactMap { url in
+                (try? sessionData(at: url))?.flatMap { try? JSONDecoder().decode(UICanvasSession.self, from: $0) }
+            }
             .sorted { $0.createdAt > $1.createdAt }
     }
 
@@ -408,7 +456,7 @@ public struct UICanvasStore: Sendable {
         defer { Darwin.close(descriptor) }
         guard flock(descriptor, LOCK_EX) == 0 else { throw CocoaError(.fileWriteUnknown) }
         defer { flock(descriptor, LOCK_UN) }
-        var session = try? JSONDecoder().decode(UICanvasSession.self, from: Data(contentsOf: url))
+        var session = try sessionData(at: url).flatMap { try? JSONDecoder().decode(UICanvasSession.self, from: $0) }
         let before = session
         let result = try body(&session)
         if let session, session != before {
@@ -424,13 +472,7 @@ public struct UICanvasStore: Sendable {
     public func open(file: String, taskID: String, title: String?, viewport: String?,
                      reopen: Bool, agentName: String?) throws -> UICanvasOpenResult {
         let canonical = Self.canonicalPath(file)
-        guard ["html", "htm"].contains(URL(fileURLWithPath: canonical).pathExtension.lowercased()) else {
-            throw UICanvasError.notHTML(file)
-        }
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: canonical, isDirectory: &isDirectory), !isDirectory.boolValue else {
-            throw UICanvasError.missingArtifact(file)
-        }
+        try UICanvasArtifactValidation.validate(path: canonical, reportedAs: file)
         if let viewport, UICanvasViewport.parse(viewport) == nil { throw UICanvasError.invalidViewport(viewport) }
         let key = Self.key(forCanonicalPath: canonical)
         return try update(taskID: taskID, key: key) { session in

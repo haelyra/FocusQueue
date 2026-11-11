@@ -499,7 +499,7 @@ public struct ProjectCreationTransaction: Sendable {
       guard ticketIDs.contains(entry.lastPathComponent.uppercased()),
         let values = try? entry.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
         values.isDirectory == true, values.isSymbolicLink != true,
-        let data = try? Data(contentsOf: entry.appendingPathComponent("context.json")),
+        let data = try? TaskContextStore.contextData(at: entry.appendingPathComponent("context.json")),
         let context = try? JSONDecoder().decode(TaskContext.self, from: data),
         ticketIDs.contains(context.ticketID.uppercased())
       else { return nil }

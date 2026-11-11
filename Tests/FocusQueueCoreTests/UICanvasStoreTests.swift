@@ -70,6 +70,65 @@ struct UICanvasStoreTests {
         #expect(UICanvasViewport.parse("50x50") == nil)
     }
 
+    @Test("Registration and reload validation refuse pipes, folders, and oversized artifacts without blocking")
+    func artifactValidation() throws {
+        let fixture = try Fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let store = fixture.store
+        try UICanvasArtifactValidation.validate(fixture.mockup)
+        @Sendable func register(_ url: URL) throws {
+            _ = try store.open(file: url.path, taskID: "FOC-070", title: nil, viewport: nil, reopen: false, agentName: nil)
+        }
+
+        let fifo = fixture.root.appendingPathComponent("previews/pipe.html")
+        try makeFIFO(fifo)
+        let started = Date()
+        let outcome = finishes(within: 2, releasing: fifo) {
+            [Result { try register(fifo) }, Result { try UICanvasArtifactValidation.validate(fifo) }]
+        }
+        let results = try #require(outcome, "Registering a FIFO blocked past the deadline")
+        #expect(Date().timeIntervalSince(started) < 1)
+        for result in results {
+            #expect(throws: UICanvasError.notRegularFile(fifo.path)) { try result.get() }
+        }
+
+        let folder = fixture.root.appendingPathComponent("previews/folder.html", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        #expect(throws: UICanvasError.notRegularFile(folder.path)) { try register(folder) }
+
+        let huge = fixture.root.appendingPathComponent("previews/huge.html")
+        try makeSparseFile(huge, bytes: UInt64(UICanvasArtifactValidation.maximumBytes) + 1)
+        #expect(throws: UICanvasError.artifactTooLarge(huge.path)) { try register(huge) }
+        #expect(store.sessions(taskID: "FOC-070").isEmpty)
+
+        // A persisted session revalidates before reload: the artifact was removed, then swapped for a pipe.
+        _ = try fixture.open()
+        try FileManager.default.removeItem(at: fixture.mockup)
+        #expect(throws: UICanvasError.missingArtifact(fixture.mockup.path)) {
+            try UICanvasArtifactValidation.validate(fixture.mockup)
+        }
+        try makeFIFO(fixture.mockup)
+        #expect(throws: UICanvasError.notRegularFile(fixture.mockup.path)) {
+            try UICanvasArtifactValidation.validate(fixture.mockup)
+        }
+    }
+
+    @Test("An oversized session file is reported and never replaced")
+    func oversizedSessionPreserved() throws {
+        let fixture = try Fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let session = try fixture.open()
+        let file = fixture.root.appendingPathComponent("tasks/FOC-070/canvas/\(session.key).json")
+        try makeSparseFile(file, bytes: UInt64(FileReadLimits.metadataBytes) + 1)
+        #expect(throws: SafeFileReadError.tooLarge(file.path, limit: FileReadLimits.metadataBytes)) {
+            _ = try fixture.store.load(taskID: "FOC-070", key: session.key)
+        }
+        #expect(throws: SafeFileReadError.self) { _ = try fixture.open() }
+        let size = try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber
+        #expect(size?.intValue == FileReadLimits.metadataBytes + 1)
+        #expect(fixture.store.sessions(taskID: "FOC-070").isEmpty)
+    }
+
     @Test("Feedback is delivered exactly once and marks the agent thinking")
     func feedbackDeliveredOnce() throws {
         let fixture = try Fixture()

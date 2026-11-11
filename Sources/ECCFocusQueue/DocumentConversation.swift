@@ -10,7 +10,8 @@ actor DocumentConversationStore {
     func load() throws -> [QueueChatMessage] {
         let url = directory.appendingPathComponent("conversation.json")
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }
-        return try JSONDecoder().decode([QueueChatMessage].self, from: Data(contentsOf: url))
+        return try JSONDecoder().decode([QueueChatMessage].self,
+            from: SafeFileRead.data(at: url, limit: FileReadLimits.metadataBytes))
     }
     func save(_ messages: [QueueChatMessage]) throws {
         try SystemFileAccessor().write(JSONEncoder().encode(messages), to: directory.appendingPathComponent("conversation.json"))
@@ -144,6 +145,7 @@ actor DocumentContextReader {
         }
         var seen = Set<String>(), remaining = readOnly ? 64_000 : 160_000
         for path in paths where seen.insert(path).inserted && remaining > 0 {
+            try Task.checkCancellation()
             let url = URL(fileURLWithPath: path)
             let ext = url.pathExtension.lowercased()
             if ext == "pdf", document.isFileURL, path == document.path {
@@ -155,11 +157,10 @@ actor DocumentContextReader {
                 continue
             }
             guard !["pdf", "png", "jpg", "jpeg", "gif"].contains(ext) else { continue }
-            guard let handle = try? FileHandle(forReadingFrom: url) else {
+            // A named pipe, device, or folder is refused before any blocking open.
+            guard let data = try? SafeFileRead.prefix(of: url, count: min(48_000, remaining)) else {
                 result += "\nSource unavailable: \(path)\n"; continue
             }
-            defer { try? handle.close() }
-            let data = try handle.read(upToCount: min(48_000, remaining)) ?? Data()
             remaining -= data.count
             let text = String(decoding: data, as: UTF8.self)
             guard !text.contains("\0") else { continue }
@@ -204,7 +205,7 @@ actor DocumentContextReader {
     /// The PDF's text with page markers. A long PDF starts one page before the
     /// selected page, so the passage under discussion always fits.
     static func pdfText(_ url: URL, focusPage: Int?, limit: Int) -> String? {
-        guard let pdf = PDFDocument(url: url) else { return nil }
+        guard (try? SafeFileRead.validateRegularFile(at: url)) != nil, let pdf = PDFDocument(url: url) else { return nil }
         let count = pdf.pageCount
         let pages = (0..<count).map { "[Page \($0 + 1) of \(count)]\n\(pdf.page(at: $0)?.string ?? "")" }
         let total = pages.reduce(0) { $0 + $1.utf8.count + 2 }
@@ -265,7 +266,8 @@ actor DocumentChatRouteStore {
     init(directory: URL) { url = directory.appendingPathComponent("route.json") }
     func load() throws -> DocumentChatRoute? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return try JSONDecoder().decode(DocumentChatRoute.self, from: Data(contentsOf: url))
+        return try JSONDecoder().decode(DocumentChatRoute.self,
+            from: SafeFileRead.data(at: url, limit: FileReadLimits.metadataBytes))
     }
     func save(_ route: DocumentChatRoute?) throws {
         guard let route else { try? FileManager.default.removeItem(at: url); return }
@@ -554,9 +556,11 @@ final class DocumentConversation {
         }
     }
 
-    /// The document's bytes and text, or nil when it is unreadable or not UTF-8.
-    private static func editableSource(_ document: URL) -> (data: Data, text: String)? {
-        guard let data = try? Data(contentsOf: document), let text = String(data: data, encoding: .utf8) else { return nil }
+    /// The document's bytes and text, or nil when it is unreadable, not a
+    /// regular file, past the editable-size ceiling, or not UTF-8.
+    static func editableSource(_ document: URL) -> (data: Data, text: String)? {
+        guard let data = try? SafeFileRead.data(at: document, limit: FileReadLimits.editableDocumentBytes),
+              let text = String(data: data, encoding: .utf8) else { return nil }
         return (data, text)
     }
 
@@ -588,7 +592,7 @@ final class DocumentConversation {
             return reply.reply.isEmpty ? "I could not make that change from this document." : reply.reply
         }
         // Line numbers describe the text the model saw, so a newer file is never patched.
-        guard (try? Data(contentsOf: document)) == source.data else {
+        guard (try? SafeFileRead.data(at: document, limit: FileReadLimits.editableDocumentBytes)) == source.data else {
             return "The document changed while I was working, so I made no changes. Send the request again."
         }
         do {

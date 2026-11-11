@@ -880,10 +880,16 @@ public actor TaskContextStore {
         return root.appendingPathComponent("tasks", isDirectory: true).appendingPathComponent(ticketID.uppercased(), isDirectory: true)
     }
 
+    /// A task's context.json, bounded by bytes actually read. An oversized or
+    /// special file is reported as an error and left exactly as it is.
+    static func contextData(at url: URL) throws -> Data {
+        try SafeFileRead.data(at: url, limit: FileReadLimits.metadataBytes)
+    }
+
     public func load(ticketID: String) throws -> TaskContext? {
         let url = try directory(ticketID: ticketID).appendingPathComponent("context.json")
         guard files.fileExists(atPath: url.path) else { return nil }
-        let data = try Data(contentsOf: url)
+        let data = try Self.contextData(at: url)
         guard var value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw TaskContextError.commandFailed("Task context must be a JSON object. The original file was preserved.")
         }
@@ -941,7 +947,7 @@ public actor TaskContextStore {
         let candidate = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
         for task in try files.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
             guard task.lastPathComponent != ticketID.uppercased(), files.fileExists(atPath: task.appendingPathComponent("context.json").path) else { continue }
-            let other = try JSONDecoder().decode(TaskContext.self, from: Data(contentsOf: task.appendingPathComponent("context.json")))
+            let other = try JSONDecoder().decode(TaskContext.self, from: Self.contextData(at: task.appendingPathComponent("context.json")))
             let paths = [other.worktreePath].compactMap { $0 } + other.subtasks.compactMap { $0.workspace?.path }
             if paths.contains(where: { URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL == candidate }) { return true }
         }
@@ -1427,7 +1433,7 @@ public actor TaskContextStore {
             guard var context = try load(ticketID: ticketID) else { throw TaskContextError.missingContext(ticketID) }
             guard date > (context.lastInteractionAt ?? .distantPast) else { return context }
             let url = context.contextDirectory.appendingPathComponent("context.json")
-            guard var document = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any] else {
+            guard var document = try JSONSerialization.jsonObject(with: Self.contextData(at: url)) as? [String: Any] else {
                 throw CocoaError(.fileReadCorruptFile)
             }
             context.lastInteractionAt = date

@@ -311,12 +311,27 @@ public actor TmuxController {
       try await Task.sleep(for: .milliseconds(300))
     }
     let buffer = "focus-queue-prompt-\(reference.paneID.dropFirst())"
-    try await checked(reference.executable, ["set-buffer", "-b", buffer, "--", prompt])
+    // tmux rejects any single command over about 16 KB ("command too long"),
+    // and a full Kimi brief with inlined documents passes that. load-buffer
+    // reads the text from a private file instead, so length never matters.
+    let file = try Self.writePromptFile(prompt)
+    defer { try? FileManager.default.removeItem(at: file) }
+    try await checked(reference.executable, ["load-buffer", "-b", buffer, file.path])
     try await checked(reference.executable, ["paste-buffer", "-p", "-d", "-b", buffer, "-t", reference.paneID])
     // Let the TUI finish reading the paste before Enter submits it.
     try await Task.sleep(for: .milliseconds(400))
     try await checked(reference.executable, ["send-keys", "-t", reference.paneID, "Enter"])
     return true
+  }
+
+  /// A prompt can hold task documents, so only this user may read the file.
+  static func writePromptFile(_ prompt: String) throws -> URL {
+    let file = FileManager.default.temporaryDirectory
+      .appendingPathComponent("focus-queue-prompt-\(UUID().uuidString).txt")
+    guard FileManager.default.createFile(
+      atPath: file.path, contents: Data(prompt.utf8), attributes: [.posixPermissions: 0o600])
+    else { throw TmuxError.unavailable("Could not stage the prompt for the agent pane.") }
+    return file
   }
 
   /// Presses Escape in a verified provider pane. Escape stops a running turn

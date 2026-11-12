@@ -636,7 +636,8 @@ public actor TaskAgentLauncher {
       throw TaskContextError.commandFailed("This stopped agent has no saved conversation to resume. Start New Agent with a fresh assignment.")
     }
     // Kimi's `--prompt` runs a one-shot print mode with no TUI, so a managed
-    // Kimi pane starts interactive and receives its prompt by paste.
+    // Kimi pane starts interactive and receives its prompt by paste through
+    // `deliverInitialPrompt`, which the caller runs once the runtime is saved.
     let pastedPrompt = subtask.provider == .kimi
       ? Self.initialPrompt(context: context, subtask: subtask, includePrompt: includePrompt) : nil
     let usageRunID = UUID().uuidString
@@ -658,22 +659,6 @@ public actor TaskAgentLauncher {
     Self.recordInitialPrompt(context: context, subtask: subtask,
                              includePrompt: includePrompt, supportDirectory: supportDirectory,
                              runID: usageRunID)
-    if let pastedPrompt {
-      // Callers persist the reference as soon as this returns; the TUI's
-      // startup must not hold that up.
-      Task {
-        do {
-          let submitted = try await runtime.submitPrompt(
-            pastedPrompt, to: reference, ready: Self.kimiInputIsReady)
-          if !submitted {
-            NSLog("Focus Queue could not deliver the Kimi prompt to %@ before its input timeout", reference.paneID)
-          }
-        } catch {
-          NSLog("Focus Queue could not deliver the Kimi prompt to %@: %@",
-                reference.paneID, error.localizedDescription)
-        }
-      }
-    }
     // Give process discovery the same prompt source the shell entry points
     // record, so naming works even when provider hooks are not installed.
     let trimmedInitialPrompt = subtask.initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -705,6 +690,33 @@ public actor TaskAgentLauncher {
         helper: helper, supportDirectory: supportDirectory)
     }
     return reference
+  }
+
+  /// How a pasted starting prompt fared.
+  public enum PromptDelivery: Sendable, Equatable {
+    case delivered
+    case failed(String)
+  }
+
+  /// Pastes Kimi's starting prompt into its pane once the input box shows.
+  /// Claude and Codex start with the prompt in argv, so this returns nil for
+  /// them and for resumed conversations. Run it after the runtime is saved:
+  /// recording the runtime resets attention, which would hide a fast failure.
+  public func deliverInitialPrompt(
+    context: TaskContext, subtask: TaskSubtask, includePrompt: Bool = true,
+    to reference: TmuxSessionReference, timeout: Duration = .seconds(45)
+  ) async -> PromptDelivery? {
+    guard subtask.provider == .kimi,
+          let prompt = Self.initialPrompt(context: context, subtask: subtask, includePrompt: includePrompt)
+    else { return nil }
+    do {
+      let submitted = try await TmuxController(runner: runner, serverName: tmuxServerName)
+        .submitPrompt(prompt, to: reference, ready: Self.kimiInputIsReady, timeout: timeout)
+      return submitted ? .delivered
+        : .failed("Kimi's input box did not appear within \(timeout.components.seconds) seconds.")
+    } catch {
+      return .failed(error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
   }
 
   public func configureManagedPresentation(

@@ -155,7 +155,8 @@ struct KimiLaunchTests {
     let reference = try await controller.start(
       name: "fq-kimi-paste", directory: root.path,
       command: ["/bin/sh", "-c", script, "fake-kimi", output.path], executable: executable)
-    let prompt = "first line; $(not run)" + String(repeating: "x", count: 15_000) + "\nsecond line"
+    // Past tmux's ~16 KB single-command cap, which once dropped full Kimi briefs.
+    let prompt = "first line; $(not run)" + String(repeating: "x", count: 40_000) + "\nsecond line"
     let submitted = try await controller.submitPrompt(
       prompt, to: reference,
       ready: TaskAgentLauncher.kimiInputIsReady, timeout: .seconds(10))
@@ -199,6 +200,84 @@ struct KimiLaunchTests {
       try await Task.sleep(for: .milliseconds(100))
     }
     #expect(try String(contentsOf: output, encoding: .utf8) == "retry survived\n")
+  }
+}
+
+@Suite("Kimi starting-prompt delivery", .enabled(if: SetupEnvironment.executable("tmux") != nil))
+struct KimiPromptDeliveryTests {
+  private func withServer(
+    _ script: String, _ body: (TaskAgentLauncher, TmuxSessionReference, URL) async throws -> Void
+  ) async throws {
+    let executable = try #require(SetupEnvironment.executable("tmux"))
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "fq-kimi-deliver-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let serverName = "fq-kimi-deliver-\(UUID().uuidString.prefix(8))"
+    defer {
+      let cleanup = Process()
+      cleanup.executableURL = URL(fileURLWithPath: executable)
+      cleanup.arguments = ["-L", serverName, "kill-server"]
+      cleanup.environment = ["TMUX_TMPDIR": "/tmp", "PATH": "/usr/bin:/bin"]
+      cleanup.standardError = FileHandle.nullDevice
+      try? cleanup.run(); cleanup.waitUntilExit()
+      try? FileManager.default.removeItem(at: root)
+    }
+    let output = root.appendingPathComponent("received.txt")
+    let reference = try await TmuxController(serverName: serverName).start(
+      name: "fq-kimi-deliver", directory: root.path,
+      command: ["/bin/sh", "-c", script, "fake-kimi", output.path], executable: executable)
+    try await body(TaskAgentLauncher(tmuxServerName: serverName), reference, output)
+  }
+
+  private func context(_ root: String = "/tmp/fq-kimi-deliver") -> TaskContext {
+    TaskContext(ticketID: "ECC-1", title: "Kimi", summary: "", successCriteria: "Checks pass",
+      planPath: root + "/plan.md", worktreePath: "/tmp/other-not-documents", updatedAt: Date())
+  }
+
+  @Test("A Kimi brief longer than tmux's command cap reaches the pane whole")
+  func longBriefArrives() async throws {
+    try await withServer(
+      "stty -icanon -echo min 1 time 0; printf '│ >\\n'; cat > \"$1\""
+    ) { launcher, reference, output in
+      var subtask = TaskSubtask(title: "Kimi agent", provider: .kimi)
+      subtask.initialPrompt = "Review the module. " + String(repeating: "Check every edge case. ", count: 1_200)
+      let brief = try #require(TaskAgentLauncher.initialPrompt(
+        context: context(), subtask: subtask, includePrompt: true))
+      #expect(brief.utf8.count > 20_000)
+      let outcome = await launcher.deliverInitialPrompt(
+        context: context(), subtask: subtask, to: reference, timeout: .seconds(10))
+      #expect(outcome == .delivered)
+      for _ in 0..<60 where (try? String(contentsOf: output, encoding: .utf8)) != brief + "\n" {
+        try await Task.sleep(for: .milliseconds(100))
+      }
+      #expect(try String(contentsOf: output, encoding: .utf8) == brief + "\n")
+    }
+  }
+
+  @Test("A Kimi pane that never shows its input box reports a failed delivery")
+  func unreadyPaneFails() async throws {
+    try await withServer("printf 'Loading…\\n'; sleep 30") { launcher, reference, _ in
+      let subtask = TaskSubtask(title: "Kimi agent", provider: .kimi)
+      let outcome = await launcher.deliverInitialPrompt(
+        context: context(), subtask: subtask, to: reference, timeout: .seconds(1))
+      guard case .failed(let reason) = outcome else {
+        Issue.record("Expected a failed delivery, got \(String(describing: outcome))"); return
+      }
+      #expect(reason.contains("input box did not appear"))
+    }
+  }
+
+  @Test("Providers that take their prompt in argv need no paste")
+  func argvProvidersSkipDelivery() async throws {
+    try await withServer("sleep 30") { launcher, reference, _ in
+      for provider in [AgentProvider.claude, .codex] {
+        #expect(await launcher.deliverInitialPrompt(
+          context: context(), subtask: TaskSubtask(title: "Agent", provider: provider), to: reference) == nil)
+      }
+      var resumed = TaskSubtask(title: "Kimi agent", provider: .kimi)
+      resumed.sessionID = "session_11111111-2222-4333-8444-555555555555"
+      #expect(await launcher.deliverInitialPrompt(context: context(), subtask: resumed, to: reference) == nil)
+    }
   }
 }
 

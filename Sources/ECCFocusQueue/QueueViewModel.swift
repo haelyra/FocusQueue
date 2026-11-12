@@ -4080,6 +4080,39 @@ final class QueueViewModel {
     }
   }
 
+  /// Kimi takes its starting prompt by paste after its TUI opens, while Claude
+  /// and Codex get it in argv. A failed paste leaves a live agent with no
+  /// instructions, so it must show on the agent, not only in the system log.
+  private func deliverPastedPrompt(
+    context: TaskContext, subtask: TaskSubtask, includePrompt: Bool,
+    runtime: TmuxSessionReference, ticketID: String
+  ) {
+    let launcher = taskAgentLauncher
+    Task { [weak self] in
+      guard let outcome = await launcher.deliverInitialPrompt(
+        context: context, subtask: subtask, includePrompt: includePrompt, to: runtime),
+        let self else { return }
+      do {
+        switch outcome {
+        case .delivered:
+          taskContexts[ticketID] = try await taskContextStore.recordPrompt(
+            ticketID: ticketID, subtaskID: subtask.id)
+          await recordAgentLaunch(subtask, ticketID: ticketID, phase: "prompt-delivery",
+            outcome: "succeeded", message: "The starting prompt reached the agent's input box.")
+        case .failed(let reason):
+          let summary = "\(subtask.provider.displayName) started but never received its starting prompt. "
+            + "\(reason) The agent is idle with no instructions; type your request in its pane."
+          taskContexts[ticketID] = try await taskContextStore.reportAttention(
+            ticketID: ticketID, subtaskID: subtask.id, attention: .failed, summary: summary)
+          await recordAgentLaunch(subtask, ticketID: ticketID, phase: "prompt-delivery",
+            outcome: "failed", message: reason)
+        }
+      } catch {
+        actionMessages[ticketID] = error.localizedDescription
+      }
+    }
+  }
+
   private func recordAgentLaunch(
     _ subtask: TaskSubtask, ticketID: String, phase: String,
     outcome: String, message: String, details: [String: String] = [:]
@@ -4351,6 +4384,8 @@ final class QueueViewModel {
           taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
             ticketID: ticket.id, subtaskID: assignment.id, tmux: runtime,
             status: assignment.sessionID == nil ? .working : .idle)
+          deliverPastedPrompt(context: context, subtask: assignment, includePrompt: true,
+                              runtime: runtime, ticketID: ticket.id)
           assignment.tmux = runtime
           _ = try await terminalController.openAgentRuntime(assignment, taskID: ticket.id, taskTitle: ticket.title, configuration: config.wezTerm)
         } else {
@@ -4553,10 +4588,13 @@ final class QueueViewModel {
           taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
             ticketID: ticket.id, subtaskID: subtask.id, tmux: tmux,
             status: Self.launchStatus(subtask, includePrompt: includePrompt))
-          if includePrompt {
+          // A pasted prompt is recorded only once it reaches the pane.
+          if includePrompt, subtask.provider != .kimi {
             taskContexts[ticket.id] = try await taskContextStore.recordPrompt(
               ticketID: ticket.id, subtaskID: subtask.id)
           }
+          deliverPastedPrompt(context: context, subtask: subtask, includePrompt: includePrompt,
+                              runtime: tmux, ticketID: ticket.id)
           subtask.tmux = tmux
           await recordAgentLaunch(
             subtask, ticketID: ticket.id, phase: "tmux-confirm", outcome: "succeeded",

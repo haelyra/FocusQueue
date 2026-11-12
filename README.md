@@ -463,9 +463,11 @@ holds every keyword, the search retries with close spellings and synonyms. A
 code matches with or without its prefix, dash, or leading zeros: `FOC-018`,
 `foc 18`, and `18` all find FOC-018. A word that is exactly a status or priority,
 such as `blocked`, `in-progress`, or `high`, filters by that field; two values
-of one field are alternatives. `status:` (or `is:`) and `priority:` (or `p:`)
-accept part of a value, and `status:open` or `status:done` select open or
-completed tasks. Esc or the clear button closes the search; clicking elsewhere
+of one field are alternatives. `status:` (or `is:`), `priority:` (or `p:`),
+and `category:` accept the start of a value. For example, `category:back retry`
+finds tasks in categories starting with “back” that match “retry”.
+`status:open` and `status:done` select open and completed tasks respectively.
+Esc or the clear button closes the search; clicking elsewhere
 drops the cursor and closes an empty one.
 Saved positions and the selected ordering mode survive refreshes and restarts.
 

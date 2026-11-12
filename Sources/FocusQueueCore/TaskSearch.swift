@@ -12,7 +12,7 @@ public enum TaskSearchMatch: Equatable, Sendable {
 
 /// A query term that narrows by a task field instead of matching text.
 public struct TaskSearchFilter: Equatable, Sendable {
-  public enum Field: String, Sendable { case status, priority }
+  public enum Field: String, Sendable { case status, priority, category }
   public let field: Field
   /// The value as typed, compacted: "in-progress" is "inprogress".
   public let value: String
@@ -43,7 +43,7 @@ public struct TaskSearchResult: Equatable, Sendable {
 /// synonyms, so ordinary typing stays a cheap substring scan.
 ///
 /// A word that is exactly a status or priority ("blocked", "high") filters by
-/// that field, as do `status:`/`is:` and `priority:`/`p:` with a partial value.
+/// that field. Explicit status, priority and category qualifiers accept partial values.
 /// Values of one field are alternatives; different fields must all hold.
 public struct TaskSearchIndex: Sendable {
   /// Text is kept as UTF-8 bytes: byte scans are several times faster than
@@ -54,6 +54,7 @@ public struct TaskSearchIndex: Sendable {
     let idForms: Set<String>
     let status: String
     let priority: String
+    let category: String
     let title: [UInt8]
     let text: [UInt8]
     let words: Set<String>
@@ -78,6 +79,7 @@ public struct TaskSearchIndex: Sendable {
       vocabulary.formUnion(words)
       return Entry(ticket: ticket, idForms: idForms,
         status: TaskSearchText.compact(ticket.status), priority: TaskSearchText.compact(ticket.priority),
+        category: TaskSearchText.compact(ticket.category ?? ""),
         title: Array(title.utf8), text: Array(text.utf8), words: words)
     }
     self.vocabulary = vocabulary.sorted()
@@ -145,6 +147,7 @@ public struct TaskSearchIndex: Sendable {
       guard !values.isEmpty else { return true }
       return values.contains { value in
         switch field {
+        case .category: return entry.category.hasPrefix(value)
         case .priority: return entry.priority.hasPrefix(value)
         case .status:
           if TaskSearchText.openStatusNames.contains(value) { return entry.ticket.isOpen }
@@ -153,7 +156,7 @@ public struct TaskSearchIndex: Sendable {
         }
       }
     }
-    return holds(.status) && holds(.priority)
+    return holds(.status) && holds(.priority) && holds(.category)
   }
 
   /// Short keywords match the start of a word so "ui" does not match "build";
@@ -283,7 +286,7 @@ enum TaskSearchText {
   static let openStatusNames: Set<String> = ["open", "active"]
   static let closedStatusNames: Set<String> = ["done", "closed", "completed", "complete"]
   static let qualifiers: [String: TaskSearchFilter.Field] = [
-    "status": .status, "is": .status, "priority": .priority, "p": .priority,
+    "status": .status, "is": .status, "priority": .priority, "p": .priority, "category": .category,
   ]
 
   static let stopWords: Set<String> = [

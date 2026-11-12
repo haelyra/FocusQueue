@@ -107,6 +107,24 @@ struct TaskSearchTests {
     #expect(mixedIDs("status:open serach") == ["FOC-019", "FOC-022"])
   }
 
+  @Test("Category qualifiers match assigned categories and combine with status and keywords")
+  func categoryQueries() {
+    let index = TaskSearchIndex([
+      DashboardTicket(id: "A", title: "Add order endpoint", category: "Backend", status: "open", summary: ""),
+      DashboardTicket(id: "B", title: "Document the backend API", category: "Docs", status: "open", summary: ""),
+      DashboardTicket(id: "C", title: "Fix retry logic", category: "Backend", status: "blocked", summary: ""),
+    ])
+    func ids(_ query: String) -> [String] { index.search(query).tickets.map(\.id) }
+    #expect(ids("backend") == ["B", "A", "C"])
+    #expect(ids("category:backend") == ["A", "C"])
+    #expect(ids("CATEGORY:Back") == ["A", "C"])
+    #expect(ids("category:backend status:open") == ["A", "C"])
+    #expect(ids("category:backend status:blocked") == ["C"])
+    #expect(ids("category:backend retry") == ["C"])
+    #expect(ids("category:backend category:docs") == ["A", "B", "C"])
+    #expect(ids("category:missing").isEmpty)
+  }
+
   @Test("Title matches lead summary matches; queue order breaks ties")
   func titleMatchesLead() {
     #expect(ids("search") == ["FOC-019", "FOC-022"])

@@ -336,6 +336,19 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("bypass repository push guards", payload)
         self.assertIn("verify the remote integration ref equals the local commit", payload)
 
+    def test_global_contract_requires_registering_launched_agents(self):
+        repository = Path(__file__).parents[1]
+        for name in (
+            "Config/CODEX_GLOBAL_INSTRUCTIONS.md",
+            "Config/CLAUDE_GLOBAL_INSTRUCTIONS.md",
+        ):
+            with self.subTest(name=name):
+                payload = (repository / name).read_text()
+                self.assertIn("Agents you launch need their own registration", payload)
+                self.assertIn("`tmux start-agent <TASK> <NEW-AGENT-ID> -- <provider>`", payload)
+                self.assertIn("Never let it inherit your agent ID or workspace", payload)
+                self.assertIn("Only ephemeral sub-agents you fully manage", payload)
+
     def test_global_contract_maps_report_stages_to_existing_task_statuses(self):
         repository = Path(__file__).parents[1]
         output_contract = (

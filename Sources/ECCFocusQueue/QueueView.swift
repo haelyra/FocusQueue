@@ -2597,8 +2597,10 @@ struct RenamableTaskTitle: View {
           Divider()
         }
         Button("Rename task", systemImage: "pencil") { beginRename() }
+        Button("Copy task ID", systemImage: "doc.on.doc", action: copyTaskID)
       }
       .accessibilityAction(named: "Rename task", beginRename)
+      .accessibilityAction(named: "Copy task ID", copyTaskID)
       .help(openHint ?? (openAction == nil
         ? "Double-click to rename this task"
         : "Click to open this task's terminal. Double-click to rename the task."))
@@ -2612,6 +2614,12 @@ struct RenamableTaskTitle: View {
       } message: {
         Text("The updated title will be used everywhere this task is currently shown.")
       }
+  }
+
+  private func copyTaskID() {
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    pasteboard.setString(ticket.id, forType: .string)
   }
 
   private func beginRename() {

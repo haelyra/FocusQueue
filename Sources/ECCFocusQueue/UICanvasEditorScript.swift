@@ -404,6 +404,7 @@ enum UICanvasEditorScript {
       return true;
     }
     if (edit.kind === 'input') {
+      if (edit.radioGroup) return replayRadioGroup(edit, el, 'after');
       replayControlValue(el, edit.after);
       edit._el = el;
       return true;
@@ -420,7 +421,10 @@ enum UICanvasEditorScript {
     }
     if (!el) return false;
     if (edit.kind === 'text') { el.innerHTML = edit._htmlBefore !== undefined ? edit._htmlBefore : edit.before; return true; }
-    if (edit.kind === 'input') { replayControlValue(el, edit.before); return true; }
+    if (edit.kind === 'input') {
+      if (edit.radioGroup) return replayRadioGroup(edit, el, 'before');
+      replayControlValue(el, edit.before); return true;
+    }
     if (edit.kind === 'resize' || edit.kind === 'nudge' || edit.kind === 'style') { applyInline(el, edit._inlineBefore || {}); return true; }
     if (edit.kind === 'move') {
       if (!edit._fromParent) return false;
@@ -537,6 +541,69 @@ enum UICanvasEditorScript {
   // page's own scripts absorb the answer into their state (and localStorage).
   // The suppression flag keeps those synthetic events out of the edit log.
   var trackingSuppressed = 0;
+  var radioValues = new WeakMap();
+  function radioGroup(el) {
+    if (!el.name) return [el];
+    return Array.from(el.getRootNode().querySelectorAll('input')).filter(function (other) {
+      return other.type === 'radio' && other.name === el.name && other.form === el.form && !isOurs(other);
+    });
+  }
+  function rememberRadios(group) {
+    group.forEach(function (el) { radioValues.set(el, el.checked); });
+  }
+  rememberRadios(Array.from(document.querySelectorAll('input')).filter(function (el) { return el.type === 'radio'; }));
+  // Capture dynamically inserted or script-initialized controls before activation.
+  function prepareRadioInput(e) {
+    var el = controlFor(e.target);
+    if (el && el.type === 'radio') rememberRadios(radioGroup(el));
+  }
+  document.addEventListener('pointerdown', prepareRadioInput, true);
+  document.addEventListener('keydown', prepareRadioInput, true);
+
+  function replayRadioGroup(edit, el, direction) {
+    if (el.type !== 'radio' || !Array.isArray(edit.radioGroup) || !edit.radioGroup.length) return false;
+    var group = radioGroup(el);
+    var controls = edit.radioGroup.map(function (item) { return item && resolve(item.selector); });
+    // Resolve and validate the entire group before changing any live control.
+    if (controls.length !== group.length || new Set(controls).size !== controls.length ||
+        controls.some(function (control, i) {
+          return group.indexOf(control) < 0 || typeof edit.radioGroup[i].before !== 'boolean' ||
+            typeof edit.radioGroup[i].after !== 'boolean';
+        })) return false;
+    trackingSuppressed++;
+    try {
+      controls.forEach(function (control) { control.checked = false; });
+      controls.forEach(function (control, i) { control.checked = edit.radioGroup[i][direction]; });
+      rememberRadios(controls);
+      controls.forEach(function (control) {
+        control.dispatchEvent(new Event('input', { bubbles: true }));
+        control.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+    } finally {
+      rememberRadios(controls);
+      trackingSuppressed--;
+    }
+    edit._el = el;
+    return true;
+  }
+
+  function trackRadioInput(el) {
+    var group = radioGroup(el);
+    var states = group.map(function (control) {
+      return { selector: selectorFor(control),
+        before: radioValues.has(control) ? radioValues.get(control) : control.defaultChecked,
+        after: control.checked };
+    });
+    rememberRadios(group);
+    if (!states.some(function (state) { return state.before !== state.after; })) return;
+    var ownState = states[group.indexOf(el)];
+    var edit = newEdit('input', el, {
+      before: ownState.before, after: ownState.after, inputType: 'radio', radioGroup: states
+    });
+    edit._el = el;
+    record(edit);
+  }
+
   function replayControlValue(el, value) {
     trackingSuppressed++;
     try {
@@ -544,6 +611,7 @@ enum UICanvasEditorScript {
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
     } catch (_e) { /* replay must never break on a page listener's error */ }
+    if (el.type === 'radio') rememberRadios(radioGroup(el));
     trackingSuppressed--;
   }
   function trackInput(el) {
@@ -568,12 +636,9 @@ enum UICanvasEditorScript {
     if (trackingSuppressed) return;
     var el = controlFor(e.target);
     if (!el) return;
-    // Checking one radio clears its group; record every member's new state.
+    // Checking one radio clears its group; undo the whole selection together.
     if (el.tagName === 'INPUT' && (el.type || '').toLowerCase() === 'radio') {
-      var radios = document.querySelectorAll('input[type="radio"]');
-      for (var i = 0; i < radios.length; i++) {
-        if (radios[i].name === el.name && radios[i].form === el.form && !isOurs(radios[i])) trackInput(radios[i]);
-      }
+      trackRadioInput(el);
       return;
     }
     trackInput(el);

@@ -140,4 +140,91 @@ struct AgentPauseTests {
         }
         #expect(try String(contentsOf: output, encoding: .utf8) == expected)
     }
+
+    @Test("A resumed launch carries Play's text; Kimi's stays out of argv for a paste")
+    func resumeCommandCarriesPlayText() throws {
+        let context = TaskContext(ticketID: "ECC-870", title: "Task", summary: "",
+            successCriteria: "", planPath: "/tmp/support/tasks/ECC-870/plan.md",
+            worktreePath: "/tmp/worktree", updatedAt: Date())
+        let support = URL(fileURLWithPath: "/tmp/support")
+        let claude = TaskSubtask(title: "Claude", provider: .claude,
+            sessionID: "11111111-2222-4333-8444-555555555555")
+        let claudeCommand = try TaskAgentLauncher.command(context: context, subtask: claude,
+            supportDirectory: support, resumePrompt: "Ship it")
+        #expect(claudeCommand.contains("--resume"))
+        #expect(Array(claudeCommand.suffix(2)) == ["--", "Ship it"])
+        let plain = try TaskAgentLauncher.command(context: context, subtask: claude, supportDirectory: support)
+        #expect(!plain.contains("Ship it") && !plain.contains("--"))
+        let codex = TaskSubtask(title: "Codex", provider: .codex,
+            sessionID: "11111111-2222-4333-8444-555555555555")
+        #expect(try TaskAgentLauncher.command(context: context, subtask: codex,
+            supportDirectory: support, resumePrompt: "Ship it").last == "Ship it")
+        let kimi = TaskSubtask(title: "Kimi", provider: .kimi, sessionID: "01HZ8KJ9X0AVBR1C2D3E4F5G6H")
+        let kimiCommand = try TaskAgentLauncher.command(context: context, subtask: kimi,
+            supportDirectory: support, resumePrompt: "Ship it")
+        #expect(!kimiCommand.contains("Ship it") && !kimiCommand.contains("--prompt"))
+    }
+
+    @Test("Play types its text into a live pane; a closed pane never forks a running conversation",
+        .enabled(if: SetupEnvironment.executable("tmux") != nil))
+    func playLiveAndClosedPane() async throws {
+        let executable = try #require(SetupEnvironment.executable("tmux"))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "fq-play-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let serverName = "fq-play-\(UUID().uuidString.prefix(8))"
+        func killServer() {
+            let cleanup = Process()
+            cleanup.executableURL = URL(fileURLWithPath: executable)
+            cleanup.arguments = ["-L", serverName, "kill-server"]
+            cleanup.environment = ["TMUX_TMPDIR": "/tmp", "PATH": "/usr/bin:/bin"]
+            cleanup.standardError = FileHandle.nullDevice
+            try? cleanup.run(); cleanup.waitUntilExit()
+        }
+        defer { killServer(); try? FileManager.default.removeItem(at: root) }
+        let output = root.appendingPathComponent("received.bin")
+        let script = "stty -icanon -echo min 1 time 0; printf '│ >\\n'; cat > \"$1\""
+        let tmux = TmuxController(serverName: serverName)
+        let reference = try await tmux.start(
+            name: "fq-play", directory: root.path,
+            command: ["/bin/sh", "-c", script, "fake-agent", output.path], executable: executable)
+        var agent = TaskSubtask(id: "worker", title: "Worker", provider: .kimi,
+            sessionID: "01HZ8KJ9X0AVBR1C2D3E4F5G6H", status: .idle)
+        agent.tmux = reference
+        let support = root.appendingPathComponent("support")
+        let contexts = TaskContextStore(root: support)
+        _ = try await contexts.ensureContext(ticket: DashboardTicket(
+            id: "ECC-870", title: "Task", status: "open", summary: ""))
+        _ = try await contexts.upsertSubtask(ticketID: "ECC-870", subtask: agent)
+        let controller = AgentPauseController(store: contexts, tmux: tmux)
+
+        let (played, outcome) = try await controller.play(
+            ticketID: "ECC-870", subtaskID: agent.id, prompt: "  Ship it  ",
+            supportDirectory: support, tmuxExecutable: executable,
+            isRunningElsewhere: { _, _ in Issue.record("A live pane needs no process scan"); return false })
+        #expect(outcome == .sent)
+        #expect(played.subtasks[0].status == .working)
+        let expected = "\n\nShip it\n"
+        for _ in 0..<40 where (try? String(contentsOf: output, encoding: .utf8)) != expected {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        #expect(try String(contentsOf: output, encoding: .utf8) == expected)
+
+        killServer()
+        await #expect(throws: AgentPauseController.PauseError.runningElsewhere("Worker")) {
+            try await controller.play(ticketID: "ECC-870", subtaskID: agent.id,
+                supportDirectory: support, tmuxExecutable: executable,
+                isRunningElsewhere: { provider, sessionID in
+                    #expect(provider == .kimi && sessionID == "01HZ8KJ9X0AVBR1C2D3E4F5G6H")
+                    return true
+                })
+        }
+        agent.sessionID = nil
+        _ = try await contexts.upsertSubtask(ticketID: "ECC-870", subtask: agent)
+        await #expect(throws: AgentPauseController.PauseError.noSavedConversation("Worker")) {
+            try await controller.play(ticketID: "ECC-870", subtaskID: agent.id,
+                supportDirectory: support, tmuxExecutable: executable,
+                isRunningElsewhere: { _, _ in false })
+        }
+    }
 }

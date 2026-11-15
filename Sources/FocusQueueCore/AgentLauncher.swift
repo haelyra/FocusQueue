@@ -161,7 +161,8 @@ public actor TaskAgentLauncher {
                              pastesPrompt: Bool = false, statusHooks: Bool = true,
                              usageRunID: String? = nil,
                              codexSupportsNoDaemon: Bool = true,
-                             bypassPermissions: Bool = false) throws -> [String] {
+                             bypassPermissions: Bool = false,
+                             resumePrompt: String? = nil) throws -> [String] {
     guard let directory = (subtask.workspace?.path ?? context.worktreePath), directory.hasPrefix("/") else {
       throw TaskContextError.unsafeWorktree("Choose a task worktree before launching an agent.")
     }
@@ -193,6 +194,10 @@ public actor TaskAgentLauncher {
       providerArguments = subtask.provider == .codex
         ? ["resume", CodexSessionLineage.root(of: sessionID, codexRoot: codexRoot), "--cd", directory] + providerArguments
         : subtask.provider.resumeArguments(sessionID: sessionID) + providerArguments
+      // Kimi's --prompt is one-shot print mode, so its callers paste instead.
+      if let resumePrompt, subtask.provider != .kimi {
+        providerArguments += promptArguments(for: subtask.provider, prompt: resumePrompt)
+      }
     } else if !pastesPrompt, let prompt = initialPrompt(context: context, subtask: subtask, includePrompt: includePrompt) {
       providerArguments += promptArguments(for: subtask.provider, prompt: prompt)
     }
@@ -629,7 +634,7 @@ public actor TaskAgentLauncher {
     context: TaskContext, subtask: TaskSubtask, supportDirectory: URL,
     includePrompt: Bool = true, tmuxExecutable: String,
     usageBarEnabled: Bool = true, codexSupportsNoDaemon: Bool = true,
-    bypassPermissions: Bool = false
+    bypassPermissions: Bool = false, resumePrompt: String? = nil
   ) async throws -> TmuxSessionReference {
     if let workspace = subtask.workspace { try await TaskWorktreeManager().validate(workspace) }
     if subtask.tmux != nil, subtask.sessionID == nil {
@@ -645,7 +650,8 @@ public actor TaskAgentLauncher {
       context: context, subtask: subtask, supportDirectory: supportDirectory,
       includePrompt: includePrompt, usageBarEnabled: usageBarEnabled,
       pastesPrompt: pastedPrompt != nil, usageRunID: usageRunID,
-      codexSupportsNoDaemon: codexSupportsNoDaemon, bypassPermissions: bypassPermissions)
+      codexSupportsNoDaemon: codexSupportsNoDaemon, bypassPermissions: bypassPermissions,
+      resumePrompt: resumePrompt)
     let persistence = FileManager.default.isExecutableFile(atPath: tmuxExecutable)
       ? try TmuxPersistence.prepare(executable: tmuxExecutable, serverName: tmuxServerName,
           supportDirectory: supportDirectory) : nil

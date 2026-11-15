@@ -207,6 +207,7 @@ These manage the per-agent slots inside `tasks/<TICKET>/context.json`:
 | `archive-agent <TASK> <SUBTASK>` | Archive a finished agent slot |
 | `pause <TASK> <SUBTASK>` | Press Esc in the agent's managed tmux pane to stop its turn, then record `pausedAt` (status idle). Refuses agents without a managed pane or still at a folder-trust prompt |
 | `resume <TASK> <SUBTASK>` | Paste a short continue prompt into the same conversation and clear `pausedAt` (status working). A later typed prompt also clears the pause |
+| `play <TASK> <SUBTASK> ["<text>"]` | Resume an agent: type `continue`, or the quoted text, into its live managed pane. A closed tmux pane reopens on its saved conversation with the text. Refuses when that conversation still runs elsewhere or none was saved. Emits `status` `played` or `reopened` |
 | `associate <TASK> <AGENT> <SUBTASK>` | Link a registered session to a subtask |
 | `log <TASK> <AGENT> <entry>` | Append-only entry to `agent-log.md` (task-locked, concurrency-safe) |
 | `context <TASK>` | Dump the full `TaskContext` JSON plus derived `agentLogPath` and `dataPath` |

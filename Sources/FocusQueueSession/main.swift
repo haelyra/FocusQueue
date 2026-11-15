@@ -13,7 +13,7 @@ enum SessionRegistrationError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .usage:
-            "Usage: focus-queue-session intake-changed | data ensure | data place <user|project|task> <target-id> <fact> | development <PROJECT-ID> show|modules|link <TASK-ID> <step-id|none> [module]|unlink <TASK-ID>|depends <TASK-ID> [<PREREQUISITE-ID> ...]|step <step-id> <pending|inProgress|done|accepted>|phase <planning|phase0|implementation|prerelease|release>|sync|guidelines on|off|artifact <catalog-file> <project-file|default>|module add <name> [modules/<id>-<slug>.md] | contract show <PROJECT-ID> <engineering|orchestrator> | contract propose <PROJECT-ID> <engineering|orchestrator> <file.md> | contract generate <PROJECT-ID> | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|pin <TASK-ID>|unpin <TASK-ID>|reset | task create <PROJECT-ID> <title> <summary> | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | cleanup <TASK-ID>|--completed|--orphans|--purge [--dry-run] | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | pause <TASK-ID> <SUBTASK-ID> | resume <TASK-ID> <SUBTASK-ID> | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
+            "Usage: focus-queue-session intake-changed | data ensure | data place <user|project|task> <target-id> <fact> | development <PROJECT-ID> show|modules|link <TASK-ID> <step-id|none> [module]|unlink <TASK-ID>|depends <TASK-ID> [<PREREQUISITE-ID> ...]|step <step-id> <pending|inProgress|done|accepted>|phase <planning|phase0|implementation|prerelease|release>|sync|guidelines on|off|artifact <catalog-file> <project-file|default>|module add <name> [modules/<id>-<slug>.md] | contract show <PROJECT-ID> <engineering|orchestrator> | contract propose <PROJECT-ID> <engineering|orchestrator> <file.md> | contract generate <PROJECT-ID> | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|pin <TASK-ID>|unpin <TASK-ID>|reset | task create <PROJECT-ID> <title> <summary> | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | cleanup <TASK-ID>|--completed|--orphans|--purge [--dry-run] | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | pause <TASK-ID> <SUBTASK-ID> | resume <TASK-ID> <SUBTASK-ID> | play <TASK-ID> <SUBTASK-ID> [\"text\"] | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path]"
         case .missingSessionIdentity:
             "No Codex, Claude, or Kimi session ID was found in the environment or current WezTerm pane."
         case .missingManagedRuntime:
@@ -38,6 +38,7 @@ enum SessionRegistrationError: Error, LocalizedError {
                 print(SessionRegistrationError.usage.localizedDescription)
                 print("Agent log: log <TASK-ID> <AGENT-ID> <entry> (append-only, task-locked)")
                 print("Pause and resume: pause <TASK-ID> <SUBTASK-ID> presses Esc in the agent's managed tmux pane to stop its turn; resume <TASK-ID> <SUBTASK-ID> pastes a continue prompt into the same conversation")
+                print("Play: play <TASK-ID> <SUBTASK-ID> [\"text\"] sends continue, or the quoted text, to the agent; a closed pane reopens on its saved conversation first")
                 print("Inside a managed pane, omit <TASK-ID> <SUBTASK-ID> from attach, context, plan, log, progress, attention, result, complete, identify, review-push, and workspace; they default to $FOCUS_QUEUE_TASK_ID and $FOCUS_QUEUE_SUBTASK_ID.")
                 print("Agent rules: rules (lifecycle, plan, workspace, and map-scope rules for managed agents)")
                 print("Launch brief preview: brief <TASK-ID> <SUBTASK-ID> (the exact prompt a fresh launch of that agent receives)")
@@ -1459,6 +1460,36 @@ enum SessionRegistrationError: Error, LocalizedError {
             notifyContextChanged()
             try emit([
                 "status": command == "pause" ? "paused" : "resumed",
+                "taskID": updated.ticketID, "subtaskID": arguments[2],
+            ])
+            return
+        }
+        if command == "play", (3...4).contains(arguments.count) {
+            let configuration = try loadConfiguration(from: root)
+            guard let executable = configuration.tmuxExecutable ?? SetupEnvironment.executable("tmux") else {
+                throw TmuxError.unavailable("Install tmux on this host, then choose its executable in setup.")
+            }
+            let ticketID = arguments[1].uppercased()
+            let bypass = try await store.load(ticketID: ticketID).flatMap { context in
+                context.subtasks.first { $0.id == arguments[2] }.map {
+                    configuration.bypassesPermissions(for: $0.provider, taskOverride: context.bypassPermissions)
+                }
+            } ?? false
+            let (updated, outcome) = try await AgentPauseController(store: store).play(
+                ticketID: ticketID, subtaskID: arguments[2],
+                prompt: arguments.count == 4 ? arguments[3] : AgentPauseController.playPrompt,
+                supportDirectory: root, tmuxExecutable: executable,
+                usageBarEnabled: configuration.agentUsageBarEnabled,
+                codexSupportsNoDaemon: await CodexCatalog.load()?.supportsNoDaemon ?? true,
+                bypassPermissions: bypass,
+                isRunningElsewhere: { provider, sessionID in
+                    try await WezTermController().locateProviderProcess(
+                        provider: provider, sessionID: sessionID) != nil
+                })
+            await mirrorContext(updated, root: root)
+            notifyContextChanged()
+            try emit([
+                "status": outcome == .sent ? "played" : "reopened",
                 "taskID": updated.ticketID, "subtaskID": arguments[2],
             ])
             return

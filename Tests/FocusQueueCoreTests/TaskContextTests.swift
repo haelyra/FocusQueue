@@ -39,6 +39,9 @@ func taskContextSessionBinding() {
         environment: claudeCode.merging(["CLAUDE_SESSION_ID": "explicit-id"]) { $1 })?.1 == "explicit-id")
     #expect(TaskSessionBinding.providerSession(
         environment: claudeCode.merging(["CODEX_THREAD_ID": "codex-id"]) { $1 }) == nil)
+    // Kimi exports no session ID; an inherited Claude ID must not be labeled Kimi's.
+    #expect(TaskSessionBinding.providerSession(
+        environment: claudeCode.merging(["FOCUS_QUEUE_PROVIDER": "kimi"]) { $1 }) == nil)
     #expect(TaskSessionBinding.providerSession(
         environment: claudeCode.merging(["CODEX_THREAD_ID": "codex-id", "FOCUS_QUEUE_PROVIDER": "codex"]) { $1 })?.1 == "codex-id")
 }

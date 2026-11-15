@@ -865,6 +865,11 @@ enum SessionRegistrationError: Error, LocalizedError {
     private static func register(arguments: [String]) async throws {
         guard arguments.count == 2 else { throw SessionRegistrationError.usage }
         let environment = ProcessInfo.processInfo.environment
+        // Kimi exports no session ID, so its managed pane names the session.
+        if environment["FOCUS_QUEUE_PROVIDER"] == AgentProvider.kimi.rawValue {
+            try await attachManagedKimi(ticketID: arguments[1], environment: environment)
+            return
+        }
         guard let (provider, sessionID) = TaskSessionBinding.providerSession(environment: environment),
               UUID(uuidString: sessionID) != nil else { throw SessionRegistrationError.missingSessionIdentity }
         // A Codex sub-agent inherits its parent's history, including the startup
@@ -882,6 +887,50 @@ enum SessionRegistrationError: Error, LocalizedError {
         let event = ExternalAgentEvent(sessionID: sessionID, cwd: FileManager.default.currentDirectoryPath,
             hookEventName: "ExplicitAttach")
         try await registerEvent(event, provider: provider, explicitTaskID: arguments[1], environment: environment)
+    }
+
+    /// Binds a managed Kimi pane's live session to its assigned agent. The
+    /// session comes from the Kimi process on the pane's TTY, the same lookup
+    /// the app's identity sweep uses; Kimi starts its session file before the
+    /// first tool call, so a short retry covers a fresh launch.
+    private static func attachManagedKimi(ticketID: String, environment: [String: String]) async throws {
+        guard let subtaskID = TaskSessionBinding.subtaskID(ticketID: ticketID, environment: environment) else {
+            throw TaskContextError.commandFailed(
+                "This Kimi pane was launched for \(environment["FOCUS_QUEUE_TASK_ID"] ?? "no task"), not \(ticketID). Attach to the pane's own task.")
+        }
+        let root = supportDirectory(environment: environment)
+        let store = TaskContextStore(root: root)
+        guard let context = try await store.load(ticketID: ticketID),
+              let agent = context.subtasks.first(where: { $0.id == subtaskID }),
+              agent.provider == .kimi, agent.tmux != nil else {
+            throw TaskContextError.commandFailed(
+                "Kimi attach works only inside the agent's Focus Queue tmux pane. Start Kimi from Focus Queue.")
+        }
+        let configuration = try loadConfiguration(from: root)
+        var observed: String?
+        for attempt in 0..<8 {
+            observed = try await TaskAgentLauncher().identify(subtask: agent, configuration: configuration.wezTerm)
+            if observed != nil || attempt == 7 { break }
+            try await Task.sleep(for: .milliseconds(500))
+        }
+        if let saved = agent.sessionID, let observed, saved.caseInsensitiveCompare(observed) != .orderedSame {
+            throw TaskContextError.commandFailed(
+                "This pane runs Kimi session \(observed), but the agent record names \(saved). Focus Queue did not rebind it.")
+        }
+        guard let sessionID = observed ?? agent.sessionID else {
+            throw TaskContextError.commandFailed(
+                "Kimi has not opened its session file yet, so the session is unknown. Retry attach in a few seconds.")
+        }
+        if agent.sessionID == nil {
+            let updated = try await store.recordAgentIdentity(
+                ticketID: ticketID, subtaskID: subtaskID, sessionID: sessionID)
+            await mirrorContext(updated, root: root)
+            notifyContextChanged()
+        }
+        var output = ["status": "registered", "provider": AgentProvider.kimi.rawValue,
+                      "sessionID": sessionID, "taskID": context.ticketID, "subtaskID": subtaskID]
+        output["tmuxName"] = agent.tmux?.name
+        try emit(output)
     }
 
     /// Provider status hooks run on every tool call, so this path stays quiet and

@@ -72,6 +72,8 @@ class InstallerTests(unittest.TestCase):
                      path / "Contents/Resources/CODEX_GLOBAL_INSTRUCTIONS.md")
         shutil.copy2(Path(__file__).parents[1] / "Config/CLAUDE_GLOBAL_INSTRUCTIONS.md",
                      path / "Contents/Resources/CLAUDE_GLOBAL_INSTRUCTIONS.md")
+        shutil.copy2(Path(__file__).parents[1] / "Config/KIMI_GLOBAL_INSTRUCTIONS.md",
+                     path / "Contents/Resources/KIMI_GLOBAL_INSTRUCTIONS.md")
         shell = path / "Contents/Resources/shell"
         shell.mkdir()
         (shell / "focus_queue_codex_entry.py").write_bytes(b"entry:" + content)
@@ -341,6 +343,7 @@ class InstallerTests(unittest.TestCase):
         for name in (
             "Config/CODEX_GLOBAL_INSTRUCTIONS.md",
             "Config/CLAUDE_GLOBAL_INSTRUCTIONS.md",
+            "Config/KIMI_GLOBAL_INSTRUCTIONS.md",
         ):
             with self.subTest(name=name):
                 payload = (repository / name).read_text()
@@ -361,6 +364,7 @@ class InstallerTests(unittest.TestCase):
         for name in (
             "Config/CODEX_GLOBAL_INSTRUCTIONS.md",
             "Config/CLAUDE_GLOBAL_INSTRUCTIONS.md",
+            "Config/KIMI_GLOBAL_INSTRUCTIONS.md",
         ):
             with self.subTest(name=name):
                 payload = (repository / name).read_text()
@@ -506,6 +510,33 @@ class InstallerTests(unittest.TestCase):
         self.installer.install()
         self.assertEqual(prompt.read_text(), once)
         self.assertEqual((self.home / ".codex/AGENTS.md").read_text(), codex_prompt)
+
+    def test_kimi_global_prompt_merges_into_kimi_home_and_keeps_personal_text(self):
+        prompt = self.home / ".kimi-code/AGENTS.md"
+        prompt.parent.mkdir(parents=True)
+        personal = "# Scoped instruction pointer\n\n- Read my KIMI.md first.\n"
+        prompt.write_text(personal)
+        self.installer.install()
+        once = prompt.read_text()
+        self.assertTrue(once.startswith(personal))
+        self.assertEqual(once.count(MODULE.PROMPT_START), 1)
+        self.assertIn("Kimi exports no session ID", once)
+        self.assertIn('`play <TASK> <AGENT> ["<text>"]`', once)
+        manifest = json.loads(self.installer.manifest.read_text())
+        self.assertIn({"path": str(prompt), "ownership": "delimited-block-only"}, manifest["managedSettings"])
+        self.installer.install()
+        self.assertEqual(prompt.read_text(), once)
+
+    def test_kimi_contract_matches_claude_except_provider_specific_lines(self):
+        config = Path(__file__).parents[1] / "Config"
+        claude = (config / "CLAUDE_GLOBAL_INSTRUCTIONS.md").read_text().splitlines()
+        kimi = (config / "KIMI_GLOBAL_INSTRUCTIONS.md").read_text().splitlines()
+        self.assertEqual(len(claude), len(kimi))
+        differing = [(a, b) for a, b in zip(claude, kimi) if a != b]
+        self.assertEqual(len(differing), 2, "only the start-entry and session-ID lines differ")
+        self.assertTrue(differing[0][0].startswith("- Start agents through the installed `claude`"))
+        self.assertTrue(differing[1][0].startswith("- Claude Code exports this session"))
+        self.assertNotIn("claude", "\n".join(kimi).lower())
 
     def legacy_prompt_homes(self):
         """A pre-move install: blocks in ~/Documents beside personal text, personal global files."""

@@ -90,7 +90,7 @@ Agents receive and consume identity through environment variables. These are the
 | `WEZTERM_PANE`, `WEZTERM_UNIX_SOCKET` | WezTerm | Terminal pane identity |
 | `TMUX`, `TMUX_PANE` | tmux | tmux identity |
 
-**Known gap:** there is no `KIMI_SESSION_ID`-style variable in the session-binding code. Kimi panes cannot be identified from env alone; Kimi must register through hooks (`register-event`). The `attach` usage text claims Kimi support it cannot deliver from env (`main.swift:17`, `TaskContext.swift:14-25`).
+**Kimi:** Kimi exports no session variable. In a managed Kimi pane (`FOCUS_QUEUE_PROVIDER=kimi`), `attach` reads the session from the Kimi process on the pane's TTY, records it on `$FOCUS_QUEUE_SUBTASK_ID`, and emits `status: "registered"`. It refuses outside a managed pane, when the pane belongs to another task, or when the live session differs from the saved one. Kimi opens its session file on its first prompt, so attach before then asks for a retry.
 
 ---
 

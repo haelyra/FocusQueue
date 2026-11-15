@@ -525,6 +525,10 @@ class Installer:
         # The global instruction files every Codex and Claude session reads.
         self.codex_prompt = self.home / ".codex/AGENTS.md"
         self.claude_prompt = self.home / ".claude/CLAUDE.md"
+        # Kimi Code reads $KIMI_CODE_HOME/AGENTS.md, by default ~/.kimi-code/AGENTS.md.
+        kimi_home = os.environ.get("KIMI_CODE_HOME", "")
+        self.kimi_prompt = (Path(kimi_home) if kimi_home.startswith("/") and self.home == Path.home().absolute()
+                            else self.home / ".kimi-code") / "AGENTS.md"
         # Earlier releases wrote the block under ~/Documents, which only agents started
         # there read. Installation moves it out, leaving the rest of these files alone.
         self.legacy_codex_prompt = self.home / "Documents/AGENTS.md"
@@ -553,7 +557,8 @@ class Installer:
         return ((self.codex_prompt, None if self.unattended else self.legacy_codex_prompt,
                  "CODEX_GLOBAL_INSTRUCTIONS.md", "Codex"),
                 (self.claude_prompt, None if self.unattended else self.legacy_claude_prompt,
-                 "CLAUDE_GLOBAL_INSTRUCTIONS.md", "Claude"))
+                 "CLAUDE_GLOBAL_INSTRUCTIONS.md", "Claude"),
+                (self.kimi_prompt, None, "KIMI_GLOBAL_INSTRUCTIONS.md", "Kimi"))
 
     def owns_chat_launcher(self, launcher, script):
         """True when the path is free or already holds exactly what this installer writes.
@@ -760,6 +765,7 @@ class Installer:
                 "chatLaunchers": self.chat_launcher_plan(),
                 "codexInstructions": prompt_plans["Codex"],
                 "claudeInstructions": prompt_plans["Claude"],
+                "kimiInstructions": prompt_plans["Kimi"],
                 "signature": "verified (does not imply notarization)"}
 
     def stop(self):
@@ -861,6 +867,7 @@ class Installer:
                 "Contents/MacOS/focus-queue-map",
                 "Contents/Resources/CODEX_GLOBAL_INSTRUCTIONS.md",
                 "Contents/Resources/CLAUDE_GLOBAL_INSTRUCTIONS.md",
+                "Contents/Resources/KIMI_GLOBAL_INSTRUCTIONS.md",
                 "Contents/Resources/shell/focus_queue_codex_entry.py",
                 "Contents/Resources/shell/focus_queue_claude_entry.py",
                 "Contents/Resources/shell/focus_queue_usage_wrapper.sh",
@@ -994,6 +1001,7 @@ class Installer:
                                   if str(launcher) in chat_launchers["installed"]],
                 "managedSettings": [{"path": str(self.codex_prompt), "ownership": "delimited-block-only"},
                     {"path": str(self.claude_prompt), "ownership": "delimited-block-only"},
+                    {"path": str(self.kimi_prompt), "ownership": "delimited-block-only"},
                     # Only the app's block was ever removed here; the rest stays the user's.
                     {"path": str(self.legacy_codex_prompt), "ownership": "legacy-delimited-block-removed"},
                     {"path": str(self.legacy_claude_prompt), "ownership": "legacy-delimited-block-removed"},
@@ -1027,7 +1035,8 @@ class Installer:
                 if target in original_prompts and (
                     target.read_bytes() if target.exists() else b""
                 ) != original_prompts[target]:
-                    label = "Codex" if target.name == "AGENTS.md" else "Claude"
+                    label = {self.codex_prompt: "Codex", self.claude_prompt: "Claude",
+                             self.kimi_prompt: "Kimi"}.get(target, "Agent")
                     raise ValueError(f"{label} instructions changed during installation ({target}); "
                                      "retry to preserve the newer edit.")
                 if target == self.codex_entry and (target.read_bytes() if target.exists() else None) != original_entry:
@@ -1158,8 +1167,9 @@ def _uninstall_locked(installer, home, *, check, stop):
             targets.append(path)
     # The app owns only its delimited block in the agents' instruction files.
     prompts = []
+    legacy_prompts = {"Codex": installer.legacy_codex_prompt, "Claude": installer.legacy_claude_prompt}
     for path, _, _, label in installer.prompt_files():
-        for candidate in (path, installer.legacy_codex_prompt if label == "Codex" else installer.legacy_claude_prompt):
+        for candidate in (path, *([legacy_prompts[label]] if label in legacy_prompts else [])):
             safe_destination(candidate, home)
             if candidate.is_file() and not candidate.is_symlink():
                 text = candidate.read_text()

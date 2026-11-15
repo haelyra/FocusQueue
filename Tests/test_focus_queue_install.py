@@ -352,6 +352,20 @@ class InstallerTests(unittest.TestCase):
                 self.assertIn("Never let it inherit your agent ID or workspace", payload)
                 self.assertIn("Only ephemeral sub-agents you fully manage", payload)
 
+    def test_global_contract_records_divergences_as_decisions(self):
+        repository = Path(__file__).parents[1]
+        for name in (
+            "Config/CODEX_GLOBAL_INSTRUCTIONS.md",
+            "Config/CLAUDE_GLOBAL_INSTRUCTIONS.md",
+            "Config/KIMI_GLOBAL_INSTRUCTIONS.md",
+        ):
+            with self.subTest(name=name):
+                payload = (repository / name).read_text()
+                self.assertIn("Record every divergence before acting on it", payload)
+                self.assertIn('`focus-queue-session decision add <TASK> <AGENT> "<divergence>"', payload)
+                self.assertIn('A reply of "continue" means the recommended option', payload)
+                self.assertIn('`decision rewind <TASK> <AGENT> <NODE> --reason "<why>"`', payload)
+
     def test_global_contract_maps_report_stages_to_existing_task_statuses(self):
         repository = Path(__file__).parents[1]
         output_contract = (

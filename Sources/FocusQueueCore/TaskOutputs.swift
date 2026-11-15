@@ -27,7 +27,7 @@ public enum TaskOutputs {
         "archive", "maintenance-history", "push-reviews", "workspace-map", "architecture",
         "node_modules", "__pycache__",
         // App runtime state: canvas sessions, document chat routes, harness runs.
-        "canvas", "document-agents", "documents",
+        "canvas", "document-agents", "documents", "decisions",
     ]
     /// The walkthrough's demo mockup at the context root. A deeper folder with
     /// this name is an agent's.

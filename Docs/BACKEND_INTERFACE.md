@@ -280,6 +280,21 @@ QChat runs on its own server, `ecc-focus-queue-qchat` (a support folder other th
 
 **`intake-changed`** — emits `{"status":"notified"}` and posts the change notification.
 
+### 3.12 Decision trees
+
+An agent records a **decision** before its work departs from the user's instruction, the master plan, or the task plan. Each agent's tree is `tasks/<TASK>/decisions/<AGENT-ID>.json` (written under `<AGENT-ID>.lock`; never hand-edit it), and the app draws it in the plan viewer's **Decision tree** tab, opened from the agent's ⋮ menu (**View decision tree**). `<TASK> <AGENT>` may be omitted inside the agent's pane.
+
+| Command | Effect |
+|---|---|
+| `decision add [<TASK> <AGENT>] "<divergence>" --option "<recommended>" [--option "<fallback>" …] [--from user\|master-plan\|task-plan\|other] [--detail "<why>"] [--chosen <OPTION\|recommended>] [--no-push]` | Records node `D<n>` under the agent's current path. Options are lettered A, B, … in recommendation order; `"Label — detail"` adds a detail line. Commits the whole worktree (tracked and untracked, minus ignored files) with a temporary index, so the branch, index, and files are untouched, stores it at `refs/focus-queue/decisions/<TASK>/<AGENT>/D<n>`, and pushes that ref to the branch's remote. A failed push is recorded (`pushError`), not fatal. Saves the Claude transcript through its last user turn at `decisions/<AGENT>/D<n>.jsonl`. Without `--chosen` the node is pending: the agent gets a `question` attention and should stop. |
+| `decision choose [<TASK> <AGENT>] [<NODE>] <OPTION\|recommended\|next> [--by user\|agent\|continue]` | Settles a pending node (default: the newest). From outside the agent's pane it also resumes the agent with a proceed prompt through `play`. A user reply of "continue" is `recommended --by continue`. |
+| `decision rewind [<TASK> <AGENT>] <NODE> [--option <OPTION>] [--reason "<why>"] [--by user\|agent] [--no-restart]` | Commits and pushes the current worktree to `…/D<n>-abandoned-<stamp>`, then restores the node's checkpoint. The branch moves back to the checkpoint's parent only when every dropped commit is unpublished and the branch is not an integration branch; otherwise the restored files are uncommitted changes on the current head. Integration-branch checkouts are refused. Claude resumes a fresh session written from the node's transcript copy (the record is rebound to it); Codex and Kimi keep their session and are told to drop the later turns. Default option: the first untried one. An agent's own rewind (`--by agent`) needs **Rewind automatically** on in Settings, and its restart runs from a detached process after 3 seconds. |
+| `decision show [<TASK> <AGENT>]` · `decision list [<TASK>]` | The tree JSON; per-agent summaries with pending nodes and the next auto-decide time. |
+| `decision due [--apply]` | Lists pending nodes with their auto-decide time; `--apply` settles overdue ones with the recommended option and resumes their agents (the app does this every minute). |
+| `decision push [<TASK> <AGENT>]` | Retries checkpoint pushes that failed. |
+
+Settings → **Decisions** stores `decisionAutoDecide` (default on), `decisionAutoDecideMinutes` (default 60), and `decisionAutoRewind` (default on) in `config.json`.
+
 ---
 
 ## 4. Provider harness CLIs
@@ -486,6 +501,11 @@ focus-queue-session progress  <TASK> <SUBTASK> working "summary"
 focus-queue-session log       <TASK> <AGENT>   "entry"
 focus-queue-session attention <TASK> <AGENT>   question "summary"
 focus-queue-session complete  <TASK> <SUBTASK> "result summary"
+
+# Decisions (before departing from the user's instruction, master plan, or task plan)
+focus-queue-session decision add <TASK> <AGENT> "<divergence>" --option "<recommended>" --option "<fallback>"
+focus-queue-session decision choose <TASK> <AGENT> <NODE> recommended --by continue   # the user said "continue"
+focus-queue-session decision rewind <TASK> <AGENT> <NODE> --reason "<why>"           # chosen option failed
 
 # Placement (no ticket yet)
 focus-queue-session placement --prompt "<objective>" --cwd "$PWD"

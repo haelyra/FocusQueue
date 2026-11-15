@@ -102,6 +102,12 @@ import UserNotifications
     )
     DistributedNotificationCenter.default().addObserver(
       self,
+      selector: #selector(decisionTreeChanged(_:)),
+      name: Notification.Name(DecisionTreeStore.notificationName),
+      object: nil
+    )
+    DistributedNotificationCenter.default().addObserver(
+      self,
       selector: #selector(reloadQueueOrder(_:)),
       name: Notification.Name(QueueOrderStore.changeNotificationName),
       object: nil
@@ -435,6 +441,11 @@ import UserNotifications
 
   @objc private func importAgentRegistration(_ notification: Notification) {
     Task { await model.refreshExternalAgentRegistrations(force: true) }
+  }
+
+  @objc private func decisionTreeChanged(_ notification: Notification) {
+    guard let ticketID = notification.userInfo?["task"] as? String else { return }
+    model.handleDecisionTreeChange(ticketID: ticketID, root: notification.userInfo?["root"] as? String)
   }
 
   @objc private func uiCanvasChanged(_ notification: Notification) {

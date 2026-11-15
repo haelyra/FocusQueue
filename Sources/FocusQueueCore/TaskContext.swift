@@ -627,6 +627,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
         // Directly after the shared facts, in the exact form `sharedDataBlock` uses,
         // so the prompt hook sees the launch brief already carries them.
         if let subtask, let contract = agentContractInjection(subtask: subtask) { lines += contract.lines }
+        if subtask?.launchConfiguration?.contractRole == .orchestrator { lines += FocusQueueOrchestratorRules.lines }
         if includeTask, let data = Self.inlineDocument(atPath: dataURL.path, limit: 2_000) {
             lines += ["Task data (\(dataURL.path)):", data]
         }
@@ -657,6 +658,8 @@ public struct TaskContext: Codable, Equatable, Sendable {
            let contract = AgentContract.injection(role: role, directory: directory, process: process) {
             lines += contract.lines
         }
+        // Every orchestrator gets Focus Queue's own rules after its project's contract, as in the brief.
+        if role == .orchestrator { lines += FocusQueueOrchestratorRules.lines }
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
@@ -724,6 +727,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
         - result "summary": a finished response that leaves the assignment open.
         - complete "what changed and how it was verified": only after verification.
         - log "entry": decisions, configuration, research, and verification evidence, appended to the task's agent-log.md. Read only relevant entries; never paste the whole log into the plan.
+        - decision add "<divergence>" --option "<recommended>" --option "<fallback>": before work departs from the user's instruction, the master plan, or the task plan. It pushes a checkpoint ref under refs/focus-queue/decisions/ (authorized), saves the conversation, and asks the user. `decision choose` records the answer ("continue" means recommended); `decision rewind <NODE>` restores code and conversation when the chosen option fails.
 
         Task plan (tasks/<TASK-ID>/plan.md)
         - Keep it bare: What/Why/How (one sentence each), success criteria, a Progress checklist, and links to crucial context or evidence.

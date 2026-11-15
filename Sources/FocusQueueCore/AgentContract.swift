@@ -33,6 +33,22 @@ public enum AgentContractRole: String, Codable, CaseIterable, Sendable, Identifi
     public static let recommendedRuleLimit = 7
 }
 
+/// Focus Queue's own orchestrator rules. They are project-agnostic and reach
+/// every orchestrator (task chat, project QChat, orchestrator launches) whether
+/// or not its project signed an orchestration.md; a project's signed contract
+/// follows them.
+public enum FocusQueueOrchestratorRules {
+    public static let title = "Focus Queue orchestrator rules:"
+    public static let text = """
+        - **Act, do not announce.** When the user's request needs an agent, start it yourself; never tell the user to start one. Run `focus-queue-session add <TASK> <provider> "<title>" "<description>"`, then `focus-queue-session tmux start-agent <TASK> <AGENT> -- <provider>`. Resume a waiting agent with `focus-queue-session play <TASK> <AGENT> "<text>"`.
+        - **Record each divergence.** Before work departs from the user's instruction, the master plan, or the task plan, run `focus-queue-session decision add <TASK> <AGENT> "<divergence>" --option "<recommended>" --option "<fallback>"`. It commits and pushes a worktree checkpoint and saves the conversation.
+        - **Blockers wait, then proceed.** Ask once, with options and a recommendation. With no reply within the auto-decide window (default one hour), Focus Queue takes the recommended option and resumes the agent. A user reply of "continue" means the same now: `focus-queue-session decision choose <TASK> <AGENT> <NODE> recommended --by continue`.
+        - **Rewind when the choice fails.** If the chosen option does not work as desired, run `focus-queue-session decision rewind <TASK> <AGENT> <NODE> --reason "<why>"`. It restores code and conversation to the decision and takes the next recommended option. When auto-rewind is off in Settings, ask the user first.
+        """
+    public static var lines: [String] { [title, text] }
+    public static var block: String { lines.joined(separator: "\n") }
+}
+
 /// The owner's sign-off. The signed text is kept so it stays live while a later,
 /// unsigned edit of the file waits for review.
 public struct AgentContractSignoff: Codable, Equatable, Sendable {
@@ -539,6 +555,7 @@ public struct AgentContractGenerator: Sendable {
         docs += sources.map(\.path).filter { !docs.contains($0) }
         let injected = [
             managedGlobalContract(home: home).map { "Global Focus Queue agent contract:\n\($0)" },
+            "Every orchestrator also receives these \(FocusQueueOrchestratorRules.block)",
             TaskContext.sharedDataBlock(root: root, projectID: project.id, role: nil),
             process.map { "Development process brief (\($0.currentPhase.title)): " + DevelopmentProcessCatalog.brief(for: $0.currentPhase) },
         ].compactMap { $0 }.joined(separator: "\n\n")

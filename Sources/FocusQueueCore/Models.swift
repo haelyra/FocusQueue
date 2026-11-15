@@ -341,6 +341,20 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var placementTimeoutSeconds: Int?
   /// Opts native prompt hooks into automatic durable-data placement; nil is off.
   public var dataPlacementEnabled: Bool?
+  /// Settles an unanswered decision with its recommended option; nil is on.
+  public var decisionAutoDecide: Bool?
+  /// Minutes a decision waits for the user before auto-decide; nil is 60.
+  public var decisionAutoDecideMinutes: Int?
+  /// Lets agents rewind to a decision on their own when the chosen path fails; nil is on.
+  public var decisionAutoRewind: Bool?
+
+  /// Decision automation with defaults applied.
+  public var decisionAutomation: DecisionAutomationSettings {
+    DecisionAutomationSettings(
+      autoDecide: decisionAutoDecide ?? true,
+      autoDecideMinutes: decisionAutoDecideMinutes ?? DecisionAutomationSettings.defaultMinutes,
+      autoRewind: decisionAutoRewind ?? true)
+  }
 
   public static let defaultAgentProviderFallbackOrder: [AgentProvider] = [.codex, .claude]
   public var agentModelChoices: [AgentModelChoice]
@@ -526,6 +540,9 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.placementConfidenceThreshold = nil
     self.placementTimeoutSeconds = nil
     self.dataPlacementEnabled = nil
+    self.decisionAutoDecide = nil
+    self.decisionAutoDecideMinutes = nil
+    self.decisionAutoRewind = nil
     self.agentModelChoices = Self.defaultAgentModelChoices
     self.autoArchiveStaleAgents = false
     self.defaultAgentProvider = nil
@@ -557,6 +574,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case placementModelEnabled, placementProvider, placementModels, placementEfforts
     case placementConfidenceThreshold, placementTimeoutSeconds
     case dataPlacementEnabled
+    case decisionAutoDecide, decisionAutoDecideMinutes, decisionAutoRewind
     case agentModelChoices
     case autoArchiveStaleAgents
     case defaultAgentProvider, defaultAgentModels, defaultAgentEfforts
@@ -601,6 +619,9 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
       try container.decodeIfPresent(Double.self, forKey: .placementConfidenceThreshold)
     placementTimeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .placementTimeoutSeconds)
     dataPlacementEnabled = try container.decodeIfPresent(Bool.self, forKey: .dataPlacementEnabled)
+    decisionAutoDecide = try container.decodeIfPresent(Bool.self, forKey: .decisionAutoDecide)
+    decisionAutoDecideMinutes = try container.decodeIfPresent(Int.self, forKey: .decisionAutoDecideMinutes)
+    decisionAutoRewind = try container.decodeIfPresent(Bool.self, forKey: .decisionAutoRewind)
     agentModelChoices = Self.mergedAgentModelChoices(
       (try container.decodeIfPresent([AgentModelChoice].self, forKey: .agentModelChoices)) ?? [])
     autoArchiveStaleAgents = try container.decodeIfPresent(Bool.self, forKey: .autoArchiveStaleAgents) ?? false
@@ -693,6 +714,9 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encodeIfPresent(placementConfidenceThreshold, forKey: .placementConfidenceThreshold)
     try container.encodeIfPresent(placementTimeoutSeconds, forKey: .placementTimeoutSeconds)
     try container.encodeIfPresent(dataPlacementEnabled, forKey: .dataPlacementEnabled)
+    try container.encodeIfPresent(decisionAutoDecide, forKey: .decisionAutoDecide)
+    try container.encodeIfPresent(decisionAutoDecideMinutes, forKey: .decisionAutoDecideMinutes)
+    try container.encodeIfPresent(decisionAutoRewind, forKey: .decisionAutoRewind)
     try container.encode(agentModelChoices, forKey: .agentModelChoices)
     try container.encode(autoArchiveStaleAgents, forKey: .autoArchiveStaleAgents)
     try container.encodeIfPresent(defaultAgentProvider, forKey: .defaultAgentProvider)

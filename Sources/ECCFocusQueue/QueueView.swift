@@ -1872,6 +1872,36 @@ struct QueueSettingsView: View {
             }
           }
           settingsSection(
+            title: "Decisions",
+            detail: "When an orchestrator or agent departs from your instruction, the master plan, or the task plan, it records a decision with a pushed checkpoint. View decision tree, in an agent's ⋮ menu, shows them."
+          ) {
+            VStack(alignment: .leading, spacing: 12) {
+              settingToggle(
+                "Decide automatically when you do not reply",
+                detail: "After the wait below, Focus Queue takes the recommended option and resumes the agent. Replying \"continue\" to an agent does the same right away.",
+                isOn: Binding(
+                  get: { model.decisionAutomation.autoDecide },
+                  set: { model.setDecisionAutoDecide($0) }))
+              Stepper(value: Binding(
+                get: { model.decisionAutomation.autoDecideMinutes },
+                set: { model.setDecisionAutoDecideMinutes($0) }
+              ), in: DecisionAutomationSettings.minutesRange, step: 15) {
+                HStack {
+                  Text("Wait before deciding")
+                  Spacer()
+                  Text(model.decisionAutomation.windowDescription).monospacedDigit().foregroundStyle(.secondary)
+                }
+              }
+              .disabled(!model.decisionAutomation.autoDecide)
+              settingToggle(
+                "Rewind automatically when a chosen option fails",
+                detail: "Agents may restore the code and conversation to the decision and take the next recommended option. When off, they ask you first.",
+                isOn: Binding(
+                  get: { model.decisionAutomation.autoRewind },
+                  set: { model.setDecisionAutoRewind($0) }))
+            }
+          }
+          settingsSection(
             title: "Agent terminals",
             detail: "Each task runs its agents as panes in one shared tmux session."
           ) {
@@ -4050,6 +4080,16 @@ private struct TaskAgentRow: View {
 
   private var isOpening: Bool { model.isOpening(agent, ticketID: ticket.id) }
 
+  /// Present only for an agent that recorded a divergence; counts decisions waiting for the user.
+  private var decisionTreeButton: some View {
+    let pending = model.pendingDecisionCount(agent, ticketID: ticket.id)
+    return Button(pending > 0 ? "View decision tree (\(pending) waiting)" : "View decision tree",
+                  systemImage: "arrow.triangle.branch") {
+      model.openDecisionTree(for: agent, ticket: ticket)
+    }
+    .disabled(!model.hasDecisionTree(agent, ticketID: ticket.id))
+  }
+
   var body: some View {
     HStack(spacing: 7) {
       Button { model.openSubtask(agent, for: ticket) } label: {
@@ -4091,6 +4131,7 @@ private struct TaskAgentRow: View {
           model.openLaunchDiagnostics(for: agent)
         }
         .disabled(!model.hasLaunchDiagnostics(for: agent))
+        decisionTreeButton
         Button("Close terminal window", systemImage: "macwindow.badge.minus") {
           model.closeAgentTerminalWindow(agent, for: ticket)
         }
@@ -4107,7 +4148,7 @@ private struct TaskAgentRow: View {
       .fixedSize()
       .minimumHitTarget()
       .accessibilityLabel("More options for agent \(agent.title)")
-      .help("Open, edit, complete, inspect, close the window of, or archive this agent")
+      .help("Open, edit, complete, inspect, view the decision tree of, close the window of, or archive this agent")
     }
     .padding(9)
     .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
@@ -4121,6 +4162,7 @@ private struct TaskAgentRow: View {
         model.openSubtask(agent, for: ticket)
       }
       .disabled(isOpening)
+      decisionTreeButton
       Button("Close terminal window", systemImage: "macwindow.badge.minus") {
         model.closeAgentTerminalWindow(agent, for: ticket)
       }

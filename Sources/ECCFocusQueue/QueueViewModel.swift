@@ -257,6 +257,16 @@ final class QueueViewModel {
   private(set) var uiCanvasSessions: [String: [UICanvasSession]] = [:]
   /// A canvas an agent just opened; the plan viewer selects its tab once.
   private(set) var requestedUICanvas: UICanvasRequest?
+  /// Decision trees per task, read from tasks/<TASK-ID>/decisions.
+  var decisionTrees: [String: [DecisionTree]] = [:]
+  /// An agent's tree the human asked to see; the plan viewer opens its tab once.
+  var requestedDecisionTree: DecisionTreeRequest?
+  /// "<TASK>/<AGENT>" while a choose, rewind, or push runs for that agent.
+  var decisionActionsInFlight: Set<String> = []
+  /// The last outcome per "<TASK>/<AGENT>", shown under the tree.
+  var decisionMessages: [String: DecisionActionMessage] = [:]
+  /// When the refresh loop last looked for overdue decisions.
+  var lastDecisionAutomationCheck: Date?
   /// Canvas tabs the human closed; an agent's next `canvas open` shows them again.
   private(set) var dismissedUICanvasKeys: Set<String> = []
   /// Ended canvases the human reopened from the task's context; they stay
@@ -1731,6 +1741,7 @@ final class QueueViewModel {
       let showingAll = showsAllProjects
       let now = Date()
       await fireDueScheduledLaunches(now: now)
+      runDecisionAutomationIfDue(now: now)
       let stamp: DashboardFileStamp
       if showingAll {
         stamp = try await allProjectsStamp()
@@ -2261,8 +2272,9 @@ final class QueueViewModel {
           + (pending.isEmpty ? " (all steps accepted)." : "; next steps: \(pending).")
           + " \(DevelopmentProcessCatalog.brief(for: process.currentPhase))"
           + " Change links, steps, or the phase with `focus-queue-session development`, never by editing development.json.\n"
-        scope += orchestratorContractScope(projectID: selectedProjectID) ?? ""
       }
+      // A project's QChat is its orchestrator, with or without a development process.
+      if !showsAllProjects { scope += orchestratorContractScope(projectID: selectedProjectID) ?? "" }
       scopedMessage = scope + "Read the dashboard for the project named in the user's request. Preserve projectID and unknown fields on edits to the selected dashboard." + request
     }
     chatTasks[conversation] = Task { [weak self] in
@@ -3345,13 +3357,16 @@ final class QueueViewModel {
     reloadDevelopmentContracts()
   }
 
-  /// The project's signed orchestrator contract for a chat turn, or nil.
+  /// Focus Queue's orchestrator rules for a chat turn, then the project's signed
+  /// orchestrator contract when there is one.
   func orchestratorContractScope(projectID: String?) -> String? {
-    guard let projectID, let process = try? developmentProcessStore.load(projectID: projectID), process.enabled,
-          let directory = try? developmentProcessStore.contractDirectory(projectID: projectID),
-          let injection = AgentContract.injection(role: .orchestrator, directory: directory, process: process)
-    else { return nil }
-    return injection.lines.joined(separator: "\n") + "\n"
+    var lines = FocusQueueOrchestratorRules.lines
+    if let projectID, let process = try? developmentProcessStore.load(projectID: projectID), process.enabled,
+       let directory = try? developmentProcessStore.contractDirectory(projectID: projectID),
+       let injection = AgentContract.injection(role: .orchestrator, directory: directory, process: process) {
+      lines += injection.lines
+    }
+    return lines.joined(separator: "\n") + "\n"
   }
 
   /// Keeps every enabled project's process current without any agent's help.
@@ -7119,4 +7134,184 @@ struct DevelopmentContractControl: Equatable {
   let isDraft: Bool
   let state: AgentContractState
   let lint: [AgentContractLintIssue]
+}
+
+// MARK: - Decision trees
+
+struct DecisionTreeRequest: Equatable {
+  let id = UUID()
+  let ticketID: String
+  let agentID: String
+}
+
+struct DecisionActionMessage: Equatable {
+  var text: String
+  var isError: Bool
+  var at = Date()
+}
+
+extension QueueViewModel {
+  private var decisionStore: DecisionTreeStore { DecisionTreeStore(root: paths.supportDirectory) }
+
+  private func decisionService() -> DecisionTreeService {
+    DecisionTreeService(root: paths.supportDirectory, control: TmuxDecisionAgentControl(root: paths.supportDirectory))
+  }
+
+  static func decisionKey(_ ticketID: String, _ agentID: String) -> String {
+    "\(ticketID.uppercased())/\(agentID.uppercased())"
+  }
+
+  func refreshDecisionTrees(ticketID: String) {
+    let ticketID = ticketID.uppercased()
+    let trees = decisionStore.trees(taskID: ticketID)
+    let value: [DecisionTree]? = trees.isEmpty ? nil : trees
+    if decisionTrees[ticketID] != value { decisionTrees[ticketID] = value }
+  }
+
+  func decisionTrees(ticketID: String) -> [DecisionTree] { decisionTrees[ticketID.uppercased()] ?? [] }
+
+  func decisionTree(ticketID: String, agentID: String) -> DecisionTree? {
+    decisionTrees(ticketID: ticketID).first { $0.agentID.caseInsensitiveCompare(agentID) == .orderedSame }
+  }
+
+  func hasDecisionTree(_ agent: TaskSubtask, ticketID: String) -> Bool {
+    decisionTree(ticketID: ticketID, agentID: agent.id) != nil
+  }
+
+  func pendingDecisionCount(_ agent: TaskSubtask, ticketID: String) -> Int {
+    decisionTree(ticketID: ticketID, agentID: agent.id)?.pendingNodes.count ?? 0
+  }
+
+  /// The agent title for a tree, from the live record when it still exists.
+  func decisionAgentTitle(_ tree: DecisionTree) -> String {
+    taskContexts[tree.taskID]?.subtasks.first { $0.id.caseInsensitiveCompare(tree.agentID) == .orderedSame }?.title
+      ?? tree.agentTitle ?? tree.agentID
+  }
+
+  func isDecisionActionRunning(ticketID: String, agentID: String) -> Bool {
+    decisionActionsInFlight.contains(Self.decisionKey(ticketID, agentID))
+  }
+
+  func decisionMessage(ticketID: String, agentID: String) -> DecisionActionMessage? {
+    decisionMessages[Self.decisionKey(ticketID, agentID)]
+  }
+
+  /// "View decision tree": shows the task's plan viewer on that agent's tree.
+  func openDecisionTree(for agent: TaskSubtask, ticket: DashboardTicket) {
+    refreshDecisionTrees(ticketID: ticket.id)
+    if panelMode != .expanded { setPanelMode(.expanded) }
+    if presentedPlanTicketID != ticket.id { openPlan(for: ticket) }
+    requestedDecisionTree = DecisionTreeRequest(ticketID: ticket.id.uppercased(), agentID: agent.id)
+  }
+
+  func consumeDecisionTreeRequest(_ request: DecisionTreeRequest) {
+    if requestedDecisionTree == request { requestedDecisionTree = nil }
+  }
+
+  /// The CLI changed a tree. Notifications from another support directory are ignored.
+  func handleDecisionTreeChange(ticketID: String, root: String?) {
+    if let root, URL(fileURLWithPath: root).standardizedFileURL.path
+      != paths.supportDirectory.standardizedFileURL.path { return }
+    refreshDecisionTrees(ticketID: ticketID)
+  }
+
+  var decisionAutomation: DecisionAutomationSettings { config.decisionAutomation }
+
+  // Always explicit values: a nil key would keep the previous value on disk.
+  func setDecisionAutoDecide(_ enabled: Bool) {
+    guard config.decisionAutoDecide != enabled else { return }
+    config.decisionAutoDecide = enabled
+    if config.decisionAutoDecideMinutes == nil { config.decisionAutoDecideMinutes = DecisionAutomationSettings.defaultMinutes }
+    persistConfiguration()
+  }
+
+  func setDecisionAutoDecideMinutes(_ minutes: Int) {
+    let range = DecisionAutomationSettings.minutesRange
+    let clamped = min(max(minutes, range.lowerBound), range.upperBound)
+    guard config.decisionAutoDecideMinutes != clamped else { return }
+    config.decisionAutoDecideMinutes = clamped
+    if config.decisionAutoDecide == nil { config.decisionAutoDecide = true }
+    persistConfiguration()
+  }
+
+  func setDecisionAutoRewind(_ enabled: Bool) {
+    guard config.decisionAutoRewind != enabled else { return }
+    config.decisionAutoRewind = enabled
+    persistConfiguration()
+  }
+
+  private func runDecisionAction(ticketID: String, agentID: String,
+                                 _ action: @escaping @Sendable (DecisionTreeService) async throws -> String) {
+    let key = Self.decisionKey(ticketID, agentID)
+    guard !decisionActionsInFlight.contains(key) else { return }
+    decisionActionsInFlight.insert(key)
+    let service = decisionService()
+    Task { @MainActor [weak self] in
+      let message: DecisionActionMessage
+      do { message = DecisionActionMessage(text: try await action(service), isError: false) }
+      catch { message = DecisionActionMessage(text: error.localizedDescription, isError: true) }
+      guard let self else { return }
+      self.decisionActionsInFlight.remove(key)
+      self.decisionMessages[key] = message
+      self.refreshDecisionTrees(ticketID: ticketID)
+      await self.refresh()
+    }
+  }
+
+  /// The human answered a pending decision: record it and tell the agent to proceed.
+  func chooseDecision(ticketID: String, agentID: String, nodeID: String, optionID: String) {
+    runDecisionAction(ticketID: ticketID, agentID: agentID) { service in
+      let settled = try await service.choose(taskID: ticketID, agentID: agentID, nodeID: nodeID,
+                                             optionID: optionID, by: .user, resume: true)
+      if let error = settled.deliveryError {
+        return "Recorded option \(settled.optionID) for \(settled.nodeID), but the agent was not resumed: \(error)"
+      }
+      return "Recorded option \(settled.optionID) for \(settled.nodeID); the agent was told to proceed."
+    }
+  }
+
+  /// Rewinds code and conversation to a node and restarts the agent on `optionID`.
+  func rewindDecision(ticketID: String, agentID: String, nodeID: String, optionID: String, reason: String?) {
+    let reason = reason?.trimmingCharacters(in: .whitespacesAndNewlines)
+    runDecisionAction(ticketID: ticketID, agentID: agentID) { service in
+      let rewound = try await service.rewind(taskID: ticketID, agentID: agentID, nodeID: nodeID, optionID: optionID,
+                                             by: .user, reason: reason?.isEmpty == false ? reason : nil)
+      var text = "Rewound to \(rewound.node.id); the agent now takes option \(rewound.option.id). Abandoned work is saved at \(rewound.restore.saved.ref)."
+      if let note = rewound.restore.branchNote { text += " \(note)" }
+      if !rewound.conversationForked { text += " The conversation was not forked; the same session was told to drop the later turns." }
+      if let error = rewound.restartError { text += " The agent did not restart: \(error)" }
+      return text
+    }
+  }
+
+  func retryDecisionPush(ticketID: String, agentID: String) {
+    runDecisionAction(ticketID: ticketID, agentID: agentID) { service in
+      let tree = try await service.pushPending(taskID: ticketID, agentID: agentID)
+      let failed = tree.nodes.compactMap(\.checkpoint).filter { !$0.pushed }
+      return failed.isEmpty ? "Every checkpoint is on the remote." : "Push still fails: \(failed.first?.pushError ?? "unknown")"
+    }
+  }
+
+  /// Once a minute: reload every task's trees, then settle overdue decisions
+  /// when auto-decide is on. The service guarantees one settlement per node.
+  func runDecisionAutomationIfDue(now: Date = Date()) {
+    if let last = lastDecisionAutomationCheck, now.timeIntervalSince(last) < 60 { return }
+    lastDecisionAutomationCheck = now
+    for ticketID in decisionStore.taskIDsWithTrees() { refreshDecisionTrees(ticketID: ticketID) }
+    let settings = config.decisionAutomation
+    guard settings.autoDecide,
+          decisionTrees.values.contains(where: { $0.contains { !$0.pendingNodes.isEmpty } }) else { return }
+    let service = decisionService()
+    Task { @MainActor [weak self] in
+      let settled = await service.applyDue(now: now, settings: settings)
+      guard let self, !settled.isEmpty else { return }
+      for item in settled {
+        self.refreshDecisionTrees(ticketID: item.taskID)
+        self.decisionMessages[Self.decisionKey(item.taskID, item.agentID)] = DecisionActionMessage(
+          text: "No reply within \(settings.windowDescription): \(item.nodeID) took option \(item.optionID)."
+            + (item.deliveryError.map { " The agent was not resumed: \($0)" } ?? ""),
+          isError: item.deliveryError != nil)
+      }
+    }
+  }
 }

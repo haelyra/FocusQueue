@@ -15,6 +15,9 @@ struct PlanCanvasView: View {
   @State private var canvasSelection: PlanCanvasSelection?
   @State private var composerFocusRequest = 0
   @State private var showsWorkspaceMap = false
+  /// The decision tree fills the central slot in place of the plan.
+  @State private var showsDecisionTree = false
+  @State private var decisionTreeAgentID: String?
   @State private var workspaceMap = WorkspaceMapModel()
   @State private var planFind = DocumentFindState()
   @State private var draggedTab: URL?
@@ -28,7 +31,7 @@ struct PlanCanvasView: View {
 
   /// The central plan is in the primary viewer, so header Find searches it.
   private var isCentralPlanVisible: Bool {
-    sideDocuments.primaryDocument == nil && !showsWorkspaceMap && selectedCanvasKey == nil
+    sideDocuments.primaryDocument == nil && !showsWorkspaceMap && !showsDecisionTree && selectedCanvasKey == nil
   }
 
   /// The selected canvas while it fills the viewer in place of the plan.
@@ -86,9 +89,10 @@ struct PlanCanvasView: View {
               : "Save the reconciled draft and return to the preview")
         }
         if model.presentedPlanURL == nil, sideDocuments.primaryDocument == nil, !showsWorkspaceMap,
-           presentedCanvas == nil {
+           !showsDecisionTree, presentedCanvas == nil {
           Button {
             showsWorkspaceMap = false
+            showsDecisionTree = false
             editDraft = model.planEditDrafts[ticket.id]?.markdown ?? model.presentedPlanMarkdown
             editBaseline = model.planEditDrafts[ticket.id]?.baseline ?? model.presentedPlanMarkdown
             isEditing.toggle()
@@ -190,8 +194,11 @@ struct PlanCanvasView: View {
         rememberPresentedDocument()
         model.refreshUICanvases(ticketID: ticket.id)
         showRequestedCanvas()
+        model.refreshDecisionTrees(ticketID: ticket.id)
+        showRequestedDecisionTree()
       }
       .onChange(of: model.requestedUICanvas) { _, _ in showRequestedCanvas() }
+      .onChange(of: model.requestedDecisionTree) { _, _ in showRequestedDecisionTree() }
       .onChange(of: model.presentedPlanURL) { _, _ in
         isEditing = false
         canvasSelection = nil
@@ -226,10 +233,12 @@ struct PlanCanvasView: View {
 
   private var document: some View {
     VStack(alignment: .leading, spacing: 8) {
-      if !showsWorkspaceMap, let context = model.taskContexts[ticket.id] {
+      if !showsWorkspaceMap, !showsDecisionTree, let context = model.taskContexts[ticket.id] {
         DocumentMetadataStrip(url: URL(fileURLWithPath: context.planPath), taskID: ticket.id)
       }
-      if showsWorkspaceMap {
+      if showsDecisionTree {
+        DecisionTreeView(model: model, ticket: ticket, agentID: $decisionTreeAgentID)
+      } else if showsWorkspaceMap {
         WorkspaceMapView(queue: model, ticket: ticket, model: workspaceMap,
           openDocument: { url in openDocument(url) },
           discuss: { context in
@@ -336,12 +345,31 @@ struct PlanCanvasView: View {
         documentTab("Central plan", isSelected: isCentralPlanVisible) {
           sideDocuments.showCentralContent()
           showsWorkspaceMap = false
+          showsDecisionTree = false
           selectedCanvasKey = nil
           model.openPlan(for: ticket)
         }
-        documentTab("Map", isSelected: sideDocuments.primaryDocument == nil && showsWorkspaceMap && selectedCanvasKey == nil) {
+        if showsDecisionTree || !model.decisionTrees(ticketID: ticket.id).isEmpty {
+          HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Image(systemName: "arrow.triangle.branch").font(.system(size: 11)).foregroundStyle(.secondary)
+            documentTab("Decision tree",
+                        isSelected: sideDocuments.primaryDocument == nil && showsDecisionTree && selectedCanvasKey == nil) {
+              showDecisionTree(agentID: decisionTreeAgentID)
+            }
+            let pending = model.decisionTrees(ticketID: ticket.id).reduce(0) { $0 + $1.pendingNodes.count }
+            if pending > 0 {
+              Text("\(pending)").font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
+                .padding(.horizontal, 5).background(Capsule().fill(Color.orange))
+                .accessibilityLabel("\(pending) decision\(pending == 1 ? "" : "s") waiting")
+            }
+          }
+          .help("Decisions where an agent departs from your instruction, the master plan, or the task plan")
+        }
+        documentTab("Map", isSelected: sideDocuments.primaryDocument == nil && showsWorkspaceMap && !showsDecisionTree
+                      && selectedCanvasKey == nil) {
           sideDocuments.showCentralContent()
           showsWorkspaceMap = true
+          showsDecisionTree = false
           selectedCanvasKey = nil
           canvasSelection = nil
         }
@@ -371,6 +399,7 @@ struct PlanCanvasView: View {
               isSelected: sideDocuments.primaryDocument == url || sideDocuments.secondaryDocument == url
             ) {
               showsWorkspaceMap = false
+              showsDecisionTree = false
               selectedCanvasKey = nil
               sideDocuments.select(url)
             }
@@ -404,6 +433,7 @@ struct PlanCanvasView: View {
         guard let identifier = identifiers.last,
               let url = sideDocuments.tabs.first(where: { $0.absoluteString == identifier }) else { return false }
         showsWorkspaceMap = false
+        showsDecisionTree = false
         sideDocuments.select(url)
         return true
       }
@@ -484,7 +514,7 @@ struct PlanCanvasView: View {
       sideDocuments.open(url, in: .primary)
       return
     }
-    sideDocuments.openLinkedDocument(url, besideCentralContent: showsWorkspaceMap)
+    sideDocuments.openLinkedDocument(url, besideCentralContent: showsWorkspaceMap || showsDecisionTree)
   }
 
   private func selectCanvas(_ key: String) {
@@ -492,8 +522,28 @@ struct PlanCanvasView: View {
     // Clear both panes but keep the document tabs, so the canvas fills the viewer.
     sideDocuments.dismiss()
     showsWorkspaceMap = false
+    showsDecisionTree = false
     canvasSelection = nil
     selectedCanvasKey = key
+  }
+
+  /// Shows an agent's decision tree in the central slot, beside the plan's tab.
+  private func showDecisionTree(agentID: String?) {
+    if isEditing { isEditing = false }
+    sideDocuments.showCentralContent()
+    showsWorkspaceMap = false
+    selectedCanvasKey = nil
+    canvasSelection = nil
+    decisionTreeAgentID = agentID ?? model.decisionTrees(ticketID: ticket.id).first?.agentID
+    showsDecisionTree = true
+  }
+
+  /// "View decision tree" in an agent's menu: bring its tree to the front.
+  private func showRequestedDecisionTree() {
+    guard let request = model.requestedDecisionTree,
+          request.ticketID.caseInsensitiveCompare(ticket.id) == .orderedSame else { return }
+    showDecisionTree(agentID: request.agentID)
+    model.consumeDecisionTreeRequest(request)
   }
 
   private func closeCanvasTab(_ key: String) {

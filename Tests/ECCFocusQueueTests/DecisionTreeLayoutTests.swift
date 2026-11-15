@@ -47,16 +47,20 @@ struct DecisionTreeLayoutTests {
     #expect(d1.x > min(d2.x, d3.x) && d1.x < max(d2.x, d3.x))
     #expect(layout.size.width >= 2 * DecisionTreeLayout.slotWidth)
 
-    let renderer = ImageRenderer(content: DecisionTreeDiagram(
-      tree: tree, selectedNodeID: "D3", settings: DecisionAutomationSettings(), select: { _ in })
-      .padding(16).background(Color(nsColor: .windowBackgroundColor)))
-    renderer.scale = 2
-    let image = try #require(renderer.nsImage)
-    #expect(image.size.width >= layout.size.width)
-    if let output = ProcessInfo.processInfo.environment["FOCUS_QUEUE_RENDER_DIR"],
-       let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff) {
-      try bitmap.representation(using: .png, properties: [:])?.write(to:
-        URL(fileURLWithPath: output).appendingPathComponent("decision-tree.png"))
+    // The diagram uses semantic colors, so it follows the app's light or dark appearance.
+    for scheme in [ColorScheme.light, .dark] {
+      let renderer = ImageRenderer(content: DecisionTreeDiagram(
+        tree: tree, selectedNodeID: "D3", settings: DecisionAutomationSettings(), select: { _ in })
+        .padding(16).background(scheme == .dark ? Color(white: 0.11) : Color.white)
+        .environment(\.colorScheme, scheme))
+      renderer.scale = 2
+      let image = try #require(renderer.nsImage)
+      #expect(image.size.width >= layout.size.width)
+      if let output = ProcessInfo.processInfo.environment["FOCUS_QUEUE_RENDER_DIR"],
+         let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff) {
+        try bitmap.representation(using: .png, properties: [:])?.write(to:
+          URL(fileURLWithPath: output).appendingPathComponent("decision-tree-\(scheme == .dark ? "dark" : "light").png"))
+      }
     }
   }
 

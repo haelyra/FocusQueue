@@ -115,7 +115,9 @@ func leanAgentRules() {
                      "complete \"", "log \"entry\"", "Progress checklist", "immutable", "Push only when the user authorizes",
                      "'/Apps/focus-queue-map' scope <TASK-ID> <AGENT-ID>",
                      "/usr/bin/python3` is 3.9", "Never send a parser's stderr to /dev/null",
-                     "ref [<TASK-ID>] <CODE>", "focusqueue://ref/<TASK-ID>/B3", "knows only the project's basic structure"] {
+                     "ref [<TASK-ID>] <CODE>", "focusqueue://ref/<TASK-ID>/B3", "knows only the project's basic structure",
+                     "Phases group work; they never hold back independent work",
+                     "review propose <file>", "review approve|dismiss <TASK-ID> <REVIEW-ID>", "at most five"] {
         #expect(rules.contains(required), "Missing rule: \(required)")
     }
     #expect(!TaskContext.agentRules(mapHelper: nil).contains("Map scope"))

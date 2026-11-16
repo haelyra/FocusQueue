@@ -434,11 +434,13 @@ func focusQueueOrchestratorRulesReachOrchestrators() async throws {
     let delivered = try #require(SharedDataDelivery.context(payload: payload, provider: "claude", projectID: project.id,
                                                             root: root, role: .orchestrator))
     #expect(delivered.contains("**Blockers wait, then proceed.**"))
-    // The rules stay concise: five rules, each with the exact command to run.
+    // The rules stay concise: seven rules, each with the exact command to run.
     let rules = FocusQueueOrchestratorRules.text.split(separator: "\n").filter { $0.hasPrefix("- **") }
-    #expect(rules.count == 5 && rules.allSatisfy { $0.contains("`focus-queue-session ") })
+    #expect(rules.count == 7 && rules.allSatisfy { $0.contains("`focus-queue-session ") })
     #expect(FocusQueueOrchestratorRules.text.contains("**Bias for experimentation.**"))
-    #expect(FocusQueueOrchestratorRules.text.count < 1_600)
+    #expect(FocusQueueOrchestratorRules.text.contains("**Parallel by default.**"))
+    #expect(FocusQueueOrchestratorRules.text.contains("**Guard the user's attention.**"))
+    #expect(FocusQueueOrchestratorRules.text.count < 2_100)
     // Generated project contracts must not repeat them.
     let inputs = try AgentContractGenerator.inputs(project: project, root: root, process: nil, home: root)
     #expect(inputs.alreadyInjected.contains(FocusQueueOrchestratorRules.text))

@@ -108,6 +108,12 @@ import UserNotifications
     )
     DistributedNotificationCenter.default().addObserver(
       self,
+      selector: #selector(priorityReviewsChanged(_:)),
+      name: Notification.Name(PriorityReviewStore.notificationName),
+      object: nil
+    )
+    DistributedNotificationCenter.default().addObserver(
+      self,
       selector: #selector(reloadQueueOrder(_:)),
       name: Notification.Name(QueueOrderStore.changeNotificationName),
       object: nil
@@ -461,6 +467,10 @@ import UserNotifications
           let key = notification.userInfo?["key"] as? String else { return }
     model.handleUICanvasChange(ticketID: ticketID, key: key, event: notification.userInfo?["event"] as? String,
                                root: notification.userInfo?["root"] as? String)
+  }
+
+  @objc private func priorityReviewsChanged(_ notification: Notification) {
+    model.handlePriorityReviewChange(root: notification.userInfo?["root"] as? String)
   }
 
   @objc private func reloadQueueOrder(_ notification: Notification) {

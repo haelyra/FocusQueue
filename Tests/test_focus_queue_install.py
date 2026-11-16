@@ -379,6 +379,20 @@ class InstallerTests(unittest.TestCase):
                 self.assertIn("pivotal high-level design choices", payload)
                 self.assertIn("Settle implementation-level questions yourself", payload)
 
+    def test_global_contract_runs_independent_work_in_parallel(self):
+        repository = Path(__file__).parents[1]
+        for name in (
+            "Config/CODEX_GLOBAL_INSTRUCTIONS.md",
+            "Config/CLAUDE_GLOBAL_INSTRUCTIONS.md",
+            "Config/KIMI_GLOBAL_INSTRUCTIONS.md",
+        ):
+            with self.subTest(name=name):
+                payload = (repository / name).read_text()
+                self.assertIn("Parallel by default", payload)
+                self.assertIn("A phase groups work; it never holds back work that does not depend on it.", payload)
+                self.assertIn("focus-queue-session review propose <TASK> <AGENT> <file>", payload)
+                self.assertIn("the queue shows at most five at its top", payload)
+
     def test_global_contract_links_shorthand_references(self):
         repository = Path(__file__).parents[1]
         for name in (

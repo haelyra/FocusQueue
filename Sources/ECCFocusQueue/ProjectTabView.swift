@@ -403,8 +403,9 @@ struct ProjectTabView: View {
           title: "Modules",
           detail: "\(process.modules.filter(\.criteriaAccepted).count)/\(process.modules.count) accepted")
         moduleFolderButton(files)
+        moduleReviewOrderPicker(process)
         if process.modules.isEmpty && untracked.isEmpty {
-          Text("No modules yet. Optional and experimental: add a module when its design file starts, even as a stub. Success criteria are accepted in order and never block a phase.")
+          Text("No modules yet. Optional and experimental: add a module when its design file starts, even as a stub. Success criteria never block a phase.")
             .font(.caption).foregroundStyle(.secondary)
         }
         ForEach(process.modules) { module in
@@ -414,7 +415,9 @@ struct ProjectTabView: View {
           VStack(alignment: .leading, spacing: 4) {
             Text("Not tracked yet").font(.caption.bold()).foregroundStyle(.secondary)
             ForEach(untracked) { file in untrackedModuleRow(file) }
-            Text("Track modules in dependency order: success criteria are accepted in the order tracked.")
+            Text(process.effectiveModuleReviewOrder == .sequential
+              ? "Track modules in dependency order: success criteria are accepted in the order tracked."
+              : "Track modules in any order; each module's success criteria can be accepted on its own.")
               .font(.caption2).foregroundStyle(.secondary)
               .fixedSize(horizontal: false, vertical: true)
           }
@@ -517,13 +520,32 @@ struct ProjectTabView: View {
       .accessibilityLabel("Open \(file.displayTitle)")
       Button("Track") { model.trackDevelopmentModuleFile(file) }
         .buttonStyle(.bordered).controlSize(.mini)
-        .help("Add \(file.displayTitle) to the in-order success-criteria review")
+        .help("Add \(file.displayTitle) to the success-criteria review")
         .accessibilityLabel("Track \(file.displayTitle)")
     }
   }
 
+  /// Parallel (default): independent modules are accepted as each is ready.
+  /// Sequential: the owner chose a strict listed order.
+  private func moduleReviewOrderPicker(_ process: DevelopmentProcess) -> some View {
+    HStack(spacing: 8) {
+      Text("Module review").font(.caption).foregroundStyle(.secondary)
+      Picker("Module review", selection: Binding(
+        get: { process.effectiveModuleReviewOrder },
+        set: { model.setDevelopmentModuleReviewOrder($0) })
+      ) {
+        ForEach(DevelopmentModuleReviewOrder.allCases, id: \.self) { Text($0.title).tag($0) }
+      }
+      .pickerStyle(.segmented).labelsHidden().controlSize(.small).fixedSize()
+      .help("Parallel accepts each module's success criteria on its own; sequential requires the modules listed before it first")
+      .accessibilityLabel("Module review order")
+    }
+  }
+
   private func moduleRow(_ module: DevelopmentModule, modules: [DevelopmentModule]) -> some View {
-    let blockedBy = modules.prefix(while: { $0.id != module.id }).first { !$0.criteriaAccepted }
+    let sequential = model.developmentProcess?.effectiveModuleReviewOrder == .sequential
+    let blockedBy = sequential
+      ? modules.prefix(while: { $0.id != module.id }).first { !$0.criteriaAccepted } : nil
     return VStack(alignment: .leading, spacing: 4) {
       HStack(spacing: 8) {
         Image(systemName: module.criteriaAccepted ? "checkmark.seal.fill" : "seal")

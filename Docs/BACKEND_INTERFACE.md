@@ -307,6 +307,24 @@ A **reference card** explains one shorthand code (B3, M7, FC2, D4) an agent writ
 
 Agents paste the `markdown` value, for example `[B3](focusqueue://ref/FOC-133/B3)`. The app registers the `focusqueue` URL scheme. A click in a terminal or another app opens the task's plan viewer with the card on the left and the defining document on the right. A click inside a Focus Queue document opens the card beside the current document. A link without a card builds it on first click.
 
+
+### 3.14 Priority human reviews
+
+A **priority review** is a document an agent believes needs a human decision or sign-off that no agent can make. Agents propose; an orchestrator approves the few that matter most. The Focus queue shows approved reviews above **Today's focus**, at most five at once, ordered by priority (critical, high, medium, low), then by approval time; the rest wait their turn and the heading counts them. Proposals no orchestrator has triaged sit behind a collapsed "awaiting orchestrator approval" line, where the user can approve or dismiss one. Clicking a review expands the panel and opens the task's plan viewer with the document on the left (editable) and the task plan on the right; the document header and the row both offer **Mark reviewed**. Reviews of closed tasks leave the queue.
+
+Each task keeps `tasks/<TASK>/reviews.json`, rewritten under `reviews.lock`; never hand-edit it. Each CLI write posts `com.ecc.focusqueue.priority-reviews.changed`; the app also re-reads every 30 seconds. `<TASK> <AGENT>` may be omitted inside the agent's pane.
+
+| Command | Effect |
+|---|---|
+| `review propose [<TASK> <AGENT>] <file> "<why a human must read it>" [--priority critical\|high\|medium\|low] [--title "<text>"] [--approve]` | Records a `proposed` review (default priority `high`, title from the file name). The file must exist. A repeat proposal of an open review's document refreshes it instead of adding another. `--approve` is for orchestrators proposing their own. |
+| `review approve [<TASK>] <REVIEW-ID> [--priority …]` | Approves a proposal, or re-ranks an approved review. Records `approvedBy` (`agent:<ID>` inside a pane, else `human`). |
+| `review done\|dismiss [<TASK>] <REVIEW-ID>` | Resolves it: `done` after the user acted on it, `dismissed` when declined. A bare review ID resolves to this pane's task, else the one task that has it. |
+| `review list [<TASK>] [--all]` | JSON `visible` (the queue's top five), `waiting`, `proposed`, and with `--all` `resolved`. |
+
+### 3.15 Parallel work and module review order
+
+Dependencies hold work back only when one piece consumes another's output, interface, data, or environment, or the user asked for the order; phases group work and never gate it. Task dependencies (`development <PROJECT> depends …`) only order the queue's phase view. Module success criteria are accepted in any order by default; `development <PROJECT> modules sequential` (or **Module review** in the Project tab) restores strict listed order, and `modules parallel` returns to the default. The choice is `moduleReviewOrder` in `development.json`; parallel is stored as an absent key.
+
 ---
 
 ## 4. Provider harness CLIs
@@ -521,6 +539,8 @@ focus-queue-session decision rewind <TASK> <AGENT> <NODE> --reason "<why>"      
 
 # References (link every shorthand code in a report)
 focus-queue-session ref <TASK> B3 M7     # → "markdown": "[B3](focusqueue://ref/<TASK>/B3)"; card in evidence/refs/
+focus-queue-session review propose <TASK> <AGENT> <file> "<why a human must read it>" --priority high
+focus-queue-session review approve <TASK> <REVIEW-ID>   # orchestrator; the queue shows at most five
 
 # Placement (no ticket yet)
 focus-queue-session placement --prompt "<objective>" --cwd "$PWD"

@@ -270,6 +270,10 @@ final class QueueViewModel {
   var requestedDecisionTree: DecisionTreeRequest?
   /// A reference card a `focusqueue://ref` link asked for; the plan viewer splits it once.
   var requestedReference: ReferenceRequest?
+  /// Every task's priority human reviews, from tasks/<TASK-ID>/reviews.json.
+  private(set) var priorityReviews: [PriorityReview] = []
+  /// When the refresh loop last re-read priority reviews.
+  @ObservationIgnored private var lastPriorityReviewRead: Date?
   /// "<TASK>/<AGENT>" while a choose, rewind, or push runs for that agent.
   var decisionActionsInFlight: Set<String> = []
   /// The last outcome per "<TASK>/<AGENT>", shown under the tree.
@@ -1758,6 +1762,7 @@ final class QueueViewModel {
       let now = Date()
       await fireDueScheduledLaunches(now: now)
       runDecisionAutomationIfDue(now: now)
+      refreshPriorityReviewsIfDue(now: now)
       let stamp: DashboardFileStamp
       if showingAll {
         stamp = try await allProjectsStamp()
@@ -3178,9 +3183,13 @@ final class QueueViewModel {
     mutateDevelopmentProcess { try $0.addModule(name: name, file: file, projectID: $1) }
   }
 
-  /// Sequential by design: the store rejects module N+1 before module N.
+  /// Parallel by default; under sequential review the store rejects module N+1 before module N.
   func acceptDevelopmentModuleCriteria(moduleID: String) {
     mutateDevelopmentProcess { try $0.acceptCriteria(moduleID: moduleID, projectID: $1) }
+  }
+
+  func setDevelopmentModuleReviewOrder(_ order: DevelopmentModuleReviewOrder) {
+    mutateDevelopmentProcess { try $0.setModuleReviewOrder(order, projectID: $1) }
   }
 
   func setDevelopmentModuleImplemented(_ implemented: Bool, moduleID: String) {
@@ -7276,6 +7285,90 @@ extension QueueViewModel {
 
   func consumeReferenceRequest(_ request: ReferenceRequest) {
     if requestedReference == request { requestedReference = nil }
+  }
+
+  // MARK: Priority human reviews
+
+  var priorityReviewStore: PriorityReviewStore { PriorityReviewStore(root: paths.supportDirectory) }
+
+  /// The queue's split of open reviews among the shown project's open tasks:
+  /// at most five approved reviews now, approved ones waiting, and proposals.
+  var priorityReviewQueue: (visible: [PriorityReview], waiting: [PriorityReview], proposed: [PriorityReview]) {
+    PriorityReviewStore.partition(priorityReviews, openTaskIDs: Set(openTickets.map { $0.id.uppercased() }))
+  }
+
+  /// The open review of a document, for the viewer's "Reviewed" control.
+  func openPriorityReview(for document: URL) -> PriorityReview? {
+    let path = document.standardizedFileURL.path
+    return priorityReviews.first { $0.status.isOpen && $0.document == path }
+  }
+
+  func refreshPriorityReviews() {
+    lastPriorityReviewRead = Date()
+    Task { @MainActor [weak self] in await self?.reloadPriorityReviews() }
+  }
+
+  /// Reads every task's reviews off the main thread.
+  func reloadPriorityReviews() async {
+    lastPriorityReviewRead = Date()
+    let store = priorityReviewStore
+    let reviews = await Task.detached(priority: .utility) { store.allReviews() }.value
+    if priorityReviews != reviews { priorityReviews = reviews }
+  }
+
+  /// The CLI notifies the app; this slow poll only catches missed notifications.
+  private func refreshPriorityReviewsIfDue(now: Date) {
+    guard lastPriorityReviewRead.map({ now.timeIntervalSince($0) >= 30 }) ?? true else { return }
+    refreshPriorityReviews()
+  }
+
+  func handlePriorityReviewChange(root: String?) {
+    if let root, URL(fileURLWithPath: root).standardizedFileURL.path
+      != paths.supportDirectory.standardizedFileURL.path { return }
+    refreshPriorityReviews()
+  }
+
+  /// Clicking a priority review: the task's viewer shows the document on the
+  /// left, in the editor, and the task plan beside it.
+  func openPriorityReview(_ review: PriorityReview) {
+    let document = review.documentURL
+    guard FileManager.default.fileExists(atPath: document.path) else {
+      programLog.record("Priority review \(review.id) on \(review.taskID) points at a missing file: \(review.document)",
+                        category: "Reviews")
+      return
+    }
+    if panelMode != .expanded { setPanelMode(.expanded) }
+    guard let ticket = dashboard.tickets.first(where: { $0.id.caseInsensitiveCompare(review.taskID) == .orderedSame })
+    else {
+      openDocumentViewer(document, scope: documentScope(for: document))
+      return
+    }
+    if presentedPlanTicketID != ticket.id { openPlan(for: ticket) }
+    // The loaded context names the plan; before it loads, the plan has a fixed home.
+    let plan = taskContexts[ticket.id].map { URL(fileURLWithPath: $0.planPath) }
+      ?? Optional(paths.supportDirectory.appendingPathComponent("tasks/\(ticket.id)/plan.md"))
+        .flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
+    requestedReference = ReferenceRequest(ticketID: ticket.id, card: document, source: plan)
+  }
+
+  /// Marks a review read (done) or declines it (dismissed).
+  func resolvePriorityReview(_ review: PriorityReview, as status: PriorityReviewStatus) {
+    do {
+      try priorityReviewStore.resolve(taskID: review.taskID, reviewID: review.id, as: status)
+    } catch {
+      programLog.record("Could not update priority review \(review.id): \(error.localizedDescription)", category: "Reviews")
+    }
+    refreshPriorityReviews()
+  }
+
+  /// The human approves a proposal no orchestrator has triaged yet.
+  func approvePriorityReview(_ review: PriorityReview) {
+    do {
+      try priorityReviewStore.approve(taskID: review.taskID, reviewID: review.id, by: "human")
+    } catch {
+      programLog.record("Could not approve priority review \(review.id): \(error.localizedDescription)", category: "Reviews")
+    }
+    refreshPriorityReviews()
   }
 
   /// The CLI changed a tree. Notifications from another support directory are ignored.

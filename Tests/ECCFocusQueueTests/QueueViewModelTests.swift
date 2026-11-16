@@ -754,6 +754,43 @@ struct QueueViewModelTests {
     #expect(model.priorityReviewQueue.visible.isEmpty && model.openPriorityReview(for: document) == nil)
   }
 
+  @Test("A searched file opens beside its task plan, and an outside file viewed there is linked into the task context")
+  func searchedFileRoutingAndLinking() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let outside = FileManager.default.temporaryDirectory.appendingPathComponent("fq-linked-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: outside) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let ticket = try #require(model.openTickets.first)
+    model.openPlan(for: ticket)
+    for _ in 0..<100 where model.taskContexts[ticket.id] == nil { try await Task.sleep(for: .milliseconds(20)) }
+    let context = try #require(model.taskContexts[ticket.id])
+
+    let file = outside.appendingPathComponent("Sources/WidgetThing.swift")
+    try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("struct WidgetThing {}\n".utf8).write(to: file)
+    model.rememberViewedDocument(file, ticketID: ticket.id)
+    // Focus Queue's own records are never linked.
+    model.rememberViewedDocument(URL(fileURLWithPath: context.planPath), ticketID: ticket.id)
+    let linked = TaskLinkedFiles.load(context.contextDirectory)
+    #expect(linked.map(\.path) == [file.standardizedFileURL.path])
+
+    await model.refreshSearchableTaskFiles()
+    let display = try #require(linked.first?.displayPath)
+    let found = TaskSearch.search(model.openTickets, query: "WidgetThing.swift",
+      files: model.searchableTaskFiles.mapValues { $0.map(\.relativePath) })
+    #expect(found.fileSource == .context && found.fileMatches[ticket.id] == [display])
+
+    let match = try #require(model.searchableFile(display, ticketID: ticket.id, source: .context))
+    model.closePlan()
+    model.setPanelMode(.collapsed)
+    model.openSearchMatch(match, ticketID: ticket.id, source: .context)
+    #expect(model.panelMode == .expanded)
+    #expect(model.presentedPlanTicketID == ticket.id)
+    #expect(model.requestedReference?.card.standardizedFileURL == file.standardizedFileURL)
+    #expect(model.requestedReference?.source?.lastPathComponent == "plan.md")
+  }
+
   @Test("An agent's canvas open expands the panel and requests its tab; other support dirs are ignored")
   func uiCanvasOpenRouting() async throws {
     let fixture = try await Fixture()

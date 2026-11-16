@@ -200,6 +200,10 @@ struct PlanCanvasView: View {
       }
       .onChange(of: model.requestedUICanvas) { _, _ in showRequestedCanvas() }
       .onChange(of: model.requestedReference) { _, _ in showRequestedReference() }
+      // A file viewed here from outside the context folder is linked into it.
+      .onChange(of: sideDocuments.tabs) { old, new in
+        for url in new where !old.contains(url) { model.rememberViewedDocument(url, ticketID: ticket.id) }
+      }
       .onChange(of: model.requestedDecisionTree) { _, _ in showRequestedDecisionTree() }
       .onChange(of: model.presentedPlanURL) { _, _ in
         isEditing = false

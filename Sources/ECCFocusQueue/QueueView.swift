@@ -40,6 +40,7 @@ struct QueueView: View {
   /// Broad one-letter queries can match most of the queue; rendering every
   /// card would stall typing, so results stop here until the query narrows.
   private let taskSearchResultLimit = 30
+  private let taskSearchFileResultLimit = 12
 
   private var focusTickets: [DashboardTicket] { Array(model.openTickets.prefix(5)) }
 
@@ -334,10 +335,16 @@ struct QueueView: View {
         for: model.openTickets + model.completedTickets, query: taskSearchQuery,
         files: model.searchableTaskFiles, worktreeFiles: model.searchableWorktreeFiles,
         filesVersion: model.searchableTaskFilesVersion) : nil
-    let shownTickets = search.map { Array($0.tickets.prefix(taskSearchResultLimit)) } ?? focusTickets
+    // Tasks found only through a file show as file cards, not task cards.
+    let searchTasks = search.map { search in search.tickets.filter { !search.fileOnlyIDs.contains($0.id) } }
+    let fileHits = search.map(TaskSearchFileHit.hits) ?? []
+    let shownTickets = searchTasks.map { Array($0.prefix(taskSearchResultLimit)) } ?? focusTickets
+    let shownFileHits = Array(fileHits.prefix(taskSearchFileResultLimit))
+    // A query that looks like a file name lists files first.
+    let filesFirst = taskSearchQuery.contains(".") || taskSearchQuery.contains("/") || shownTickets.isEmpty
     return VStack(alignment: .leading, spacing: 10) {
       HStack {
-        focusHeading(resultCount: search?.tickets.count)
+        focusHeading(resultCount: search.map { _ in (searchTasks?.count ?? 0) + fileHits.count })
           .walkthroughAnchor(.search)
         Menu {
           ForEach(model.availableQueueSortModes) { mode in
@@ -367,7 +374,8 @@ struct QueueView: View {
           .accessibilityLabel("Queue view and ordering")
       }
       if let search {
-        if let caption = taskSearchCaption(search, shown: shownTickets.count) {
+        if let caption = taskSearchCaption(search, shown: shownTickets.count, total: searchTasks?.count ?? 0,
+          shownFiles: shownFileHits.count, totalFiles: fileHits.count) {
           Text(caption).font(.caption).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -379,27 +387,28 @@ struct QueueView: View {
       if let search, search.tickets.isEmpty {
         ContentUnavailableView.search(text: taskSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines))
           .frame(maxWidth: .infinity).notificationSurface(radius: 18)
-      } else if shownTickets.isEmpty {
+      } else if search == nil, shownTickets.isEmpty {
         ContentUnavailableView(
           "Queue is clear", systemImage: "checkmark.circle",
           description: Text("No open tasks are present in \(model.showsAllProjects ? "any project" : model.selectedProject?.name ?? "the selected project").")
         ).frame(maxWidth: .infinity).notificationSurface(radius: 18)
-      } else if agentViewEnabled {
-        agentViewList(for: shownTickets)
-      } else if search != nil {
-        let completedIDs = Set(model.completedTickets.map(\.id))
-        ForEach(shownTickets) { ticket in
-          VStack(alignment: .leading, spacing: 4) {
+      } else if let search {
+        if filesFirst { searchFileCards(shownFileHits, source: search.fileSource) }
+        if agentViewEnabled {
+          agentViewList(for: shownTickets)
+        } else {
+          let completedIDs = Set(model.completedTickets.map(\.id))
+          ForEach(shownTickets) { ticket in
             if completedIDs.contains(ticket.id) {
               CompletedTicketCard(ticket: ticket, model: model)
             } else {
               TicketCard(ticket: ticket, model: model)
             }
-            if let paths = search?.fileMatches[ticket.id] {
-              TaskSearchFileMatches(paths: paths, source: search?.fileSource ?? .context, ticketID: ticket.id, model: model)
-            }
           }
         }
+        if !filesFirst { searchFileCards(shownFileHits, source: search.fileSource) }
+      } else if agentViewEnabled {
+        agentViewList(for: shownTickets)
       } else {
         QueueTicketList(tickets: shownTickets, previous: nil, model: model)
       }
@@ -453,7 +462,18 @@ struct QueueView: View {
       .help(model.showsAllProjects ? "Search all tasks" : "Search \(model.projectScopeName) tasks")
   }
 
-  private func taskSearchCaption(_ search: TaskSearchResult, shown: Int) -> String? {
+  @ViewBuilder
+  private func searchFileCards(_ hits: [TaskSearchFileHit], source: TaskSearchFileSource) -> some View {
+    if !hits.isEmpty {
+      Text(source == .context ? "Files" : "Files in task worktrees")
+        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+      ForEach(hits) { hit in TaskSearchFileCard(hit: hit, source: source, model: model) }
+    }
+  }
+
+  private func taskSearchCaption(
+    _ search: TaskSearchResult, shown: Int, total: Int, shownFiles: Int, totalFiles: Int
+  ) -> String? {
     var parts: [String] = []
     if !search.filters.isEmpty {
       let fields = [TaskSearchFilter.Field.priority, .status].compactMap { field -> String? in
@@ -469,8 +489,8 @@ struct QueueView: View {
       parts.append(suggestion.map { "No exact matches · showing results for \u{201C}\($0)\u{201D}" }
         ?? "No exact matches · showing similar tasks")
     }
-    if shown < search.tickets.count {
-      parts.append("Showing \(shown) of \(search.tickets.count) · keep typing to narrow")
+    if shown < total || shownFiles < totalFiles {
+      parts.append("Showing \(shown + shownFiles) of \(total + totalFiles) · keep typing to narrow")
     }
     return parts.isEmpty ? nil : parts.joined(separator: "\n")
   }
@@ -2640,38 +2660,57 @@ private struct FocusSearchHeading: View {
   }
 }
 
-/// Files under a search result that matched the query by path. Clicking one
-/// opens it the way the task's outputs panel does.
-private struct TaskSearchFileMatches: View {
-  let paths: [String]
+/// One file a search matched, with the task whose context or worktree holds it.
+private struct TaskSearchFileHit: Identifiable {
+  let ticket: DashboardTicket
+  let path: String
+  var id: String { ticket.id + "\u{0}" + path }
+
+  /// Every listed file match, in task rank order.
+  static func hits(_ search: TaskSearchResult) -> [TaskSearchFileHit] {
+    search.tickets.flatMap { ticket in
+      (search.fileMatches[ticket.id] ?? []).map { TaskSearchFileHit(ticket: ticket, path: $0) }
+    }
+  }
+}
+
+/// A file search result: the file's name and folder, and the task it belongs
+/// to. Clicking opens the file in Focus Queue's viewer beside the task plan.
+private struct TaskSearchFileCard: View {
+  let hit: TaskSearchFileHit
   let source: TaskSearchFileSource
-  let ticketID: String
   let model: QueueViewModel
 
+  private var name: String { (hit.path as NSString).lastPathComponent }
+  private var folder: String { (hit.path as NSString).deletingLastPathComponent }
+
   var body: some View {
-    VStack(alignment: .leading, spacing: 2) {
-      ForEach(paths, id: \.self) { path in
-        Button {
-          if let file = model.searchableFile(path, ticketID: ticketID, source: source) {
-            model.openSearchMatch(file, ticketID: ticketID, source: source)
-          }
-        } label: {
-          Label {
-            Text(path).lineLimit(1).truncationMode(.middle)
-          } icon: {
-            Image(systemName: source == .context ? "doc.text.magnifyingglass" : "arrow.triangle.branch")
-          }
-          .font(.caption).foregroundStyle(.secondary)
-          .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Open matching file \(path)")
-        .help(source == .context
-          ? "Matched file in \(ticketID)'s context folder. Click to open."
-          : "Matched file changed in \(ticketID)'s worktree. Click to open.")
+    Button {
+      if let file = model.searchableFile(hit.path, ticketID: hit.ticket.id, source: source) {
+        model.openSearchMatch(file, ticketID: hit.ticket.id, source: source)
       }
+    } label: {
+      HStack(alignment: .top, spacing: 10) {
+        Image(systemName: source == .context ? "doc.text" : "arrow.triangle.branch")
+          .font(.system(size: 16)).foregroundStyle(.secondary).frame(width: 20)
+        VStack(alignment: .leading, spacing: 3) {
+          Text(name).font(.system(size: 13, weight: .semibold)).lineLimit(1).truncationMode(.middle)
+          if !folder.isEmpty {
+            Text(folder).font(.caption.monospaced()).foregroundStyle(.secondary)
+              .lineLimit(1).truncationMode(.head)
+          }
+          Text("\(hit.ticket.id) · \(hit.ticket.title)").font(.caption).foregroundStyle(.tertiary).lineLimit(1)
+        }
+        Spacer(minLength: 0)
+      }
+      .padding(12).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
     }
-    .padding(.horizontal, 12)
+    .buttonStyle(.plain)
+    .notificationSurface(radius: 14)
+    .accessibilityLabel("Open \(name) from \(hit.ticket.id), \(hit.ticket.title)")
+    .help(source == .context
+      ? "Open \(hit.path) beside \(hit.ticket.id)'s plan"
+      : "Open \(hit.path), changed in \(hit.ticket.id)'s worktree, beside its plan")
   }
 }
 

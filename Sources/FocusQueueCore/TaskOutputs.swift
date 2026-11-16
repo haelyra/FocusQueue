@@ -35,6 +35,7 @@ public enum TaskOutputs {
     static let ignoredFiles: Set<String> = [
         "plan.md", "data.md", "agent-log.md", TaskContext.initialPromptFileName, "context.json",
         "maintenance.json", TaskCompletionCleanup.reportName, "conversation.json", "plan-draft.json",
+        TaskLinkedFiles.fileName,
     ]
 
     static func isIgnored(fileName name: String) -> Bool {

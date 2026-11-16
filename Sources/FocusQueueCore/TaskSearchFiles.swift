@@ -131,3 +131,68 @@ public enum TaskSearchFiles {
     return Array(found.sorted { ($0.modifiedAt, $1.relativePath) > ($1.modifiedAt, $0.relativePath) }.prefix(limit))
   }
 }
+
+/// Files outside a task's context folder that the user viewed in the task's
+/// plan viewer, such as a worktree file opened from search. Kept in the
+/// context folder so search finds them there next time.
+public enum TaskLinkedFiles {
+  public static let fileName = "linked-files.json"
+  /// The most recently viewed files kept per task.
+  public static let limit = 200
+
+  public struct Entry: Codable, Equatable, Sendable {
+    /// Absolute path of the file.
+    public var path: String
+    /// What search matches and shows: the path inside its worktree when known.
+    public var displayPath: String
+    public var viewedAt: Date
+
+    public init(path: String, displayPath: String, viewedAt: Date) {
+      self.path = path
+      self.displayPath = displayPath
+      self.viewedAt = viewedAt
+    }
+  }
+
+  private struct Record: Codable {
+    var schemaVersion = 1
+    var files: [Entry]
+  }
+
+  public static func url(in contextDirectory: URL) -> URL {
+    contextDirectory.appendingPathComponent(fileName)
+  }
+
+  /// Linked files, most recently viewed first. A damaged record reads as empty.
+  public static func load(_ contextDirectory: URL) -> [Entry] {
+    guard let data = try? Data(contentsOf: url(in: contextDirectory)),
+      let record = try? JSONDecoder().decode(Record.self, from: data) else { return [] }
+    return record.files
+  }
+
+  /// Records a view, moving a known file to the front. Returns false when
+  /// the file was already first, so callers can skip a rescan.
+  @discardableResult
+  public static func record(
+    _ file: URL, displayPath: String, in contextDirectory: URL, at date: Date = Date()
+  ) throws -> Bool {
+    let path = file.standardizedFileURL.path
+    var files = load(contextDirectory)
+    if files.first?.path == path, files.first?.displayPath == displayPath { return false }
+    files.removeAll { $0.path == path }
+    files.insert(Entry(path: path, displayPath: displayPath, viewedAt: date), at: 0)
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    try encoder.encode(Record(files: Array(files.prefix(limit)))).write(to: url(in: contextDirectory), options: .atomic)
+    return true
+  }
+
+  /// Linked files that still exist, as search entries keyed by display path.
+  public static func searchFiles(_ contextDirectory: URL) -> [TaskOutputFile] {
+    load(contextDirectory).compactMap { entry in
+      guard FileManager.default.fileExists(atPath: entry.path) else { return nil }
+      return TaskOutputFile(relativePath: entry.displayPath, url: URL(fileURLWithPath: entry.path),
+        modifiedAt: entry.viewedAt)
+    }
+  }
+}

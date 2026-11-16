@@ -117,4 +117,30 @@ struct TaskSearchFilesTests {
     let uncommitted = await TaskSearchFiles.worktreeFiles(.init(path: repo.path))
     #expect(Set(uncommitted.map(\.relativePath)) == ["edited.txt", "notes/untracked.md"])
   }
+
+  @Test("Tasks found only through a file are flagged so they show as file results")
+  func fileOnlyFlag() {
+    let result = TaskSearch.search(tickets, query: "polish", files: ["FOC-2": ["evidence/polish-notes.md"]])
+    #expect(result.tickets.map(\.id) == ["FOC-1", "FOC-2"])
+    #expect(result.fileOnlyIDs == ["FOC-2"])
+  }
+
+  @Test("Linked files keep the newest view first, drop missing files from search, and stay out of outputs")
+  func linkedFiles() throws {
+    let context = try temporaryDirectory()
+    let outside = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: context); try? FileManager.default.removeItem(at: outside) }
+    let first = outside.appendingPathComponent("a.swift"), second = outside.appendingPathComponent("b.swift")
+    try Data("a".utf8).write(to: first)
+    try Data("b".utf8).write(to: second)
+    #expect(try TaskLinkedFiles.record(first, displayPath: "Sources/a.swift", in: context))
+    #expect(try TaskLinkedFiles.record(second, displayPath: "Sources/b.swift", in: context))
+    #expect(try TaskLinkedFiles.record(first, displayPath: "Sources/a.swift", in: context))
+    #expect(try !TaskLinkedFiles.record(first, displayPath: "Sources/a.swift", in: context), "already first")
+    #expect(TaskLinkedFiles.load(context).map(\.displayPath) == ["Sources/a.swift", "Sources/b.swift"])
+
+    try FileManager.default.removeItem(at: second)
+    #expect(TaskLinkedFiles.searchFiles(context).map(\.relativePath) == ["Sources/a.swift"])
+    #expect(TaskOutputs.scan(context).isEmpty, "the link record is not an agent output")
+  }
 }

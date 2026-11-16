@@ -54,6 +54,33 @@ public enum DocumentEditing {
     static let windowMatchThreshold = 0.8
     static let windowWordLimit = 30
 
+    static let editVerbs: Set<String> = ["fix", "edit", "change", "update", "rewrite", "reword", "rephrase",
+        "reformat", "format", "correct", "add", "insert", "append", "prepend", "remove", "delete", "replace",
+        "rename", "set", "move", "merge", "split", "convert", "shorten", "expand", "tidy", "clean", "apply",
+        "mark", "swap", "sort", "capitalize", "bold", "italicize", "fill", "strike", "trim", "tighten"]
+    static let politeLeads = ["please", "pls", "can", "could", "would", "will", "you", "go", "ahead", "and",
+        "now", "also", "then", "just", "kindly", "i", "want", "need", "to", "like", "me", "let's", "lets"]
+
+    /// True when a sentence of the request starts, after courtesy words, with
+    /// an editing verb ("fix the table", "can you edit line 4"). Questions such
+    /// as "why is this table broken?" stay with the read-only reader.
+    public static func isExplicitEditRequest(_ request: String) -> Bool {
+        let sentences = request.lowercased().split(whereSeparator: { ".!?;\n".contains($0) })
+        return sentences.contains { sentence in
+            let words = sentence.split(whereSeparator: { !$0.isLetter && $0 != "'" }).map(String.init)
+            guard let verb = words.first(where: { !politeLeads.contains($0) }) else { return false }
+            return editVerbs.contains(verb)
+        }
+    }
+
+    /// A no-edit reply that asks for the document, or for more of it.
+    public static func asksForFullDocument(_ reply: DocumentEditReply) -> Bool {
+        if reply.needsFullDocument { return true }
+        let text = reply.reply.lowercased()
+        return ["full document", "whole document", "entire document", "complete document", "excerpt", "paste the", "provide the"]
+            .contains(where: text.contains)
+    }
+
     /// Splits on newlines only, so `\r` line endings survive a round trip.
     public static func lines(of text: String) -> [String] {
         text.components(separatedBy: "\n")

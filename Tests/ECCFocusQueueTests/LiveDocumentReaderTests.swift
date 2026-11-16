@@ -107,3 +107,59 @@ func liveDocumentEditorSanity() async throws {
     print("LIVE_DOCUMENT_EDITOR \(provider.rawValue): edited one cell, \(usage == nil ? "usage not recorded" : "\(total) tokens"), reply: \(chat.messages.last?.text ?? "")")
     if provider == .claude { try #require(usage != nil && total < 6_000, "Editor used \(total) tokens") }
 }
+
+/// Replays a reader edit request, Clear Chat, then the same request to a new
+/// agent. ECC_FOCUS_QUEUE_REPRO_DOC substitutes a real document for the sample.
+@Test("Live document chat edits a table after a reader turn and Clear Chat",
+    .enabled(if: ProcessInfo.processInfo.environment["ECC_FOCUS_QUEUE_LIVE_DOCUMENT_TESTS"] == "1"))
+@MainActor
+func liveDocumentClearThenEditSanity() async throws {
+    let environment = ProcessInfo.processInfo.environment
+    let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        .appendingPathComponent("live-document-clear-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let context = try await TaskContextStore(root: root).ensureContext(
+        ticket: .init(id: "ECC-909", title: "Clear then edit sanity", status: "open", summary: "Fix this document."))
+    let document = root.appendingPathComponent("decisions.md")
+    let original = try environment["ECC_FOCUS_QUEUE_REPRO_DOC"].map { try String(contentsOfFile: $0, encoding: .utf8) }
+        ?? "# Decisions\n\n| ID | Question | Answer |\n|---|---|\n| D1 | Ship the beta? | Yes |\n| D2 | Rename the app? | No | later |\n"
+    try Data(original.utf8).write(to: document)
+    let provider = AgentProvider(rawValue: environment["ECC_FOCUS_QUEUE_DOCUMENT_PROVIDER"] ?? "codex") ?? .codex
+    let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let script = source.appendingPathComponent("Scripts/focus_queue_\(provider.rawValue).py").path
+    let executable = root.appendingPathComponent("harness").path
+    let quotedScript = "'" + script.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    try Data("#!/bin/sh\nexec /usr/bin/env python3 \(quotedScript) \"$@\"\n".utf8).write(to: URL(fileURLWithPath: executable))
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable)
+    let agent = HarnessQueueAgent(provider: provider)
+    let services = DocumentChatServices(agent: { _ in agent }, executable: { _ in executable },
+        resolveCreator: { _ in nil }, modelChoices: { _ in [] })
+    let chat = DocumentConversation(document: document, subject: .init(kind: .task(context)), support: root,
+        services: services, configuration: .init(enabled: true, executable: executable, sessionName: "unused", timeoutSeconds: 120),
+        dashboardPath: root.appendingPathComponent("dashboard.json").path, workspace: root.path, provider: provider,
+        model: environment["ECC_FOCUS_QUEUE_DOCUMENT_MODEL"], effort: environment["ECC_FOCUS_QUEUE_DOCUMENT_EFFORT"])
+    await chat.load()
+    func ask(_ request: String) async throws -> String {
+        chat.draft = request; chat.send()
+        for _ in 0..<1_500 where chat.isResponding { try await Task.sleep(for: .milliseconds(100)) }
+        try #require(!chat.isResponding, "Chat did not finish within its run budget")
+        return try #require(chat.messages.last?.text)
+    }
+    let request = environment["ECC_FOCUS_QUEUE_REPRO_REQUEST"] ?? "fix the md table formatting issues"
+    let readerReply = try await ask(request)
+    let afterReader = try String(contentsOf: document, encoding: .utf8)
+    print("LIVE_CLEAR_EDIT reader changed=\(afterReader != original) reply: \(readerReply)")
+    chat.clear()
+    for _ in 0..<100 where chat.isClearing { try await Task.sleep(for: .milliseconds(50)) }
+    try #require(chat.messages.isEmpty && chat.route.kind == .ephemeralReader)
+    chat.setRecipient(.newAgent)
+    let editorReply = try await ask(request)
+    let edited = try String(contentsOf: document, encoding: .utf8)
+    print("LIVE_CLEAR_EDIT editor changed=\(edited != afterReader) reply: \(editorReply)")
+    print("LIVE_CLEAR_EDIT result:\n\(edited)")
+    if environment["ECC_FOCUS_QUEUE_REPRO_DOC"] == nil {
+        try #require(afterReader != original, "Reader did not apply an explicit edit request: \(readerReply)")
+        try #require(edited.contains("|---|---|---|"), "Separator row was not repaired: \(edited)")
+    }
+}

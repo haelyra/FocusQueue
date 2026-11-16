@@ -355,7 +355,8 @@ struct DocumentPaneTests {
 
     /// A started editor chat on `name`, with a scripted reply per model call.
     @MainActor
-    private func editorChat(_ root: URL, name: String, text: String, replies: [String]) async throws -> (DocumentConversation, URL, ScriptedEditorAgent) {
+    private func editorChat(_ root: URL, name: String, text: String, replies: [String],
+                            recipient: DocumentChatRoute.Kind = .newAgent) async throws -> (DocumentConversation, URL, ScriptedEditorAgent) {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let context = try await TaskContextStore(root: root).ensureContext(ticket: .init(id: "ECC-905", title: "Editor", status: "open", summary: "Edit"))
         let document = root.appendingPathComponent(name)
@@ -367,7 +368,7 @@ struct DocumentPaneTests {
             configuration: SetupEnvironment.starter(supportDirectory: root).verifier, dashboardPath: "/dashboard",
             workspace: root.path, provider: .claude)
         await chat.load()
-        chat.setRecipient(.newAgent)
+        chat.setRecipient(recipient)
         return (chat, document, agent)
     }
 
@@ -420,6 +421,73 @@ struct DocumentPaneTests {
         #expect(!requests[0].message.contains("Unrelated planning prose") && requests[1].message.contains("Unrelated planning prose"))
         #expect(chat.messages.last?.text == "I could not make that change from this document.")
         #expect(try String(contentsOf: document, encoding: .utf8) == Self.longTable)
+    }
+
+    @Test("A whole short document is labeled complete, and a request for it is retried once")
+    func editorRetriesWhenAskingForTheDocumentItHas() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("document-editor-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let text = "# Decisions\n\n| ID | Answer | Source |\n|---|---|\n| D1 | Yes | Plan |\n"
+        let asks = #"{"reply":"I can't tell which table is wrong from this excerpt alone. Please provide the full document.","edits":[],"needsFullDocument":false}"#
+        let fixed = #"{"reply":"Added the missing separator column.","edits":[{"line":4,"find":"|---|---|","replace":"|---|---|---|"}],"needsFullDocument":false}"#
+        let (chat, document, agent) = try await editorChat(root, name: "decisions.md", text: text, replies: [asks, fixed])
+        try await sendAndWait(chat, "fix the md table formatting issues")
+        let requests = await agent.requests
+        #expect(requests.count == 2)
+        #expect(requests[0].message.contains(DocumentContextReader.completeRule) && !requests[0].message.contains("needsFullDocument to true"))
+        #expect(requests[0].message.contains("Complete 6-line document") && !requests[0].message.contains(DocumentContextReader.fullDocumentRetry))
+        #expect(requests[1].message.contains(DocumentContextReader.fullDocumentRetry))
+        #expect(chat.messages.last?.text == "Added the missing separator column.")
+        #expect(try String(contentsOf: document, encoding: .utf8) == text.replacingOccurrences(of: "|---|---|\n", with: "|---|---|---|\n"))
+    }
+
+    @Test("The reader sends an explicit edit request to the editor and keeps questions read-only")
+    func readerEditsOnlyWhenExplicitlyAsked() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("document-editor-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixed = #"{"reply":"Renamed the title.","edits":[{"line":1,"find":"Plan","replace":"Roadmap"}]}"#
+        let (chat, document, agent) = try await editorChat(root, name: "plan.md", text: "# Plan\n",
+            replies: ["The title is Plan.", fixed], recipient: .ephemeralReader)
+        #expect(chat.route.kind == .ephemeralReader && !chat.usesEditor)
+        try await sendAndWait(chat, "What is the title?")
+        try await sendAndWait(chat, "Please rename the title to Roadmap.")
+        let requests = await agent.requests
+        #expect(requests.count == 2)
+        #expect(requests[0].message.hasPrefix(DocumentConversation.readerPreamble) && requests[0].configuration.documentReader == true)
+        #expect(requests[1].message.hasPrefix(DocumentContextReader.editorPreamble))
+        #expect(requests[1].configuration.documentEditor == true && requests[1].configuration.documentReader == false)
+        #expect(try String(contentsOf: document, encoding: .utf8) == "# Roadmap\n")
+        #expect(chat.route.kind == .ephemeralReader)
+    }
+
+    @Test("An edit request answered with no edits says the document is unchanged")
+    func editorFlagsClaimedFixWithoutEdits() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("document-editor-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let claim = #"{"reply":"I corrected the separator.","edits":[]}"#
+        let (chat, document, _) = try await editorChat(root, name: "plan.md", text: "# Plan\n", replies: [claim, claim])
+        try await sendAndWait(chat, "fix the separator")
+        #expect(chat.messages.last?.text == "The document is unchanged. I corrected the separator.")
+        try await sendAndWait(chat, "Is the separator right?")
+        #expect(chat.messages.last?.text == "I corrected the separator.")
+        let noOp = #"{"reply":"Fixed the title.","edits":[{"line":1,"find":"Plan","replace":"Plan"}]}"#
+        let (same, sameDocument, _) = try await editorChat(root.appendingPathComponent("same"), name: "plan.md", text: "# Plan\n", replies: [noOp])
+        try await sendAndWait(same, "fix the title")
+        #expect(same.messages.last?.text == "The document is unchanged: the edits matched what it already says. Fixed the title.")
+        #expect(try String(contentsOf: sameDocument, encoding: .utf8) == "# Plan\n")
+        #expect(try String(contentsOf: document, encoding: .utf8) == "# Plan\n")
+    }
+
+    @Test("Explicit edit requests are told apart from questions")
+    func explicitEditIntent() {
+        for request in ["fix the md table formatting issues", "Can you edit line 4?", "please update the status",
+                        "Looks good. Now remove the second row.", "I want you to rewrite the intro", "could you please add a row"] {
+            #expect(DocumentEditing.isExplicitEditRequest(request), "\(request)")
+        }
+        for request in ["Why is this table broken?", "What should I change?", "Summarize the document",
+                        "Is the format right?", "explain the edits needed"] {
+            #expect(!DocumentEditing.isExplicitEditRequest(request), "\(request)")
+        }
     }
 
     @Test("The editor changes nothing when an edit fails or the file moved on")

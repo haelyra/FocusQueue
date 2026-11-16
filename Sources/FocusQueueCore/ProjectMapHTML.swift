@@ -160,7 +160,7 @@ public enum ProjectMapHTML {
         for node in all {
             switch node.kind {
             case .root:
-                cards.append(#"<div class="root" id="root" data-node="root" data-kind="root" data-rank="0" style="left:\#(f(node.x))px;top:\#(f(node.y))px" title="Click to expand or collapse every phase"><b>\#(escape(map.projectName))</b><span>\#(percent(progress.project)) complete · \#(escape(map.currentPhase))</span>\#(bar(progress.project))</div>"#)
+                cards.append(#"<div class="root" id="root" data-node="root" data-kind="root" data-rank="0" style="left:\#(f(node.x))px;top:\#(f(node.y))px" title="Click to expand or collapse every phase"><b>\#(escape(map.projectName))</b><span>\#(percent(progress.project)) complete</span>\#(bar(progress.project))</div>"#)
             case .phase(let isTrack):
                 let index = Int(node.id.dropFirst(4)) ?? 0
                 let title = map.lanes.indices.contains(index) ? map.lanes[index].title : node.id

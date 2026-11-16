@@ -286,33 +286,53 @@ public enum ProjectMapBuilder {
         for (leaf, tasks) in claims { for task in tasks { taskLeaves[task, default: []].append(leaf) } }
         for task in taskLeaves.keys { taskLeaves[task]?.sort { (leafOrder[$0] ?? 0) < (leafOrder[$1] ?? 0) } }
 
-        // Tasks no leaf claims get one lane per linked process phase, in phase order.
-        var outsideLanes: [String: Int] = [:]
-        let outsideTitles = DevelopmentPhase.allCases.map(\.title) + ["no phase"]
-        for title in outsideTitles {
-            let used = tickets.contains { ticket in
-                let id = ticket.id.uppercased()
-                return taskLeaves[id] == nil && (process.phase(ofTask: id)?.title ?? "no phase") == title
-            }
-            guard used else { continue }
-            lanes.append(ProjectMap.Lane(title: "Not in the plan · \(title)", isTrack: true))
-            outsideLanes[title] = lanes.count - 1
+        // A task that claims no leaf (an orchestrator, a design-doc or review
+        // task) still belongs to a plan phase: the one its title names, else the
+        // section of a leaf its title mentions, else the section matching its
+        // development-process phase. Only a task with none of these signals is
+        // left in a "Not linked to a phase" lane.
+        var unlinkedLane: Int?
+        let phaseSection = PlanPhaseSections(outline: outline) { leafID in
+            // A leaf still has open work unless it is ticked or a finished task covers it.
+            guard let leaf = outline.leaves.first(where: { $0.id == leafID }), !leaf.isChecked else { return false }
+            let covering = claims[leafID] ?? []
+            return covering.isEmpty || covering.contains { byID[$0].map { $0.isOpen } ?? false }
         }
         for ticket in tickets {
             let id = ticket.id.uppercased()
             let leaves = taskLeaves[id] ?? []
-            let lane: Int
+            var lane: Int
+            var reason: String?
             if let first = leaves.first, let leaf = outline.leaves.first(where: { $0.id == first }) {
                 lane = leaf.sectionIndex
+            } else if let section = phaseSection.section(titled: ticket.title)
+                        ?? outline.leafIDs(in: ticket.title).compactMap({ leafID in
+                            outline.leaves.first { $0.id == leafID }?.sectionIndex }).first
+                        ?? process.phase(ofTask: id).flatMap(phaseSection.section(for:)) {
+                lane = section
+                reason = "Supports this phase; it does not claim a plan leaf."
             } else {
-                lane = outsideLanes[process.phase(ofTask: id)?.title ?? "no phase"] ?? 0
+                // A link without a step is the process's own "outside the
+                // process" marker (side questions, chores); say so plainly.
+                let outside = process.links[id] != nil
+                let title = outside ? "Outside the development process" : "Not linked to a phase"
+                if unlinkedLane == nil {
+                    lanes.append(ProjectMap.Lane(title: title, isTrack: true))
+                    unlinkedLane = lanes.count - 1
+                } else if lanes[unlinkedLane!].title != title {
+                    lanes[unlinkedLane!].title = "Outside the development process or unlinked"
+                }
+                lane = unlinkedLane!
+                reason = outside
+                    ? "Marked outside the development process (a side question or chore)."
+                    : "No plan leaf, phase in its title, or process phase places it."
             }
             nodeIndex[id] = nodes.count
             nodes.append(ProjectMap.Node(
                 id: id, kind: .task, title: ticket.title, status: ticket.status.lowercased(), lane: lane,
                 leaves: leaves,
                 gate: leaves.compactMap { leaf in outline.leaves.first { $0.id == leaf }?.gate }.first,
-                phase: process.phase(ofTask: id)?.title, agents: agents[id] ?? [], reason: nil))
+                phase: nil, agents: agents[id] ?? [], reason: reason))
             for leaf in leaves { leafNodes[leaf, default: []].append(id) }
         }
 
@@ -399,6 +419,65 @@ public enum ProjectMapBuilder {
             return String(title[..<colon])
         }
         return title.split(separator: " ").first.map(String.init) ?? ""
+    }
+}
+
+/// Maps phase names onto the development plan's own sections. The plan
+/// (`## Phase 1 — …`) and the development process (Planning, Phase 0,
+/// Phase 1+, Phase N−1, Phase N) name phases differently; the map shows only
+/// the plan's sections, so process phases are translated here.
+struct PlanPhaseSections {
+    let outline: DevelopmentPlanOutline
+    /// Whether a leaf still has open work.
+    let isOpen: (String) -> Bool
+
+    /// `Phase 1` in "Phase 1 D1: …" → the `## Phase 1 — …` section.
+    func section(titled title: String) -> Int? {
+        guard let match = title.range(of: #"\bPhase\s+([0-9]+|[A-Z])\b"#, options: .regularExpression) else { return nil }
+        let token = title[match].split(whereSeparator: \.isWhitespace).last.map(String.init) ?? ""
+        return section(named: token)
+    }
+
+    func section(named token: String) -> Int? {
+        outline.sections.indices.first { index in
+            let section = outline.sections[index]
+            guard !section.isTrack, let match = section.title.range(of: #"^Phase\s+([0-9]+|[A-Z])\b"#,
+                                                                   options: .regularExpression) else { return false }
+            return section.title[match].split(whereSeparator: \.isWhitespace).last.map(String.init) == token
+        }
+    }
+
+    /// Numbered build sections (`Phase 1`, `Phase 2`, …) in number order.
+    var numbered: [(number: Int, index: Int)] {
+        outline.sections.indices.compactMap { index -> (Int, Int)? in
+            let title = outline.sections[index].title
+            guard !outline.sections[index].isTrack,
+                  let match = title.range(of: #"^Phase\s+[0-9]+\b"#, options: .regularExpression),
+                  let number = Int(title[match].split(whereSeparator: \.isWhitespace).last ?? "") else { return nil }
+            return (number, index)
+        }.sorted { $0.0 < $1.0 }
+    }
+
+    func section(for phase: DevelopmentPhase) -> Int? {
+        let build = numbered.filter { $0.number >= 1 }
+        switch phase {
+        case .planning:
+            return outline.sections.indices.first {
+                !outline.sections[$0].isTrack && outline.sections[$0].title.localizedCaseInsensitiveContains("planning")
+            } ?? section(named: "0")
+        case .phase0:
+            return section(named: "0")
+        case .implementation:
+            // "Phase 1+" is every build phase: use the earliest one with open work.
+            let open = build.first { entry in
+                outline.leaves.contains { $0.sectionIndex == entry.index && isOpen($0.id) }
+            }
+            return (open ?? build.first)?.index
+        case .prerelease:
+            return build.count >= 2 ? build[build.count - 2].index : build.last?.index
+        case .release:
+            return build.last?.index
+        }
     }
 }
 

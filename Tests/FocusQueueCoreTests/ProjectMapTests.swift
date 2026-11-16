@@ -92,7 +92,9 @@ func mapCoversLeaves() {
     #expect(node("DEM-6")?.leaves == ["1.3"])     // title label "Phase 1 1.3:"
     #expect(node("DEM-5")?.leaves == [])          // a mere mention claims nothing
     #expect(node("DEM-1")?.agents.count == 1)
-    #expect(node("DEM-5").map { map.lanes[$0.lane].title } == "Not in the plan · no phase")
+    // "Decide starting 1.3 alongside 1.2" claims no leaf but mentions Phase 1 leaves.
+    #expect(node("DEM-5").map { map.lanes[$0.lane].title } == "Phase 1 — Build")
+    #expect(node("DEM-5")?.reason == "Supports this phase; it does not claim a plan leaf.")
 }
 
 @Test("Ghosts mark unmet, uncovered leaves only")
@@ -235,4 +237,28 @@ func mapProgress() {
     let html = ProjectMapHTML.render(map)
     #expect(html.contains("31% complete"))
     #expect(html.contains("not planned yet · ≈3 tasks"))
+}
+
+@Test("Tasks that claim no leaf join the plan phase their title or process phase names")
+func unclaimedTasksJoinPlanPhases() {
+    var process = DevelopmentProcess()
+    process.links["DEM-21"] = DevelopmentTaskLink(phase: .implementation, step: "build", source: .steward)
+    process.links["DEM-22"] = DevelopmentTaskLink(phase: .planning, step: "prd", source: .steward)
+    process.links["DEM-23"] = DevelopmentTaskLink(phase: .phase0, step: nil, source: .steward)
+    let tickets = demoTickets + [
+        ticket("DEM-20", "Phase 1 Orchestrator: design docs"),
+        ticket("DEM-21", "Storage review"),
+        ticket("DEM-22", "Write the PRD"),
+        ticket("DEM-23", "Side question"),
+        ticket("DEM-24", "Loose chore"),
+    ]
+    let map = demoMap(tickets: tickets, process: process)
+    func lane(_ id: String) -> String? { map.nodes.first { $0.id == id }.map { map.lanes[$0.lane].title } }
+    #expect(lane("DEM-20") == "Phase 1 — Build")             // title names Phase 1
+    #expect(lane("DEM-21") == "Phase 1 — Build")             // "Phase 1+" → earliest build phase with open work
+    #expect(lane("DEM-22") == "A. Planning completion")      // process Planning → the planning section
+    #expect(lane("DEM-23") == "Outside the development process or unlinked")
+    #expect(lane("DEM-24") == "Outside the development process or unlinked")
+    #expect(!map.lanes.contains { $0.title.hasPrefix("Not in the plan") })
+    #expect(map.nodes.allSatisfy { $0.phase == nil })        // process phase names never show
 }

@@ -235,7 +235,7 @@ These manage the per-agent slots inside `tasks/<TICKET>/context.json`:
 **`projects list` · `projects recover` · `projects create --id <id> --name <name> --workspace <abs-path> --from <project-id> --task <TASK-ID> [--task ...]`**
 `create` is transactional and posts the project-catalog-change notification so the running app reloads `config.json`. This is the *only* safe way to add a project while the app runs.
 
-**`development <PROJECT-ID> show | modules | link <TASK-ID> <step-id|none> [module] | unlink <TASK-ID> | depends <TASK-ID> [<PREREQUISITE-ID> ...] | step <step-id> <pending|inProgress|done|accepted> | phase <planning|phase0|implementation|prerelease|release> | sync`**
+**`development <PROJECT-ID> show | modules | map | link <TASK-ID> <step-id|none> [module] | unlink <TASK-ID> | depends <TASK-ID> [<PREREQUISITE-ID> ...] | step <step-id> <pending|inProgress|done|accepted> | phase <planning|phase0|implementation|prerelease|release> | sync`**
 Locked edits of `projects/<id>/development.json`, the per-project development process (FOC-117). Every write is one read-modify-write under the project file lock; a malformed file throws and is never overwritten. `link` records a *human* link (a step from any phase, or `none` for work outside the process) that the steward never overrides; the task must exist in that project's dashboard. `depends` replaces the task's prerequisite list in `dependencies` (task → task IDs it waits on); no IDs clears it, and a self-reference or cycle is refused. Reconcile drops entries for tasks that left the dashboard. `step … accepted` is the human acceptance; accepting the last step of a phase advances the phase. `sync` runs the same steward pass the app runs.
 
 The Project tab turns each step's catalog documents into clickable chips that open in the document viewer, where a review toggle checks the document off (`checkedArtifacts` on the step state). When every artifact of a step exists in the project folder and is reviewed, the app marks the step done; clicking the step marker completes it and right-clicking reopens it. Status changes and automatic raises preserve the check-offs.
@@ -244,6 +244,14 @@ The process updates itself outside agent sessions:
 1. **Task status (no model).** On each app refresh (at most every 30 s), an open linked task makes its step active; when every linked task is closed the step is done and linked modules are implemented. Automatic updates only raise a step, never accept it, and a human reset to pending holds.
 2. **Steward (placement model).** When a project's *signature* changes (a new unlinked task, a new Markdown file in the project folder or `modules/`, a module, or the phase), the app runs `focus_queue_placement.py develop` once (at most every 120 s; failures retry after 30 min). The prompt carries the step catalog, unlinked tasks, and file headings. The reply proposes links and step evidence, which the app validates and applies. It uses the placement provider, model, and effort, and Settings › Placement › model off disables it. Usage is recorded under the `development` source.
 3. **Agents** get at most one brief line naming their own step's phase rule (`Development process (Phase 0, step Scaffolding & environment): …`), or none when the task is linked outside the process.
+
+**`development <PROJECT-ID> map`** — project dependency map (FOC-138)
+Writes `projects/<id>/project-map.html` and prints `{status, path, tasks, ghosts, edges}`; it refuses when the project's development process is off. The map is deterministic (no model call). Every dashboard write through `JSONDashboardRepository` (task create, rename, status, priority, resolve, reopen) rebuilds it when the dashboard sits in `projects/<id>/` beside an enabled `development.json`; the Project tab's *Project map* button rebuilds it and opens it in the document viewer, so agent changes (which never write the dashboard) appear on open.
+- **Inputs.** The dashboard tasks, `development.json` (phase links and `dependencies`), the development plan (`devplan.md`, or its `artifactNames` override), module files (`development … modules`), and each task's `context.json` agents (removed, merged, and assignment-only agents are skipped).
+- **Plan leaves.** A leaf is a bullet `- [ ] **<id>. <Title>.**` under a `##` section, with indented `Deps:`, `Gate:`, `Modules:`, and `Task:` fields (the devplan guideline's format). Only `Deps:` text before the first semicolon counts, `none …` means none, and `X–Y`, `X-Y`, and `X to Y` expand in plan order. Task IDs in `Deps:` become edges too.
+- **Coverage.** A task covers a leaf through the leaf's `Task:` field, a table row whose first cell is the leaf ID, a `<TASK-ID> covers <leaves>` sentence, or a leaf ID in its title before the first colon (`Phase 1 1.2: …`). A title that only mentions a leaf claims nothing. Cancelled tasks never cover.
+- **Ghost nodes.** A dotted grey node for each leaf with no covering task, unless it is ticked `[x]` or it is gate-less in a non-gating section (headings with cross-cutting, track, out of scope, triage, task set, or dependency tree/spine). Tracked modules with unaccepted criteria and module files that no task title or leaf `Modules:` line names get a ghost in *Modules without planned work*.
+- **Layout.** One lane per plan section in order, then *Not in the plan · <phase>* lanes for unclaimed tasks by their process link. Columns follow dependency depth within a lane. Each task card shows its status and a dropdown of its agents; hovering highlights its edges.
 
 **`development <PROJECT-ID> guidelines on|off · artifact <catalog-file> <project-file|default> · module add <name> [file]`** — experimental planning guidelines (KAI-016 → FOC-117)
 Off by default per project (`planningGuidelines` in `development.json`, also the *Planning guidelines* toggle under *Development process* in Settings, badged Experimental). Off, nothing changes: the file gains no keys, the PRD step lists only `prd.md`, briefs gain no line, and `artifact`/`module` refuse.
@@ -306,6 +314,24 @@ A **reference card** explains one shorthand code (B3, M7, FC2, D4) an agent writ
 | `ref [<TASK>] <CODE> [<CODE> …] [--doc <file.md> …]` | Finds each code's definition and writes its card. Search order: `--doc` files, the project's planning files (technical design and master plan, PRD, design, devplan, concept, architecture, research, plan), `modules/*.md`, then the task plan. A heading that starts with the code wins, then a table row whose first cell is the code, then a list item or line that starts with it. The diagram is one that names the code, else one in the code's own section, else a related code's section diagram. JSON per code: `card`, `link`, `markdown`, `definedIn`, `line`, `diagram`, `highlighted`, `related`; `status` is `written` or `not-found`. Exits 1 when no code was found. An unchanged card is not rewritten. |
 
 Agents paste the `markdown` value, for example `[B3](focusqueue://ref/FOC-133/B3)`. The app registers the `focusqueue` URL scheme. A click in a terminal or another app opens the task's plan viewer with the card on the left and the defining document on the right. A click inside a Focus Queue document opens the card beside the current document. A link without a card builds it on first click.
+
+
+### 3.14 Priority human reviews
+
+A **priority review** is a document an agent believes needs a human decision or sign-off that no agent can make. Agents propose; an orchestrator approves the few that matter most. The Focus queue shows approved reviews above **Today's focus**, at most five at once, ordered by priority (critical, high, medium, low), then by approval time; the rest wait their turn and the heading counts them. Proposals no orchestrator has triaged sit behind a collapsed "awaiting orchestrator approval" line, where the user can approve or dismiss one. Clicking a review expands the panel and opens the task's plan viewer with the document on the left (editable) and the task plan on the right; the document header and the row both offer **Mark reviewed**. Reviews of closed tasks leave the queue.
+
+Each task keeps `tasks/<TASK>/reviews.json`, rewritten under `reviews.lock`; never hand-edit it. Each CLI write posts `com.ecc.focusqueue.priority-reviews.changed`; the app also re-reads every 30 seconds. `<TASK> <AGENT>` may be omitted inside the agent's pane.
+
+| Command | Effect |
+|---|---|
+| `review propose [<TASK> <AGENT>] <file> "<why a human must read it>" [--priority critical\|high\|medium\|low] [--title "<text>"] [--approve]` | Records a `proposed` review (default priority `high`, title from the file name). The file must exist. A repeat proposal of an open review's document refreshes it instead of adding another. `--approve` is for orchestrators proposing their own. |
+| `review approve [<TASK>] <REVIEW-ID> [--priority …]` | Approves a proposal, or re-ranks an approved review. Records `approvedBy` (`agent:<ID>` inside a pane, else `human`). |
+| `review done\|dismiss [<TASK>] <REVIEW-ID>` | Resolves it: `done` after the user acted on it, `dismissed` when declined. A bare review ID resolves to this pane's task, else the one task that has it. |
+| `review list [<TASK>] [--all]` | JSON `visible` (the queue's top five), `waiting`, `proposed`, and with `--all` `resolved`. |
+
+### 3.15 Parallel work and module review order
+
+Dependencies hold work back only when one piece consumes another's output, interface, data, or environment, or the user asked for the order; phases group work and never gate it. Task dependencies (`development <PROJECT> depends …`) only order the queue's phase view. Module success criteria are accepted in any order by default; `development <PROJECT> modules sequential` (or **Module review** in the Project tab) restores strict listed order, and `modules parallel` returns to the default. The choice is `moduleReviewOrder` in `development.json`; parallel is stored as an absent key.
 
 ---
 
@@ -521,6 +547,8 @@ focus-queue-session decision rewind <TASK> <AGENT> <NODE> --reason "<why>"      
 
 # References (link every shorthand code in a report)
 focus-queue-session ref <TASK> B3 M7     # → "markdown": "[B3](focusqueue://ref/<TASK>/B3)"; card in evidence/refs/
+focus-queue-session review propose <TASK> <AGENT> <file> "<why a human must read it>" --priority high
+focus-queue-session review approve <TASK> <REVIEW-ID>   # orchestrator; the queue shows at most five
 
 # Placement (no ticket yet)
 focus-queue-session placement --prompt "<objective>" --cwd "$PWD"

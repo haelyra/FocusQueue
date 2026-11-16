@@ -306,7 +306,10 @@ struct QueueView: View {
       ScrollViewReader { proxy in
         ScrollView {
           LazyVStack(alignment: .leading, spacing: 10) {
-            todayFocusSection.id("active-queue-top")
+            VStack(alignment: .leading, spacing: 10) {
+              if !isFilteringTasks { PriorityReviewSection(model: model) }
+              todayFocusSection
+            }.id("active-queue-top")
 
             if showsMoreTasks, !isFilteringTasks {
               additionalQueue.transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -2468,6 +2471,122 @@ private struct DependencyRail: View {
     }
     .frame(width: 8, height: 22)
     .allowsHitTesting(false)
+  }
+}
+
+/// The few documents that most need a person, above Today's focus: at most
+/// five approved reviews, highest priority first. A click opens the task's
+/// viewer with the document beside the task plan.
+private struct PriorityReviewSection: View {
+  let model: QueueViewModel
+  @State private var showsProposals = false
+
+  var body: some View {
+    let queue = model.priorityReviewQueue
+    if !queue.visible.isEmpty || !queue.proposed.isEmpty {
+      VStack(alignment: .leading, spacing: 6) {
+        SectionHeading(title: "Priority reviews", detail: detail(queue))
+          .help("Documents agents flagged for a human and an orchestrator approved. At most \(PriorityReviewStore.visibleLimit) show at once; the rest wait their turn.")
+        if !queue.visible.isEmpty {
+          VStack(spacing: 1) {
+            ForEach(queue.visible) { review in
+              PriorityReviewRow(review: review, model: model)
+            }
+          }.notificationSurface(radius: 16)
+        }
+        if !queue.proposed.isEmpty {
+          Button {
+            withAnimation(.easeInOut(duration: 0.15)) { showsProposals.toggle() }
+          } label: {
+            Label(
+              "\(queue.proposed.count) \(queue.proposed.count == 1 ? "proposal" : "proposals") awaiting orchestrator approval",
+              systemImage: showsProposals ? "chevron.down" : "chevron.right")
+              .font(.caption).foregroundStyle(.secondary)
+          }
+          .buttonStyle(.plain).padding(.horizontal, 6)
+          .help("An orchestrator approves proposals; you can approve or dismiss one yourself")
+          if showsProposals {
+            VStack(spacing: 1) {
+              ForEach(queue.proposed) { review in
+                PriorityReviewRow(review: review, model: model)
+              }
+            }.notificationSurface(radius: 16)
+          }
+        }
+      }
+    }
+  }
+
+  private func detail(_ queue: (visible: [PriorityReview], waiting: [PriorityReview], proposed: [PriorityReview]))
+    -> String {
+    var parts = ["\(queue.visible.count)/\(PriorityReviewStore.visibleLimit)"]
+    if !queue.waiting.isEmpty { parts.append("\(queue.waiting.count) waiting") }
+    return parts.joined(separator: " · ")
+  }
+}
+
+private struct PriorityReviewRow: View {
+  let review: PriorityReview
+  let model: QueueViewModel
+  @Environment(\.queueAccentStyle) private var accentStyle
+
+  private var role: QueueAccentRole {
+    switch review.priority {
+    case .critical: .danger
+    case .high: .warning
+    case .medium: .info
+    case .low: .success
+    }
+  }
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 9) {
+      Button { model.openPriorityReview(review) } label: {
+        HStack(alignment: .top, spacing: 9) {
+          Image(systemName: "doc.text.magnifyingglass")
+            .foregroundStyle(QueueAccentPalette.color(role, style: accentStyle))
+            .font(.system(size: 15)).padding(.top, 1)
+          VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+              Text(review.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+              Text(review.priority.rawValue.uppercased())
+                .font(.system(size: 9, weight: .bold)).tracking(0.5)
+                .foregroundStyle(QueueAccentPalette.color(role, style: accentStyle))
+            }
+            Text("\(review.taskID) · \(review.reason)")
+              .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .help("Open \(review.documentURL.lastPathComponent) beside \(review.taskID)'s plan")
+      .accessibilityLabel("Priority review, \(review.priority.rawValue): \(review.title), task \(review.taskID). \(review.reason)")
+
+      if review.status == .proposed {
+        Button("Approve") { model.approvePriorityReview(review) }
+          .buttonStyle(.bordered).controlSize(.mini)
+          .help("Approve it for the priority list")
+      } else {
+        Button { model.resolvePriorityReview(review, as: .done) } label: {
+          Image(systemName: "checkmark.circle").font(.system(size: 16))
+        }
+        .buttonStyle(.plain).minimumHitTarget(width: 32, height: 32)
+        .help("Mark reviewed").accessibilityLabel("Mark \(review.title) reviewed")
+      }
+    }
+    .padding(.horizontal, 12).padding(.vertical, 6)
+    .contextMenu {
+      Button("Open beside task") { model.openPriorityReview(review) }
+      if review.status == .proposed {
+        Button("Approve") { model.approvePriorityReview(review) }
+      } else {
+        Button("Mark reviewed") { model.resolvePriorityReview(review, as: .done) }
+      }
+      Button("Dismiss") { model.resolvePriorityReview(review, as: .dismissed) }
+    }
   }
 }
 

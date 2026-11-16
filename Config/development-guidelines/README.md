@@ -37,7 +37,7 @@ flowchart TB
 | `research` | `design.md` | AI from research | Marks reviewed | [design-guideline.md](design-guideline.md) |
 | `prd` | `prd.md` | AI | Marks reviewed | [prd-guideline.md](prd-guideline.md) |
 | `prd` | `technical-design.md` | AI solidifies choices | Ratifies each open decision | [technical-design-guideline.md](technical-design-guideline.md) |
-| `modules` (optional) | `modules/<id>-<slug>.md` | AI, one stub per module, filled per phase | Optional: accepts each module's success criteria, in order | [module-guideline.md](module-guideline.md) |
+| `modules` (optional) | `modules/<id>-<slug>.md` | AI, one stub per module, filled per phase | Optional: accepts each module's success criteria, in any order by default | [module-guideline.md](module-guideline.md) |
 | `devplan` | `devplan.md` | AI outline | Creates tasks from it and checks leaves off | [devplan-guideline.md](devplan-guideline.md) |
 | `contract` | `agent-contract.md`, `orchestration.md` | Bundled generator | Reads and signs both | The bundled contract generator: Project tab, Agent contracts, Generate |
 

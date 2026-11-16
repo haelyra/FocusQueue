@@ -13,7 +13,7 @@ enum SessionRegistrationError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .usage:
-            "Usage: focus-queue-session intake-changed | data ensure | data place <user|project|task> <target-id> <fact> | development <PROJECT-ID> show|modules|link <TASK-ID> <step-id|none> [module]|unlink <TASK-ID>|depends <TASK-ID> [<PREREQUISITE-ID> ...]|step <step-id> <pending|inProgress|done|accepted>|phase <planning|phase0|implementation|prerelease|release>|sync|guidelines on|off|artifact <catalog-file> <project-file|default>|module add <name> [modules/<id>-<slug>.md] | contract show <PROJECT-ID> <engineering|orchestrator> | contract propose <PROJECT-ID> <engineering|orchestrator> <file.md> | contract generate <PROJECT-ID> | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|pin <TASK-ID>|unpin <TASK-ID>|reset | task create <PROJECT-ID> <title> <summary> | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | cleanup <TASK-ID>|--completed|--orphans|--purge [--dry-run] | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | pause <TASK-ID> <SUBTASK-ID> | resume <TASK-ID> <SUBTASK-ID> | play <TASK-ID> <SUBTASK-ID> [\"text\"] | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path] | decision add|choose|rewind|show|list|due|push (run `decision` alone for its usage)"
+            "Usage: focus-queue-session intake-changed | data ensure | data place <user|project|task> <target-id> <fact> | development <PROJECT-ID> show|modules|map|link <TASK-ID> <step-id|none> [module]|unlink <TASK-ID>|depends <TASK-ID> [<PREREQUISITE-ID> ...]|step <step-id> <pending|inProgress|done|accepted>|phase <planning|phase0|implementation|prerelease|release>|sync|modules parallel|sequential|guidelines on|off|artifact <catalog-file> <project-file|default>|module add <name> [modules/<id>-<slug>.md] | contract show <PROJECT-ID> <engineering|orchestrator> | contract propose <PROJECT-ID> <engineering|orchestrator> <file.md> | contract generate <PROJECT-ID> | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|pin <TASK-ID>|unpin <TASK-ID>|reset | task create <PROJECT-ID> <title> <summary> | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | cleanup <TASK-ID>|--completed|--orphans|--purge [--dry-run] | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | pause <TASK-ID> <SUBTASK-ID> | resume <TASK-ID> <SUBTASK-ID> | play <TASK-ID> <SUBTASK-ID> [\"text\"] | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path] | decision add|choose|rewind|show|list|due|push (run `decision` alone for its usage)"
         case .missingSessionIdentity:
             "No Codex, Claude, or Kimi session ID was found in the environment or current WezTerm pane."
         case .missingManagedRuntime:
@@ -41,12 +41,13 @@ enum SessionRegistrationError: Error, LocalizedError {
                 print("Play: play <TASK-ID> <SUBTASK-ID> [\"text\"] sends continue, or the quoted text, to the agent; a closed pane reopens on its saved conversation first")
                 print("Inside a managed pane, omit <TASK-ID> <SUBTASK-ID> from attach, context, plan, log, progress, attention, result, complete, identify, review-push, and workspace; they default to $FOCUS_QUEUE_TASK_ID and $FOCUS_QUEUE_SUBTASK_ID.")
                 print("Agent rules: rules (lifecycle, plan, workspace, and map-scope rules for managed agents)")
+                print("Priority reviews: review propose [<TASK-ID> <AGENT-ID>] <file> \"<why a human must read it>\" [--priority critical|high|medium|low] [--title <text>] [--approve] | review approve|done|dismiss [<TASK-ID>] <REVIEW-ID> | review list [<TASK-ID>] [--all] (the queue shows at most 5 approved reviews at its top)")
                 print("Launch brief preview: brief <TASK-ID> <SUBTASK-ID> (the exact prompt a fresh launch of that agent receives)")
                 print("Maintenance: reconcile <TASK-ID> [--no-cleanup] (repair documents and save a receipt; optional workspace cleanup)")
                 print("Status hooks: status-event --provider claude|codex|kimi (reads one provider hook payload on stdin; exits 0 silently)")
                 print("UI Canvas: canvas open <file.html> [--viewport mobile|desktop|custom|WxH] [--title <text>] | canvas await <file.html> [--reply <msg>] | canvas typing <file.html> [--state thinking|typing|idle] | canvas end <file.html> | canvas list|pending (native ecc-ui-canvas; same JSON)")
                 print("Data placement: data-placement status|on|off (automatic native prompt capture; off by default)")
-                print("Development process: development <PROJECT-ID> show | link <TASK-ID> <step-id|none> [module] | unlink <TASK-ID> | step <step-id> <pending|inProgress|done|accepted> | phase <planning|phase0|implementation|prerelease|release> | sync (locked edits of development.json; the app's steward and task status keep it current otherwise)")
+                print("Development process: development <PROJECT-ID> show | map (rebuild project-map.html) | link <TASK-ID> <step-id|none> [module] | unlink <TASK-ID> | step <step-id> <pending|inProgress|done|accepted> | phase <planning|phase0|implementation|prerelease|release> | modules parallel|sequential (module success-criteria review order; parallel is the default) | sync (locked edits of development.json; the app's steward and task status keep it current otherwise)")
                 print("Planning guidelines (experimental, per project): development <PROJECT-ID> guidelines on|off | artifact <catalog-file> <project-file|default> (keep a catalog document under the project's own name) | module add <name> [file] (default modules/<id>-<slug>.md; show lists modules). Bundled guidelines install read-only to <support>/development-guidelines.")
                 print("Agent contracts: contract show <PROJECT-ID> <engineering|orchestrator> (what that role's agents receive) | contract propose <PROJECT-ID> <role> <file.md> (stores a draft and asks the owner to sign it off) | contract generate <PROJECT-ID> (drafts both from the plan documents). Only the owner signs off, in the Project tab.")
                 print("Scoped data: data ensure | data show <project-id> | data place <user|project|task> <target-id> <one-or-two-sentence fact>")
@@ -80,6 +81,11 @@ enum SessionRegistrationError: Error, LocalizedError {
             else if arguments.first == "ref" {
                 let environment = ProcessInfo.processInfo.environment
                 try await ReferenceCommand.run(arguments: arguments,
+                    root: supportDirectory(environment: environment), environment: environment)
+            }
+            else if arguments.first == "review" {
+                let environment = ProcessInfo.processInfo.environment
+                try await PriorityReviewCommand.run(arguments: arguments,
                     root: supportDirectory(environment: environment), environment: environment)
             }
             else if arguments.first == "decision" {
@@ -1156,6 +1162,19 @@ enum SessionRegistrationError: Error, LocalizedError {
                 throw TaskContextError.commandFailed("\(project.name) has no development process. Enable it in the Project tab or Settings.")
             }
             process = loaded
+        case ("map", 3):
+            // Rebuild the project map now; it also rebuilds on every dashboard write.
+            let generator = ProjectMapGenerator(root: root)
+            guard let map = try generator.build(projectID: project.id) else {
+                throw TaskContextError.commandFailed("\(project.name) has no enabled development process, so it has no project map.")
+            }
+            let url = try generator.write(map, projectID: project.id)
+            let taskCount: Int = map.nodes.filter { $0.kind == .task }.count
+            let summary: [String: String] = ["status": "written", "path": url.path, "tasks": String(taskCount),
+                                             "ghosts": String(map.nodes.count - taskCount),
+                                             "edges": String(map.edges.count)]
+            try emit(summary)
+            return
         case ("modules", 3):
             // Read-only: the module folder the Project tab shows.
             let directory = try store.url(projectID: project.id).deletingLastPathComponent()
@@ -1200,6 +1219,12 @@ enum SessionRegistrationError: Error, LocalizedError {
         case ("phase", 4):
             guard let phase = DevelopmentPhase(rawValue: arguments[3]) else { throw SessionRegistrationError.usage }
             process = try store.setPhase(phase, projectID: project.id)
+        case ("modules", 4):
+            // Module review order: parallel (default) or sequential.
+            guard let order = DevelopmentModuleReviewOrder(rawValue: arguments[3]) else {
+                throw SessionRegistrationError.usage
+            }
+            process = try store.setModuleReviewOrder(order, projectID: project.id)
         case ("guidelines", 4):
             // Experimental planning guidelines (KAI-016), off unless a project opts in.
             guard ["on", "off"].contains(arguments[3]) else { throw SessionRegistrationError.usage }

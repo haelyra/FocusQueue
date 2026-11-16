@@ -37,10 +37,19 @@ struct ProjectTabTests {
     model.setDevelopmentStepStatus(.done, stepID: "concept")
     #expect(model.developmentProcess?.steps["concept"]?.status == .done)
 
-    // Modules enforce sequential acceptance and surface the rejection.
+    // Modules are accepted in any order by default.
     model.addDevelopmentModule(name: "Auth", file: nil)
     model.addDevelopmentModule(name: "Sync", file: nil)
-    let modules = try #require(model.developmentProcess?.modules)
+    model.addDevelopmentModule(name: "Search", file: nil)
+    let all = try #require(model.developmentProcess?.modules)
+    model.acceptDevelopmentModuleCriteria(moduleID: all[2].id)
+    #expect(model.developmentProcess?.modules[2].criteriaAccepted == true)
+    #expect(model.developmentProcessError == nil)
+
+    // Sequential review, when chosen, enforces the order and surfaces the rejection.
+    model.setDevelopmentModuleReviewOrder(.sequential)
+    #expect(model.developmentProcess?.effectiveModuleReviewOrder == .sequential)
+    let modules = all
     model.acceptDevelopmentModuleCriteria(moduleID: modules[1].id)
     #expect(model.developmentProcessError?.contains("Auth") == true)
     #expect(model.developmentProcess?.modules[1].criteriaAccepted == false)

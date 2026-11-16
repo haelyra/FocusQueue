@@ -90,7 +90,24 @@ func stepStatusFlow() throws {
     #expect(process.phaseIsAccepted)
 }
 
-@Test("Module criteria acceptance is sequential")
+@Test("Module criteria acceptance is parallel by default")
+func parallelModuleAcceptance() throws {
+    let (root, projectID) = try processFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = DevelopmentProcessStore(root: root)
+
+    var process = try store.addModule(name: "Auth", file: "modules/auth.md", projectID: projectID)
+    process = try store.addModule(name: "Sync", file: "modules/sync.md", projectID: projectID)
+    #expect(process.moduleReviewOrder == nil && process.effectiveModuleReviewOrder == .parallel)
+    // Sync is independent of Auth, so its criteria are accepted first.
+    process = try store.acceptCriteria(moduleID: process.modules[1].id, projectID: projectID)
+    #expect(process.modules[1].criteriaAccepted && !process.modules[0].criteriaAccepted)
+    // The default is stored as an absent key, so older files keep their shape.
+    let json = try String(contentsOf: store.url(projectID: projectID), encoding: .utf8)
+    #expect(!json.contains("moduleReviewOrder"))
+}
+
+@Test("Module criteria acceptance is sequential when the project chooses it")
 func sequentialModuleAcceptance() throws {
     let (root, projectID) = try processFixture()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -98,6 +115,8 @@ func sequentialModuleAcceptance() throws {
 
     var process = try store.addModule(name: "Auth", file: "modules/auth.md", projectID: projectID)
     process = try store.addModule(name: "Sync", file: "modules/sync.md", projectID: projectID)
+    process = try store.setModuleReviewOrder(.sequential, projectID: projectID)
+    #expect(try store.load(projectID: projectID)?.moduleReviewOrder == .sequential)
     let auth = process.modules[0], sync = process.modules[1]
 
     // Accepting Sync before Auth is rejected and names both modules.

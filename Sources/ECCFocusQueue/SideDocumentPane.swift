@@ -253,6 +253,17 @@ struct SideDocumentPane: View {
                     .documentDrag(document, started: dragStarted)
                 Spacer()
                 if let contract { contractSignoff(contract) }
+                if let review = queue.openPriorityReview(for: document) {
+                    Button {
+                        queue.resolvePriorityReview(review, as: .done)
+                    } label: {
+                        Label("Mark reviewed", systemImage: "checkmark.circle")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .help("Priority review for \(review.taskID): \(review.reason)\nMarking it reviewed removes it from the queue's priority list.")
+                    .accessibilityLabel("Mark priority review \(review.title) reviewed")
+                }
                 if let artifactReview {
                     Button {
                         artifactReview.set(!artifactReview.checked)

@@ -163,8 +163,17 @@ public struct DevelopmentTicket: Equatable, Sendable {
     }
 }
 
+/// How the owner reviews module success criteria. Parallel (the default) lets
+/// any module's criteria be accepted at any time, so independent modules move
+/// without waiting on each other; sequential keeps the strict listed order.
+public enum DevelopmentModuleReviewOrder: String, Codable, CaseIterable, Sendable {
+    case parallel, sequential
+
+    public var title: String { self == .parallel ? "Parallel" : "Sequential" }
+}
+
 /// A feature module tracked through the process. Success criteria are accepted
-/// strictly in order, matching the sequential human review in the process design.
+/// in any order unless the project chose sequential module review.
 public struct DevelopmentModule: Codable, Equatable, Sendable, Identifiable {
     public var id: String
     public var name: String
@@ -209,6 +218,9 @@ public struct DevelopmentProcess: Codable, Equatable, Sendable {
     /// Catalog document → this project's own file name, for projects whose
     /// documents predate the catalog names. Applies only with guidelines on.
     public var artifactNames: [String: String]?
+    /// Nil is parallel, the default; only an explicit sequential choice gates
+    /// module acceptance on the modules listed before it.
+    public var moduleReviewOrder: DevelopmentModuleReviewOrder?
     public var updatedAt: Date
 
     public init(enabled: Bool = true, currentPhase: DevelopmentPhase = .planning,
@@ -226,7 +238,7 @@ public struct DevelopmentProcess: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, enabled, currentPhase, steps, modules, links, dependencies, steward, contracts
-        case planningGuidelines, artifactNames, updatedAt
+        case planningGuidelines, artifactNames, moduleReviewOrder, updatedAt
     }
 
     /// Every field is optional on read, so files from earlier builds and partial
@@ -244,8 +256,12 @@ public struct DevelopmentProcess: Codable, Equatable, Sendable {
         contracts = try container.decodeIfPresent([String: AgentContractSignoff].self, forKey: .contracts) ?? [:]
         planningGuidelines = try container.decodeIfPresent(Bool.self, forKey: .planningGuidelines)
         artifactNames = try container.decodeIfPresent([String: String].self, forKey: .artifactNames)
+        moduleReviewOrder = try? container.decodeIfPresent(DevelopmentModuleReviewOrder.self, forKey: .moduleReviewOrder)
         updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
     }
+
+    /// The effective module review order; parallel unless the owner chose sequential.
+    public var effectiveModuleReviewOrder: DevelopmentModuleReviewOrder { moduleReviewOrder ?? .parallel }
 
     public func status(of step: DevelopmentStep) -> DevelopmentStepStatus {
         steps[step.id]?.status ?? .pending
@@ -494,7 +510,7 @@ public enum DevelopmentProcessCatalog {
 }
 
 public enum DevelopmentProcessError: Error, Equatable {
-    /// Module success criteria must be accepted in listed order.
+    /// Under sequential module review, criteria must be accepted in listed order.
     case outOfOrderAcceptance(module: String, blockedBy: String)
     case unknownModule(String)
     case unknownStep(String)
@@ -508,7 +524,7 @@ extension DevelopmentProcessError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .outOfOrderAcceptance(let module, let blockedBy):
-            "Accept \(blockedBy)'s success criteria before \(module)'s; modules are reviewed in order."
+            "Accept \(blockedBy)'s success criteria before \(module)'s; this project reviews modules in order. Switch module review to parallel in the Project tab to accept them in any order."
         case .unknownModule(let id): "No module with id \(id)."
         case .unknownStep(let id): "No step with id \(id) in this phase."
         case .missingArtifact(let file): "\(file) does not exist yet; create the document before checking it off."
@@ -729,19 +745,26 @@ public struct DevelopmentProcessStore: Sendable {
         }
     }
 
-    /// Sequential acceptance: a module's criteria can be accepted only after every
-    /// module listed before it.
+    /// Accepts a module's criteria. Parallel review (the default) accepts any
+    /// module at any time; sequential review requires every module listed before it.
     public func acceptCriteria(moduleID: String, projectID: String) throws -> DevelopmentProcess {
         try mutate(projectID: projectID) { process in
             guard let index = process.modules.firstIndex(where: { $0.id == moduleID }) else {
                 throw DevelopmentProcessError.unknownModule(moduleID)
             }
-            if let blocker = process.modules[..<index].first(where: { !$0.criteriaAccepted }) {
+            if process.effectiveModuleReviewOrder == .sequential,
+               let blocker = process.modules[..<index].first(where: { !$0.criteriaAccepted }) {
                 throw DevelopmentProcessError.outOfOrderAcceptance(
                     module: process.modules[index].name, blockedBy: blocker.name)
             }
             process.modules[index].criteriaAccepted = true
         }
+    }
+
+    /// Parallel is stored as nil so files keep their pre-setting shape.
+    public func setModuleReviewOrder(_ order: DevelopmentModuleReviewOrder,
+                                     projectID: String) throws -> DevelopmentProcess {
+        try mutate(projectID: projectID) { $0.moduleReviewOrder = order == .parallel ? nil : order }
     }
 
     public func setModuleImplemented(_ implemented: Bool, moduleID: String,

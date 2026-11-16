@@ -3,10 +3,10 @@
 **Status:** experimental and optional (2026-11-10). Shown when a project turns on Planning guidelines. Module files never block a phase.
 
 - **What:** the format and generator prompt for the per-module design files. Each holds a one-line description, foundation, I/O, success criteria, and debug logs.
-- **Why:** each module file is the contract its implementer builds and its reviewer tests against. The owner accepts each module's success criteria in order, so the criteria must be exact.
+- **Why:** each module file is the contract its implementer builds and its reviewer tests against. The owner accepts each module's success criteria, so the criteria must be exact.
 - **How:** the AI spawns one stub per technical-design module, in dependency order. A file reaches implementation depth only when the phase that builds its module starts; later content stays a heading with its owning phase.
 
-**Step:** `modules` (optional). **Produces:** `modules/<id>-<slug>.md`, for example `modules/m6-context-scoped-data.md`. **Owner gate:** optional; accepts each module's success criteria in the Project tab, in listed order. Neither the step nor acceptance blocks a phase.
+**Step:** `modules` (optional). **Produces:** `modules/<id>-<slug>.md`, for example `modules/m6-context-scoped-data.md`. **Owner gate:** optional; accepts each module's success criteria in the Project tab, in any order unless the project chose sequential module review. Neither the step nor acceptance blocks a phase.
 
 ## Distribution and maturity
 
@@ -81,7 +81,7 @@ A stub is a valid file. Phase-ready content is written by the task that implemen
 - **Never logged:** secrets, prompt contents, terminal bytes, and file contents. Paths and hashes are allowed.
 - **Criterion evidence:** a table mapping each success criterion to the log events or result files that prove it, so a reviewer can verify without rerunning.
 
-**Sequential acceptance.** Register modules in the Project tab in dependency order: a module's dependencies come before it. Focus Queue blocks accepting module N+1 before module N.
+**Parallel acceptance.** Modules are reviewed and built in parallel by default; a module waits only on the modules in its **Depends on** line. A project that chooses sequential module review in the Project tab accepts modules in listed order, so register them in dependency order.
 
 **Size.** As short as the contract allows. Depth goes where the next phase will test it. Later-phase content is a heading and a phase, not a design.
 

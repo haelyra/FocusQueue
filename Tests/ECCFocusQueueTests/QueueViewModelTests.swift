@@ -719,6 +719,41 @@ struct QueueViewModelTests {
     #expect(window.firstResponder is QueueChatComposerNSTextView)
   }
 
+  @Test("An approved priority review tops the queue and opens beside its task plan")
+  func priorityReviewRouting() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let ticket = try #require(model.openTickets.first)
+    let folder = fixture.root.appendingPathComponent("tasks/\(ticket.id)", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let document = folder.appendingPathComponent("decision.md")
+    try Data("# Pick one\n".utf8).write(to: document)
+
+    let review = try model.priorityReviewStore.propose(
+      taskID: ticket.id, agentID: "A1", document: document, title: "Storage choice",
+      reason: "Pick the storage engine", priority: .high)
+    await model.reloadPriorityReviews()
+    #expect(model.priorityReviewQueue.visible.isEmpty)
+    #expect(model.priorityReviewQueue.proposed.map(\.id) == [review.id])
+
+    model.approvePriorityReview(review)
+    await model.reloadPriorityReviews()
+    #expect(model.priorityReviewQueue.visible.map(\.id) == [review.id])
+    #expect(model.openPriorityReview(for: document)?.id == review.id)
+
+    model.setPanelMode(.collapsed)
+    model.openPriorityReview(try #require(model.priorityReviewQueue.visible.first))
+    #expect(model.panelMode == .expanded)
+    #expect(model.presentedPlanTicketID == ticket.id)
+    #expect(model.requestedReference?.card == document.standardizedFileURL)
+    #expect(model.requestedReference?.source?.lastPathComponent == "plan.md")
+
+    model.resolvePriorityReview(review, as: .done)
+    await model.reloadPriorityReviews()
+    #expect(model.priorityReviewQueue.visible.isEmpty && model.openPriorityReview(for: document) == nil)
+  }
+
   @Test("An agent's canvas open expands the panel and requests its tab; other support dirs are ignored")
   func uiCanvasOpenRouting() async throws {
     let fixture = try await Fixture()

@@ -172,6 +172,53 @@ extension WalkthroughDemoRecording {
     #expect(model.openTickets.map(\.id) == ["HAB-2", "HAB-3", "HAB-1"])
     await recorder.hold(0.2)                     // phase order
   }
+
+  /// Priority reviews (FOC-137): approved reviews above Today's focus, a
+  /// proposal awaiting approval, then a click that opens the document beside
+  /// the task plan.
+  @Test("Record priority reviews on an example project", .enabled(if: output != nil))
+  func recordPriorityReviews() async throws {
+    let demo = try await DemoEnvironment(name: "priority-reviews")
+    defer { demo.cleanUp() }
+    let model = demo.model
+    model.finishWalkthrough()
+    let project = try await demo.addExampleProject()
+    try await demo.seedExampleTasks(project: project)
+    for _ in 0..<6 where model.openTickets.isEmpty {
+      try await Task.sleep(for: .milliseconds(700))
+      await model.refresh(userInitiated: true)
+    }
+    let store = model.priorityReviewStore
+    let reviews: [(String, String, String, String, PriorityReviewLevel, Bool)] = [
+      ("HAB-1", "notification-timing.md", "Reminder timing",
+       "Pick a fixed evening time or each habit's usual time; it changes the data model.", .critical, true),
+      ("HAB-3", "chart-scope.md", "Chart scope",
+       "Approve a seven-day chart before the week-over-week view is built.", .medium, true),
+      ("HAB-2", "onboarding-copy.md", "Onboarding copy",
+       "Read the three screens' wording for tone.", .low, false),
+    ]
+    for (task, file, title, reason, level, approved) in reviews {
+      let folder = demo.root.appendingPathComponent("tasks/\(task)", isDirectory: true)
+      try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+      let document = folder.appendingPathComponent(file)
+      try Data("# \(title)\n\n\(reason)\n\n## Options\n\n- A (recommended)\n- B\n".utf8).write(to: document)
+      try store.propose(taskID: task, agentID: "agent-1", document: document, title: title, reason: reason,
+                        priority: level, approved: approved, approvedBy: approved ? "agent:orchestrator" : nil)
+    }
+    await model.reloadPriorityReviews()
+    #expect(model.priorityReviewQueue.visible.map(\.title) == ["Reminder timing", "Chart scope"])
+    #expect(model.priorityReviewQueue.proposed.map(\.title) == ["Onboarding copy"])
+    let recorder = FrameRecorder(model: model, directory: demo.frames,
+      desktop: NSSize(width: 470, height: 1100), scale: 2)
+    await recorder.hold(0.2)                     // the priority list above Today's focus
+
+    model.openPriorityReview(try #require(model.priorityReviewQueue.visible.first))
+    #expect(model.presentedPlanTicketID == "HAB-1")
+    let ticket = try #require(model.dashboard.tickets.first { $0.id == "HAB-1" })
+    try Self.snapshot(PlanCanvasView(model: model, ticket: ticket, chatDraft: .constant("")),
+                      size: NSSize(width: 1300, height: 760),
+                      to: demo.frames.appendingPathComponent("viewer.png"))   // document beside the task plan
+  }
 }
 
 extension WalkthroughDemoRecording {

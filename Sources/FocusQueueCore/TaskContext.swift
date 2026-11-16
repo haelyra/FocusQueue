@@ -729,6 +729,13 @@ public struct TaskContext: Codable, Equatable, Sendable {
         - log "entry": decisions, configuration, research, and verification evidence, appended to the task's agent-log.md. Read only relevant entries; never paste the whole log into the plan.
         - decision add "<divergence>" --option "<recommended>" --option "<fallback>": before work departs from the user's instruction, the master plan, or the task plan. It pushes a checkpoint ref under refs/focus-queue/decisions/ (authorized), saves the conversation, and asks the user. `decision choose` records the answer ("continue" means recommended); `decision rewind <NODE>` restores code and conversation when the chosen option fails.
 
+        Parallel work
+        - Add a dependency only when your work consumes another piece's output, interface, data, or environment, or the user asked for the order. Phases group work; they never hold back independent work.
+
+        Priority human reviews
+        - review propose <file> "<why a human must read it>" --priority critical|high|medium|low: once, for a document that needs a human decision or sign-off no agent can make. Never for routine progress.
+        - Orchestrators approve the few that matter most with `review list` and `review approve|dismiss <TASK-ID> <REVIEW-ID>`; the queue shows at most five at its top. `review done <REVIEW-ID>` after the user acts on it.
+
         Task plan (tasks/<TASK-ID>/plan.md)
         - Keep it bare: What/Why/How (one sentence each), success criteria, a Progress checklist, and links to crucial context or evidence.
         - Tick Progress items as they finish and add the next ones. Re-read before editing and preserve other agents' concurrent edits.

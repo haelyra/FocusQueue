@@ -483,7 +483,11 @@ public actor TmuxController {
       // -q keeps older tmux builds without an option from failing the launch.
       "set-option", "-sq", "set-clipboard", "on", ";",
       "set-option", "-sq", "copy-command", "/usr/bin/pbcopy", ";",
-      "set-option", "-gq", "allow-passthrough", "on",
+      "set-option", "-gq", "allow-passthrough", "on", ";",
+      // Pass OSC 8 hyperlinks through, so a provider's Markdown links (such as
+      // focusqueue://ref reference cards) stay clickable in the outer terminal.
+      // A fixed index keeps repeated configuration from appending duplicates.
+      "set-option", "-sq", "terminal-features[9]", "*:hyperlinks",
     ]
     let result = try await runner.run(.init(
       executable: executable, arguments: arguments,

@@ -84,6 +84,7 @@ struct SetupAndTmuxTests {
     #expect(try await value(["show-options", "-sv", "set-clipboard"]) == "on")
     #expect(try await value(["show-options", "-sv", "copy-command"]) == "/usr/bin/pbcopy")
     #expect(try await value(["show-options", "-gv", "allow-passthrough"]) == "on")
+    #expect(try await value(["show-options", "-sv", "terminal-features[9]"]) == "*:hyperlinks")
   }
 
   @Test("An attaching tmux client receives terminal resizes")

@@ -15,6 +15,8 @@ struct QueueView: View {
   @State private var visiblePastCompletedCount = 0
   @State private var screen: QueueScreen = .queue
   @State private var selectedTab: QueueTab = .focus
+  /// The card a project map click located, outlined briefly.
+  @State private var flashedTicketID: String?
   @State private var focusDropIsTargeted = false
   @State private var restButtonDropIsTargeted = false
   @State private var restSectionDropIsTargeted = false
@@ -321,6 +323,19 @@ struct QueueView: View {
             guard !isFilteringTasks, current.shouldScrollToTop(from: previous) else { return }
             proxy.scrollTo("active-queue-top", anchor: .top)
           }
+          .onChange(of: model.mapLocatedTaskID) { _, taskID in
+            // A project map click: wait for the tab switch and "more tasks" to
+            // lay out, then bring the card into view and flash it.
+            guard let taskID else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+              withAnimation(.snappy(duration: 0.3)) { proxy.scrollTo(taskID, anchor: .center) }
+              flashedTicketID = taskID
+              DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+                if flashedTicketID == taskID { flashedTicketID = nil }
+              }
+              model.clearMapLocatedTask()
+            }
+          }
       }
 
       if !isFilteringTasks, !remainingTickets.isEmpty || !model.visibleRoutines.isEmpty { moreButton }
@@ -410,7 +425,7 @@ struct QueueView: View {
       } else if agentViewEnabled {
         agentViewList(for: shownTickets)
       } else {
-        QueueTicketList(tickets: shownTickets, previous: nil, model: model)
+        QueueTicketList(tickets: shownTickets, previous: nil, model: model, flashedID: flashedTicketID)
       }
     }
     .onChange(of: taskSearchIsFocused) { _, focused in
@@ -976,7 +991,7 @@ struct QueueView: View {
             .dropDestination(for: String.self) { ticketIDs, _ in
               moveTicketsToRest(ticketIDs)
             } isTargeted: { restSectionDropIsTargeted = $0 }
-            QueueTicketList(tickets: remainingTickets, previous: focusTickets.last, model: model)
+            QueueTicketList(tickets: remainingTickets, previous: focusTickets.last, model: model, flashedID: flashedTicketID)
           }
         }
       }
@@ -2433,6 +2448,8 @@ private struct QueueTicketList: View {
   /// The card shown just before this list, so a split list keeps one heading.
   let previous: DashboardTicket?
   let model: QueueViewModel
+  /// A card a project map click located; it gets a brief outline.
+  var flashedID: String? = nil
   @Environment(\.queueAccentStyle) private var accentStyle
 
   var body: some View {
@@ -2445,6 +2462,14 @@ private struct QueueTicketList: View {
         PhaseHeading(title: group.title, count: phaseCount(group, phases: phases))
       }
       TicketCard(ticket: ticket, model: model)
+        .id(ticket.id)
+        .overlay {
+          RoundedRectangle(cornerRadius: 14)
+            .stroke(QueueAccentPalette.color(.info, style: accentStyle), lineWidth: 2.5)
+            .opacity(flashedID == ticket.id ? 1 : 0)
+            .animation(.easeOut(duration: 0.35), value: flashedID)
+            .allowsHitTesting(false)
+        }
         .overlay(alignment: .topLeading) {
           if let phases, let above, group == groupAbove,
              phases.prerequisites(of: ticket.id).contains(above.id.uppercased()) {

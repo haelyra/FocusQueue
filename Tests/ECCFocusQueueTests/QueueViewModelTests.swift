@@ -1493,6 +1493,32 @@ struct QueueViewModelTests {
     try await eventually { await runner.repairedContextIDs.contains(hiddenTicket.id) }
   }
 
+  @Test("A project map click scrolls an automatic queue to the task and moves it to the top of a manual one")
+  func projectMapLocatesTask() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
+
+    // Automatic order: the order stays; the queue is asked to scroll to the task.
+    model.revealMapTask("ecc-102")
+    #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
+    #expect(model.mapLocatedTaskID == "ECC-102")
+    #expect(model.requestedReportTaskID == "ECC-102")
+    model.clearMapLocatedTask(); model.clearRequestedReportTask()
+
+    // A saved manual order: the task moves to the top.
+    #expect(model.moveTicket("ECC-102", to: .top))
+    model.revealMapTask("ECC-101")
+    #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
+    #expect(model.mapLocatedTaskID == "ECC-101")
+
+    // Unknown IDs do nothing.
+    model.clearMapLocatedTask()
+    model.revealMapTask("NOPE-1")
+    #expect(model.mapLocatedTaskID == nil)
+  }
+
   @Test("App and agent share queue moves across refreshes, state saves, and restarts")
   func sharedQueueOrder() async throws {
     let fixture = try await Fixture()

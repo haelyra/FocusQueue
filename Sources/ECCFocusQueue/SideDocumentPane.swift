@@ -233,6 +233,12 @@ struct SideDocumentPane: View {
     @State private var find = DocumentFindState()
 
     private var store: DocumentContentStore { queue.documentContentStore }
+
+    /// `focusqueue://task/<ID>` (a project map click) locates the task in the
+    /// queue; every other link opens as before.
+    private func openLink(_ url: URL) {
+        if let task = ProjectMapPage.taskID(from: url) { queue.revealMapTask(task) } else { open(url) }
+    }
     private var entry: DocumentContentStore.Entry { store.entry(for: document) }
     private var editSession: DocumentContentStore.EditSession? { store.editSessions[document] }
     private var editDraftBinding: Binding<String> {
@@ -406,7 +412,7 @@ struct SideDocumentPane: View {
                         findRequest: find.request, findSearchesBackwards: find.searchesBackwards)
                 case .rendered(let resource):
                     ReadOnlyResourceDocument(
-                        url: resource, open: open, revision: entry.revision, findQuery: find.query,
+                        url: resource, open: openLink, revision: entry.revision, findQuery: find.query,
                         findRequest: find.request, findSearchesBackwards: find.searchesBackwards)
                 }
             } else { ProgressView("Loading document…") }
@@ -674,12 +680,21 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
     var findRequest = 0
     var findSearchesBackwards = false
     func makeCoordinator() -> Coordinator { Coordinator(open: open) }
-    func makeNSView(context: Context) -> ZoomableWebContainer {
+    /// Page scripts off, offline. Project maps get their interaction script in
+    /// the app's own content world; it does nothing on any other page.
+    static func configuration(coordinator: Coordinator) -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent(); config.defaultWebpagePreferences.allowsContentJavaScript = false
         OfflineWebContent.configure(config, allowsPageScripts: false)
+        config.userContentController.addUserScript(WKUserScript(
+            source: ProjectMapScript.source, injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
+        config.userContentController.add(coordinator, contentWorld: .defaultClient,
+                                         name: ProjectMapScript.messageHandler)
+        return config
+    }
+    func makeNSView(context: Context) -> ZoomableWebContainer {
         // Zoom buttons and right-drag panning for viewing (FOC-138).
-        let container = ZoomableWebContainer(configuration: config)
+        let container = ZoomableWebContainer(configuration: Self.configuration(coordinator: context.coordinator))
         container.webView.navigationDelegate = context.coordinator
         container.webView.uiDelegate = context.coordinator
         return container
@@ -709,8 +724,10 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
     static func dismantleNSView(_ container: ZoomableWebContainer, coordinator: Coordinator) {
         let view = container.webView
         view.stopLoading(); view.navigationDelegate = nil; view.uiDelegate = nil
+        view.configuration.userContentController.removeScriptMessageHandler(
+            forName: ProjectMapScript.messageHandler, contentWorld: .defaultClient)
     }
-    @MainActor final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+    @MainActor final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         var url: URL?
         var revision = 0
         var open: (URL) -> Void
@@ -723,6 +740,14 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
         init(open: @escaping (URL) -> Void) { self.open = open }
 
         func willLoadDocument() { isDocumentLoaded = false }
+
+        /// A project map card was clicked: locate that task in the queue.
+        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard message.name == ProjectMapScript.messageHandler, message.frameInfo.isMainFrame,
+                  let body = message.body as? [String: Any], body["type"] as? String == "locate",
+                  let task = body["task"] as? String, let url = ProjectMapPage.taskURL(task) else { return }
+            open(url)
+        }
 
         func requestFind(
             query: String, request: Int, searchesBackwards: Bool, in webView: WKWebView

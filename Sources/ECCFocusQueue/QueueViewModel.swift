@@ -6221,6 +6221,27 @@ final class QueueViewModel {
     requestedReportTaskID = nil
   }
 
+  /// The task a project map click asked the queue to show; the queue scrolls
+  /// to it and flashes it, then clears this.
+  private(set) var mapLocatedTaskID: String?
+
+  /// A project map card was clicked: show the task in the queue beside the map.
+  /// With a saved manual order ("Your saved task order") the task moves to the
+  /// top; an automatic order is left alone and the queue scrolls to the task.
+  /// The Focus (or Completed) tab opens either way.
+  func revealMapTask(_ taskID: String) {
+    guard let ticket = dashboard.tickets.first(where: { $0.id.caseInsensitiveCompare(taskID) == .orderedSame })
+    else { return }
+    if ticket.isOpen, savedQueueOrder != nil {
+      _ = moveTicket(ticket.id, to: .top)
+    }
+    revealProject(for: ticket.id)
+    requestedReportTaskID = ticket.id
+    mapLocatedTaskID = ticket.id
+  }
+
+  func clearMapLocatedTask() { mapLocatedTaskID = nil }
+
   func requestNewTask(projectID: String? = nil, autofocusPrompt: Bool = false) {
     // An agent cannot start without a signed-in provider; the gate explains why.
     guard !requiresProviderSignIn else { return setPanelMode(.expanded) }

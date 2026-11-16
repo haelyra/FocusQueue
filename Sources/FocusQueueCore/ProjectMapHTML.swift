@@ -16,8 +16,8 @@ import Foundation
 /// and agent lists are native `<details>` dropdowns.
 public enum ProjectMapHTML {
     static let nodeWidth = 176.0, nodeHeight = 74.0
-    static let phaseWidth = 200.0, phaseHeight = 48.0
-    static let rootWidth = 240.0, rootHeight = 56.0
+    static let phaseWidth = 200.0, phaseHeight = 56.0
+    static let rootWidth = 240.0, rootHeight = 64.0
     static let slotWidth = 196.0, rankHeight = 150.0
     static let left = 120.0, top = 46.0, margin = 40.0
 
@@ -51,7 +51,9 @@ public enum ProjectMapHTML {
 
         for (laneIndex, lane) in map.lanes.enumerated() {
             let nodes = map.nodes.filter { $0.lane == laneIndex }
-            guard !nodes.isEmpty else { continue }
+            // An empty gating section is a phase nobody has planned yet; it stays
+            // visible (and counts toward progress at an estimated size).
+            guard !nodes.isEmpty || !lane.isTrack else { continue }
             let phase = TreeNode(id: "lane\(laneIndex)", kind: .phase(isTrack: lane.isTrack))
             phase.rank = 1
             root.children.append(phase)
@@ -117,7 +119,7 @@ public enum ProjectMapHTML {
         for rank in 0...maxRank {
             let y = top + Double(rank) * rankHeight - 34
             let name = rank == 0 ? "project" : rank == 1 ? "phases" : rank == 2 ? "first tasks" : "depends on rank \(rank - 1)"
-            bands.append(#"<div class="band\#(rank % 2 == 0 ? " even" : "")" style="top:\#(f(y))px;height:\#(f(rankHeight))px;width:\#(f(width))px"><div class="ranklabel"><b>Rank \#(rank)</b><span>\#(name)</span></div></div>"#)
+            bands.append(#"<div class="band\#(rank % 2 == 0 ? " even" : "")" data-rank="\#(rank)" style="top:\#(f(y))px;height:\#(f(rankHeight))px;width:\#(f(width))px"><div class="ranklabel" title="\#(name)">R\#(rank)</div></div>"#)
         }
 
         // Edges: straight lines from a parent's bottom center to a child's top center.
@@ -134,7 +136,7 @@ public enum ProjectMapHTML {
             for child in node.children {
                 if case .item = node.kind { continue }   // dependency edges come below
                 let (x1, y1, x2, y2) = segment(node, child)
-                lines.append(#"<line class="struct\#(child.isGhost ? " gh" : "")" x1="\#(f(x1))" y1="\#(f(y1))" x2="\#(f(x2))" y2="\#(f(y2))"/>"#)
+                lines.append(#"<line class="struct\#(child.isGhost ? " gh" : "")" data-from="\#(escape(node.id))" data-to="\#(escape(child.id))" x1="\#(f(x1))" y1="\#(f(y1))" x2="\#(f(x2))" y2="\#(f(y2))"/>"#)
             }
         }
         for edge in map.edges {
@@ -147,32 +149,41 @@ public enum ProjectMapHTML {
             if from.kind == .ghost || to.kind == .ghost { classes += ["gh", "dash"] }
             if isFinished(from) || isFinished(to) { classes.append("fin") }
             let (x1, y1, x2, y2) = segment(a, b)
-            lines.append(#"<line class="\#(classes.joined(separator: " "))" x1="\#(f(x1))" y1="\#(f(y1))" x2="\#(f(x2))" y2="\#(f(y2))"/>"#)
+            lines.append(#"<line class="\#(classes.joined(separator: " "))" data-from="\#(escape(edge.from))" data-to="\#(escape(edge.to))" x1="\#(f(x1))" y1="\#(f(y1))" x2="\#(f(x2))" y2="\#(f(y2))"/>"#)
         }
 
+        let progress = Progress(map)
+        var parentOf: [String: String] = [:]
+        for node in all { for child in node.children { parentOf[child.id] = node.id } }
         var hoverCSS: [String] = []
         var cards: [String] = []
         for node in all {
             switch node.kind {
             case .root:
-                cards.append(#"<div class="root" id="root" style="left:\#(f(node.x))px;top:\#(f(node.y))px"><b>\#(escape(map.projectName))</b><span>\#(escape("Phase: \(map.currentPhase)"))</span></div>"#)
+                cards.append(#"<div class="root" id="root" data-node="root" data-kind="root" data-rank="0" style="left:\#(f(node.x))px;top:\#(f(node.y))px" title="Click to expand or collapse every phase"><b>\#(escape(map.projectName))</b><span>\#(percent(progress.project)) complete · \#(escape(map.currentPhase))</span>\#(bar(progress.project))</div>"#)
             case .phase(let isTrack):
                 let index = Int(node.id.dropFirst(4)) ?? 0
                 let title = map.lanes.indices.contains(index) ? map.lanes[index].title : node.id
                 let count = map.nodes.filter { $0.lane == index }.count
-                cards.append(#"<div class="phase\#(isTrack ? " track" : "")" style="left:\#(f(node.x))px;top:\#(f(node.y))px" title="\#(escape(title))"><b>\#(escape(title))</b><span>\#(count) node\#(count == 1 ? "" : "s")\#(isTrack ? " · not gating" : "")</span></div>"#)
+                let share = progress.lanes[index]
+                let detail = count == 0
+                    ? "not planned yet · ≈\(Int(progress.estimatedSize.rounded())) tasks"
+                    : "\(count) node\(count == 1 ? "" : "s") · \(percent(share ?? 0))\(isTrack ? " · not gating" : "")"
+                cards.append(#"<div class="phase\#(isTrack ? " track" : "")\#(count == 0 ? " unplanned" : "")" data-node="\#(node.id)" data-kind="phase" data-parent="root" data-rank="1" style="left:\#(f(node.x))px;top:\#(f(node.y))px" title="\#(escape(title)) — click to expand or collapse"><b>\#(escape(title))</b><span>\#(escape(detail))</span>\#(bar(share ?? 0))</div>"#)
             case .item(let item, let i):
                 hoverCSS.append("#map:has(#n\(i):hover) .node:not(.k\(i)){opacity:.28}")
-                hoverCSS.append("#map:has(#n\(i):hover) .e\(i){stroke:var(--edge-hi);stroke-width:2.2;opacity:1;visibility:visible}")
-                cards.append(card(item, index: i, neighbours: neighbours[i] ?? [], x: node.x, y: node.y))
+                hoverCSS.append("#map:has(#n\(i):hover) .e\(i){stroke:var(--edge-hi);stroke-width:2.2;opacity:1;visibility:visible;marker-end:url(#ahi)}")
+                cards.append(card(item, index: i, neighbours: neighbours[i] ?? [], x: node.x, y: node.y,
+                                  parent: parentOf[node.id] ?? "root", lane: "lane\(item.lane)", rank: node.rank))
             }
         }
 
+        let layoutJSON = #"{"slot":\#(slotWidth),"rank":\#(rankHeight),"top":\#(top),"left":\#(left),"margin":\#(margin),"sizes":{"root":[\#(rootWidth),\#(rootHeight)],"phase":[\#(phaseWidth),\#(phaseHeight)],"item":[\#(nodeWidth),\#(nodeHeight)]}}"#
         let tasks = map.nodes.filter { $0.kind == .task }
         let open = tasks.filter { !isFinished($0) }.count
         let stamp = DateFormatter()
         stamp.dateFormat = "yyyy-MM-dd HH:mm"
-        let summary = "\(tasks.count) tasks (\(open) open) · \(map.nodes.count - tasks.count) ghost tasks · "
+        let summary = "\(percent(progress.project)) complete · \(tasks.count) tasks (\(open) open) · \(map.nodes.count - tasks.count) ghost tasks · "
             + (map.planFile.map { "plan: \($0)" } ?? "no development plan file")
             + " · generated \(stamp.string(from: map.generatedAt))"
 
@@ -186,6 +197,8 @@ public enum ProjectMapHTML {
             .replacingOccurrences(of: "{{BANDS}}", with: bands.joined(separator: "\n"))
             .replacingOccurrences(of: "{{EDGES}}", with: lines.joined(separator: "\n"))
             .replacingOccurrences(of: "{{CARDS}}", with: cards.joined(separator: "\n"))
+            .replacingOccurrences(of: "{{LAYOUT}}", with: escape(layoutJSON))
+            .replacingOccurrences(of: "{{SCRIPT}}", with: ProjectMapScript.source)
     }
 
     static func order(_ node: TreeNode, _ indexOf: [String: Int]) -> Int {
@@ -193,7 +206,8 @@ public enum ProjectMapHTML {
         return Int(node.id.dropFirst(4)) ?? 0
     }
 
-    static func card(_ node: ProjectMap.Node, index: Int, neighbours: Set<Int>, x: Double, y: Double) -> String {
+    static func card(_ node: ProjectMap.Node, index: Int, neighbours: Set<Int>, x: Double, y: Double,
+                     parent: String = "root", lane: String = "", rank: Int = 2) -> String {
         let group = statusGroup(node.status)
         var classes = ["node", node.kind == .ghost ? "ghost" : "s-\(group)", "k\(index)"]
         classes += neighbours.sorted().map { "k\($0)" }
@@ -228,7 +242,56 @@ public enum ProjectMapHTML {
             summary = "Planned work"
         }
         let tooltip = escape(([title] + (node.gate.map { ["Gate: \($0)"] } ?? [])).joined(separator: "\n"))
-        return #"<div class="\#(classes.joined(separator: " "))" id="n\#(index)" data-id="\#(escape(node.id))" style="left:\#(f(x))px;top:\#(f(y))px" title="\#(tooltip)"><div class="top"><span class="id">\#(escape(label))</span><span class="pill \#(node.kind == .ghost ? "ghost" : "s-\(group)")">\#(escape(pill))</span></div><div class="title">\#(escape(title))</div><details><summary>\#(summary)</summary><div class="panel">\#(details.joined())</div></details></div>"#
+        let task = node.kind == .task ? #" data-task="\#(escape(node.id))""# : ""
+        return #"<div class="\#(classes.joined(separator: " "))" id="n\#(index)" data-id="\#(escape(node.id))" data-node="\#(escape(node.id))" data-kind="item" data-parent="\#(escape(parent))" data-lane="\#(lane)" data-rank="\#(rank)"\#(task) style="left:\#(f(x))px;top:\#(f(y))px" title="\#(tooltip)"><div class="top"><span class="id">\#(escape(label))</span><span class="pill \#(node.kind == .ghost ? "ghost" : "s-\(group)")">\#(escape(pill))</span></div><div class="title">\#(escape(title))</div><details><summary>\#(summary)</summary><div class="panel">\#(details.joined())</div></details></div>"#
+    }
+
+    /// Completion credit per status: done > review > in progress > blocked >
+    /// backlog. Ghosts count as not started; cancelled work counts not at all.
+    static func credit(_ node: ProjectMap.Node) -> Double? {
+        switch statusGroup(node.status) {
+        case "done": 1
+        case "review": 0.75
+        case "active": 0.4
+        case "blocked": 0.3
+        case "cancel": nil
+        default: 0
+        }
+    }
+
+    /// Percent complete per lane and for the project. A gating section with no
+    /// items yet counts at the average size of the planned gating sections,
+    /// with nothing done, so unplanned phases pull the project total down.
+    struct Progress {
+        var lanes: [Int: Double] = [:]
+        var project = 0.0
+        var estimatedSize = 0.0
+
+        init(_ map: ProjectMap) {
+            var done = 0.0, size = 0.0
+            var plannedSizes: [Double] = []
+            var unplanned = 0
+            for (index, lane) in map.lanes.enumerated() {
+                let credits = map.nodes.filter { $0.lane == index }.compactMap(ProjectMapHTML.credit)
+                if credits.isEmpty {
+                    if !lane.isTrack { unplanned += 1; lanes[index] = 0 }
+                    continue
+                }
+                let sum = credits.reduce(0, +)
+                lanes[index] = sum / Double(credits.count)
+                done += sum; size += Double(credits.count)
+                if !lane.isTrack { plannedSizes.append(Double(credits.count)) }
+            }
+            estimatedSize = plannedSizes.isEmpty ? 0 : plannedSizes.reduce(0, +) / Double(plannedSizes.count)
+            size += estimatedSize * Double(unplanned)
+            project = size > 0 ? done / size : 0
+        }
+    }
+
+    static func percent(_ value: Double) -> String { "\(Int((value * 100).rounded()))%" }
+
+    static func bar(_ value: Double) -> String {
+        #"<i class="bar"><i style="width:\#(f(min(1, max(0, value)) * 100))%"></i></i>"#
     }
 
     static func statusGroup(_ status: String) -> String {
@@ -297,22 +360,30 @@ h1 { font-size: 16px; margin: 0 0 2px; }
 #map { position: relative; }
 .band { position: absolute; left: 0; background: var(--band); border-top: 1px solid #222228; }
 .band.even { background: var(--band2); }
-/* Sticky: the rank label stays at the left edge while the tree scrolls. */
-.ranklabel { position: sticky; left: 0; display: inline-flex; flex-direction: column; gap: 1px; z-index: 3;
-  margin-top: 8px; padding: 5px 10px; background: rgba(18,18,20,.85); border-radius: 0 8px 8px 0; }
-.ranklabel b { font-size: 13px; color: var(--ink); }
-.ranklabel span { font-size: 11px; color: var(--muted); max-width: 100px; }
+/* Sticky and quiet: the rank tag stays at the left edge while the tree scrolls. */
+.ranklabel { position: sticky; left: 0; display: inline-block; z-index: 3; margin-top: 6px; padding: 1px 7px;
+  font-size: 10px; font-weight: 600; color: #5c5c66; letter-spacing: .04em; }
 svg { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; z-index: 1; }
 line { stroke: var(--edge); stroke-width: 1.4; }
 line.struct { stroke: #5a5a64; }
 line.dep.tree { stroke: var(--edge); }
 line.extra { visibility: hidden; stroke-dasharray: 5 4; opacity: .8; }
+line.dep { marker-end: url(#a); }
+line.off { display: none; }
+line.lit { visibility: visible; stroke: var(--review); stroke-width: 2; opacity: 1; marker-end: url(#ahi); }
 line.dash { stroke-dasharray: 5 4; }
 .root, .phase, .node { position: absolute; z-index: 2; }
 .root { width: 240px; height: 56px; border-radius: 28px; background: #1d2a3d; border: 2px solid var(--accent);
   display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.root { cursor: pointer; height: 64px; }
 .root b { font-size: 15px; } .root span { color: var(--muted); font-size: 11px; }
-.phase { width: 200px; height: 48px; border-radius: 10px; background: #26262c; border: 1.5px solid #6a6a76;
+.bar { display: block; width: 70%; height: 4px; margin-top: 4px; border-radius: 2px; background: #34343c; overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--done); border-radius: 2px; }
+.phase { cursor: pointer; }
+.phase:hover { border-color: var(--accent); }
+.phase.unplanned { border-style: dotted; opacity: .75; }
+html[data-fq-map] .phase::after { content: "▸"; position: absolute; right: 8px; top: 6px; color: var(--muted); font-size: 10px; }
+.phase { width: 200px; height: 56px; border-radius: 10px; background: #26262c; border: 1.5px solid #6a6a76;
   display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 10px; text-align: center; }
 .phase b { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .phase span { color: var(--muted); font-size: 10.5px; }
@@ -320,6 +391,13 @@ line.dash { stroke-dasharray: 5 4; }
 .node { width: 176px; height: 74px; display: flex; flex-direction: column; background: var(--panel);
   border: 1px solid var(--line); border-top: 3px solid var(--idle); border-radius: 8px; padding: 4px 8px 3px; }
 .node:hover { box-shadow: 0 0 0 2px var(--edge-hi); }
+.node[data-task] { cursor: pointer; }
+.node.peek { box-shadow: 0 0 0 2px var(--review), 0 8px 22px rgba(0,0,0,.55); z-index: 30; }
+.node.located { animation: located 1.1s ease-out; }
+@keyframes located { 0% { box-shadow: 0 0 0 0 var(--accent); } 30% { box-shadow: 0 0 0 6px rgba(90,162,255,.55); } 100% { box-shadow: 0 0 0 0 rgba(90,162,255,0); } }
+.actions { display: none; gap: 6px; }
+html[data-fq-map] .actions { display: inline-flex; }
+.actions button { font: inherit; color: var(--ink); background: #26262c; border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; cursor: pointer; }
 .node:has(details[open]) { z-index: 40; }
 .node.s-done { border-top-color: var(--done); }
 .node.s-active { border-top-color: var(--active); }
@@ -368,16 +446,24 @@ details[open] summary::before { content: "▾"; }
       <span><i class="dot" style="background:var(--done)"></i>Done</span>
       <span><i class="dot ghost"></i>No task yet</span>
     </span>
-    <span class="hint">Scroll to zoom · right-drag to move · hover a task for all its dependencies</span>
+    <span class="actions"><button type="button" data-action="expand">Expand all</button><button type="button" data-action="collapse">Collapse all</button></span>
+    <span class="hint">Arrows point from a task to the work that waits on it · click a phase to open it · click a task to find it in the queue · scroll to zoom · right-drag to move</span>
   </div>
 </header>
-<div id="map" style="width:{{WIDTH}}px;height:{{HEIGHT}}px">
+<div id="map" data-layout="{{LAYOUT}}" style="width:{{WIDTH}}px;height:{{HEIGHT}}px">
 {{BANDS}}
 <svg width="{{WIDTH}}" height="{{HEIGHT}}" viewBox="0 0 {{WIDTH}} {{HEIGHT}}" aria-hidden="true">
+<defs>
+<marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#8a8a94"/></marker>
+<marker id="ahi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#5aa2ff"/></marker>
+</defs>
 {{EDGES}}
 </svg>
 {{CARDS}}
 </div>
+<script>
+{{SCRIPT}}
+</script>
 </body>
 </html>
 """#

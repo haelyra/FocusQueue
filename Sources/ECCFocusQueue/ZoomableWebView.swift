@@ -206,6 +206,17 @@ final class ZoomableWebContainer: NSView {
 enum ProjectMapPage {
     static let generatorTag = #"<meta name="generator" content="Focus Queue project map">"#
 
+    static func taskURL(_ taskID: String) -> URL? {
+        guard taskID.range(of: #"^[A-Za-z][A-Za-z0-9]*-[0-9]+$"#, options: .regularExpression) != nil else { return nil }
+        return URL(string: "focusqueue://task/\(taskID.uppercased())")
+    }
+
+    static func taskID(from url: URL) -> String? {
+        guard url.scheme == "focusqueue", url.host == "task" else { return nil }
+        let id = url.lastPathComponent
+        return taskURL(id) == nil ? nil : id.uppercased()
+    }
+
     static func isMap(_ url: URL) -> Bool {
         guard url.isFileURL, ["html", "htm"].contains(url.pathExtension.lowercased()),
               let handle = try? FileHandle(forReadingFrom: url) else { return false }

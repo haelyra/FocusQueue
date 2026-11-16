@@ -144,13 +144,15 @@ func mapHTMLEscapesScript() {
 func mapHTMLIsStatic() {
     let map = demoMap(tickets: demoTickets)
     let html = ProjectMapHTML.render(map)
-    // The document viewer disables page scripts, so nothing may depend on them.
-    #expect(!html.lowercased().contains("<script"))
+    // The document viewer disables page scripts: the static markup already
+    // holds the whole tree, and the interaction script is inline once.
+    #expect(html.components(separatedBy: "<script>").count - 1 == 1)
+    #expect(html.contains(ProjectMapScript.source))
     for node in map.nodes { #expect(html.contains(#"data-id="\#(node.id)""#)) }
     // Every dependency is drawn once: as a tree edge or as a hidden extra edge.
     #expect(html.components(separatedBy: #"<line class="dep "#).count - 1 == map.edges.count)
     #expect(html.contains(#"class="root" id="root""#))
-    #expect(html.contains("Rank 0") && html.contains("Rank 2"))
+    #expect(html.contains(#"data-rank="0""#) && html.contains(">R2</div>"))
     #expect(html.contains("<details><summary>1 agent</summary>"))
 }
 
@@ -196,7 +198,7 @@ func mapTreeRanks() {
     let html = ProjectMapHTML.render(map)
     // In Phase 1: DEM-1 (1.1) heads the chain DEM-4 (1.2) → DEM-6/ghost 1.3 → ghost 1.4.
     func top(_ id: String) -> Double? {
-        guard let range = html.range(of: #"data-id="\#(id)" style="left:"#) else { return nil }
+        guard let range = html.range(of: #"data-id="\#(id)""#) else { return nil }
         let rest = html[range.upperBound...]
         guard let topRange = rest.range(of: "top:") else { return nil }
         return Double(rest[topRange.upperBound...].prefix { $0 == "." || $0.isNumber })
@@ -207,4 +209,30 @@ func mapTreeRanks() {
     #expect(top("DEM-6") == one + 2 * rank)
     #expect(top("ghost:1.4") == one + 3 * rank)
     #expect(one == ProjectMapHTML.top + 2 * rank)
+}
+
+@Test("Percent complete weighs status and estimates unplanned phases")
+func mapProgress() {
+    func node(_ id: String, _ status: String, lane: Int, ghost: Bool = false) -> ProjectMap.Node {
+        ProjectMap.Node(id: id, kind: ghost ? .ghost : .task, title: id, status: status, lane: lane,
+                        leaves: [], gate: nil, phase: nil, agents: [], reason: nil)
+    }
+    let map = ProjectMap(
+        projectID: "p", projectName: "P", planFile: nil, currentPhase: "Planning", generatedAt: Date(),
+        lanes: [.init(title: "Phase 1", isTrack: false), .init(title: "Phase 2", isTrack: false),
+                .init(title: "Not in the plan", isTrack: true)],
+        nodes: [node("A-1", "resolved", lane: 0), node("A-2", "in-progress", lane: 0),
+                node("ghost:1.3", "missing", lane: 0, ghost: true), node("A-9", "cancelled", lane: 0),
+                node("A-4", "qa", lane: 2)],
+        edges: [])
+    let progress = ProjectMapHTML.Progress(map)
+    // Phase 1: (1 + 0.4 + 0) / 3; the cancelled task is left out.
+    #expect(abs((progress.lanes[0] ?? 0) - 1.4 / 3) < 0.0001)
+    // Phase 2 has no items: it counts at Phase 1's size (3) with nothing done.
+    #expect(progress.estimatedSize == 3)
+    #expect(abs((progress.lanes[2] ?? 0) - 0.75) < 0.0001)
+    #expect(abs(progress.project - (1.4 + 0.75) / 7) < 0.0001)
+    let html = ProjectMapHTML.render(map)
+    #expect(html.contains("31% complete"))
+    #expect(html.contains("not planned yet · ≈3 tasks"))
 }

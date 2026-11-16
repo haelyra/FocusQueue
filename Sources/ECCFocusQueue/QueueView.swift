@@ -332,7 +332,8 @@ struct QueueView: View {
     let search = isFilteringTasks
       ? taskSearchCache.result(
         for: model.openTickets + model.completedTickets, query: taskSearchQuery,
-        files: model.searchableTaskFiles, filesVersion: model.searchableTaskFilesVersion) : nil
+        files: model.searchableTaskFiles, worktreeFiles: model.searchableWorktreeFiles,
+        filesVersion: model.searchableTaskFilesVersion) : nil
     let shownTickets = search.map { Array($0.tickets.prefix(taskSearchResultLimit)) } ?? focusTickets
     return VStack(alignment: .leading, spacing: 10) {
       HStack {
@@ -395,7 +396,7 @@ struct QueueView: View {
               TicketCard(ticket: ticket, model: model)
             }
             if let paths = search?.fileMatches[ticket.id] {
-              TaskSearchFileMatches(paths: paths, ticketID: ticket.id, model: model)
+              TaskSearchFileMatches(paths: paths, source: search?.fileSource ?? .context, ticketID: ticket.id, model: model)
             }
           }
         }
@@ -460,6 +461,9 @@ struct QueueView: View {
         return values.isEmpty ? nil : "\(field.rawValue.capitalized) \(values.joined(separator: " or "))"
       }
       parts.append("Filtered by " + fields.joined(separator: " · "))
+    }
+    if search.fileSource == .worktree, !search.fileMatches.isEmpty {
+      parts.append("No context-folder files match · showing files changed in task worktrees")
     }
     if case .approximate(let suggestion) = search.match {
       parts.append(suggestion.map { "No exact matches · showing results for \u{201C}\($0)\u{201D}" }
@@ -2640,6 +2644,7 @@ private struct FocusSearchHeading: View {
 /// opens it the way the task's outputs panel does.
 private struct TaskSearchFileMatches: View {
   let paths: [String]
+  let source: TaskSearchFileSource
   let ticketID: String
   let model: QueueViewModel
 
@@ -2647,19 +2652,23 @@ private struct TaskSearchFileMatches: View {
     VStack(alignment: .leading, spacing: 2) {
       ForEach(paths, id: \.self) { path in
         Button {
-          if let file = model.searchableFile(path, ticketID: ticketID) { model.openOutput(file, ticketID: ticketID) }
+          if let file = model.searchableFile(path, ticketID: ticketID, source: source) {
+            model.openSearchMatch(file, ticketID: ticketID, source: source)
+          }
         } label: {
           Label {
             Text(path).lineLimit(1).truncationMode(.middle)
           } icon: {
-            Image(systemName: "doc.text.magnifyingglass")
+            Image(systemName: source == .context ? "doc.text.magnifyingglass" : "arrow.triangle.branch")
           }
           .font(.caption).foregroundStyle(.secondary)
           .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Open matching file \(path)")
-        .help("Matched file in \(ticketID)'s context folder. Click to open.")
+        .help(source == .context
+          ? "Matched file in \(ticketID)'s context folder. Click to open."
+          : "Matched file changed in \(ticketID)'s worktree. Click to open.")
       }
     }
     .padding(.horizontal, 12)
@@ -2686,7 +2695,7 @@ private struct TaskSearchField: View {
           return .handled
         }
         .accessibilityLabel("Search tasks")
-        .help("Type words, a code such as FOC-018 or 18, a status such as backlog, a priority such as high, or a file name from a task's context folder. status: and priority: accept part of a value.")
+        .help("Type words, a code such as FOC-018 or 18, a status such as backlog, a priority such as high, or a file name from a task's context folder (or, failing that, a file its worktree changed). status: and priority: accept part of a value.")
       if let resultCount {
         Text("\(resultCount)").font(.system(size: 11, weight: .semibold).monospacedDigit())
           .foregroundStyle(.secondary)
@@ -2775,12 +2784,14 @@ private final class TaskSearchCache {
   private var result = TaskSearchResult(tickets: [], match: .none)
 
   func result(
-    for tickets: [DashboardTicket], query: String, files: [String: [TaskOutputFile]], filesVersion: Int
+    for tickets: [DashboardTicket], query: String, files: [String: [TaskOutputFile]],
+    worktreeFiles: [String: [TaskOutputFile]], filesVersion: Int
   ) -> TaskSearchResult {
     if tickets != self.tickets || filesVersion != self.filesVersion {
       self.tickets = tickets
       self.filesVersion = filesVersion
-      index = TaskSearchIndex(tickets, files: files.mapValues { $0.map(\.relativePath) })
+      index = TaskSearchIndex(tickets, files: files.mapValues { $0.map(\.relativePath) },
+        worktreeFiles: worktreeFiles.mapValues { $0.map(\.relativePath) })
       self.query = nil
     }
     if query != self.query {

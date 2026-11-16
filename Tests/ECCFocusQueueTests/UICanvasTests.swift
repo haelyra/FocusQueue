@@ -143,7 +143,7 @@ struct UICanvasTests {
                          configuration: UICanvasWebStage.configuration(coordinator: coordinator))
     view.navigationDelegate = coordinator
     view.pageZoom = layout.scale
-    defer { UICanvasWebStage.dismantleNSView(view, coordinator: coordinator) }
+    defer { UICanvasWebStage.teardown(view, coordinator: coordinator) }
     model.attach(view)
 
     // pageZoom turns the half-size frame into an honest 393 CSS px viewport.
@@ -233,7 +233,7 @@ struct UICanvasTests {
     let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 800, height: 600),
                          configuration: UICanvasWebStage.configuration(coordinator: coordinator))
     view.navigationDelegate = coordinator
-    defer { UICanvasWebStage.dismantleNSView(view, coordinator: coordinator) }
+    defer { UICanvasWebStage.teardown(view, coordinator: coordinator) }
     model.attach(view)
     try await eventually { model.renderedViewport.width > 0 }
 
@@ -297,7 +297,7 @@ struct UICanvasTests {
     let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 800, height: 600),
                          configuration: UICanvasWebStage.configuration(coordinator: coordinator))
     view.navigationDelegate = coordinator
-    defer { UICanvasWebStage.dismantleNSView(view, coordinator: coordinator) }
+    defer { UICanvasWebStage.teardown(view, coordinator: coordinator) }
     model.attach(view)
     try await eventually { model.renderedViewport.width > 0 }
     model.setMode(.interact)
@@ -392,13 +392,13 @@ struct UICanvasTests {
       (try? await first.evaluateJavaScript(
         "try { localStorage.setItem('answers', 'kept'); 'ok' } catch (e) { String(e) }") as? String) == "ok"
     }
-    UICanvasWebStage.dismantleNSView(first, coordinator: coordinator)
+    UICanvasWebStage.teardown(first, coordinator: coordinator)
 
     // A new web view, as after an app restart, reads the same page state.
     let second = WKWebView(frame: CGRect(x: 0, y: 0, width: 800, height: 600),
                            configuration: UICanvasWebStage.configuration(coordinator: coordinator))
     second.navigationDelegate = coordinator
-    defer { UICanvasWebStage.dismantleNSView(second, coordinator: coordinator) }
+    defer { UICanvasWebStage.teardown(second, coordinator: coordinator) }
     model.attach(second)
     try await eventually {
       (try? await second.evaluateJavaScript("document.title") as? String) == "Sheet"

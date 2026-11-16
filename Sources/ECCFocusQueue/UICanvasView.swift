@@ -336,14 +336,17 @@ struct UICanvasWebStage: NSViewRepresentable {
 
   func makeCoordinator() -> Coordinator { Coordinator(model: model) }
 
-  func makeNSView(context: Context) -> WKWebView {
-    let view = WKWebView(frame: .zero, configuration: Self.configuration(coordinator: context.coordinator))
+  func makeNSView(context: Context) -> ZoomableWebContainer {
+    // Viewing zoom (magnification) sits on top of the fit-to-stage pageZoom,
+    // so the page's CSS viewport and media queries never change (FOC-138).
+    let container = ZoomableWebContainer(configuration: Self.configuration(coordinator: context.coordinator))
+    let view = container.webView
     view.navigationDelegate = context.coordinator
     view.uiDelegate = context.coordinator
     view.pageZoom = zoom
     view.isInspectable = true
     model.attach(view)
-    return view
+    return container
   }
 
   /// Mockup scripts run (tabs, toggles, animations must work); the editor runs
@@ -363,13 +366,19 @@ struct UICanvasWebStage: NSViewRepresentable {
     return configuration
   }
 
-  func updateNSView(_ view: WKWebView, context: Context) {
+  func updateNSView(_ container: ZoomableWebContainer, context: Context) {
+    let view = container.webView
     context.coordinator.model = model
     if abs(view.pageZoom - zoom) > 0.0005 { view.pageZoom = zoom }
     if model.webView !== view { model.attach(view) }
   }
 
-  static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
+  static func dismantleNSView(_ container: ZoomableWebContainer, coordinator: Coordinator) {
+    teardown(container.webView, coordinator: coordinator)
+  }
+
+  /// Stops the stage's web view and drops its handlers.
+  static func teardown(_ view: WKWebView, coordinator: Coordinator) {
     view.stopLoading()
     view.navigationDelegate = nil
     view.uiDelegate = nil

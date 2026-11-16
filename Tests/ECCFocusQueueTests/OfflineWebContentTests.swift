@@ -127,7 +127,7 @@ struct OfflineWebContentTests {
                          configuration: UICanvasWebStage.configuration(coordinator: coordinator))
     view.navigationDelegate = coordinator
     view.uiDelegate = coordinator
-    defer { UICanvasWebStage.dismantleNSView(view, coordinator: coordinator) }
+    defer { UICanvasWebStage.teardown(view, coordinator: coordinator) }
     model.attach(view)
 
     try await eventually {

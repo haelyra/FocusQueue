@@ -662,7 +662,8 @@ struct DocumentConversationView: View {
 
 /// Static local resources render offline in the side pane; link activation
 /// always requests another tab, and web links open in the browser. Page
-/// scripts, popups, and every network request are disabled.
+/// scripts, popups, and every network request are disabled. The viewer has
+/// zoom buttons and right-drag panning (`ZoomableWebContainer`).
 struct ReadOnlyResourceDocument: NSViewRepresentable {
     let url: URL
     let open: (URL) -> Void
@@ -673,16 +674,18 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
     var findRequest = 0
     var findSearchesBackwards = false
     func makeCoordinator() -> Coordinator { Coordinator(open: open) }
-    func makeNSView(context: Context) -> WKWebView {
+    func makeNSView(context: Context) -> ZoomableWebContainer {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent(); config.defaultWebpagePreferences.allowsContentJavaScript = false
         OfflineWebContent.configure(config, allowsPageScripts: false)
-        let view = WKWebView(frame: .zero, configuration: config)
-        view.navigationDelegate = context.coordinator
-        view.uiDelegate = context.coordinator
-        return view
+        // Zoom buttons and right-drag panning for viewing (FOC-138).
+        let container = ZoomableWebContainer(configuration: config)
+        container.webView.navigationDelegate = context.coordinator
+        container.webView.uiDelegate = context.coordinator
+        return container
     }
-    func updateNSView(_ view: WKWebView, context: Context) {
+    func updateNSView(_ container: ZoomableWebContainer, context: Context) {
+        let view: WKWebView = container.webView
         context.coordinator.open = open
         if context.coordinator.url != url || context.coordinator.revision != revision {
             context.coordinator.url = url
@@ -696,7 +699,10 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
         context.coordinator.requestFind(
             query: findQuery, request: findRequest, searchesBackwards: findSearchesBackwards, in: view)
     }
-    static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) { view.stopLoading(); view.navigationDelegate = nil; view.uiDelegate = nil }
+    static func dismantleNSView(_ container: ZoomableWebContainer, coordinator: Coordinator) {
+        let view = container.webView
+        view.stopLoading(); view.navigationDelegate = nil; view.uiDelegate = nil
+    }
     @MainActor final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var url: URL?
         var revision = 0

@@ -136,7 +136,19 @@ func mapHTMLEscapesScript() {
     let map = demoMap(tickets: [ticket("DEM-1", "Break </script><b>out")])
     let html = ProjectMapHTML.render(map)
     #expect(!html.contains("</script><b>"))
+    #expect(html.contains("Break &lt;/script&gt;&lt;b&gt;out"))
     #expect(html.contains("<title>Demo project map</title>"))
+}
+
+@Test("The map renders without scripts, with every node and edge in the markup")
+func mapHTMLIsStatic() {
+    let map = demoMap(tickets: demoTickets)
+    let html = ProjectMapHTML.render(map)
+    // The document viewer disables page scripts, so nothing may depend on them.
+    #expect(!html.lowercased().contains("<script"))
+    for node in map.nodes { #expect(html.contains(#"data-id="\#(node.id)""#)) }
+    #expect(html.components(separatedBy: #"<path class="edge"#).count - 1 == map.edges.count)
+    #expect(html.contains("<details><summary>1 agent</summary>"))
 }
 
 @Test("Dashboard writes rebuild the map only for development-process projects")
@@ -169,8 +181,8 @@ func dashboardWriteRebuildsMap() async throws {
     _ = try await repository.createTicket(ticket("DEM-7", "Phase 1 1.4: gate run"), in: dashboard,
                                           expectedRevision: snapshot.revision)
     let html = try String(contentsOf: mapURL, encoding: .utf8)
-    #expect(html.contains(#""id":"DEM-7""#))
-    #expect(html.contains(#""id":"ghost:1.2""#))
+    #expect(html.contains(#"data-id="DEM-7""#))
+    #expect(html.contains(#"data-id="ghost:1.2""#))
     let built = try #require(try ProjectMapGenerator(root: root).build(projectID: "demo"))
     #expect(built.nodes.first { $0.id == "DEM-7" }?.leaves == ["1.4"])
 }

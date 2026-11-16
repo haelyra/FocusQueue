@@ -545,3 +545,32 @@ struct MapDocumentMetadataTests {
         #expect(!DocumentMetadata.read(file.appendingPathExtension("missing")).exists)
     }
 }
+
+@MainActor
+@Test("A focusqueue://ref link opens its reference card, built on first use, beside the open document")
+func referenceLinkOpensCardBeside() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("ref-pane-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let project = root.appendingPathComponent("projects/example")
+    let task = root.appendingPathComponent("tasks/EX-002")
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: task, withIntermediateDirectories: true)
+    try "| ID | Item |\n|---|---|\n| FC2 | Read linked plans |\n".write(
+        to: project.appendingPathComponent("prd.md"), atomically: true, encoding: .utf8)
+    try JSONSerialization.data(withJSONObject: ["projectPlanPath": project.appendingPathComponent("plan.md").path])
+        .write(to: task.appendingPathComponent("context.json"))
+    let previous = EmbeddedDocumentLink.referenceRoot
+    EmbeddedDocumentLink.referenceRoot = { root }
+    defer { EmbeddedDocumentLink.referenceRoot = previous }
+
+    let pane = DocumentPaneState()
+    let plan = project.appendingPathComponent("prd.md")
+    pane.open(plan)
+    pane.openLinkedDocument(URL(string: "focusqueue://ref/EX-002/FC2")!)
+    let card = ReferenceCards.cardURL(root: root, taskID: "EX-002", code: "FC2").standardizedFileURL
+    #expect(pane.primaryDocument == plan.standardizedFileURL)
+    #expect(pane.secondaryDocument == card)
+    #expect(try String(contentsOf: card, encoding: .utf8).contains("# FC2 · Read linked plans"))
+    pane.openLinkedDocument(URL(string: "focusqueue://ref/EX-002/ZZ9")!)
+    #expect(pane.error == "This link cannot be displayed as a document.")
+}

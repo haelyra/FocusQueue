@@ -802,7 +802,17 @@ class Installer:
                 time.sleep(0.1)
         raise RuntimeError("The previous Focus Queue app is still running; installation stopped.")
 
+    LSREGISTER = Path("/System/Library/Frameworks/CoreServices.framework/Frameworks/"
+                      "LaunchServices.framework/Support/lsregister")
+
+    def register_url_scheme(self, application):
+        """Best effort: tell Launch Services about the focusqueue:// handler so
+        reference links in terminals open this copy. A failure never blocks install."""
+        if self.LSREGISTER.exists() and application.exists():
+            subprocess.run([str(self.LSREGISTER), "-f", str(application)], capture_output=True)
+
     def start_app(self, *, login, application=None):
+        self.register_url_scheme(application or self.app)
         if login:
             for attempt in range(5):
                 result = subprocess.run(["/bin/launchctl", "bootstrap", f"gui/{os.getuid()}", str(self.agent)], capture_output=True, text=True)

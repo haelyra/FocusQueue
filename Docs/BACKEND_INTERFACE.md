@@ -297,6 +297,16 @@ An agent records a **decision** before its work departs from the user's instruct
 
 Settings → **Decisions** stores `decisionAutoDecide` (default on), `decisionAutoDecideMinutes` (default 60), and `decisionAutoRewind` (default on) in `config.json`.
 
+### 3.13 Reference cards
+
+A **reference card** explains one shorthand code (B3, M7, FC2, D4) an agent writes in a report: the diagram that shows it, outlined in orange, above its definition. Cards are Markdown files at `tasks/<TASK>/evidence/refs/<CODE>.md`, so each new card appears among the task's new outputs.
+
+| Command | Effect |
+|---|---|
+| `ref [<TASK>] <CODE> [<CODE> …] [--doc <file.md> …]` | Finds each code's definition and writes its card. Search order: `--doc` files, the project's planning files (technical design and master plan, PRD, design, devplan, concept, architecture, research, plan), `modules/*.md`, then the task plan. A heading that starts with the code wins, then a table row whose first cell is the code, then a list item or line that starts with it. The diagram is one that names the code, else one in the code's own section, else a related code's section diagram. JSON per code: `card`, `link`, `markdown`, `definedIn`, `line`, `diagram`, `highlighted`, `related`; `status` is `written` or `not-found`. Exits 1 when no code was found. An unchanged card is not rewritten. |
+
+Agents paste the `markdown` value, for example `[B3](focusqueue://ref/FOC-133/B3)`. The app registers the `focusqueue` URL scheme. A click in a terminal or another app opens the task's plan viewer with the card on the left and the defining document on the right. A click inside a Focus Queue document opens the card beside the current document. A link without a card builds it on first click.
+
 ---
 
 ## 4. Provider harness CLIs
@@ -508,6 +518,9 @@ focus-queue-session complete  <TASK> <SUBTASK> "result summary"
 focus-queue-session decision add <TASK> <AGENT> "<divergence>" --option "<recommended>" --option "<fallback>"
 focus-queue-session decision choose <TASK> <AGENT> <NODE> recommended --by continue   # the user said "continue"
 focus-queue-session decision rewind <TASK> <AGENT> <NODE> --reason "<why>"           # chosen option failed
+
+# References (link every shorthand code in a report)
+focus-queue-session ref <TASK> B3 M7     # → "markdown": "[B3](focusqueue://ref/<TASK>/B3)"; card in evidence/refs/
 
 # Placement (no ticket yet)
 focus-queue-session placement --prompt "<objective>" --cwd "$PWD"

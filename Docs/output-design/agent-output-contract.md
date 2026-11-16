@@ -83,8 +83,9 @@ verifiably complete and the evidence is in §2.
    no "great question".
 5. Concrete referents always: `path/to/file.swift:42`, ticket IDs, exact
    values.
-6. Define components before mechanism when the reader may not have them in
-   mind.
+6. Write for a developer who knows only the project's basic structure. At
+   first mention, say in a few words what each module, criterion, or concept
+   is, before its mechanism. Stay concise: a gloss, not a lecture.
 7. One structural table or diagram when ≥3 parts interact. Never repeat its
    content in prose.
 8. Every correctness claim attaches evidence or an explicit "not verified"
@@ -93,6 +94,13 @@ verifiably complete and the evidence is in §2.
    fairly confident", no five-point scales.
 10. Output renders as terminal Markdown: shallow structure, no deep nesting,
     cite code as `path:line`.
+11. Link every shorthand reference (B3, M7, FC2, D4). Run
+    `focus-queue-session ref <CODE> [<CODE> ...]` and paste each returned
+    `markdown` link, glossed at first mention: `[B3](focusqueue://ref/FOC-1/B3)
+    (agent resource library)`. Clicking it opens the code's diagram and
+    definition in Focus Queue's split view; the card is saved under the task's
+    `evidence/refs/`. If `ref` finds no definition, write the meaning instead
+    of the bare code.
 
 ## Worked example
 

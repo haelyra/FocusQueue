@@ -8,7 +8,14 @@ import Foundation
 enum EmbeddedDocumentLink {
   static let scheme = "focus-queue-document"
 
+  /// Where reference cards live; tests point it at a scratch directory.
+  nonisolated(unsafe) static var referenceRoot: () -> URL = { AppPaths.live().supportDirectory }
+
   static func destination(_ url: URL) -> URL? {
+    // A shorthand reference opens its card, built on first use.
+    if let (taskID, code) = ReferenceCards.parse(url) {
+      return ReferenceCards.ensureCard(root: referenceRoot(), taskID: taskID, code: code)
+    }
     guard url.scheme == scheme else { return url }
     guard url.host == "open",
       let components = URLComponents(url: url, resolvingAgainstBaseURL: false),

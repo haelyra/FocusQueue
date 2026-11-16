@@ -244,6 +244,14 @@ import UserNotifications
     }
   }
 
+  /// `focusqueue://ref/<TASK>/<CODE>` links, clicked in a terminal or any
+  /// other app, open the reference card in the task's split view.
+  func application(_ application: NSApplication, open urls: [URL]) {
+    var opened = false
+    for url in urls where model.openReference(url) { opened = true }
+    if opened { showPanel() }
+  }
+
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
   func applicationWillTerminate(_ notification: Notification) {

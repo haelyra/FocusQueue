@@ -745,6 +745,10 @@ public struct TaskContext: Codable, Equatable, Sendable {
         - Complete only your assigned subtask and preserve other agents' changes. Update the plan within the agreed scope without an extra approval loop; ask before materially changing scope, ownership, branch strategy, or external delivery.
         - Push only when the user authorizes remote delivery, never directly to main unless explicitly requested. Never force-remove a worktree or merge a branch without the task's approval terms. Task closure requires verification and safe cleanup.
 
+        References
+        - Explain for a developer who knows only the project's basic structure, concisely: gloss each module, criterion, or decision code in a few words at first mention.
+        - ref [<TASK-ID>] <CODE> [<CODE> ...] [--doc <file.md>]: writes evidence/refs/<CODE>.md, the diagram that shows the code (outlined) above its definition, and returns a `markdown` link such as `[B3](focusqueue://ref/<TASK-ID>/B3)`. Paste it for every shorthand code; Focus Queue opens the card in split view. When it finds no definition, write the meaning instead of the code.
+
         UI Canvas
         - To preview a UI mockup, use `canvas open|await|typing|end <file.html>` in place of `ecc-ui-canvas`: same arguments and JSON, and it opens as a tab in this task's plan viewer instead of a browser.
 

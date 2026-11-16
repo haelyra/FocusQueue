@@ -261,6 +261,8 @@ final class QueueViewModel {
   var decisionTrees: [String: [DecisionTree]] = [:]
   /// An agent's tree the human asked to see; the plan viewer opens its tab once.
   var requestedDecisionTree: DecisionTreeRequest?
+  /// A reference card a `focusqueue://ref` link asked for; the plan viewer splits it once.
+  var requestedReference: ReferenceRequest?
   /// "<TASK>/<AGENT>" while a choose, rewind, or push runs for that agent.
   var decisionActionsInFlight: Set<String> = []
   /// The last outcome per "<TASK>/<AGENT>", shown under the tree.
@@ -7144,6 +7146,13 @@ struct DevelopmentContractControl: Equatable {
 
 // MARK: - Decision trees
 
+struct ReferenceRequest: Equatable {
+  let id = UUID()
+  let ticketID: String
+  let card: URL
+  let source: URL?
+}
+
 struct DecisionTreeRequest: Equatable {
   let id = UUID()
   let ticketID: String
@@ -7212,6 +7221,35 @@ extension QueueViewModel {
 
   func consumeDecisionTreeRequest(_ request: DecisionTreeRequest) {
     if requestedDecisionTree == request { requestedDecisionTree = nil }
+  }
+
+  /// A `focusqueue://ref/<TASK>/<CODE>` link clicked outside a Focus Queue
+  /// viewer, such as in an agent's terminal: the task's plan viewer shows the
+  /// card (diagram and definition) on the left and its source document on the
+  /// right. Returns false when the URL is not a reference link.
+  @discardableResult
+  func openReference(_ url: URL) -> Bool {
+    guard let (taskID, code) = ReferenceCards.parse(url) else { return false }
+    guard let card = ReferenceCards.ensureCard(root: paths.supportDirectory, taskID: taskID, code: code) else {
+      programLog.record("No document defines \(code) for \(taskID); the reference link has no card.", category: "References")
+      return true
+    }
+    let source = ReferenceCards.definitionSource(ofCard: card).flatMap { url in
+      FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+    if panelMode != .expanded { setPanelMode(.expanded) }
+    guard let ticket = dashboard.tickets.first(where: { $0.id.caseInsensitiveCompare(taskID) == .orderedSame }) else {
+      openDocumentViewer(card, scope: documentScope(for: card))
+      if let source { documentViewer.open(source, in: .secondary) }
+      return true
+    }
+    if presentedPlanTicketID != ticket.id { openPlan(for: ticket) }
+    requestedReference = ReferenceRequest(ticketID: ticket.id, card: card, source: source)
+    return true
+  }
+
+  func consumeReferenceRequest(_ request: ReferenceRequest) {
+    if requestedReference == request { requestedReference = nil }
   }
 
   /// The CLI changed a tree. Notifications from another support directory are ignored.

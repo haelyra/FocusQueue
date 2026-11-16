@@ -77,6 +77,11 @@ enum SessionRegistrationError: Error, LocalizedError {
                 try await UICanvasCommand.run(arguments: arguments,
                     root: supportDirectory(environment: environment), environment: environment)
             }
+            else if arguments.first == "ref" {
+                let environment = ProcessInfo.processInfo.environment
+                try await ReferenceCommand.run(arguments: arguments,
+                    root: supportDirectory(environment: environment), environment: environment)
+            }
             else if arguments.first == "decision" {
                 let environment = ProcessInfo.processInfo.environment
                 try await DecisionTreeCommand.run(arguments: arguments,

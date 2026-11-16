@@ -196,8 +196,10 @@ struct PlanCanvasView: View {
         showRequestedCanvas()
         model.refreshDecisionTrees(ticketID: ticket.id)
         showRequestedDecisionTree()
+        showRequestedReference()
       }
       .onChange(of: model.requestedUICanvas) { _, _ in showRequestedCanvas() }
+      .onChange(of: model.requestedReference) { _, _ in showRequestedReference() }
       .onChange(of: model.requestedDecisionTree) { _, _ in showRequestedDecisionTree() }
       .onChange(of: model.presentedPlanURL) { _, _ in
         isEditing = false
@@ -544,6 +546,23 @@ struct PlanCanvasView: View {
           request.ticketID.caseInsensitiveCompare(ticket.id) == .orderedSame else { return }
     showDecisionTree(agentID: request.agentID)
     model.consumeDecisionTreeRequest(request)
+  }
+
+  /// A reference link from outside the viewer: the card (diagram and
+  /// definition) on the left, the document that defines the code on the right.
+  private func showRequestedReference() {
+    guard let request = model.requestedReference,
+          request.ticketID.caseInsensitiveCompare(ticket.id) == .orderedSame else { return }
+    if isEditing { isEditing = false }
+    showsWorkspaceMap = false
+    showsDecisionTree = false
+    selectedCanvasKey = nil
+    canvasSelection = nil
+    sideDocuments.open(request.card, in: .primary)
+    if let source = request.source, source.standardizedFileURL != request.card.standardizedFileURL {
+      sideDocuments.open(source, in: .secondary)
+    }
+    model.consumeReferenceRequest(request)
   }
 
   private func closeCanvasTab(_ key: String) {

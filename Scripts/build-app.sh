@@ -63,6 +63,9 @@ info_plist="$bundle_path/Contents/Info.plist"
 /usr/bin/plutil -insert NSHighResolutionCapable -bool true "$info_plist"
 /usr/bin/plutil -insert NSDocumentsFolderUsageDescription -string \
   "Focus Queue reads your local task dashboard from the Documents folder." "$info_plist"
+# focusqueue://ref/<TASK>/<CODE> links from agent terminals open reference cards.
+/usr/bin/plutil -insert CFBundleURLTypes -json \
+  '[{"CFBundleURLName":"com.haelyra.ecc-focus-queue.reference","CFBundleURLSchemes":["focusqueue"]}]' "$info_plist"
 
 integration_ref="${ECC_FOCUS_QUEUE_INTEGRATION_REF:-origin/main}"
 /usr/bin/python3 "$project_dir/Scripts/focus_queue_install.py" \

@@ -366,6 +366,23 @@ class InstallerTests(unittest.TestCase):
                 self.assertIn('A reply of "continue" means the recommended option', payload)
                 self.assertIn('`decision rewind <TASK> <AGENT> <NODE> --reason "<why>"`', payload)
 
+    def test_global_contract_links_shorthand_references(self):
+        repository = Path(__file__).parents[1]
+        for name in (
+            "Config/CODEX_GLOBAL_INSTRUCTIONS.md",
+            "Config/CLAUDE_GLOBAL_INSTRUCTIONS.md",
+            "Config/KIMI_GLOBAL_INSTRUCTIONS.md",
+        ):
+            with self.subTest(name=name):
+                payload = (repository / name).read_text()
+                self.assertIn("a developer who knows only the project's basic structure", payload)
+                self.assertIn("`focus-queue-session ref <TASK> <CODE> [<CODE> ...]`", payload)
+                self.assertIn("`[B3](focusqueue://ref/<TASK>/B3)`", payload)
+                self.assertIn("`evidence/refs/`", payload)
+        output_contract = (repository / "Docs/output-design/agent-output-contract.md").read_text()
+        self.assertIn("Link every shorthand reference", output_contract)
+        self.assertIn("knows only the project's basic structure", output_contract)
+
     def test_global_contract_maps_report_stages_to_existing_task_statuses(self):
         repository = Path(__file__).parents[1]
         output_contract = (

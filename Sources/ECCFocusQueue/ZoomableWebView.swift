@@ -16,6 +16,9 @@ final class ZoomableWebView: WKWebView {
     static let dragThreshold: CGFloat = 3
 
     var onMagnificationChange: ((CGFloat) -> Void)?
+    /// On map-like pages the scroll wheel zooms around the pointer instead of
+    /// scrolling; scrollbars and right-drag still move the view.
+    var wheelZooms = false
 
     override init(frame: CGRect, configuration: WKWebViewConfiguration) {
         super.init(frame: frame, configuration: configuration)
@@ -29,10 +32,61 @@ final class ZoomableWebView: WKWebView {
     func zoomOut() { setZoom(magnification / Self.zoomStep) }
     func resetZoom() { setZoom(1) }
 
-    func setZoom(_ value: CGFloat) {
-        let clamped = min(Self.zoomRange.upperBound, max(Self.zoomRange.lowerBound, value))
-        setMagnification(clamped, centeredAt: NSPoint(x: bounds.midX, y: bounds.midY))
-        onMagnificationChange?(magnification)
+    /// Buttons zoom around the middle of the view.
+    func setZoom(_ value: CGFloat) { zoom(to: value, keeping: NSPoint(x: bounds.midX, y: bounds.midY)) }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard wheelZooms, event.scrollingDeltaY != 0 else { return super.scrollWheel(with: event) }
+        // Trackpads report fine pixel deltas; mouse wheels report coarse lines.
+        let sensitivity: CGFloat = event.hasPreciseScrollingDeltas ? 0.006 : 0.08
+        zoom(to: (zoomTarget ?? magnification) * exp(event.scrollingDeltaY * sensitivity),
+             keeping: convert(event.locationInWindow, from: nil))
+    }
+
+    // WebKit's own `centeredAt:` does not keep content under the pointer (zooming
+    // in jumped to the top-left), so zoom anchors itself: read the scroll
+    // offset, apply the magnification, then scroll so the same page point is
+    // under the same view point. Steps that arrive mid-zoom are coalesced.
+    private var zoomTarget: CGFloat?
+    private var zoomAnchor = NSPoint.zero
+    private var isZooming = false
+
+    func zoom(to value: CGFloat, keeping viewPoint: NSPoint) {
+        zoomTarget = min(Self.zoomRange.upperBound, max(Self.zoomRange.lowerBound, value))
+        zoomAnchor = viewPoint
+        if !isZooming { applyPendingZoom() }
+    }
+
+    private func applyPendingZoom() {
+        guard let target = zoomTarget else { isZooming = false; return }
+        zoomTarget = nil
+        let old = magnification
+        guard abs(target - old) > 0.0001 else { return applyPendingZoom() }
+        isZooming = true
+        // Page scroll offsets count from the top-left.
+        let px = zoomAnchor.x, py = isFlipped ? zoomAnchor.y : bounds.height - zoomAnchor.y
+        callAsyncJavaScript("return [window.scrollX, window.scrollY]", arguments: [:], in: nil, in: .defaultClient) { [weak self] result in
+            guard let self else { return }
+            let offset = ((try? result.get()) as? [Double]) ?? [0, 0]
+            let pageX = offset[0] + px / old, pageY = offset[1] + py / old
+            self.setMagnification(target, centeredAt: .zero)
+            self.callAsyncJavaScript(
+                "window.scrollTo(x, y)", arguments: ["x": pageX - px / target, "y": pageY - py / target],
+                in: nil, in: .defaultClient
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.onMagnificationChange?(self.magnification)
+                self.applyPendingZoom()
+            }
+        }
+    }
+
+    /// Scrolls so the element is centered horizontally at the top. Runs in the
+    /// app's content world, so it works on pages whose own scripts are off.
+    func reveal(elementID: String) {
+        callAsyncJavaScript(
+            "document.getElementById(id)?.scrollIntoView({block: 'start', inline: 'center'})",
+            arguments: ["id": elementID], in: nil, in: .defaultClient)
     }
 
     override func magnify(with event: NSEvent) {
@@ -69,7 +123,8 @@ final class ZoomableWebView: WKWebView {
         let screenPoint = window.convertPoint(toScreen: windowPoint)
         let screenHeight = NSScreen.screens.first?.frame.height ?? 0
         scroll.location = CGPoint(x: screenPoint.x, y: screenHeight - screenPoint.y)
-        if let wheel = NSEvent(cgEvent: scroll) { scrollWheel(with: wheel) }
+        // super: a pan must scroll even where the wheel zooms.
+        if let wheel = NSEvent(cgEvent: scroll) { super.scrollWheel(with: wheel) }
     }
 }
 
@@ -144,4 +199,18 @@ final class ZoomableWebContainer: NSView {
     @objc private func zoomIn() { webView.zoomIn() }
     @objc private func zoomOut() { webView.zoomOut() }
     @objc private func resetZoom() { webView.resetZoom() }
+}
+
+/// Recognizes pages written by `ProjectMapGenerator` from their generator tag,
+/// so copies of a map (for example in a task's evidence folder) behave the same.
+enum ProjectMapPage {
+    static let generatorTag = #"<meta name="generator" content="Focus Queue project map">"#
+
+    static func isMap(_ url: URL) -> Bool {
+        guard url.isFileURL, ["html", "htm"].contains(url.pathExtension.lowercased()),
+              let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        let head = (try? handle.read(upToCount: 2_048)) ?? Data()
+        return String(decoding: head, as: UTF8.self).contains(generatorTag)
+    }
 }

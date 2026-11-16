@@ -140,14 +140,17 @@ func mapHTMLEscapesScript() {
     #expect(html.contains("<title>Demo project map</title>"))
 }
 
-@Test("The map renders without scripts, with every node and edge in the markup")
+@Test("The map renders as a ranked tree without scripts, with every node and edge in the markup")
 func mapHTMLIsStatic() {
     let map = demoMap(tickets: demoTickets)
     let html = ProjectMapHTML.render(map)
     // The document viewer disables page scripts, so nothing may depend on them.
     #expect(!html.lowercased().contains("<script"))
     for node in map.nodes { #expect(html.contains(#"data-id="\#(node.id)""#)) }
-    #expect(html.components(separatedBy: #"<path class="edge"#).count - 1 == map.edges.count)
+    // Every dependency is drawn once: as a tree edge or as a hidden extra edge.
+    #expect(html.components(separatedBy: #"<line class="dep "#).count - 1 == map.edges.count)
+    #expect(html.contains(#"class="root" id="root""#))
+    #expect(html.contains("Rank 0") && html.contains("Rank 2"))
     #expect(html.contains("<details><summary>1 agent</summary>"))
 }
 
@@ -185,4 +188,23 @@ func dashboardWriteRebuildsMap() async throws {
     #expect(html.contains(#"data-id="ghost:1.2""#))
     let built = try #require(try ProjectMapGenerator(root: root).build(projectID: "demo"))
     #expect(built.nodes.first { $0.id == "DEM-7" }?.leaves == ["1.4"])
+}
+
+@Test("Tree ranks: root, phases, then tasks one rank below their tree parent")
+func mapTreeRanks() {
+    let map = demoMap(tickets: demoTickets)
+    let html = ProjectMapHTML.render(map)
+    // In Phase 1: DEM-1 (1.1) heads the chain DEM-4 (1.2) → DEM-6/ghost 1.3 → ghost 1.4.
+    func top(_ id: String) -> Double? {
+        guard let range = html.range(of: #"data-id="\#(id)" style="left:"#) else { return nil }
+        let rest = html[range.upperBound...]
+        guard let topRange = rest.range(of: "top:") else { return nil }
+        return Double(rest[topRange.upperBound...].prefix { $0 == "." || $0.isNumber })
+    }
+    let rank = ProjectMapHTML.rankHeight
+    let one = try! #require(top("DEM-1"))
+    #expect(top("DEM-4") == one + rank)
+    #expect(top("DEM-6") == one + 2 * rank)
+    #expect(top("ghost:1.4") == one + 3 * rank)
+    #expect(one == ProjectMapHTML.top + 2 * rank)
 }

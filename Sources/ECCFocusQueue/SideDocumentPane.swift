@@ -688,6 +688,13 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
         let view: WKWebView = container.webView
         context.coordinator.open = open
         if context.coordinator.url != url || context.coordinator.revision != revision {
+            if context.coordinator.url != url {
+                // Project maps navigate by zoom: the wheel zooms, and the view
+                // opens centered on the tree's root (FOC-138).
+                let isMap = ProjectMapPage.isMap(url)
+                container.webView.wheelZooms = isMap
+                context.coordinator.revealsRoot = isMap
+            }
             context.coordinator.url = url
             context.coordinator.revision = revision
             context.coordinator.willLoadDocument()
@@ -707,6 +714,9 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
         var url: URL?
         var revision = 0
         var open: (URL) -> Void
+        /// Center a project map on its root after the first load only, so a
+        /// rebuild while viewing keeps the user's place.
+        var revealsRoot = false
         private var isDocumentLoaded = false
         private var handledFindRequest = 0
         private var pendingFind: (query: String, searchesBackwards: Bool)?
@@ -736,6 +746,10 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             isDocumentLoaded = true
             performPendingFind(in: webView)
+            if revealsRoot, let zoomable = webView as? ZoomableWebView {
+                revealsRoot = false
+                zoomable.reveal(elementID: "root")
+            }
         }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                      for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {

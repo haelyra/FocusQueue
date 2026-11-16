@@ -1,29 +1,62 @@
 import Foundation
 
-/// Renders a `ProjectMap` as one self-contained, script-free HTML page. Focus
-/// Queue's document viewer runs pages with scripts off, so the layout, SVG
-/// edges, hover highlighting (CSS `:has`), filters (CSS checkboxes), and agent
-/// dropdowns (`<details>`) are all computed here or done in CSS.
+/// Renders a `ProjectMap` as a textbook-style tree on one self-contained,
+/// script-free, dark HTML page.
+///
+/// - Rank 0 is the project, rank 1 its phases (plan sections), and ranks 2+
+///   its tasks by dependency depth inside their phase. Each task hangs under
+///   its deepest in-phase prerequisite, so a child is always one rank below its
+///   parent. Every parent is centered over its children; edges are straight.
+/// - Dependencies the tree cannot show (a second prerequisite, or one in
+///   another phase) are dashed lines, hidden until a card is hovered or the
+///   "Show all dependencies" toggle is on.
+///
+/// Focus Queue's document viewer runs pages with scripts off, so layout and
+/// edges are computed here, hover uses CSS `:has`, filters are CSS checkboxes,
+/// and agent lists are native `<details>` dropdowns.
 public enum ProjectMapHTML {
-    // Layout in CSS pixels. Cards have a fixed size so edges can be precomputed;
-    // the agent dropdown floats over the board instead of growing the card.
-    static let cardWidth = 236.0, cardHeight = 140.0
-    static let columnGap = 56.0, rowGap = 12.0
-    static let laneHeader = 30.0, lanePadding = 10.0, laneGap = 14.0, margin = 16.0
+    static let nodeWidth = 176.0, nodeHeight = 74.0
+    static let phaseWidth = 200.0, phaseHeight = 48.0
+    static let rootWidth = 240.0, rootHeight = 56.0
+    static let slotWidth = 196.0, rankHeight = 150.0
+    static let left = 120.0, top = 46.0, margin = 40.0
 
-    struct Placed { var node: ProjectMap.Node; var index: Int; var x: Double; var y: Double }
+    enum Kind { case root, phase(isTrack: Bool), item(ProjectMap.Node, index: Int) }
+
+    final class TreeNode {
+        let id: String
+        let kind: Kind
+        var children: [TreeNode] = []
+        var rank = 0
+        var slots = 1.0
+        var centerX = 0.0
+        init(id: String, kind: Kind) { self.id = id; self.kind = kind }
+
+        var size: (width: Double, height: Double) {
+            switch kind {
+            case .root: (ProjectMapHTML.rootWidth, ProjectMapHTML.rootHeight)
+            case .phase: (ProjectMapHTML.phaseWidth, ProjectMapHTML.phaseHeight)
+            case .item: (ProjectMapHTML.nodeWidth, ProjectMapHTML.nodeHeight)
+            }
+        }
+        var y: Double { ProjectMapHTML.top + Double(rank) * ProjectMapHTML.rankHeight }
+        var x: Double { centerX - size.width / 2 }
+    }
 
     public static func render(_ map: ProjectMap) -> String {
         let indexOf = Dictionary(map.nodes.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let root = TreeNode(id: "root", kind: .root)
+        var byID: [String: TreeNode] = [:]
+        var treeEdges = Set<String>()
 
-        // Depth inside each lane = longest chain of in-lane prerequisites.
-        var placed: [String: Placed] = [:]
-        var lanes: [(title: String, isTrack: Bool, y: Double, height: Double, width: Double)] = []
-        var y = margin
-        var boardWidth = 0.0
         for (laneIndex, lane) in map.lanes.enumerated() {
             let nodes = map.nodes.filter { $0.lane == laneIndex }
             guard !nodes.isEmpty else { continue }
+            let phase = TreeNode(id: "lane\(laneIndex)", kind: .phase(isTrack: lane.isTrack))
+            phase.rank = 1
+            root.children.append(phase)
+            byID[phase.id] = phase
+
             let ids = Set(nodes.map(\.id))
             var preds: [String: [String]] = [:]
             for edge in map.edges where ids.contains(edge.from) && ids.contains(edge.to) {
@@ -39,76 +72,107 @@ public enum ProjectMapHTML {
                 depth[id] = value
                 return value
             }
-            var rows: [Int: Int] = [:]
+            for node in nodes { byID[node.id] = TreeNode(id: node.id, kind: .item(node, index: indexOf[node.id] ?? 0)) }
             for node in nodes {
-                let column = depthOf(node.id)
-                let row = rows[column, default: 0]
-                rows[column] = row + 1
-                placed[node.id] = Placed(
-                    node: node, index: indexOf[node.id] ?? 0,
-                    x: margin + lanePadding + Double(column) * (cardWidth + columnGap),
-                    y: y + laneHeader + Double(row) * (cardHeight + rowGap))
+                let tree = byID[node.id]!
+                let own = depthOf(node.id)
+                tree.rank = 2 + own
+                // The parent is the prerequisite exactly one level up, earliest in plan order.
+                let parent = (preds[node.id] ?? [])
+                    .filter { depthOf($0) == own - 1 }
+                    .min { (indexOf[$0] ?? 0) < (indexOf[$1] ?? 0) }
+                if let parent, let parentNode = byID[parent] {
+                    parentNode.children.append(tree)
+                    treeEdges.insert(parent + "\u{1}" + node.id)
+                } else {
+                    phase.children.append(tree)
+                }
             }
-            let columns = (rows.keys.max() ?? 0) + 1
-            let maxRows = rows.values.max() ?? 1
-            let height = laneHeader + Double(maxRows) * (cardHeight + rowGap) - rowGap + lanePadding
-            let width = lanePadding * 2 + Double(columns) * cardWidth + Double(columns - 1) * columnGap
-            lanes.append((lane.title, lane.isTrack, y, height, width))
-            boardWidth = max(boardWidth, width)
-            y += height + laneGap
         }
-        let boardHeight = y + margin
-        boardWidth += margin * 2
+        for node in byID.values {
+            node.children.sort { order($0, indexOf) < order($1, indexOf) }
+        }
 
-        // Edges, precomputed. Edges to a later column run right-to-left between
-        // columns; the rest run between card bottoms and tops.
-        var edgeMarkup: [String] = []
+        // Tidy layout: a node spans its children's slots and sits centered over them.
+        func measure(_ node: TreeNode) -> Double {
+            node.slots = node.children.isEmpty ? 1 : node.children.map(measure).reduce(0, +)
+            return node.slots
+        }
+        func place(_ node: TreeNode, start: Double) {
+            node.centerX = left + (start + node.slots / 2) * slotWidth
+            var cursor = start
+            for child in node.children { place(child, start: cursor); cursor += child.slots }
+        }
+        _ = measure(root)
+        place(root, start: 0)
+        var all: [TreeNode] = []
+        func collect(_ node: TreeNode) { all.append(node); node.children.forEach(collect) }
+        collect(root)
+        let maxRank = all.map(\.rank).max() ?? 0
+        let width = left + root.slots * slotWidth + margin
+        let height = top + Double(maxRank) * rankHeight + nodeHeight + margin + 30
+
+        // Rank bands with labels, alternating so ranks read at a glance.
+        var bands: [String] = []
+        for rank in 0...maxRank {
+            let y = top + Double(rank) * rankHeight - 34
+            let name = rank == 0 ? "project" : rank == 1 ? "phases" : rank == 2 ? "first tasks" : "depends on rank \(rank - 1)"
+            bands.append(#"<div class="band\#(rank % 2 == 0 ? " even" : "")" style="top:\#(f(y))px;height:\#(f(rankHeight))px;width:\#(f(width))px"><div class="ranklabel"><b>Rank \#(rank)</b><span>\#(name)</span></div></div>"#)
+        }
+
+        // Edges: straight lines from a parent's bottom center to a child's top center.
+        var lines: [String] = []
         var neighbours: [Int: Set<Int>] = [:]
-        for edge in map.edges {
-            guard let a = placed[edge.from], let b = placed[edge.to] else { continue }
-            neighbours[a.index, default: []].insert(b.index)
-            neighbours[b.index, default: []].insert(a.index)
-            let path: String
-            if b.x >= a.x + cardWidth {
-                let x1 = a.x + cardWidth, y1 = a.y + 24, x2 = b.x - 2, y2 = b.y + 24
-                let dx = max(24, (x2 - x1) / 2)
-                path = "M\(f(x1)),\(f(y1)) C\(f(x1 + dx)),\(f(y1)) \(f(x2 - dx)),\(f(y2)) \(f(x2)),\(f(y2))"
-            } else {
-                let down = b.y > a.y
-                let x1 = a.x + cardWidth / 2, y1 = down ? a.y + cardHeight : a.y
-                let x2 = b.x + cardWidth / 2 + (b.x == a.x ? 18 : 0), y2 = down ? b.y - 2 : b.y + cardHeight + 2
-                let dy = (y2 - y1) / 2
-                path = "M\(f(x1)),\(f(y1)) C\(f(x1)),\(f(y1 + dy)) \(f(x2)),\(f(y2 - dy)) \(f(x2)),\(f(y2))"
+        func segment(_ a: TreeNode, _ b: TreeNode) -> (Double, Double, Double, Double) {
+            if b.rank > a.rank { return (a.centerX, a.y + a.size.height, b.centerX, b.y - 3) }
+            if b.rank < a.rank { return (a.centerX, a.y, b.centerX, b.y + b.size.height + 3) }
+            let forward = b.centerX > a.centerX
+            return (forward ? a.x + a.size.width : a.x, a.y + a.size.height / 2,
+                    forward ? b.x - 3 : b.x + b.size.width + 3, b.y + b.size.height / 2)
+        }
+        for node in all {
+            for child in node.children {
+                if case .item = node.kind { continue }   // dependency edges come below
+                let (x1, y1, x2, y2) = segment(node, child)
+                lines.append(#"<line class="struct\#(child.isGhost ? " gh" : "")" x1="\#(f(x1))" y1="\#(f(y1))" x2="\#(f(x2))" y2="\#(f(y2))"/>"#)
             }
-            var classes = ["edge", "e\(a.index)", "e\(b.index)"]
-            if a.node.lane != b.node.lane { classes.append("cross") }
-            if edge.source == "task" || a.node.kind == .ghost || b.node.kind == .ghost { classes.append("dash") }
-            if isFinished(a.node) || isFinished(b.node) { classes.append("fin") }
-            if a.node.kind == .ghost || b.node.kind == .ghost { classes.append("gh") }
-            edgeMarkup.append(#"<path class="\#(classes.joined(separator: " "))" d="\#(path)"/>"#)
+        }
+        for edge in map.edges {
+            guard let a = byID[edge.from], let b = byID[edge.to],
+                  case .item(let from, let i) = a.kind, case .item(let to, let j) = b.kind else { continue }
+            neighbours[i, default: []].insert(j)
+            neighbours[j, default: []].insert(i)
+            let isTree = treeEdges.contains(edge.from + "\u{1}" + edge.to)
+            var classes = ["dep", isTree ? "tree" : "extra", "e\(i)", "e\(j)"]
+            if from.kind == .ghost || to.kind == .ghost { classes += ["gh", "dash"] }
+            if isFinished(from) || isFinished(to) { classes.append("fin") }
+            let (x1, y1, x2, y2) = segment(a, b)
+            lines.append(#"<line class="\#(classes.joined(separator: " "))" x1="\#(f(x1))" y1="\#(f(y1))" x2="\#(f(x2))" y2="\#(f(y2))"/>"#)
         }
 
-        // Hover: highlight the card's edges and neighbours, dim everything else.
         var hoverCSS: [String] = []
-        for item in placed.values.sorted(by: { $0.index < $1.index }) {
-            let i = item.index
-            hoverCSS.append("#map:has(#n\(i):hover) .node:not(.k\(i)){opacity:.3}")
-            hoverCSS.append("#map:has(#n\(i):hover) .e\(i){stroke:var(--edge-hi);stroke-width:2;opacity:1;marker-end:url(#ahi)}")
-        }
-
-        let laneMarkup = lanes.map { lane in
-            #"<section class="lane\#(lane.isTrack ? " track" : "")" style="top:\#(f(lane.y))px;left:\#(f(margin))px;width:\#(f(lane.width))px;height:\#(f(lane.height))px"><h2>\#(escape(lane.title))</h2></section>"#
-        }
-        let cardMarkup = placed.values.sorted(by: { $0.index < $1.index }).map { item in
-            card(item, neighbours: neighbours[item.index] ?? [])
+        var cards: [String] = []
+        for node in all {
+            switch node.kind {
+            case .root:
+                cards.append(#"<div class="root" id="root" style="left:\#(f(node.x))px;top:\#(f(node.y))px"><b>\#(escape(map.projectName))</b><span>\#(escape("Phase: \(map.currentPhase)"))</span></div>"#)
+            case .phase(let isTrack):
+                let index = Int(node.id.dropFirst(4)) ?? 0
+                let title = map.lanes.indices.contains(index) ? map.lanes[index].title : node.id
+                let count = map.nodes.filter { $0.lane == index }.count
+                cards.append(#"<div class="phase\#(isTrack ? " track" : "")" style="left:\#(f(node.x))px;top:\#(f(node.y))px" title="\#(escape(title))"><b>\#(escape(title))</b><span>\#(count) node\#(count == 1 ? "" : "s")\#(isTrack ? " · not gating" : "")</span></div>"#)
+            case .item(let item, let i):
+                hoverCSS.append("#map:has(#n\(i):hover) .node:not(.k\(i)){opacity:.28}")
+                hoverCSS.append("#map:has(#n\(i):hover) .e\(i){stroke:var(--edge-hi);stroke-width:2.2;opacity:1;visibility:visible}")
+                cards.append(card(item, index: i, neighbours: neighbours[i] ?? [], x: node.x, y: node.y))
+            }
         }
 
         let tasks = map.nodes.filter { $0.kind == .task }
         let open = tasks.filter { !isFinished($0) }.count
-        let ghosts = map.nodes.count - tasks.count
         let stamp = DateFormatter()
         stamp.dateFormat = "yyyy-MM-dd HH:mm"
-        let summary = "Phase: \(map.currentPhase) · \(tasks.count) tasks (\(open) open) · \(ghosts) ghost tasks · "
+        let summary = "\(tasks.count) tasks (\(open) open) · \(map.nodes.count - tasks.count) ghost tasks · "
             + (map.planFile.map { "plan: \($0)" } ?? "no development plan file")
             + " · generated \(stamp.string(from: map.generatedAt))"
 
@@ -117,50 +181,54 @@ public enum ProjectMapHTML {
             .replacingOccurrences(of: "{{HEADING}}", with: escape("\(map.projectName) · project map"))
             .replacingOccurrences(of: "{{SUMMARY}}", with: escape(summary))
             .replacingOccurrences(of: "{{HOVER}}", with: hoverCSS.joined(separator: "\n"))
-            .replacingOccurrences(of: "{{WIDTH}}", with: f(boardWidth))
-            .replacingOccurrences(of: "{{HEIGHT}}", with: f(boardHeight))
-            .replacingOccurrences(of: "{{LANES}}", with: laneMarkup.joined(separator: "\n"))
-            .replacingOccurrences(of: "{{EDGES}}", with: edgeMarkup.joined(separator: "\n"))
-            .replacingOccurrences(of: "{{CARDS}}", with: cardMarkup.joined(separator: "\n"))
-            .replacingOccurrences(of: "{{EMPTY}}", with: placed.isEmpty ? #"<p class="empty">No tasks to show.</p>"# : "")
+            .replacingOccurrences(of: "{{WIDTH}}", with: f(width))
+            .replacingOccurrences(of: "{{HEIGHT}}", with: f(height))
+            .replacingOccurrences(of: "{{BANDS}}", with: bands.joined(separator: "\n"))
+            .replacingOccurrences(of: "{{EDGES}}", with: lines.joined(separator: "\n"))
+            .replacingOccurrences(of: "{{CARDS}}", with: cards.joined(separator: "\n"))
     }
 
-    static func card(_ item: Placed, neighbours: Set<Int>) -> String {
-        let node = item.node
+    static func order(_ node: TreeNode, _ indexOf: [String: Int]) -> Int {
+        if case .item(_, let index) = node.kind { return index }
+        return Int(node.id.dropFirst(4)) ?? 0
+    }
+
+    static func card(_ node: ProjectMap.Node, index: Int, neighbours: Set<Int>, x: Double, y: Double) -> String {
         let group = statusGroup(node.status)
-        var classes = ["node", node.kind == .ghost ? "ghost" : "s-\(group)", "k\(item.index)"]
+        var classes = ["node", node.kind == .ghost ? "ghost" : "s-\(group)", "k\(index)"]
         classes += neighbours.sorted().map { "k\($0)" }
         if isFinished(node) { classes.append("fin") }
         if node.kind == .ghost { classes.append("gh") }
         let label = node.kind == .ghost
             ? (node.leaves.isEmpty ? "module" : "leaf " + node.leaves.joined(separator: ", "))
             : node.id
-        let pill = node.status == "missing" ? "No task yet" : node.status.replacingOccurrences(of: "-", with: " ")
+        let pill = node.status == "missing" ? "no task" : node.status.replacingOccurrences(of: "-", with: " ")
         let title = node.kind == .ghost
             ? node.title.replacingOccurrences(of: #"^\S+\.\s"#, with: "", options: .regularExpression)
             : node.title
-        var meta: [String] = []
-        if node.kind == .task, !node.leaves.isEmpty { meta.append("Plan " + node.leaves.joined(separator: ", ")) }
-        if let phase = node.phase { meta.append(phase) }
-        var body = #"<div class="top"><span class="id">\#(escape(label))</span><span class="pill \#(node.kind == .ghost ? "ghost" : "s-\(group)")">\#(escape(pill))</span></div>"#
-        body += #"<div class="title" title="\#(escape(title))">\#(escape(title))</div>"#
-        if !meta.isEmpty { body += #"<div class="meta">\#(escape(meta.joined(separator: " · ")))</div>"# }
-        if let gate = node.gate { body += #"<div class="gate" title="\#(escape(gate))">Gate: \#(escape(gate))</div>"# }
-        if let reason = node.reason { body += #"<div class="meta" title="\#(escape(reason))">\#(escape(reason))</div>"# }
+        var details: [String] = []
+        var facts: [String] = []
+        if node.kind == .task, !node.leaves.isEmpty { facts.append("Plan " + node.leaves.joined(separator: ", ")) }
+        if let phase = node.phase { facts.append(phase) }
+        if !facts.isEmpty { details.append(#"<div class="meta">\#(escape(facts.joined(separator: " · ")))</div>"#) }
+        if let gate = node.gate { details.append(#"<div class="meta">Gate: \#(escape(gate))</div>"#) }
+        if let reason = node.reason { details.append(#"<div class="meta">\#(escape(reason))</div>"#) }
+        let summary: String
         if node.kind == .task {
             let count = node.agents.count
-            let heading = count == 0 ? "No agents" : "\(count) agent\(count == 1 ? "" : "s")"
-            let rows = count == 0
-                ? #"<div class="meta">No agent has worked on this task yet.</div>"#
-                : node.agents.map { agent in
-                    var row = #"<div class="agent"><div><b>\#(escape(agent.title))</b> · \#(escape(agent.provider)) · \#(escape(agent.status))</div>"#
-                    if let attention = agent.attention { row += #"<div class="meta">\#(escape(attention))</div>"# }
-                    if !agent.summary.isEmpty { row += #"<div class="meta clamp">\#(escape(agent.summary))</div>"# }
-                    return row + "</div>"
-                }.joined()
-            body += #"<details><summary>\#(heading)</summary><div class="panel">\#(rows)</div></details>"#
+            summary = count == 0 ? "No agents" : "\(count) agent\(count == 1 ? "" : "s")"
+            if count == 0 { details.append(#"<div class="meta">No agent has worked on this task yet.</div>"#) }
+            for agent in node.agents {
+                var row = #"<div class="agent"><div><b>\#(escape(agent.title))</b> · \#(escape(agent.provider)) · \#(escape(agent.status))</div>"#
+                if let attention = agent.attention { row += #"<div class="meta">\#(escape(attention))</div>"# }
+                if !agent.summary.isEmpty { row += #"<div class="meta clamp">\#(escape(agent.summary))</div>"# }
+                details.append(row + "</div>")
+            }
+        } else {
+            summary = "Planned work"
         }
-        return #"<div class="\#(classes.joined(separator: " "))" id="n\#(item.index)" data-id="\#(escape(node.id))" style="left:\#(f(item.x))px;top:\#(f(item.y))px">\#(body)</div>"#
+        let tooltip = escape(([title] + (node.gate.map { ["Gate: \($0)"] } ?? [])).joined(separator: "\n"))
+        return #"<div class="\#(classes.joined(separator: " "))" id="n\#(index)" data-id="\#(escape(node.id))" style="left:\#(f(x))px;top:\#(f(y))px" title="\#(tooltip)"><div class="top"><span class="id">\#(escape(label))</span><span class="pill \#(node.kind == .ghost ? "ghost" : "s-\(group)")">\#(escape(pill))</span></div><div class="title">\#(escape(title))</div><details><summary>\#(summary)</summary><div class="panel">\#(details.joined())</div></details></div>"#
     }
 
     static func statusGroup(_ status: String) -> String {
@@ -193,93 +261,105 @@ public enum ProjectMapHTML {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="generator" content="Focus Queue project map">
+<meta name="color-scheme" content="dark">
 <title>{{TITLE}}</title>
 <style>
 :root {
-  --bg: #f7f7f5; --panel: #ffffff; --ink: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7;
-  --edge: #a1a1a6; --edge-hi: #0a66d8; --lane: #efefec;
-  --done: #1f8a4c; --active: #0a66d8; --review: #7b3fd0; --blocked: #c4372f; --idle: #8a8a8e; --cancel: #a1a1a6;
-  --ghost: #9a9aa0;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1b1b1d; --panel: #26262a; --ink: #f2f2f4; --muted: #a1a1a8; --line: #3a3a40;
-    --edge: #6a6a72; --edge-hi: #4c9bff; --lane: #222226;
-    --done: #3cbf73; --active: #4c9bff; --review: #a97cf0; --blocked: #ff6b61; --idle: #8e8e93; --cancel: #6c6c72;
-    --ghost: #7c7c84;
-  }
+  --bg: #121214; --band: #17171a; --band2: #1c1c20; --panel: #232327; --ink: #ececf0; --muted: #9a9aa3;
+  --line: #3a3a42; --edge: #8a8a94; --edge-hi: #5aa2ff; --accent: #5aa2ff;
+  --done: #3cbf73; --active: #4c9bff; --review: #a97cf0; --blocked: #ff6b61; --idle: #8e8e93; --cancel: #66666c;
+  --ghost: #6e6e78;
 }
 * { box-sizing: border-box; }
-html, body { margin: 0; background: var(--bg); color: var(--ink); }
-body { font: 13px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif; }
+html { background: var(--bg); color-scheme: dark; overflow: scroll; }
+html, body { margin: 0; color: var(--ink); }
+body { font: 12px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif; }
+::-webkit-scrollbar { width: 12px; height: 12px; background: #1a1a1e; }
+::-webkit-scrollbar-thumb { background: #4a4a54; border-radius: 6px; border: 2px solid #1a1a1e; }
+::-webkit-scrollbar-thumb:hover { background: #64646f; }
+::-webkit-scrollbar-corner { background: #1a1a1e; }
 header { padding: 12px 16px 10px; border-bottom: 1px solid var(--line); }
 h1 { font-size: 16px; margin: 0 0 2px; }
-.sub { color: var(--muted); font-size: 12px; }
-.controls { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; margin-top: 8px; font-size: 12px; }
+.sub { color: var(--muted); }
+.controls { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-top: 8px; }
 .toggle { position: absolute; opacity: 0; pointer-events: none; }
 .controls label { cursor: pointer; user-select: none; }
 .controls label::before { content: "☐ "; }
-#hideDone:checked ~ header label[for=hideDone]::before, #hideGhosts:checked ~ header label[for=hideGhosts]::before { content: "☑ "; }
-#hideDone:checked ~ #map .fin, #hideGhosts:checked ~ #map .gh { visibility: hidden; }
+#hideDone:checked ~ header label[for=hideDone]::before, #hideGhosts:checked ~ header label[for=hideGhosts]::before,
+#showDeps:checked ~ header label[for=showDeps]::before { content: "☑ "; }
+#hideDone:checked ~ #map .fin, #hideGhosts:checked ~ #map .gh { visibility: hidden !important; }
+#showDeps:checked ~ #map .extra { visibility: visible; }
 .legend { display: inline-flex; flex-wrap: wrap; gap: 8px; color: var(--muted); }
 .legend span { display: inline-flex; align-items: center; gap: 4px; }
 .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
 .dot.ghost { border: 1.5px dashed var(--ghost); }
+.hint { color: var(--muted); }
 #map { position: relative; }
-.lane { position: absolute; background: var(--lane); border-radius: 10px; padding: 8px 10px; }
-.lane h2 { font-size: 12px; font-weight: 600; margin: 0; color: var(--muted); white-space: nowrap; }
-.lane.track h2::after { content: " · not gating"; font-weight: 400; }
+.band { position: absolute; left: 0; background: var(--band); border-top: 1px solid #222228; }
+.band.even { background: var(--band2); }
+/* Sticky: the rank label stays at the left edge while the tree scrolls. */
+.ranklabel { position: sticky; left: 0; display: inline-flex; flex-direction: column; gap: 1px; z-index: 3;
+  margin-top: 8px; padding: 5px 10px; background: rgba(18,18,20,.85); border-radius: 0 8px 8px 0; }
+.ranklabel b { font-size: 13px; color: var(--ink); }
+.ranklabel span { font-size: 11px; color: var(--muted); max-width: 100px; }
 svg { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; z-index: 1; }
-.edge { fill: none; stroke: var(--edge); stroke-width: 1.2; opacity: .9; marker-end: url(#a); }
-.edge.cross { opacity: .45; }
-.edge.dash { stroke-dasharray: 4 3; }
-.node { position: absolute; width: 236px; height: 140px; display: flex; flex-direction: column; gap: 1px;
-  background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--idle);
-  border-radius: 8px; padding: 7px 9px; z-index: 2; }
+line { stroke: var(--edge); stroke-width: 1.4; }
+line.struct { stroke: #5a5a64; }
+line.dep.tree { stroke: var(--edge); }
+line.extra { visibility: hidden; stroke-dasharray: 5 4; opacity: .8; }
+line.dash { stroke-dasharray: 5 4; }
+.root, .phase, .node { position: absolute; z-index: 2; }
+.root { width: 240px; height: 56px; border-radius: 28px; background: #1d2a3d; border: 2px solid var(--accent);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.root b { font-size: 15px; } .root span { color: var(--muted); font-size: 11px; }
+.phase { width: 200px; height: 48px; border-radius: 10px; background: #26262c; border: 1.5px solid #6a6a76;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 10px; text-align: center; }
+.phase b { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.phase span { color: var(--muted); font-size: 10.5px; }
+.phase.track { border-style: dashed; }
+.node { width: 176px; height: 74px; display: flex; flex-direction: column; background: var(--panel);
+  border: 1px solid var(--line); border-top: 3px solid var(--idle); border-radius: 8px; padding: 4px 8px 3px; }
 .node:hover { box-shadow: 0 0 0 2px var(--edge-hi); }
 .node:has(details[open]) { z-index: 40; }
-.node.s-done { border-left-color: var(--done); }
-.node.s-active { border-left-color: var(--active); }
-.node.s-review { border-left-color: var(--review); }
-.node.s-blocked { border-left-color: var(--blocked); }
-.node.s-cancel { border-left-color: var(--cancel); }
+.node.s-done { border-top-color: var(--done); }
+.node.s-active { border-top-color: var(--active); }
+.node.s-review { border-top-color: var(--review); }
+.node.s-blocked { border-top-color: var(--blocked); }
+.node.s-cancel { border-top-color: var(--cancel); }
 .node.s-cancel .title { text-decoration: line-through; }
-.node.ghost { background: var(--lane); border: 1.5px dashed var(--ghost); color: var(--ghost); }
+.node.ghost { background: transparent; border: 1.5px dashed var(--ghost); color: var(--ghost); }
 .top { display: flex; justify-content: space-between; gap: 6px; align-items: center; }
-.id { font: 11px ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pill { font-size: 10px; font-weight: 600; padding: 0 6px; border-radius: 9px; border: 1px solid currentColor; white-space: nowrap; }
+.id { font: 10.5px ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pill { font-size: 9.5px; font-weight: 600; padding: 0 5px; border-radius: 8px; border: 1px solid currentColor; white-space: nowrap; }
 .pill.s-done { color: var(--done); } .pill.s-active { color: var(--active); } .pill.s-review { color: var(--review); }
 .pill.s-blocked { color: var(--blocked); } .pill.s-idle { color: var(--idle); } .pill.s-cancel { color: var(--cancel); }
 .pill.ghost { color: var(--ghost); border-style: dashed; }
-.title { font-weight: 600; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.meta { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.gate { font-size: 11px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-details { margin-top: auto; font-size: 12px; position: relative; }
-summary { cursor: pointer; color: var(--muted); list-style: none; user-select: none; }
+.title { font-weight: 600; font-size: 11.5px; margin-top: 1px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+details { margin-top: auto; position: relative; }
+summary { cursor: pointer; color: var(--muted); list-style: none; user-select: none; font-size: 11px; }
 summary::-webkit-details-marker { display: none; }
-summary::before { content: "▸"; display: inline-block; width: 12px; }
+summary::before { content: "▸"; display: inline-block; width: 11px; }
 details[open] summary::before { content: "▾"; }
-.panel { position: absolute; left: -10px; top: 20px; width: 320px; max-height: 280px; overflow: auto;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px 9px 6px;
-  box-shadow: 0 6px 20px rgba(0,0,0,.18); }
+.panel { position: absolute; left: -9px; top: 17px; width: 320px; max-height: 300px; overflow: auto; color: var(--ink);
+  background: #2a2a30; border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+.meta { font-size: 11px; color: var(--muted); margin-bottom: 3px; }
 .agent { padding: 5px 0 3px; border-top: 1px solid var(--line); }
-.agent:first-child { border-top: 0; }
 .agent b { font-weight: 600; }
-.panel .meta { white-space: normal; }
-.panel .clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.empty { color: var(--muted); padding: 20px 16px; }
+.clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 {{HOVER}}
 </style>
 </head>
 <body>
 <input type="checkbox" class="toggle" id="hideDone">
 <input type="checkbox" class="toggle" id="hideGhosts">
+<input type="checkbox" class="toggle" id="showDeps">
 <header>
   <h1>{{HEADING}}</h1>
   <div class="sub">{{SUMMARY}}</div>
   <div class="controls">
     <label for="hideDone">Hide finished</label>
     <label for="hideGhosts">Hide ghost tasks</label>
+    <label for="showDeps">Show all dependencies</label>
     <span class="legend">
       <span><i class="dot" style="background:var(--active)"></i>In progress</span>
       <span><i class="dot" style="background:var(--review)"></i>Review/QA</span>
@@ -288,16 +368,12 @@ details[open] summary::before { content: "▾"; }
       <span><i class="dot" style="background:var(--done)"></i>Done</span>
       <span><i class="dot ghost"></i>No task yet</span>
     </span>
+    <span class="hint">Scroll to zoom · right-drag to move · hover a task for all its dependencies</span>
   </div>
 </header>
-{{EMPTY}}
 <div id="map" style="width:{{WIDTH}}px;height:{{HEIGHT}}px">
-{{LANES}}
+{{BANDS}}
 <svg width="{{WIDTH}}" height="{{HEIGHT}}" viewBox="0 0 {{WIDTH}} {{HEIGHT}}" aria-hidden="true">
-<defs>
-<marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--edge)"/></marker>
-<marker id="ahi" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--edge-hi)"/></marker>
-</defs>
 {{EDGES}}
 </svg>
 {{CARDS}}
@@ -305,4 +381,11 @@ details[open] summary::before { content: "▾"; }
 </body>
 </html>
 """#
+}
+
+private extension ProjectMapHTML.TreeNode {
+    var isGhost: Bool {
+        if case .item(let node, _) = kind { return node.kind == .ghost }
+        return false
+    }
 }

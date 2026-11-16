@@ -267,6 +267,10 @@ final class QueueViewModel {
   var decisionMessages: [String: DecisionActionMessage] = [:]
   /// When the refresh loop last looked for overdue decisions.
   var lastDecisionAutomationCheck: Date?
+  /// The bundled global contract payloads; a development build has none.
+  var builtInContractResources: URL? = Bundle.main.resourceURL
+  /// Why the last built-in contract could not be opened.
+  var builtInContractError: String?
   /// Canvas tabs the human closed; an agent's next `canvas open` shows them again.
   private(set) var dismissedUICanvasKeys: Set<String> = []
   /// Ended canvases the human reopened from the task's context; they stay
@@ -973,6 +977,8 @@ final class QueueViewModel {
   }
 
   private func finishBootstrap() async {
+    // Readable copies of the contracts this build gives agents, for Settings and links.
+    BuiltInAgentContract.writeAll(root: paths.supportDirectory, resources: builtInContractResources)
     do {
       let projects = ProjectCatalog.ensuringOther(
         in: config.projects, supportDirectory: paths.supportDirectory)
@@ -7289,6 +7295,25 @@ extension QueueViewModel {
       let tree = try await service.pushPending(taskID: ticketID, agentID: agentID)
       let failed = tree.nodes.compactMap(\.checkpoint).filter { !$0.pushed }
       return failed.isEmpty ? "Every checkpoint is on the remote." : "Push still fails: \(failed.first?.pushError ?? "unknown")"
+    }
+  }
+
+  func builtInContractAvailable(_ contract: BuiltInAgentContract) -> Bool {
+    contract.isAvailable(resources: builtInContractResources)
+  }
+
+  /// Opens a contract Focus Queue gives agents, refreshed from this build, in
+  /// the document viewer.
+  func openBuiltInContract(_ contract: BuiltInAgentContract) {
+    do {
+      guard let url = try contract.write(root: paths.supportDirectory, resources: builtInContractResources) else {
+        builtInContractError = "This build does not include the \(contract.title) contract."
+        return
+      }
+      builtInContractError = nil
+      openDocumentViewer(url, scope: nil)
+    } catch {
+      builtInContractError = "Could not write the \(contract.title) contract: \(error.localizedDescription)"
     }
   }
 

@@ -1902,6 +1902,19 @@ struct QueueSettingsView: View {
             }
           }
           settingsSection(
+            title: "Agent contracts",
+            detail: "The rules Focus Queue itself gives agents. Every agent gets its provider's global contract; orchestrators also get the orchestrator rules. A project's signed contracts are in its Project tab."
+          ) {
+            VStack(alignment: .leading, spacing: 10) {
+              builtInContractRow("Global contract", contracts: [.claude, .codex, .kimi])
+              builtInContractRow("Orchestrator rules", contracts: [.orchestrator])
+              if let error = model.builtInContractError {
+                Text(error).font(.caption).foregroundStyle(.orange)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+            }
+          }
+          settingsSection(
             title: "Agent terminals",
             detail: "Each task runs its agents as panes in one shared tmux session."
           ) {
@@ -2290,6 +2303,22 @@ struct QueueSettingsView: View {
         HotkeyRecorderField(model: model, action: action).disabled(!isOn.wrappedValue)
       }
       Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    }
+  }
+
+  /// Buttons that open a built-in contract in full in the document viewer.
+  private func builtInContractRow(_ title: String, contracts: [BuiltInAgentContract]) -> some View {
+    HStack(spacing: 6) {
+      Text(title)
+      Spacer(minLength: 8)
+      ForEach(contracts) { contract in
+        let available = model.builtInContractAvailable(contract)
+        Button(contracts.count == 1 ? "Open" : contract.title) { model.openBuiltInContract(contract) }
+          .buttonStyle(.bordered).controlSize(.small)
+          .disabled(!available)
+          .help(available ? "Read the full file. \(contract.delivery)" : "Only the installed app includes this contract.")
+          .accessibilityLabel(contract == .orchestrator ? "Open the orchestrator rules" : "Open the \(contract.title) agent contract")
+      }
     }
   }
 

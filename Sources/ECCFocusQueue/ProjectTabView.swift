@@ -321,6 +321,14 @@ struct ProjectTabView: View {
           .buttonStyle(.borderless)
           .help("Lint results and the generator's notes from the last generation")
         }
+        Button {
+          model.openBuiltInContract(.orchestrator)
+        } label: {
+          Label("Built-in rules", systemImage: "lock.doc")
+            .font(.system(size: 10, weight: .semibold))
+        }
+        .buttonStyle(.borderless)
+        .help("Read the rules Focus Queue adds for every orchestrator, beside this signed contract")
       }
       Text("Signed contracts reach agents by role: engineering launches get the engineering contract; task chat, project QChat, and orchestrator launches get the orchestrator contract. Saving one in the viewer signs it off.")
         .font(.caption2).foregroundStyle(.secondary)

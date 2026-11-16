@@ -94,7 +94,10 @@ verifiably complete and the evidence is in §2.
    fairly confident", no five-point scales.
 10. Output renders as terminal Markdown: shallow structure, no deep nesting,
     cite code as `path:line`.
-11. Link every shorthand reference (B3, M7, FC2, D4). Run
+11. Avoid shorthand references (B3, M7, FC2, D4); name the thing in plain
+    words instead. When a code is unavoidable, summarize what it is before
+    its first use, so a reader can catch up without opening anything.
+    Link every shorthand reference you do use. Run
     `focus-queue-session ref <CODE> [<CODE> ...]` and paste each returned
     `markdown` link, glossed at first mention: `[B3](focusqueue://ref/FOC-1/B3)
     (agent resource library)`. Clicking it opens the code's diagram and

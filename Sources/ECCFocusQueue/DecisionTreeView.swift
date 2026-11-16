@@ -31,9 +31,16 @@ struct DecisionTreeView: View {
           .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.03)))
           .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.08), lineWidth: 1))
           if let selected {
-            DecisionNodeDetail(model: model, tree: tree, node: selected)
-              .frame(width: 320)
-              .id(selected.id)
+            ScrollView {
+              DecisionNodeDetail(node: selected, settings: model.decisionAutomation,
+                                 running: model.isDecisionActionRunning(ticketID: tree.taskID, agentID: tree.agentID),
+                                 actions: actions(tree: tree, node: selected))
+                .padding(12)
+            }
+            .frame(width: 320)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.03)))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+            .id("\(tree.agentID)/\(selected.id)")
           }
         }
         if let message = model.decisionMessage(ticketID: tree.taskID, agentID: tree.agentID) {
@@ -74,6 +81,14 @@ struct DecisionTreeView: View {
       Text(settings.autoRewind ? "· Agents may rewind" : "· Rewinds need you")
         .font(.caption).foregroundStyle(.secondary)
     }
+  }
+
+  private func actions(tree: DecisionTree, node: DecisionNode) -> DecisionNodeActions {
+    let (taskID, agentID, nodeID) = (tree.taskID, tree.agentID, node.id)
+    return DecisionNodeActions(
+      choose: { model.chooseDecision(ticketID: taskID, agentID: agentID, nodeID: nodeID, optionID: $0) },
+      rewind: { model.rewindDecision(ticketID: taskID, agentID: agentID, nodeID: nodeID, optionID: $0, reason: $1) },
+      retryPush: { model.retryDecisionPush(ticketID: taskID, agentID: agentID) })
   }
 
   private func selectedNode(in tree: DecisionTree) -> DecisionNode? {
@@ -330,157 +345,292 @@ struct DecisionPathPill: View {
 
 // MARK: - Detail
 
-struct DecisionNodeDetail: View {
-  let model: QueueViewModel
-  let tree: DecisionTree
-  let node: DecisionNode
-  @State private var rewindOptionID: String = ""
-  @State private var reason = ""
-  @State private var confirmingRewind = false
+/// What the decision panel asks the app to do.
+struct DecisionNodeActions {
+  var choose: @MainActor (_ optionID: String) -> Void = { _ in }
+  var rewind: @MainActor (_ optionID: String, _ reason: String) -> Void = { _, _ in }
+  var retryPush: @MainActor () -> Void = {}
+}
 
-  private var running: Bool { model.isDecisionActionRunning(ticketID: tree.taskID, agentID: tree.agentID) }
+/// The side panel's content for one decision. The decision, its options, and
+/// the choose and rewind actions stay in view; the agent's reasoning, the
+/// checkpoint, and earlier attempts sit in collapsed sections.
+struct DecisionNodeDetail: View {
+  let node: DecisionNode
+  let settings: DecisionAutomationSettings
+  let running: Bool
+  let actions: DecisionNodeActions
+  @State private var showsWhy: Bool
+  @State private var showsCheckpoint: Bool
+  @State private var showsHistory: Bool
+  @State private var rewinding = false
+  @State private var rewindOptionID: String
+  @State private var reason = ""
+
+  /// `expanded` opens or closes every section. When nil, only the reasoning
+  /// of a decision that still waits for an answer starts open.
+  init(node: DecisionNode, settings: DecisionAutomationSettings, running: Bool = false,
+       actions: DecisionNodeActions = DecisionNodeActions(), expanded: Bool? = nil) {
+    self.node = node
+    self.settings = settings
+    self.running = running
+    self.actions = actions
+    _showsWhy = State(initialValue: expanded ?? (node.status == .pending))
+    _showsCheckpoint = State(initialValue: expanded ?? false)
+    _showsHistory = State(initialValue: expanded ?? false)
+    _rewindOptionID = State(initialValue: node.nextUntriedOptionID ?? node.recommendedOptionID ?? "")
+  }
 
   var body: some View {
-    ScrollView {
-      VStack(alignment: .leading, spacing: 12) {
-        VStack(alignment: .leading, spacing: 4) {
-          Text("\(node.id) · departs from the \(node.divergence.label.lowercased())")
-            .font(.caption).foregroundStyle(.secondary)
-          Text(node.title).font(.headline).textSelection(.enabled)
-          if let detail = node.detail, !detail.isEmpty {
-            Text(detail).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-          }
-        }
-        optionsList
-        if node.status == .pending { chooseSection }
-        rewindSection
-        recordSection
-        if running { ProgressView().controlSize(.small) }
-      }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(12)
+    VStack(alignment: .leading, spacing: 10) {
+      header
+      Text(node.title).font(.headline).textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+      if hasReasoning { reasoning }
+      options
+      rewindButton
+      checkpointSection
+      if node.attempts.count > 1 { historySection }
     }
-    .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.03)))
-    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.08), lineWidth: 1))
-    .onAppear { rewindOptionID = node.nextUntriedOptionID ?? node.recommendedOptionID ?? "" }
-    .confirmationDialog("Rewind \(model.decisionAgentTitle(tree)) to \(node.id)?", isPresented: $confirmingRewind) {
-      Button("Rewind and take option \(rewindOptionID)", role: .destructive) {
-        model.rewindDecision(ticketID: tree.taskID, agentID: tree.agentID, nodeID: node.id,
-                             optionID: rewindOptionID, reason: reason)
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text(rewindMessage)
-    }
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  private var optionsList: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      ForEach(Array(node.options.enumerated()), id: \.element.id) { index, option in
-        HStack(alignment: .top, spacing: 8) {
-          Text(option.id).font(.system(size: 11, weight: .bold, design: .rounded))
-            .frame(width: 20, height: 20)
-            .background(Circle().fill(node.activeAttempt?.optionID == option.id ? Color.accentColor : Color.primary.opacity(0.08)))
-            .foregroundStyle(node.activeAttempt?.optionID == option.id ? Color.white : Color.primary)
-          VStack(alignment: .leading, spacing: 2) {
-            Text(option.label).font(.callout.weight(.medium)).textSelection(.enabled)
-            if let detail = option.detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
-            Text(badges(for: option, index: index)).font(.caption2).foregroundStyle(.secondary)
-          }
-        }
-      }
-    }
-  }
-
-  private func badges(for option: DecisionOption, index: Int) -> String {
-    var parts: [String] = []
-    if index == 0 { parts.append("Recommended") } else if index == 1 { parts.append("Fallback") }
-    let attempts = node.attempts.filter { $0.optionID == option.id }
-    if attempts.contains(where: { $0.state == .active }) { parts.append("Current path") }
-    if let abandoned = attempts.last(where: { $0.state == .abandoned }) {
-      parts.append("Abandoned" + (abandoned.reason.map { ": \($0)" } ?? ""))
-    }
-    return parts.joined(separator: " · ")
-  }
-
-  private var chooseSection: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      Text("Choose").font(.subheadline.weight(.semibold))
-      if let due = model.decisionAutomation.dueDate(for: node) {
-        Text("With no choice by \(due.formatted(date: .omitted, time: .shortened)), Focus Queue takes option \(node.recommendedOptionID ?? "A").")
+  private var header: some View {
+    HStack(spacing: 6) {
+      Text(node.id).font(.system(size: 11, weight: .bold, design: .rounded))
+      Text(node.divergence.label).font(.caption).foregroundStyle(.secondary)
+        .help(node.divergence == .other ? "A divergence" : "Departs from the \(node.divergence.label.lowercased())")
+      Spacer(minLength: 4)
+      if running { ProgressView().controlSize(.mini) }
+      if node.status == .pending {
+        Label("Waiting for you", systemImage: "questionmark.circle.fill")
+          .font(.caption.weight(.semibold)).foregroundStyle(.orange)
+      } else {
+        Label("Decided by \(node.decidedBy?.label ?? "?")", systemImage: "checkmark.circle")
           .font(.caption).foregroundStyle(.secondary)
       }
-      HStack {
-        ForEach(node.options) { option in
-          Button(option.id == node.recommendedOptionID ? "Take \(option.id) (recommended)" : "Take \(option.id)") {
-            model.chooseDecision(ticketID: tree.taskID, agentID: tree.agentID, nodeID: node.id, optionID: option.id)
+    }
+  }
+
+  // MARK: Reasoning
+
+  private var optionNotes: [DecisionOption] { node.options.filter { !($0.detail ?? "").isEmpty } }
+
+  private var hasReasoning: Bool { !(node.detail ?? "").isEmpty || !optionNotes.isEmpty }
+
+  private var reasoning: some View {
+    DisclosureGroup(isExpanded: $showsWhy) {
+      VStack(alignment: .leading, spacing: 6) {
+        if let detail = node.detail, !detail.isEmpty { Text(detail) }
+        ForEach(optionNotes) { option in
+          HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(option.id).fontWeight(.semibold)
+            Text(option.detail ?? "")
           }
+        }
+      }
+      .font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+      .fixedSize(horizontal: false, vertical: true)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.top, 4)
+    } label: {
+      Text("Why").font(.subheadline.weight(.semibold))
+    }
+  }
+
+  // MARK: Options
+
+  private var options: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      ForEach(node.options) { option in optionRow(option) }
+      if node.status == .pending, let due = settings.dueDate(for: node), let recommended = node.recommendedOptionID {
+        Label("Auto-picks \(recommended) at \(due.formatted(date: .omitted, time: .shortened))", systemImage: "clock")
+          .font(.caption).foregroundStyle(.secondary)
+      }
+    }
+  }
+
+  private func optionRow(_ option: DecisionOption) -> some View {
+    let attempts = node.attempts.filter { $0.optionID == option.id }
+    let current = attempts.contains { $0.state == .active }
+    let abandoned = !current && attempts.contains { $0.state == .abandoned }
+    let recommended = option.id == node.recommendedOptionID
+    let tags = [recommended ? "Recommended" : nil, current ? "Current" : nil, abandoned ? "Abandoned" : nil]
+      .compactMap { $0 }
+    return HStack(alignment: .top, spacing: 8) {
+      Text(option.id).font(.system(size: 11, weight: .bold, design: .rounded))
+        .frame(width: 20, height: 20)
+        .background(Circle().fill(current ? Color.accentColor : Color.primary.opacity(0.08)))
+        .foregroundStyle(current ? Color.white : Color.primary)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(option.label).font(.callout).strikethrough(abandoned)
+          .foregroundStyle(abandoned ? Color.secondary : Color.primary)
+          .fixedSize(horizontal: false, vertical: true)
+          .textSelection(.enabled)
+        if !tags.isEmpty {
+          Text(tags.joined(separator: " · ")).font(.caption2)
+            .foregroundStyle(current ? Color.accentColor : Color.secondary)
+        }
+      }
+      .padding(.top, 2)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      if node.status == .pending {
+        Button("Take") { actions.choose(option.id) }
           .buttonStyle(.bordered)
-          .tint(option.id == node.recommendedOptionID ? .accentColor : nil)
+          .tint(recommended ? .accentColor : nil)
           .disabled(running)
-          .help(option.label)
-        }
+          .help("Take option \(option.id): \(option.label)")
       }
     }
   }
 
-  @ViewBuilder private var rewindSection: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      Text("Rewind here").font(.subheadline.weight(.semibold))
-      if node.checkpoint != nil {
-        Picker("Then take", selection: $rewindOptionID) {
-          ForEach(node.options) { option in Text("\(option.id): \(option.label)").tag(option.id) }
-        }
-        TextField("Why the current path is wrong (optional)", text: $reason, axis: .vertical)
-          .lineLimit(1...3).textFieldStyle(.roundedBorder)
-        Button("Rewind to \(node.id)…") { confirmingRewind = true }
-          .disabled(running || rewindOptionID.isEmpty)
-        Text(conversationLine).font(.caption).foregroundStyle(.secondary)
-      } else {
-        Text("No checkpoint was saved for this decision\(node.checkpointError.map { ": \($0)" } ?? ""), so its code cannot be restored.")
-          .font(.caption).foregroundStyle(.orange)
+  // MARK: Rewind
+
+  @ViewBuilder private var rewindButton: some View {
+    if node.checkpoint != nil {
+      Button { rewinding = true } label: {
+        Label("Rewind to \(node.id)…", systemImage: "arrow.uturn.backward")
       }
+      .disabled(running || node.options.isEmpty)
+      .help("Restore the code and conversation saved at \(node.id), then take an option")
+      .popover(isPresented: $rewinding, arrowEdge: .bottom) { rewindForm }
+    } else {
+      Label("No checkpoint, so this decision can't be rewound", systemImage: "exclamationmark.triangle")
+        .font(.caption).foregroundStyle(.orange)
     }
   }
 
-  @ViewBuilder private var recordSection: some View {
-    VStack(alignment: .leading, spacing: 4) {
-      Text("Record").font(.subheadline.weight(.semibold))
-      if let checkpoint = node.checkpoint {
-        Text("Checkpoint \(checkpoint.shortCommit) on \(checkpoint.branch ?? "a detached head")")
-          .font(.caption).textSelection(.enabled)
-        Text(checkpoint.ref).font(.caption2.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
-        if checkpoint.pushed {
-          Label("Pushed to \(checkpoint.remote ?? "the remote")", systemImage: "checkmark.icloud")
-            .font(.caption).foregroundStyle(.secondary)
+  private var rewindForm: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      Text("Rewind to \(node.id)").font(.headline)
+      Picker("Then take", selection: $rewindOptionID) {
+        ForEach(node.options) { option in Text("\(option.id): \(option.label)").tag(option.id) }
+      }
+      TextField("Reason for the agent (optional)", text: $reason, axis: .vertical)
+        .lineLimit(1...3).textFieldStyle(.roundedBorder)
+      Text(rewindConsequence).font(.caption).foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      HStack {
+        Spacer()
+        Button("Cancel") { rewinding = false }.keyboardShortcut(.cancelAction)
+        Button("Rewind", role: .destructive) {
+          rewinding = false
+          actions.rewind(rewindOptionID, reason)
+        }
+        .buttonStyle(.borderedProminent).tint(.red)
+        .disabled(running || rewindOptionID.isEmpty)
+      }
+    }
+    .padding(14)
+    .frame(width: 300)
+  }
+
+  private var rewindConsequence: String {
+    let restore = "Saves current work, restores the code from \(node.id),"
+    return node.conversation?.forkable == true
+      ? "\(restore) and restarts the agent in the conversation saved there."
+      : "\(restore) and tells the agent's current session to drop the later turns."
+  }
+
+  // MARK: Checkpoint and history
+
+  private var checkpointSection: some View {
+    DisclosureGroup(isExpanded: $showsCheckpoint) {
+      Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8, verticalSpacing: 4) {
+        if let checkpoint = node.checkpoint {
+          GridRow {
+            fieldName("Commit")
+            Text("\(Text(checkpoint.shortCommit).monospaced())\(pushNote(checkpoint))")
+          }
+          if !checkpoint.pushed {
+            GridRow {
+              fieldName("Push")
+              VStack(alignment: .leading, spacing: 4) {
+                Text(checkpoint.pushError ?? "Not pushed").foregroundStyle(.orange)
+                  .fixedSize(horizontal: false, vertical: true)
+                Button("Retry push") { actions.retryPush() }.controlSize(.small).disabled(running)
+              }
+            }
+          }
+          GridRow {
+            fieldName("Branch")
+            Text(checkpoint.branch ?? "Detached head").lineLimit(1).truncationMode(.middle)
+              .help(checkpoint.branch ?? "")
+          }
+          GridRow {
+            fieldName("Ref")
+            Text(checkpoint.ref).monospaced().lineLimit(1).truncationMode(.middle).help(checkpoint.ref)
+          }
         } else {
-          Label(checkpoint.pushError ?? "Not pushed", systemImage: "icloud.slash")
-            .font(.caption).foregroundStyle(.orange).textSelection(.enabled)
-          Button("Retry push") { model.retryDecisionPush(ticketID: tree.taskID, agentID: tree.agentID) }
-            .disabled(running)
+          GridRow {
+            fieldName("Commit")
+            Text("None" + (node.checkpointError.map { ": \($0)" } ?? "")).foregroundStyle(.orange)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+        GridRow {
+          fieldName("Conversation")
+          Text(conversationSummary).fixedSize(horizontal: false, vertical: true)
         }
       }
-      ForEach(Array(node.attempts.enumerated()), id: \.offset) { _, attempt in
-        Text("\(attempt.optionID) · \(attempt.state == .active ? "current" : "abandoned") · started by \(attempt.startedBy.label)"
-             + (attempt.rewoundFrom.map { " · earlier work saved at \($0.shortCommit)" } ?? ""))
-          .font(.caption2).foregroundStyle(.secondary)
+      .font(.caption).textSelection(.enabled)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.top, 4)
+    } label: {
+      HStack(spacing: 6) {
+        Text("Checkpoint").font(.subheadline.weight(.semibold))
+        if node.checkpoint?.pushed != true {
+          Label(node.checkpoint == nil ? "Missing" : "Not pushed", systemImage: "icloud.slash")
+            .font(.caption).foregroundStyle(.orange)
+        }
       }
     }
   }
 
-  private var conversationLine: String {
-    guard let conversation = node.conversation else { return "The conversation was not recorded." }
-    if conversation.forkable {
-      return "The agent restarts in the conversation saved at \(node.id)" + (conversation.entries.map { " (\($0) entries)" } ?? "") + "."
-    }
-    return conversation.note ?? "The conversation could not be saved."
+  private func pushNote(_ checkpoint: DecisionCheckpoint) -> String {
+    checkpoint.pushed ? ", pushed to \(checkpoint.remote ?? "the remote")" : ""
   }
 
-  private var rewindMessage: String {
-    let checkpoint = node.checkpoint?.shortCommit ?? "?"
-    return "The worktree returns to checkpoint \(checkpoint); its current state is committed and pushed first, so nothing is lost. "
-      + (node.conversation?.forkable == true
-        ? "The agent restarts in the conversation saved at \(node.id) and takes option \(rewindOptionID)."
-        : "The agent's current conversation is told to drop the later turns and take option \(rewindOptionID).")
+  private func fieldName(_ name: String) -> some View {
+    Text(name).foregroundStyle(.secondary)
+  }
+
+  private var conversationSummary: String {
+    guard let conversation = node.conversation else { return "Not recorded" }
+    if conversation.forkable {
+      return "Saved" + (conversation.entries.map { ", \($0.formatted()) entries" } ?? "")
+    }
+    return conversation.note ?? "Not saved"
+  }
+
+  private var historySection: some View {
+    let rewinds = node.attempts.count - 1
+    return DisclosureGroup(isExpanded: $showsHistory) {
+      VStack(alignment: .leading, spacing: 4) {
+        ForEach(Array(node.attempts.enumerated()), id: \.offset) { _, attempt in
+          HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(attempt.optionID).fontWeight(.semibold)
+            Text(historyLine(attempt)).foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+      }
+      .font(.caption).textSelection(.enabled)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.top, 4)
+    } label: {
+      HStack(spacing: 6) {
+        Text("History").font(.subheadline.weight(.semibold))
+        Text("\(rewinds) rewind\(rewinds == 1 ? "" : "s")").font(.caption).foregroundStyle(.secondary)
+      }
+    }
+  }
+
+  private func historyLine(_ attempt: DecisionAttempt) -> String {
+    var line = attempt.state == .active ? "Current" : "Abandoned"
+    if let reason = attempt.reason, !reason.isEmpty { line += ": \(reason)" }
+    line += " · started by \(attempt.startedBy.label)"
+    if let earlier = attempt.rewoundFrom { line += " · earlier work saved at \(earlier.shortCommit)" }
+    return line
   }
 }

@@ -187,4 +187,44 @@ struct TaskSearchTests {
     // algorithmic regression without failing a loaded parallel debug run.
     #expect(elapsed < .seconds(2), "three searches took \(elapsed)")
   }
+
+  @Test("A file name in a context folder finds its task and names the file")
+  func fileNameFindsTask() {
+    let files = [
+      "FOC-021": ["evidence/installer-notarization.log", "evidence/refs/B3.md"],
+      "FOC-020": ["evidence/crash-report.txt"],
+    ]
+    let result = TaskSearch.search(tickets, query: "notarization.log", files: files)
+    #expect(result.tickets.map(\.id) == ["FOC-021"])
+    #expect(result.match == .exact)
+    #expect(result.fileMatches == ["FOC-021": ["evidence/installer-notarization.log"]])
+    // A folder-qualified path matches as well.
+    #expect(TaskSearch.search(tickets, query: "refs/B3", files: files).fileMatches["FOC-021"] == ["evidence/refs/B3.md"])
+  }
+
+  @Test("Tasks found only by a file rank after text matches")
+  func fileOnlyMatchesRankLast() {
+    let files = ["FOC-019": ["evidence/crash-before.png"]]
+    let result = TaskSearch.search(tickets, query: "crash", files: files)
+    #expect(result.tickets.map(\.id) == ["FOC-020", "FOC-019"])
+    #expect(result.fileMatches["FOC-020"] == nil)
+    #expect(result.fileMatches["FOC-019"] == ["evidence/crash-before.png"])
+  }
+
+  @Test("File matches respect status filters and the per-task listing limit")
+  func fileMatchesRespectFilters() {
+    let paths = (1...5).map { "evidence/shot-\($0).png" }
+    let files = ["FOC-021": paths, "FOC-019": ["evidence/shot.png"]]
+    let blocked = TaskSearch.search(tickets, query: "blocked shot", files: files)
+    #expect(blocked.tickets.map(\.id) == ["FOC-021"])
+    #expect(blocked.fileMatches["FOC-021"] == Array(paths.prefix(TaskSearchIndex.fileMatchLimit)))
+    #expect(TaskSearch.search(tickets, query: "shot", files: [:]).tickets.isEmpty)
+  }
+
+  @Test("An exact file name lists before longer names that contain it")
+  func exactFileNameFirst() {
+    let files = ["FOC-019": ["evidence/panel-after-dark.png", "evidence/panel-after.png"]]
+    #expect(TaskSearch.search(tickets, query: "panel-after.png", files: files).fileMatches["FOC-019"]
+      == ["evidence/panel-after.png", "evidence/panel-after-dark.png"])
+  }
 }

@@ -327,7 +327,9 @@ struct QueueView: View {
     // Searches the whole project queue, not only the top five. Completed tasks
     // follow open ones so a code or a closed status still finds its task.
     let search = isFilteringTasks
-      ? taskSearchCache.result(for: model.openTickets + model.completedTickets, query: taskSearchQuery) : nil
+      ? taskSearchCache.result(
+        for: model.openTickets + model.completedTickets, query: taskSearchQuery,
+        files: model.searchableTaskFiles, filesVersion: model.searchableTaskFilesVersion) : nil
     let shownTickets = search.map { Array($0.tickets.prefix(taskSearchResultLimit)) } ?? focusTickets
     return VStack(alignment: .leading, spacing: 10) {
       HStack {
@@ -383,10 +385,15 @@ struct QueueView: View {
       } else if search != nil {
         let completedIDs = Set(model.completedTickets.map(\.id))
         ForEach(shownTickets) { ticket in
-          if completedIDs.contains(ticket.id) {
-            CompletedTicketCard(ticket: ticket, model: model)
-          } else {
-            TicketCard(ticket: ticket, model: model)
+          VStack(alignment: .leading, spacing: 4) {
+            if completedIDs.contains(ticket.id) {
+              CompletedTicketCard(ticket: ticket, model: model)
+            } else {
+              TicketCard(ticket: ticket, model: model)
+            }
+            if let paths = search?.fileMatches[ticket.id] {
+              TaskSearchFileMatches(paths: paths, ticketID: ticket.id, model: model)
+            }
           }
         }
       } else {
@@ -423,7 +430,7 @@ struct QueueView: View {
       TaskSearchField(
         query: $taskSearchQuery, isFocused: $taskSearchIsFocused,
         prompt: (model.showsAllProjects ? "Search all tasks" : "Search \(model.projectScopeName) tasks")
-          + " · code, status, priority",
+          + " · code, status, priority, file",
         resultCount: resultCount, endEditing: endTaskSearchEditing, close: closeTaskSearch)
     } else if agentViewEnabled {
       focusHeadingButton(title: "Today's focus", detail: "\(agentViewAgentCount(for: focusTickets)) agents")
@@ -463,6 +470,7 @@ struct QueueView: View {
 
   private func openTaskSearch() {
     isTaskSearchActive = true
+    Task { await model.refreshSearchableTaskFiles() }
     Task { @MainActor in
       await Task.yield()
       taskSearchIsFocused = true
@@ -2509,6 +2517,36 @@ private struct FocusSearchHeading: View {
   }
 }
 
+/// Files under a search result that matched the query by path. Clicking one
+/// opens it the way the task's outputs panel does.
+private struct TaskSearchFileMatches: View {
+  let paths: [String]
+  let ticketID: String
+  let model: QueueViewModel
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 2) {
+      ForEach(paths, id: \.self) { path in
+        Button {
+          if let file = model.searchableFile(path, ticketID: ticketID) { model.openOutput(file, ticketID: ticketID) }
+        } label: {
+          Label {
+            Text(path).lineLimit(1).truncationMode(.middle)
+          } icon: {
+            Image(systemName: "doc.text.magnifyingglass")
+          }
+          .font(.caption).foregroundStyle(.secondary)
+          .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open matching file \(path)")
+        .help("Matched file in \(ticketID)'s context folder. Click to open.")
+      }
+    }
+    .padding(.horizontal, 12)
+  }
+}
+
 private struct TaskSearchField: View {
   @Binding var query: String
   var isFocused: FocusState<Bool>.Binding
@@ -2529,7 +2567,7 @@ private struct TaskSearchField: View {
           return .handled
         }
         .accessibilityLabel("Search tasks")
-        .help("Type words, a code such as FOC-018 or 18, a status such as backlog, or a priority such as high. status: and priority: accept part of a value.")
+        .help("Type words, a code such as FOC-018 or 18, a status such as backlog, a priority such as high, or a file name from a task's context folder. status: and priority: accept part of a value.")
       if let resultCount {
         Text("\(resultCount)").font(.system(size: 11, weight: .semibold).monospacedDigit())
           .foregroundStyle(.secondary)
@@ -2612,14 +2650,18 @@ struct OutsideClickMonitor: NSViewRepresentable {
 /// until the query changes, so re-renders between keystrokes cost nothing.
 private final class TaskSearchCache {
   private var tickets: [DashboardTicket] = []
+  private var filesVersion: Int?
   private var index = TaskSearchIndex([])
   private var query: String?
   private var result = TaskSearchResult(tickets: [], match: .none)
 
-  func result(for tickets: [DashboardTicket], query: String) -> TaskSearchResult {
-    if tickets != self.tickets {
+  func result(
+    for tickets: [DashboardTicket], query: String, files: [String: [TaskOutputFile]], filesVersion: Int
+  ) -> TaskSearchResult {
+    if tickets != self.tickets || filesVersion != self.filesVersion {
       self.tickets = tickets
-      index = TaskSearchIndex(tickets)
+      self.filesVersion = filesVersion
+      index = TaskSearchIndex(tickets, files: files.mapValues { $0.map(\.relativePath) })
       self.query = nil
     }
     if query != self.query {

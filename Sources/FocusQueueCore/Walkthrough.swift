@@ -125,7 +125,7 @@ public enum WalkthroughStep: String, CaseIterable, Codable, Sendable {
     case .rightClick:
       "Task cards, agent rows, New Agent, and the minimize button all have extra actions on right-click."
     case .search:
-      "Click Today's focus to search by words, a code such as FOC-12, a status, or a priority."
+      "Click Today's focus to search by words, a code such as FOC-12, a status, a priority, or a file name."
     case .help:
       "The info menu has documentation, the GitHub repository, this walkthrough, and a feedback form."
     }

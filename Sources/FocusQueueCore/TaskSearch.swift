@@ -30,11 +30,18 @@ public struct TaskSearchResult: Equatable, Sendable {
   public let tickets: [DashboardTicket]
   public let match: TaskSearchMatch
   public let filters: [TaskSearchFilter]
+  /// Context-folder files whose path holds every keyword, by task ID, as
+  /// relative paths in the order they were indexed (newest first).
+  public let fileMatches: [String: [String]]
 
-  public init(tickets: [DashboardTicket], match: TaskSearchMatch, filters: [TaskSearchFilter] = []) {
+  public init(
+    tickets: [DashboardTicket], match: TaskSearchMatch, filters: [TaskSearchFilter] = [],
+    fileMatches: [String: [String]] = [:]
+  ) {
     self.tickets = tickets
     self.match = match
     self.filters = filters
+    self.fileMatches = fileMatches
   }
 }
 
@@ -45,7 +52,17 @@ public struct TaskSearchResult: Equatable, Sendable {
 /// A word that is exactly a status or priority ("blocked", "high") filters by
 /// that field, as do `status:`/`is:` and `priority:`/`p:` with a partial value.
 /// Values of one field are alternatives; different fields must all hold.
+///
+/// Files in a task's context folder are searched by path, so typing a file
+/// name finds the task that holds it. File-only matches rank after text matches.
 public struct TaskSearchIndex: Sendable {
+  /// A context-folder file: its relative path, normalized bytes, and words.
+  private struct IndexedFile: Sendable {
+    let path: String
+    let bytes: [UInt8]
+    let words: Set<String>
+  }
+
   /// Text is kept as UTF-8 bytes: byte scans are several times faster than
   /// `String.contains` and stay correct because UTF-8 never matches mid-character.
   private struct Entry: Sendable {
@@ -57,7 +74,11 @@ public struct TaskSearchIndex: Sendable {
     let title: [UInt8]
     let text: [UInt8]
     let words: Set<String>
+    let files: [IndexedFile]
   }
+
+  /// Matching files listed per task; more stay findable but unlisted.
+  public static let fileMatchLimit = 3
 
   private let entries: [Entry]
   private let vocabulary: [String]
@@ -65,7 +86,8 @@ public struct TaskSearchIndex: Sendable {
   private let statuses: Set<String>
   private let priorities: Set<String>
 
-  public init(_ tickets: [DashboardTicket]) {
+  /// `files` maps a task ID to relative paths inside its context folder.
+  public init(_ tickets: [DashboardTicket], files: [String: [String]] = [:]) {
     var vocabulary = Set<String>()
     entries = tickets.map { ticket in
       let id = TaskSearchText.normalized(ticket.id)
@@ -78,7 +100,12 @@ public struct TaskSearchIndex: Sendable {
       vocabulary.formUnion(words)
       return Entry(ticket: ticket, idForms: idForms,
         status: TaskSearchText.compact(ticket.status), priority: TaskSearchText.compact(ticket.priority),
-        title: Array(title.utf8), text: Array(text.utf8), words: words)
+        title: Array(title.utf8), text: Array(text.utf8), words: words,
+        files: (files[ticket.id] ?? []).map { path in
+          let normalized = TaskSearchText.normalized(path)
+          return IndexedFile(path: path, bytes: Array(normalized.utf8),
+            words: Set(TaskSearchText.words(in: normalized)))
+        })
     }
     self.vocabulary = vocabulary.sorted()
     vocabularyBytes = self.vocabulary.map { Array($0.utf8) }
@@ -105,10 +132,22 @@ public struct TaskSearchIndex: Sendable {
     }
 
     let tokenBytes = tokens.map { Array($0.utf8) }
-    let exact = pool.filter { entry in tokenBytes.allSatisfy { Self.contains($0, in: entry) } }
+    // A file whose name is exactly the query lists before longer names holding it.
+    let typedName = TaskSearchText.normalized(text.trimmingCharacters(in: .whitespaces))
+    var fileMatches: [String: [String]] = [:]
+    for entry in pool {
+      let matching = entry.files.filter { file in tokenBytes.allSatisfy { Self.contains($0, in: file) } }
+      guard !matching.isEmpty else { continue }
+      let exactName = matching.filter { TaskSearchText.normalized(($0.path as NSString).lastPathComponent) == typedName }
+      let ordered = exactName + matching.filter { file in !exactName.contains { $0.path == file.path } }
+      fileMatches[entry.ticket.id] = ordered.prefix(Self.fileMatchLimit).map(\.path)
+    }
+    let exact = pool.filter { entry in
+      fileMatches[entry.ticket.id] != nil || tokenBytes.allSatisfy { Self.contains($0, in: entry) }
+    }
     if !exact.isEmpty {
       return TaskSearchResult(tickets: Self.ranked(exact, tokens: tokens, tokenBytes: tokenBytes),
-        match: .exact, filters: filters)
+        match: .exact, filters: filters, fileMatches: fileMatches)
     }
     return approximateSearch(tokens, in: pool, filters: filters)
   }
@@ -163,17 +202,24 @@ public struct TaskSearchIndex: Sendable {
     return TaskSearchText.bytes(entry.text, contain: token)
   }
 
+  private static func contains(_ token: [UInt8], in file: IndexedFile) -> Bool {
+    if token.count <= 2 { return file.words.contains { $0.utf8.starts(with: token) } }
+    return TaskSearchText.bytes(file.bytes, contain: token)
+  }
+
   private static func wordMatches(_ token: [UInt8], _ word: [UInt8]) -> Bool {
     token.count <= 2 ? word.starts(with: token) : TaskSearchText.bytes(word, contain: token)
   }
 
-  /// ID matches lead, then title matches; queue order breaks ties.
+  /// ID matches lead, then title matches, then other text, then tasks found
+  /// only through a file; queue order breaks ties.
   private static func ranked(_ entries: [Entry], tokens: [String], tokenBytes: [[UInt8]]) -> [DashboardTicket] {
     let queryCodes = TaskSearchText.codeForms(tokens)
     func rank(_ entry: Entry) -> Int {
       if !entry.idForms.isDisjoint(with: queryCodes) { return 0 }
       if tokenBytes.allSatisfy({ TaskSearchText.bytes(entry.title, contain: $0) }) { return 1 }
-      return 2
+      if tokenBytes.allSatisfy({ contains($0, in: entry) }) { return 2 }
+      return 3
     }
     return entries.enumerated()
       .sorted { lhs, rhs in
@@ -247,8 +293,10 @@ public struct TaskSearchIndex: Sendable {
 }
 
 public enum TaskSearch {
-  public static func search(_ tickets: [DashboardTicket], query: String) -> TaskSearchResult {
-    TaskSearchIndex(tickets).search(query)
+  public static func search(
+    _ tickets: [DashboardTicket], query: String, files: [String: [String]] = [:]
+  ) -> TaskSearchResult {
+    TaskSearchIndex(tickets, files: files).search(query)
   }
 }
 

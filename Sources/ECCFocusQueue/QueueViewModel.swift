@@ -213,6 +213,13 @@ final class QueueViewModel {
   private(set) var taskContexts: [String: TaskContext] = [:]
   /// Files agents saved in each open task's context folder, newest first.
   private(set) var taskOutputs: [String: [TaskOutputFile]] = [:]
+  /// Files in every task's context folder, open or completed, for task search.
+  /// Scanned when search opens, so the queue does not walk closed tasks idly.
+  private(set) var searchableTaskFiles: [String: [TaskOutputFile]] = [:] {
+    didSet { searchableTaskFilesVersion &+= 1 }
+  }
+  /// Changes with `searchableTaskFiles`, so the search cache compares one number.
+  private(set) var searchableTaskFilesVersion = 0
   private(set) var unassignedAgentRegistrations: [ExternalAgentRegistration] = []
   private(set) var externalAgentRegistrationError: String? {
     didSet {
@@ -374,6 +381,7 @@ final class QueueViewModel {
   @ObservationIgnored private var durableDocumentStamps: [String: DurableDocumentStamp] = [:]
   @ObservationIgnored private var lastContextRefresh: Date?
   @ObservationIgnored private var lastOutputScan: Date?
+  @ObservationIgnored private var lastSearchFileScan: Date?
   @ObservationIgnored private var lastDashboardRead: Date?
   @ObservationIgnored private var lastDashboardStamp: DashboardFileStamp?
   @ObservationIgnored private var lastDurableContextScan: Date?
@@ -1977,6 +1985,24 @@ final class QueueViewModel {
   }
 
   func outputs(for ticketID: String) -> [TaskOutputFile] { taskOutputs[ticketID] ?? [] }
+
+  /// Rescans context folders for task search at most every 15 seconds. Each
+  /// folder walk is bounded by `TaskOutputs.scanLimit`.
+  func refreshSearchableTaskFiles() async {
+    guard lastSearchFileScan.map({ Date().timeIntervalSince($0) >= 15 }) ?? true else { return }
+    lastSearchFileScan = Date()
+    let folders = taskContexts.map { ($0.key, $0.value.contextDirectory) }
+    let scanned = await Task.detached(priority: .userInitiated) {
+      Dictionary(folders.map { ($0.0, TaskOutputs.scan($0.1)) }, uniquingKeysWith: { first, _ in first })
+        .filter { !$0.value.isEmpty }
+    }.value
+    if searchableTaskFiles != scanned { searchableTaskFiles = scanned }
+  }
+
+  /// A file a search result named, resolved inside the task's context folder.
+  func searchableFile(_ relativePath: String, ticketID: String) -> TaskOutputFile? {
+    searchableTaskFiles[ticketID]?.first { $0.relativePath == relativePath }
+  }
 
   /// Outputs to announce on the task card until the user opens or dismisses them.
   func newOutputs(for ticketID: String) -> [TaskOutputFile] {

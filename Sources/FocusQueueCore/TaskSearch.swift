@@ -43,11 +43,15 @@ public struct TaskSearchResult: Equatable, Sendable {
   /// relative paths in the order they were indexed (newest first).
   public let fileMatches: [String: [String]]
   public let fileSource: TaskSearchFileSource
+  /// Tasks in `tickets` found only through a file, not their own text.
+  public let fileOnlyIDs: Set<String>
 
   public init(
     tickets: [DashboardTicket], match: TaskSearchMatch, filters: [TaskSearchFilter] = [],
-    fileMatches: [String: [String]] = [:], fileSource: TaskSearchFileSource = .context
+    fileMatches: [String: [String]] = [:], fileSource: TaskSearchFileSource = .context,
+    fileOnlyIDs: Set<String> = []
   ) {
+    self.fileOnlyIDs = fileOnlyIDs
     self.tickets = tickets
     self.match = match
     self.filters = filters
@@ -159,12 +163,16 @@ public struct TaskSearchIndex: Sendable {
       fileMatches = Self.fileMatches(in: pool, \.worktreeFiles, tokenBytes: tokenBytes, typedName: typedName)
       if !fileMatches.isEmpty { fileSource = .worktree }
     }
+    var fileOnlyIDs = Set<String>()
     let exact = pool.filter { entry in
-      fileMatches[entry.ticket.id] != nil || tokenBytes.allSatisfy { Self.contains($0, in: entry) }
+      if tokenBytes.allSatisfy({ Self.contains($0, in: entry) }) { return true }
+      guard fileMatches[entry.ticket.id] != nil else { return false }
+      fileOnlyIDs.insert(entry.ticket.id)
+      return true
     }
     if !exact.isEmpty {
       return TaskSearchResult(tickets: Self.ranked(exact, tokens: tokens, tokenBytes: tokenBytes),
-        match: .exact, filters: filters, fileMatches: fileMatches, fileSource: fileSource)
+        match: .exact, filters: filters, fileMatches: fileMatches, fileSource: fileSource, fileOnlyIDs: fileOnlyIDs)
     }
     return approximateSearch(tokens, in: pool, filters: filters)
   }

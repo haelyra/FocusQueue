@@ -2006,7 +2006,9 @@ final class QueueViewModel {
       lastSearchFileScan = Date()
       let folders = taskContexts.map { ($0.key, $0.value.contextDirectory) }
       let scanned = await Task.detached(priority: .userInitiated) {
-        Dictionary(folders.map { ($0.0, TaskSearchFiles.contextFiles($0.1)) }, uniquingKeysWith: { first, _ in first })
+        // Viewed files linked into a context folder search like the folder's own files.
+        Dictionary(folders.map { ($0.0, TaskSearchFiles.contextFiles($0.1) + TaskLinkedFiles.searchFiles($0.1)) },
+          uniquingKeysWith: { first, _ in first })
           .filter { !$0.value.isEmpty }
       }.value
       if searchableTaskFiles != scanned { searchableTaskFiles = scanned }
@@ -2042,10 +2044,53 @@ final class QueueViewModel {
     return files[ticketID]?.first { $0.relativePath == relativePath }
   }
 
-  /// Opens a search match. Context files open like outputs; worktree files
-  /// open in their default app without touching the output review record.
+  /// Opens a search match in Focus Queue's viewer with its task's plan beside
+  /// it, as if opened from the task. HTML outputs keep opening in the canvas.
   func openSearchMatch(_ file: TaskOutputFile, ticketID: String, source: TaskSearchFileSource) {
-    if source == .context { openOutput(file, ticketID: ticketID) } else { open(file.url.path, ticketID: ticketID) }
+    guard let ticket = dashboard.tickets.first(where: { $0.id == ticketID }) else { return }
+    let contextDirectory = taskContexts[ticketID]?.contextDirectory.standardizedFileURL.path
+    let insideContext = contextDirectory.map { file.url.standardizedFileURL.path.hasPrefix($0 + "/") } ?? false
+    if insideContext, ["html", "htm"].contains(file.url.pathExtension.lowercased()) {
+      openOutput(file, ticketID: ticketID)
+      return
+    }
+    if insideContext { Task { await markOutputsReviewed([file], ticketID: ticketID) } }
+    openBesideTaskPlan(file.url, ticket: ticket)
+  }
+
+  /// The task's plan viewer with `document` on the left and the task plan
+  /// on the right.
+  func openBesideTaskPlan(_ document: URL, ticket: DashboardTicket) {
+    if panelMode != .expanded { setPanelMode(.expanded) }
+    if presentedPlanTicketID != ticket.id { openPlan(for: ticket) }
+    // The loaded context names the plan; before it loads, the plan has a fixed home.
+    let plan = taskContexts[ticket.id].map { URL(fileURLWithPath: $0.planPath) }
+      ?? Optional(paths.supportDirectory.appendingPathComponent("tasks/\(ticket.id)/plan.md"))
+        .flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
+    requestedReference = ReferenceRequest(ticketID: ticket.id, card: document, source: plan)
+  }
+
+  /// A file shown in a task's plan viewer from outside its context folder,
+  /// such as a worktree file, is linked into the context so search finds it
+  /// there again. Focus Queue's own records are not linked.
+  func rememberViewedDocument(_ url: URL, ticketID: String) {
+    guard url.isFileURL, let context = taskContexts[ticketID] else { return }
+    let path = url.standardizedFileURL.path
+    let support = paths.supportDirectory.standardizedFileURL.path
+    guard !path.hasPrefix(support + "/"), FileManager.default.fileExists(atPath: path) else { return }
+    let roots = (TaskSearchFiles.uniqueWorktrees([context])[ticketID] ?? []).map(\.path)
+      + [context.worktreePath, context.repositoryPath, context.projectRepositoryPath].compactMap { $0 }
+        .filter { !$0.isEmpty }.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+    let displayPath = roots.first { path.hasPrefix($0 + "/") }.map { String(path.dropFirst($0.count + 1)) }
+      ?? (path as NSString).abbreviatingWithTildeInPath
+    do {
+      if try TaskLinkedFiles.record(url, displayPath: displayPath, in: context.contextDirectory) {
+        lastSearchFileScan = nil
+      }
+    } catch {
+      programLog.record("Could not link \(path) into \(ticketID)'s context: \(error.localizedDescription)",
+        category: "Search")
+    }
   }
 
   /// Outputs to announce on the task card until the user opens or dismisses them.
@@ -7403,12 +7448,7 @@ extension QueueViewModel {
       openDocumentViewer(document, scope: documentScope(for: document))
       return
     }
-    if presentedPlanTicketID != ticket.id { openPlan(for: ticket) }
-    // The loaded context names the plan; before it loads, the plan has a fixed home.
-    let plan = taskContexts[ticket.id].map { URL(fileURLWithPath: $0.planPath) }
-      ?? Optional(paths.supportDirectory.appendingPathComponent("tasks/\(ticket.id)/plan.md"))
-        .flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
-    requestedReference = ReferenceRequest(ticketID: ticket.id, card: document, source: plan)
+    openBesideTaskPlan(document, ticket: ticket)
   }
 
   /// Marks a review read (done) or declines it (dismissed).

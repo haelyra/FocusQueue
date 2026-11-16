@@ -213,12 +213,17 @@ final class QueueViewModel {
   private(set) var taskContexts: [String: TaskContext] = [:]
   /// Files agents saved in each open task's context folder, newest first.
   private(set) var taskOutputs: [String: [TaskOutputFile]] = [:]
-  /// Files in every task's context folder, open or completed, for task search.
-  /// Scanned when search opens, so the queue does not walk closed tasks idly.
+  /// Every file in each task's context folder, open or completed, for task
+  /// search. Scanned when search opens, so the queue does not walk them idly.
   private(set) var searchableTaskFiles: [String: [TaskOutputFile]] = [:] {
     didSet { searchableTaskFilesVersion &+= 1 }
   }
-  /// Changes with `searchableTaskFiles`, so the search cache compares one number.
+  /// Files each task's own worktrees added or changed; search falls back to
+  /// them when no context-folder file matches.
+  private(set) var searchableWorktreeFiles: [String: [TaskOutputFile]] = [:] {
+    didSet { searchableTaskFilesVersion &+= 1 }
+  }
+  /// Changes with either file list, so the search cache compares one number.
   private(set) var searchableTaskFilesVersion = 0
   private(set) var unassignedAgentRegistrations: [ExternalAgentRegistration] = []
   private(set) var externalAgentRegistrationError: String? {
@@ -382,6 +387,7 @@ final class QueueViewModel {
   @ObservationIgnored private var lastContextRefresh: Date?
   @ObservationIgnored private var lastOutputScan: Date?
   @ObservationIgnored private var lastSearchFileScan: Date?
+  @ObservationIgnored private var lastWorktreeFileScan: Date?
   @ObservationIgnored private var lastDashboardRead: Date?
   @ObservationIgnored private var lastDashboardStamp: DashboardFileStamp?
   @ObservationIgnored private var lastDurableContextScan: Date?
@@ -1986,22 +1992,55 @@ final class QueueViewModel {
 
   func outputs(for ticketID: String) -> [TaskOutputFile] { taskOutputs[ticketID] ?? [] }
 
-  /// Rescans context folders for task search at most every 15 seconds. Each
-  /// folder walk is bounded by `TaskOutputs.scanLimit`.
+  /// Rescans context folders for task search at most every 15 seconds, and
+  /// task worktrees, which need git, at most every 2 minutes. Both run off
+  /// the main actor; context results arrive without waiting for git.
   func refreshSearchableTaskFiles() async {
-    guard lastSearchFileScan.map({ Date().timeIntervalSince($0) >= 15 }) ?? true else { return }
-    lastSearchFileScan = Date()
-    let folders = taskContexts.map { ($0.key, $0.value.contextDirectory) }
-    let scanned = await Task.detached(priority: .userInitiated) {
-      Dictionary(folders.map { ($0.0, TaskOutputs.scan($0.1)) }, uniquingKeysWith: { first, _ in first })
-        .filter { !$0.value.isEmpty }
-    }.value
-    if searchableTaskFiles != scanned { searchableTaskFiles = scanned }
+    async let worktrees: Void = refreshSearchableWorktreeFiles()
+    if lastSearchFileScan.map({ Date().timeIntervalSince($0) >= 15 }) ?? true {
+      lastSearchFileScan = Date()
+      let folders = taskContexts.map { ($0.key, $0.value.contextDirectory) }
+      let scanned = await Task.detached(priority: .userInitiated) {
+        Dictionary(folders.map { ($0.0, TaskSearchFiles.contextFiles($0.1)) }, uniquingKeysWith: { first, _ in first })
+          .filter { !$0.value.isEmpty }
+      }.value
+      if searchableTaskFiles != scanned { searchableTaskFiles = scanned }
+    }
+    await worktrees
   }
 
-  /// A file a search result named, resolved inside the task's context folder.
-  func searchableFile(_ relativePath: String, ticketID: String) -> TaskOutputFile? {
-    searchableTaskFiles[ticketID]?.first { $0.relativePath == relativePath }
+  private func refreshSearchableWorktreeFiles() async {
+    guard lastWorktreeFileScan.map({ Date().timeIntervalSince($0) >= 120 }) ?? true else { return }
+    lastWorktreeFileScan = Date()
+    let worktrees = TaskSearchFiles.uniqueWorktrees(Array(taskContexts.values))
+      .flatMap { ticketID, trees in trees.map { (ticketID, $0) } }
+    let scanned = await Task.detached(priority: .utility) {
+      var files: [String: [TaskOutputFile]] = [:]
+      // Eight git scans at a time keep the fallback quick without flooding git.
+      for chunk in stride(from: 0, to: worktrees.count, by: 8).map({ worktrees[$0..<min($0 + 8, worktrees.count)] }) {
+        await withTaskGroup(of: (String, [TaskOutputFile]).self) { group in
+          for (ticketID, worktree) in chunk {
+            group.addTask { (ticketID, await TaskSearchFiles.worktreeFiles(worktree)) }
+          }
+          for await (ticketID, found) in group where !found.isEmpty { files[ticketID, default: []] += found }
+        }
+      }
+      return files
+    }.value
+    if searchableWorktreeFiles != scanned { searchableWorktreeFiles = scanned }
+  }
+
+  /// A file a search result named, resolved in the task's context folder or,
+  /// for a worktree match, the task's worktrees.
+  func searchableFile(_ relativePath: String, ticketID: String, source: TaskSearchFileSource) -> TaskOutputFile? {
+    let files = source == .context ? searchableTaskFiles : searchableWorktreeFiles
+    return files[ticketID]?.first { $0.relativePath == relativePath }
+  }
+
+  /// Opens a search match. Context files open like outputs; worktree files
+  /// open in their default app without touching the output review record.
+  func openSearchMatch(_ file: TaskOutputFile, ticketID: String, source: TaskSearchFileSource) {
+    if source == .context { openOutput(file, ticketID: ticketID) } else { open(file.url.path, ticketID: ticketID) }
   }
 
   /// Outputs to announce on the task card until the user opens or dismisses them.

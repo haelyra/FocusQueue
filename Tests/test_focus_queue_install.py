@@ -366,6 +366,19 @@ class InstallerTests(unittest.TestCase):
                 self.assertIn('A reply of "continue" means the recommended option', payload)
                 self.assertIn('`decision rewind <TASK> <AGENT> <NODE> --reason "<why>"`', payload)
 
+    def test_global_contract_biases_toward_experimentation(self):
+        repository = Path(__file__).parents[1]
+        for name in (
+            "Config/CODEX_GLOBAL_INSTRUCTIONS.md",
+            "Config/CLAUDE_GLOBAL_INSTRUCTIONS.md",
+            "Config/KIMI_GLOBAL_INSTRUCTIONS.md",
+        ):
+            with self.subTest(name=name):
+                payload = (repository / name).read_text()
+                self.assertIn("Bias for experimentation", payload)
+                self.assertIn("pivotal high-level design choices", payload)
+                self.assertIn("Settle implementation-level questions yourself", payload)
+
     def test_global_contract_links_shorthand_references(self):
         repository = Path(__file__).parents[1]
         for name in (

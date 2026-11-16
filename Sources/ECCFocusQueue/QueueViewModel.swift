@@ -3129,6 +3129,27 @@ final class QueueViewModel {
     mutateDevelopmentProcess { try $0.trackModuleFile(file, projectID: $1) }
   }
 
+  /// Rebuilds the project map (agent changes never write the dashboard, so the
+  /// file can lag them) and opens it in the document viewer.
+  func openProjectMap() {
+    guard let projectID = selectedProject?.id else { return }
+    let root = paths.supportDirectory
+    Task { [weak self] in
+      let result = await Task.detached(priority: .userInitiated) {
+        Result { try ProjectMapGenerator(root: root).write(projectID: projectID) }
+      }.value
+      guard let self else { return }
+      switch result {
+      case .success(let url?):
+        self.openDocumentViewer(url, scope: .project(projectID))
+      case .success(nil):
+        self.developmentProcessError = "Project map: turn on the development process first."
+      case .failure(let error):
+        self.developmentProcessError = "Project map: \(error.localizedDescription)"
+      }
+    }
+  }
+
   /// Phase markers in the all-projects view read each project's process.
   /// Single-project scope uses `developmentProcess` alone, so it skips the reads.
   private func reloadPhaseProcesses() {

@@ -786,6 +786,9 @@ public actor JSONDashboardRepository: DashboardManaging {
         let document = try JSONDecoder().decode(DashboardDocument.self, from: data)
         _ = try currentData(at: url, expectedRevision: expectedRevision)
         try files.write(data, to: url)
+        // Development-process projects keep a project map beside the dashboard;
+        // every task add or change rebuilds it. A no-op for other dashboards.
+        ProjectMapGenerator.refreshAfterDashboardWrite(url)
         return DashboardSnapshot(
             document: document,
             revision: DashboardRevision(contents: data)

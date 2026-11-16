@@ -1,0 +1,176 @@
+import Foundation
+import Testing
+@testable import FocusQueueCore
+
+private let plan = """
+# Demo development plan
+
+KAI-like intro: DEM-3 covers A2 plus setup, and DEM-9 covers nothing listed.
+
+## A. Planning completion
+
+- **A1. Write the module files.**
+  Scope: one per module. Modules: M1, M2.
+  Deps: none (can precede A2–A3). Docs: none.
+- **A2. Prepare the reference machine.**
+  Deps: none. Gate: pre-run check passes.
+- [x] **A3. Already finished.**
+  Deps: A1. Gate: done by hand.
+
+## Phase 1 — Build
+
+Exit gate: the slice works.
+
+- [ ] **1.1. Core protocol.** Task: DEM-1
+  Scope: frames. Modules: M4.
+  Deps: A1, DEM-2 (its daemon); starts before 1.4 by owner decision. Gate: round trip validates.
+- [ ] **1.2. Storage.** Task: —
+  Deps: 1.1. Gate: assertions pass.
+- [ ] **1.3. Launch pipeline.** Task: —
+  Deps: 1.2. Gate: no duplicate agents.
+- [ ] **1.4. Gate run.** Task: —
+  Deps: 1.1–1.3. Gate: green.
+
+## Task set
+
+| Leaf | Task title | Summary | Task ID |
+|---|---|---|---|
+| 1.2 | Storage | Build storage | DEM-4 |
+
+## Cross-cutting tracks
+
+- **C1. Provider wave.** Runs beside phases, post-MVP.
+- **C2. Benchmarks.** Gate: suites stay green.
+
+## Out of scope
+
+- LSP IDE, Monaco.
+"""
+
+private func ticket(_ id: String, _ title: String, status: String = "backlog") -> DashboardTicket {
+    DashboardTicket(id: id, title: title, status: status, summary: "")
+}
+
+private func demoMap(tickets: [DashboardTicket], process: DevelopmentProcess = DevelopmentProcess()) -> ProjectMap {
+    ProjectMapBuilder.build(projectID: "demo", projectName: "Demo", process: process, tickets: tickets,
+                            outline: DevelopmentPlanOutline.parse(plan), planFile: "devplan.md",
+                            agents: ["DEM-1": [ProjectMap.Agent(title: "Agent 1", provider: "claude",
+                                                                status: "working", attention: nil, summary: "")]],
+                            now: Date(timeIntervalSince1970: 0))
+}
+
+private let demoTickets = [
+    ticket("DEM-1", "Core protocol", status: "in-progress"),
+    ticket("DEM-2", "Phase 0 daemon spike", status: "resolved"),
+    ticket("DEM-3", "Phase 0 entry: reference hardware"),
+    ticket("DEM-4", "Storage worker"),
+    ticket("DEM-5", "Decide starting 1.3 alongside 1.2"),
+    ticket("DEM-6", "Phase 1 1.3: launch pipeline", status: "cancelled"),
+]
+
+@Test("The plan parser reads leaves, checkboxes, gates, and dependency text")
+func planParserReadsLeaves() {
+    let outline = DevelopmentPlanOutline.parse(plan)
+    #expect(outline.leaves.map(\.id) == ["A1", "A2", "A3", "1.1", "1.2", "1.3", "1.4", "C1", "C2"])
+    let a3 = outline.leaves[2]
+    #expect(a3.isChecked && a3.gate == "done by hand.")
+    // "none (can precede …)" is no dependency; text after a semicolon is ignored.
+    #expect(outline.leaves[0].dependencyText.isEmpty)
+    #expect(outline.leafIDs(in: outline.leaves[3].dependencyText) == ["A1"])
+    #expect(outline.leafIDs(in: "1.1–1.3") == ["1.1", "1.2", "1.3"])
+    #expect(outline.leafIDs(in: "1.1 to 1.3, §1.4") == ["1.1", "1.2", "1.3"])
+    #expect(outline.sections.map(\.isTrack) == [false, false, true, true, true])
+}
+
+@Test("Tasks cover leaves by Task field, table row, covers sentence, and title label")
+func mapCoversLeaves() {
+    let map = demoMap(tickets: demoTickets)
+    let node = { (id: String) in map.nodes.first { $0.id == id } }
+    #expect(node("DEM-1")?.leaves == ["1.1"])     // Task: field
+    #expect(node("DEM-3")?.leaves == ["A2"])      // "DEM-3 covers A2"
+    #expect(node("DEM-4")?.leaves == ["1.2"])     // task-set table row
+    #expect(node("DEM-6")?.leaves == ["1.3"])     // title label "Phase 1 1.3:"
+    #expect(node("DEM-5")?.leaves == [])          // a mere mention claims nothing
+    #expect(node("DEM-1")?.agents.count == 1)
+    #expect(node("DEM-5").map { map.lanes[$0.lane].title } == "Not in the plan · no phase")
+}
+
+@Test("Ghosts mark unmet, uncovered leaves only")
+func mapGhosts() {
+    let map = demoMap(tickets: demoTickets)
+    let ghosts = Set(map.nodes.filter { $0.kind == .ghost }.map(\.id))
+    // A1 has no task; 1.3's only task was cancelled; 1.4 has none; C2 is a gated track.
+    // A3 is ticked, C1 is a gate-less track, and covered leaves need no ghost.
+    #expect(ghosts == ["ghost:A1", "ghost:1.3", "ghost:1.4", "ghost:C2"])
+    #expect(map.nodes.first { $0.id == "ghost:1.3" }?.reason == "Its only tasks were cancelled.")
+}
+
+@Test("Edges follow plan dependencies through tasks and ghosts, plus task dependencies")
+func mapEdges() throws {
+    var process = DevelopmentProcess()
+    try process.setDependencies(taskID: "DEM-5", prerequisites: ["DEM-4"])
+    let map = demoMap(tickets: demoTickets, process: process)
+    let edges = Set(map.edges.map { "\($0.from)>\($0.to)" })
+    #expect(edges.contains("ghost:A1>DEM-1"))       // leaf dependency onto a ghost
+    #expect(edges.contains("DEM-2>DEM-1"))           // a task ID in a Deps line
+    #expect(edges.contains("DEM-1>DEM-4"))           // 1.2 depends on 1.1
+    #expect(edges.contains("DEM-4>DEM-6") && edges.contains("DEM-4>ghost:1.3"))
+    #expect(edges.contains("DEM-1>ghost:1.4") && edges.contains("ghost:1.3>ghost:1.4"))
+    #expect(edges.contains("DEM-4>DEM-5"))           // development.json dependency
+    #expect(!edges.contains { $0.hasPrefix("ghost:A2") || $0.contains(">ghost:A1") })
+}
+
+@Test("Module ghosts appear only for modules nothing mentions")
+func mapModuleGhosts() {
+    let process = DevelopmentProcess(modules: [DevelopmentModule(id: "m9", name: "M9 Workspaces"),
+                                               DevelopmentModule(id: "m4", name: "M4", qaAccepted: true)])
+    let map = ProjectMapBuilder.build(projectID: "demo", projectName: "Demo", process: process, tickets: demoTickets,
+                                      outline: DevelopmentPlanOutline.parse(plan), planFile: nil, agents: [:],
+                                      moduleIDs: ["m1", "m7"])
+    let ghosts = map.nodes.filter { $0.id.hasPrefix("ghost:module:") }.map(\.id)
+    #expect(ghosts == ["ghost:module:m9", "ghost:module:m7"])
+}
+
+@Test("The HTML embeds the map without letting task text close the script")
+func mapHTMLEscapesScript() {
+    let map = demoMap(tickets: [ticket("DEM-1", "Break </script><b>out")])
+    let html = ProjectMapHTML.render(map)
+    #expect(!html.contains("</script><b>"))
+    #expect(html.contains("<title>Demo project map</title>"))
+}
+
+@Test("Dashboard writes rebuild the map only for development-process projects")
+func dashboardWriteRebuildsMap() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("fq-map-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let project = root.appendingPathComponent("projects/demo")
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+    let dashboard = project.appendingPathComponent("dashboard.json")
+    try Data(#"{"tickets":[]}"#.utf8).write(to: dashboard)
+    try plan.write(to: project.appendingPathComponent("devplan.md"), atomically: true, encoding: .utf8)
+    let mapURL = project.appendingPathComponent(ProjectMapGenerator.fileName)
+    let repository = JSONDashboardRepository()
+
+    // No development.json: no map.
+    var snapshot = try await repository.loadSnapshot(from: dashboard)
+    snapshot = try await repository.createTicket(ticket("DEM-1", "Core protocol"), in: dashboard,
+                                                  expectedRevision: snapshot.revision)
+    #expect(!FileManager.default.fileExists(atPath: mapURL.path))
+
+    // Disabled process: still no map.
+    let store = DevelopmentProcessStore(root: root)
+    try store.setEnabled(false, projectID: "demo")
+    snapshot = try await repository.createTicket(ticket("DEM-2", "Second"), in: dashboard,
+                                                  expectedRevision: snapshot.revision)
+    #expect(!FileManager.default.fileExists(atPath: mapURL.path))
+
+    // Enabled: adding a task writes a map that includes it.
+    try store.setEnabled(true, projectID: "demo")
+    _ = try await repository.createTicket(ticket("DEM-7", "Phase 1 1.4: gate run"), in: dashboard,
+                                          expectedRevision: snapshot.revision)
+    let html = try String(contentsOf: mapURL, encoding: .utf8)
+    #expect(html.contains(#""id":"DEM-7""#))
+    #expect(html.contains(#""id":"ghost:1.2""#))
+    let built = try #require(try ProjectMapGenerator(root: root).build(projectID: "demo"))
+    #expect(built.nodes.first { $0.id == "DEM-7" }?.leaves == ["1.4"])
+}

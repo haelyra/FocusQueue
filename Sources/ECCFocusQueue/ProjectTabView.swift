@@ -44,6 +44,15 @@ struct ProjectTabView: View {
       if let process = model.developmentProcess {
         phaseStepper(process)
         stewardLine(process, projectID: project.id)
+        Button {
+          model.openProjectMap()
+        } label: {
+          Label("Project map", systemImage: "point.3.connected.trianglepath.dotted")
+            .font(.system(size: 11, weight: .semibold))
+        }
+        .buttonStyle(.borderless).controlSize(.small)
+        .help("Open the task dependency map: every task with its status and agents, plus dotted ghost tasks for planned work no task covers yet")
+        .accessibilityLabel("Open the project map for \(project.name)")
         VStack(alignment: .leading, spacing: 6) {
           ForEach(process.currentSteps) { step in
             stepRow(step, status: process.status(of: step), process: process)

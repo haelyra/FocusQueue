@@ -178,7 +178,7 @@ public enum ProjectMapHTML {
             }
         }
 
-        let layoutJSON = #"{"slot":\#(slotWidth),"rank":\#(rankHeight),"top":\#(top),"left":\#(left),"margin":\#(margin),"sizes":{"root":[\#(rootWidth),\#(rootHeight)],"phase":[\#(phaseWidth),\#(phaseHeight)],"item":[\#(nodeWidth),\#(nodeHeight)]}}"#
+        let layoutJSON = #"{"slot":\#(slotWidth),"rank":\#(rankHeight),"sub":\#(nodeHeight + 30),"top":\#(top),"left":\#(left),"margin":\#(margin),"sizes":{"root":[\#(rootWidth),\#(rootHeight)],"phase":[\#(phaseWidth),\#(phaseHeight)],"item":[\#(nodeWidth),\#(nodeHeight)]}}"#
         let tasks = map.nodes.filter { $0.kind == .task }
         let open = tasks.filter { !isFinished($0) }.count
         let stamp = DateFormatter()
@@ -370,6 +370,7 @@ line.dep.tree { stroke: var(--edge); }
 line.extra { visibility: hidden; stroke-dasharray: 5 4; opacity: .8; }
 line.dep { marker-end: url(#a); }
 line.off { display: none; }
+.group { position: absolute; z-index: 1; border: 1px dashed #3c3c46; border-radius: 12px; background: rgba(255,255,255,.015); pointer-events: none; }
 line.lit { visibility: visible; stroke: var(--review); stroke-width: 2; opacity: 1; marker-end: url(#ahi); }
 line.dash { stroke-dasharray: 5 4; }
 .root, .phase, .node { position: absolute; z-index: 2; }

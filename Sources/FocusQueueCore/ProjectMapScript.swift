@@ -45,31 +45,81 @@ public enum ProjectMapScript {
   function save() { try { sessionStorage.setItem(storeKey, JSON.stringify([].concat(Array.from(expanded)))); } catch (e) {} }
   var peek = [];
 
-  // Tidy tree over what is visible; peeked tasks stack under their collapsed
-  // phase so nothing else moves while the pointer rests on a card.
+  // Tidy tree over what is visible. A parent with more than WRAP children
+  // keeps the ones that have subtrees in its first row and wraps the rest
+  // into a framed grid at most WRAP wide, so wide ranks become extra rows.
+  // Peeked tasks stack under their collapsed phase so nothing else moves while
+  // the pointer rests on a card.
+  var WRAP = 5;
+  var frames = [], rankTop = [];
   function layout() {
-    var target = {};
+    var target = {}, rows = {};
+    frames = [];
+    list.forEach(function (n) { n.frame = null; });
     function measure(n) {
       n.vis = (n.kind === 'phase' && !expanded.has(n.id)) ? [] : n.children;
-      n.slots = n.vis.length ? n.vis.reduce(function (s, k) { return s + measure(k); }, 0) : 1;
+      n.vis.forEach(measure);
+      n.grid = null;
+      var leaves = n.vis.filter(function (k) { return !k.vis.length; });
+      if (n.vis.length > WRAP && leaves.length > 1) {
+        var branches = n.vis.filter(function (k) { return k.vis.length; });
+        var cols = Math.min(WRAP, leaves.length), rowCount = Math.ceil(leaves.length / cols);
+        n.grid = { branches: branches, leaves: leaves, cols: cols, rows: rowCount };
+        rows[n.rank + 1] = Math.max(rows[n.rank + 1] || 1, rowCount);
+        n.slots = branches.reduce(function (s, k) { return s + k.slots; }, 0) + cols;
+      } else {
+        n.slots = n.vis.length ? n.vis.reduce(function (s, k) { return s + k.slots; }, 0) : 1;
+      }
       return n.slots;
     }
-    function place(n, start) {
-      target[n.id] = { cx: C.left + (start + n.slots / 2) * C.slot, y: C.top + n.rank * C.rank };
-      var c = start;
-      n.vis.forEach(function (k) { place(k, c); c += k.slots; });
-    }
     var root = nodes.root;
-    measure(root); place(root, 0);
+    measure(root);
+    // Each rank is as tall as its most wrapped group needs.
+    rankTop = [C.top];
+    for (var r = 0; r <= 64; r++) rankTop.push(rankTop[r] + C.rank + ((rows[r] || 1) - 1) * C.sub);
+    function place(n, start, line) {
+      target[n.id] = { cx: C.left + (start + n.slots / 2) * C.slot, y: rankTop[n.rank] + line * C.sub };
+      var c = start;
+      if (!n.grid) { n.vis.forEach(function (k) { place(k, c, 0); c += k.slots; }); return; }
+      n.grid.branches.forEach(function (k) { place(k, c, 0); c += k.slots; });
+      var g = n.grid, tallest = 0;
+      g.leaves.forEach(function (k, i) {
+        place(k, c + (i % g.cols), Math.floor(i / g.cols));
+        tallest = Math.max(tallest, k.h);
+      });
+      var frame = { parent: n.id, x: C.left + c * C.slot + 4, y: rankTop[n.rank + 1] - 12,
+                    w: g.cols * C.slot - 8, h: (g.rows - 1) * C.sub + tallest + 24 };
+      frame.cx = frame.x + frame.w / 2;
+      frames.push(frame);
+      g.leaves.forEach(function (k) { k.frame = frame; });
+    }
+    place(root, 0, 0);
     var stacks = {};
     peek.forEach(function (id) {
       var n = nodes[id];
       if (!n || target[id] || !n.lane || !target[n.lane]) return;
-      var phase = target[n.lane];
-      var i = stacks[n.lane] = (stacks[n.lane] || 0) + 1;
-      target[id] = { cx: phase.cx, y: phase.y + i * C.rank, peek: true };
+      var phase = target[n.lane], phaseNode = nodes[n.lane];
+      var i = stacks[n.lane] = (stacks[n.lane] || 0);
+      stacks[n.lane] = i + 1;
+      target[id] = { cx: phase.cx, y: phase.y + phaseNode.h + 44 + i * C.sub, peek: true };
     });
     return target;
+  }
+
+  // Wrapped groups get a frame behind their cards; parent lines land on it.
+  var frameEls = [];
+  function drawFrames(visible) {
+    frameEls.forEach(function (el) { el.remove(); });
+    frameEls = [];
+    if (!visible) return;
+    frames.forEach(function (f) {
+      var el = document.createElement('div');
+      el.className = 'group';
+      el.style.left = f.x + 'px'; el.style.top = f.y + 'px';
+      el.style.width = f.w + 'px'; el.style.height = f.h + 'px';
+      map.insertBefore(el, svg);
+      frameEls.push(el);
+    });
   }
 
   function anchor(n, target) {
@@ -97,10 +147,15 @@ public enum ProjectMapScript {
     map.style.width = width + 'px'; map.style.height = height + 'px';
     svg.setAttribute('width', width); svg.setAttribute('height', height);
     svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+    var deepest = Math.max(maxRank, peekDepth(target));
     bands.forEach(function (b) {
-      b.style.display = (+b.dataset.rank <= Math.max(maxRank, peekDepth(target))) ? '' : 'none';
+      var r = +b.dataset.rank;
+      b.style.display = r <= deepest ? '' : 'none';
       b.style.width = width + 'px';
+      b.style.top = (rankTop[r] - 34) + 'px';
+      b.style.height = (rankTop[r + 1] - rankTop[r]) + 'px';
     });
+    drawFrames(false);
     cancelAnimationFrame(frameID);
     var start = performance.now(), duration = animate ? 300 : 0;
     function frame(now) {
@@ -121,6 +176,7 @@ public enum ProjectMapScript {
         n.el.style.opacity = ''; n.el.style.transform = '';
         if (!n.shown) n.el.style.display = 'none';
       });
+      drawFrames(true);
       drawLines();
     }
     // Without animation the layout lands now, so a map never flashes expanded.
@@ -129,7 +185,11 @@ public enum ProjectMapScript {
 
   function peekDepth(target) {
     var deepest = 0;
-    list.forEach(function (n) { var t = target[n.id]; if (t && t.peek) deepest = Math.max(deepest, Math.round((t.y - C.top) / C.rank)); });
+    list.forEach(function (n) {
+      var t = target[n.id];
+      if (!t || !t.peek) return;
+      for (var r = 0; r + 1 < rankTop.length && rankTop[r + 1] <= t.y + n.h; r++) deepest = Math.max(deepest, r + 1);
+    });
     return deepest;
   }
 
@@ -144,7 +204,11 @@ public enum ProjectMapScript {
         (a.el.classList.contains('peek') || b.el.classList.contains('peek')));
       if (!on) return;
       var x1, y1, x2, y2;
-      if (b.y >= a.y + a.h) { x1 = a.cx; y1 = a.y + a.h; x2 = b.cx; y2 = b.y - 3; }
+      // A line from a parent into its wrapped group ends on the group's frame,
+      // so it never threads between the cards.
+      if (b.frame && b.frame.parent === a.id && !b.el.classList.contains('peek')) {
+        x1 = a.cx; y1 = a.y + a.h; x2 = b.frame.cx; y2 = b.frame.y - 3;
+      } else if (b.y >= a.y + a.h) { x1 = a.cx; y1 = a.y + a.h; x2 = b.cx; y2 = b.y - 3; }
       else if (b.y + b.h <= a.y) { x1 = a.cx; y1 = a.y; x2 = b.cx; y2 = b.y + b.h + 3; }
       else {
         var fwd = b.cx > a.cx;

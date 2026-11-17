@@ -237,7 +237,9 @@ struct SideDocumentPane: View {
     /// `focusqueue://task/<ID>` (a project map click) locates the task in the
     /// queue; every other link opens as before.
     private func openLink(_ url: URL) {
-        if let task = ProjectMapPage.taskID(from: url) { queue.revealMapTask(task) } else { open(url) }
+        if let request = ProjectMapPage.request(from: url) {
+            queue.handleMapTaskAction(request.task, action: request.action, provider: request.provider)
+        } else { open(url) }
     }
     private var entry: DocumentContentStore.Entry { store.entry(for: document) }
     private var editSession: DocumentContentStore.EditSession? { store.editSessions[document] }
@@ -412,7 +414,8 @@ struct SideDocumentPane: View {
                         findRequest: find.request, findSearchesBackwards: find.searchesBackwards)
                 case .rendered(let resource):
                     ReadOnlyResourceDocument(
-                        url: resource, open: openLink, revision: entry.revision, findQuery: find.query,
+                        url: resource, open: openLink, liveMap: { [queue] in await queue.projectMapLivePayload() },
+                        revision: entry.revision, findQuery: find.query,
                         findRequest: find.request, findSearchesBackwards: find.searchesBackwards)
                 }
             } else { ProgressView("Loading document…") }
@@ -673,6 +676,8 @@ struct DocumentConversationView: View {
 struct ReadOnlyResourceDocument: NSViewRepresentable {
     let url: URL
     let open: (URL) -> Void
+    /// Live agent data for a project map page, pushed every few seconds.
+    var liveMap: (@MainActor () async -> [String: Any])? = nil
     /// The store's content generation; a new one means the file changed on
     /// disk (an in-app save or an agent's write), so the page reloads.
     var revision = 0
@@ -702,6 +707,7 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
     func updateNSView(_ container: ZoomableWebContainer, context: Context) {
         let view: WKWebView = container.webView
         context.coordinator.open = open
+        context.coordinator.liveMap = liveMap
         if context.coordinator.url != url || context.coordinator.revision != revision {
             if context.coordinator.url != url {
                 // Project maps navigate by zoom: the wheel zooms, and the view
@@ -726,6 +732,7 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
         view.stopLoading(); view.navigationDelegate = nil; view.uiDelegate = nil
         view.configuration.userContentController.removeScriptMessageHandler(
             forName: ProjectMapScript.messageHandler, contentWorld: .defaultClient)
+        coordinator.stopLiveMap()
     }
     @MainActor final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         var url: URL?
@@ -741,12 +748,47 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
 
         func willLoadDocument() { isDocumentLoaded = false }
 
-        /// A project map card was clicked: locate that task in the queue.
+        /// A project map card or menu choice: locate the task, launch an agent
+        /// on it, or open its prompt sheet. Only these shapes are accepted.
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
             guard message.name == ProjectMapScript.messageHandler, message.frameInfo.isMainFrame,
-                  let body = message.body as? [String: Any], body["type"] as? String == "locate",
-                  let task = body["task"] as? String, let url = ProjectMapPage.taskURL(task) else { return }
+                  let body = message.body as? [String: Any],
+                  let action = (body["type"] as? String).flatMap(ProjectMapPage.Action.init(rawValue:)),
+                  let task = body["task"] as? String,
+                  let url = ProjectMapPage.taskURL(task, action: action, provider: body["provider"] as? String)
+            else { return }
             open(url)
+        }
+
+        /// Pushes live agents into an open project map every 3 seconds.
+        var liveMap: (@MainActor () async -> [String: Any])?
+        private var liveTimer: Timer?
+        private var livePushing = false
+        private weak var liveView: WKWebView?
+
+        func startLiveMap(in webView: WKWebView) {
+            stopLiveMap()
+            liveView = webView
+            pushLiveMap()
+            liveTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.pushLiveMap() }
+            }
+        }
+
+        func stopLiveMap() { liveTimer?.invalidate(); liveTimer = nil }
+
+        private func pushLiveMap() {
+            guard !livePushing, let liveMap, let view = liveView else { return }
+            livePushing = true
+            Task { @MainActor [weak self] in
+                let payload = await liveMap()
+                defer { self?.livePushing = false }
+                guard let data = try? JSONSerialization.data(withJSONObject: payload),
+                      let json = String(data: data, encoding: .utf8) else { return }
+                _ = try? await view.callAsyncJavaScript(
+                    "if (window.fqMapLive) window.fqMapLive(JSON.parse(json))",
+                    arguments: ["json": json], in: nil, contentWorld: .defaultClient)
+            }
         }
 
         func requestFind(
@@ -775,6 +817,7 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
                 revealsRoot = false
                 zoomable.reveal(elementID: "root")
             }
+            if (webView as? ZoomableWebView)?.wheelZooms == true { startLiveMap(in: webView) } else { stopLiveMap() }
         }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                      for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {

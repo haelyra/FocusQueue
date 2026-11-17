@@ -87,7 +87,31 @@ struct ProjectMapViewerTests {
     // Clicking a task card reaches the app as a locate request.
     _ = await run(web, "document.querySelector('[data-node=\"DEM-2\"] .title').click(); return 1")
     try await eventually { opened.contains(URL(string: "focusqueue://task/DEM-2")!) }
+    // Right-click opens the task menu; a provider choice reaches the app as a launch.
+    _ = await run(web, """
+      const card = document.querySelector('[data-node="DEM-2"]');
+      card.dispatchEvent(new MouseEvent('contextmenu', {bubbles: true, cancelable: true, clientX: 50, clientY: 50}));
+      return 1
+      """)
+    try await eventually { await run(web, "return document.querySelectorAll('.menu button').length") == "5" }
+    _ = await run(web, "[...document.querySelectorAll('.menu button')].find(b => b.textContent === 'Launch Codex agent').click(); return 1")
+    try await eventually { opened.contains(URL(string: "focusqueue://task/DEM-2?action=launch&provider=codex")!) }
+    #expect(await run(web, "return document.querySelectorAll('.menu').length") == "0")
+
+    // Live pushes add a pulsing provider mark, the agent's activity, and a phase marker.
+    _ = await run(web, """
+      window.fqMapLive({tasks: {"DEM-2": [{p: "claude", t: "Builder", s: "working", k: "editing", d: "Core/Map.swift"}]},
+                        defaultProvider: "claude", providers: ["claude", "codex", "kimi"], names: {claude: "Claude"}});
+      return 1
+      """)
+    #expect(await run(web, "return document.querySelectorAll('[data-node=\"DEM-2\"] .top .pv').length") == "1")
+    #expect(await run(web, "return document.querySelector('[data-node=\"DEM-2\"] .act').textContent") == "editing Core/Map.swift")
+    #expect(await run(web, "return document.querySelectorAll('[data-kind=\"phase\"] .live .pv').length") == "1")
+
     #expect(ProjectMapPage.taskID(from: URL(string: "focusqueue://task/dem-2")!) == "DEM-2")
+    let launch = ProjectMapPage.request(from: URL(string: "focusqueue://task/DEM-2?action=launch&provider=kimi")!)
+    #expect(launch?.action == .launch && launch?.provider == .kimi)
+    #expect(ProjectMapPage.request(from: URL(string: "focusqueue://task/DEM-2?action=rm&provider=evil")!)?.action == .locate)
     #expect(ProjectMapPage.taskID(from: URL(string: "focusqueue://task/../etc")!) == nil)
   }
 }

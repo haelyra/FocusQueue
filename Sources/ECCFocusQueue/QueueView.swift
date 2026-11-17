@@ -2443,6 +2443,21 @@ private struct TerminalAppSetting: View {
 
 /// Open task cards. In phase order, a heading opens each phase and a short
 /// rail joins a card to the card above when it waits on that task.
+/// A project map's "New agent with a prompt…" opens the matching card's sheet.
+private struct MapAgentCreatorRequest: ViewModifier {
+  let model: QueueViewModel
+  let ticketID: String
+  @Binding var isPresented: Bool
+
+  func body(content: Content) -> some View {
+    content.onChange(of: model.requestedAgentCreatorTaskID, initial: true) { _, taskID in
+      guard taskID == ticketID else { return }
+      model.clearRequestedAgentCreator()
+      isPresented = true
+    }
+  }
+}
+
 private struct QueueTicketList: View {
   let tickets: [DashboardTicket]
   /// The card shown just before this list, so a split list keeps one heading.
@@ -3521,6 +3536,7 @@ private struct TicketCard: View {
       .sheet(isPresented: $showsAgentCreator) {
         TaskAgentCreatorSheet(model: model, ticket: ticket)
       }
+      .modifier(MapAgentCreatorRequest(model: model, ticketID: ticket.id, isPresented: $showsAgentCreator))
       .sheet(item: $editingSubtask) { subtask in
         SubtaskEditorSheet(subtask: subtask) { title, explanation in
           model.updateSubtask(

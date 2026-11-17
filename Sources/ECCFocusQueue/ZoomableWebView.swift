@@ -1,4 +1,5 @@
 import AppKit
+import FocusQueueCore
 import WebKit
 
 /// A web view for looking at pages: visual zoom and right-drag panning.
@@ -206,15 +207,31 @@ final class ZoomableWebContainer: NSView {
 enum ProjectMapPage {
     static let generatorTag = #"<meta name="generator" content="Focus Queue project map">"#
 
-    static func taskURL(_ taskID: String) -> URL? {
+    /// What a project map click asks for.
+    enum Action: String { case locate, launch, prompt }
+
+    static func taskURL(_ taskID: String, action: Action = .locate, provider: String? = nil) -> URL? {
         guard taskID.range(of: #"^[A-Za-z][A-Za-z0-9]*-[0-9]+$"#, options: .regularExpression) != nil else { return nil }
-        return URL(string: "focusqueue://task/\(taskID.uppercased())")
+        var components = URLComponents()
+        components.scheme = "focusqueue"; components.host = "task"; components.path = "/" + taskID.uppercased()
+        var query: [URLQueryItem] = []
+        if action != .locate { query.append(URLQueryItem(name: "action", value: action.rawValue)) }
+        if let provider, AgentProvider(rawValue: provider) != nil { query.append(URLQueryItem(name: "provider", value: provider)) }
+        components.queryItems = query.isEmpty ? nil : query
+        return components.url
     }
 
-    static func taskID(from url: URL) -> String? {
+    static func taskID(from url: URL) -> String? { request(from: url)?.task }
+
+    /// `focusqueue://task/<ID>[?action=launch|prompt][&provider=claude]`.
+    static func request(from url: URL) -> (task: String, action: Action, provider: AgentProvider?)? {
         guard url.scheme == "focusqueue", url.host == "task" else { return nil }
         let id = url.lastPathComponent
-        return taskURL(id) == nil ? nil : id.uppercased()
+        guard taskURL(id) != nil else { return nil }
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let action = items.first { $0.name == "action" }?.value.flatMap(Action.init(rawValue:)) ?? .locate
+        let provider = items.first { $0.name == "provider" }?.value.flatMap(AgentProvider.init(rawValue:))
+        return (id.uppercased(), action, provider)
     }
 
     static func isMap(_ url: URL) -> Bool {

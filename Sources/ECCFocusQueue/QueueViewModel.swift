@@ -6242,6 +6242,65 @@ final class QueueViewModel {
 
   func clearMapLocatedTask() { mapLocatedTaskID = nil }
 
+  /// A task whose card should open its "New agent with a prompt" sheet; the
+  /// card clears it once shown.
+  private(set) var requestedAgentCreatorTaskID: String?
+  func clearRequestedAgentCreator() { requestedAgentCreatorTaskID = nil }
+
+  /// A project map task menu choice: launch an agent (the default provider, or
+  /// the one named), open the card's prompt sheet, or locate the task.
+  func handleMapTaskAction(_ taskID: String, action: ProjectMapPage.Action, provider: AgentProvider?) {
+    guard let ticket = dashboard.tickets.first(where: { $0.id.caseInsensitiveCompare(taskID) == .orderedSame })
+    else { return }
+    switch action {
+    case .locate:
+      revealMapTask(ticket.id)
+    case .launch:
+      guard ticket.isOpen else { return }
+      revealMapTask(ticket.id)
+      launchDefaultAgent(for: ticket, provider: provider)
+    case .prompt:
+      guard ticket.isOpen else { return }
+      revealMapTask(ticket.id)
+      requestedAgentCreatorTaskID = ticket.id
+    }
+  }
+
+  /// What the project map shows live: every agent's provider, title, status,
+  /// and attention, plus a rough activity (the newest tool call in its
+  /// transcript) for agents that are working. Transcript tails are read off
+  /// the main actor; only working agents are read.
+  func projectMapLivePayload() async -> [String: Any] {
+    var tasks: [String: [[String: String]]] = [:]
+    var reads: [(task: String, index: Int, url: URL, provider: AgentProvider)] = []
+    for (taskID, context) in taskContexts {
+      let key = taskID.uppercased()
+      for agent in context.subtasks
+      where agent.agentRemovedAt == nil && agent.mergedIntoSubtaskID == nil && !agent.isAssignmentOnly {
+        var entry = ["p": agent.provider.rawValue, "t": agent.title, "s": agent.status.rawValue]
+        if let attention = agent.attention { entry["a"] = attention.label }
+        tasks[key, default: []].append(entry)
+        if agent.status == .working, let url = await agentActivityObserver.transcriptURL(for: agent) {
+          reads.append((key, tasks[key]!.count - 1, url, agent.provider))
+        }
+      }
+    }
+    let found = await Task.detached(priority: .utility) {
+      reads.map { AgentToolActivity.read(url: $0.url, provider: $0.provider) }
+    }.value
+    for (read, activity) in zip(reads, found) {
+      guard let activity else { continue }
+      tasks[read.task]?[read.index]["k"] = activity.kind.verb
+      tasks[read.task]?[read.index]["d"] = activity.detail
+    }
+    return [
+      "tasks": tasks,
+      "defaultProvider": defaultAgentProvider.rawValue,
+      "providers": AgentProvider.allCases.map(\.rawValue),
+      "names": Dictionary(uniqueKeysWithValues: AgentProvider.allCases.map { ($0.rawValue, $0.displayName) }),
+    ]
+  }
+
   func requestNewTask(projectID: String? = nil, autofocusPrompt: Bool = false) {
     // An agent cannot start without a signed-in provider; the gate explains why.
     guard !requiresProviderSignIn else { return setPanelMode(.expanded) }

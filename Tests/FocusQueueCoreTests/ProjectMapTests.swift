@@ -155,7 +155,7 @@ func mapHTMLIsStatic() {
     #expect(html.components(separatedBy: #"<line class="dep "#).count - 1 == map.edges.count)
     #expect(html.contains(#"class="root" id="root""#))
     #expect(html.contains(#"data-rank="0""#) && html.contains(">R2</div>"))
-    #expect(html.contains("<details><summary>1 agent</summary>"))
+    #expect(html.contains(#"<details><summary>1 agent<span class="act"></span></summary>"#))
 }
 
 @Test("Dashboard writes rebuild the map only for development-process projects")
@@ -261,4 +261,15 @@ func unclaimedTasksJoinPlanPhases() {
     #expect(lane("DEM-24") == "Outside the development process or unlinked")
     #expect(!map.lanes.contains { $0.title.hasPrefix("Not in the plan") })
     #expect(map.nodes.allSatisfy { $0.phase == nil })        // process phase names never show
+}
+
+@Test("Task cards carry a menu button, live slots, and a pulse for agents working at generation time")
+func mapLiveMarkup() {
+    let map = demoMap(tickets: demoTickets)   // DEM-1 has one working Claude agent
+    let html = ProjectMapHTML.render(map)
+    #expect(html.contains(#"<symbol id="pv-claude""#) && html.contains(#"<symbol id="act-editing""#))
+    #expect(html.contains(#"aria-label="Task actions for DEM-1""#))
+    #expect(html.contains(#"<i class="pv" title="Agent 1 (claude) is working">"#))
+    #expect(html.components(separatedBy: #"class="pv""#).count - 1 == 1)
+    #expect(html.contains(#"<span class="act"></span>"#))
 }

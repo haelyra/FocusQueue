@@ -222,7 +222,15 @@ public enum ProjectMapScript {
 
   // Phases and the root toggle; tasks locate themselves in the queue.
   map.addEventListener('click', function (event) {
-    if (event.target.closest('details')) return;
+    if (event.target.closest('details') || event.target.closest('.menu')) return;
+    var more = event.target.closest('.more');
+    if (more) {
+      event.stopPropagation();
+      var card = more.closest('[data-task]'), r = more.getBoundingClientRect(), m = map.getBoundingClientRect();
+      openMenu(card, r.left - m.left, r.bottom - m.top + 4);
+      return;
+    }
+    closeMenu();
     var el = event.target.closest('[data-node]');
     if (!el) return;
     var n = nodes[el.dataset.node];
@@ -236,8 +244,7 @@ public enum ProjectMapScript {
       save(); peek = []; apply(true);
     } else if (el.dataset.task) {
       el.classList.remove('located'); void el.offsetWidth; el.classList.add('located');
-      var handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.focusQueueMap;
-      if (handler) handler.postMessage({ type: 'locate', task: el.dataset.task });
+      send({ type: 'locate', task: el.dataset.task });
     }
   });
   document.querySelectorAll('[data-action]').forEach(function (button) {
@@ -247,6 +254,119 @@ public enum ProjectMapScript {
       save(); peek = []; apply(true);
     });
   });
+
+  function send(message) {
+    var handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.focusQueueMap;
+    if (handler) handler.postMessage(message);
+  }
+
+  // Task menu: right-click a task card, or its ⋯ button.
+  var menu = null, live = { providers: ['claude', 'codex', 'kimi'], defaultProvider: null, names: {} };
+  function closeMenu() { if (menu) { menu.remove(); menu = null; } }
+  function icon(id) {
+    var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', id.indexOf('pv-') === 0 ? '0 0 24 24' : '0 0 16 16');
+    svg.setAttribute('width', '13'); svg.setAttribute('height', '13');
+    var use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    use.setAttribute('href', '#' + id);
+    svg.appendChild(use);
+    return svg;
+  }
+  function item(label, iconID, enabled, action) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    if (iconID) b.appendChild(icon(iconID));
+    b.appendChild(document.createTextNode(label));
+    b.disabled = !enabled;
+    b.addEventListener('click', function (event) { event.stopPropagation(); closeMenu(); action(); });
+    return b;
+  }
+  function openMenu(card, x, y) {
+    closeMenu();
+    var task = card.dataset.task, open = !card.classList.contains('fin');
+    menu = document.createElement('div');
+    menu.className = 'menu';
+    var head = document.createElement('div');
+    head.className = 'head';
+    head.textContent = task + (open ? '' : ' · finished');
+    menu.appendChild(head);
+    var name = function (p) { return live.names[p] || (p.charAt(0).toUpperCase() + p.slice(1)); };
+    // The app's default provider leads once the app has said which it is.
+    if (live.defaultProvider) {
+      menu.appendChild(item('Launch agent (' + name(live.defaultProvider) + ')', 'pv-' + live.defaultProvider, open,
+        function () { send({ type: 'launch', task: task }); }));
+    }
+    live.providers.filter(function (p) { return p !== live.defaultProvider; }).forEach(function (p) {
+      menu.appendChild(item('Launch ' + name(p) + ' agent', 'pv-' + p, open,
+        function () { send({ type: 'launch', task: task, provider: p }); }));
+    });
+    menu.appendChild(item('New agent with a prompt…', 'act-editing', open, function () { send({ type: 'prompt', task: task }); }));
+    menu.appendChild(document.createElement('hr'));
+    menu.appendChild(item('Find in queue', 'act-researching', true, function () { send({ type: 'locate', task: task }); }));
+    menu.style.left = x + 'px'; menu.style.top = y + 'px';
+    map.appendChild(menu);
+  }
+  map.addEventListener('contextmenu', function (event) {
+    var card = event.target.closest('[data-task]');
+    if (!card) return;
+    event.preventDefault();
+    var m = map.getBoundingClientRect();
+    openMenu(card, event.clientX - m.left, event.clientY - m.top);
+  });
+  document.addEventListener('keydown', function (event) { if (event.key === 'Escape') closeMenu(); });
+  document.addEventListener('click', function (event) { if (menu && !event.target.closest('.menu')) closeMenu(); });
+
+  // Live agents, pushed by the app every few seconds: a pulsing provider mark
+  // per working agent, an amber one for an agent waiting on you, and the
+  // newest tool call as a rough activity on the task's agent line.
+  window.fqMapLive = function (payload) {
+    if (!payload || !payload.tasks) return;
+    if (payload.providers) live.providers = payload.providers;
+    if (payload.defaultProvider) live.defaultProvider = payload.defaultProvider;
+    if (payload.names) live.names = payload.names;
+    var phaseLive = {};
+    list.forEach(function (n) {
+      if (n.kind !== 'item' || !n.el.dataset.task) return;
+      var agents = payload.tasks[n.el.dataset.task] || [];
+      var slot = n.el.querySelector('.top .live'), act = n.el.querySelector('.act');
+      if (slot) slot.textContent = '';
+      if (act) act.textContent = '';
+      var busy = agents.filter(function (a) { return a.s === 'working' || a.a; });
+      busy.forEach(function (a) {
+        var i = document.createElement('i');
+        i.className = 'pv' + (a.s === 'working' ? '' : ' waiting');
+        i.title = a.t + ' (' + (live.names[a.p] || a.p) + ') · ' + (a.s === 'working'
+          ? (a.k ? a.k + ' ' + (a.d || '') : 'working') : a.a);
+        i.appendChild(icon('pv-' + a.p));
+        if (slot) slot.appendChild(i);
+        if (a.s === 'working' && n.lane) {
+          var bucket = phaseLive[n.lane] = phaseLive[n.lane] || {};
+          bucket[a.p] = (bucket[a.p] || 0) + 1;
+        }
+      });
+      var doing = agents.filter(function (a) { return a.s === 'working' && a.k; })[0];
+      if (act && doing) {
+        act.appendChild(icon('act-' + doing.k));
+        act.appendChild(document.createTextNode(doing.k + (doing.d ? ' ' + doing.d : '')));
+        act.title = doing.t + ': ' + doing.k + (doing.d ? ' ' + doing.d : '');
+      }
+    });
+    list.forEach(function (n) {
+      if (n.kind !== 'phase') return;
+      var slot = n.el.querySelector('.live');
+      if (!slot) return;
+      slot.textContent = '';
+      var bucket = phaseLive[n.id] || {}, total = 0;
+      Object.keys(bucket).forEach(function (p) {
+        total += bucket[p];
+        var i = document.createElement('i');
+        i.className = 'pv';
+        i.appendChild(icon('pv-' + p));
+        slot.appendChild(i);
+      });
+      slot.title = total ? total + ' agent' + (total === 1 ? '' : 's') + ' working in this phase' : '';
+    });
+  };
 
   // Hovering a task briefly shows its dependencies that sit in collapsed phases.
   var hoverTimer = 0, leaveTimer = 0;

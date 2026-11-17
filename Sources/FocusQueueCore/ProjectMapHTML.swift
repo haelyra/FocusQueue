@@ -18,7 +18,8 @@ public enum ProjectMapHTML {
     static let nodeWidth = 176.0, nodeHeight = 74.0
     static let phaseWidth = 200.0, phaseHeight = 56.0
     static let rootWidth = 240.0, rootHeight = 64.0
-    static let slotWidth = 196.0, rankHeight = 150.0
+    // Slightly tight: 10 px between cards, 58 px between ranks.
+    static let slotWidth = 186.0, rankHeight = 132.0
     static let left = 120.0, top = 46.0, margin = 40.0
 
     enum Kind { case root, phase(isTrack: Bool), item(ProjectMap.Node, index: Int) }
@@ -169,7 +170,7 @@ public enum ProjectMapHTML {
                 let detail = count == 0
                     ? "not planned yet · ≈\(Int(progress.estimatedSize.rounded())) tasks"
                     : "\(count) node\(count == 1 ? "" : "s") · \(percent(share ?? 0))\(isTrack ? " · not gating" : "")"
-                cards.append(#"<div class="phase\#(isTrack ? " track" : "")\#(count == 0 ? " unplanned" : "")" data-node="\#(node.id)" data-kind="phase" data-parent="root" data-rank="1" style="left:\#(f(node.x))px;top:\#(f(node.y))px" title="\#(escape(title)) — click to expand or collapse"><b>\#(escape(title))</b><span>\#(escape(detail))</span>\#(bar(share ?? 0))</div>"#)
+                cards.append(#"<div class="phase\#(isTrack ? " track" : "")\#(count == 0 ? " unplanned" : "")" data-node="\#(node.id)" data-kind="phase" data-parent="root" data-rank="1" style="left:\#(f(node.x))px;top:\#(f(node.y))px" title="\#(escape(title)) — click to expand or collapse"><b>\#(escape(title))</b><span>\#(escape(detail))<span class="live"></span></span>\#(bar(share ?? 0))</div>"#)
             case .item(let item, let i):
                 hoverCSS.append("#map:has(#n\(i):hover) .node:not(.k\(i)){opacity:.28}")
                 hoverCSS.append("#map:has(#n\(i):hover) .e\(i){stroke:var(--edge-hi);stroke-width:2.2;opacity:1;visibility:visible;marker-end:url(#ahi)}")
@@ -178,7 +179,7 @@ public enum ProjectMapHTML {
             }
         }
 
-        let layoutJSON = #"{"slot":\#(slotWidth),"rank":\#(rankHeight),"sub":\#(nodeHeight + 30),"top":\#(top),"left":\#(left),"margin":\#(margin),"sizes":{"root":[\#(rootWidth),\#(rootHeight)],"phase":[\#(phaseWidth),\#(phaseHeight)],"item":[\#(nodeWidth),\#(nodeHeight)]}}"#
+        let layoutJSON = #"{"slot":\#(slotWidth),"rank":\#(rankHeight),"sub":\#(nodeHeight + 22),"top":\#(top),"left":\#(left),"margin":\#(margin),"sizes":{"root":[\#(rootWidth),\#(rootHeight)],"phase":[\#(phaseWidth),\#(phaseHeight)],"item":[\#(nodeWidth),\#(nodeHeight)]}}"#
         let tasks = map.nodes.filter { $0.kind == .task }
         let open = tasks.filter { !isFinished($0) }.count
         let stamp = DateFormatter()
@@ -199,6 +200,7 @@ public enum ProjectMapHTML {
             .replacingOccurrences(of: "{{CARDS}}", with: cards.joined(separator: "\n"))
             .replacingOccurrences(of: "{{LAYOUT}}", with: escape(layoutJSON))
             .replacingOccurrences(of: "{{SCRIPT}}", with: ProjectMapScript.source)
+            .replacingOccurrences(of: "{{ICONS}}", with: iconDefinitions)
     }
 
     static func order(_ node: TreeNode, _ indexOf: [String: Int]) -> Int {
@@ -243,11 +245,42 @@ public enum ProjectMapHTML {
         }
         let tooltip = escape(([title] + (node.gate.map { ["Gate: \($0)"] } ?? [])).joined(separator: "\n"))
         let task = node.kind == .task ? #" data-task="\#(escape(node.id))""# : ""
-        return #"<div class="\#(classes.joined(separator: " "))" id="n\#(index)" data-id="\#(escape(node.id))" data-node="\#(escape(node.id))" data-kind="item" data-parent="\#(escape(parent))" data-lane="\#(lane)" data-rank="\#(rank)"\#(task) style="left:\#(f(x))px;top:\#(f(y))px" title="\#(tooltip)"><div class="top"><span class="id">\#(escape(label))</span><span class="pill \#(node.kind == .ghost ? "ghost" : "s-\(group)")">\#(escape(pill))</span></div><div class="title">\#(escape(title))</div><details><summary>\#(summary)</summary><div class="panel">\#(details.joined())</div></details></div>"#
+        // Agents working at generation time pulse; the app keeps these live.
+        let working = node.agents.filter { $0.status == "working" }
+        let live = working.map { agent in
+            ##"<i class="pv" title="\##(escape(agent.title)) (\##(escape(agent.provider))) is working"><svg viewBox="0 0 24 24"><use href="#pv-\##(escape(agent.provider))"/></svg></i>"##
+        }.joined()
+        let more = node.kind == .task
+            ? #"<button class="more" type="button" title="Task actions" aria-label="Task actions for \#(escape(node.id))">⋯</button>"#
+            : ""
+        return #"<div class="\#(classes.joined(separator: " "))" id="n\#(index)" data-id="\#(escape(node.id))" data-node="\#(escape(node.id))" data-kind="item" data-parent="\#(escape(parent))" data-lane="\#(lane)" data-rank="\#(rank)"\#(task) style="left:\#(f(x))px;top:\#(f(y))px" title="\#(tooltip)"><div class="top"><span class="id">\#(escape(label))</span><span class="live">\#(live)</span>\#(more)<span class="pill \#(node.kind == .ghost ? "ghost" : "s-\(group)")">\#(escape(pill))</span></div><div class="title">\#(escape(title))</div><details><summary>\#(summary)<span class="act"></span></summary><div class="panel">\#(details.joined())</div></details></div>"#
     }
 
     /// Completion credit per status: done > review > in progress > blocked >
     /// backlog. Ghosts count as not started; cancelled work counts not at all.
+    /// Provider marks and activity glyphs, referenced by `<use href="#…">`.
+    static var iconDefinitions: String {
+        let providers = AgentProvider.allCases.map {
+            #"<symbol id="pv-\#($0.rawValue)" viewBox="0 0 24 24"><path fill="currentColor" d="\#(ProviderMark.path(for: $0).replacingOccurrences(of: "\n", with: " "))"/></symbol>"#
+        }
+        // 16-unit stroke glyphs: a page, a pencil, a prompt, a check, a lens,
+        // a fork, a list, and three dots.
+        let glyphs: [(String, String)] = [
+            ("reading", "M4 2h6l3 3v9H4z M10 2v3h3 M6 8h5 M6 11h5"),
+            ("editing", "M3 13l1-3 7-7 2 2-7 7z M10 4l2 2"),
+            ("running", "M2 3h12v10H2z M4 6l2 2-2 2 M8 10h3"),
+            ("testing", "M8 1.5a6.5 6.5 0 1 0 0.01 0z M5 8l2 2 4-4"),
+            ("researching", "M7 2.5a4.5 4.5 0 1 0 0.01 0z M10.3 10.3L14 14"),
+            ("delegating", "M4 2v12 M4 8c4 0 6-2 8-5 M12 3v3 M12 3H9"),
+            ("planning", "M5 4h8 M5 8h8 M5 12h8 M2.5 4h.5 M2.5 8h.5 M2.5 12h.5"),
+            ("working", "M3.5 8h.5 M7.75 8h.5 M12 8h.5"),
+        ]
+        let activities = glyphs.map { name, path in
+            #"<symbol id="act-\#(name)" viewBox="0 0 16 16"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" d="\#(path)"/></symbol>"#
+        }
+        return (providers + activities).joined()
+    }
+
     static func credit(_ node: ProjectMap.Node) -> Double? {
         switch statusGroup(node.status) {
         case "done": 1
@@ -363,7 +396,8 @@ h1 { font-size: 16px; margin: 0 0 2px; }
 /* Sticky and quiet: the rank tag stays at the left edge while the tree scrolls. */
 .ranklabel { position: sticky; left: 0; display: inline-block; z-index: 3; margin-top: 6px; padding: 1px 7px;
   font-size: 10px; font-weight: 600; color: #5c5c66; letter-spacing: .04em; }
-svg { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; z-index: 1; }
+#map > svg { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; z-index: 1; }
+.pv svg, .act svg, .menu svg { display: inline-block; position: static; }
 line { stroke: var(--edge); stroke-width: 1.4; }
 line.struct { stroke: #5a5a64; }
 line.dep.tree { stroke: var(--edge); }
@@ -393,6 +427,30 @@ html[data-fq-map] .phase::after { content: "▸"; position: absolute; right: 8px
   border: 1px solid var(--line); border-top: 3px solid var(--idle); border-radius: 8px; padding: 4px 8px 3px; }
 .node:hover { box-shadow: 0 0 0 2px var(--edge-hi); }
 .node[data-task] { cursor: pointer; }
+.top .live { display: inline-flex; gap: 3px; flex: none; }
+.top .live:empty { display: none; }
+.phase .live { display: inline-flex; gap: 2px; margin-left: 5px; vertical-align: -3px; }
+.phase .live .pv, .phase .live .pv svg { width: 12px; height: 12px; }
+.pv { position: relative; display: inline-flex; flex: none; width: 14px; height: 14px; color: #8fc1ff; animation: pulse 1.6s ease-in-out infinite; }
+.pv svg { width: 14px; height: 14px; }
+.pv.waiting { color: #ffb44d; animation: none; }
+@keyframes pulse { 0%, 100% { opacity: .45; transform: scale(.9); filter: none; }
+  50% { opacity: 1; transform: scale(1.1); filter: drop-shadow(0 0 4px rgba(90,162,255,.9)); } }
+.act { color: #8fc1ff; margin-left: 6px; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.act:empty { display: none; }
+.act svg { width: 11px; height: 11px; margin-right: 3px; vertical-align: -1px; }
+.more { display: none; margin-left: auto; border: 0; background: transparent; color: var(--muted); font-size: 14px; line-height: 1; padding: 0 3px; border-radius: 4px; cursor: pointer; }
+html[data-fq-map] .more { display: inline-block; }
+.more:hover { background: #34343c; color: var(--ink); }
+.menu { position: absolute; z-index: 60; min-width: 210px; background: #2a2a30; border: 1px solid var(--line); border-radius: 8px;
+  padding: 4px; box-shadow: 0 10px 30px rgba(0,0,0,.55); font-size: 12px; }
+.menu button { display: flex; width: 100%; align-items: center; gap: 8px; text-align: left; border: 0; background: transparent; color: var(--ink);
+  padding: 5px 8px; border-radius: 5px; cursor: pointer; font: inherit; }
+.menu button:hover { background: #3a5a8c; }
+.menu button:disabled { color: var(--muted); background: transparent; cursor: default; }
+.menu button svg { width: 13px; height: 13px; }
+.menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 2px; }
+.menu .head { color: var(--muted); padding: 3px 8px 4px; font-size: 11px; }
 .node.peek { box-shadow: 0 0 0 2px var(--review), 0 8px 22px rgba(0,0,0,.55); z-index: 30; }
 .node.located { animation: located 1.1s ease-out; }
 @keyframes located { 0% { box-shadow: 0 0 0 0 var(--accent); } 30% { box-shadow: 0 0 0 6px rgba(90,162,255,.55); } 100% { box-shadow: 0 0 0 0 rgba(90,162,255,0); } }
@@ -407,17 +465,20 @@ html[data-fq-map] .actions { display: inline-flex; }
 .node.s-cancel { border-top-color: var(--cancel); }
 .node.s-cancel .title { text-decoration: line-through; }
 .node.ghost { background: transparent; border: 1.5px dashed var(--ghost); color: var(--ghost); }
-.top { display: flex; justify-content: space-between; gap: 6px; align-items: center; }
-.id { font: 10.5px ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.top { display: flex; gap: 5px; align-items: center; }
+.id { font: 10.5px ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); white-space: nowrap; flex: none; }
+.top .pill { flex: none; margin-left: auto; }
+html[data-fq-map] .top .more + .pill { margin-left: 0; }
 .pill { font-size: 9.5px; font-weight: 600; padding: 0 5px; border-radius: 8px; border: 1px solid currentColor; white-space: nowrap; }
 .pill.s-done { color: var(--done); } .pill.s-active { color: var(--active); } .pill.s-review { color: var(--review); }
 .pill.s-blocked { color: var(--blocked); } .pill.s-idle { color: var(--idle); } .pill.s-cancel { color: var(--cancel); }
 .pill.ghost { color: var(--ghost); border-style: dashed; }
 .title { font-weight: 600; font-size: 11.5px; margin-top: 1px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 details { margin-top: auto; position: relative; }
-summary { cursor: pointer; color: var(--muted); list-style: none; user-select: none; font-size: 11px; }
+summary { cursor: pointer; color: var(--muted); list-style: none; user-select: none; font-size: 11px;
+  display: flex; align-items: baseline; white-space: nowrap; overflow: hidden; }
 summary::-webkit-details-marker { display: none; }
-summary::before { content: "▸"; display: inline-block; width: 11px; }
+summary::before { content: "▸"; display: inline-block; width: 11px; flex: none; }
 details[open] summary::before { content: "▾"; }
 .panel { position: absolute; left: -9px; top: 17px; width: 320px; max-height: 300px; overflow: auto; color: var(--ink);
   background: #2a2a30; border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
@@ -429,6 +490,7 @@ details[open] summary::before { content: "▾"; }
 </style>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>{{ICONS}}</defs></svg>
 <input type="checkbox" class="toggle" id="hideDone">
 <input type="checkbox" class="toggle" id="hideGhosts">
 <input type="checkbox" class="toggle" id="showDeps">

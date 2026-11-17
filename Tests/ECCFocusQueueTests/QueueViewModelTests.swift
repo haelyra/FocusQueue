@@ -1517,6 +1517,14 @@ struct QueueViewModelTests {
     model.clearMapLocatedTask()
     model.revealMapTask("NOPE-1")
     #expect(model.mapLocatedTaskID == nil)
+
+    // "New agent with a prompt…" locates the task and asks its card for the sheet.
+    model.handleMapTaskAction("ECC-102", action: .prompt, provider: nil)
+    #expect(model.requestedAgentCreatorTaskID == "ECC-102")
+    #expect(model.mapLocatedTaskID == "ECC-102")
+    let payload = await model.projectMapLivePayload()
+    #expect(payload["defaultProvider"] as? String == model.defaultAgentProvider.rawValue)
+    #expect((payload["providers"] as? [String])?.count == AgentProvider.allCases.count)
   }
 
   @Test("App and agent share queue moves across refreshes, state saves, and restarts")

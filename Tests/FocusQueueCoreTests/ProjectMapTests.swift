@@ -269,7 +269,20 @@ func mapLiveMarkup() {
     let html = ProjectMapHTML.render(map)
     #expect(html.contains(#"<symbol id="pv-claude""#) && html.contains(#"<symbol id="act-editing""#))
     #expect(html.contains(#"aria-label="Task actions for DEM-1""#))
-    #expect(html.contains(#"<i class="pv" title="Agent 1 (claude) is working">"#))
-    #expect(html.components(separatedBy: #"class="pv""#).count - 1 == 1)
+    #expect(html.contains(#"<div class="agents"><i class="pv working" title="Agent 1 (claude) · Working">"#))
+    #expect(html.contains(#"<span class="agentlegend""#) && html.contains("Needs you</span>"))
     #expect(html.contains(#"<span class="act"></span>"#))
+}
+
+@Test("Agent states: attention wins over status, finished agents are hidden")
+func agentStates() {
+    typealias S = ProjectMap.State
+    #expect(S(status: "working", attention: nil) == .working)
+    #expect(S(status: "idle", attention: "approval") == .attention)
+    #expect(S(status: "idle", attention: "question") == .attention)
+    #expect(S(status: "blocked", attention: "interrupted") == .interrupted)
+    #expect(S(status: "working", attention: "quotaExhausted") == .blocked)
+    #expect(S(status: "blocked", attention: nil) == .blocked)
+    #expect(S(status: "queued", attention: nil) == .idle)
+    #expect(S(status: "completed", attention: nil) == nil)
 }

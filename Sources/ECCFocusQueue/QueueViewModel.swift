@@ -6278,7 +6278,7 @@ final class QueueViewModel {
       for agent in context.subtasks
       where agent.agentRemovedAt == nil && agent.mergedIntoSubtaskID == nil && !agent.isAssignmentOnly {
         var entry = ["p": agent.provider.rawValue, "t": agent.title, "s": agent.status.rawValue]
-        if let attention = agent.attention { entry["a"] = attention.label }
+        if let attention = agent.attention { entry["a"] = attention.label; entry["ak"] = attention.rawValue }
         tasks[key, default: []].append(entry)
         if agent.status == .working, let url = await agentActivityObserver.transcriptURL(for: agent) {
           reads.append((key, tasks[key]!.count - 1, url, agent.provider))

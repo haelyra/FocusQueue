@@ -98,15 +98,24 @@ struct ProjectMapViewerTests {
     try await eventually { opened.contains(URL(string: "focusqueue://task/DEM-2?action=launch&provider=codex")!) }
     #expect(await run(web, "return document.querySelectorAll('.menu').length") == "0")
 
-    // Live pushes add a pulsing provider mark, the agent's activity, and a phase marker.
+    // Live pushes add one state-colored mark per unfinished agent under the
+    // card, the working agent's activity, and phase marks (most urgent first,
+    // idle agents left out).
     _ = await run(web, """
-      window.fqMapLive({tasks: {"DEM-2": [{p: "claude", t: "Builder", s: "working", k: "editing", d: "Core/Map.swift"}]},
-                        defaultProvider: "claude", providers: ["claude", "codex", "kimi"], names: {claude: "Claude"}});
+      window.fqMapLive({tasks: {"DEM-2": [
+          {p: "claude", t: "Builder", s: "working", k: "editing", d: "Core/Map.swift"},
+          {p: "codex", t: "Reviewer", s: "idle", a: "Needs approval", ak: "approval"},
+          {p: "kimi", t: "Old", s: "blocked", a: "Interrupted", ak: "interrupted"},
+          {p: "claude", t: "Spare", s: "idle"},
+          {p: "claude", t: "Done", s: "completed"}]},
+        defaultProvider: "claude", providers: ["claude", "codex", "kimi"], names: {claude: "Claude"}});
       return 1
       """)
-    #expect(await run(web, "return document.querySelectorAll('[data-node=\"DEM-2\"] .top .pv').length") == "1")
+    #expect(await run(web, "return [...document.querySelectorAll('[data-node=\"DEM-2\"] .agents .pv')].map(e => e.className).join(',')")
+            == "pv working,pv attention,pv interrupted,pv idle")
     #expect(await run(web, "return document.querySelector('[data-node=\"DEM-2\"] .act').textContent") == "editing Core/Map.swift")
-    #expect(await run(web, "return document.querySelectorAll('[data-kind=\"phase\"] .live .pv').length") == "1")
+    #expect(await run(web, "return [...document.querySelector('[data-kind=\"phase\"] .live').children].map(e => e.className).join(',')")
+            == "pv attention,pv interrupted,pv working")
 
     #expect(ProjectMapPage.taskID(from: URL(string: "focusqueue://task/dem-2")!) == "DEM-2")
     let launch = ProjectMapPage.request(from: URL(string: "focusqueue://task/DEM-2?action=launch&provider=kimi")!)

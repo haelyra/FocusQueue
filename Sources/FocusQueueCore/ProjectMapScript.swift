@@ -52,10 +52,19 @@ public enum ProjectMapScript {
   // the pointer rests on a card.
   var WRAP = 5;
   var frames = [], rankTop = [];
+  // Agent marks hang under a card; the first row fits in the gap below it,
+  // and each further row adds height so the rows below move down.
+  var MARK = 17;
+  function stripExtra(n) {
+    var strip = n.kind === 'item' && n.el.querySelector('.agents');
+    var count = strip ? strip.children.length : 0;
+    var perRow = Math.max(1, Math.floor((n.w - 12 + 3) / MARK));
+    return Math.max(0, Math.ceil(count / perRow) - 1) * MARK;
+  }
   function layout() {
-    var target = {}, rows = {};
+    var target = {}, need = {};
     frames = [];
-    list.forEach(function (n) { n.frame = null; });
+    list.forEach(function (n) { n.frame = null; n.extra = stripExtra(n); n.off = 0; });
     function measure(n) {
       n.vis = (n.kind === 'phase' && !expanded.has(n.id)) ? [] : n.children;
       n.vis.forEach(measure);
@@ -64,8 +73,14 @@ public enum ProjectMapScript {
       if (n.vis.length > WRAP && leaves.length > 1) {
         var branches = n.vis.filter(function (k) { return k.vis.length; });
         var cols = Math.min(WRAP, leaves.length), rowCount = Math.ceil(leaves.length / cols);
+        // Rows in a wrapped group sit one card apart, plus any extra mark rows above them.
+        var offset = 0;
+        for (var row = 0; row < rowCount; row++) {
+          var members = leaves.slice(row * cols, row * cols + cols);
+          members.forEach(function (k) { k.off = offset; });
+          offset += C.sub + Math.max.apply(null, members.map(function (k) { return k.extra; }));
+        }
         n.grid = { branches: branches, leaves: leaves, cols: cols, rows: rowCount };
-        rows[n.rank + 1] = Math.max(rows[n.rank + 1] || 1, rowCount);
         n.slots = branches.reduce(function (s, k) { return s + k.slots; }, 0) + cols;
       } else {
         n.slots = n.vis.length ? n.vis.reduce(function (s, k) { return s + k.slots; }, 0) : 1;
@@ -74,26 +89,30 @@ public enum ProjectMapScript {
     }
     var root = nodes.root;
     measure(root);
-    // Each rank is as tall as its most wrapped group needs.
+    // Each rank is as tall as its deepest wrapped row and longest mark strip need.
+    (function collect(n) {
+      need[n.rank] = Math.max(need[n.rank] || 0, n.off + n.extra);
+      n.vis.forEach(collect);
+    })(root);
     rankTop = [C.top];
-    for (var r = 0; r <= 64; r++) rankTop.push(rankTop[r] + C.rank + ((rows[r] || 1) - 1) * C.sub);
-    function place(n, start, line) {
-      target[n.id] = { cx: C.left + (start + n.slots / 2) * C.slot, y: rankTop[n.rank] + line * C.sub };
+    for (var r = 0; r <= 64; r++) rankTop.push(rankTop[r] + C.rank + (need[r] || 0));
+    function place(n, start) {
+      target[n.id] = { cx: C.left + (start + n.slots / 2) * C.slot, y: rankTop[n.rank] + n.off };
       var c = start;
-      if (!n.grid) { n.vis.forEach(function (k) { place(k, c, 0); c += k.slots; }); return; }
-      n.grid.branches.forEach(function (k) { place(k, c, 0); c += k.slots; });
-      var g = n.grid, tallest = 0;
+      if (!n.grid) { n.vis.forEach(function (k) { place(k, c); c += k.slots; }); return; }
+      n.grid.branches.forEach(function (k) { place(k, c); c += k.slots; });
+      var g = n.grid, bottom = 0;
       g.leaves.forEach(function (k, i) {
-        place(k, c + (i % g.cols), Math.floor(i / g.cols));
-        tallest = Math.max(tallest, k.h);
+        place(k, c + (i % g.cols));
+        bottom = Math.max(bottom, k.off + k.h + k.extra);
       });
       var frame = { parent: n.id, x: C.left + c * C.slot + 4, y: rankTop[n.rank + 1] - 12,
-                    w: g.cols * C.slot - 8, h: (g.rows - 1) * C.sub + tallest + 24 };
+                    w: g.cols * C.slot - 8, h: bottom + 32 };
       frame.cx = frame.x + frame.w / 2;
       frames.push(frame);
       g.leaves.forEach(function (k) { k.frame = frame; });
     }
-    place(root, 0, 0);
+    place(root, 0);
     var stacks = {};
     peek.forEach(function (id) {
       var n = nodes[id];
@@ -316,9 +335,9 @@ public enum ProjectMapScript {
   document.addEventListener('keydown', function (event) { if (event.key === 'Escape') closeMenu(); });
   document.addEventListener('click', function (event) { if (menu && !event.target.closest('.menu')) closeMenu(); });
 
-  // Live agents, pushed by the app every few seconds: a pulsing provider mark
-  // per working agent, an amber one for an agent waiting on you, and the
-  // newest tool call as a rough activity on the task's agent line.
+  // Live agents, pushed by the app every few seconds: one provider mark per
+  // unfinished agent in a strip under its task, colored and pulsing by state
+  // (see the legend), and the newest tool call as a rough activity.
   window.fqMapLive = function (payload) {
     if (!payload || !payload.tasks) return;
     if (payload.providers) live.providers = payload.providers;
@@ -328,45 +347,68 @@ public enum ProjectMapScript {
     list.forEach(function (n) {
       if (n.kind !== 'item' || !n.el.dataset.task) return;
       var agents = payload.tasks[n.el.dataset.task] || [];
-      var slot = n.el.querySelector('.top .live'), act = n.el.querySelector('.act');
-      if (slot) slot.textContent = '';
+      var strip = n.el.querySelector('.agents'), act = n.el.querySelector('.act');
+      if (strip) strip.textContent = '';
       if (act) act.textContent = '';
-      var busy = agents.filter(function (a) { return a.s === 'working' || a.a; });
-      busy.forEach(function (a) {
+      agents.forEach(function (a) {
+        var state = agentState(a);
+        if (!state) return;
         var i = document.createElement('i');
-        i.className = 'pv' + (a.s === 'working' ? '' : ' waiting');
-        i.title = a.t + ' (' + (live.names[a.p] || a.p) + ') · ' + (a.s === 'working'
-          ? (a.k ? a.k + ' ' + (a.d || '') : 'working') : a.a);
+        i.className = 'pv ' + state;
+        i.title = a.t + ' (' + (live.names[a.p] || a.p) + ') · ' + STATE_LABELS[state] +
+          (state === 'working' && a.k ? ' · ' + a.k + ' ' + (a.d || '') : '') + (a.a && state !== 'working' ? ' · ' + a.a : '');
         i.appendChild(icon('pv-' + a.p));
-        if (slot) slot.appendChild(i);
-        if (a.s === 'working' && n.lane) {
+        if (strip) strip.appendChild(i);
+        if (n.lane && state !== 'idle') {
           var bucket = phaseLive[n.lane] = phaseLive[n.lane] || {};
-          bucket[a.p] = (bucket[a.p] || 0) + 1;
+          var key = state + ':' + a.p;
+          bucket[key] = (bucket[key] || 0) + 1;
         }
       });
-      var doing = agents.filter(function (a) { return a.s === 'working' && a.k; })[0];
+      var doing = agents.filter(function (a) { return agentState(a) === 'working' && a.k; })[0];
       if (act && doing) {
         act.appendChild(icon('act-' + doing.k));
         act.appendChild(document.createTextNode(doing.k + (doing.d ? ' ' + doing.d : '')));
         act.title = doing.t + ': ' + doing.k + (doing.d ? ' ' + doing.d : '');
       }
     });
+    // Each phase shows one mark per provider and state at work inside it,
+    // most urgent first, so a collapsed phase still shows what needs you.
     list.forEach(function (n) {
       if (n.kind !== 'phase') return;
       var slot = n.el.querySelector('.live');
       if (!slot) return;
       slot.textContent = '';
       var bucket = phaseLive[n.id] || {}, total = 0;
-      Object.keys(bucket).forEach(function (p) {
-        total += bucket[p];
+      Object.keys(bucket).sort(function (x, y) {
+        return STATE_ORDER.indexOf(x.split(':')[0]) - STATE_ORDER.indexOf(y.split(':')[0]);
+      }).forEach(function (key) {
+        var parts = key.split(':');
+        total += bucket[key];
         var i = document.createElement('i');
-        i.className = 'pv';
-        i.appendChild(icon('pv-' + p));
+        i.className = 'pv ' + parts[0];
+        i.title = bucket[key] + ' ' + (live.names[parts[1]] || parts[1]) + ' · ' + STATE_LABELS[parts[0]];
+        i.appendChild(icon('pv-' + parts[1]));
         slot.appendChild(i);
       });
-      slot.title = total ? total + ' agent' + (total === 1 ? '' : 's') + ' working in this phase' : '';
+      slot.title = total ? total + ' active agent' + (total === 1 ? '' : 's') + ' in this phase' : '';
     });
+    // A strip that gained or lost a row of marks moves the rows below it.
+    if (list.some(function (n) { return n.shown && stripExtra(n) !== n.extra; })) apply(true);
   };
+
+  // Same rules as ProjectMap.State: attention wins over status.
+  var STATE_LABELS = { working: 'Working', attention: 'Needs you', blocked: 'Blocked', interrupted: 'Interrupted', idle: 'Idle' };
+  var STATE_ORDER = ['attention', 'blocked', 'interrupted', 'working', 'idle'];
+  function agentState(a) {
+    if (a.ak === 'approval' || a.ak === 'question') return 'attention';
+    if (a.ak === 'interrupted') return 'interrupted';
+    if (a.ak === 'failed' || a.ak === 'incomplete' || a.ak === 'quotaExhausted') return 'blocked';
+    if (a.s === 'working') return 'working';
+    if (a.s === 'blocked') return 'blocked';
+    if (a.s === 'idle' || a.s === 'queued') return 'idle';
+    return null;
+  }
 
   // Hovering a task briefly shows its dependencies that sit in collapsed phases.
   var hoverTimer = 0, leaveTimer = 0;

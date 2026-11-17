@@ -199,8 +199,51 @@ public struct ProjectMap: Codable, Equatable, Sendable {
         public var title: String
         public var provider: String
         public var status: String
+        /// The attention label shown to people ("Needs approval").
         public var attention: String?
         public var summary: String
+        /// The attention case (`approval`, `interrupted`, …), for the state color.
+        public var attentionKind: String?
+
+        public init(title: String, provider: String, status: String, attention: String?, summary: String,
+                    attentionKind: String? = nil) {
+            self.title = title; self.provider = provider; self.status = status
+            self.attention = attention; self.summary = summary; self.attentionKind = attentionKind
+        }
+
+        /// What the map shows for this agent; nil hides a finished agent.
+        /// Attention wins over status: approval and questions need you, an
+        /// ended turn is interrupted, failures are blocked.
+        public var state: State? { State(status: status, attention: attentionKind) }
+    }
+
+    public enum State: String, Codable, Sendable, CaseIterable {
+        case working, attention, blocked, interrupted, idle
+
+        public init?(status: String, attention: String?) {
+            switch attention {
+            case "approval", "question": self = .attention; return
+            case "interrupted": self = .interrupted; return
+            case "failed", "incomplete", "quotaExhausted": self = .blocked; return
+            default: break
+            }
+            switch status {
+            case "working": self = .working
+            case "blocked": self = .blocked
+            case "idle", "queued": self = .idle
+            default: return nil
+            }
+        }
+
+        public var label: String {
+            switch self {
+            case .working: "Working"
+            case .attention: "Needs you"
+            case .blocked: "Blocked"
+            case .interrupted: "Interrupted"
+            case .idle: "Idle"
+            }
+        }
     }
 
     public struct Node: Codable, Equatable, Sendable {
@@ -561,7 +604,8 @@ public struct ProjectMapGenerator: Sendable {
             .map { subtask in
                 ProjectMap.Agent(title: subtask.title, provider: subtask.provider.rawValue,
                                  status: subtask.status.rawValue, attention: subtask.attention?.label,
-                                 summary: String(subtask.progressSummary.prefix(240)))
+                                 summary: String(subtask.progressSummary.prefix(240)),
+                                 attentionKind: subtask.attention?.rawValue)
             }
     }
 }

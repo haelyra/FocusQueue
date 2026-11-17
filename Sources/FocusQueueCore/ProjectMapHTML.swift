@@ -245,15 +245,16 @@ public enum ProjectMapHTML {
         }
         let tooltip = escape(([title] + (node.gate.map { ["Gate: \($0)"] } ?? [])).joined(separator: "\n"))
         let task = node.kind == .task ? #" data-task="\#(escape(node.id))""# : ""
-        // Agents working at generation time pulse; the app keeps these live.
-        let working = node.agents.filter { $0.status == "working" }
-        let live = working.map { agent in
-            ##"<i class="pv" title="\##(escape(agent.title)) (\##(escape(agent.provider))) is working"><svg viewBox="0 0 24 24"><use href="#pv-\##(escape(agent.provider))"/></svg></i>"##
+        // One mark per unfinished agent, colored by state, in a strip under the
+        // card that wraps downward; the app keeps it live.
+        let live = node.agents.compactMap { agent -> String? in
+            guard let state = agent.state else { return nil }
+            return ##"<i class="pv \##(state.rawValue)" title="\##(escape(agent.title)) (\##(escape(agent.provider))) · \##(state.label)"><svg viewBox="0 0 24 24"><use href="#pv-\##(escape(agent.provider))"/></svg></i>"##
         }.joined()
         let more = node.kind == .task
             ? #"<button class="more" type="button" title="Task actions" aria-label="Task actions for \#(escape(node.id))">⋯</button>"#
             : ""
-        return #"<div class="\#(classes.joined(separator: " "))" id="n\#(index)" data-id="\#(escape(node.id))" data-node="\#(escape(node.id))" data-kind="item" data-parent="\#(escape(parent))" data-lane="\#(lane)" data-rank="\#(rank)"\#(task) style="left:\#(f(x))px;top:\#(f(y))px" title="\#(tooltip)"><div class="top"><span class="id">\#(escape(label))</span><span class="live">\#(live)</span>\#(more)<span class="pill \#(node.kind == .ghost ? "ghost" : "s-\(group)")">\#(escape(pill))</span></div><div class="title">\#(escape(title))</div><details><summary>\#(summary)<span class="act"></span></summary><div class="panel">\#(details.joined())</div></details></div>"#
+        return #"<div class="\#(classes.joined(separator: " "))" id="n\#(index)" data-id="\#(escape(node.id))" data-node="\#(escape(node.id))" data-kind="item" data-parent="\#(escape(parent))" data-lane="\#(lane)" data-rank="\#(rank)"\#(task) style="left:\#(f(x))px;top:\#(f(y))px" title="\#(tooltip)"><div class="top"><span class="id">\#(escape(label))</span>\#(more)<span class="pill \#(node.kind == .ghost ? "ghost" : "s-\(group)")">\#(escape(pill))</span></div><div class="title">\#(escape(title))</div><details><summary>\#(summary)<span class="act"></span></summary><div class="panel">\#(details.joined())</div></details>\#(node.kind == .task ? #"<div class="agents">\#(live)</div>"# : "")</div>"#
     }
 
     /// Completion credit per status: done > review > in progress > blocked >
@@ -365,6 +366,7 @@ public enum ProjectMapHTML {
   --line: #3a3a42; --edge: #8a8a94; --edge-hi: #5aa2ff; --accent: #5aa2ff;
   --done: #3cbf73; --active: #4c9bff; --review: #a97cf0; --blocked: #ff6b61; --idle: #8e8e93; --cancel: #66666c;
   --ghost: #6e6e78;
+  --ag-working: #8fc1ff; --ag-attention: #ffb44d; --ag-blocked: #ff6b61; --ag-interrupted: #ff9a4d; --ag-idle: #8e8e96;
 }
 * { box-sizing: border-box; }
 html { background: var(--bg); color-scheme: dark; overflow: scroll; }
@@ -427,15 +429,25 @@ html[data-fq-map] .phase::after { content: "▸"; position: absolute; right: 8px
   border: 1px solid var(--line); border-top: 3px solid var(--idle); border-radius: 8px; padding: 4px 8px 3px; }
 .node:hover { box-shadow: 0 0 0 2px var(--edge-hi); }
 .node[data-task] { cursor: pointer; }
-.top .live { display: inline-flex; gap: 3px; flex: none; }
-.top .live:empty { display: none; }
+/* Agent marks hang under the card and wrap into rows. */
+.agents { position: absolute; left: 6px; right: 6px; top: calc(100% + 3px); display: flex; flex-wrap: wrap; gap: 3px; pointer-events: auto; }
+.agents:empty { display: none; }
 .phase .live { display: inline-flex; gap: 2px; margin-left: 5px; vertical-align: -3px; }
 .phase .live .pv, .phase .live .pv svg { width: 12px; height: 12px; }
-.pv { position: relative; display: inline-flex; flex: none; width: 14px; height: 14px; color: #8fc1ff; animation: pulse 1.6s ease-in-out infinite; }
+.pv { position: relative; display: inline-flex; flex: none; width: 14px; height: 14px; --glow: rgba(90,162,255,.9); color: var(--ag-idle); }
 .pv svg { width: 14px; height: 14px; }
-.pv.waiting { color: #ffb44d; animation: none; }
+/* Agent states: working pulses blue, needs-you pulses amber fast, blocked
+   pulses red slowly, interrupted is a still orange, idle a still grey. */
+.pv.working { color: var(--ag-working); --glow: rgba(90,162,255,.9); animation: pulse 1.6s ease-in-out infinite; }
+.pv.attention { color: var(--ag-attention); --glow: rgba(255,180,77,.95); animation: pulse .9s ease-in-out infinite; }
+.pv.blocked { color: var(--ag-blocked); --glow: rgba(255,107,97,.9); animation: pulse 2.6s ease-in-out infinite; }
+.pv.interrupted { color: var(--ag-interrupted); }
+.pv.idle { color: var(--ag-idle); opacity: .75; }
 @keyframes pulse { 0%, 100% { opacity: .45; transform: scale(.9); filter: none; }
-  50% { opacity: 1; transform: scale(1.1); filter: drop-shadow(0 0 4px rgba(90,162,255,.9)); } }
+  50% { opacity: 1; transform: scale(1.1); filter: drop-shadow(0 0 4px var(--glow)); } }
+.agentlegend { display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; color: var(--muted); }
+.agentlegend .pv { width: 12px; height: 12px; } .agentlegend .pv svg { width: 12px; height: 12px; }
+.agentlegend span { display: inline-flex; align-items: center; gap: 4px; }
 .act { color: #8fc1ff; margin-left: 6px; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .act:empty { display: none; }
 .act svg { width: 11px; height: 11px; margin-right: 3px; vertical-align: -1px; }
@@ -508,6 +520,13 @@ details[open] summary::before { content: "▾"; }
       <span><i class="dot" style="background:var(--idle)"></i>Not started</span>
       <span><i class="dot" style="background:var(--done)"></i>Done</span>
       <span><i class="dot ghost"></i>No task yet</span>
+    </span>
+    <span class="agentlegend" title="Each mark is one agent, shown with its provider's icon">Agents:
+      <span><i class="pv working"><svg viewBox="0 0 24 24"><use href="#pv-claude"/></svg></i>Working</span>
+      <span><i class="pv attention"><svg viewBox="0 0 24 24"><use href="#pv-claude"/></svg></i>Needs you</span>
+      <span><i class="pv blocked"><svg viewBox="0 0 24 24"><use href="#pv-claude"/></svg></i>Blocked</span>
+      <span><i class="pv interrupted"><svg viewBox="0 0 24 24"><use href="#pv-claude"/></svg></i>Interrupted</span>
+      <span><i class="pv idle"><svg viewBox="0 0 24 24"><use href="#pv-claude"/></svg></i>Idle</span>
     </span>
     <span class="actions"><button type="button" data-action="expand">Expand all</button><button type="button" data-action="collapse">Collapse all</button></span>
     <span class="hint">Arrows point from a task to the work that waits on it · click a phase to open it · click a task to find it in the queue · scroll to zoom · right-drag to move</span>

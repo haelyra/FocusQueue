@@ -19,6 +19,7 @@ struct ProjectTabView: View {
       VStack(alignment: .leading, spacing: 10) {
         if let project {
           bulletinBoardRow
+          scheduleRow
           processSection(project)
           modulesSection(project)
           filesSection(project)
@@ -64,6 +65,34 @@ struct ProjectTabView: View {
     .notificationSurface(radius: 16)
     .accessibilityLabel(model.isBulletinBoardPresented ? "Close bulletin board" : "Open bulletin board, \(count) pinned")
     .help("Pinned tasks, agents, files, and folders. Drag items onto the board beside the queue.")
+  }
+
+  // MARK: - Schedule
+
+  /// Opens the schedule timeline beside the queue.
+  private var scheduleRow: some View {
+    let count = model.scheduledLaunches.count
+    return Button { model.toggleSchedule() } label: {
+      HStack(spacing: 8) {
+        Image(systemName: "calendar.day.timeline.left")
+          .font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(model.isSchedulePresented ? Color.accentColor : Color.secondary)
+        VStack(alignment: .leading, spacing: 1) {
+          Text("Schedule").font(.system(size: 12, weight: .semibold))
+          Text(count == 0 ? "Timers, repeats, and daily jobs" : "\(count) scheduled launch\(count == 1 ? "" : "es")")
+            .font(.caption).foregroundStyle(.secondary)
+        }
+        Spacer()
+        Image(systemName: model.isSchedulePresented ? "sidebar.trailing" : "arrow.right.to.line.compact")
+          .font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+      }
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .padding(12)
+    .notificationSurface(radius: 16)
+    .accessibilityLabel(model.isSchedulePresented ? "Close schedule" : "Open schedule, \(count) scheduled")
+    .help("A timeline of scheduled agent launches, the daily report, and pending auto-decisions. Drag to retime.")
   }
 
   // MARK: - Development process

@@ -86,6 +86,8 @@ final class QueueCapacityModel {
 struct CapacityPanelView: View {
   let capacity: QueueCapacityModel
   var scheduledCount: Int = 0
+  /// Opens the schedule timeline; nil keeps the count as plain text.
+  var openSchedule: (() -> Void)?
 
   private func barColor(_ fraction: Double) -> Color {
     if fraction >= 0.90 { return .red }
@@ -103,9 +105,21 @@ struct CapacityPanelView: View {
           Text(advice.readiness.headline)
             .font(.system(size: 11, weight: .semibold))
           if scheduledCount > 0 {
-            Text("· \(scheduledCount) scheduled")
-              .font(.system(size: 10, weight: .medium))
-              .foregroundStyle(.secondary)
+            if let openSchedule {
+              Button(action: openSchedule) {
+                Text("· \(scheduledCount) scheduled")
+                  .font(.system(size: 10, weight: .medium))
+                  .underline()
+                  .foregroundStyle(.secondary)
+              }
+              .buttonStyle(.plain)
+              .accessibilityLabel("Open schedule, \(scheduledCount) scheduled")
+              .help("Open the schedule timeline")
+            } else {
+              Text("· \(scheduledCount) scheduled")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+            }
           }
           Spacer()
           trendLabel

@@ -5593,3 +5593,76 @@ extension QueueViewModelTests {
     #expect(renderer.nsImage != nil)
   }
 }
+
+extension QueueViewModelTests {
+  @Test("Schedule timeline collects jobs, retimes them by drag, and shares the side panel")
+  func scheduleTimelineWorkflow() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let now = Date()
+    let store = LaunchScheduleStore(supportDirectory: fixture.root)
+    try store.save([
+      ScheduledLaunch(id: "once", fireAt: now.addingTimeInterval(3 * 3_600), ticketID: "ECC-101",
+                      prompt: "Run the nightly sweep", title: "Nightly sweep", preset: AgentLaunchPreset(provider: .claude)),
+      ScheduledLaunch(id: "loop", fireAt: now.addingTimeInterval(3_600), repeatIntervalSeconds: 8 * 3_600,
+                      ticketID: "ECC-102", prompt: "Check CI", title: "CI check", preset: AgentLaunchPreset(provider: .claude)),
+    ])
+    var tree = DecisionTree(taskID: "ECC-102", agentID: "agent-1", agentTitle: nil, provider: nil,
+                            now: DecisionTreeStore.timestamp(now))
+    tree.nodes = [DecisionNode(id: "D1", parentID: nil, parentOptionID: nil, title: "Pick a layout",
+                               divergence: .taskPlan, detail: nil,
+                               options: [DecisionOption(id: "a", label: "Grid"), DecisionOption(id: "b", label: "List")],
+                               createdAt: DecisionTreeStore.timestamp(now))]
+    let treeURL = try DecisionTreeStore(root: fixture.root).treeURL(taskID: "ECC-102", agentID: "agent-1")
+    try FileManager.default.createDirectory(at: treeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try JSONEncoder().encode(tree).write(to: treeURL)
+
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    await model.refresh()
+
+    // The schedule takes the side panel and gives it back to the bulletin board.
+    model.setSchedulePresented(true)
+    #expect(model.isSchedulePresented && model.isInspectorPresented)
+    model.setBulletinBoardPresented(true)
+    #expect(!model.isSchedulePresented && model.isBulletinBoardPresented)
+    model.toggleSchedule()
+    #expect(model.isSchedulePresented && !model.isBulletinBoardPresented)
+
+    // Launches, the opted-in daily report, and the pending decision all appear.
+    let jobs = model.scheduleJobs(now: now)
+    #expect(Set(jobs.map(\.kind)) == [.timer, .interval, .cron, .autoDecide])
+    #expect(model.scheduleTicketInfo["ECC-101"]?.title == "Task ECC-101")
+    let timer = try #require(jobs.first { $0.kind == .timer })
+    #expect(timer.trackID == "ECC-101")
+
+    // Dragging the timer an hour later persists the new fire time, snapped.
+    let target = timer.anchor.addingTimeInterval(3_600)
+    let moved = try #require(model.moveScheduleJob(timer, from: timer.anchor, to: target, snapMinutes: 15, now: now))
+    #expect(moved == ScheduleTimeline.snap(target, minutes: 15))
+    #expect(store.load().first { $0.id == "once" }?.fireAt == moved)
+    #expect(model.scheduledLaunches.first { $0.id == "once" }?.fireAt == moved)
+
+    // Dragging the daily report changes its time of day for every day.
+    let report = try #require(jobs.first { $0.kind == .cron })
+    var calendar = Calendar.current
+    calendar.timeZone = .current
+    let reportTarget = try #require(calendar.date(bySettingHour: 9, minute: 47, second: 0, of: now))
+    #expect(model.moveScheduleJob(report, from: report.anchor, to: reportTarget, snapMinutes: 5) != nil)
+    #expect(model.config.dailyReport.scheduleHour == 9 && model.config.dailyReport.scheduleMinute == 45)
+
+    // Decisions are read-only from the timeline.
+    let decision = try #require(jobs.first { $0.kind == .autoDecide })
+    #expect(model.moveScheduleJob(decision, from: decision.anchor, to: target, snapMinutes: 15) == nil)
+
+    if let output = ProcessInfo.processInfo.environment["FOCUS_QUEUE_RENDER_DIR"] {
+      let size = NSSize(width: 820, height: 360)
+      for (name, zoom) in [("schedule-timeline.png", 0.0), ("schedule-timeline-zoomed.png", 0.75)] {
+        try WalkthroughDemoRecording.snapshot(
+          ScheduleTimelineView(model: model, initialZoom: zoom).padding(12).environment(\.colorScheme, .dark),
+          size: size, to: URL(fileURLWithPath: output).appendingPathComponent(name))
+      }
+    }
+    let renderer = ImageRenderer(content: ScheduleTimelineView(model: model).frame(width: 760, height: 320))
+    #expect(renderer.nsImage != nil)
+  }
+}

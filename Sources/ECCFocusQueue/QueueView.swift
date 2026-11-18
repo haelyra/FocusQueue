@@ -163,6 +163,9 @@ struct QueueView: View {
     } else if model.isBulletinBoardPresented {
       BulletinBoardView(model: model)
         .frame(minWidth: 320, idealWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
+    } else if model.isSchedulePresented {
+      ScheduleTimelineView(model: model)
+        .frame(minWidth: 520, idealWidth: 760, maxWidth: .infinity, maxHeight: .infinity)
     } else if model.isQueueChatInspectorPresented {
       VStack(alignment: .leading, spacing: 10) {
         HStack {
@@ -243,7 +246,8 @@ struct QueueView: View {
     VStack(spacing: QueueChromeMetrics.sectionSpacing) {
       header
       if model.config.capacityPanelEnabled {
-        CapacityPanelView(capacity: model.capacityModel, scheduledCount: model.scheduledLaunches.count)
+        CapacityPanelView(capacity: model.capacityModel, scheduledCount: model.scheduledLaunches.count,
+                          openSchedule: { model.toggleSchedule() })
       }
       if model.pendingDailyReportApproval != nil {
         missedReportApprovalBanner

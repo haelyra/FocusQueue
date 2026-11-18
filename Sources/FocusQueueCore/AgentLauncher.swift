@@ -142,12 +142,15 @@ public actor TaskAgentLauncher {
   private let candidateSockets: [String]?
   private let tmuxServerName: String
   private let processController: WezTermController
+  private let claudeConfigURL: URL
   public init(
     runner: any ProcessRunning = FoundationProcessRunner(),
     candidateSockets: [String]? = nil,
-    tmuxServerName: String = TmuxController.serverName
+    tmuxServerName: String = TmuxController.serverName,
+    claudeConfigURL: URL = ClaudeFolderTrust.configURL()
   ) {
     self.runner = runner
+    self.claudeConfigURL = claudeConfigURL
     self.candidateSockets = candidateSockets
     self.tmuxServerName = tmuxServerName
     self.processController = WezTermController(runner: runner, candidateSockets: candidateSockets)
@@ -645,6 +648,11 @@ public actor TaskAgentLauncher {
     // `deliverInitialPrompt`, which the caller runs once the runtime is saved.
     let pastedPrompt = subtask.provider == .kimi
       ? Self.initialPrompt(context: context, subtask: subtask, includePrompt: includePrompt) : nil
+    if subtask.provider == .claude {
+      // Task folders join through --add-dir; an untrusted one stops the launch
+      // on Claude's trust prompt. Best effort: a failure only brings the prompt back.
+      try? ClaudeFolderTrust.ensureTrusted(supportDirectory, configURL: claudeConfigURL)
+    }
     let usageRunID = UUID().uuidString
     let command = try Self.command(
       context: context, subtask: subtask, supportDirectory: supportDirectory,
@@ -755,6 +763,11 @@ public actor TaskAgentLauncher {
   ) async throws -> DirectAgentLaunchReceipt {
     if let workspace = subtask.workspace {
       try await TaskWorktreeManager().validate(workspace)
+    }
+    if subtask.provider == .claude {
+      // Task folders join through --add-dir; an untrusted one stops the launch
+      // on Claude's trust prompt. Best effort: a failure only brings the prompt back.
+      try? ClaudeFolderTrust.ensureTrusted(supportDirectory, configURL: claudeConfigURL)
     }
     let usageRunID = UUID().uuidString
     let command = try Self.command(

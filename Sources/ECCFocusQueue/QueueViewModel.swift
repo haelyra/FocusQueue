@@ -266,6 +266,8 @@ final class QueueViewModel {
   private(set) var showsCleanedBulletinPins =
     UserDefaults.standard.bool(forKey: "bulletinBoardShowsCleanedUp")
   @ObservationIgnored private var bulletinPinsLoaded = false
+  /// What happened after a card was clicked, shown on that card for a moment.
+  private(set) var bulletinPinFeedback: [String: BulletinPinFeedback] = [:]
   /// Each project's last board location, saved with the pins.
   private(set) var bulletinPlacements: [String: BulletinBoardPlacement] = [:]
   /// The board is showing as the queue's Board tab.
@@ -4462,24 +4464,63 @@ final class QueueViewModel {
   /// Tasks open their agents (the task's shared tmux session), or show in
   /// the queue when they have none; agents open in their workspace; files and
   /// folders open in their default app or Finder; links open as links do.
+  /// Each click leaves feedback on its card: opening, then opened or the error.
   func openBulletinPin(_ pin: BulletinPin) {
     switch pin.kind {
     case .task:
-      guard let ticket = bulletinTicket(for: pin) else { return }
+      guard let ticket = bulletinTicket(for: pin) else {
+        setBulletinPinFeedback(pin.id, .failed, "This task is no longer in the queue.")
+        return
+      }
       if visibleAgents(for: ticket.id).isEmpty {
         revealBulletinTask(pin)
+        setBulletinPinFeedback(pin.id, .done, "No agents yet: shown in the queue")
       } else {
-        openTaskAgents(for: ticket)
+        setBulletinPinFeedback(pin.id, .opening, "Opening agents…")
+        Task {
+          let failure = await openTaskAgentsNow(for: ticket)
+          setBulletinPinFeedback(pin.id, failure == nil ? .done : .failed, failure ?? "Opened its agents")
+        }
       }
     case .agent:
-      guard let ticket = bulletinTicket(for: pin), let agent = bulletinAgent(for: pin) else { return }
+      guard let ticket = bulletinTicket(for: pin), let agent = bulletinAgent(for: pin) else {
+        setBulletinPinFeedback(pin.id, .failed, "This agent is no longer on its task.")
+        return
+      }
+      setBulletinPinFeedback(pin.id, .opening, "Opening agent…")
       openSubtask(agent, for: ticket)
+      Task {
+        // openSubtask finishes in the background; follow it to report the result.
+        let deadline = Date().addingTimeInterval(90)
+        while isOpening(agent, ticketID: ticket.id), Date() < deadline {
+          try? await Task.sleep(for: .milliseconds(150))
+        }
+        if let error = agentSessionError(for: agent, ticketID: ticket.id) {
+          setBulletinPinFeedback(pin.id, .failed, error)
+        } else {
+          setBulletinPinFeedback(pin.id, .done, actionMessages[ticket.id] ?? "Opened")
+        }
+      }
     case .file, .folder:
       guard let path = pin.path else { return }
-      NSWorkspace.shared.open(URL(fileURLWithPath: path))
+      let opened = NSWorkspace.shared.open(URL(fileURLWithPath: path))
+      setBulletinPinFeedback(pin.id, opened ? .done : .failed, opened ? "Opened" : "Could not open this item")
     case .link:
       guard let url = pin.url else { return }
       open(url)
+      setBulletinPinFeedback(pin.id, .done, "Opened")
+    }
+  }
+
+  /// Sets a card's click feedback. A finished state clears itself after a few
+  /// seconds; an error stays a little longer so it can be read.
+  func setBulletinPinFeedback(_ pinID: String, _ state: BulletinPinFeedback.State, _ message: String) {
+    let feedback = BulletinPinFeedback(state: state, message: message)
+    bulletinPinFeedback[pinID] = feedback
+    guard state != .opening else { return }
+    Task {
+      try? await Task.sleep(for: .seconds(state == .failed ? 8 : 3))
+      if bulletinPinFeedback[pinID] == feedback { bulletinPinFeedback[pinID] = nil }
     }
   }
 
@@ -5038,23 +5079,67 @@ final class QueueViewModel {
   /// saved pane restores or focuses that shared session without creating a
   /// separate WezTerm tab per agent.
   func openTaskAgents(for ticket: DashboardTicket) {
+    Task { await openTaskAgentsNow(for: ticket) }
+  }
+
+  /// Shows the task's shared tmux session through the first saved pane that
+  /// still verifies, most active agent first. Showing the session resumes no
+  /// conversation, so one agent whose process cannot be identified (or a stale
+  /// record) no longer blocks the rest. Only when every pane has stopped does
+  /// it resume the most recent agent. Returns the failure, or nil.
+  @discardableResult
+  func openTaskAgentsNow(for ticket: DashboardTicket) async -> String? {
     markTicketViewed(ticket.id)
     let agents = visibleAgents(for: ticket.id)
     guard !agents.isEmpty else {
-      actionMessages[ticket.id] = "This task has no agents to open."
-      return
+      let message = "This task has no agents to open."
+      actionMessages[ticket.id] = message
+      return message
     }
-    let managed = agents.filter { $0.tmux?.name.hasPrefix("fq-task-") == true }
-    if let representative = managed.first,
-       Set(managed.compactMap(\.tmux?.name)).count == 1 {
-      actionMessages[ticket.id] =
-        "Opening \(agents.count) agent\(agents.count == 1 ? "" : "s") in the shared tmux session…"
-      openSubtask(representative, for: ticket, showResult: false)
-      return
+    let sessionName = try? TmuxController.taskSessionName(taskID: ticket.id)
+    let managed = Self.taskSessionOrder(agents.filter { $0.tmux != nil && $0.tmux?.name == sessionName })
+    guard !managed.isEmpty else {
+      for agent in agents { openSubtask(agent, for: ticket, showResult: false) }
+      return nil
     }
-    for agent in agents {
-      openSubtask(agent, for: ticket, showResult: false)
+    let label = "\(managed.count) agent\(managed.count == 1 ? "" : "s")"
+    actionMessages[ticket.id] = "Opening \(label) in the task's tmux session…"
+    launchingTaskIDs.insert(ticket.id)
+    var failures: [Error] = []
+    for agent in managed {
+      do {
+        _ = try await terminalController.openAgentRuntime(
+          agent, taskID: ticket.id, taskTitle: ticket.title, configuration: config.wezTerm)
+        launchingTaskIDs.remove(ticket.id)
+        actionMessages[ticket.id] = "Opened \(label) in the task's tmux session."
+        return nil
+      } catch {
+        failures.append(error)
+      }
     }
+    launchingTaskIDs.remove(ticket.id)
+    if failures.allSatisfy({ if case TmuxError.stopped = $0 { true } else { false } }) {
+      // Every pane is gone: resume the most recent conversation in a new pane.
+      openSubtask(managed[0], for: ticket, showResult: false)
+      return nil
+    }
+    let message = failures.last.map(\.localizedDescription) ?? "Could not open the task's agents."
+    actionMessages[ticket.id] = message
+    return message
+  }
+
+  /// Working agents and those needing attention first, then the most recently active.
+  static func taskSessionOrder(_ agents: [TaskSubtask]) -> [TaskSubtask] {
+    agents.enumerated().sorted { left, right in
+      func rank(_ agent: TaskSubtask) -> Int {
+        agent.attention != nil ? 0 : agent.status == .working ? 1 : 2
+      }
+      let (a, b) = (left.element, right.element)
+      if rank(a) != rank(b) { return rank(a) < rank(b) }
+      let (aTime, bTime) = (a.lastOutputAt ?? a.lastHeartbeatAt ?? .distantPast,
+                            b.lastOutputAt ?? b.lastHeartbeatAt ?? .distantPast)
+      return aTime != bTime ? aTime > bTime : left.offset < right.offset
+    }.map(\.element)
   }
 
   func launchAgent(
@@ -8256,4 +8341,13 @@ struct BulletinBoardWindowRequest: Equatable {
   let title: String
   let frame: BulletinBoardFrame?
   let pinned: Bool
+}
+
+
+/// A card's response to a click: opening, opened, or why it could not open.
+struct BulletinPinFeedback: Equatable {
+  enum State: Equatable { case opening, done, failed }
+  let id = UUID()
+  let state: State
+  let message: String
 }

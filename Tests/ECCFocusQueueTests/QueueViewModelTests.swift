@@ -5597,6 +5597,19 @@ extension QueueViewModelTests {
         BulletinCardFace(kind: item.kind, kindLabel: item.kindLabel, title: item.title, detail: item.detail).padding(8),
         size: NSSize(width: 184, height: 94),
         to: URL(fileURLWithPath: output).appendingPathComponent("bulletin-drag-preview.png"))
+      let states: [(BulletinPinFeedback.State, String)] = [
+        (.opening, "Opening agents…"), (.done, "Opened its agents"),
+        (.failed, "tmux could not open the agent session: This agent already has a pane."),
+      ]
+      try WalkthroughDemoRecording.snapshot(
+        HStack(spacing: 12) {
+          ForEach(Array(states.enumerated()), id: \.offset) { _, state in
+            BulletinCardFace(kind: .task, kindLabel: "ECC-101", title: "Task ECC-101", detail: "open",
+                             feedback: BulletinPinFeedback(state: state.0, message: state.1))
+          }
+        }.padding(10).environment(\.colorScheme, .dark),
+        size: NSSize(width: 560, height: 100),
+        to: URL(fileURLWithPath: output).appendingPathComponent("bulletin-click-feedback.png"))
     }
 
     // Pins survive a restart; removing cleaned-up pins deletes only those.
@@ -5834,5 +5847,90 @@ extension QueueViewModelTests {
       for: BulletinBoardFrame(x: -90_000, y: -90_000, width: 400, height: 400), near: screen)
     #expect(visible.contains(NSPoint(x: lost.midX, y: lost.midY)))
     #expect(lost.size == BulletinBoardWindowController.defaultSize)
+  }
+}
+
+private actor TaskSessionOpenRecorder: WezTermControlling {
+  let failing: Set<String>
+  private(set) var attempts: [String] = []
+  init(failing: Set<String>) { self.failing = failing }
+
+  func openManagedAgentRuntime(_ tmux: TmuxSessionReference, taskID: String,
+    subtaskID: String, provider: AgentProvider, taskTitle: String,
+    configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    attempts.append(subtaskID)
+    if failing.contains(subtaskID) { throw TmuxError.unavailable("This agent already has a pane.") }
+    return .spawned(paneID: nil)
+  }
+
+  func listAttachablePanes(configuration: WezTermConfiguration) async throws -> [WezTermPane] { [] }
+  func listRunningAgents(configuration: WezTermConfiguration) async throws -> [RunningAgentSession] { [] }
+  func attach(paneID: Int, tabTitle: String, windowTitle: String,
+    configuration: WezTermConfiguration) async throws { throw TestFailure.unexpectedExternalAction }
+  func focusOrSpawn(directory: String, taskID: String, taskTitle: String,
+    configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    throw TestFailure.unexpectedExternalAction
+  }
+  func focusOrResume(session: TaskAgentSession, taskID: String,
+    configuration: WezTermConfiguration) async throws -> TerminalActionResult {
+    throw TestFailure.unexpectedExternalAction
+  }
+}
+
+extension QueueViewModelTests {
+  private func taskSessionAgent(_ id: String, pane: Int, status: TaskSubtaskStatus) -> TaskSubtask {
+    TaskSubtask(id: id, title: id, provider: .claude, sessionID: UUID().uuidString, status: status,
+      tmux: try! TmuxController.decode("fq-task-ecc-101|4242|1|%\(pane)|\(5000 + pane)|/dev/ttys\(pane)|0",
+        executable: "/usr/bin/false")[0])
+  }
+
+  @Test("Clicking a pinned task opens its tmux session through the first pane that opens, working agents first")
+  func bulletinTaskClickOpensSession() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    for agent in [taskSessionAgent("idle-a", pane: 1, status: .idle),
+                  taskSessionAgent("working-b", pane: 2, status: .working),
+                  taskSessionAgent("idle-c", pane: 3, status: .idle)] {
+      _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: agent)
+    }
+    // The working agent's pane cannot open, as when its process cannot be identified.
+    let recorder = TaskSessionOpenRecorder(failing: ["working-b"])
+    let model = await fixture.model(agent: ControlledQueueAgent(), terminalController: recorder)
+    await model.refresh()
+    #expect(model.visibleAgents(for: "ECC-101").count == 3)
+    #expect(model.pinTaskToBulletinBoard("ECC-101"))
+    let pin = try #require(model.bulletinPins.first { $0.taskID == "ECC-101" })
+
+    model.openBulletinPin(pin)
+    #expect(model.bulletinPinFeedback[pin.id]?.state == .opening)
+    for _ in 0..<100 where model.bulletinPinFeedback[pin.id]?.state == .opening {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    #expect(await recorder.attempts == ["working-b", "idle-a"])
+    #expect(model.bulletinPinFeedback[pin.id]?.state == .done)
+    #expect(model.actionMessages["ECC-101"] == "Opened 3 agents in the task's tmux session.")
+  }
+
+  @Test("When no pane of a pinned task opens, its card shows the error")
+  func bulletinTaskClickReportsFailure() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let store = TaskContextStore(root: fixture.root)
+    _ = try await store.ensureContext(ticket: fixture.tickets[0])
+    _ = try await store.upsertSubtask(ticketID: "ECC-101", subtask: taskSessionAgent("only", pane: 1, status: .idle))
+    let recorder = TaskSessionOpenRecorder(failing: ["only"])
+    let model = await fixture.model(agent: ControlledQueueAgent(), terminalController: recorder)
+    await model.refresh()
+    #expect(model.pinTaskToBulletinBoard("ECC-101"))
+    let pin = try #require(model.bulletinPins.first { $0.taskID == "ECC-101" })
+    model.openBulletinPin(pin)
+    for _ in 0..<100 where model.bulletinPinFeedback[pin.id]?.state == .opening {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    let feedback = try #require(model.bulletinPinFeedback[pin.id])
+    #expect(feedback.state == .failed)
+    #expect(feedback.message.contains("already has a pane"))
   }
 }

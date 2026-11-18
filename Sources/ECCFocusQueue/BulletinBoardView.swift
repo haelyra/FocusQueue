@@ -20,6 +20,8 @@ struct BulletinBoardView: View {
   @State private var dropIsTargeted = false
   @State private var dragOffsets: [String: CGSize] = [:]
   @State private var tearOffDistance: CGFloat = 0
+  /// The card just clicked, pressed in and outlined for a moment.
+  @State private var pressedPinID: String?
 
   private var scopeName: String { model.bulletinBoardProjectID == nil ? "All projects" : model.projectScopeName }
 
@@ -196,8 +198,11 @@ struct BulletinBoardView: View {
     let offset = dragOffsets[pin.id] ?? .zero
     let maxX = max(0, boardWidth - BulletinBoardMetrics.cardWidth - 4)
     let x = min(pin.x, maxX)
-    return BulletinPinCard(model: model, pin: pin, isCleanedUp: model.isBulletinPinCleanedUp(pin))
+    let pressed = pressedPinID == pin.id
+    return BulletinPinCard(model: model, pin: pin, isCleanedUp: model.isBulletinPinCleanedUp(pin),
+                           feedback: model.bulletinPinFeedback[pin.id])
       .frame(width: BulletinBoardMetrics.cardWidth, height: BulletinBoardMetrics.cardHeight)
+      .scaleEffect(pressed ? 0.94 : 1)
       .offset(x: x + offset.width, y: pin.y + offset.height)
       .zIndex(dragOffsets[pin.id] == nil ? 0 : 1)
       .gesture(
@@ -209,7 +214,15 @@ struct BulletinBoardView: View {
             let newY = max(0, pin.y + value.translation.height)
             model.moveBulletinPin(pin.id, to: CGPoint(x: newX, y: newY))
           })
-      .onTapGesture { model.openBulletinPin(pin) }
+      .onTapGesture {
+        withAnimation(.easeOut(duration: 0.08)) { pressedPinID = pin.id }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
+          withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) {
+            if pressedPinID == pin.id { pressedPinID = nil }
+          }
+        }
+        model.openBulletinPin(pin)
+      }
   }
 
   // MARK: - Dropping and choosing
@@ -316,6 +329,16 @@ struct BulletinCardFace: View {
   let title: String
   let detail: String
   var isCleanedUp = false
+  /// After a click: a spinner while opening, then the result in place of the detail.
+  var feedback: BulletinPinFeedback?
+
+  private var feedbackColor: Color {
+    switch feedback?.state {
+    case .failed: .orange
+    case .done: .green
+    default: .accentColor
+    }
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 3) {
@@ -324,11 +347,27 @@ struct BulletinCardFace: View {
         Text(kindLabel).font(.system(size: 9, weight: .semibold)).lineLimit(1)
       }
       .foregroundStyle(.secondary)
-      Text(title).font(.system(size: 12, weight: .semibold)).lineLimit(2)
+      Text(title).font(.system(size: 12, weight: .semibold)).lineLimit(feedback?.state == .failed ? 1 : 2)
         .fixedSize(horizontal: false, vertical: true)
       Spacer(minLength: 0)
-      Text(detail).font(.system(size: 10)).foregroundStyle(isCleanedUp ? Color.orange : Color.secondary)
-        .lineLimit(1).truncationMode(.middle)
+      if let feedback {
+        HStack(spacing: 4) {
+          switch feedback.state {
+          case .opening: ProgressView().controlSize(.mini).scaleEffect(0.7).frame(width: 10, height: 10)
+          case .done: Image(systemName: "checkmark.circle.fill").font(.system(size: 9))
+          case .failed: Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 9))
+          }
+          Text(feedback.message).font(.system(size: 10, weight: .medium))
+            .lineLimit(feedback.state == .failed ? 2 : 1).truncationMode(.tail)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .foregroundStyle(feedbackColor)
+        .help(feedback.message)
+        .transition(.opacity)
+      } else {
+        Text(detail).font(.system(size: 10)).foregroundStyle(isCleanedUp ? Color.orange : Color.secondary)
+          .lineLimit(1).truncationMode(.middle)
+      }
     }
     .padding(.horizontal, 10).padding(.top, 11).padding(.bottom, 7)
     .frame(width: BulletinBoardMetrics.cardWidth, height: BulletinBoardMetrics.cardHeight, alignment: .topLeading)
@@ -338,6 +377,12 @@ struct BulletinCardFace: View {
     .overlay(RoundedRectangle(cornerRadius: 8).stroke(
       isCleanedUp ? Color.orange.opacity(0.6) : Color.primary.opacity(0.1),
       style: StrokeStyle(lineWidth: isCleanedUp ? 1 : 0.5, dash: isCleanedUp ? [4, 3] : [])))
+    .overlay {
+      if feedback != nil {
+        RoundedRectangle(cornerRadius: 8).stroke(feedbackColor.opacity(0.85), lineWidth: 1.5)
+      }
+    }
+    .animation(.easeInOut(duration: 0.2), value: feedback)
     .shadow(color: .black.opacity(0.35), radius: 3, y: 2)
     .overlay(alignment: .top) {
       PinHead(color: kind.pinColor)
@@ -351,6 +396,7 @@ private struct BulletinPinCard: View {
   let model: QueueViewModel
   let pin: BulletinPin
   let isCleanedUp: Bool
+  var feedback: BulletinPinFeedback?
 
   private var ticket: DashboardTicket? { model.bulletinTicket(for: pin) }
   private var agent: TaskSubtask? { model.bulletinAgent(for: pin) }
@@ -382,7 +428,8 @@ private struct BulletinPinCard: View {
 
   var body: some View {
     let title = model.bulletinPinTitle(pin)
-    BulletinCardFace(kind: pin.kind, kindLabel: kindLabel, title: title, detail: detail, isCleanedUp: isCleanedUp)
+    BulletinCardFace(kind: pin.kind, kindLabel: kindLabel, title: title, detail: detail, isCleanedUp: isCleanedUp,
+                     feedback: feedback)
       .contentShape(RoundedRectangle(cornerRadius: 8))
       .contextMenu {
         Button(pin.kind == .task ? "Open agents" : "Open",

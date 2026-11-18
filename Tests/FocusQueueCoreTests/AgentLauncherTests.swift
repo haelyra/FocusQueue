@@ -281,7 +281,7 @@ private actor AgentLaunchRunner: ProcessRunning {
   }
 }
 
-private actor TaskPaneLaunchRunner: ProcessRunning {
+actor TaskPaneLaunchRunner: ProcessRunning {
   private(set) var specifications: [ProcessSpecification] = []
   var observations = 0
   let timeout: Bool

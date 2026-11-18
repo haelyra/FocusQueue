@@ -290,6 +290,45 @@ public struct ProviderProcessScan: Sendable, Equatable {
     }
 }
 
+/// A live provider process could own the requested session, but which
+/// session it runs cannot be proven, so opening or resuming would be a guess.
+public struct ProviderIdentityError: LocalizedError, Equatable, Sendable {
+    public let provider: AgentProvider
+    public let sessionID: String
+    /// Processes that could own the session but have no proven identity.
+    public let blockers: [UnresolvedProviderProcess]
+    /// Processes of this provider whose identity is proven.
+    public let candidates: [KnownProviderProcess]
+
+    public init(provider: AgentProvider, sessionID: String,
+                blockers: [UnresolvedProviderProcess], candidates: [KnownProviderProcess] = []) {
+        self.provider = provider
+        self.sessionID = sessionID
+        self.blockers = blockers
+        self.candidates = candidates
+    }
+
+    public var errorDescription: String? {
+        let name = provider.displayName
+        let groups = Dictionary(grouping: blockers) { $0.cwd ?? "" }
+        var parts: [String] = []
+        for (cwd, group) in groups.sorted(by: { $0.key < $1.key }) {
+            let pids = group.map { String($0.processID) }.sorted().joined(separator: ", ")
+            if cwd.isEmpty {
+                parts.append(group.count == 1
+                    ? "\(name) process \(pids) has no readable working directory yet (it may still be starting)"
+                    : "\(group.count) \(name) processes (pids \(pids)) have no readable working directory yet (they may still be starting)")
+            } else if group.count == 1 {
+                parts.append("\(name) process \(pids) in \(cwd) has no registered or open session")
+            } else {
+                parts.append("\(group.count) \(name) processes share \(cwd) (pids \(pids))")
+            }
+        }
+        let cause = parts.isEmpty ? "A \(name) process has no proven session" : parts.joined(separator: "; ")
+        return "\(cause); cannot tell which owns \(sessionID)."
+    }
+}
+
 public enum TerminalActionResult: Equatable, Sendable {
     case focused(paneID: Int)
     case spawned(paneID: Int?)
@@ -1334,7 +1373,8 @@ public actor WezTermController: WezTermControlling {
                 let blockers = scan.unresolved.filter { unresolvedProcessCouldOwn($0, sessionID: sessionID) }
                 guard !blockers.isEmpty else { return nil }
                 guard attempt + 1 < limit else {
-                    throw WezTermError.actionFailed("A provider process has no exact session identity yet. Retry after startup.")
+                    throw ProviderIdentityError(provider: provider, sessionID: sessionID,
+                        blockers: blockers, candidates: scan.resolved)
                 }
                 try await Task.sleep(for: retryDelay)
             } catch is CancellationError { throw CancellationError() }
@@ -1525,16 +1565,36 @@ public actor WezTermController: WezTermControlling {
                     processID: process.pid, tty: tty, cwd: cwd))
             }
         }
+        let registrations = claudeDiskFallback.isEmpty ? [] : paneRegistrations()
         let fallbackByProject = Dictionary(grouping: claudeDiskFallback) {
             Self.claudeProjectDirectoryName(forWorkingDirectory: $0.cwd)
         }
         for (projectDirectory, group) in fallbackByProject {
+            var unregistered: [(process: AgentProcess, cwd: String)] = []
+            for entry in group {
+                let tty = entry.process.tty == "??" ? nil : "/dev/" + entry.process.tty
+                // A hook or attach registration bound to this exact pane process
+                // names its session, however many processes share the project.
+                if let sessionID = Self.registeredSession(
+                    provider: .claude, processID: entry.process.pid, tty: tty, in: registrations),
+                   claudeProjectDirectory(containingTranscript: sessionID).map({ $0 == projectDirectory }) ?? true {
+                    if seen.insert(AgentProvider.claude.rawValue + ":" + sessionID).inserted {
+                        result.append(KnownProviderProcess(provider: .claude, sessionID: sessionID,
+                            processID: entry.process.pid, tty: tty, cwd: entry.cwd))
+                    } else {
+                        unresolved.append(UnresolvedProviderProcess(
+                            provider: .claude, processID: entry.process.pid, tty: tty, cwd: entry.cwd))
+                    }
+                } else {
+                    unregistered.append(entry)
+                }
+            }
             // Two live processes in one project can each own a different
             // transcript; attributing the newest file to either would be a guess.
-            guard group.count == 1, let entry = group.first,
+            guard group.count == 1, let entry = unregistered.first,
                   let sessionID = latestClaudeTranscriptID(inProjectDirectory: projectDirectory)
             else {
-                for entry in group {
+                for entry in unregistered {
                     unresolved.append(UnresolvedProviderProcess(
                         provider: entry.process.provider, processID: entry.process.pid,
                         tty: entry.process.tty == "??" ? nil : "/dev/" + entry.process.tty,
@@ -1567,6 +1627,48 @@ public actor WezTermController: WezTermControlling {
             }
         }
         return ProviderProcessScan(resolved: result, unresolved: unresolved)
+    }
+
+    /// A saved session registration bound to a tmux pane process.
+    struct PaneRegistration: Equatable, Sendable {
+        let provider: AgentProvider
+        let sessionID: String
+        let panePID: Int32
+        let tty: String?
+    }
+
+    /// Pane-bound registrations from the saved agent sessions. Read-only.
+    func paneRegistrations() -> [PaneRegistration] {
+        struct Saved: Decodable {
+            struct Session: Decodable {
+                struct Pane: Decodable { let panePID: Int32?; let tty: String? }
+                let provider: String?; let sessionID: String?; let tmux: Pane?
+            }
+            let agentSessions: [Session]?
+        }
+        let url = supportDirectory.appendingPathComponent("state.json")
+        guard let data = try? Data(contentsOf: url),
+              let saved = try? JSONDecoder().decode(Saved.self, from: data) else { return [] }
+        return (saved.agentSessions ?? []).compactMap { session in
+            guard let provider = session.provider.flatMap(AgentProvider.init(rawValue:)),
+                  let sessionID = session.sessionID, provider.isValidSessionID(sessionID),
+                  let pid = session.tmux?.panePID, pid > 0 else { return nil }
+            return PaneRegistration(provider: provider, sessionID: sessionID.lowercased(),
+                panePID: pid, tty: session.tmux?.tty)
+        }
+    }
+
+    /// The one session registered for this exact pane process: same pane PID
+    /// and, when both are known, the same terminal. Process IDs and terminals
+    /// are reused, so registrations naming different sessions for one
+    /// process prove nothing and return nil.
+    static func registeredSession(provider: AgentProvider, processID: Int32, tty: String?,
+                                  in registrations: [PaneRegistration]) -> String? {
+        let sessions = Set(registrations.filter {
+            $0.provider == provider && $0.panePID == processID
+                && ($0.tty == nil || tty == nil || $0.tty == tty)
+        }.map(\.sessionID))
+        return sessions.count == 1 ? sessions.first : nil
     }
 
     /// Claude Code escapes a project directory name by replacing every

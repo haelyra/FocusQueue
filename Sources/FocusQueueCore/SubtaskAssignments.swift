@@ -250,7 +250,10 @@ extension TaskContext {
         }
     }
 
-    mutating func mergeSharedAgentSubtasks() {
+    /// Returns each merge as (kept record, merged record), before any changes.
+    @discardableResult
+    mutating func mergeSharedAgentSubtasks() -> [(kept: TaskSubtask, merged: TaskSubtask)] {
+        var merges: [(kept: TaskSubtask, merged: TaskSubtask)] = []
         let agents = subtasks.filter(\.hasAgent)
         let grouped = Dictionary(grouping: agents) {
             $0.sessionID?.lowercased() ?? "record:" + $0.id
@@ -272,9 +275,13 @@ extension TaskContext {
                     subtasks[primary].status = indices.contains(where: { subtasks[$0].status == .working }) ? .working : .queued
                     subtasks[primary].completionOverrideAt = nil
                 }
-                for index in indices.dropFirst() { subtasks[index].mergedIntoSubtaskID = canonicalID }
+                for index in indices.dropFirst() {
+                    merges.append((subtasks[primary], subtasks[index]))
+                    subtasks[index].mergedIntoSubtaskID = canonicalID
+                }
             }
         }
         refreshAssignmentStatuses()
+        return merges
     }
 }

@@ -107,7 +107,7 @@ struct ProviderProcessDiscoveryTests {
     func persistentUnknownRecheck() async throws {
         let sample = ["40 ttys040 /opt/codex\n", "p40\nfcwd\nn/tmp/repository\n"]
         let runner = ProviderDiscoveryRunner(sample + sample + sample + sample)
-        await #expect(throws: WezTermError.self) {
+        await #expect(throws: ProviderIdentityError.self) {
             try await WezTermController(runner: runner).locateProviderProcess(
                 provider: .codex, sessionID: parent, retryDelay: .zero)
         }
@@ -238,11 +238,105 @@ struct ProviderProcessDiscoveryTests {
         #expect(scan.unresolved.map(\.processID).sorted() == [40, 41])
 
         let runner = ProviderDiscoveryRunner(sample + sample + sample + sample)
-        await #expect(throws: WezTermError.self) {
+        await #expect(throws: ProviderIdentityError.self) {
             try await WezTermController(runner: runner, claudeRoot: claudeRoot).locateProviderProcess(
                 provider: .claude, sessionID: parent, retryDelay: .zero)
         }
         #expect(await runner.outputs.isEmpty)
+    }
+
+    /// FOC-142: agents started from one repository folder shared a Claude
+    /// project, so every one of them was unresolved and none could be opened.
+    private func registrationFixture(
+        registrations: [(pid: Int32, tty: String, session: String)]
+    ) throws -> (claudeRoot: URL, support: URL, cleanup: () -> Void) {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "focus-queue-claude-registered-\(UUID())", isDirectory: true)
+        let claudeRoot = base.appendingPathComponent("claude", isDirectory: true)
+        let support = base.appendingPathComponent("support", isDirectory: true)
+        let project = claudeRoot.appendingPathComponent("projects/-tmp-repository", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        for id in [parent, child] {
+            try Data("{}\n".utf8).write(to: project.appendingPathComponent("\(id).jsonl"))
+        }
+        let sessions = registrations.map { registration -> [String: Any] in
+            ["id": UUID().uuidString, "ticketID": "ECC-1", "provider": "claude",
+             "sessionID": registration.session, "tabTitle": "t", "workingDirectory": "/tmp/repository",
+             "tmux": ["name": "fq-task-ecc-1", "serverPID": 9, "createdAt": 1, "paneID": "%1",
+                      "panePID": registration.pid, "tty": registration.tty, "executable": "/mock/tmux"]]
+        }
+        try JSONSerialization.data(withJSONObject: ["agentSessions": sessions])
+            .write(to: support.appendingPathComponent("state.json"))
+        return (claudeRoot, support, { try? FileManager.default.removeItem(at: base) })
+    }
+
+    private let sharedProject = ["40 ttys040 /opt/claude\n41 ttys041 /opt/claude\n",
+        "p40\nfcwd\nn/tmp/repository\np41\nfcwd\nn/tmp/repository\n"]
+
+    @Test("Pane-bound registrations resolve Claude processes that share one project")
+    func registrationsResolveSharedProject() async throws {
+        let fixture = try registrationFixture(registrations: [
+            (40, "/dev/ttys040", parent), (41, "/dev/ttys041", child)])
+        defer { fixture.cleanup() }
+        let scan = try await WezTermController(runner: ProviderDiscoveryRunner(sharedProject),
+            claudeRoot: fixture.claudeRoot, supportDirectory: fixture.support)
+            .knownProviderProcesses(requireComplete: true)
+        #expect(scan.unresolved.isEmpty)
+        #expect(Dictionary(uniqueKeysWithValues: scan.resolved.map { ($0.processID, $0.sessionID) })
+            == [40: parent, 41: child])
+
+        let located = try await WezTermController(runner: ProviderDiscoveryRunner(sharedProject),
+            claudeRoot: fixture.claudeRoot, supportDirectory: fixture.support)
+            .locateProviderProcess(provider: .claude, sessionID: child, retryDelay: .zero)
+        #expect(located?.processID == 41)
+    }
+
+    @Test("Without registrations, Claude processes sharing a project stay unresolved and the error names them")
+    func unregisteredSharedProjectNamesTheCollision() async throws {
+        let fixture = try registrationFixture(registrations: [])
+        defer { fixture.cleanup() }
+        let scan = try await WezTermController(runner: ProviderDiscoveryRunner(sharedProject),
+            claudeRoot: fixture.claudeRoot, supportDirectory: fixture.support)
+            .knownProviderProcesses(requireComplete: true)
+        #expect(scan.resolved.isEmpty)
+        #expect(scan.unresolved.map(\.processID).sorted() == [40, 41])
+
+        let runner = ProviderDiscoveryRunner(sharedProject + sharedProject + sharedProject + sharedProject)
+        do {
+            _ = try await WezTermController(runner: runner, claudeRoot: fixture.claudeRoot,
+                supportDirectory: fixture.support)
+                .locateProviderProcess(provider: .claude, sessionID: parent, retryDelay: .zero)
+            Issue.record("expected an identity error")
+        } catch let error as ProviderIdentityError {
+            #expect(error.blockers.map(\.processID).sorted() == [40, 41])
+            #expect(error.localizedDescription
+                == "2 Claude processes share /tmp/repository (pids 40, 41); cannot tell which owns \(parent).")
+            #expect(!error.localizedDescription.contains("Retry after startup"))
+        }
+    }
+
+    @Test("Registrations naming different sessions for one process, or a wrong terminal, prove nothing")
+    func conflictingOrStaleRegistrationsStayUnresolved() async throws {
+        let fixture = try registrationFixture(registrations: [
+            (40, "/dev/ttys040", parent), (40, "/dev/ttys040", child), (41, "/dev/ttys099", child)])
+        defer { fixture.cleanup() }
+        let scan = try await WezTermController(runner: ProviderDiscoveryRunner(sharedProject),
+            claudeRoot: fixture.claudeRoot, supportDirectory: fixture.support)
+            .knownProviderProcesses(requireComplete: true)
+        #expect(scan.resolved.isEmpty)
+        #expect(scan.unresolved.map(\.processID).sorted() == [40, 41])
+    }
+
+    @Test("One registered process does not let an unregistered sibling guess the newest transcript")
+    func unregisteredSiblingDoesNotGuess() async throws {
+        let fixture = try registrationFixture(registrations: [(40, "/dev/ttys040", parent)])
+        defer { fixture.cleanup() }
+        let scan = try await WezTermController(runner: ProviderDiscoveryRunner(sharedProject),
+            claudeRoot: fixture.claudeRoot, supportDirectory: fixture.support)
+            .knownProviderProcesses(requireComplete: true)
+        #expect(scan.resolved.map(\.processID) == [40])
+        #expect(scan.unresolved.map(\.processID) == [41])
     }
 
     @Test("An unresolved Claude process in another project does not block the requested session")
@@ -286,7 +380,7 @@ struct ProviderProcessDiscoveryTests {
     func unresolvedKimiFailsClosed() async throws {
         let sample = ["40 ttys040 /opt/kimi\n", "p40\nfcwd\nn/tmp/repository\n"]
         let runner = ProviderDiscoveryRunner(sample + sample + sample + sample)
-        await #expect(throws: WezTermError.self) {
+        await #expect(throws: ProviderIdentityError.self) {
             try await WezTermController(runner: runner).locateProviderProcess(
                 provider: .kimi, sessionID: "session_55555555-5555-4555-8555-555555555555",
                 retryDelay: .zero)
@@ -400,7 +494,7 @@ struct ProviderProcessDiscoveryTests {
         defer { try? FileManager.default.removeItem(at: codexRoot) }
         let sample = ["40 ttys040 /opt/codex\n", "p40\nfcwd\nn/tmp/repository\n"]
         let runner = ProviderDiscoveryRunner(sample + sample + sample + sample)
-        await #expect(throws: WezTermError.self) {
+        await #expect(throws: ProviderIdentityError.self) {
             try await WezTermController(runner: runner, codexRoot: codexRoot).locateProviderProcess(
                 provider: .codex, sessionID: parent, retryDelay: .zero)
         }
@@ -413,7 +507,7 @@ struct ProviderProcessDiscoveryTests {
         defer { try? FileManager.default.removeItem(at: codexRoot) }
         let sample = ["40 ttys040 /opt/codex\n", "p40\nfcwd\nn/tmp/resumed\n"]
         let runner = ProviderDiscoveryRunner(sample + sample + sample + sample)
-        await #expect(throws: WezTermError.self) {
+        await #expect(throws: ProviderIdentityError.self) {
             try await WezTermController(runner: runner, codexRoot: codexRoot).locateProviderProcess(
                 provider: .codex, sessionID: parent, retryDelay: .zero)
         }
@@ -427,7 +521,7 @@ struct ProviderProcessDiscoveryTests {
         defer { try? FileManager.default.removeItem(at: codexRoot) }
         let sample = ["40 ttys040 /opt/codex\n", "p40\nfcwd\nn/tmp/other\n"]
         let runner = ProviderDiscoveryRunner(sample + sample + sample + sample)
-        await #expect(throws: WezTermError.self) {
+        await #expect(throws: ProviderIdentityError.self) {
             try await WezTermController(runner: runner, codexRoot: codexRoot).locateProviderProcess(
                 provider: .codex, sessionID: parent, retryDelay: .zero)
         }

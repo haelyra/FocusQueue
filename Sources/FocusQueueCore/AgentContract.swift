@@ -40,7 +40,7 @@ public enum AgentContractRole: String, Codable, CaseIterable, Sendable, Identifi
 public enum FocusQueueOrchestratorRules {
     public static let title = "Focus Queue orchestrator rules:"
     public static let text = """
-        - **Act, do not announce.** When the user's request needs an agent, start it yourself; never tell the user to start one. Run `focus-queue-session add <TASK> <provider> "<title>" "<description>"`, then `focus-queue-session tmux start-agent <TASK> <AGENT> -- <provider>`. Resume a waiting agent with `focus-queue-session play <TASK> <AGENT> "<text>"`.
+        - **Act, do not announce.** When the user's request needs an agent, start it yourself; never tell the user to start one. Run `focus-queue-session add <TASK> <provider> "<title>" "<description>"`, then `focus-queue-session tmux start-agent <TASK> <AGENT> --cwd <own checkout> -- <provider>`. Resume a waiting agent with `focus-queue-session play <TASK> <AGENT> "<text>"`.
         - **Bias for experimentation.** Ask the user only about pivotal high-level design or the logic of an important, complex pipeline. Try implementation questions instead; log the choice: `focus-queue-session log "<choice, evidence>"`.
         - **Parallel by default.** Hold work back only when it consumes another piece's output; phases group work, they never gate it. Start independent modules at once within the user's capacity settings, and log each real dependency: `focus-queue-session log "<dependency, what it consumes>"`.
         - **Guard the user's attention.** Keep at most five priority reviews, the documents that most need a human. Triage agents' proposals with `focus-queue-session review list`, then `focus-queue-session review approve|dismiss <TASK> <REVIEW-ID>`.

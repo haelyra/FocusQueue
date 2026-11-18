@@ -565,11 +565,30 @@ enum SessionRegistrationError: Error, LocalizedError {
         let ticketID = arguments[2].uppercased()
         let subtaskID = arguments[3]
         let root = supportDirectory(environment: ProcessInfo.processInfo.environment)
+        var entry = AgentEventLog.Registration(
+            event: "runtime-repair", outcome: "failed", task: ticketID, subtask: subtaskID)
+        defer { AgentEventLog.record(entry, supportDirectory: root) }
+        do {
+            let runtime = try await repairRuntime(ticketID: ticketID, subtaskID: subtaskID, root: root, entry: &entry)
+            entry.outcome = "repaired"
+            entry.pane = runtime.paneID
+        } catch {
+            entry.reason = error.localizedDescription
+            throw error
+        }
+    }
+
+    private static func repairRuntime(
+        ticketID: String, subtaskID: String, root: URL, entry: inout AgentEventLog.Registration
+    ) async throws -> TmuxSessionReference {
         let store = TaskContextStore(root: root)
         guard let context = try await store.load(ticketID: ticketID),
               let subtask = context.subtasks.first(where: { $0.id == subtaskID }) else {
             throw TaskContextError.missingSubtask(subtaskID)
         }
+        entry.provider = subtask.provider.rawValue
+        entry.session = subtask.sessionID
+        entry.cwd = subtask.workspace?.path
         guard subtask.runtimeMode == nil || subtask.runtimeMode == .tmux else {
             throw TaskContextError.commandFailed(
                 "This subtask was launched as a direct terminal session, so it has no tmux runtime to repair.")
@@ -589,6 +608,7 @@ enum SessionRegistrationError: Error, LocalizedError {
         try emit(RuntimeRepairResult(
             status: "repaired", taskID: ticketID,
             subtaskID: subtaskID, runtime: runtime))
+        return runtime
     }
 
     private static func tmuxCommand(arguments: [String]) async throws {
@@ -682,16 +702,19 @@ enum SessionRegistrationError: Error, LocalizedError {
             let taskID = arguments[2]
             let agentID = arguments[3]
             var remaining = Array(arguments.dropFirst(4))
-            var directory = FileManager.default.currentDirectoryPath
+            var explicitDirectory: String?
             if remaining.first == "--cwd" {
                 guard remaining.count >= 3 else { throw SessionRegistrationError.usage }
-                directory = remaining[1]
+                explicitDirectory = remaining[1]
                 remaining.removeFirst(2)
             }
             guard remaining.first == "--", remaining.count >= 2 else {
                 throw SessionRegistrationError.usage
             }
             remaining.removeFirst()
+            let directory = try await startAgentDirectory(
+                taskID: taskID, agentID: agentID, explicit: explicitDirectory,
+                root: supportDirectory(environment: environment))
             let reference = try await controller.startAgent(
                 taskID: taskID, subtaskID: agentID, directory: directory,
                 command: remaining, executable: executable)
@@ -729,6 +752,26 @@ enum SessionRegistrationError: Error, LocalizedError {
             try await persistence?.enable()
         default: throw SessionRegistrationError.usage
         }
+    }
+
+    /// The directory a new agent pane starts in: `--cwd` when given, else the
+    /// agent's recorded workspace. Agents started from the caller's directory
+    /// shared one project folder, so their sessions could not be told apart.
+    static func startAgentDirectory(taskID: String, agentID: String, explicit: String?,
+                                    root: URL) async throws -> String {
+        if let explicit { return explicit }
+        let agent = try await TaskContextStore(root: root).load(ticketID: taskID)?
+            .subtasks.first { $0.id.caseInsensitiveCompare(agentID) == .orderedSame }
+        guard let path = agent?.workspace?.path else {
+            throw TaskContextError.commandFailed(
+                "Agent \(agentID) on \(taskID) has no recorded workspace, so start-agent will not use the current directory. Record one with `focus-queue-session workspace \(taskID) \(agentID) <absolute-path>`, or pass `--cwd <dir>`.")
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw TaskContextError.commandFailed(
+                "Agent \(agentID) on \(taskID) records workspace \(path), which no longer exists. Pass `--cwd <dir>`.")
+        }
+        return path
     }
 
     private static func libraryCommand(arguments: [String]) async throws {
@@ -1036,6 +1079,33 @@ enum SessionRegistrationError: Error, LocalizedError {
     private static func registerEvent(_ event: ExternalAgentEvent, provider: AgentProvider,
                                       explicitTaskID: String?, environment: [String: String]) async throws {
         let root = supportDirectory(environment: environment)
+        var entry = AgentEventLog.Registration(
+            event: event.hookEventName == "ExplicitAttach" ? "attach" : "register-event",
+            outcome: "failed", task: explicitTaskID ?? environment["FOCUS_QUEUE_TASK_ID"],
+            subtask: environment["FOCUS_QUEUE_SUBTASK_ID"], provider: provider.rawValue,
+            session: event.providerSessionID ?? event.sessionID.lowercased(),
+            pane: environment["TMUX_PANE"] ?? environment["WEZTERM_PANE"], cwd: event.cwd,
+            details: ["hook": event.hookEventName])
+        defer { AgentEventLog.record(entry, supportDirectory: root) }
+        do {
+            let record = try await registerEventUnlogged(
+                event, provider: provider, explicitTaskID: explicitTaskID, environment: environment)
+            entry.outcome = record.status
+            entry.reason = record.reason
+            entry.task = record.taskID ?? entry.task
+            entry.subtask = record.subtaskID ?? entry.subtask
+            entry.pane = record.session?.tmux?.paneID ?? entry.pane
+        } catch {
+            entry.reason = error.localizedDescription
+            throw error
+        }
+    }
+
+    private static func registerEventUnlogged(
+        _ event: ExternalAgentEvent, provider: AgentProvider,
+        explicitTaskID: String?, environment: [String: String]
+    ) async throws -> ExternalAgentRegistration {
+        let root = supportDirectory(environment: environment)
         let config = try loadConfiguration(from: root)
         let launchID = event.isSubagent
             ? (event.providerSessionID ?? event.sessionID.lowercased())
@@ -1104,6 +1174,7 @@ enum SessionRegistrationError: Error, LocalizedError {
                                   projectID: placement?.projectID, taskID: record.taskID, provider: provider,
                                   environment: environment, root: root, config: config)
         }
+        return record
     }
 
     /// Starts background data extraction for one user prompt. The provider hook has a
@@ -1404,15 +1475,14 @@ enum SessionRegistrationError: Error, LocalizedError {
                 // "Stopped" is only emitted when no live process could plausibly
                 // own the requested session; unrelated identity-less processes
                 // (another project's agent, a daemon) never block a resume.
-                var blocked = false
-                for process in complete.unresolved {
-                    if await controller.unresolvedProcessCouldOwn(process, sessionID: sessionID) {
-                        blocked = true
-                        break
-                    }
+                var blockers: [UnresolvedProviderProcess] = []
+                for process in complete.unresolved
+                where await controller.unresolvedProcessCouldOwn(process, sessionID: sessionID) {
+                    blockers.append(process)
                 }
-                guard !blocked else {
-                    throw WezTermError.actionFailed("A provider process has no exact session identity yet. Retry after startup.")
+                guard blockers.isEmpty else {
+                    throw ProviderIdentityError(provider: provider, sessionID: sessionID,
+                        blockers: blockers, candidates: complete.resolved)
                 }
                 try emit(RuntimeLocationResult(status: "stopped", sessionID: sessionID)); return
             }
@@ -1434,8 +1504,14 @@ enum SessionRegistrationError: Error, LocalizedError {
             }
             try emit(result)
         } catch {
+            let root = supportDirectory(environment: ProcessInfo.processInfo.environment)
+            let path = AgentEventLog.record(AgentEventLog.openFailure(
+                source: "runtime-locate", task: ProcessInfo.processInfo.environment["FOCUS_QUEUE_TASK_ID"],
+                subtask: nil, provider: provider, session: sessionID, step: "locate", error: error),
+                supportDirectory: root)
             try emit(RuntimeLocationResult(
-                status: "unknown", sessionID: sessionID, reason: error.localizedDescription))
+                status: "unknown", sessionID: sessionID,
+                reason: AgentEventLog.message(error.localizedDescription, logPath: path)))
         }
     }
 
@@ -1560,7 +1636,9 @@ enum SessionRegistrationError: Error, LocalizedError {
                     configuration.bypassesPermissions(for: $0.provider, taskOverride: context.bypassPermissions)
                 }
             } ?? false
-            let (updated, outcome) = try await AgentPauseController(store: store).play(
+            let played: (TaskContext, AgentPauseController.PlayOutcome)
+            do {
+                played = try await AgentPauseController(store: store).play(
                 ticketID: ticketID, subtaskID: arguments[2],
                 prompt: arguments.count == 4 ? arguments[3] : AgentPauseController.playPrompt,
                 supportDirectory: root, tmuxExecutable: executable,
@@ -1571,6 +1649,15 @@ enum SessionRegistrationError: Error, LocalizedError {
                     try await WezTermController().locateProviderProcess(
                         provider: provider, sessionID: sessionID) != nil
                 })
+            } catch {
+                let agent = try? await store.load(ticketID: ticketID)?.subtasks.first { $0.id == arguments[2] }
+                let path = AgentEventLog.record(AgentEventLog.openFailure(
+                    source: "play", task: ticketID, subtask: arguments[2], provider: agent?.provider,
+                    session: agent?.sessionID, step: "play", error: error), supportDirectory: root)
+                throw TaskContextError.commandFailed(
+                    AgentEventLog.message(error.localizedDescription, logPath: path))
+            }
+            let (updated, outcome) = played
             await mirrorContext(updated, root: root)
             notifyContextChanged()
             try emit([

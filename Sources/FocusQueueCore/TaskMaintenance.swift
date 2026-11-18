@@ -54,7 +54,9 @@ public actor TaskMaintenance {
                 // Cleanup is destructive: an unverified process means ownership
                 // is unknown, and unknown never authorizes cleanup.
                 guard scan.unresolved.isEmpty else {
-                    throw WezTermError.actionFailed("A provider process has no exact session identity yet. Retry after startup.")
+                    throw ProviderIdentityError(provider: agent.provider,
+                        sessionID: agent.sessionID ?? agent.id, blockers: scan.unresolved,
+                        candidates: scan.resolved)
                 }
                 running = scan.resolved
             }

@@ -4933,6 +4933,7 @@ final class QueueViewModel {
         openingSubtaskIDs.remove(key)
         if let sessionKey { openingAgentSessionIDs.remove(sessionKey) }
       }
+      var step = "prepare"
       do {
         if subtask.agentRemovedAt != nil {
           // Restoring the record itself is serialized by the context store.
@@ -4942,6 +4943,7 @@ final class QueueViewModel {
         defer { workspaceLease.release() }
         if subtask.tmux != nil {
           do {
+            step = "identify"
             let expectedIdentity = subtask.sessionID?.lowercased()
             let observedIdentity: String?
             if expectedIdentity == nil {
@@ -4953,6 +4955,7 @@ final class QueueViewModel {
                 subtask: subtask, configuration: config.wezTerm)
             }
             if expectedIdentity == nil || observedIdentity?.lowercased() == expectedIdentity {
+              step = "open-view"
               _ = try await terminalController.openAgentRuntime(subtask, taskID: ticket.id, taskTitle: ticket.title, configuration: config.wezTerm)
               try await acknowledgeViewedAgent(subtask, ticketID: ticket.id)
               actionMessages[ticket.id] = "Opened \(subtask.title)."
@@ -4968,6 +4971,7 @@ final class QueueViewModel {
           } catch TmuxError.stopped { /* Resume the durable provider conversation below. */ }
         } else if subtask.terminalPaneID != nil {
           do {
+            step = "open-view"
             _ = try await terminalController.openAgentRuntime(subtask, taskID: ticket.id, taskTitle: ticket.title, configuration: config.wezTerm)
             try await agentTerminalFocusHandler?(config.wezTerm.applicationName, ticket.id)
             try await acknowledgeViewedAgent(subtask, ticketID: ticket.id)
@@ -4977,6 +4981,7 @@ final class QueueViewModel {
         } else if subtask.runtimeMode == .tmux {
           if let executable = config.tmuxExecutable ?? SetupEnvironment.executable("tmux") {
             do {
+              step = "recover-pane"
               let runtime = try await TmuxController().inspectAgent(
                 taskID: ticket.id, subtaskID: subtask.id, executable: executable)
               taskContexts[ticket.id] = try await taskContextStore.setManagedRuntime(
@@ -4997,6 +5002,7 @@ final class QueueViewModel {
         // provider process scan can authorize a new resume process. A Codex
         // sub-agent thread resumes through its lineage root, so the guard must
         // check the same identity the resume will use.
+        step = "locate-running"
         if let sessionID = subtask.sessionID {
           let resumeIdentity = subtask.provider == .codex
             ? CodexSessionLineage.root(of: sessionID) : sessionID
@@ -5005,6 +5011,7 @@ final class QueueViewModel {
               "This conversation is already running in \(running.cwd). Open its existing terminal. No second agent was started.")
           }
         }
+        step = "resume"
         guard var context = try await taskContextStore.load(ticketID: ticket.id) else {
           throw TaskContextError.missingContext(ticket.id)
         }
@@ -5069,10 +5076,22 @@ final class QueueViewModel {
         try await acknowledgeViewedAgent(subtask, ticketID: ticket.id)
         actionMessages[ticket.id] = assignment.sessionID == nil ? "New agent opened in its assigned workspace." : "Resumed the saved agent conversation in its assigned workspace."
       } catch {
-        agentSessionErrors[key] = error.localizedDescription
-        actionMessages[ticket.id] = error.localizedDescription
+        let message = recordOpenFailure(
+          error, step: step, ticketID: ticket.id, subtask: subtask)
+        agentSessionErrors[key] = message
+        actionMessages[ticket.id] = message
       }
     }
+  }
+
+  /// Appends the failed open to the open-failure log and returns the alert
+  /// text, which ends with that log's path.
+  func recordOpenFailure(_ error: Error, step: String, ticketID: String,
+                         subtask: TaskSubtask?, source: String = "app") -> String {
+    let path = AgentEventLog.record(AgentEventLog.openFailure(
+      source: source, task: ticketID, subtask: subtask?.id, provider: subtask?.provider,
+      session: subtask?.sessionID, step: step, error: error), supportDirectory: paths.supportDirectory)
+    return AgentEventLog.message(error.localizedDescription, logPath: path)
   }
 
   /// A task-owned tmux session contains every live agent pane. Opening one
@@ -5123,7 +5142,13 @@ final class QueueViewModel {
       openSubtask(managed[0], for: ticket, showResult: false)
       return nil
     }
-    let message = failures.last.map(\.localizedDescription) ?? "Could not open the task's agents."
+    let message: String
+    if let failure = failures.last {
+      message = recordOpenFailure(failure, step: "open-task-session", ticketID: ticket.id,
+        subtask: managed.first, source: "app-task")
+    } else {
+      message = "Could not open the task's agents."
+    }
     actionMessages[ticket.id] = message
     return message
   }

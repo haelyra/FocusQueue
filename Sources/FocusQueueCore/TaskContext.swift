@@ -1183,6 +1183,18 @@ public actor TaskContextStore {
         let description = description.trimmingCharacters(in: .whitespacesAndNewlines)
         let workDescription = String((description.isEmpty ? title : description).prefix(2_000))
         let now = Date()
+        var duplicate: (created: String, existing: [String])?
+        defer {
+            if let duplicate {
+                AgentEventLog.record(.init(
+                    event: "duplicate-created", outcome: "created",
+                    reason: "A record for this session already exists; a fresh association added another.",
+                    task: ticketID, subtask: duplicate.created, provider: provider.rawValue,
+                    session: sessionID.lowercased(), pane: tmux?.paneID ?? paneID.map(String.init), cwd: cwd,
+                    details: ["existingSubtasks": duplicate.existing.joined(separator: ",")]),
+                    supportDirectory: root)
+            }
+        }
         return try mutate(ticketID: ticketID) { context in
             let sameSession: (TaskSubtask) -> Bool = {
                 $0.provider == provider && $0.sessionID?.lowercased() == sessionID.lowercased()
@@ -1209,6 +1221,8 @@ public actor TaskContextStore {
                     status: .idle, includeInitializationPrompt: false, runtimeMode: nil)
                 agent.tracksCompletion = false
                 agent.workspace = AgentWorkspace(path: cwd, repositoryPath: context.repositoryPath ?? cwd)
+                let existing = context.subtasks.filter(sameSession).map(\.id)
+                if !existing.isEmpty { duplicate = (agent.id, existing) }
                 context.subtasks.append(agent)
                 index = context.subtasks.count - 1
             }
@@ -1529,11 +1543,14 @@ public actor TaskContextStore {
     @discardableResult public func mergeTrackedLaunch(
         ticketID: String, launchID: String, into subtaskID: String
     ) throws -> TaskContext {
-        try mutate(ticketID: ticketID, archiveChanges: true) { context in
+        var merge: (kept: TaskSubtask, merged: TaskSubtask)?
+        defer { if let merge { logMerge(ticketID: ticketID, kept: merge.kept, merged: merge.merged) } }
+        return try mutate(ticketID: ticketID, archiveChanges: true) { context in
             guard let target = context.subtasks.first(where: {
                 $0.id.caseInsensitiveCompare(subtaskID) == .orderedSame
             }), let index = context.subtasks.firstIndex(where: { $0.id == launchID }),
                 context.subtasks[index].agentRemovedAt == nil else { return }
+            merge = (target, context.subtasks[index])
             let key = TaskContext.launchRemovalKey(launchID)
             context.removedAgentSessionKeys = Array(Set((context.removedAgentSessionKeys ?? []) + [key])).sorted()
             context.subtasks[index].mergedIntoSubtaskID = target.id
@@ -1568,6 +1585,26 @@ public actor TaskContextStore {
     }
 
     @discardableResult public func setAgentWorkspace(ticketID: String, subtaskID: String, workspace: AgentWorkspace) throws -> TaskContext {
+        var entry = AgentEventLog.Registration(
+            event: "workspace-assigned", outcome: "assigned", task: ticketID, subtask: subtaskID,
+            cwd: workspace.path, details: workspace.branch.map { ["branch": $0] })
+        defer { AgentEventLog.record(entry, supportDirectory: root) }
+        do {
+            let context = try setAgentWorkspaceUnlogged(ticketID: ticketID, subtaskID: subtaskID, workspace: workspace)
+            if let agent = context.subtasks.first(where: { $0.id == subtaskID }) {
+                entry.provider = agent.provider.rawValue
+                entry.session = agent.sessionID
+                entry.pane = agent.tmux?.paneID
+            }
+            return context
+        } catch {
+            entry.outcome = "failed"
+            entry.reason = error.localizedDescription
+            throw error
+        }
+    }
+
+    private func setAgentWorkspaceUnlogged(ticketID: String, subtaskID: String, workspace: AgentWorkspace) throws -> TaskContext {
         try mutate(ticketID: ticketID, archiveChanges: true) { context in
             guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else { throw TaskContextError.missingSubtask(subtaskID) }
             let previousWorkspace = context.subtasks[index].workspace
@@ -1778,10 +1815,28 @@ public actor TaskContextStore {
 
     /// Only an orchestrator boundary combines assignments. Aliases keep old CLI IDs valid.
     @discardableResult public func reconcileSubtasks(ticketID: String) throws -> TaskContext {
-        try mutate(ticketID: ticketID, archiveChanges: true, archiveBeforeChanges: true) { context in
+        var merges: [(kept: TaskSubtask, merged: TaskSubtask)] = []
+        let context = try mutate(ticketID: ticketID, archiveChanges: true, archiveBeforeChanges: true) { context in
             context.separateLegacyAgentAssignments()
-            context.mergeSharedAgentSubtasks()
+            merges = context.mergeSharedAgentSubtasks()
         }
+        for merge in merges { logMerge(ticketID: ticketID, kept: merge.kept, merged: merge.merged) }
+        return context
+    }
+
+    /// Records a duplicate merge and whether the kept record has the merged
+    /// record's tmux runtime and workspace ("kept", "lost", or "none").
+    private func logMerge(ticketID: String, kept: TaskSubtask, merged: TaskSubtask) {
+        func carried<T>(_ kept: T?, _ merged: T?) -> String {
+            merged == nil ? "none" : (kept == nil ? "lost" : "kept")
+        }
+        AgentEventLog.record(.init(
+            event: "duplicate-merged", outcome: "merged", task: ticketID, subtask: merged.id,
+            provider: merged.provider.rawValue, session: merged.sessionID, pane: merged.tmux?.paneID,
+            cwd: merged.workspace?.path,
+            details: ["into": kept.id, "tmux": carried(kept.tmux, merged.tmux),
+                      "workspace": carried(kept.workspace, merged.workspace)]),
+            supportDirectory: root)
     }
 
     @discardableResult public func recordAgentIdentity(ticketID: String, subtaskID: String, sessionID: String) throws -> TaskContext {

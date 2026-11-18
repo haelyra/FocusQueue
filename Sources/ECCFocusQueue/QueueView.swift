@@ -161,7 +161,7 @@ struct QueueView: View {
       .equatable()
       .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
     } else if model.isBulletinBoardPresented {
-      BulletinBoardView(model: model)
+      BulletinBoardView(model: model, mode: .side)
         .frame(minWidth: 320, idealWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
     } else if model.isSchedulePresented {
       ScheduleTimelineView(model: model)
@@ -263,6 +263,8 @@ struct QueueView: View {
           model: model, draft: queueAgentDraft, focusRequest: model.queueChatFocusRequest)
       case .project:
         ProjectTabView(model: model)
+      case .board:
+        BulletinBoardView(model: model, mode: .tab)
       }
     }
   }
@@ -646,15 +648,25 @@ struct QueueView: View {
         Text(focusLabel).tag(QueueTab.focus)
         Text(completedLabel).tag(QueueTab.completed)
         Text("QChat").tag(QueueTab.agent)
+        if model.bulletinBoardTabEnabled {
+          Text("Board").tag(QueueTab.board)
+        }
       }
       .pickerStyle(.segmented)
       .labelsHidden()
       .accessibilityLabel("Queue section")
       .walkthroughAnchor(.qchat)
-      .onChange(of: selectedTab) { _, tab in
+      .onChange(of: selectedTab) { previous, tab in
         if tab == .agent, model.isQueueChatInspectorPresented {
           model.setQueueChatInspectorPresented(false)
         }
+        // The Board tab is one of the board's locations; the model keeps the truth.
+        if tab == .board { model.setBulletinBoardTabActive(true) }
+        else if previous == .board { model.setBulletinBoardTabActive(false) }
+      }
+      .onChange(of: model.isBulletinBoardTabActive) { _, active in
+        if active { if selectedTab != .board { selectedTab = .board } }
+        else if selectedTab == .board { selectedTab = .focus }
       }
 
       Button {
@@ -1090,6 +1102,7 @@ struct QueueView: View {
         : "\(model.defaultAgentProvider.displayName) ready"
     case .project:
       model.developmentProcess.map { "\($0.currentPhase.title) phase" } ?? "Project"
+    case .board: "\(model.visibleBulletinPins.count) pinned"
     }
   }
 
@@ -1171,6 +1184,8 @@ private enum QueueTab: Hashable {
   /// Project context, development process, and progress. Opened from the
   /// button beside the project title, not from the crowded segmented picker.
   case project
+  /// The bulletin board, when its tab is turned on in Settings.
+  case board
 }
 
 struct QueueAgentChatView: View {
@@ -2087,6 +2102,19 @@ struct QueueSettingsView: View {
                 isOn: Binding(
                   get: { model.bulletinBoardHotkeyEnabled },
                   set: { model.setBulletinBoardHotkeyEnabled($0) }))
+            }
+          }
+
+          settingsSection(
+            title: "Bulletin board",
+            detail: "Pinned tasks, agents, files, folders, and links. Each project reopens its board where you last had it: beside the queue, in the Board tab, or in its own window."
+          ) {
+            VStack(alignment: .leading, spacing: 10) {
+              settingToggle("Board tab beside Focus, Completed, and QChat",
+                detail: "Shows the board under the queue's header, like the other tabs. Choosing the tab makes it that project's board location.",
+                isOn: Binding(
+                  get: { model.bulletinBoardTabEnabled },
+                  set: { model.setBulletinBoardTabEnabled($0) }))
             }
           }
 

@@ -47,15 +47,15 @@ struct ProjectTabView: View {
       ? " · \(model.hotkeyShortcut(for: .bulletinBoard).displayString)" : ""
     return Button { model.toggleBulletinBoard() } label: {
       HStack(spacing: 8) {
-        Image(systemName: model.isBulletinBoardPresented ? "pin.circle.fill" : "pin.circle")
+        Image(systemName: model.isBulletinBoardVisible ? "pin.circle.fill" : "pin.circle")
           .font(.system(size: 16, weight: .semibold))
-          .foregroundStyle(model.isBulletinBoardPresented ? Color.accentColor : Color.secondary)
+          .foregroundStyle(model.isBulletinBoardVisible ? Color.accentColor : Color.secondary)
         VStack(alignment: .leading, spacing: 1) {
           Text("Bulletin board").font(.system(size: 12, weight: .semibold))
           Text("\(count) pinned\(shortcut)").font(.caption).foregroundStyle(.secondary)
         }
         Spacer()
-        Image(systemName: model.isBulletinBoardPresented ? "sidebar.trailing" : "arrow.right.to.line.compact")
+        Image(systemName: model.isBulletinBoardVisible ? "sidebar.trailing" : "arrow.right.to.line.compact")
           .font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
       }
       .contentShape(Rectangle())
@@ -63,7 +63,7 @@ struct ProjectTabView: View {
     .buttonStyle(.plain)
     .padding(12)
     .notificationSurface(radius: 16)
-    .accessibilityLabel(model.isBulletinBoardPresented ? "Close bulletin board" : "Open bulletin board, \(count) pinned")
+    .accessibilityLabel(model.isBulletinBoardVisible ? "Close bulletin board" : "Open bulletin board, \(count) pinned")
     .help("Pinned tasks, agents, files, and folders. Drag items onto the board beside the queue.")
   }
 

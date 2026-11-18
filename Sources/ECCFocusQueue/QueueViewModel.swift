@@ -266,6 +266,16 @@ final class QueueViewModel {
   private(set) var showsCleanedBulletinPins =
     UserDefaults.standard.bool(forKey: "bulletinBoardShowsCleanedUp")
   @ObservationIgnored private var bulletinPinsLoaded = false
+  /// Each project's last board location, saved with the pins.
+  private(set) var bulletinPlacements: [String: BulletinBoardPlacement] = [:]
+  /// The board is showing as the queue's Board tab.
+  private(set) var isBulletinBoardTabActive = false
+  /// The detached board window, when open; the app delegate shows it.
+  private(set) var bulletinBoardWindowRequest: BulletinBoardWindowRequest?
+  @ObservationIgnored var bulletinBoardWindowHandler: ((BulletinBoardWindowRequest?) -> Void)?
+  /// Settings: show a Board tab beside Focus, Completed, and QChat.
+  private(set) var bulletinBoardTabEnabled =
+    UserDefaults.standard.bool(forKey: "bulletinBoardTabEnabled")
   private(set) var isTokenAnalyticsPresented = false
   private(set) var presentedAgentUpdate: QueueAgentUpdate?
   private(set) var presentedPlanTicketID: String?
@@ -1157,8 +1167,10 @@ final class QueueViewModel {
   /// Switches the queue to the merged all-projects scope (the default view).
   func selectAllProjects() async {
     guard !showsAllProjects else { return }
+    let boardWasVisible = isBulletinBoardVisible
     localState.showsAllProjects = true
     persistLocalState()
+    relocateBulletinBoard(afterScopeChange: boardWasVisible)
     closeAgentUpdate()
     closePlan()
     setQueueChatInspectorPresented(false)
@@ -1197,9 +1209,11 @@ final class QueueViewModel {
       var updated = config
       guard updated.selectProject(id: id) else { return false }
       try await configurationRepository.save(updated)
+      let boardWasVisible = isBulletinBoardVisible
       config = updated
       localState.showsAllProjects = false
       persistLocalState()
+      relocateBulletinBoard(afterScopeChange: boardWasVisible)
       programLog.record("Selected project \(project.name).", category: "Projects")
 
       closeAgentUpdate()
@@ -4070,8 +4084,143 @@ final class QueueViewModel {
     reportVisibilityHandler?(isInspectorPresented)
   }
 
+  /// The board is open somewhere: beside the queue, as a tab, or in its window.
+  var isBulletinBoardVisible: Bool {
+    isBulletinBoardPresented || isBulletinBoardTabActive || bulletinBoardWindowRequest != nil
+  }
+
+  /// Hides the board wherever it is, or opens it where this project last had it.
   func toggleBulletinBoard() {
-    setBulletinBoardPresented(!isBulletinBoardPresented)
+    if isBulletinBoardVisible { hideBulletinBoard() } else { showBulletinBoard() }
+  }
+
+  /// The key a project's placement is saved under; the All view has its own.
+  var bulletinBoardKey: String { bulletinBoardProjectID ?? BulletinBoardDocument.allProjectsKey }
+
+  var bulletinBoardPlacement: BulletinBoardPlacement { bulletinPlacements[bulletinBoardKey] ?? BulletinBoardPlacement() }
+
+  /// The location the board opens in: a tab placement needs the Board tab on.
+  var effectiveBulletinBoardMode: BulletinBoardMode {
+    let mode = bulletinBoardPlacement.mode
+    return mode == .tab && !bulletinBoardTabEnabled ? .side : mode
+  }
+
+  func showBulletinBoard() {
+    loadBulletinPinsIfNeeded()
+    switch effectiveBulletinBoardMode {
+    case .side:
+      setBulletinBoardWindowRequest(nil)
+      isBulletinBoardTabActive = false
+      setBulletinBoardPresented(true)
+    case .tab:
+      setBulletinBoardWindowRequest(nil)
+      if isBulletinBoardPresented { setBulletinBoardPresented(false) }
+      isBulletinBoardTabActive = true
+    case .window:
+      if isBulletinBoardPresented { setBulletinBoardPresented(false) }
+      isBulletinBoardTabActive = false
+      let placement = bulletinBoardPlacement
+      setBulletinBoardWindowRequest(BulletinBoardWindowRequest(
+        key: bulletinBoardKey, title: "Bulletin board · \(bulletinBoardProjectID == nil ? "All projects" : projectScopeName)",
+        frame: placement.windowFrame, pinned: placement.windowPinned))
+    }
+  }
+
+  func hideBulletinBoard() {
+    if isBulletinBoardPresented { setBulletinBoardPresented(false) }
+    isBulletinBoardTabActive = false
+    setBulletinBoardWindowRequest(nil)
+  }
+
+  private func setBulletinBoardWindowRequest(_ request: BulletinBoardWindowRequest?) {
+    guard bulletinBoardWindowRequest != request else { return }
+    bulletinBoardWindowRequest = request
+    bulletinBoardWindowHandler?(request)
+  }
+
+  private func updateBulletinPlacement(_ change: (inout BulletinBoardPlacement) -> Void) {
+    loadBulletinPinsIfNeeded()
+    var placements = bulletinPlacements
+    var placement = placements[bulletinBoardKey] ?? BulletinBoardPlacement()
+    change(&placement)
+    guard placements[bulletinBoardKey] != placement else { return }
+    placements[bulletinBoardKey] = placement
+    saveBulletinBoard(pins: bulletinPins, placements: placements)
+  }
+
+  /// Moves this project's board beside the queue, into the Board tab, or into
+  /// its own window, and remembers that as where it opens next time.
+  func moveBulletinBoard(to mode: BulletinBoardMode) {
+    if mode == .tab { setBulletinBoardTabEnabled(true) }
+    updateBulletinPlacement { $0.mode = mode }
+    showBulletinBoard()
+  }
+
+  /// Tears the board off into its own window, centered under a screen point.
+  func detachBulletinBoard(at screenPoint: CGPoint?) {
+    updateBulletinPlacement { placement in
+      placement.mode = .window
+      guard let screenPoint else { return }
+      let width = placement.windowFrame?.width ?? 520
+      let height = placement.windowFrame?.height ?? 560
+      placement.windowFrame = BulletinBoardFrame(
+        x: screenPoint.x - width / 2, y: screenPoint.y - height + 20, width: width, height: height)
+    }
+    showBulletinBoard()
+  }
+
+  /// The window moved or resized; it reopens there for this project.
+  func bulletinBoardWindowFrameChanged(_ frame: CGRect, key: String) {
+    guard key == bulletinBoardKey else { return }
+    let saved = BulletinBoardFrame(x: frame.minX, y: frame.minY, width: frame.width, height: frame.height)
+    updateBulletinPlacement { $0.windowFrame = saved }
+    if let request = bulletinBoardWindowRequest {
+      bulletinBoardWindowRequest = BulletinBoardWindowRequest(
+        key: request.key, title: request.title, frame: saved, pinned: request.pinned)
+    }
+  }
+
+  /// The window's close button: the board hides, and still opens in a window next time.
+  func bulletinBoardWindowDidClose() {
+    bulletinBoardWindowRequest = nil
+  }
+
+  func setBulletinBoardWindowPinned(_ pinned: Bool) {
+    updateBulletinPlacement { $0.windowPinned = pinned }
+    if let request = bulletinBoardWindowRequest {
+      setBulletinBoardWindowRequest(BulletinBoardWindowRequest(
+        key: request.key, title: request.title, frame: request.frame, pinned: pinned))
+    }
+  }
+
+  /// The Board tab was chosen or left in the queue's tab picker. Choosing it
+  /// makes the tab this project's board location.
+  func setBulletinBoardTabActive(_ active: Bool) {
+    guard active != isBulletinBoardTabActive else { return }
+    if active {
+      loadBulletinPinsIfNeeded()
+      updateBulletinPlacement { $0.mode = .tab }
+      if isBulletinBoardPresented { setBulletinBoardPresented(false) }
+      setBulletinBoardWindowRequest(nil)
+    }
+    isBulletinBoardTabActive = active
+  }
+
+  func setBulletinBoardTabEnabled(_ enabled: Bool) {
+    guard bulletinBoardTabEnabled != enabled else { return }
+    bulletinBoardTabEnabled = enabled
+    UserDefaults.standard.set(enabled, forKey: "bulletinBoardTabEnabled")
+    if !enabled, isBulletinBoardTabActive {
+      isBulletinBoardTabActive = false
+      showBulletinBoard()
+    }
+  }
+
+  /// Switching projects moves an open board to the new project's location.
+  private func relocateBulletinBoard(afterScopeChange wasVisible: Bool) {
+    guard wasVisible else { return }
+    hideBulletinBoard()
+    showBulletinBoard()
   }
 
   private var bulletinBoardStore: BulletinBoardStore { BulletinBoardStore(root: paths.supportDirectory) }
@@ -4079,7 +4228,9 @@ final class QueueViewModel {
   func loadBulletinPinsIfNeeded() {
     guard !bulletinPinsLoaded else { return }
     do {
-      bulletinPins = try bulletinBoardStore.load().pins
+      let document = try bulletinBoardStore.load()
+      bulletinPins = document.pins
+      bulletinPlacements = document.placements
       bulletinPinsLoaded = true
       bulletinBoardError = nil
     } catch {
@@ -4089,11 +4240,16 @@ final class QueueViewModel {
   }
 
   private func saveBulletinPins(_ pins: [BulletinPin]) {
+    saveBulletinBoard(pins: pins, placements: bulletinPlacements)
+  }
+
+  private func saveBulletinBoard(pins: [BulletinPin], placements: [String: BulletinBoardPlacement]) {
     loadBulletinPinsIfNeeded()
     guard bulletinPinsLoaded else { return }
     do {
-      try bulletinBoardStore.save(BulletinBoardDocument(pins: pins))
+      try bulletinBoardStore.save(BulletinBoardDocument(pins: pins, placements: placements))
       bulletinPins = pins
+      bulletinPlacements = placements
       bulletinBoardError = nil
     } catch {
       bulletinBoardError = "Bulletin board: \(error.localizedDescription)"
@@ -4272,6 +4428,13 @@ final class QueueViewModel {
     })
   }
 
+  /// Scrolls the queue to a pinned task and outlines it briefly.
+  func revealBulletinTask(_ pin: BulletinPin) {
+    guard let ticket = bulletinTicket(for: pin) else { return }
+    requestedReportTaskID = ticket.id
+    mapLocatedTaskID = ticket.id
+  }
+
   func moveBulletinPin(_ id: String, to point: CGPoint) {
     guard let index = bulletinPins.firstIndex(where: { $0.id == id }) else { return }
     var pins = bulletinPins
@@ -4296,14 +4459,18 @@ final class QueueViewModel {
     })
   }
 
-  /// Tasks show in the queue with a brief outline; agents open in their
-  /// workspace; files and folders open in their default app or Finder.
+  /// Tasks open their agents (the task's shared tmux session), or show in
+  /// the queue when they have none; agents open in their workspace; files and
+  /// folders open in their default app or Finder; links open as links do.
   func openBulletinPin(_ pin: BulletinPin) {
     switch pin.kind {
     case .task:
       guard let ticket = bulletinTicket(for: pin) else { return }
-      requestedReportTaskID = ticket.id
-      mapLocatedTaskID = ticket.id
+      if visibleAgents(for: ticket.id).isEmpty {
+        revealBulletinTask(pin)
+      } else {
+        openTaskAgents(for: ticket)
+      }
     case .agent:
       guard let ticket = bulletinTicket(for: pin), let agent = bulletinAgent(for: pin) else { return }
       openSubtask(agent, for: ticket)
@@ -8077,4 +8244,13 @@ extension QueueViewModel {
       category: "Tasks")
     return true
   }
+}
+
+
+/// What the app delegate needs to show the detached board window.
+struct BulletinBoardWindowRequest: Equatable {
+  let key: String
+  let title: String
+  let frame: BulletinBoardFrame?
+  let pinned: Bool
 }

@@ -57,13 +57,73 @@ public struct BulletinPin: Codable, Identifiable, Equatable, Sendable {
   }
 }
 
+/// Where a project's board opens: beside the queue, as a queue tab, or in
+/// its own window.
+public enum BulletinBoardMode: String, Codable, Sendable, CaseIterable {
+  case side, tab, window
+}
+
+public struct BulletinBoardFrame: Codable, Equatable, Sendable {
+  public var x: Double
+  public var y: Double
+  public var width: Double
+  public var height: Double
+
+  public init(x: Double, y: Double, width: Double, height: Double) {
+    self.x = x
+    self.y = y
+    self.width = width
+    self.height = height
+  }
+}
+
+/// A project's last board location, so toggling reopens it there. The window
+/// frame and pin survive moving the board back beside the queue.
+public struct BulletinBoardPlacement: Codable, Equatable, Sendable {
+  public var mode: BulletinBoardMode
+  public var windowFrame: BulletinBoardFrame?
+  /// A pinned window stays where it was put on its desktop; an unpinned one
+  /// floats above other apps on every desktop, like the queue itself.
+  public var windowPinned: Bool
+
+  public init(mode: BulletinBoardMode = .side, windowFrame: BulletinBoardFrame? = nil, windowPinned: Bool = false) {
+    self.mode = mode
+    self.windowFrame = windowFrame
+    self.windowPinned = windowPinned
+  }
+
+  private enum CodingKeys: String, CodingKey { case mode, windowFrame, windowPinned }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    mode = (try? container.decode(BulletinBoardMode.self, forKey: .mode)) ?? .side
+    windowFrame = try container.decodeIfPresent(BulletinBoardFrame.self, forKey: .windowFrame)
+    windowPinned = try container.decodeIfPresent(Bool.self, forKey: .windowPinned) ?? false
+  }
+}
+
 public struct BulletinBoardDocument: Codable, Equatable, Sendable {
+  /// The placement key for the All view, which has no single project.
+  public static let allProjectsKey = "*all"
+
   public var schemaVersion: Int
   public var pins: [BulletinPin]
+  /// Last board location by project ID, or `allProjectsKey`.
+  public var placements: [String: BulletinBoardPlacement]
 
-  public init(schemaVersion: Int = 1, pins: [BulletinPin] = []) {
+  public init(schemaVersion: Int = 1, pins: [BulletinPin] = [], placements: [String: BulletinBoardPlacement] = [:]) {
     self.schemaVersion = schemaVersion
     self.pins = pins
+    self.placements = placements
+  }
+
+  private enum CodingKeys: String, CodingKey { case schemaVersion, pins, placements }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+    pins = try container.decodeIfPresent([BulletinPin].self, forKey: .pins) ?? []
+    placements = try container.decodeIfPresent([String: BulletinBoardPlacement].self, forKey: .placements) ?? [:]
   }
 }
 

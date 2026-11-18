@@ -5556,7 +5556,15 @@ extension QueueViewModelTests {
     #expect(model.isPinnedToBulletinBoard(taskID: "ECC-101", subtaskID: "board-agent"))
     #expect(model.bulletinPinTitle(model.visibleBulletinPins[1]) == "Board agent")
 
-    // Pinning an item again moves its card instead of adding one.
+    // A task with no agents shows in the queue when clicked; one with agents opens them instead.
+    let ecc102 = try #require(model.visibleBulletinPins.first { $0.taskID == "ECC-102" })
+    #expect(model.visibleAgents(for: "ECC-102").isEmpty)
+    model.openBulletinPin(ecc102)
+    #expect(model.requestedReportTaskID == "ECC-102" && model.mapLocatedTaskID == "ECC-102")
+    model.clearRequestedReportTask()
+    model.clearMapLocatedTask()
+
+        // Pinning an item again moves its card instead of adding one.
     #expect(model.pinDroppedItem("ECC-101", at: CGPoint(x: 90, y: 140)))
     #expect(model.visibleBulletinPins.count == 5)
     let moved = try #require(model.visibleBulletinPins.first { $0.taskID == "ECC-101" && $0.kind == .task })
@@ -5719,5 +5727,106 @@ extension QueueViewModelTests {
     }
     let renderer = ImageRenderer(content: ScheduleTimelineView(model: model).frame(width: 760, height: 320))
     #expect(renderer.nsImage != nil)
+  }
+}
+
+extension QueueViewModelTests {
+  @Test("The board reopens where each project last had it: beside the queue, in the tab, or in a pinned window")
+  func bulletinBoardPlacements() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    model.setBulletinBoardTabEnabled(false)
+    defer { model.setBulletinBoardTabEnabled(false) }
+    var windowRequests: [BulletinBoardWindowRequest?] = []
+    model.bulletinBoardWindowHandler = { windowRequests.append($0) }
+
+    // First open: beside the queue.
+    model.toggleBulletinBoard()
+    #expect(model.isBulletinBoardPresented && model.isBulletinBoardVisible)
+    #expect(model.effectiveBulletinBoardMode == .side)
+
+    // Detach into a window: the side panel closes and the window opens.
+    model.detachBulletinBoard(at: CGPoint(x: 900, y: 700))
+    #expect(!model.isBulletinBoardPresented)
+    let opened = try #require(model.bulletinBoardWindowRequest)
+    #expect(opened.frame == BulletinBoardFrame(x: 640, y: 160, width: 520, height: 560))
+    #expect(windowRequests.last??.key == model.bulletinBoardKey)
+
+    // Moving the window and pinning it persist for this project.
+    model.bulletinBoardWindowFrameChanged(CGRect(x: 50, y: 60, width: 600, height: 500), key: model.bulletinBoardKey)
+    model.setBulletinBoardWindowPinned(true)
+    #expect(windowRequests.last??.pinned == true)
+    model.bulletinBoardWindowFrameChanged(CGRect(x: 1, y: 1, width: 400, height: 400), key: "another-project")
+    let saved = try BulletinBoardStore(root: fixture.root).load().placements[model.bulletinBoardKey]
+    #expect(saved == BulletinBoardPlacement(
+      mode: .window, windowFrame: BulletinBoardFrame(x: 50, y: 60, width: 600, height: 500), windowPinned: true))
+
+    // Toggling hides it everywhere, then reopens the pinned window at its spot.
+    model.toggleBulletinBoard()
+    #expect(!model.isBulletinBoardVisible && windowRequests.last! == nil)
+    model.toggleBulletinBoard()
+    #expect(model.bulletinBoardWindowRequest?.frame == BulletinBoardFrame(x: 50, y: 60, width: 600, height: 500))
+    #expect(model.bulletinBoardWindowRequest?.pinned == true)
+
+    // The window's own close button keeps the window as the next location.
+    model.bulletinBoardWindowDidClose()
+    #expect(!model.isBulletinBoardVisible)
+    model.toggleBulletinBoard()
+    #expect(model.bulletinBoardWindowRequest != nil)
+
+    // Moving to the Board tab turns the tab on and closes the window.
+    model.moveBulletinBoard(to: .tab)
+    #expect(model.bulletinBoardTabEnabled && model.isBulletinBoardTabActive)
+    #expect(model.bulletinBoardWindowRequest == nil && windowRequests.last! == nil)
+    model.toggleBulletinBoard()
+    #expect(!model.isBulletinBoardVisible)
+    model.toggleBulletinBoard()
+    #expect(model.isBulletinBoardTabActive)
+
+    // Leaving the tab in the picker hides the board; choosing it brings it back.
+    model.setBulletinBoardTabActive(false)
+    #expect(!model.isBulletinBoardVisible)
+    model.setBulletinBoardTabActive(true)
+    #expect(model.isBulletinBoardTabActive && model.bulletinBoardPlacement.mode == .tab)
+
+    // Turning the tab off in Settings moves an open board beside the queue.
+    model.setBulletinBoardTabEnabled(false)
+    #expect(!model.isBulletinBoardTabActive && model.isBulletinBoardPresented)
+    #expect(model.effectiveBulletinBoardMode == .side)
+
+    // A project has its own location: switching scope moves the open board.
+    let allKey = model.bulletinBoardKey
+    let project = try #require(model.projects.first)
+    #expect(await model.selectProject(id: project.id))
+    #expect(model.bulletinBoardKey == project.id && model.bulletinBoardKey != allKey)
+    #expect(model.isBulletinBoardPresented && model.bulletinBoardPlacement.mode == .side)
+    model.moveBulletinBoard(to: .window)
+    #expect(model.bulletinBoardWindowRequest?.key == project.id)
+    await model.selectAllProjects()
+    // The All view last had its board in the tab, which is now off, so it shows beside the queue.
+    #expect(model.bulletinBoardWindowRequest == nil && model.isBulletinBoardPresented)
+    #expect(try BulletinBoardStore(root: fixture.root).load().placements[project.id]?.mode == .window)
+
+    if let output = ProcessInfo.processInfo.environment["FOCUS_QUEUE_RENDER_DIR"] {
+      for mode in [BulletinBoardMode.tab, .window] {
+        try WalkthroughDemoRecording.snapshot(BulletinBoardView(model: model, mode: mode).padding(10),
+          size: NSSize(width: 440, height: 300),
+          to: URL(fileURLWithPath: output).appendingPathComponent("bulletin-board-\(mode.rawValue).png"))
+      }
+    }
+  }
+
+  @Test("A saved board window frame on a missing display reopens centered on screen")
+  func bulletinBoardWindowFrame() throws {
+    let screen = try #require(NSScreen.main)
+    let visible = screen.visibleFrame
+    let onScreen = BulletinBoardFrame(x: visible.midX - 200, y: visible.midY - 200, width: 400, height: 400)
+    #expect(BulletinBoardWindowController.frame(for: onScreen, near: screen)
+      == NSRect(x: onScreen.x, y: onScreen.y, width: 400, height: 400))
+    let lost = BulletinBoardWindowController.frame(
+      for: BulletinBoardFrame(x: -90_000, y: -90_000, width: 400, height: 400), near: screen)
+    #expect(visible.contains(NSPoint(x: lost.midX, y: lost.midY)))
+    #expect(lost.size == BulletinBoardWindowController.defaultSize)
   }
 }

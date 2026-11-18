@@ -46,6 +46,7 @@ import UserNotifications
   )
   private var panel: FocusPanel?
   private var programLogWindow: NSWindow?
+  private var bulletinBoardWindowController: BulletinBoardWindowController?
   private var statusItem: NSStatusItem?
   private var exitTerminalFocusItem: NSMenuItem?
   private var terminalFocusController: TerminalFocusModeController?
@@ -165,6 +166,9 @@ import UserNotifications
     model.newTaskHotkeyEnabledHandler = { [weak self] _ in self?.applyHotkeys() }
     model.qchatHotkeyEnabledHandler = { [weak self] _ in self?.applyHotkeys() }
     model.hotkeyConfigurationHandler = { [weak self] in self?.applyHotkeys() }
+    let bulletinBoardWindow = BulletinBoardWindowController(model: model)
+    bulletinBoardWindowController = bulletinBoardWindow
+    model.bulletinBoardWindowHandler = { [weak bulletinBoardWindow] request in bulletinBoardWindow?.apply(request) }
     model.setCanSwitchMonitor(NSScreen.screens.count > 1)
     configureDailyReportNotifications()
     NSWorkspace.shared.notificationCenter.addObserver(
@@ -431,17 +435,25 @@ import UserNotifications
 
   /// Toggles the bulletin board beside the queue. Like QChat, a press while
   /// another app has the keyboard brings an open board forward instead.
+  /// Opens the board where this project last had it: beside the queue, in
+  /// the Board tab, or in its own window. A detached board toggles straight
+  /// away; one inside the queue closes only while the queue has the keyboard,
+  /// so a press from another app brings it forward instead.
   private func handleBulletinBoardHotkey() {
-    NSLog("Bulletin board hotkey: %@, panel key=%d",
-      model.isBulletinBoardPresented ? "open" : "closed", panel?.isKeyWindow == true)
-    if model.isBulletinBoardPresented, model.panelMode == .expanded, panel?.isKeyWindow == true {
-      model.setBulletinBoardPresented(false)
+    let mode = model.effectiveBulletinBoardMode
+    NSLog("Bulletin board hotkey: %@ in %@, panel key=%d",
+      model.isBulletinBoardVisible ? "open" : "closed", mode.rawValue, panel?.isKeyWindow == true)
+    if model.isBulletinBoardVisible,
+      mode == .window || (model.panelMode == .expanded && panel?.isKeyWindow == true) {
+      model.hideBulletinBoard()
       return
     }
-    revealPanelOnPointerDisplay()
-    panel?.makeKey()
-    model.setPanelMode(.expanded)
-    model.setBulletinBoardPresented(true)
+    if mode != .window {
+      revealPanelOnPointerDisplay()
+      panel?.makeKey()
+      model.setPanelMode(.expanded)
+    }
+    model.showBulletinBoard()
   }
 
   /// Toggles like the side-panel button, but a press while another app has the

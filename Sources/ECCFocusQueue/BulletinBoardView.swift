@@ -15,8 +15,11 @@ enum BulletinBoardMetrics {
 /// rearrange them, and click a card to open its item.
 struct BulletinBoardView: View {
   let model: QueueViewModel
+  /// Where this copy of the board is showing, which shapes its header.
+  var mode: BulletinBoardMode = .side
   @State private var dropIsTargeted = false
   @State private var dragOffsets: [String: CGSize] = [:]
+  @State private var tearOffDistance: CGFloat = 0
 
   private var scopeName: String { model.bulletinBoardProjectID == nil ? "All projects" : model.projectScopeName }
 
@@ -31,25 +34,89 @@ struct BulletinBoardView: View {
     .onAppear { model.loadBulletinPinsIfNeeded() }
   }
 
-  /// A small title: the board itself is the content.
+  /// A small title: the board itself is the content. Dragging the title out
+  /// of the queue tears the board off into its own window.
   private var header: some View {
     HStack(spacing: 6) {
-      PinHead(color: .red).frame(width: 9, height: 9)
-      Text("BULLETIN BOARD").font(.system(size: 10, weight: .heavy)).tracking(0.6)
-      Text(scopeName).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
-      Spacer()
+      titleHandle
+      Spacer(minLength: 4)
+      placementButtons
+      if mode == .window { windowPinButton }
       optionsMenu
-      Button { model.setBulletinBoardPresented(false) } label: {
+      Button { model.hideBulletinBoard() } label: {
         Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
       }
       .buttonStyle(.plain)
       .frame(minWidth: 26, minHeight: 26).contentShape(Rectangle())
       .accessibilityLabel("Close bulletin board")
-      .help("Close bulletin board (\(model.hotkeyShortcut(for: .bulletinBoard).displayString))")
+      .help("Close bulletin board (\(model.hotkeyShortcut(for: .bulletinBoard).displayString)). It reopens here for this project.")
     }
     .foregroundStyle(.secondary)
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Bulletin board, \(scopeName)")
+  }
+
+  private var titleHandle: some View {
+    HStack(spacing: 6) {
+      PinHead(color: .red).frame(width: 9, height: 9)
+      Text(tearOffDistance > 40 ? "RELEASE TO DETACH" : "BULLETIN BOARD")
+        .font(.system(size: 10, weight: .heavy)).tracking(0.6)
+        .foregroundStyle(tearOffDistance > 40 ? Color.accentColor : Color.secondary)
+      Text(scopeName).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
+    }
+    .contentShape(Rectangle())
+    .gesture(DragGesture(minimumDistance: 6, coordinateSpace: .global)
+      .onChanged { value in tearOffDistance = hypot(value.translation.width, value.translation.height) }
+      .onEnded { _ in
+        let detach = tearOffDistance > 40
+        tearOffDistance = 0
+        if detach { model.detachBulletinBoard(at: NSEvent.mouseLocation) }
+      }, including: mode == .window ? .subviews : .all)
+    .help(mode == .window ? "Bulletin board for \(scopeName)"
+      : "Drag the title out to detach the board into its own window")
+  }
+
+  /// Beside the queue, the queue's Board tab, or its own window. The choice
+  /// is remembered per project.
+  private var placementButtons: some View {
+    HStack(spacing: 0) {
+      placementButton(.side, systemImage: "sidebar.right", label: "Beside the queue")
+      placementButton(.tab, systemImage: "rectangle.stack", label: "In the queue's Board tab")
+      placementButton(.window, systemImage: "macwindow.on.rectangle", label: "In its own window")
+    }
+    .padding(2)
+    .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+  }
+
+  private func placementButton(_ target: BulletinBoardMode, systemImage: String, label: String) -> some View {
+    let isCurrent = mode == target
+    return Button { model.moveBulletinBoard(to: target) } label: {
+      Image(systemName: systemImage).font(.system(size: 10, weight: .semibold))
+        .frame(width: 22, height: 18)
+        .background(isCurrent ? Color.accentColor.opacity(0.22) : .clear, in: RoundedRectangle(cornerRadius: 4))
+        .foregroundStyle(isCurrent ? Color.accentColor : Color.secondary)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .disabled(isCurrent)
+    .accessibilityLabel("Show the board \(label.lowercased())")
+    .accessibilityValue(isCurrent ? "Current" : "")
+    .help(isCurrent ? "Showing \(label.lowercased())" : "Show the board \(label.lowercased()). This project reopens it there.")
+  }
+
+  private var windowPinButton: some View {
+    let pinned = model.bulletinBoardPlacement.windowPinned
+    return Button { model.setBulletinBoardWindowPinned(!pinned) } label: {
+      Image(systemName: pinned ? "pin.fill" : "pin").font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(pinned ? Color.accentColor : Color.secondary)
+    }
+    .buttonStyle(.plain)
+    .frame(minWidth: 26, minHeight: 26).contentShape(Rectangle())
+    .accessibilityLabel("Pin board window")
+    .accessibilityValue(pinned ? "On" : "Off")
+    .help(pinned
+      ? "Pinned: stays at this spot on this desktop. Click to float it above apps on every desktop."
+      : "Floating above apps on every desktop. Click to pin it at this spot on this desktop.")
   }
 
   private var optionsMenu: some View {
@@ -318,8 +385,13 @@ private struct BulletinPinCard: View {
     BulletinCardFace(kind: pin.kind, kindLabel: kindLabel, title: title, detail: detail, isCleanedUp: isCleanedUp)
       .contentShape(RoundedRectangle(cornerRadius: 8))
       .contextMenu {
-        Button("Open", systemImage: "arrow.up.forward.square") { model.openBulletinPin(pin) }
+        Button(pin.kind == .task ? "Open agents" : "Open",
+               systemImage: pin.kind == .task ? "terminal" : "arrow.up.forward.square") { model.openBulletinPin(pin) }
           .disabled(isCleanedUp && pin.kind != .file && pin.kind != .folder)
+        if pin.kind == .task {
+          Button("Show in queue", systemImage: "list.bullet") { model.revealBulletinTask(pin) }
+            .disabled(ticket == nil)
+        }
         if let path = pin.path {
           Button("Show in Finder", systemImage: "folder") {
             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
@@ -335,10 +407,12 @@ private struct BulletinPinCard: View {
         Divider()
         Button("Unpin", systemImage: "pin.slash") { model.unpinBulletinPin(pin.id) }
       }
-      .help(pin.path ?? pin.url ?? title)
+      .help(pin.kind == .task ? "\(title): click to open its agents" : pin.path ?? pin.url ?? title)
       .accessibilityElement(children: .combine)
       .accessibilityLabel("\(kindLabel), \(title), \(detail)")
-      .accessibilityHint("Opens the pinned item. Drag to move it on the board.")
+      .accessibilityHint(pin.kind == .task
+        ? "Opens the task's agents. Drag to move it on the board."
+        : "Opens the pinned item. Drag to move it on the board.")
       .accessibilityAction(named: "Unpin") { model.unpinBulletinPin(pin.id) }
   }
 }

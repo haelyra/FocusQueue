@@ -125,6 +125,27 @@ struct BulletinBoardTests {
     #expect(second.x > first.x && second.y == first.y)
   }
 
+  @Test("Placements round-trip per project, and files saved before placements still load")
+  func placements() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("bulletin-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = BulletinBoardStore(root: root)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try Data(#"{"schemaVersion":1,"pins":[]}"#.utf8).write(to: store.url)
+    #expect(try store.load().placements.isEmpty)
+    let frame = BulletinBoardFrame(x: 100, y: 200, width: 520, height: 480)
+    try store.save(BulletinBoardDocument(placements: [
+      "p1": BulletinBoardPlacement(mode: .window, windowFrame: frame, windowPinned: true),
+      BulletinBoardDocument.allProjectsKey: BulletinBoardPlacement(mode: .tab),
+    ]))
+    let loaded = try store.load().placements
+    #expect(loaded["p1"] == BulletinBoardPlacement(mode: .window, windowFrame: frame, windowPinned: true))
+    #expect(loaded[BulletinBoardDocument.allProjectsKey]?.mode == .tab)
+    // An unknown future mode falls back to beside the queue instead of failing the board.
+    let odd = try JSONDecoder().decode(BulletinBoardPlacement.self, from: Data(#"{"mode":"floating"}"#.utf8))
+    #expect(odd.mode == .side && !odd.windowPinned)
+  }
+
   @Test("The store round-trips pins and reads a missing file as empty")
   func store() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("bulletin-\(UUID().uuidString)")

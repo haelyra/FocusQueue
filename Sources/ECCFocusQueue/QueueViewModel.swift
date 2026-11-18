@@ -7963,6 +7963,15 @@ extension QueueViewModel {
 
   func toggleSchedule() { setSchedulePresented(!isSchedulePresented) }
 
+  /// The window width the open side panel needs; the app resizes the panel to it.
+  var inspectorLayout: QueueInspectorLayout {
+    if presentedPlanTicketID != nil || isDocumentViewerPresented { return .plan }
+    if isQueueChatInspectorPresented { return .chat }
+    if isTokenAnalyticsPresented { return .analytics }
+    if isSchedulePresented { return .schedule }
+    return isDailyReportPresented || presentedAgentUpdate != nil ? .report : .closed
+  }
+
   /// Task titles and owning projects, keyed by upper-cased task ID.
   var scheduleTicketInfo: [String: ScheduleTicketInfo] {
     var info: [String: ScheduleTicketInfo] = [:]

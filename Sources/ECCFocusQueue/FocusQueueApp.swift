@@ -1332,12 +1332,7 @@ import UserNotifications
     scheduleFocusChromeRefresh()
   }
 
-  private var inspectorLayout: QueueInspectorLayout {
-    if model.presentedPlanTicketID != nil || model.isDocumentViewerPresented { return .plan }
-    if model.isQueueChatInspectorPresented { return .chat }
-    if model.isTokenAnalyticsPresented { return .analytics }
-    return model.isDailyReportPresented || model.presentedAgentUpdate != nil ? .report : .closed
-  }
+  private var inspectorLayout: QueueInspectorLayout { model.inspectorLayout }
 
   private func setDailyReportVisible(_ visible: Bool) {
     guard let panel else { return }

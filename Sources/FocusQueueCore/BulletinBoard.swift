@@ -1,9 +1,10 @@
 import Foundation
 
 /// What a bulletin board pin points at. Tasks and agents are referenced by
-/// ID so the board always shows their live title; files and folders by path.
+/// ID so the board always shows their live title; files and folders by path;
+/// links (web pages, pull requests, app links) by URL.
 public enum BulletinPinKind: String, Codable, Sendable, CaseIterable {
-  case task, agent, file, folder
+  case task, agent, file, folder, link
 }
 
 /// One item pinned to the bulletin board, at a spot the person chose.
@@ -16,6 +17,8 @@ public struct BulletinPin: Codable, Identifiable, Equatable, Sendable {
   public var taskID: String?
   public var subtaskID: String?
   public var path: String?
+  /// A link's URL, for `.link` pins.
+  public var url: String?
   /// The title when pinned, shown if the item later disappears.
   public var title: String
   /// Top-left corner of the card on the board, in points.
@@ -25,7 +28,7 @@ public struct BulletinPin: Codable, Identifiable, Equatable, Sendable {
 
   public init(
     id: String = UUID().uuidString, kind: BulletinPinKind, projectID: String?,
-    taskID: String? = nil, subtaskID: String? = nil, path: String? = nil,
+    taskID: String? = nil, subtaskID: String? = nil, path: String? = nil, url: String? = nil,
     title: String, x: Double = 0, y: Double = 0, pinnedAt: Date = Date()
   ) {
     self.id = id
@@ -34,6 +37,7 @@ public struct BulletinPin: Codable, Identifiable, Equatable, Sendable {
     self.taskID = taskID
     self.subtaskID = subtaskID
     self.path = path
+    self.url = url
     self.title = title
     self.x = x
     self.y = y
@@ -45,6 +49,7 @@ public struct BulletinPin: Codable, Identifiable, Equatable, Sendable {
   public func targets(sameItemAs other: BulletinPin) -> Bool {
     kind == other.kind && taskID == other.taskID && subtaskID == other.subtaskID
       && path.map(BulletinPin.normalizedPath) == other.path.map(BulletinPin.normalizedPath)
+      && url == other.url
   }
 
   public static func normalizedPath(_ path: String) -> String {
@@ -76,6 +81,16 @@ public enum BulletinDragToken {
     let parts = value.dropFirst(agentPrefix.count).split(separator: "/", maxSplits: 1).map(String.init)
     guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
     return (parts[0], parts[1])
+  }
+
+  /// A dropped string that names a non-file link, such as `https://…` or an
+  /// app link. Task IDs and plain words have no scheme, so they never match.
+  public static func linkURL(_ value: String) -> URL? {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.contains(where: \.isWhitespace), let url = URL(string: trimmed),
+          let scheme = url.scheme?.lowercased(), scheme != "file",
+          trimmed.contains(":/") || scheme == "mailto" else { return nil }
+    return url
   }
 
   /// A dropped string that names a file: a `file://` URL or an absolute path.
@@ -123,6 +138,8 @@ public enum BulletinBoardRules {
     case .file, .folder:
       guard let path = pin.path else { return true }
       return !lookup.fileExists(path)
+    case .link:
+      return pin.url == nil
     }
   }
 

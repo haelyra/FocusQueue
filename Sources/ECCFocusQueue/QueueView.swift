@@ -1749,7 +1749,7 @@ private struct DailyReportView: View {
           if let url = message.url {
             Button("Open message", systemImage: "arrow.up.right.square") {
               model.open(url)
-            }.buttonStyle(.link)
+            }.buttonStyle(.link).bulletinDraggable(.resource(url, title: message.title))
           }
           ForEach(message.tasks) { task in
             Button(task.id, systemImage: "checklist") {
@@ -2754,6 +2754,7 @@ private struct TaskSearchFileCard: View {
       .padding(12).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .bulletinDraggable(model.searchableFile(hit.path, ticketID: hit.ticket.id, source: source).map { .file($0.url) })
     .notificationSurface(radius: 14)
     .accessibilityLabel("Open \(name) from \(hit.ticket.id), \(hit.ticket.title)")
     .help(source == .context
@@ -3014,6 +3015,7 @@ private struct RoutineRow: View {
       if routine.url != nil {
         Button(action: open) { Image(systemName: "arrow.up.right.square").font(.caption) }
           .buttonStyle(.borderless).minimumHitTarget()
+          .bulletinDraggable(routine.url.flatMap { BulletinDragItem.resource($0, title: routine.title) })
           .accessibilityLabel("Open \(routine.title)").help("Open queue")
       }
     }.padding(.horizontal, 12).padding(.vertical, 5)
@@ -3146,6 +3148,7 @@ struct CompletedTicketCard: View {
                     Text(evidenceName(evidence)).font(.system(size: 12)).lineLimit(1)
                   }
                   .buttonStyle(.link)
+                  .bulletinDraggable(.resource(evidence, title: evidenceName(evidence)))
                   .accessibilityLabel("Open evidence \(evidenceName(evidence))")
                 }
               }
@@ -3169,6 +3172,7 @@ struct CompletedTicketCard: View {
               }.font(.system(size: 13))
             }
             .buttonStyle(.plain)
+            .bulletinDraggable(.resource(pullRequest.url, title: "PR #\(pullRequest.number): \(pullRequest.title)"))
             .accessibilityLabel("Open pull request \(pullRequest.number): \(pullRequest.title)")
           }
         }
@@ -3181,7 +3185,8 @@ struct CompletedTicketCard: View {
             Button { model.open(link.url, ticketID: ticket.id) } label: {
               Label(link.label, systemImage: linkIcon(link.type)).font(.system(size: 13)).lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            }.buttonStyle(.plain).accessibilityLabel("Open \(link.label)")
+            }.buttonStyle(.plain).bulletinDraggable(.resource(link.url, title: link.label))
+              .accessibilityLabel("Open \(link.label)")
           }
         }
       }
@@ -3213,7 +3218,8 @@ struct CompletedTicketCard: View {
           ForEach(evidence, id: \.self) { item in
             Button { model.open(item, ticketID: ticket.id) } label: {
               Text(evidenceName(item)).font(.system(size: 12)).lineLimit(1)
-            }.buttonStyle(.link).accessibilityLabel("Open completion evidence \(evidenceName(item))")
+            }.buttonStyle(.link).bulletinDraggable(.resource(item, title: evidenceName(item)))
+              .accessibilityLabel("Open completion evidence \(evidenceName(item))")
           }
         }
       }
@@ -3579,7 +3585,7 @@ private struct TicketCard: View {
       } message: {
         Text("The archived task context remains available for recovery.")
       }
-      .draggable(ticket.id)
+      .bulletinDraggable(.task(ticket))
       .background {
         GeometryReader { geometry in
           Color.clear.onAppear { cardHeight = geometry.size.height }
@@ -4125,7 +4131,7 @@ private struct TicketCard: View {
                   } label: {
                     Text(URL(fileURLWithPath: evidence).lastPathComponent).font(.system(size: 12))
                       .lineLimit(1)
-                  }.buttonStyle(.link).accessibilityLabel(
+                  }.buttonStyle(.link).bulletinDraggable(.resource(evidence)).accessibilityLabel(
                     "Open evidence \(URL(fileURLWithPath: evidence).lastPathComponent)")
                 }
               }
@@ -4149,8 +4155,9 @@ private struct TicketCard: View {
                 Spacer()
                 Text(pullRequest.state?.lowercased() ?? "").foregroundStyle(.secondary)
               }.font(.system(size: 13))
-            }.buttonStyle(.plain).accessibilityLabel(
-              "Open pull request \(pullRequest.number): \(pullRequest.title)")
+            }.buttonStyle(.plain)
+            .bulletinDraggable(.resource(pullRequest.url, title: "PR #\(pullRequest.number): \(pullRequest.title)"))
+            .accessibilityLabel("Open pull request \(pullRequest.number): \(pullRequest.title)")
           }
         }
       }
@@ -4166,7 +4173,8 @@ private struct TicketCard: View {
                 2
               ).frame(
                 maxWidth: .infinity, alignment: .leading)
-            }.buttonStyle(.plain).accessibilityLabel("Open \(link.label)")
+            }.buttonStyle(.plain).bulletinDraggable(.resource(link.url, title: link.label))
+              .accessibilityLabel("Open \(link.label)")
           }
         }
       }
@@ -4449,7 +4457,7 @@ private struct TaskAgentRow: View {
     }
     .padding(.vertical, 2)
     // Drag onto the bulletin board to pin this agent.
-    .draggable(BulletinDragToken.agent(taskID: ticket.id, subtaskID: agent.id))
+    .bulletinDraggable(.agent(agent, ticketID: ticket.id))
     .contextMenu {
       Button("Open agent", systemImage: "terminal") {
         model.openSubtask(agent, for: ticket)

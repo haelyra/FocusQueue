@@ -432,6 +432,8 @@ import UserNotifications
   /// Toggles the bulletin board beside the queue. Like QChat, a press while
   /// another app has the keyboard brings an open board forward instead.
   private func handleBulletinBoardHotkey() {
+    NSLog("Bulletin board hotkey: %@, panel key=%d",
+      model.isBulletinBoardPresented ? "open" : "closed", panel?.isKeyWindow == true)
     if model.isBulletinBoardPresented, model.panelMode == .expanded, panel?.isKeyWindow == true {
       model.setBulletinBoardPresented(false)
       return
@@ -1332,12 +1334,7 @@ import UserNotifications
     scheduleFocusChromeRefresh()
   }
 
-  private var inspectorLayout: QueueInspectorLayout {
-    if model.presentedPlanTicketID != nil || model.isDocumentViewerPresented { return .plan }
-    if model.isQueueChatInspectorPresented { return .chat }
-    if model.isTokenAnalyticsPresented { return .analytics }
-    return model.isDailyReportPresented || model.presentedAgentUpdate != nil ? .report : .closed
-  }
+  private var inspectorLayout: QueueInspectorLayout { QueueInspectorLayout.current(for: model) }
 
   private func setDailyReportVisible(_ visible: Bool) {
     guard let panel else { return }

@@ -65,6 +65,8 @@ struct NewOutputsPanel: View {
       .help("Dismiss. The file stays in the task's context folder.")
       .accessibilityLabel("Dismiss \(output.url.lastPathComponent)")
     }
+    // Drag a new file onto the bulletin board to pin it.
+    .bulletinDraggable(.file(output.url))
     .contextMenu {
       Button("Show in Finder", systemImage: "folder") {
         NSWorkspace.shared.activateFileViewerSelecting([output.url])

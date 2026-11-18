@@ -257,6 +257,8 @@ final class QueueViewModel {
   private(set) var isQueueChatInspectorPresented = false
   /// The bulletin board side panel: pinned tasks, agents, files, and folders.
   private(set) var isBulletinBoardPresented = false
+  /// The schedule timeline beside the queue (FOC-140).
+  private(set) var isSchedulePresented = false
   /// Every pin on this Mac; the board filters them to the project scope.
   private(set) var bulletinPins: [BulletinPin] = []
   private(set) var bulletinBoardError: String?
@@ -2716,7 +2718,7 @@ final class QueueViewModel {
   var isInspectorPresented: Bool {
     isQueueChatInspectorPresented || isDailyReportPresented || presentedPlanTicketID != nil
       || presentedAgentUpdate != nil || isDocumentViewerPresented
-      || isTokenAnalyticsPresented || isBulletinBoardPresented
+      || isTokenAnalyticsPresented || isBulletinBoardPresented || isSchedulePresented
   }
 
   func setTokenAnalyticsPresented(_ presented: Bool) {
@@ -2724,6 +2726,7 @@ final class QueueViewModel {
     if presented {
       isQueueChatInspectorPresented = false
       isBulletinBoardPresented = false
+      isSchedulePresented = false
       presentedAgentUpdate = nil
       presentedPlanTicketID = nil
       presentedPlanURL = nil
@@ -3641,6 +3644,7 @@ final class QueueViewModel {
     markTicketViewed(ticket.id)
     isQueueChatInspectorPresented = false
     isBulletinBoardPresented = false
+    isSchedulePresented = false
     presentedAgentUpdate = nil
     isDailyReportPresented = false
     isDocumentViewerPresented = false
@@ -3719,6 +3723,7 @@ final class QueueViewModel {
     revealProject(for: update.ticketID)
     isQueueChatInspectorPresented = false
     isBulletinBoardPresented = false
+    isSchedulePresented = false
     presentedPlanTicketID = nil
     presentedPlanURL = nil
     isDailyReportPresented = false
@@ -3975,6 +3980,7 @@ final class QueueViewModel {
     }
     isQueueChatInspectorPresented = false
     isBulletinBoardPresented = false
+    isSchedulePresented = false
     presentedAgentUpdate = nil
     presentedPlanTicketID = nil
     presentedPlanURL = nil
@@ -4031,6 +4037,7 @@ final class QueueViewModel {
     if presented {
       isTokenAnalyticsPresented = false
       isBulletinBoardPresented = false
+      isSchedulePresented = false
       presentedAgentUpdate = nil
       presentedPlanTicketID = nil
       presentedPlanURL = nil
@@ -4050,6 +4057,7 @@ final class QueueViewModel {
   func setBulletinBoardPresented(_ presented: Bool) {
     if presented {
       loadBulletinPinsIfNeeded()
+      isSchedulePresented = false
       isTokenAnalyticsPresented = false
       isQueueChatInspectorPresented = false
       presentedAgentUpdate = nil
@@ -6359,6 +6367,7 @@ final class QueueViewModel {
       isTokenAnalyticsPresented = false
       isQueueChatInspectorPresented = false
       isBulletinBoardPresented = false
+      isSchedulePresented = false
       presentedAgentUpdate = nil
       presentedPlanTicketID = nil
       presentedPlanURL = nil
@@ -7970,5 +7979,102 @@ extension QueueViewModel {
           isError: item.deliveryError != nil)
       }
     }
+  }
+}
+
+// MARK: - Schedule timeline (FOC-140)
+
+extension QueueViewModel {
+  /// Opens the arrangement-style timeline of scheduled jobs beside the queue.
+  func setSchedulePresented(_ presented: Bool) {
+    if presented {
+      reloadScheduledLaunches()
+      isBulletinBoardPresented = false
+      isTokenAnalyticsPresented = false
+      isQueueChatInspectorPresented = false
+      presentedAgentUpdate = nil
+      presentedPlanTicketID = nil
+      presentedPlanURL = nil
+      isDailyReportPresented = false
+      isDocumentViewerPresented = false
+    }
+    isSchedulePresented = presented
+    reportVisibilityHandler?(isInspectorPresented)
+  }
+
+  func toggleSchedule() { setSchedulePresented(!isSchedulePresented) }
+
+  /// Task titles and owning projects, keyed by upper-cased task ID.
+  var scheduleTicketInfo: [String: ScheduleTicketInfo] {
+    var info: [String: ScheduleTicketInfo] = [:]
+    for ticket in dashboard.tickets {
+      info[ticket.id.uppercased()] = ScheduleTicketInfo(
+        title: ticket.title, projectID: ticket.projectID ?? project(for: ticket)?.id)
+    }
+    return info
+  }
+
+  var scheduleProjectNames: [String: String] {
+    Dictionary(config.projects.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+  }
+
+  /// Every job the app owns: scheduled agent launches, the daily report, and
+  /// pending decisions that settle themselves. Reads decision files from disk.
+  func scheduleJobs(now: Date = Date()) -> [ScheduleJob] {
+    let store = decisionStore
+    let trees = store.taskIDsWithTrees().flatMap { store.trees(taskID: $0) }
+    let projects = config.projects
+    return ScheduleTimeline.jobs(
+      launches: scheduledLaunches,
+      dailyReport: config.dailyReport,
+      decisions: trees,
+      automation: config.decisionAutomation,
+      tickets: scheduleTicketInfo,
+      projectForTicket: { ticketID in
+        // Tasks outside the loaded dashboard still carry their project's prefix.
+        projects.first { project in
+          let prefix = project.taskPrefix.trimmingCharacters(in: .whitespaces).uppercased()
+          return !prefix.isEmpty && ticketID.uppercased().hasPrefix(prefix + "-")
+        }?.id
+      },
+      now: now)
+  }
+
+  /// Applies a drag from the timeline. Returns the job's new next fire time,
+  /// or nil when the job cannot move.
+  @discardableResult
+  func moveScheduleJob(_ job: ScheduleJob, from: Date, to: Date, snapMinutes: Int,
+                       calendar: Calendar = .current, now: Date = Date()) -> Date? {
+    guard job.isMovable else { return nil }
+    switch job.source {
+    case .scheduledLaunch(let id):
+      let fireAt = ScheduleTimeline.movedFireDate(
+        of: job, from: from, to: to, snapMinutes: snapMinutes, now: now, calendar: calendar)
+      return rescheduleLaunch(id: id, fireAt: fireAt) ? fireAt : nil
+    case .dailyReport:
+      // Snap in the viewer's zone, but the report runs on this Mac's clock.
+      let snapped = ScheduleTimeline.snap(to, minutes: snapMinutes, calendar: calendar)
+      let time = ScheduleTimeline.timeOfDay(snapped, snapMinutes: 1)
+      setDailyReportSchedule(hour: time.hour, minute: time.minute)
+      programLog.record(
+        "Moved the daily report to \(String(format: "%02d:%02d", time.hour, time.minute)) from the schedule.",
+        category: "Tasks")
+      return snapped
+    case .decision:
+      return nil
+    }
+  }
+
+  /// Moves one scheduled launch; repeats keep their interval from the new time.
+  @discardableResult
+  func rescheduleLaunch(id: String, fireAt: Date) -> Bool {
+    reloadScheduledLaunches()
+    guard let index = scheduledLaunches.firstIndex(where: { $0.id == id }) else { return false }
+    scheduledLaunches[index].fireAt = fireAt
+    persistScheduledLaunches()
+    programLog.record(
+      "Rescheduled the \(scheduledLaunches[index].ticketID) agent launch to \(fireAt) from the schedule.",
+      category: "Tasks")
+    return true
   }
 }

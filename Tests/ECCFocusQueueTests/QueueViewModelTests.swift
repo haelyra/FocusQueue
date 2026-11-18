@@ -5526,8 +5526,11 @@ extension QueueViewModelTests {
     defer { model.setShowsCleanedBulletinPins(false) }
 
     // The board takes the side panel and gives it back to QChat.
+    #expect(QueueInspectorLayout.current(for: model) == .closed)
     model.setBulletinBoardPresented(true)
     #expect(model.isBulletinBoardPresented && model.isInspectorPresented)
+    // The window widens for the board exactly as it does for QChat.
+    #expect(QueueInspectorLayout.current(for: model) == .chat)
     model.setQueueChatInspectorPresented(true)
     #expect(!model.isBulletinBoardPresented && model.isQueueChatInspectorPresented)
     model.toggleBulletinBoard()
@@ -5544,7 +5547,12 @@ extension QueueViewModelTests {
     #expect(model.pinDroppedItem(folder.path, at: nil))
     #expect(model.pinTaskToBulletinBoard("ECC-102"))
     #expect(!model.pinDroppedItem("NOPE-1", at: nil))
-    #expect(model.visibleBulletinPins.map(\.kind) == [.task, .agent, .file, .folder, .task])
+    #expect(model.pinDroppedItem("https://github.com/org/repo/pull/9", at: nil))
+    #expect(model.visibleBulletinPins.map(\.kind) == [.task, .agent, .file, .folder, .task, .link])
+    let link = try #require(model.visibleBulletinPins.last)
+    #expect(link.url == "https://github.com/org/repo/pull/9" && link.title == "github.com/org/repo/pull/9")
+    #expect(!model.isBulletinPinCleanedUp(link))
+    model.unpinBulletinPin(link.id)
     #expect(model.isPinnedToBulletinBoard(taskID: "ECC-101", subtaskID: "board-agent"))
     #expect(model.bulletinPinTitle(model.visibleBulletinPins[1]) == "Board agent")
 
@@ -5576,6 +5584,11 @@ extension QueueViewModelTests {
       try WalkthroughDemoRecording.snapshot(BulletinBoardView(model: model).padding(12), size: size,
         to: URL(fileURLWithPath: output).appendingPathComponent("bulletin-board-cleaned.png"))
       model.setShowsCleanedBulletinPins(false)
+      let item = BulletinDragItem.task(fixture.tickets[0])
+      try WalkthroughDemoRecording.snapshot(
+        BulletinCardFace(kind: item.kind, kindLabel: item.kindLabel, title: item.title, detail: item.detail).padding(8),
+        size: NSSize(width: 184, height: 94),
+        to: URL(fileURLWithPath: output).appendingPathComponent("bulletin-drag-preview.png"))
     }
 
     // Pins survive a restart; removing cleaned-up pins deletes only those.
@@ -5591,6 +5604,48 @@ extension QueueViewModelTests {
     let renderer = ImageRenderer(content: BulletinBoardView(model: model)
       .frame(width: 460, height: 360).environment(\.colorScheme, .dark))
     #expect(renderer.nsImage != nil)
+  }
+}
+
+@Suite("Bulletin board drag sources")
+@MainActor
+struct BulletinDragSourceTests {
+  @Test("Files, folders, links, and unresolvable strings map to the right drag items")
+  func dragItems() throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("drag-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let file = folder.appendingPathComponent("plan.md")
+    try Data().write(to: file)
+
+    let fileItem = try #require(BulletinDragItem.resource(file.path))
+    #expect(fileItem.kind == .file && fileItem.value == file.absoluteString && fileItem.title == "plan.md")
+    #expect(BulletinDragItem.file(folder).kind == .folder)
+    let link = try #require(BulletinDragItem.resource("https://example.com/docs", title: "Docs"))
+    #expect(link.kind == .link && link.title == "Docs" && link.value == "https://example.com/docs")
+    #expect(BulletinDragItem.resource("evidence/relative.md") == nil)
+    #expect(BulletinDragItem.task(DashboardTicket(id: "FOC-9", title: "T", status: "open", summary: "")).value == "FOC-9")
+
+    // Context grid cells drag their file, or their link when they have no file.
+    let web = TaskContextItem(id: "pr", title: "PR #1", target: .web("https://github.com/o/r/pull/1"), help: "")
+    #expect(web.bulletinDragItem?.kind == .link)
+    let output = TaskContextItem(id: "o", title: "plan.md", target: .resource(file.path), fileURL: file, help: "")
+    #expect(output.bulletinDragItem?.value == file.absoluteString)
+  }
+
+  @Test("A press on a chat link finds the link; plain text does not")
+  func chatLinkHitTest() throws {
+    let view = ChatMarkdownNSTextView()
+    view.setMarkdown("[Docs](https://example.com/docs) and plain words after the link")
+    _ = view.fittingHeight(for: 400)
+    let layoutManager = try #require(view.layoutManager)
+    let container = try #require(view.textContainer)
+    let first = layoutManager.boundingRect(forGlyphRange: NSRange(location: 1, length: 1), in: container)
+    let hit = view.link(at: NSPoint(x: first.midX + view.textContainerOrigin.x, y: first.midY + view.textContainerOrigin.y))
+    #expect(hit?.url.absoluteString == "https://example.com/docs")
+    #expect(hit?.text == "Docs")
+    let plain = layoutManager.boundingRect(forGlyphRange: NSRange(location: 12, length: 1), in: container)
+    #expect(view.link(at: NSPoint(x: plain.midX, y: plain.midY)) == nil)
   }
 }
 

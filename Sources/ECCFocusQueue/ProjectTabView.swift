@@ -313,6 +313,7 @@ struct ProjectTabView: View {
         }
         .buttonStyle(.plain)
         .disabled(!exists)
+        .bulletinDraggable(exists ? url.map { BulletinDragItem.file($0) } : nil)
         .help((checked ? "Reviewed. Click to open."
               : exists ? "Click to open, then mark it reviewed in the viewer."
               : "Not created yet.") + (file == artifact ? "" : " This project keeps it as \(file)."))
@@ -388,6 +389,7 @@ struct ProjectTabView: View {
               .font(.system(size: 10, weight: .semibold))
           }
           .buttonStyle(.borderless)
+          .bulletinDraggable(.file(review))
           .help("Lint results and the generator's notes from the last generation")
         }
         Button {

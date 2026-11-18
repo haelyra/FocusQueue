@@ -374,7 +374,7 @@ struct ProjectFilesSection: View {
                     }
                     .buttonStyle(.plain)
                     .help(document.url.path)
-                    .draggable(document.url.absoluteString)
+                    .bulletinDraggable(.file(document.url, title: document.title))
                     .accessibilityLabel("Open \(document.title)")
                 }
             }
@@ -383,6 +383,7 @@ struct ProjectFilesSection: View {
                 Text("Links").font(.caption.bold()).foregroundStyle(.secondary).padding(.top, 4)
                 ForEach(links) { link in
                     Button(link.label, systemImage: "link") { model.open(link.url) }
+                        .bulletinDraggable(.resource(link.url, title: link.label))
                         .buttonStyle(.link).font(.system(size: 12)).multilineTextAlignment(.leading).help(link.url)
                 }
             }

@@ -98,6 +98,22 @@ struct BulletinBoardTests {
     #expect(BulletinDragToken.fileURL("file:///tmp/a%20b.md")?.path == "/tmp/a b.md")
     #expect(BulletinDragToken.fileURL("/tmp/x")?.path == "/tmp/x")
     #expect(BulletinDragToken.fileURL("FOC-1") == nil)
+    #expect(BulletinDragToken.linkURL("https://github.com/org/repo/pull/7")?.host == "github.com")
+    #expect(BulletinDragToken.linkURL("focusqueue://ref/FOC-1/B3") != nil)
+    #expect(BulletinDragToken.linkURL("file:///tmp/a.md") == nil)
+    #expect(BulletinDragToken.linkURL("FOC-1") == nil)
+    #expect(BulletinDragToken.linkURL("note: not a link") == nil)
+  }
+
+  @Test("Links are never cleaned up and dedupe by URL")
+  func links() {
+    let pin = BulletinPin(kind: .link, projectID: "p1", url: "https://example.com/a", title: "A")
+    #expect(!BulletinBoardRules.isCleanedUp(pin, lookup: lookup()))
+    let pins = BulletinBoardRules.adding(pin, to: BulletinBoardRules.adding(
+      BulletinPin(kind: .link, projectID: "p1", url: "https://example.com/a", title: "A", x: 50), to: []))
+    #expect(pins.count == 1)
+    let other = BulletinPin(kind: .link, projectID: "p1", url: "https://example.com/b", title: "B")
+    #expect(!pin.targets(sameItemAs: other))
   }
 
   @Test("New pins without a drop spot fill free grid slots")

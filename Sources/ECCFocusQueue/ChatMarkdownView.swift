@@ -651,6 +651,68 @@ final class ChatMarkdownNSTextView: NSTextView {
     }
   }
 
+  /// The link under a point, with its visible text, or nil off a link.
+  func link(at point: NSPoint) -> (url: URL, text: String, index: Int)? {
+    guard let layoutManager, let textContainer, let textStorage, textStorage.length > 0 else { return nil }
+    let location = NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
+    var fraction: CGFloat = 0
+    let glyph = layoutManager.glyphIndex(for: location, in: textContainer, fractionOfDistanceThroughGlyph: &fraction)
+    guard layoutManager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: textContainer)
+      .contains(location) else { return nil }
+    let index = layoutManager.characterIndexForGlyph(at: glyph)
+    guard index < textStorage.length else { return nil }
+    var range = NSRange()
+    let value = textStorage.attribute(.link, at: index, effectiveRange: &range)
+    guard let url = (value as? URL) ?? (value as? String).flatMap(URL.init(string:)) else { return nil }
+    return (url, (textStorage.string as NSString).substring(with: range), index)
+  }
+
+  /// A press on a link waits: moving drags the link (to the bulletin board or
+  /// any app), releasing opens it as before. Elsewhere, text selects as usual.
+  override func mouseDown(with event: NSEvent) {
+    let start = convert(event.locationInWindow, from: nil)
+    guard event.clickCount == 1, let window, let link = link(at: start) else {
+      super.mouseDown(with: event)
+      return
+    }
+    while let next = window.nextEvent(matching: [.leftMouseUp, .leftMouseDragged]) {
+      if next.type == .leftMouseUp { break }
+      let point = convert(next.locationInWindow, from: nil)
+      if hypot(point.x - start.x, point.y - start.y) > 4 {
+        beginLinkDrag(link.url, text: link.text, event: event, at: start)
+        return
+      }
+    }
+    clicked(onLink: link.url, at: link.index)
+  }
+
+  private func beginLinkDrag(_ url: URL, text: String, event: NSEvent, at point: NSPoint) {
+    let item = NSPasteboardItem()
+    item.setString(url.absoluteString, forType: .string)
+    item.setString(url.absoluteString, forType: url.isFileURL ? .fileURL : .URL)
+    let dragItem = NSDraggingItem(pasteboardWriter: item)
+    let drag = url.isFileURL ? BulletinDragItem.file(url, title: text)
+      : BulletinDragItem.resource(url.absoluteString, title: text)
+    let renderer = ImageRenderer(content: Group {
+      if let drag {
+        BulletinCardFace(kind: drag.kind, kindLabel: drag.kindLabel, title: drag.title, detail: drag.detail)
+          .padding(8)
+      }
+    })
+    renderer.scale = window?.backingScaleFactor ?? 2
+    let image = renderer.nsImage ?? NSImage(size: NSSize(width: 40, height: 20))
+    dragItem.setDraggingFrame(
+      NSRect(x: point.x - image.size.width / 2, y: point.y - image.size.height / 2,
+             width: image.size.width, height: image.size.height),
+      contents: image)
+    beginDraggingSession(with: [dragItem], event: event, source: self)
+  }
+
+  override func draggingSession(
+    _ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext
+  ) -> NSDragOperation {
+    context == .outsideApplication ? [.copy, .link] : [.copy, .link, .generic]
+  }
 }
 
 private struct ChatMarkdownTextView: NSViewRepresentable {

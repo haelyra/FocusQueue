@@ -20,6 +20,16 @@ struct QueueInspectorLayout: Equatable {
   static let documentPairMinimumWidth: CGFloat = 1_040
   static let inspectorMinimumWidth = documentMinimumWidth + chatMinimumWidth + 12
 
+  /// The width the side panel's current content needs. The bulletin board
+  /// widens the window like QChat does; the schedule timeline goes wider.
+  @MainActor static func current(for model: QueueViewModel) -> Self {
+    if model.presentedPlanTicketID != nil || model.isDocumentViewerPresented { return .plan }
+    if model.isQueueChatInspectorPresented || model.isBulletinBoardPresented { return .chat }
+    if model.isTokenAnalyticsPresented { return .analytics }
+    if model.isSchedulePresented { return .schedule }
+    return model.isDailyReportPresented || model.presentedAgentUpdate != nil ? .report : .closed
+  }
+
   func preferredWidth(compactWidth: CGFloat) -> CGFloat {
     min(maximumWidth, max(minimumWidth, compactWidth + expansionWidth))
   }

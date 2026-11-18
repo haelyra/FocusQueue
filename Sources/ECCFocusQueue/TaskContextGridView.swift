@@ -180,6 +180,16 @@ struct TaskContextItem: Identifiable {
   var symbol: String?
   var help: String
   var isNew = false
+
+  /// Files and folders drag as themselves; links and pull requests as URLs.
+  var bulletinDragItem: BulletinDragItem? {
+    if let fileURL { return .file(fileURL, title: title) }
+    switch target {
+    case .web(let value), .resource(let value): return .resource(value, title: title)
+    case .folder(let url): return .file(url, title: title)
+    case .plan, .output, .canvas: return nil
+    }
+  }
 }
 
 /// One Finder-style grid cell: the file's thumbnail and title. One click
@@ -216,6 +226,7 @@ struct ContextGridCell<Menu: View>: View {
     .contentShape(RoundedRectangle(cornerRadius: 7))
     .onTapGesture(count: 2) { onOpen() }
     .simultaneousGesture(TapGesture().onEnded { onSelect() })
+    .bulletinDraggable(item.bulletinDragItem)
     .contextMenu { menu() }
     .help(item.help)
     .accessibilityElement(children: .ignore)

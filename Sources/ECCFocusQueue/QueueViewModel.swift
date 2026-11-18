@@ -4141,6 +4141,8 @@ final class QueueViewModel {
       return subtasks(for: taskID).first { $0.id == pin.subtaskID }?.title ?? pin.title
     case .file, .folder:
       return pin.path.map { URL(fileURLWithPath: $0).lastPathComponent } ?? pin.title
+    case .link:
+      return pin.title
     }
   }
 
@@ -4214,13 +4216,46 @@ final class QueueViewModel {
     return true
   }
 
-  /// A drop of plain strings: task IDs, agent drag tokens, file URLs, or paths.
+  /// Pins a web page, pull request, or app link. A link the queue already
+  /// names (a task link or pull request) keeps that name.
+  @discardableResult
+  func pinLinkToBulletinBoard(_ url: URL, title: String? = nil, at point: CGPoint? = nil) -> Bool {
+    guard !url.isFileURL else { return pinFileToBulletinBoard(url, at: point) }
+    loadBulletinPinsIfNeeded()
+    let known = knownLink(url.absoluteString)
+    let projectID = bulletinBoardProjectID ?? known?.ticket.flatMap { project(for: $0)?.id ?? $0.projectID }
+    let name = title.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 }
+      ?? known?.title ?? Self.linkTitle(url)
+    let pin = BulletinPin(kind: .link, projectID: projectID, url: url.absoluteString, title: name)
+    saveBulletinPins(BulletinBoardRules.adding(placedBulletinPin(pin, at: point), to: bulletinPins))
+    return true
+  }
+
+  /// The label a task already gives a link: a task link's label or a pull request's title.
+  private func knownLink(_ value: String) -> (title: String, ticket: DashboardTicket?)? {
+    for ticket in dashboard.tickets {
+      if let link = ticket.links.first(where: { $0.url == value }) { return (link.label, ticket) }
+      if let pr = ticket.prs.first(where: { $0.url == value }) { return ("PR #\(pr.number): \(pr.title)", ticket) }
+    }
+    return nil
+  }
+
+  /// "github.com/org/repo/pull/7" for a web page; the whole link otherwise.
+  nonisolated static func linkTitle(_ url: URL) -> String {
+    guard let host = url.host, !host.isEmpty else { return url.absoluteString }
+    let path = url.path == "/" ? "" : url.path
+    return host.replacingOccurrences(of: "www.", with: "") + path
+  }
+
+  /// A drop of plain strings: task IDs, agent drag tokens, file URLs or
+  /// paths, and links.
   @discardableResult
   func pinDroppedItem(_ value: String, at point: CGPoint?) -> Bool {
     if let agent = BulletinDragToken.parseAgent(value) {
       return pinAgentToBulletinBoard(taskID: agent.taskID, subtaskID: agent.subtaskID, at: point)
     }
     if let url = BulletinDragToken.fileURL(value) { return pinFileToBulletinBoard(url, at: point) }
+    if let url = BulletinDragToken.linkURL(value) { return pinLinkToBulletinBoard(url, at: point) }
     return pinTaskToBulletinBoard(value.trimmingCharacters(in: .whitespacesAndNewlines), at: point)
   }
 
@@ -4275,6 +4310,9 @@ final class QueueViewModel {
     case .file, .folder:
       guard let path = pin.path else { return }
       NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    case .link:
+      guard let url = pin.url else { return }
+      open(url)
     }
   }
 
@@ -6625,7 +6663,10 @@ final class QueueViewModel {
   func setHotkeyError(_ message: String?, for action: HotkeyAction) {
     guard hotkeyErrors[action] != message else { return }
     hotkeyErrors[action] = message
-    if let message { programLog.record(message, level: .warning, category: "Hotkeys") }
+    if let message {
+      programLog.record(message, level: .warning, category: "Hotkeys")
+      NSLog("Hotkey %@ not registered: %@", action.rawValue, message)
+    }
   }
 
   func setQChatHotkeyEnabled(_ enabled: Bool) {
@@ -7964,13 +8005,7 @@ extension QueueViewModel {
   func toggleSchedule() { setSchedulePresented(!isSchedulePresented) }
 
   /// The window width the open side panel needs; the app resizes the panel to it.
-  var inspectorLayout: QueueInspectorLayout {
-    if presentedPlanTicketID != nil || isDocumentViewerPresented { return .plan }
-    if isQueueChatInspectorPresented { return .chat }
-    if isTokenAnalyticsPresented { return .analytics }
-    if isSchedulePresented { return .schedule }
-    return isDailyReportPresented || presentedAgentUpdate != nil ? .report : .closed
-  }
+  var inspectorLayout: QueueInspectorLayout { QueueInspectorLayout.current(for: self) }
 
   /// Task titles and owning projects, keyed by upper-cased task ID.
   var scheduleTicketInfo: [String: ScheduleTicketInfo] {

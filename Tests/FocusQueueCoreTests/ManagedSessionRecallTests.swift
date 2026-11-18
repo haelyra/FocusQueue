@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Testing
 @testable import FocusQueueCore
@@ -23,12 +24,17 @@ private actor DeterministicRecallRunner: ProcessRunning {
   let reference: TmuxSessionReference
   let agentID: String
   let hasAttachedClient: Bool
+  /// What `ps` reports for the WezTerm GUI process, or nil when it is gone.
+  let guiCommand: String?
   var spawnedPane = false
+  var detached = false
 
-  init(reference: TmuxSessionReference, agentID: String, hasAttachedClient: Bool = true) {
+  init(reference: TmuxSessionReference, agentID: String, hasAttachedClient: Bool = true,
+       guiCommand: String? = nil) {
     self.reference = reference
     self.agentID = agentID
     self.hasAttachedClient = hasAttachedClient
+    self.guiCommand = guiCommand
   }
 
   func run(_ specification: ProcessSpecification) throws -> ProcessResult {
@@ -43,7 +49,11 @@ private actor DeterministicRecallRunner: ProcessRunning {
       }
       if specification.arguments.contains("list-clients") {
         if spawnedPane { return success("/dev/ttys501\n") }
-        return success(hasAttachedClient ? "/dev/ttys500\n" : "")
+        return success(hasAttachedClient && !detached ? "/dev/ttys500\n" : "")
+      }
+      if specification.arguments.contains("detach-client") {
+        detached = true
+        return success()
       }
       if specification.arguments.contains("display-message") {
         if specification.arguments.last == "#{pane_current_path}" { return success("/tmp\n") }
@@ -53,7 +63,7 @@ private actor DeterministicRecallRunner: ProcessRunning {
       return success()
     }
     if specification.executable == "/mock/wezterm" {
-      if specification.arguments == ["cli", "list", "--format", "json"] {
+      if specification.arguments.suffix(3) == ["list", "--format", "json"] {
         let paneID = spawnedPane ? 73 : 41
         let tty = spawnedPane ? "/dev/ttys501" : "/dev/ttys500"
         let listedTTY = hasAttachedClient || spawnedPane ? tty : "/dev/ttys777"
@@ -65,8 +75,11 @@ private actor DeterministicRecallRunner: ProcessRunning {
       }
       return success()
     }
-    if specification.executable == "/usr/bin/open" {
+    if specification.executable == "/usr/bin/open" || specification.executable == "/bin/sh" {
       return success()
+    }
+    if specification.executable == "/bin/ps", let guiCommand {
+      return success(guiCommand + "\n")
     }
     return .init(
       exitCode: 1, standardOutput: "",
@@ -155,6 +168,80 @@ struct ManagedSessionRecallTests {
     #expect(calls.contains { $0.arguments == ["cli", "set-tab-title", "--pane-id", "41", "ECC-1 · tmux"] })
     #expect(!calls.contains { $0.executable == "/usr/bin/open" && $0.arguments.contains("-na") })
     #expect(!calls.flatMap(\.arguments).contains("spawn"))
+  }
+
+  /// FOC-142: `activate-pane` left the last front WezTerm window in front, so
+  /// clicking one task showed another task's window.
+  @Test("Recall in a Focus Queue WezTerm raises the exact window it focuses")
+  func managedGUIRaisesFocusedWindow() async throws {
+    let support = FileManager.default.temporaryDirectory
+      .appendingPathComponent("fq-raise-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: support) }
+    let config = WezTermManagedConfig.fileURL(supportDirectory: support).path
+    let reference = taskReference()
+    let runner = DeterministicRecallRunner(reference: reference, agentID: "agent-one",
+      guiCommand: "/Applications/WezTerm.app/Contents/MacOS/wezterm-gui --config-file \(config) start --always-new-process")
+    var subtask = TaskSubtask(id: "agent-one", title: "Exact agent", provider: .codex,
+      tmux: reference, runtimeMode: .tmux)
+    subtask.workspace = AgentWorkspace(path: "/tmp", repositoryPath: "/tmp")
+
+    let result = try await WezTermController(
+      runner: runner, candidateSockets: [], supportDirectory: support).openAgentRuntime(
+        subtask, taskID: "ECC-1",
+        configuration: .init(executable: "/mock/wezterm", applicationName: "WezTerm",
+          socketPath: "/tmp/gui-sock-4242"))
+
+    #expect(result == .focused(paneID: 41))
+    let calls = await runner.calls
+    let raise = try #require(calls.first { $0.executable == "/bin/sh" })
+    #expect(raise.arguments.last == "/dev/ttys500")
+    #expect(raise.arguments.contains { $0.contains("SetUserVar=focus_queue_raise=") })
+    let raiseIndex = try #require(calls.firstIndex { $0.executable == "/bin/sh" })
+    let activateIndex = try #require(calls.firstIndex { $0.arguments.contains("activate-pane") })
+    let revealIndex = try #require(calls.lastIndex { $0.executable == "/usr/bin/open" })
+    #expect(activateIndex < raiseIndex && raiseIndex < revealIndex)
+    #expect(!calls.contains { $0.arguments.contains("detach-client") })
+    #expect(!calls.flatMap(\.arguments).contains("spawn"))
+    // The running GUI reloads the refreshed config that holds the raise handler.
+    #expect(FileManager.default.fileExists(atPath: config))
+  }
+
+  @Test("Recall in a WezTerm Focus Queue did not start replaces the hidden view with a front window")
+  func unmanagedGUIReplacesHiddenView() async throws {
+    let reference = taskReference()
+    let runner = DeterministicRecallRunner(reference: reference, agentID: "agent-one",
+      guiCommand: "/Applications/WezTerm.app/Contents/MacOS/wezterm-gui start")
+    var subtask = TaskSubtask(id: "agent-one", title: "Exact agent", provider: .codex,
+      tmux: reference, runtimeMode: .tmux)
+    subtask.workspace = AgentWorkspace(path: "/tmp", repositoryPath: "/tmp")
+
+    let result = try await WezTermController(
+      runner: runner, candidateSockets: []).openAgentRuntime(
+        subtask, taskID: "ECC-1",
+        configuration: .init(executable: "/mock/wezterm", applicationName: "WezTerm",
+          socketPath: "/tmp/gui-sock-4242"))
+
+    #expect(result == .focused(paneID: 73))
+    let calls = await runner.calls
+    let detach = try #require(calls.firstIndex { $0.arguments.contains("detach-client") })
+    #expect(calls[detach].arguments.suffix(2) == ["-t", "/dev/ttys500"])
+    let spawn = try #require(calls.firstIndex { Array($0.arguments.prefix(2)) == ["cli", "spawn"] })
+    #expect(detach < spawn)
+    #expect(!calls.contains { $0.arguments == ["cli", "activate-pane", "--pane-id", "41"] })
+  }
+
+  @Test("The managed WezTerm config raises a window when its pane sets the raise variable")
+  func managedConfigHasRaiseHandler() {
+    #expect(WezTermManagedConfig.script.contains("wezterm.on(\"user-var-changed\""))
+    #expect(WezTermManagedConfig.script.contains("name == \"focus_queue_raise\""))
+    #expect(WezTermManagedConfig.script.contains("window:focus()"))
+    let sequence = WezTermManagedConfig.raiseSequence(token: "abc")
+    #expect(sequence == "\u{1B}]1337;SetUserVar=focus_queue_raise=YWJj\u{07}")
+    #expect(WezTermManagedConfig.isManaged(
+      guiCommand: "wezterm-gui --config-file /s/terminal/wezterm-managed.lua start",
+      supportDirectory: URL(fileURLWithPath: "/s")))
+    #expect(!WezTermManagedConfig.isManaged(
+      guiCommand: "wezterm-gui start", supportDirectory: URL(fileURLWithPath: "/s")))
   }
 
   @Test("WezTerm recall labels the managed view with the task name")
@@ -642,5 +729,73 @@ struct ManagedSessionRecallTests {
       throw error
     }
     try await controller.stop(reference)
+  }
+
+  /// FOC-142 end to end: two task windows in one Focus Queue WezTerm; opening
+  /// the task behind must bring its own window to the front of WezTerm's
+  /// window stack. Window order comes from CoreGraphics, front to back.
+  @Test("Live: recall brings the task's own WezTerm window in front of another task's",
+    .enabled(if: ProcessInfo.processInfo.environment["ECC_FOCUS_QUEUE_LIVE_TERMINAL_TESTS"] == "1"))
+  func liveRecallRaisesExactWindow() async throws {
+    let tmux = try #require(SetupEnvironment.executable("tmux"))
+    let wezterm = try #require(SetupEnvironment.executable("wezterm"))
+    let id = UUID().uuidString.prefix(8).lowercased()
+    let support = FileManager.default.temporaryDirectory
+      .appendingPathComponent("fq-live-raise-\(id)", isDirectory: true)
+    let sessions = TmuxController()
+    let first = try await sessions.start(
+      name: "fq-live-raise-\(id)-a", directory: "/tmp", command: ["/bin/sleep", "600"], executable: tmux)
+    let second = try await sessions.start(
+      name: "fq-live-raise-\(id)-b", directory: "/tmp", command: ["/bin/sleep", "600"], executable: tmux)
+    let runner = FoundationProcessRunner()
+    var guiPID: String?
+    func windows() -> [Int] {
+      guard let pid = guiPID.flatMap(Int.init),
+            let list = CGWindowListCopyWindowInfo(
+              [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
+      else { return [] }
+      return list.filter { ($0[kCGWindowOwnerPID as String] as? Int) == pid && ($0[kCGWindowLayer as String] as? Int) == 0 }
+        .compactMap { $0[kCGWindowNumber as String] as? Int }
+    }
+    do {
+      let controller = WezTermController(candidateSockets: [], supportDirectory: support)
+      let absent = support.appendingPathComponent("no-gui").path
+      _ = try await controller.openManagedRuntime(
+        first, taskID: "FOC-142", provider: .claude, taskTitle: "First task",
+        configuration: .init(executable: wezterm, applicationName: "WezTerm", socketPath: absent))
+      var socket = ""
+      for _ in 0..<60 where guiPID == nil {
+        try await Task.sleep(for: .milliseconds(250))
+        let found = try await runner.run(.init(executable: "/usr/bin/pgrep",
+          arguments: ["-f", "wezterm-gui.*fq-live-raise-\(id)"], timeoutSeconds: 5))
+        guiPID = found.standardOutput.split(separator: "\n").first.map(String.init)
+      }
+      let pid = try #require(guiPID)
+      socket = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".local/share/wezterm/gui-sock-\(pid)").path
+      for _ in 0..<40 where windows().isEmpty { try await Task.sleep(for: .milliseconds(250)) }
+      let firstWindow = try #require(windows().first)
+      let pinned = WezTermConfiguration(executable: wezterm, applicationName: "WezTerm", socketPath: socket)
+
+      _ = try await controller.openManagedRuntime(
+        second, taskID: "FOC-143", provider: .claude, taskTitle: "Second task", configuration: pinned)
+      try await Task.sleep(for: .seconds(1))
+      #expect(windows().count == 2)
+      #expect(windows().first != firstWindow, "the second task's new window should open in front")
+
+      let reopened = try await controller.openManagedRuntime(
+        first, taskID: "FOC-142", provider: .claude, taskTitle: "First task", configuration: pinned)
+      guard case .focused = reopened else {
+        Issue.record("expected the existing view to be focused, got \(reopened)"); throw CancellationError()
+      }
+      try await Task.sleep(for: .seconds(1))
+      #expect(windows().first == firstWindow, "the first task's window must come to the front")
+    } catch {
+      Issue.record(error)
+    }
+    if let guiPID { _ = try? await runner.run(.init(executable: "/bin/kill", arguments: [guiPID], timeoutSeconds: 5)) }
+    try? await sessions.stop(first)
+    try? await sessions.stop(second)
+    try? FileManager.default.removeItem(at: support)
   }
 }

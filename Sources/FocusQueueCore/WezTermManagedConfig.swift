@@ -12,6 +12,21 @@ import Foundation
 public enum WezTermManagedConfig {
   public static let tabTitleVariable = "FOCUS_QUEUE_WEZTERM_TAB_TITLE"
   public static let windowTitleVariable = "FOCUS_QUEUE_WEZTERM_WINDOW_TITLE"
+  /// Setting this pane user variable raises the pane's window (see `script`).
+  public static let raiseUserVariable = "focus_queue_raise"
+
+  /// The escape that sets `raiseUserVariable` on whichever pane reads it. The
+  /// value changes on every call so WezTerm always reports a change.
+  public static func raiseSequence(token: String = UUID().uuidString) -> String {
+    let value = Data(token.utf8).base64EncodedString()
+    return "\u{1B}]1337;SetUserVar=\(raiseUserVariable)=\(value)\u{07}"
+  }
+
+  /// Whether a WezTerm GUI started with `command` loads this file, and so
+  /// answers `raiseSequence`.
+  public static func isManaged(guiCommand command: String, supportDirectory: URL) -> Bool {
+    command.contains("--config-file \(fileURL(supportDirectory: supportDirectory).path)")
+  }
 
   public struct Titles: Equatable, Sendable {
     public var tab: String
@@ -74,6 +89,15 @@ public enum WezTermManagedConfig {
         window:set_title(window_title)
       end
       return false
+    end)
+
+    -- `wezterm cli activate-pane` selects a pane inside its own window but
+    -- leaves whichever window was last in front. Focus Queue sets this user
+    -- variable on the exact pane it opens, so that pane's window comes forward.
+    wezterm.on("user-var-changed", function(window, pane, name, value)
+      if name == "\(raiseUserVariable)" then
+        window:focus()
+      end
     end)
 
     -- Same search order WezTerm uses when no --config-file is given.

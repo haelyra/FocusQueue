@@ -262,6 +262,18 @@ public actor TmuxController {
     return clients.count
   }
 
+  /// Detaches the one client on `tty` from the session, leaving the session
+  /// and any other views running. A window that only ran that client closes.
+  public func detachClient(tty: String, reference: TmuxSessionReference) async throws {
+    try Self.validateName(reference.name)
+    guard tty.range(of: "^/dev/tty[a-z]*[0-9]+$", options: .regularExpression) != nil,
+          try await clientTTYs(for: reference).contains(tty) else { throw TmuxError.changed }
+    let result = try await run(reference.executable, ["detach-client", "-t", tty])
+    guard result.succeeded else {
+      throw TmuxError.unavailable("Could not close the task's hidden terminal view.")
+    }
+  }
+
   public func workingDirectory(for reference: TmuxSessionReference) async throws -> String {
     _ = try await verify(reference)
     let result = try await run(reference.executable, [

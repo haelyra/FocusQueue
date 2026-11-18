@@ -937,13 +937,23 @@ public actor WezTermController: WezTermControlling {
             let panes = try Self.decodePanes(from: connection.result)
             let clients = try await runtime.clientTTYs(for: reference)
             if let pane = Self.managedClientPane(in: panes, clientTTYs: clients, directory: directory) {
-                try await focus(
-                    pane: pane,
-                    tabTitle: AgentTerminalLabels.managedTabTitle(ticketID: taskID, taskTitle: taskTitle),
-                    windowTitle: AgentTerminalLabels.windowTitle(
-                        ticketID: taskID.uppercased(), taskTitle: taskTitle),
-                    configuration: pinned)
-                return .focused(paneID: pane.paneID)
+                if let tty = pane.ttyName,
+                   await guiKind(socketPath: pinned.socketPath) == .unmanaged {
+                    // A WezTerm that Focus Queue did not start cannot raise one
+                    // exact window, so focusing this view would show whichever
+                    // window was last in front, often another task. Detach this
+                    // view (a Focus Queue window closes; the agent keeps running
+                    // in tmux) and attach a new window, which opens in front.
+                    try await runtime.detachClient(tty: tty, reference: reference)
+                } else {
+                    try await focus(
+                        pane: pane,
+                        tabTitle: AgentTerminalLabels.managedTabTitle(ticketID: taskID, taskTitle: taskTitle),
+                        windowTitle: AgentTerminalLabels.windowTitle(
+                            ticketID: taskID.uppercased(), taskTitle: taskTitle),
+                        configuration: pinned)
+                    return .focused(paneID: pane.paneID)
+                }
             }
 
             let command = try TmuxController.attachCommand(reference: reference)
@@ -2027,6 +2037,8 @@ public actor WezTermController: WezTermControlling {
             windowTitle: windowTitle,
             configuration: configuration
         )
+        // activate-pane leaves the last front window in front; raise this one.
+        if let tty = pane.ttyName { await raiseWindow(tty: tty, socketPath: configuration.socketPath) }
         let revealed = try await runner.run(ProcessSpecification(
             executable: "/usr/bin/open",
             arguments: WezTermConnection.revealArguments(configuration: configuration),
@@ -2034,6 +2046,47 @@ public actor WezTermController: WezTermControlling {
         guard revealed.succeeded else {
             throw WezTermError.actionFailed("The terminal process is running, but its window could not open. \(Self.failureDetail(revealed))")
         }
+    }
+
+    /// Which WezTerm GUI a socket belongs to, as far as it can be proven.
+    enum WezTermGUIKind: Equatable { case managed, unmanaged, unknown }
+
+    /// `.managed` or `.unmanaged` only when `socketPath` names a running
+    /// WezTerm GUI (`gui-sock-<pid>`) whose command line shows whether it
+    /// loaded Focus Queue's managed config; anything else is `.unknown`.
+    func guiKind(socketPath: String?) async -> WezTermGUIKind {
+        guard let socketPath else { return .unknown }
+        let name = URL(fileURLWithPath: socketPath).resolvingSymlinksInPath().lastPathComponent
+        guard name.hasPrefix("gui-sock-"), let pid = Int32(name.dropFirst("gui-sock-".count)),
+              pid > 0 else { return .unknown }
+        guard let listed = try? await runner.run(ProcessSpecification(
+            executable: "/bin/ps", arguments: ["-ww", "-o", "command=", "-p", String(pid)],
+            timeoutSeconds: 5)), listed.succeeded else { return .unknown }
+        let command = listed.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard command.contains("wezterm-gui") else { return .unknown }
+        return WezTermManagedConfig.isManaged(guiCommand: command, supportDirectory: supportDirectory)
+            ? .managed : .unmanaged
+    }
+
+    /// Raises the WezTerm window showing `tty` through the managed config's
+    /// user-variable handler. Best effort: a GUI without the handler ignores it.
+    private func raiseWindow(tty: String, socketPath: String?) async {
+        guard tty.range(of: "^/dev/tty[a-z]*[0-9]+$", options: .regularExpression) != nil else { return }
+        if await guiKind(socketPath: socketPath) == .managed {
+            // A GUI started before this handler existed reloads its config
+            // when the file changes, so refresh it and give the reload a moment.
+            let file = WezTermManagedConfig.fileURL(supportDirectory: supportDirectory)
+            let before = try? Data(contentsOf: file)
+            if (try? WezTermManagedConfig.install(supportDirectory: supportDirectory)) != nil,
+               (try? Data(contentsOf: file)) != before {
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+        }
+        _ = try? await runner.run(ProcessSpecification(
+            executable: "/bin/sh",
+            arguments: ["-c", "printf '%s' \"$1\" > \"$2\"", "sh",
+                WezTermManagedConfig.raiseSequence(), tty],
+            timeoutSeconds: 5))
     }
 
     private func labelAndActivate(

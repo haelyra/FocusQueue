@@ -5684,8 +5684,14 @@ extension QueueViewModelTests {
     await model.refresh()
 
     // The schedule takes the side panel and gives it back to the bulletin board.
+    #expect(model.inspectorLayout == .closed)
+    var widths: [Bool] = []
+    model.reportVisibilityHandler = { widths.append($0) }
     model.setSchedulePresented(true)
     #expect(model.isSchedulePresented && model.isInspectorPresented)
+    // Opening the schedule asks the window to widen to the schedule layout.
+    #expect(widths == [true] && model.inspectorLayout == .schedule)
+    #expect(QueueInspectorLayout.schedule.preferredWidth(compactWidth: 440) == 1_340)
     model.setBulletinBoardPresented(true)
     #expect(!model.isSchedulePresented && model.isBulletinBoardPresented)
     model.toggleSchedule()

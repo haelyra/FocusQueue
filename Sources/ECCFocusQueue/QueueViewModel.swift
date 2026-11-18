@@ -8171,6 +8171,9 @@ extension QueueViewModel {
 
   func toggleSchedule() { setSchedulePresented(!isSchedulePresented) }
 
+  /// The window width the open side panel needs; the app resizes the panel to it.
+  var inspectorLayout: QueueInspectorLayout { QueueInspectorLayout.current(for: self) }
+
   /// Task titles and owning projects, keyed by upper-cased task ID.
   var scheduleTicketInfo: [String: ScheduleTicketInfo] {
     var info: [String: ScheduleTicketInfo] = [:]

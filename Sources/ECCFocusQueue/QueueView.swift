@@ -160,6 +160,9 @@ struct QueueView: View {
       }
       .equatable()
       .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
+    } else if model.isBulletinBoardPresented {
+      BulletinBoardView(model: model)
+        .frame(minWidth: 320, idealWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
     } else if model.isQueueChatInspectorPresented {
       VStack(alignment: .leading, spacing: 10) {
         HStack {
@@ -2075,6 +2078,11 @@ struct QueueSettingsView: View {
                 isOn: Binding(
                   get: { model.toggleMinimizationHotkeyEnabled },
                   set: { model.setToggleMinimizationHotkeyEnabled($0) }))
+              hotkeyRow(.bulletinBoard,
+                detail: "Opens the bulletin board of pinned tasks, agents, files, and folders beside the queue. Press again to close it.",
+                isOn: Binding(
+                  get: { model.bulletinBoardHotkeyEnabled },
+                  set: { model.setBulletinBoardHotkeyEnabled($0) }))
             }
           }
 
@@ -3615,6 +3623,7 @@ private struct TicketCard: View {
     ) {
       Task { await model.setTicketPinned(ticket, pinned: !model.isTicketPinned(ticket.id)) }
     }
+    BulletinBoardMenuButton(model: model, taskID: ticket.id)
     if model.phaseProcess(for: ticket) != nil {
       Menu("Depends on", systemImage: "arrow.turn.down.right") {
         let candidates = model.prerequisiteCandidates(for: ticket)
@@ -4413,6 +4422,7 @@ private struct TaskAgentRow: View {
         }
         .disabled(!model.hasLaunchDiagnostics(for: agent))
         decisionTreeButton
+        BulletinBoardMenuButton(model: model, taskID: ticket.id, subtaskID: agent.id)
         Button("Close terminal window", systemImage: "macwindow.badge.minus") {
           model.closeAgentTerminalWindow(agent, for: ticket)
         }
@@ -4429,7 +4439,7 @@ private struct TaskAgentRow: View {
       .fixedSize()
       .minimumHitTarget()
       .accessibilityLabel("More options for agent \(agent.title)")
-      .help("Open, edit, complete, inspect, view the decision tree of, close the window of, or archive this agent")
+      .help("Open, edit, complete, inspect, view the decision tree of, pin to the bulletin board, close the window of, or archive this agent")
     }
     .padding(9)
     .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
@@ -4438,12 +4448,15 @@ private struct TaskAgentRow: View {
         .stroke(Color.primary.opacity(0.12), lineWidth: 1)
     }
     .padding(.vertical, 2)
+    // Drag onto the bulletin board to pin this agent.
+    .draggable(BulletinDragToken.agent(taskID: ticket.id, subtaskID: agent.id))
     .contextMenu {
       Button("Open agent", systemImage: "terminal") {
         model.openSubtask(agent, for: ticket)
       }
       .disabled(isOpening)
       decisionTreeButton
+      BulletinBoardMenuButton(model: model, taskID: ticket.id, subtaskID: agent.id)
       Button("Close terminal window", systemImage: "macwindow.badge.minus") {
         model.closeAgentTerminalWindow(agent, for: ticket)
       }

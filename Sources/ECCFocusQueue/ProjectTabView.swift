@@ -18,6 +18,7 @@ struct ProjectTabView: View {
     ScrollView {
       VStack(alignment: .leading, spacing: 10) {
         if let project {
+          bulletinBoardRow
           processSection(project)
           modulesSection(project)
           filesSection(project)
@@ -33,6 +34,36 @@ struct ProjectTabView: View {
       }
       .padding(.horizontal, 2).padding(.vertical, 2)
     }.scrollIndicators(.automatic)
+  }
+
+  // MARK: - Bulletin board
+
+  /// Opens the board of pinned tasks, agents, files, and folders beside the
+  /// queue. Shown whether or not the development process is on.
+  private var bulletinBoardRow: some View {
+    let count = model.visibleBulletinPins.count
+    let shortcut = model.isHotkeyEnabled(.bulletinBoard)
+      ? " · \(model.hotkeyShortcut(for: .bulletinBoard).displayString)" : ""
+    return Button { model.toggleBulletinBoard() } label: {
+      HStack(spacing: 8) {
+        Image(systemName: model.isBulletinBoardPresented ? "pin.circle.fill" : "pin.circle")
+          .font(.system(size: 16, weight: .semibold))
+          .foregroundStyle(model.isBulletinBoardPresented ? Color.accentColor : Color.secondary)
+        VStack(alignment: .leading, spacing: 1) {
+          Text("Bulletin board").font(.system(size: 12, weight: .semibold))
+          Text("\(count) pinned\(shortcut)").font(.caption).foregroundStyle(.secondary)
+        }
+        Spacer()
+        Image(systemName: model.isBulletinBoardPresented ? "sidebar.trailing" : "arrow.right.to.line.compact")
+          .font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+      }
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .padding(12)
+    .notificationSurface(radius: 16)
+    .accessibilityLabel(model.isBulletinBoardPresented ? "Close bulletin board" : "Open bulletin board, \(count) pinned")
+    .help("Pinned tasks, agents, files, and folders. Drag items onto the board beside the queue.")
   }
 
   // MARK: - Development process

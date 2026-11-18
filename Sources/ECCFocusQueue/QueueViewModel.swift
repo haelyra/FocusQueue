@@ -144,6 +144,8 @@ final class QueueViewModel {
     UserDefaults.standard.object(forKey: "qchatHotkeyEnabled") as? Bool ?? true
   private(set) var toggleMinimizationHotkeyEnabled =
     UserDefaults.standard.object(forKey: "toggleMinimizationHotkeyEnabled") as? Bool ?? true
+  private(set) var bulletinBoardHotkeyEnabled =
+    UserDefaults.standard.object(forKey: "bulletinBoardHotkeyEnabled") as? Bool ?? true
   /// A recorded combo per action; a missing entry keeps the built-in shortcut.
   private(set) var hotkeyShortcuts: [HotkeyAction: HotkeyShortcut] = HotkeyAction.allCases
     .reduce(into: [:]) { shortcuts, action in
@@ -253,6 +255,15 @@ final class QueueViewModel {
   @ObservationIgnored private var liveRuntimeSubtaskIDs: Set<String> = []
   @ObservationIgnored private var spinningRuntimeSubtaskIDs: Set<String> = []
   private(set) var isQueueChatInspectorPresented = false
+  /// The bulletin board side panel: pinned tasks, agents, files, and folders.
+  private(set) var isBulletinBoardPresented = false
+  /// Every pin on this Mac; the board filters them to the project scope.
+  private(set) var bulletinPins: [BulletinPin] = []
+  private(set) var bulletinBoardError: String?
+  /// "Show cleaned-up items" in the board's options menu.
+  private(set) var showsCleanedBulletinPins =
+    UserDefaults.standard.bool(forKey: "bulletinBoardShowsCleanedUp")
+  @ObservationIgnored private var bulletinPinsLoaded = false
   private(set) var isTokenAnalyticsPresented = false
   private(set) var presentedAgentUpdate: QueueAgentUpdate?
   private(set) var presentedPlanTicketID: String?
@@ -999,6 +1010,8 @@ final class QueueViewModel {
   private func finishBootstrap() async {
     // Readable copies of the contracts this build gives agents, for Settings and links.
     BuiltInAgentContract.writeAll(root: paths.supportDirectory, resources: builtInContractResources)
+    // Task and agent menus show whether each item is already on the bulletin board.
+    loadBulletinPinsIfNeeded()
     do {
       let projects = ProjectCatalog.ensuringOther(
         in: config.projects, supportDirectory: paths.supportDirectory)
@@ -2224,6 +2237,8 @@ final class QueueViewModel {
 
   @discardableResult
   func moveTicket(_ ticketID: String, to placement: QueuePlacement) -> Bool {
+    // Other drags, such as agent rows headed for the bulletin board, are not tasks.
+    guard dashboard.tickets.contains(where: { $0.id == ticketID }) else { return false }
     do {
       let automaticIDs = automaticOpenTicketIDs
       let currentIDs = allOpenTickets.filter(\.isOpen).map(\.id)
@@ -2701,13 +2716,14 @@ final class QueueViewModel {
   var isInspectorPresented: Bool {
     isQueueChatInspectorPresented || isDailyReportPresented || presentedPlanTicketID != nil
       || presentedAgentUpdate != nil || isDocumentViewerPresented
-      || isTokenAnalyticsPresented
+      || isTokenAnalyticsPresented || isBulletinBoardPresented
   }
 
   func setTokenAnalyticsPresented(_ presented: Bool) {
     guard presented != isTokenAnalyticsPresented else { return }
     if presented {
       isQueueChatInspectorPresented = false
+      isBulletinBoardPresented = false
       presentedAgentUpdate = nil
       presentedPlanTicketID = nil
       presentedPlanURL = nil
@@ -3624,6 +3640,7 @@ final class QueueViewModel {
     revealProject(for: ticket.id)
     markTicketViewed(ticket.id)
     isQueueChatInspectorPresented = false
+    isBulletinBoardPresented = false
     presentedAgentUpdate = nil
     isDailyReportPresented = false
     isDocumentViewerPresented = false
@@ -3701,6 +3718,7 @@ final class QueueViewModel {
     isTokenAnalyticsPresented = false
     revealProject(for: update.ticketID)
     isQueueChatInspectorPresented = false
+    isBulletinBoardPresented = false
     presentedPlanTicketID = nil
     presentedPlanURL = nil
     isDailyReportPresented = false
@@ -3956,6 +3974,7 @@ final class QueueViewModel {
       documentViewerScope = scope
     }
     isQueueChatInspectorPresented = false
+    isBulletinBoardPresented = false
     presentedAgentUpdate = nil
     presentedPlanTicketID = nil
     presentedPlanURL = nil
@@ -4011,6 +4030,7 @@ final class QueueViewModel {
   func setQueueChatInspectorPresented(_ presented: Bool) {
     if presented {
       isTokenAnalyticsPresented = false
+      isBulletinBoardPresented = false
       presentedAgentUpdate = nil
       presentedPlanTicketID = nil
       presentedPlanURL = nil
@@ -4023,6 +4043,231 @@ final class QueueViewModel {
 
   func toggleQueueChatInspector() {
     setQueueChatInspectorPresented(!isQueueChatInspectorPresented)
+  }
+
+  // MARK: - Bulletin board
+
+  func setBulletinBoardPresented(_ presented: Bool) {
+    if presented {
+      loadBulletinPinsIfNeeded()
+      isTokenAnalyticsPresented = false
+      isQueueChatInspectorPresented = false
+      presentedAgentUpdate = nil
+      presentedPlanTicketID = nil
+      presentedPlanURL = nil
+      isDailyReportPresented = false
+      isDocumentViewerPresented = false
+    }
+    isBulletinBoardPresented = presented
+    reportVisibilityHandler?(isInspectorPresented)
+  }
+
+  func toggleBulletinBoard() {
+    setBulletinBoardPresented(!isBulletinBoardPresented)
+  }
+
+  private var bulletinBoardStore: BulletinBoardStore { BulletinBoardStore(root: paths.supportDirectory) }
+
+  func loadBulletinPinsIfNeeded() {
+    guard !bulletinPinsLoaded else { return }
+    do {
+      bulletinPins = try bulletinBoardStore.load().pins
+      bulletinPinsLoaded = true
+      bulletinBoardError = nil
+    } catch {
+      // An unreadable file stays untouched; the board refuses edits until it reads.
+      bulletinBoardError = "Bulletin board: \(error.localizedDescription)"
+    }
+  }
+
+  private func saveBulletinPins(_ pins: [BulletinPin]) {
+    loadBulletinPinsIfNeeded()
+    guard bulletinPinsLoaded else { return }
+    do {
+      try bulletinBoardStore.save(BulletinBoardDocument(pins: pins))
+      bulletinPins = pins
+      bulletinBoardError = nil
+    } catch {
+      bulletinBoardError = "Bulletin board: \(error.localizedDescription)"
+    }
+  }
+
+  private var bulletinPinLookup: BulletinPinLookup {
+    BulletinPinLookup(
+      tickets: Dictionary(dashboard.tickets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
+      contexts: taskContexts)
+  }
+
+  /// The board's project: nil in the All view, which shows every pin.
+  var bulletinBoardProjectID: String? { showsAllProjects ? nil : selectedProject?.id }
+
+  var visibleBulletinPins: [BulletinPin] {
+    BulletinBoardRules.visiblePins(bulletinPins, projectID: bulletinBoardProjectID,
+      showsCleanedUp: showsCleanedBulletinPins, lookup: bulletinPinLookup)
+  }
+
+  func isBulletinPinCleanedUp(_ pin: BulletinPin) -> Bool {
+    BulletinBoardRules.isCleanedUp(pin, lookup: bulletinPinLookup)
+  }
+
+  var cleanedBulletinPinCount: Int {
+    let lookup = bulletinPinLookup
+    return bulletinPins.filter {
+      (bulletinBoardProjectID == nil || $0.projectID == nil || $0.projectID == bulletinBoardProjectID)
+        && BulletinBoardRules.isCleanedUp($0, lookup: lookup)
+    }.count
+  }
+
+  func setShowsCleanedBulletinPins(_ shows: Bool) {
+    showsCleanedBulletinPins = shows
+    UserDefaults.standard.set(shows, forKey: "bulletinBoardShowsCleanedUp")
+  }
+
+  /// The live title of a pinned task or agent, or its title when pinned.
+  func bulletinPinTitle(_ pin: BulletinPin) -> String {
+    switch pin.kind {
+    case .task:
+      return dashboard.tickets.first { $0.id == pin.taskID }?.title ?? pin.title
+    case .agent:
+      guard let taskID = pin.taskID else { return pin.title }
+      return subtasks(for: taskID).first { $0.id == pin.subtaskID }?.title ?? pin.title
+    case .file, .folder:
+      return pin.path.map { URL(fileURLWithPath: $0).lastPathComponent } ?? pin.title
+    }
+  }
+
+  func bulletinTicket(for pin: BulletinPin) -> DashboardTicket? {
+    pin.taskID.flatMap { id in dashboard.tickets.first { $0.id == id } }
+  }
+
+  func bulletinAgent(for pin: BulletinPin) -> TaskSubtask? {
+    guard pin.kind == .agent, let taskID = pin.taskID else { return nil }
+    return subtasks(for: taskID).first { $0.id == pin.subtaskID }
+  }
+
+  private func placedBulletinPin(_ pin: BulletinPin, at point: CGPoint?) -> BulletinPin {
+    var pin = pin
+    if let point {
+      pin.x = max(0, point.x)
+      pin.y = max(0, point.y)
+    } else {
+      let slot = BulletinBoardRules.nextSlot(
+        for: visibleBulletinPins, boardWidth: 420, cardWidth: BulletinBoardMetrics.cardWidth,
+        cardHeight: BulletinBoardMetrics.cardHeight, spacing: BulletinBoardMetrics.spacing)
+      pin.x = slot.x
+      pin.y = slot.y
+    }
+    return pin
+  }
+
+  @discardableResult
+  func pinTaskToBulletinBoard(_ taskID: String, at point: CGPoint? = nil) -> Bool {
+    loadBulletinPinsIfNeeded()
+    guard let ticket = dashboard.tickets.first(where: { $0.id == taskID }) else { return false }
+    let pin = BulletinPin(kind: .task, projectID: project(for: ticket)?.id ?? ticket.projectID,
+      taskID: ticket.id, title: ticket.title)
+    saveBulletinPins(BulletinBoardRules.adding(placedBulletinPin(pin, at: point), to: bulletinPins))
+    return true
+  }
+
+  @discardableResult
+  func pinAgentToBulletinBoard(taskID: String, subtaskID: String, at point: CGPoint? = nil) -> Bool {
+    loadBulletinPinsIfNeeded()
+    guard let ticket = dashboard.tickets.first(where: { $0.id == taskID }),
+          let agent = subtasks(for: taskID).first(where: { $0.id == subtaskID }) else { return false }
+    let pin = BulletinPin(kind: .agent, projectID: project(for: ticket)?.id ?? ticket.projectID,
+      taskID: ticket.id, subtaskID: agent.id, title: agent.title)
+    saveBulletinPins(BulletinBoardRules.adding(placedBulletinPin(pin, at: point), to: bulletinPins))
+    return true
+  }
+
+  /// Files keep the board's project; in the All view they take the project
+  /// that owns the path, so they show under that project too.
+  @discardableResult
+  func pinFileToBulletinBoard(_ url: URL, at point: CGPoint? = nil) -> Bool {
+    loadBulletinPinsIfNeeded()
+    let url = url.standardizedFileURL
+    var isDirectory: ObjCBool = false
+    guard url.isFileURL, FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+      return false
+    }
+    var projectID = bulletinBoardProjectID
+    if projectID == nil {
+      switch documentScope(for: url) {
+      case .project(let id): projectID = id
+      case .task(let taskID):
+        projectID = dashboard.tickets.first { $0.id == taskID }.flatMap { project(for: $0)?.id ?? $0.projectID }
+      case nil: break
+      }
+    }
+    let pin = BulletinPin(kind: isDirectory.boolValue ? .folder : .file, projectID: projectID,
+      path: url.path, title: url.lastPathComponent)
+    saveBulletinPins(BulletinBoardRules.adding(placedBulletinPin(pin, at: point), to: bulletinPins))
+    return true
+  }
+
+  /// A drop of plain strings: task IDs, agent drag tokens, file URLs, or paths.
+  @discardableResult
+  func pinDroppedItem(_ value: String, at point: CGPoint?) -> Bool {
+    if let agent = BulletinDragToken.parseAgent(value) {
+      return pinAgentToBulletinBoard(taskID: agent.taskID, subtaskID: agent.subtaskID, at: point)
+    }
+    if let url = BulletinDragToken.fileURL(value) { return pinFileToBulletinBoard(url, at: point) }
+    return pinTaskToBulletinBoard(value.trimmingCharacters(in: .whitespacesAndNewlines), at: point)
+  }
+
+  func isPinnedToBulletinBoard(taskID: String, subtaskID: String? = nil) -> Bool {
+    bulletinPins.contains {
+      $0.taskID == taskID && $0.subtaskID == subtaskID && $0.kind == (subtaskID == nil ? .task : .agent)
+    }
+  }
+
+  func unpinTaskFromBulletinBoard(taskID: String, subtaskID: String? = nil) {
+    loadBulletinPinsIfNeeded()
+    saveBulletinPins(bulletinPins.filter {
+      !($0.taskID == taskID && $0.subtaskID == subtaskID && $0.kind == (subtaskID == nil ? .task : .agent))
+    })
+  }
+
+  func moveBulletinPin(_ id: String, to point: CGPoint) {
+    guard let index = bulletinPins.firstIndex(where: { $0.id == id }) else { return }
+    var pins = bulletinPins
+    var pin = pins.remove(at: index)
+    pin.x = max(0, point.x)
+    pin.y = max(0, point.y)
+    pins.append(pin)
+    saveBulletinPins(pins)
+  }
+
+  func unpinBulletinPin(_ id: String) {
+    saveBulletinPins(bulletinPins.filter { $0.id != id })
+  }
+
+  /// Removes the cleaned-up pins in the current scope for good.
+  func removeCleanedBulletinPins() {
+    let lookup = bulletinPinLookup
+    let scope = bulletinBoardProjectID
+    saveBulletinPins(bulletinPins.filter {
+      !((scope == nil || $0.projectID == nil || $0.projectID == scope)
+        && BulletinBoardRules.isCleanedUp($0, lookup: lookup))
+    })
+  }
+
+  /// Tasks show in the queue with a brief outline; agents open in their
+  /// workspace; files and folders open in their default app or Finder.
+  func openBulletinPin(_ pin: BulletinPin) {
+    switch pin.kind {
+    case .task:
+      guard let ticket = bulletinTicket(for: pin) else { return }
+      requestedReportTaskID = ticket.id
+      mapLocatedTaskID = ticket.id
+    case .agent:
+      guard let ticket = bulletinTicket(for: pin), let agent = bulletinAgent(for: pin) else { return }
+      openSubtask(agent, for: ticket)
+    case .file, .folder:
+      guard let path = pin.path else { return }
+      NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
   }
 
   func reloadPresentedPlan() async {
@@ -6075,6 +6320,7 @@ final class QueueViewModel {
     if presented {
       isTokenAnalyticsPresented = false
       isQueueChatInspectorPresented = false
+      isBulletinBoardPresented = false
       presentedAgentUpdate = nil
       presentedPlanTicketID = nil
       presentedPlanURL = nil
@@ -6331,11 +6577,19 @@ final class QueueViewModel {
     case .newTask: newTaskHotkeyEnabled
     case .qchat: qchatHotkeyEnabled
     case .toggleMinimization: toggleMinimizationHotkeyEnabled
+    case .bulletinBoard: bulletinBoardHotkeyEnabled
     }
   }
 
   func hotkeyShortcut(for action: HotkeyAction) -> HotkeyShortcut {
     hotkeyShortcuts[action] ?? action.defaultShortcut
+  }
+
+  func setBulletinBoardHotkeyEnabled(_ enabled: Bool) {
+    guard bulletinBoardHotkeyEnabled != enabled else { return }
+    bulletinBoardHotkeyEnabled = enabled
+    UserDefaults.standard.set(enabled, forKey: "bulletinBoardHotkeyEnabled")
+    hotkeyConfigurationHandler?()
   }
 
   func setToggleMinimizationHotkeyEnabled(_ enabled: Bool) {

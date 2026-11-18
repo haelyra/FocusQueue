@@ -5511,3 +5511,85 @@ private actor HoldingRecallRecorder: WezTermControlling {
     return .focused(paneID: 42)
   }
 }
+
+extension QueueViewModelTests {
+  @Test("Bulletin board pins drops, hides cleaned-up items, persists, and shares the side panel")
+  func bulletinBoardWorkflow() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    _ = try await TaskContextStore(root: fixture.root).ensureContext(ticket: fixture.tickets[0])
+    _ = try await TaskContextStore(root: fixture.root).upsertSubtask(ticketID: "ECC-101",
+      subtask: TaskSubtask(id: "board-agent", title: "Board agent", sessionID: UUID().uuidString))
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    await model.refresh()
+    model.setShowsCleanedBulletinPins(false)
+    defer { model.setShowsCleanedBulletinPins(false) }
+
+    // The board takes the side panel and gives it back to QChat.
+    model.setBulletinBoardPresented(true)
+    #expect(model.isBulletinBoardPresented && model.isInspectorPresented)
+    model.setQueueChatInspectorPresented(true)
+    #expect(!model.isBulletinBoardPresented && model.isQueueChatInspectorPresented)
+    model.toggleBulletinBoard()
+    #expect(model.isBulletinBoardPresented && !model.isQueueChatInspectorPresented)
+
+    // Task IDs, agent drag tokens, file URLs, and folder paths all pin.
+    let file = fixture.root.appendingPathComponent("notes.md")
+    try Data("notes".utf8).write(to: file)
+    let folder = fixture.root.appendingPathComponent("evidence", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    #expect(model.pinDroppedItem("ECC-101", at: CGPoint(x: 40, y: 30)))
+    #expect(model.pinDroppedItem(BulletinDragToken.agent(taskID: "ECC-101", subtaskID: "board-agent"), at: nil))
+    #expect(model.pinDroppedItem(file.absoluteString, at: CGPoint(x: 200, y: 30)))
+    #expect(model.pinDroppedItem(folder.path, at: nil))
+    #expect(model.pinTaskToBulletinBoard("ECC-102"))
+    #expect(!model.pinDroppedItem("NOPE-1", at: nil))
+    #expect(model.visibleBulletinPins.map(\.kind) == [.task, .agent, .file, .folder, .task])
+    #expect(model.isPinnedToBulletinBoard(taskID: "ECC-101", subtaskID: "board-agent"))
+    #expect(model.bulletinPinTitle(model.visibleBulletinPins[1]) == "Board agent")
+
+    // Pinning an item again moves its card instead of adding one.
+    #expect(model.pinDroppedItem("ECC-101", at: CGPoint(x: 90, y: 140)))
+    #expect(model.visibleBulletinPins.count == 5)
+    let moved = try #require(model.visibleBulletinPins.first { $0.taskID == "ECC-101" && $0.kind == .task })
+    #expect(moved.x == 90 && moved.y == 140)
+
+    // A deleted file and a resolved task disappear unless the option shows them.
+    try FileManager.default.removeItem(at: file)
+    let dashboardURL = URL(fileURLWithPath: model.config.dashboardPath)
+    try JSONEncoder().encode(DashboardDocument(tickets: [
+      fixture.tickets[0],
+      DashboardTicket(id: "ECC-102", title: "Task ECC-102", status: "resolved", summary: "Done"),
+    ])).write(to: dashboardURL, options: .atomic)
+    await model.refresh()
+    #expect(model.visibleBulletinPins.map(\.kind) == [.agent, .folder, .task])
+    #expect(model.cleanedBulletinPinCount == 2)
+    model.setShowsCleanedBulletinPins(true)
+    #expect(model.visibleBulletinPins.count == 5)
+    model.setShowsCleanedBulletinPins(false)
+
+    if let output = ProcessInfo.processInfo.environment["FOCUS_QUEUE_RENDER_DIR"] {
+      let size = NSSize(width: 460, height: 420)
+      try WalkthroughDemoRecording.snapshot(BulletinBoardView(model: model).padding(12), size: size,
+        to: URL(fileURLWithPath: output).appendingPathComponent("bulletin-board.png"))
+      model.setShowsCleanedBulletinPins(true)
+      try WalkthroughDemoRecording.snapshot(BulletinBoardView(model: model).padding(12), size: size,
+        to: URL(fileURLWithPath: output).appendingPathComponent("bulletin-board-cleaned.png"))
+      model.setShowsCleanedBulletinPins(false)
+    }
+
+    // Pins survive a restart; removing cleaned-up pins deletes only those.
+    #expect(try BulletinBoardStore(root: fixture.root).load().pins.count == 5)
+    model.removeCleanedBulletinPins()
+    #expect(model.bulletinPins.count == 3)
+    #expect(try BulletinBoardStore(root: fixture.root).load().pins.count == 3)
+    let agentPin = try #require(model.bulletinPins.first { $0.kind == .agent })
+    model.unpinBulletinPin(agentPin.id)
+    #expect(!model.isPinnedToBulletinBoard(taskID: "ECC-101", subtaskID: "board-agent"))
+
+    // The board renders its cards.
+    let renderer = ImageRenderer(content: BulletinBoardView(model: model)
+      .frame(width: 460, height: 360).environment(\.colorScheme, .dark))
+    #expect(renderer.nsImage != nil)
+  }
+}

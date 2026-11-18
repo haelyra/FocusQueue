@@ -400,6 +400,7 @@ import UserNotifications
     switch action {
     case .newTask: handleNewTaskHotkey()
     case .qchat: handleQChatHotkey()
+    case .bulletinBoard: handleBulletinBoardHotkey()
     case .toggleMinimization:
       let wasMiniaturized = panel?.isMiniaturized == true
       let isPinnedOnAnotherSpace = model.isWindowPinned && panel?.isOnActiveSpace == false
@@ -426,6 +427,19 @@ import UserNotifications
       panel?.attachedSheet?.isKeyWindow == true, NSApp.isActive)
     if !isOpen { revealPanelOnPointerDisplay() }
     model.toggleNewTaskRequest()
+  }
+
+  /// Toggles the bulletin board beside the queue. Like QChat, a press while
+  /// another app has the keyboard brings an open board forward instead.
+  private func handleBulletinBoardHotkey() {
+    if model.isBulletinBoardPresented, model.panelMode == .expanded, panel?.isKeyWindow == true {
+      model.setBulletinBoardPresented(false)
+      return
+    }
+    revealPanelOnPointerDisplay()
+    panel?.makeKey()
+    model.setPanelMode(.expanded)
+    model.setBulletinBoardPresented(true)
   }
 
   /// Toggles like the side-panel button, but a press while another app has the

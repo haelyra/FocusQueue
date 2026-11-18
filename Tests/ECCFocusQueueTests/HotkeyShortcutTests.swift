@@ -6,16 +6,17 @@ import Testing
 @Suite("Hotkey recording")
 @MainActor
 struct HotkeyShortcutTests {
-  @Test("Defaults are Command period, slash, and comma Carbon shortcuts")
+  @Test("Defaults are Command period, slash, comma, and Shift-Command B Carbon shortcuts")
   func defaults() {
-    let expected: [HotkeyAction: (Int, String)] = [
-      .newTask: (kVK_ANSI_Period, "⌘."), .qchat: (kVK_ANSI_Slash, "⌘/"), .toggleMinimization: (kVK_ANSI_Comma, "⌘,"),
+    let expected: [HotkeyAction: (Int, String, Int)] = [
+      .newTask: (kVK_ANSI_Period, "⌘.", cmdKey), .qchat: (kVK_ANSI_Slash, "⌘/", cmdKey),
+      .toggleMinimization: (kVK_ANSI_Comma, "⌘,", cmdKey), .bulletinBoard: (kVK_ANSI_B, "⇧⌘B", cmdKey | shiftKey),
     ]
     for action in HotkeyAction.allCases {
       let shortcut = action.defaultShortcut
       #expect(shortcut.keyCode == UInt16(expected[action]!.0))
       // Carbon's cmdKey has no side, so either Command key triggers it.
-      #expect(shortcut.carbonModifiers == UInt32(cmdKey))
+      #expect(shortcut.carbonModifiers == UInt32(expected[action]!.2))
       #expect(shortcut.displayString == expected[action]!.1)
     }
   }

@@ -374,6 +374,7 @@ struct ProjectFilesSection: View {
                     }
                     .buttonStyle(.plain)
                     .help(document.url.path)
+                    .draggable(document.url.absoluteString)
                     .accessibilityLabel("Open \(document.title)")
                 }
             }

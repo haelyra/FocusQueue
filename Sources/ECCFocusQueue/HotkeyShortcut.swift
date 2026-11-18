@@ -5,7 +5,7 @@ import SwiftUI
 /// The global shortcuts a user can rebind. Each one starts on its built-in
 /// shortcut; recording a combo replaces it until reset.
 enum HotkeyAction: String, CaseIterable, Identifiable {
-  case newTask, qchat, toggleMinimization
+  case newTask, qchat, toggleMinimization, bulletinBoard
 
   var id: String { rawValue }
 
@@ -14,6 +14,7 @@ enum HotkeyAction: String, CaseIterable, Identifiable {
     case .newTask: "New task"
     case .qchat: "QChat"
     case .toggleMinimization: "Toggle minimization"
+    case .bulletinBoard: "Bulletin board"
     }
   }
 
@@ -24,6 +25,8 @@ enum HotkeyAction: String, CaseIterable, Identifiable {
     case .newTask: HotkeyShortcut(keyCode: UInt16(kVK_ANSI_Period), modifiers: command, keyLabel: ".")
     case .qchat: HotkeyShortcut(keyCode: UInt16(kVK_ANSI_Slash), modifiers: command, keyLabel: "/")
     case .toggleMinimization: HotkeyShortcut(keyCode: UInt16(kVK_ANSI_Comma), modifiers: command, keyLabel: ",")
+    case .bulletinBoard: HotkeyShortcut(keyCode: UInt16(kVK_ANSI_B),
+      modifiers: command | NSEvent.ModifierFlags.shift.rawValue, keyLabel: "B")
     }
   }
 

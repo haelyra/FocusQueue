@@ -36,6 +36,8 @@ public enum ScheduleJobSource: Hashable, Sendable {
     case scheduledLaunch(id: String)
     case dailyReport
     case decision(taskID: String, agentID: String, nodeID: String)
+    /// A past run drawn from the two-day history; read-only.
+    case runRecord(id: String)
 }
 
 /// The window lengths the viewer offers.
@@ -90,6 +92,7 @@ public struct ScheduleJob: Identifiable, Equatable, Sendable {
         case .scheduledLaunch(let id): "launch:\(id)"
         case .dailyReport: "daily-report"
         case .decision(let task, let agent, let node): "decision:\(task)/\(agent)/\(node)"
+        case .runRecord(let id): "run:\(id)"
         }
     }
 
@@ -122,6 +125,8 @@ public struct ScheduleClip: Identifiable, Equatable, Sendable {
     public var end: Date
     /// Sub-row inside the lane; non-zero only when fires collide.
     public var row: Int = 0
+    /// Set for clips drawn from the run history; nil for scheduled fires.
+    public var outcome: ScheduleRunOutcome? = nil
     public var id: String { "\(job.id)#\(index)" }
     public var runEnd: Date { min(start.addingTimeInterval(job.expectedDuration), max(start, end)) }
 }
@@ -196,9 +201,12 @@ public enum ScheduleTimeline {
     // MARK: Arrange
 
     /// Tracks for the chosen scope, grouped by project. A nil `projectID`
-    /// means all projects. App-level jobs show in every scope.
+    /// means all projects. App-level jobs show in every scope. `history`
+    /// records whose task has no scheduled job get their own track, so a
+    /// finished one-shot launch still appears in the past.
     public static func groups(
         jobs: [ScheduleJob],
+        history: [ScheduleRunRecord] = [],
         projectID: String?,
         projectNames: [String: String],
         tickets: [String: ScheduleTicketInfo]
@@ -206,6 +214,10 @@ public enum ScheduleTimeline {
         let visible = jobs.filter { job in
             guard let projectID else { return true }
             return (job.projectID == nil && job.ticketID == nil) || job.projectID == projectID
+        }
+        let visibleHistory = history.filter { record in
+            guard let projectID else { return true }
+            return (record.projectID == nil && record.ticketID == nil) || record.projectID == projectID
         }
         var tracks: [String: ScheduleTrack] = [:]
         for job in visible {
@@ -218,6 +230,14 @@ public enum ScheduleTimeline {
                     projectID: job.projectID, jobs: [])
             }
             tracks[job.trackID]?.jobs.append(job)
+        }
+        for record in visibleHistory where tracks[record.trackID] == nil {
+            let isApp = record.ticketID == nil
+            tracks[record.trackID] = ScheduleTrack(
+                id: record.trackID,
+                title: isApp ? "Focus Queue" : record.trackID,
+                subtitle: isApp ? "App jobs" : tickets[record.trackID]?.title ?? record.title,
+                projectID: record.projectID, jobs: [])
         }
         let groupKey: (ScheduleTrack) -> String = { track in
             track.id == ScheduleJob.appTrackID ? "~app" : track.projectID ?? "~other"
@@ -285,21 +305,42 @@ public enum ScheduleTimeline {
         return dates
     }
 
+    /// A read-only job standing in for one past run, so history draws in the
+    /// same lane and shape as scheduled fires.
+    public static func historyJob(for record: ScheduleRunRecord) -> ScheduleJob {
+        ScheduleJob(source: .runRecord(id: record.id), kind: record.kind, title: record.title,
+                    detail: record.detail, ticketID: record.ticketID, projectID: record.projectID,
+                    anchor: record.scheduledAt, isMovable: false)
+    }
+
     /// Clips for one lane. Fires closer than `minimumGap` to the previous
     /// fire in a row move to the next row, so labels never sit on top of each
     /// other. Each clip's slot ends at its row's next fire (or the window's
-    /// end); the viewer truncates labels to fit.
+    /// end); the viewer truncates labels to fit. `history` records land as
+    /// read-only clips marked with their outcome; when `pastCutoff` is set,
+    /// scheduled fires before it are dropped so the recorded past is not
+    /// double-drawn by jobs whose definition changed since.
     public static func clips(for track: ScheduleTrack, in window: DateInterval, minimumGap: TimeInterval = 0,
+                             history: [ScheduleRunRecord] = [], pastCutoff: Date? = nil,
                              calendar: Calendar = .current) -> [ScheduleClip] {
-        let starts = track.jobs.flatMap { job in
-            occurrences(of: job, in: window, calendar: calendar).enumerated().map { (job, $0.offset, $0.element) }
-        }.sorted { ($0.2, $0.0.id) < ($1.2, $1.0.id) }
+        var starts: [(job: ScheduleJob, index: Int, start: Date, outcome: ScheduleRunOutcome?)] =
+            track.jobs.flatMap { job in
+                occurrences(of: job, in: window, calendar: calendar).enumerated().compactMap { index, date in
+                    if let pastCutoff, date < pastCutoff { return nil }
+                    return (job, index, date, nil)
+                }
+            }
+        starts += history.filter { window.contains($0.scheduledAt) }.enumerated().map { index, record in
+            (historyJob(for: record), index, record.scheduledAt, record.outcome)
+        }
+        starts.sort { ($0.start, $0.job.id) < ($1.start, $1.job.id) }
         var rowLast: [Date] = []
         var placed: [ScheduleClip] = []
-        for (job, index, start) in starts {
-            let row = rowLast.firstIndex { start.timeIntervalSince($0) >= max(minimumGap, 1) } ?? rowLast.count
-            if row == rowLast.count { rowLast.append(start) } else { rowLast[row] = start }
-            placed.append(ScheduleClip(job: job, index: index, start: start, end: window.end, row: row))
+        for entry in starts {
+            let row = rowLast.firstIndex { entry.start.timeIntervalSince($0) >= max(minimumGap, 1) } ?? rowLast.count
+            if row == rowLast.count { rowLast.append(entry.start) } else { rowLast[row] = entry.start }
+            placed.append(ScheduleClip(job: entry.job, index: entry.index, start: entry.start,
+                                       end: window.end, row: row, outcome: entry.outcome))
         }
         for i in placed.indices {
             if let next = placed[(i + 1)...].first(where: { $0.row == placed[i].row }) {

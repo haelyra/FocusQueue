@@ -5789,6 +5789,89 @@ extension QueueViewModelTests {
     let renderer = ImageRenderer(content: ScheduleTimelineView(model: model).frame(width: 760, height: 320))
     #expect(renderer.nsImage != nil)
   }
+
+  @Test("Past scheduled runs record completed, skipped, and failed outcomes for the timeline")
+  func scheduleRunHistoryRecording() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let now = Date()
+    let launchStore = LaunchScheduleStore(supportDirectory: fixture.paths.supportDirectory)
+    try launchStore.save([
+      ScheduledLaunch(id: "due", fireAt: now.addingTimeInterval(-60), ticketID: "ECC-101",
+                      prompt: "Sweep", title: "Sweep", preset: AgentLaunchPreset(provider: .claude)),
+      ScheduledLaunch(id: "orphan", fireAt: now.addingTimeInterval(-30), ticketID: "ECC-999",
+                      prompt: "Gone", title: "Gone", preset: AgentLaunchPreset(provider: .claude)),
+    ])
+    // An overdue decision whose agent exists but cannot be reached in tests.
+    let contexts = TaskContextStore(root: fixture.root)
+    _ = try await contexts.ensureContext(ticket: fixture.tickets[1])
+    _ = try await contexts.upsertSubtask(ticketID: "ECC-102",
+      subtask: TaskSubtask(id: "dec-agent", title: "Decision agent", sessionID: UUID().uuidString))
+    var tree = DecisionTree(taskID: "ECC-102", agentID: "dec-agent", agentTitle: nil, provider: nil,
+                            now: DecisionTreeStore.timestamp(now.addingTimeInterval(-3 * 3_600)))
+    tree.nodes = [DecisionNode(id: "D1", parentID: nil, parentOptionID: nil, title: "Pick a layout",
+                               divergence: .taskPlan, detail: nil,
+                               options: [DecisionOption(id: "a", label: "Grid"), DecisionOption(id: "b", label: "List")],
+                               createdAt: DecisionTreeStore.timestamp(now.addingTimeInterval(-3 * 3_600)))]
+    let treeURL = try DecisionTreeStore(root: fixture.root).treeURL(taskID: "ECC-102", agentID: "dec-agent")
+    try FileManager.default.createDirectory(at: treeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try JSONEncoder().encode(tree).write(to: treeURL)
+
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(),
+      terminalController: DirectViewRecorder(root: fixture.root, failReveal: false),
+      taskAgentLauncher: TaskAgentLauncher(runner: DirectCreationRunner(), candidateSockets: []))
+    await model.refresh()
+    model.reloadScheduledLaunches()
+
+    // Firing records a completion for the live task and a skip for the orphan.
+    await model.fireDueScheduledLaunches(now: now)
+    try await eventually { model.launchingTaskIDs.isEmpty }
+    let fired = model.scheduleRunHistory(now: now)
+    #expect(fired.contains { $0.ticketID == "ECC-101" && $0.outcome == .completed && $0.kind == .timer })
+    #expect(fired.contains { $0.ticketID == "ECC-999" && $0.outcome == .skipped })
+    // The history survives a reload, as an app restart would see it.
+    model.reloadScheduleRunHistory()
+    #expect(model.scheduleRunRecords.contains { $0.ticketID == "ECC-999" && $0.outcome == .skipped })
+
+    // A declined missed report is a skipped run.
+    model.setPendingDailyReportApproval(DailyReportApprovalRequest(
+      reportDate: "2026-11-19", requestedAt: ISO8601DateFormatter().string(from: now)))
+    model.respondToDailyReportApproval(run: false)
+    #expect(model.scheduleRunHistory(now: now).contains { $0.kind == .cron && $0.outcome == .skipped })
+    model.setPendingDailyReportApproval(nil)
+
+    // A finished daily report joins the history from its run receipt.
+    model.setDailyReportRunState(isRunning: true, message: "Daily report running")
+    model.setDailyReportRunState(isRunning: false, message: "Daily report finished")
+    try await eventually {
+      model.scheduleRunHistory().contains { $0.kind == .cron && $0.outcome == .completed }
+    }
+
+    // The overdue decision settles itself; resuming the test-only agent fails.
+    model.runDecisionAutomationIfDue(now: now.addingTimeInterval(60))
+    try await eventually {
+      model.scheduleRunHistory().contains { $0.kind == .autoDecide }
+    }
+    let decided = try #require(model.scheduleRunHistory().last { $0.kind == .autoDecide })
+    #expect(decided.ticketID == "ECC-102")
+    #expect(decided.outcome == .failed && decided.detail.contains("option a"))
+
+    // Records older than two days fall out of the timeline's history.
+    let old = ScheduleRunRecord(kind: .timer, title: "Ancient", ticketID: "ECC-101",
+                                scheduledAt: now.addingTimeInterval(-3 * 86_400),
+                                recordedAt: now.addingTimeInterval(-3 * 86_400), outcome: .completed)
+    try ScheduleRunHistoryStore(supportDirectory: fixture.paths.supportDirectory).record(old, now: now)
+    model.reloadScheduleRunHistory()
+    #expect(!model.scheduleRunHistory(now: now).contains { $0.title == "Ancient" })
+
+    if let output = ProcessInfo.processInfo.environment["FOCUS_QUEUE_RENDER_DIR"] {
+      try WalkthroughDemoRecording.snapshot(
+        ScheduleTimelineView(model: model).padding(12).environment(\.colorScheme, .dark),
+        size: NSSize(width: 820, height: 420),
+        to: URL(fileURLWithPath: output).appendingPathComponent("schedule-timeline-history.png"))
+    }
+  }
 }
 
 extension QueueViewModelTests {

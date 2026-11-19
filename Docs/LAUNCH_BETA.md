@@ -55,7 +55,7 @@ Final local results: 191 Swift tests and 127 Python tests passed. The optimized 
 
 `Scripts/package-release.sh` creates an architecture-specific ZIP, its SHA-256 checksum and its Ed25519 publisher signature (see below). The bundle includes the session helper, generic configuration example and Ink's license. Default builds are ad hoc signed. Optional Developer ID signing uses `ECC_FOCUS_QUEUE_SIGN_IDENTITY`; notarization, stapling and downloaded-artifact Gatekeeper validation remain release requirements.
 
-Main-branch CI exercises packaging without a publisher key and labels its artifact `macOS-ci-smoke-unsigned`. These packages have no publisher signature and the in-app updater refuses them. Tag builds keep the signed packaging path and require a trusted publisher key. The CI timeout includes both headless tests and the optimized package build.
+Main-branch CI exercises packaging without a publisher key and labels its artifact `macOS-ci-smoke-unsigned`. These packages have no publisher signature and the in-app updater refuses them. Tag builds keep the signed packaging path and require a trusted publisher key. Python checks use `/usr/bin/python3`, matching the installed launchers and installer. The CI timeout includes both headless tests and the optimized package build.
 
 ### Signed releases for the in-app updater
 

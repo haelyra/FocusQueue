@@ -1798,6 +1798,10 @@ final class QueueViewModel {
       let projectID = config.selectedProjectID
       let showingAll = showsAllProjects
       let now = Date()
+      // Schedules registered by focus-queue-session or another instance live
+      // in the shared file; reload before firing so they run without a panel
+      // open or a reschedule.
+      reloadScheduledLaunches()
       await fireDueScheduledLaunches(now: now)
       runDecisionAutomationIfDue(now: now)
       refreshPriorityReviewsIfDue(now: now)

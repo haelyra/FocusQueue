@@ -13,7 +13,7 @@ enum SessionRegistrationError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .usage:
-            "Usage: focus-queue-session intake-changed | data ensure | data place <user|project|task> <target-id> <fact> | development <PROJECT-ID> show|modules|map|link <TASK-ID> <step-id|none> [module]|unlink <TASK-ID>|depends <TASK-ID> [<PREREQUISITE-ID> ...]|step <step-id> <pending|inProgress|done|accepted>|phase <planning|phase0|implementation|prerelease|release>|sync|modules parallel|sequential|guidelines on|off|artifact <catalog-file> <project-file|default>|module add <name> [modules/<id>-<slug>.md] | contract show <PROJECT-ID> <engineering|orchestrator> | contract propose <PROJECT-ID> <engineering|orchestrator> <file.md> | contract generate <PROJECT-ID> | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|pin <TASK-ID>|unpin <TASK-ID>|reset | task create <PROJECT-ID> <title> <summary> | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | cleanup <TASK-ID>|--completed|--orphans|--purge [--dry-run] | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | pause <TASK-ID> <SUBTASK-ID> | resume <TASK-ID> <SUBTASK-ID> | play <TASK-ID> <SUBTASK-ID> [\"text\"] | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path] | decision add|choose|rewind|show|list|due|push (run `decision` alone for its usage)"
+            "Usage: focus-queue-session intake-changed | data ensure | data place <user|project|task> <target-id> <fact> | development <PROJECT-ID> show|modules|map|link <TASK-ID> <step-id|none> [module]|unlink <TASK-ID>|depends <TASK-ID> [<PREREQUISITE-ID> ...]|step <step-id> <pending|inProgress|done|accepted>|phase <planning|phase0|implementation|prerelease|release>|sync|modules parallel|sequential|guidelines on|off|artifact <catalog-file> <project-file|default>|module add <name> [modules/<id>-<slug>.md] | contract show <PROJECT-ID> <engineering|orchestrator> | contract propose <PROJECT-ID> <engineering|orchestrator> <file.md> | contract generate <PROJECT-ID> | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|pin <TASK-ID>|unpin <TASK-ID>|reset | task create <PROJECT-ID> <title> <summary> | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | cleanup <TASK-ID>|--completed|--orphans|--purge [--dry-run] | schedule add <TASK-ID> <title> <prompt> --in <minutes>|--at <yyyy-MM-dd HH:mm|HH:mm> [--every <minutes>] [--provider codex|claude|kimi] | schedule list [<TASK-ID>] | schedule cancel <ID> | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | pause <TASK-ID> <SUBTASK-ID> | resume <TASK-ID> <SUBTASK-ID> | play <TASK-ID> <SUBTASK-ID> [\"text\"] | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path] | decision add|choose|rewind|show|list|due|push (run `decision` alone for its usage)"
         case .missingSessionIdentity:
             "No Codex, Claude, or Kimi session ID was found in the environment or current WezTerm pane."
         case .missingManagedRuntime:
@@ -43,6 +43,7 @@ enum SessionRegistrationError: Error, LocalizedError {
                 print("Agent rules: rules (lifecycle, plan, workspace, and map-scope rules for managed agents)")
                 print("Priority reviews: review propose [<TASK-ID> <AGENT-ID>] <file> \"<why a human must read it>\" [--priority critical|high|medium|low] [--title <text>] [--approve] | review approve|done|dismiss [<TASK-ID>] <REVIEW-ID> | review list [<TASK-ID>] [--all] (the queue shows at most 5 approved reviews at its top)")
                 print("Launch brief preview: brief <TASK-ID> <SUBTASK-ID> (the exact prompt a fresh launch of that agent receives)")
+                print("Scheduling: schedule add <TASK-ID> <title> <prompt> --in <minutes> | --at \"<yyyy-MM-dd HH:mm or HH:mm>\" [--every <minutes>] [--provider codex|claude|kimi] registers a future agent launch the app fires on its refresh loop and shows in the Schedule panel; schedule list [<TASK-ID>]; schedule cancel <ID>")
                 print("Maintenance: reconcile <TASK-ID> [--no-cleanup] (repair documents and save a receipt; optional workspace cleanup)")
                 print("Status hooks: status-event --provider claude|codex|kimi (reads one provider hook payload on stdin; exits 0 silently)")
                 print("UI Canvas: canvas open <file.html> [--viewport mobile|desktop|custom|WxH] [--title <text>] | canvas await <file.html> [--reply <msg>] | canvas typing <file.html> [--state thinking|typing|idle] | canvas end <file.html> | canvas list|pending (native ecc-ui-canvas; same JSON)")
@@ -58,6 +59,7 @@ enum SessionRegistrationError: Error, LocalizedError {
             }
             else if arguments.first == "projects" { try projectsCommand(arguments: arguments) }
             else if arguments.first == "queue" { try await queueCommand(arguments: arguments) }
+            else if arguments.first == "schedule" { try await scheduleCommand(arguments: arguments) }
             else if arguments.first == "task" { try await taskCommand(arguments: arguments) }
             else if arguments.first == "placement" { try await placementCommand(arguments: arguments) }
             else if arguments.first == "agents" { try await agentsCommand(arguments: arguments) }
@@ -287,6 +289,139 @@ enum SessionRegistrationError: Error, LocalizedError {
                 object: nil, userInfo: nil, deliverImmediately: true)
         }
         notifyContextChanged()
+    }
+
+    /// schedule add|list|cancel: future agent launches, written to the same
+    /// scheduled-launches.json the app fires from on its refresh loop, so a
+    /// job registered here launches and shows in the schedule panel without
+    /// any extra step.
+    private static func scheduleCommand(arguments: [String]) async throws {
+        guard arguments.count >= 2 else { throw SessionRegistrationError.usage }
+        let environment = ProcessInfo.processInfo.environment
+        let root = supportDirectory(environment: environment)
+        let store = LaunchScheduleStore(supportDirectory: root)
+        func write<T: Encodable>(_ value: T) throws {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(value)
+            recordAgentCommand("schedule", output: String(decoding: data, as: UTF8.self))
+            FileHandle.standardOutput.write(data)
+            FileHandle.standardOutput.write(Data("\n".utf8))
+        }
+        switch arguments[1] {
+        case "list" where arguments.count == 2 || arguments.count == 3:
+            var launches = store.load()
+            if arguments.count == 3 {
+                launches = launches.filter { $0.ticketID.caseInsensitiveCompare(arguments[2]) == .orderedSame }
+            }
+            try write(["launches": launches])
+        case "cancel" where arguments.count == 3:
+            var launches = store.load()
+            guard let index = launches.firstIndex(where: { $0.id == arguments[2] }) else {
+                throw TaskContextError.commandFailed("No scheduled launch has id \(arguments[2]). Run schedule list for ids.")
+            }
+            let removed = launches.remove(at: index)
+            try store.save(launches)
+            notifyContextChanged()
+            try write(["status": "cancelled", "id": removed.id, "taskID": removed.ticketID])
+        case "add" where arguments.count >= 5:
+            let ticketID = arguments[2].uppercased()
+            let title = arguments[3].trimmingCharacters(in: .whitespacesAndNewlines)
+            let prompt = arguments[4].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty, !prompt.isEmpty else { throw SessionRegistrationError.usage }
+            var delayMinutes: Double?
+            var atText: String?
+            var everyMinutes: Double?
+            var provider: AgentProvider?
+            var index = 5
+            while index < arguments.count {
+                guard index + 1 < arguments.count else { throw SessionRegistrationError.usage }
+                let value = arguments[index + 1]
+                switch arguments[index] {
+                case "--in" where delayMinutes == nil:
+                    guard let parsed = Double(value), parsed > 0 else { throw SessionRegistrationError.usage }
+                    delayMinutes = parsed
+                case "--at" where atText == nil:
+                    atText = value
+                case "--every" where everyMinutes == nil:
+                    guard let parsed = Double(value), parsed > 0 else { throw SessionRegistrationError.usage }
+                    everyMinutes = parsed
+                case "--provider" where provider == nil:
+                    guard let parsed = AgentProvider(rawValue: value) else {
+                        throw TaskContextError.commandFailed("Unknown provider \(value); choose codex, claude, or kimi.")
+                    }
+                    provider = parsed
+                default: throw SessionRegistrationError.usage
+                }
+                index += 2
+            }
+            let config = try loadConfiguration(from: root)
+            let now = Date()
+            let fireAt: Date
+            if let delayMinutes, atText == nil {
+                fireAt = now.addingTimeInterval(delayMinutes * 60)
+            } else if let atText, delayMinutes == nil,
+                      let parsed = scheduleFireDate(at: atText, now: now) {
+                fireAt = parsed
+            } else {
+                throw SessionRegistrationError.usage
+            }
+            guard fireAt > now else {
+                throw TaskContextError.commandFailed("The fire time must be in the future, not \(atText ?? "now").")
+            }
+            // Scheduling onto a task that does not exist would fire into the
+            // void: the app drops launches whose task vanished.
+            let shown = URL(fileURLWithPath: config.dashboardPath).standardizedFileURL
+            let dashboardURLs = [shown] + ProjectCatalog.mergedDashboardURLs(in: config.projects).filter { $0 != shown }
+            let repository = JSONDashboardRepository()
+            var known = false
+            for url in dashboardURLs {
+                if let snapshot = try? await repository.loadSnapshot(from: url),
+                   snapshot.document.tickets.contains(where: {
+                       $0.id.caseInsensitiveCompare(ticketID) == .orderedSame
+                   }) { known = true; break }
+            }
+            guard known else {
+                throw TaskContextError.commandFailed("No task named \(ticketID) exists in any dashboard.")
+            }
+            let launch = ScheduledLaunch(
+                fireAt: fireAt,
+                repeatIntervalSeconds: everyMinutes.map { $0 * 60 },
+                ticketID: ticketID, prompt: prompt, title: title,
+                preset: AgentLaunchPreset(provider: provider
+                    ?? environment["FOCUS_QUEUE_PROVIDER"].flatMap(AgentProvider.init(rawValue:))
+                    ?? config.defaultAgentProvider ?? config.agentProviderFallbackOrder.first ?? .codex))
+            try store.save(store.load() + [launch])
+            notifyContextChanged()
+            try write(ScheduleAddReceipt(launch: launch))
+        default:
+            throw SessionRegistrationError.usage
+        }
+    }
+
+    /// Parses `--at` values: "HH:mm" (today, or tomorrow once that time has
+    /// passed), "yyyy-MM-dd HH:mm", or full ISO 8601, all in this Mac's zone.
+    static func scheduleFireDate(at text: String, now: Date, calendar: Calendar = .current) -> Date? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let local = DateFormatter()
+        local.calendar = calendar
+        local.timeZone = calendar.timeZone
+        for format in ["yyyy-MM-dd HH:mm", "yyyy-MM-dd'T'HH:mm"] {
+            local.dateFormat = format
+            if let date = local.date(from: trimmed) { return date > now ? date : nil }
+        }
+        local.dateFormat = "HH:mm"
+        if let time = local.date(from: trimmed) {
+            let components = calendar.dateComponents([.hour, .minute], from: time)
+            if let today = calendar.date(bySettingHour: components.hour ?? 0,
+                                         minute: components.minute ?? 0, second: 0, of: now) {
+                return today > now ? today : calendar.date(byAdding: .day, value: 1, to: today)
+            }
+            return nil
+        }
+        if let date = ISO8601DateFormatter().date(from: trimmed) { return date > now ? date : nil }
+        return nil
     }
 
     private static func taskCommand(arguments: [String]) async throws {
@@ -1799,6 +1934,11 @@ private struct RuntimeLocationResult: Encodable {
         self.processID = processID
         self.reason = reason
     }
+}
+
+private struct ScheduleAddReceipt: Encodable {
+    let status = "scheduled"
+    let launch: ScheduledLaunch
 }
 
 private struct ArchitectureCLIResult: Encodable {

@@ -192,6 +192,14 @@ Scoped by `FOCUS_QUEUE_PROJECT_ID`. Writes `queue-order/order-<b64(project)>.jso
 
 The saved sort mode `phase` (*Phase order*, FOC-121) applies only while one project is shown and its development process is enabled; elsewhere it resolves to recent activity in both the app and this command. Phase order groups tasks by their linked step's phase (Planning → Phase N), then unlinked tasks, then tasks outside the process. Within a group a task follows the tasks it depends on (`development … depends`); ties keep the priority order, pins lead within their phase, and a manual move sticks unless it breaks phase or dependency order.
 
+### 3.5a Scheduled agent launches
+
+**`schedule add <TASK-ID> <title> <prompt> --in <minutes> | --at "<HH:mm|yyyy-MM-dd HH:mm>" [--every <minutes>] [--provider codex|claude|kimi]`** — registers a future agent launch for an existing task. It appends one entry to `scheduled-launches.json` through the shared `LaunchScheduleStore`, so the app shows it in the Schedule panel and fires it on its next refresh after the fire time while it runs; no other registration step is needed. `--at "HH:mm"` means today, or tomorrow once that time has passed; full dates must be in the future. `--every` repeats at that interval. The provider defaults to the caller's `FOCUS_QUEUE_PROVIDER`, then the configured default. Returns `{status:"scheduled", launch:{...}}` with the launch `id`.
+
+**`schedule list [<TASK-ID>]`** — every registered launch, optionally one task's, as ISO-8601 JSON.
+
+**`schedule cancel <ID>`** — removes one launch by the `id` from `schedule list` or the add receipt.
+
 ### 3.6 Subtask (agent) lifecycle
 
 These manage the per-agent slots inside `tasks/<TICKET>/context.json`:
@@ -567,6 +575,10 @@ focus-queue-session placement --prompt "<objective>" --cwd "$PWD"
 focus-queue-session task rename   <TASK-ID> <title...>
 focus-queue-session task priority <TASK-ID> critical|high|medium|low
 focus-queue-session task status   <TASK-ID> <status>     # ⚠ unvalidated
+
+# Scheduling (future launches; the app fires them on refresh while it runs)
+focus-queue-session schedule add <TASK> <title> <prompt> --in <minutes> | --at "HH:mm"
+focus-queue-session schedule list [<TASK>] ; schedule cancel <ID>
 
 # Development process (projects that enable it)
 focus-queue-session development <PROJECT-ID> show|sync

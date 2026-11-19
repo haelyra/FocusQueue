@@ -134,13 +134,17 @@ struct QueueView: View {
       ).environment(\.queueAccentStyle, model.accentStyle).tint(
         QueueAccentPalette.color(.info, style: model.accentStyle)
       )
-      .onChange(of: model.requestedReportTaskID) { _, taskID in
-        guard let taskID else { return }
+      // `.task(id:)`, not `onChange`: a click that also expands a collapsed
+      // panel sets this before this view exists, and must still switch tabs.
+      .task(id: model.requestedReportTaskID) {
+        guard let taskID = model.requestedReportTaskID else { return }
         screen = .queue
         if model.dashboard.tickets.first(where: { $0.id == taskID })?.isCompleted == true {
           selectedTab = .completed
           showsPastCompletedTasks = true
-          visiblePastCompletedCount = max(visiblePastCompletedCount, completedPageSize)
+          // Page far enough that an older completion is in the list to scroll to.
+          let pastIndex = model.pastCompletedTickets.firstIndex { $0.id == taskID } ?? 0
+          visiblePastCompletedCount = max(visiblePastCompletedCount, completedPageSize, pastIndex + 1)
         } else {
           selectedTab = .focus
           if isTaskSearchActive { closeTaskSearch() }
@@ -332,18 +336,13 @@ struct QueueView: View {
             guard !isFilteringTasks, current.shouldScrollToTop(from: previous) else { return }
             proxy.scrollTo("active-queue-top", anchor: .top)
           }
-          .onChange(of: model.mapLocatedTaskID) { _, taskID in
-            // A project map click: wait for the tab switch and "more tasks" to
-            // lay out, then bring the card into view and flash it.
-            guard let taskID else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-              withAnimation(.snappy(duration: 0.3)) { proxy.scrollTo(taskID, anchor: .center) }
-              flashedTicketID = taskID
-              DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
-                if flashedTicketID == taskID { flashedTicketID = nil }
-              }
-              model.clearMapLocatedTask()
-            }
+          // A project map or bulletin click. `.task(id:)` also runs when this
+          // list first appears, so a click that switched tabs still scrolls.
+          .task(id: model.taskLocateRequest) {
+            guard let request = model.taskLocateRequest,
+                  model.openTickets.contains(where: { $0.id == request.taskID }) else { return }
+            await scrollToLocatedTask(request, proxy: proxy,
+              inTopSection: focusTickets.contains { $0.id == request.taskID }, topAnchor: "active-queue-top")
           }
       }
 
@@ -572,12 +571,38 @@ struct QueueView: View {
     } else {
       ForEach(groups) { group in
         AgentTaskCard(ticket: group.ticket, agents: group.agents, model: model)
+          .id(group.ticket.id)
+          .locateOutline(flashedTicketID == group.ticket.id)
       }
     }
   }
 
+  /// Scrolls a located task's card to the middle and flashes it. It waits for
+  /// the tab switch and "more tasks" to lay out, then scrolls twice: a lazy
+  /// list places an off-screen card only after the first jump. A card in the
+  /// top section first brings that section back, since a far-scrolled lazy
+  /// list may have dropped it.
+  @MainActor private func scrollToLocatedTask(
+    _ request: QueueViewModel.TaskLocateRequest, proxy: ScrollViewProxy, inTopSection: Bool, topAnchor: String?
+  ) async {
+    try? await Task.sleep(for: .milliseconds(150))
+    guard model.taskLocateRequest == request else { return }
+    if inTopSection, let topAnchor { proxy.scrollTo(topAnchor, anchor: .top) }
+    proxy.scrollTo(request.taskID, anchor: .center)
+    try? await Task.sleep(for: .milliseconds(120))
+    guard model.taskLocateRequest == request else { return }
+    withAnimation(.snappy(duration: 0.3)) { proxy.scrollTo(request.taskID, anchor: .center) }
+    flashedTicketID = request.taskID
+    // Not an await: clearing the request cancels this task.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+      if flashedTicketID == request.taskID { flashedTicketID = nil }
+    }
+    model.clearMapLocatedTask()
+  }
+
   private var completedQueueContent: some View {
     VStack(spacing: 10) {
+      ScrollViewReader { proxy in
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 10) {
           if completedSubtaskCount > 0 {
@@ -597,7 +622,7 @@ struct QueueView: View {
             ).frame(maxWidth: .infinity).notificationSurface(radius: 18)
           } else {
             ForEach(model.completedTodayTickets) { ticket in
-              CompletedTicketCard(ticket: ticket, model: model)
+              CompletedTicketCard(ticket: ticket, model: model).id(ticket.id).locateOutline(flashedTicketID == ticket.id)
             }
           }
 
@@ -608,7 +633,7 @@ struct QueueView: View {
             ).padding(.top, 4)
 
             ForEach(visiblePastCompletedTickets) { ticket in
-              CompletedTicketCard(ticket: ticket, model: model)
+              CompletedTicketCard(ticket: ticket, model: model).id(ticket.id).locateOutline(flashedTicketID == ticket.id)
             }
 
             if visiblePastCompletedCount < model.pastCompletedTickets.count {
@@ -621,6 +646,12 @@ struct QueueView: View {
           }
         }.padding(.horizontal, 2).padding(.vertical, 2)
       }.scrollIndicators(.automatic)
+        .task(id: model.taskLocateRequest) {
+          guard let request = model.taskLocateRequest,
+                model.completedTickets.contains(where: { $0.id == request.taskID }) else { return }
+          await scrollToLocatedTask(request, proxy: proxy, inTopSection: false, topAnchor: nil)
+        }
+      }
 
       if !model.pastCompletedTickets.isEmpty { completedMoreButton }
     }
@@ -978,8 +1009,10 @@ struct QueueView: View {
     }
   }
 
+  /// A `Group`, not a nested `LazyVStack`: its cards become direct children of
+  /// the queue's lazy stack, so `scrollTo` finds a card that is not on screen.
   private var additionalQueue: some View {
-    LazyVStack(alignment: .leading, spacing: 10) {
+    Group {
       if !model.visibleRoutines.isEmpty {
         SectionHeading(
           title: "Daily checklist",
@@ -995,7 +1028,7 @@ struct QueueView: View {
       }
 
       if !remainingTickets.isEmpty {
-        LazyVStack(alignment: .leading, spacing: 10) {
+        Group {
           if agentViewEnabled {
             SectionHeading(
               title: "Rest of queue",
@@ -5205,7 +5238,24 @@ private enum QueueAccentRole {
   case success
 }
 
+/// The brief outline a located card shows after a project map or bulletin click.
+private struct LocateOutline: ViewModifier {
+  let isShown: Bool
+  @Environment(\.queueAccentStyle) private var accentStyle
+  func body(content: Content) -> some View {
+    content.overlay {
+      RoundedRectangle(cornerRadius: 14)
+        .stroke(QueueAccentPalette.color(.info, style: accentStyle), lineWidth: 2.5)
+        .opacity(isShown ? 1 : 0)
+        .animation(.easeOut(duration: 0.35), value: isShown)
+        .allowsHitTesting(false)
+    }
+  }
+}
+
 private extension View {
+  func locateOutline(_ isShown: Bool) -> some View { modifier(LocateOutline(isShown: isShown)) }
+
   func minimumHitTarget(width: CGFloat = 44, height: CGFloat = 44) -> some View {
     modifier(MinimumHitTargetModifier(width: width, height: height))
   }

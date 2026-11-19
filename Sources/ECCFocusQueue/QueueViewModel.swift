@@ -4433,8 +4433,9 @@ final class QueueViewModel {
   /// Scrolls the queue to a pinned task and outlines it briefly.
   func revealBulletinTask(_ pin: BulletinPin) {
     guard let ticket = bulletinTicket(for: pin) else { return }
+    if panelMode != .expanded { setPanelMode(.expanded) }
     requestedReportTaskID = ticket.id
-    mapLocatedTaskID = ticket.id
+    requestTaskLocate(ticket.id)
   }
 
   func moveBulletinPin(_ id: String, to point: CGPoint) {
@@ -6791,26 +6792,36 @@ final class QueueViewModel {
     requestedReportTaskID = nil
   }
 
-  /// The task a project map click asked the queue to show; the queue scrolls
-  /// to it and flashes it, then clears this.
-  private(set) var mapLocatedTaskID: String?
+  /// One request to scroll the queue to a task. The serial makes a repeat
+  /// click on the same task a new request, so the queue scrolls again.
+  struct TaskLocateRequest: Equatable {
+    let taskID: String
+    let serial: Int
+  }
+
+  /// The task a project map or bulletin click asked the queue to show; the
+  /// queue scrolls to it and flashes it, then clears this.
+  private(set) var taskLocateRequest: TaskLocateRequest?
+  var mapLocatedTaskID: String? { taskLocateRequest?.taskID }
+
+  private func requestTaskLocate(_ taskID: String) {
+    taskLocateRequest = TaskLocateRequest(taskID: taskID, serial: (taskLocateRequest?.serial ?? 0) + 1)
+  }
 
   /// A project map card was clicked: show the task in the queue beside the map.
-  /// With a saved manual order ("Your saved task order") the task moves to the
-  /// top; an automatic order is left alone and the queue scrolls to the task.
-  /// The Focus (or Completed) tab opens either way.
+  /// The queue order never changes; whatever the sort, the queue opens the
+  /// Focus (or Completed) tab and scrolls to the task. A collapsed or
+  /// top-task-only panel expands so the list is visible.
   func revealMapTask(_ taskID: String) {
     guard let ticket = dashboard.tickets.first(where: { $0.id.caseInsensitiveCompare(taskID) == .orderedSame })
     else { return }
-    if ticket.isOpen, savedQueueOrder != nil {
-      _ = moveTicket(ticket.id, to: .top)
-    }
+    if panelMode != .expanded { setPanelMode(.expanded) }
     revealProject(for: ticket.id)
     requestedReportTaskID = ticket.id
-    mapLocatedTaskID = ticket.id
+    requestTaskLocate(ticket.id)
   }
 
-  func clearMapLocatedTask() { mapLocatedTaskID = nil }
+  func clearMapLocatedTask() { taskLocateRequest = nil }
 
   /// A task whose card should open its "New agent with a prompt" sheet; the
   /// card clears it once shown.

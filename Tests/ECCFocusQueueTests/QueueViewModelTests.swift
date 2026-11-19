@@ -1493,7 +1493,7 @@ struct QueueViewModelTests {
     try await eventually { await runner.repairedContextIDs.contains(hiddenTicket.id) }
   }
 
-  @Test("A project map click scrolls an automatic queue to the task and moves it to the top of a manual one")
+  @Test("A project map click scrolls the queue to the task and never reorders it, in any sort")
   func projectMapLocatesTask() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -1505,13 +1505,25 @@ struct QueueViewModelTests {
     #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
     #expect(model.mapLocatedTaskID == "ECC-102")
     #expect(model.requestedReportTaskID == "ECC-102")
+    let first = try #require(model.taskLocateRequest)
+
+    // A repeat click on the same task is a new request, so the queue scrolls again.
+    model.revealMapTask("ECC-102")
+    #expect(model.taskLocateRequest != first && model.mapLocatedTaskID == "ECC-102")
     model.clearMapLocatedTask(); model.clearRequestedReportTask()
 
-    // A saved manual order: the task moves to the top.
+    // A saved manual order: the order stays too; only a scroll is requested.
     #expect(model.moveTicket("ECC-102", to: .top))
+    #expect(model.openTickets.map(\.id) == ["ECC-102", "ECC-101"])
     model.revealMapTask("ECC-101")
-    #expect(model.openTickets.map(\.id) == ["ECC-101", "ECC-102"])
+    #expect(model.openTickets.map(\.id) == ["ECC-102", "ECC-101"])
     #expect(model.mapLocatedTaskID == "ECC-101")
+
+    // A collapsed panel expands so the list is visible.
+    model.clearMapLocatedTask()
+    model.setPanelMode(.collapsed)
+    model.revealMapTask("ECC-102")
+    #expect(!model.isPanelCollapsed && !model.isTopTaskOnly)
 
     // Unknown IDs do nothing.
     model.clearMapLocatedTask()

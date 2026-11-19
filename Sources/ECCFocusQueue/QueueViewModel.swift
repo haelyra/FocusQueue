@@ -366,8 +366,13 @@ final class QueueViewModel {
   /// Deferred and repeating agent launches from the task creator's schedule
   /// fields, persisted in the support directory and fired by the refresh loop.
   private(set) var scheduledLaunches: [ScheduledLaunch] = []
+  /// The last two days of past scheduled runs, mirrored from the history file.
+  private(set) var scheduleRunRecords: [ScheduleRunRecord] = []
   @ObservationIgnored private var launchScheduleStore: LaunchScheduleStore {
     LaunchScheduleStore(supportDirectory: paths.supportDirectory)
+  }
+  @ObservationIgnored private var scheduleRunHistoryStore: ScheduleRunHistoryStore {
+    ScheduleRunHistoryStore(supportDirectory: paths.supportDirectory)
   }
   @ObservationIgnored private var capacityModelStorage: QueueCapacityModel?
   /// Shared live capacity feed. Created on first access so the machine is
@@ -577,6 +582,7 @@ final class QueueViewModel {
     // An owner's save of a contract in the viewer is the sign-off: edits go live at once.
     documentContentStore.didSave = { [weak self] url, text in self?.agentContractSaved(url, text: text) }
     scheduledLaunches = LaunchScheduleStore(supportDirectory: paths.supportDirectory).load()
+    scheduleRunRecords = ScheduleRunHistoryStore(supportDirectory: paths.supportDirectory).load()
   }
 
   var openTickets: [DashboardTicket] {
@@ -1451,6 +1457,7 @@ final class QueueViewModel {
 
   /// Fires every scheduled launch whose time has passed. Repeating entries
   /// reschedule; one-shot entries and launches whose task vanished are removed.
+  /// Each fire lands in the two-day run history the schedule timeline shows.
   func fireDueScheduledLaunches(now: Date = Date()) async {
     let due = scheduledLaunches.filter { $0.fireAt <= now }.sorted { $0.fireAt < $1.fireAt }
     guard !due.isEmpty else { return }
@@ -1460,11 +1467,23 @@ final class QueueViewModel {
         programLog.record(
           "Dropped a scheduled launch: \(launch.ticketID) is no longer in any dashboard.",
           category: "Tasks")
+        recordScheduleRun(ScheduleRunRecord(
+          kind: launch.isRepeating ? .interval : .timer,
+          title: launch.title.isEmpty ? "Agent launch" : launch.title,
+          detail: "\(launch.ticketID) is no longer in any dashboard; the launch was dropped.",
+          ticketID: launch.ticketID, projectID: scheduleProjectID(forTicketID: launch.ticketID),
+          scheduledAt: launch.fireAt, recordedAt: now, outcome: .skipped))
         continue
       }
       programLog.record(
         "Firing a scheduled agent launch for \(ticket.id) (\(ticket.title))", category: "Tasks")
       launchPromptedAgent(for: ticket, prompt: launch.prompt, title: launch.title, preset: launch.preset)
+      recordScheduleRun(ScheduleRunRecord(
+        kind: launch.isRepeating ? .interval : .timer,
+        title: launch.title.isEmpty ? "Agent launch" : launch.title,
+        detail: "Launched the \(launch.preset.provider.displayName) agent for \(ticket.id).",
+        ticketID: ticket.id, projectID: ticket.projectID ?? project(for: ticket)?.id,
+        scheduledAt: launch.fireAt, recordedAt: now, outcome: .completed))
       if let next = launch.rescheduled(after: now),
          let index = scheduledLaunches.firstIndex(where: { $0.id == launch.id }) {
         scheduledLaunches[index] = next
@@ -1473,6 +1492,16 @@ final class QueueViewModel {
       }
     }
     persistScheduledLaunches()
+  }
+
+  /// Appends one outcome to the in-memory mirror and the shared history file.
+  private func recordScheduleRun(_ record: ScheduleRunRecord) {
+    scheduleRunRecords = ScheduleRunHistoryStore.pruned(scheduleRunRecords + [record], now: record.recordedAt)
+    do {
+      try scheduleRunHistoryStore.record(record)
+    } catch {
+      programLog.record("Could not save the schedule run history: \(error.localizedDescription)", category: "Tasks")
+    }
   }
 
   private func persistScheduledLaunches() {
@@ -6839,6 +6868,12 @@ final class QueueViewModel {
   }
 
   func respondToDailyReportApproval(run: Bool) {
+    if !run, pendingDailyReportApproval != nil {
+      recordScheduleRun(ScheduleRunRecord(
+        kind: .cron, title: "Daily report",
+        detail: "The missed report was declined.",
+        scheduledAt: Date(), outcome: .skipped))
+    }
     Task { await dailyReportApprovalHandler?(run) }
   }
 
@@ -8355,6 +8390,15 @@ extension QueueViewModel {
       guard let self, !settled.isEmpty else { return }
       for item in settled {
         self.refreshDecisionTrees(ticketID: item.taskID)
+        let resumed = item.deliveryError == nil
+        self.recordScheduleRun(ScheduleRunRecord(
+          kind: .autoDecide, title: "Decision \(item.nodeID)",
+          detail: resumed
+            ? "No reply in time: settled with option \(item.optionID); the agent was resumed."
+            : "Settled with option \(item.optionID), but the agent was not resumed: \(item.deliveryError ?? "")",
+          ticketID: item.taskID, projectID: self.scheduleProjectID(forTicketID: item.taskID),
+          scheduledAt: now, recordedAt: now,
+          outcome: resumed ? .completed : .failed))
         self.decisionMessages[Self.decisionKey(item.taskID, item.agentID)] = DecisionActionMessage(
           text: "No reply within \(settings.windowDescription): \(item.nodeID) took option \(item.optionID)."
             + (item.deliveryError.map { " The agent was not resumed: \($0)" } ?? ""),
@@ -8371,6 +8415,7 @@ extension QueueViewModel {
   func setSchedulePresented(_ presented: Bool) {
     if presented {
       reloadScheduledLaunches()
+      reloadScheduleRunHistory()
       isBulletinBoardPresented = false
       isTokenAnalyticsPresented = false
       isQueueChatInspectorPresented = false
@@ -8403,25 +8448,51 @@ extension QueueViewModel {
     Dictionary(config.projects.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
   }
 
+  /// The project a task ID belongs to, from the dashboard or, for tasks the
+  /// dashboard does not list, the project's task-ID prefix.
+  func scheduleProjectID(forTicketID ticketID: String) -> String? {
+    if let ticket = dashboard.tickets.first(where: { $0.id.caseInsensitiveCompare(ticketID) == .orderedSame }) {
+      return ticket.projectID ?? project(for: ticket)?.id
+    }
+    return config.projects.first { project in
+      let prefix = project.taskPrefix.trimmingCharacters(in: .whitespaces).uppercased()
+      return !prefix.isEmpty && ticketID.uppercased().hasPrefix(prefix + "-")
+    }?.id
+  }
+
+  /// Up to two days of past scheduled runs: stored launch, decision, and
+  /// declined-report outcomes plus the daily report's own run receipts.
+  func scheduleRunHistory(now: Date = Date()) -> [ScheduleRunRecord] {
+    let cutoff = now.addingTimeInterval(-ScheduleRunHistoryStore.retention)
+    let reports = reportHistory.runs.compactMap { receipt -> ScheduleRunRecord? in
+      guard let outcome = ScheduleRunOutcome(reportPhase: receipt.phase) else { return nil }
+      return ScheduleRunRecord(
+        id: "report-\(receipt.id)", kind: .cron, title: "Daily report",
+        detail: receipt.message, scheduledAt: receipt.startedAt,
+        recordedAt: receipt.updatedAt, outcome: outcome)
+    }
+    return (scheduleRunRecords + reports)
+      .filter { $0.recordedAt >= cutoff }
+      .sorted { ($0.scheduledAt, $0.id) < ($1.scheduledAt, $1.id) }
+  }
+
+  /// Picks up history another app instance wrote to the shared file.
+  func reloadScheduleRunHistory() {
+    scheduleRunRecords = scheduleRunHistoryStore.load()
+  }
+
   /// Every job the app owns: scheduled agent launches, the daily report, and
   /// pending decisions that settle themselves. Reads decision files from disk.
   func scheduleJobs(now: Date = Date()) -> [ScheduleJob] {
     let store = decisionStore
     let trees = store.taskIDsWithTrees().flatMap { store.trees(taskID: $0) }
-    let projects = config.projects
     return ScheduleTimeline.jobs(
       launches: scheduledLaunches,
       dailyReport: config.dailyReport,
       decisions: trees,
       automation: config.decisionAutomation,
       tickets: scheduleTicketInfo,
-      projectForTicket: { ticketID in
-        // Tasks outside the loaded dashboard still carry their project's prefix.
-        projects.first { project in
-          let prefix = project.taskPrefix.trimmingCharacters(in: .whitespaces).uppercased()
-          return !prefix.isEmpty && ticketID.uppercased().hasPrefix(prefix + "-")
-        }?.id
-      },
+      projectForTicket: { [self] ticketID in scheduleProjectID(forTicketID: ticketID) },
       now: now)
   }
 
@@ -8445,7 +8516,7 @@ extension QueueViewModel {
         "Moved the daily report to \(String(format: "%02d:%02d", time.hour, time.minute)) from the schedule.",
         category: "Tasks")
       return snapped
-    case .decision:
+    case .decision, .runRecord:
       return nil
     }
   }

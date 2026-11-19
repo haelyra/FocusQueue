@@ -49,6 +49,26 @@ extension ScheduleJobKind {
   }
 }
 
+extension ScheduleRunOutcome {
+  var color: Color {
+    switch self {
+    case .completed: Color(red: 0.25, green: 0.75, blue: 0.42)
+    case .interrupted: Color(red: 0.62, green: 0.62, blue: 0.66)
+    case .failed: Color(red: 0.93, green: 0.30, blue: 0.26)
+    case .skipped: Color(red: 0.93, green: 0.72, blue: 0.20)
+    }
+  }
+
+  var symbol: String {
+    switch self {
+    case .completed: "checkmark.circle.fill"
+    case .interrupted: "stop.circle.fill"
+    case .failed: "xmark.circle.fill"
+    case .skipped: "forward.circle.fill"
+    }
+  }
+}
+
 /// The schedule side panel: an arrangement view of every scheduled job. Each
 /// row is the task a job acts on (app-wide jobs share one row). A clip is as
 /// wide as its label, or as its expected run once zoomed in far enough, and
@@ -212,9 +232,14 @@ struct ScheduleTimelineView: View {
   // MARK: Arrangement
 
   private func window(now: Date) -> DateInterval {
-    // Start just before now so the playhead sits near the left edge at 1x.
+    // Start two days back so past runs show their outcomes behind the
+    // playhead; the range picker covers the time ahead of now.
     let hour = calendar.dateInterval(of: .hour, for: now)?.start ?? now
-    return DateInterval(start: hour.addingTimeInterval(-2 * 3_600), duration: TimeInterval(range.days) * 86_400)
+    let historyStart = calendar.dateInterval(
+      of: .hour, for: now.addingTimeInterval(-ScheduleRunHistoryStore.retention)
+    )?.start ?? now.addingTimeInterval(-ScheduleRunHistoryStore.retention)
+    return DateInterval(start: historyStart,
+                        end: hour.addingTimeInterval(TimeInterval(range.days) * 86_400 - 2 * 3_600))
   }
 
   private struct LaidOutTrack: Identifiable {
@@ -232,8 +257,9 @@ struct ScheduleTimelineView: View {
 
   @ViewBuilder private func arrangement(now: Date) -> some View {
     let window = window(now: now)
+    let history = model.scheduleRunHistory(now: now)
     let groups = ScheduleTimeline.groups(
-      jobs: jobs, projectID: scopeProjectID,
+      jobs: jobs, history: history, projectID: scopeProjectID,
       projectNames: model.scheduleProjectNames, tickets: model.scheduleTicketInfo)
     if groups.isEmpty {
       ContentUnavailableView {
@@ -252,7 +278,9 @@ struct ScheduleTimelineView: View {
           LaidOutGroup(group: group, tracks: group.tracks.map { track in
             LaidOutTrack(track: track, clips: ScheduleTimeline.clips(
               for: track, in: window,
-              minimumGap: Double(ScheduleTimelineMetrics.minimumClipGap) / scale, calendar: calendar))
+              minimumGap: Double(ScheduleTimelineMetrics.minimumClipGap) / scale,
+              history: history.filter { $0.trackID == track.id },
+              pastCutoff: now, calendar: calendar))
           })
         }
         let showsGroupTitles = groups.count > 1 || groups.first?.id != "~app"
@@ -295,6 +323,7 @@ struct ScheduleTimelineView: View {
                 .frame(width: contentWidth, alignment: .leading)
               }
               .scrollIndicators(.automatic)
+              .onAppear { center(proxy, animated: false) }
               .onChange(of: zoomSlider) { _, _ in center(proxy, animated: false) }
               .onChange(of: rangeDays) { _, _ in center(proxy, animated: false) }
               .onChange(of: selectedClipID) { _, id in if id != nil { center(proxy, animated: true) } }
@@ -390,20 +419,21 @@ struct ScheduleTimelineView: View {
     let shown = dragOffset == 0 ? clip.start
       : ScheduleTimeline.snap(clip.start.addingTimeInterval(Double(dragOffset) / scale),
                               minutes: ScheduleTimeline.snapMinutes(pointsPerHour: scale * 3_600), calendar: calendar)
-    let lines = Self.clipLines(job, start: shown, calendar: calendar)
+    let lines = clip.outcome.map { Self.historyLines(clip, outcome: $0, calendar: calendar) }
+      ?? Self.clipLines(job, start: shown, calendar: calendar)
     let natural = ScheduleTimelineMetrics.naturalWidth(title: job.title, lines: [lines.when, lines.run])
-    let run = CGFloat(job.expectedDuration * scale)
+    let run = clip.outcome == nil ? CGFloat(job.expectedDuration * scale) : 0
     let slot = CGFloat(clip.end.timeIntervalSince(clip.start) * scale) - 3
     let width = max(8, min(slot, max(natural, run)))
     let truncated = width < natural
     let selected = selectedClipID == clip.id
     let showsCard = (hoveredClipID == clip.id && truncated || dragOffset != 0) && detailClipID != clip.id
-    return ScheduleClipView(job: job, when: lines.when, run: lines.run, runWidth: min(run, width),
-                            selected: selected, lifted: dragOffset != 0)
+    return ScheduleClipView(job: job, outcome: clip.outcome, when: lines.when, run: lines.run,
+                            runWidth: min(run, width), selected: selected, lifted: dragOffset != 0)
       .frame(width: width, height: ScheduleTimelineMetrics.clipHeight, alignment: .leading)
       .overlay(alignment: .topLeading) {
         if showsCard {
-          ScheduleClipCard(job: job, when: lines.when, run: lines.run)
+          ScheduleClipCard(job: job, outcome: clip.outcome, when: lines.when, run: lines.run)
             .offset(y: ScheduleTimelineMetrics.clipHeight + 3)
             .allowsHitTesting(false)
         }
@@ -431,9 +461,19 @@ struct ScheduleTimelineView: View {
                            run: lines.run) { detailClipID = nil }
       }
       .accessibilityElement(children: .combine)
-      .accessibilityLabel("\(job.title), \(lines.when), \(lines.run)")
+      .accessibilityLabel(clip.outcome.map { "\(job.title), \($0.label.lowercased()), \(lines.when)" }
+        ?? "\(job.title), \(lines.when), \(lines.run)")
       .accessibilityHint(job.isMovable ? "Drag to retime. Activate to select and see details." : "Read-only. Activate for details.")
       .accessibilityAddTraits(selected ? .isSelected : [])
+  }
+
+  /// Line two (outcome and exact time) and line three (what happened) for a
+  /// past run drawn from the history.
+  static func historyLines(_ clip: ScheduleClip, outcome: ScheduleRunOutcome,
+                           calendar: Calendar) -> (when: String, run: String) {
+    let when = "\(outcome.label) · \(clipTime(clip.start, calendar: calendar))"
+    let run = clip.job.detail.isEmpty ? outcome.explanation : clip.job.detail
+    return (when, run)
   }
 
   private func dragGesture(_ clip: ScheduleClip, scale: Double) -> some Gesture {
@@ -485,11 +525,22 @@ struct ScheduleTimelineView: View {
   }
 
   private var legend: some View {
-    HStack(spacing: 12) {
-      ForEach(ScheduleJobKind.allCases, id: \.self) { kind in
-        HStack(spacing: 4) {
-          RoundedRectangle(cornerRadius: 2).fill(kind.color).frame(width: 9, height: 9)
-          Text("\(kind.label) · \(kind.explanation.lowercased())")
+    VStack(alignment: .leading, spacing: 4) {
+      HStack(spacing: 12) {
+        ForEach(ScheduleJobKind.allCases, id: \.self) { kind in
+          HStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 2).fill(kind.color).frame(width: 9, height: 9)
+            Text("\(kind.label) · \(kind.explanation.lowercased())")
+          }
+        }
+      }
+      HStack(spacing: 12) {
+        Text("Past runs:")
+        ForEach(ScheduleRunOutcome.allCases, id: \.self) { outcome in
+          HStack(spacing: 4) {
+            Image(systemName: outcome.symbol).foregroundStyle(outcome.color)
+            Text("\(outcome.label.lowercased()) · \(outcome.explanation.lowercased())")
+          }
         }
       }
     }
@@ -500,9 +551,11 @@ struct ScheduleTimelineView: View {
 
 /// One fire: a filled clip with the title, the kind and exact time, and the
 /// estimated run window, truncated when the next fire is close. When zoomed in
-/// past its label width, a darker band marks the expected run.
+/// past its label width, a darker band marks the expected run. A past run
+/// (outcome set) draws dimmed with its outcome marking the leading edge.
 private struct ScheduleClipView: View {
   let job: ScheduleJob
+  var outcome: ScheduleRunOutcome? = nil
   let when: String
   let run: String
   let runWidth: CGFloat
@@ -514,7 +567,8 @@ private struct ScheduleClipView: View {
     VStack(alignment: .leading, spacing: 1) {
       Text(job.title).font(Font(ScheduleTimelineMetrics.titleFont))
       HStack(spacing: 3) {
-        Image(systemName: job.isMovable ? job.kind.symbol : "lock.fill").font(.system(size: 8))
+        Image(systemName: outcome?.symbol ?? (job.isMovable ? job.kind.symbol : "lock.fill"))
+          .font(.system(size: 8))
         Text(when)
       }
       .font(Font(ScheduleTimelineMetrics.lineFont))
@@ -527,12 +581,12 @@ private struct ScheduleClipView: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     .background(alignment: .leading) {
       ZStack(alignment: .leading) {
-        job.kind.color.opacity(job.isMovable ? 0.88 : 0.7)
+        job.kind.color.opacity(outcome == nil ? (job.isMovable ? 0.88 : 0.7) : 0.45)
         if runWidth > 12 {
           // The expected run, visible once it is wider than a sliver.
           Color.black.opacity(0.14).frame(width: runWidth)
         }
-        Rectangle().fill(.white.opacity(0.85)).frame(width: 2)
+        Rectangle().fill(outcome?.color ?? .white.opacity(0.85)).frame(width: 2)
       }
     }
     .clipShape(RoundedRectangle(cornerRadius: 5))
@@ -551,6 +605,7 @@ private struct ScheduleClipView: View {
 /// The hover card for a truncated clip: its full label, never cut off.
 private struct ScheduleClipCard: View {
   let job: ScheduleJob
+  var outcome: ScheduleRunOutcome? = nil
   let when: String
   let run: String
 
@@ -558,7 +613,11 @@ private struct ScheduleClipCard: View {
     VStack(alignment: .leading, spacing: 2) {
       Text(job.title).font(.system(size: 11, weight: .semibold))
       Text(when)
-      Text(job.expectedDuration > 0 ? "\(run) (estimate)" : "Instant: happens at this moment")
+      if outcome != nil {
+        Text(run).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+      } else {
+        Text(job.expectedDuration > 0 ? "\(run) (estimate)" : "Instant: happens at this moment")
+      }
       Text(job.isMovable ? "Drag to retime · click for details" : "Read-only · click for details")
         .foregroundStyle(.secondary)
     }
@@ -591,8 +650,13 @@ private struct ScheduleClipDetail: View {
       }
       Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 4) {
         row("Type", "\(job.kind.label) · \(job.kind.explanation.lowercased())")
-        row("This run", ScheduleTimelineView.clipTime(clip.start, calendar: calendar))
-        row("Expected", job.expectedDuration > 0 ? "\(run) (estimate)" : "Instant")
+        if let outcome = clip.outcome {
+          row("Outcome", "\(outcome.label) · \(outcome.explanation.lowercased())")
+        }
+        row(clip.outcome == nil ? "This run" : "Scheduled", ScheduleTimelineView.clipTime(clip.start, calendar: calendar))
+        if clip.outcome == nil {
+          row("Expected", job.expectedDuration > 0 ? "\(run) (estimate)" : "Instant")
+        }
         if let interval = job.repeatInterval {
           row("Repeats", job.kind == .cron
             ? "daily at \(ScheduleTimelineView.clipTime(job.anchor, calendar: .current, weekday: false)) on this Mac"
@@ -606,7 +670,7 @@ private struct ScheduleClipDetail: View {
         Text(job.detail).font(.system(size: 11)).foregroundStyle(.secondary)
           .lineLimit(6).textSelection(.enabled)
       }
-      if !job.isMovable {
+      if !job.isMovable, clip.outcome == nil {
         Label("Set by the decision auto-decide window in Settings.", systemImage: "lock.fill")
           .font(.caption).foregroundStyle(.secondary)
       }

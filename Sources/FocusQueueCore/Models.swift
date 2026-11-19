@@ -293,6 +293,27 @@ public struct AgentModelChoice: Codable, Equatable, Sendable, Identifiable {
   public var id: String { "\(provider.rawValue)/\(label)" }
 }
 
+/// Broad capability class of a provider model, used to pick a similar model
+/// when a job continues on another provider after quota exhaustion.
+public enum AgentModelTier: String, Codable, Equatable, Sendable, CaseIterable {
+  case flagship, mid, fast
+
+  /// Keyword heuristic over the model ID and label: small/speed variants are
+  /// `fast`, top-of-line names are `flagship`, everything else is `mid`.
+  public init(model: String, label: String = "") {
+    let text = "\(model) \(label)".lowercased()
+    if text.contains("haiku") || text.contains("luna") || text.contains("highspeed")
+      || text.contains("high-speed") || text.contains("mini") || text.contains("flash") {
+      self = .fast
+    } else if text.contains("opus") || text.contains("fable") || text.contains("sol")
+      || text.contains("pro") {
+      self = .flagship
+    } else {
+      self = .mid
+    }
+  }
+}
+
 public struct AppConfiguration: Codable, Equatable, Sendable {
   public var appName: String
   public var dashboardPath: String {
@@ -1972,10 +1993,14 @@ public struct AgentLaunchPreset: Codable, Equatable, Sendable {
   public var useTmux: Bool?
   public var includePrompt: Bool?
   public var pluginOverrides: [String: Bool]?
+  /// Opt-in: when this agent's provider runs out of credits, continue the job
+  /// as a fresh session on the next provider that has credits available.
+  public var continueOnQuota: Bool?
 
   public init(provider: AgentProvider, model: String? = nil, effort: String? = nil,
               workspacePolicy: AgentWorkspacePolicy? = nil, useTmux: Bool? = nil,
-              includePrompt: Bool? = nil, pluginOverrides: [String: Bool]? = nil) {
+              includePrompt: Bool? = nil, pluginOverrides: [String: Bool]? = nil,
+              continueOnQuota: Bool? = nil) {
     self.provider = provider
     self.model = model
     self.effort = effort
@@ -1983,6 +2008,7 @@ public struct AgentLaunchPreset: Codable, Equatable, Sendable {
     self.useTmux = useTmux
     self.includePrompt = includePrompt
     self.pluginOverrides = pluginOverrides
+    self.continueOnQuota = continueOnQuota
   }
 }
 

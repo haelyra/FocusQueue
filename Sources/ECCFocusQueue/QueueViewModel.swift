@@ -1521,7 +1521,8 @@ final class QueueViewModel {
       includePrompt: preset.includePrompt ?? true, useTmux: preset.useTmux ?? true,
       initialPrompt: prompt, modelName: preset.model, effort: preset.effort,
       workspacePolicy: preset.workspacePolicy ?? .isolatedCommittedSnapshot,
-      pluginOverrides: preset.pluginOverrides ?? [:])
+      pluginOverrides: preset.pluginOverrides ?? [:],
+      continueOnQuota: preset.continueOnQuota ?? false)
     rememberAgentLaunch(preset)
   }
 
@@ -3140,6 +3141,7 @@ final class QueueViewModel {
                 ticketID: entry.ticketID, subtaskID: entry.subtask.id, event: event)
               if case .attention(.quotaExhausted) = event.kind,
                  let ticket = tickets.first(where: { $0.id == entry.ticketID }) {
+                quotaExhaustedAtByProvider[entry.subtask.provider] = Date()
                 await applyQuotaFallback(ticket: ticket, subtaskID: entry.subtask.id)
               }
             } catch { actionMessages[entry.ticketID] = error.localizedDescription }
@@ -4906,6 +4908,16 @@ final class QueueViewModel {
     }
   }
 
+  /// Sub-agents of one task with a saved session and no live runtime; an
+  /// orchestrator launch can resume one of these instead of starting fresh.
+  func resumableSubtasks(for ticketID: String) -> [TaskSubtask] {
+    subtasks(for: ticketID)
+      .filter { $0.hasAgent && !$0.isAssignmentOnly && $0.sessionID != nil
+        && $0.status != .completed && $0.agentRemovedAt == nil
+        && !liveRuntimeSubtaskIDs.contains($0.id) }
+      .sorted { ($0.lastHeartbeatAt ?? .distantPast) > ($1.lastHeartbeatAt ?? .distantPast) }
+  }
+
   func focusSubtasks(for ticketID: String) -> [TaskSubtask] {
     taskContexts[ticketID]?.focusSubtasks ?? []
   }
@@ -5210,6 +5222,7 @@ final class QueueViewModel {
     workspacePolicy: AgentWorkspacePolicy? = nil,
     pluginOverrides: [String: Bool] = [:],
     role: AgentContractRole = .engineering,
+    continueOnQuota: Bool = false,
     opensTerminal: Bool = true,
     completion: (@MainActor (Bool) -> Void)? = nil
   ) {
@@ -5276,7 +5289,8 @@ final class QueueViewModel {
           model: selectedModel?.isEmpty == false ? selectedModel : nil,
           effort: selectedEffort?.isEmpty == false ? selectedEffort : nil,
           pluginOverrides: pluginOverrides.isEmpty ? nil : pluginOverrides,
-          role: role == .orchestrator ? AgentContractRole.orchestrator.rawValue : nil)
+          role: role == .orchestrator ? AgentContractRole.orchestrator.rawValue : nil,
+          continueOnQuota: continueOnQuota ? true : nil)
         if let parentSubtaskID {
           guard let parent = context.subtasks.first(where: { $0.id == parentSubtaskID }), parent.status != .completed else {
             throw TaskContextError.commandFailed("This subtask is already completed or no longer exists.")
@@ -5304,6 +5318,7 @@ final class QueueViewModel {
             launchConfiguration.effort = launchConfiguration.effort ?? saved.effort
             launchConfiguration.pluginOverrides = launchConfiguration.pluginOverrides ?? saved.pluginOverrides
             launchConfiguration.role = launchConfiguration.role ?? saved.role
+            launchConfiguration.continueOnQuota = launchConfiguration.continueOnQuota ?? saved.continueOnQuota
           }
         }
         // Agents started by the retired router already own a capsule under their route ID.
@@ -5738,37 +5753,73 @@ final class QueueViewModel {
     stored ?? defaultAgentProvider
   }
 
-  /// The next configured provider after the failing one whose CLI is installed.
+  /// The next configured provider after the failing one whose CLI is installed
+  /// and that still has credits available.
   static func quotaFallbackProvider(
     for provider: AgentProvider,
     fallbackOrder: [AgentProvider],
-    executableAvailable: (AgentProvider) -> Bool
+    executableAvailable: (AgentProvider) -> Bool,
+    creditAvailable: (AgentProvider) -> Bool = { _ in true }
   ) -> AgentProvider? {
+    let usable = { executableAvailable($0) && creditAvailable($0) }
     guard let index = fallbackOrder.firstIndex(of: provider) else {
-      return fallbackOrder.first(where: executableAvailable)
+      return fallbackOrder.first(where: usable)
     }
-    return fallbackOrder.dropFirst(index + 1).first(where: executableAvailable)
+    return fallbackOrder.dropFirst(index + 1).first(where: usable)
+  }
+
+  /// How long a provider that reported quota exhaustion is treated as out of
+  /// credits. Subscription windows reset, so the mark expires instead of
+  /// banning the provider for the rest of the app's run.
+  static let quotaCreditResetSeconds: TimeInterval = 6 * 60 * 60
+
+  /// Providers that reported quota exhaustion, marked at observation time.
+  var quotaExhaustedAtByProvider: [AgentProvider: Date] = [:]
+
+  /// A provider counts as having available credits when it is signed in and
+  /// has not reported quota exhaustion inside the reset window.
+  func providerHasAvailableCredits(_ provider: AgentProvider, now: Date = Date()) -> Bool {
+    if let state = providerAccounts[provider], !state.isSignedIn { return false }
+    if let exhaustedAt = quotaExhaustedAtByProvider[provider],
+       now.timeIntervalSince(exhaustedAt) < Self.quotaCreditResetSeconds { return false }
+    return true
+  }
+
+  /// The model on the fallback provider in the same tier as the model that
+  /// ran out of credits (newest first); nil launches the provider's default.
+  static func quotaFallbackModel(
+    from sourceModel: String?, to provider: AgentProvider,
+    choices: [AgentModelChoice]
+  ) -> String? {
+    guard let sourceModel, !sourceModel.isEmpty else { return nil }
+    let tier = AgentModelTier(model: sourceModel)
+    let candidates = choices.filter { $0.provider == provider && $0.model != nil }
+    return candidates.first(where: { AgentModelTier(model: $0.model!, label: $0.label) == tier })?.model
   }
 
   static let quotaFallbackCooldownSeconds: TimeInterval = 300
 
-  /// Guards quota fallback to one replacement per subtask and one per ticket
-  /// inside the cooldown window, then claims both so a retry cannot loop.
+  /// Guards quota fallback to opted-in agents, one replacement per subtask and
+  /// one per ticket inside the cooldown window, then claims both so a retry
+  /// cannot loop.
   @discardableResult
   func claimQuotaFallback(
     ticketID: String, subtask: TaskSubtask, now: Date = Date(),
-    executableAvailable: ((AgentProvider) -> Bool)? = nil
+    executableAvailable: ((AgentProvider) -> Bool)? = nil,
+    creditAvailable: ((AgentProvider) -> Bool)? = nil
   ) -> AgentProvider? {
     let available = executableAvailable ?? providerExecutableAvailable
+    let credits = creditAvailable ?? { self.providerHasAvailableCredits($0, now: now) }
     let key = Self.subtaskKey(ticketID: ticketID, subtaskID: subtask.id)
-    guard !quotaFallbackedSubtaskKeys.contains(key),
+    guard subtask.continuesOnQuotaExhaustion,
+          !quotaFallbackedSubtaskKeys.contains(key),
           subtask.isAgentVisible, subtask.status != .completed,
           subtask.attention == .quotaExhausted,
           now.timeIntervalSince(quotaFallbackAtByTicketID[ticketID] ?? .distantPast)
             >= Self.quotaFallbackCooldownSeconds,
           let next = Self.quotaFallbackProvider(
             for: subtask.provider, fallbackOrder: config.agentProviderFallbackOrder,
-            executableAvailable: available)
+            executableAvailable: available, creditAvailable: credits)
     else { return nil }
     quotaFallbackedSubtaskKeys.insert(key)
     quotaFallbackAtByTicketID[ticketID] = now
@@ -5781,6 +5832,8 @@ final class QueueViewModel {
           let subtask = context.subtasks.first(where: { $0.id == subtaskID }),
           let next = claimQuotaFallback(ticketID: ticket.id, subtask: subtask)
     else { return }
+    let fallbackModel = Self.quotaFallbackModel(
+      from: subtask.launchConfiguration?.model, to: next, choices: config.agentModelChoices)
     let note = "Quota exhausted on \(subtask.provider.displayName); falling back to \(next.displayName)."
     do {
       taskContexts[ticket.id] = try await taskContextStore.updateProgress(
@@ -5792,7 +5845,8 @@ final class QueueViewModel {
     await recordAgentLaunch(
       subtask, ticketID: ticket.id, phase: "provider-fallback", outcome: "started",
       message: note,
-      details: ["from": subtask.provider.rawValue, "to": next.rawValue])
+      details: ["from": subtask.provider.rawValue, "to": next.rawValue,
+                "model": fallbackModel ?? "default"])
     actionMessages[ticket.id] = note
     launchAgent(
       for: ticket, title: "\(subtask.title) · \(next.displayName) fallback",
@@ -5800,7 +5854,12 @@ final class QueueViewModel {
       repositoryPath: subtask.workspace?.repositoryPath ?? defaultRepository(for: ticket),
       assignmentDescription: subtask.assignmentDescription,
       includePrompt: true, useTmux: true,
-      initialPrompt: subtask.initialPrompt, tracksCompletion: subtask.tracksCompletion)
+      initialPrompt: subtask.initialPrompt, tracksCompletion: subtask.tracksCompletion,
+      modelName: fallbackModel,
+      effort: subtask.launchConfiguration?.effort,
+      // The follow-up agent inherits the opt-in, so a second exhaustion on the
+      // new provider can continue the job again.
+      continueOnQuota: true)
   }
 
   /// The requested provider wins when its CLI is installed; otherwise the first

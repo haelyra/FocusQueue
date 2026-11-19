@@ -72,10 +72,12 @@ public enum DocumentAuthorship {
             let end = data[start...].firstIndex(of: 10) ?? data.endIndex
             let line = data[start..<end]
             start = end < data.endIndex ? data.index(after: end) : end
-            guard patterns.contains(where: { line.range(of: $0) != nil }) else { continue }
-            let text = String(decoding: line, as: UTF8.self)
-            guard let kind = toolCallKind(text, provider: provider, needles: needles),
-                  let date = timestamp(text, provider: provider) else { continue }
+            // Escaped paths may not contain the literal UTF-8 needle. Keep the
+            // cheap rejection for unescaped lines, then inspect decoded tool inputs.
+            guard line.contains(92) || patterns.contains(where: { line.range(of: $0) != nil }) else { continue }
+            guard let record = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                  let kind = toolCallKind(record, provider: provider, needles: needles),
+                  let date = timestamp(record, provider: provider) else { continue }
             if kind == .write, touch.firstWrite.map({ date < $0 }) ?? true { touch.firstWrite = date }
             touch.toolCalls.append(date)
         }
@@ -84,33 +86,75 @@ public enum DocumentAuthorship {
 
     enum ToolCallKind { case write, other }
 
-    /// Shell text that writes the path that follows it. A double quote is
-    /// JSON-escaped inside the transcript line.
-    static let shellWritePrefixes = [">", "> ", ">>", ">> ", "> \\\"", ">> \\\"", "> '", ">> '",
+    /// Shell text is decoded before matching, independent of JSON escaping.
+    static let shellWritePrefixes = [">", "> ", ">>", ">> ", "> \"", ">> \"", "> '", ">> '",
                                      "tee ", "tee -a ", "-o ", "--output ", "--output="]
 
-    static func toolCallKind(_ line: String, provider: AgentProvider, needles: [String]) -> ToolCallKind? {
-        let writeTools: [String]
+    static func toolCallKind(_ record: [String: Any], provider: AgentProvider, needles: [String]) -> ToolCallKind? {
+        let calls: [[String: Any]]
+        let inputKey: String
+        let writeTools: Set<String>
         switch provider {
         case .claude:
-            guard line.contains("\"type\":\"assistant\""), line.contains("\"type\":\"tool_use\"") else { return nil }
+            guard record["type"] as? String == "assistant",
+                  let message = record["message"] as? [String: Any],
+                  let content = message["content"] as? [Any] else { return nil }
+            calls = content.compactMap { $0 as? [String: Any] }.filter { $0["type"] as? String == "tool_use" }
+            inputKey = "input"
             writeTools = ["Write", "Edit", "MultiEdit", "NotebookEdit"]
         case .codex:
-            guard line.contains("\"type\":\"function_call\"") || line.contains("\"type\":\"custom_tool_call\"")
-            else { return nil }
+            guard record["type"] as? String == "response_item",
+                  let payload = record["payload"] as? [String: Any],
+                  let type = payload["type"] as? String,
+                  ["function_call", "custom_tool_call"].contains(type) else { return nil }
+            calls = [payload]
+            inputKey = type == "function_call" ? "arguments" : "input"
             writeTools = []
         case .kimi:
-            guard line.contains("\"type\":\"tool.call\"") else { return nil }
+            guard let event = record["event"] as? [String: Any],
+                  event["type"] as? String == "tool.call" else { return nil }
+            calls = [event]
+            inputKey = "args"
             writeTools = ["Write", "Edit", "WriteFile", "StrReplaceFile"]
         }
-        if writeTools.contains(where: { line.contains("\"name\":\"\($0)\"") }) { return .write }
-        let prefixes = ["Add File: ", "Update File: ", "Move to: "] + shellWritePrefixes
-        let writes = needles.contains { needle in prefixes.contains { line.contains($0 + needle) } }
-        return writes ? .write : .other
+        var matched = false
+        for call in calls {
+            guard let name = call["name"] as? String, let rawInput = call[inputKey] else { continue }
+            // Codex function arguments (and some provider tool arguments) are
+            // JSON encoded inside a string; custom patch input is plain text.
+            let input: Any
+            if let text = rawInput as? String,
+               let decoded = try? JSONSerialization.jsonObject(with: Data(text.utf8)) {
+                input = decoded
+            } else {
+                input = rawInput
+            }
+            if writeTools.contains(name) {
+                // A file mentioned in written content is not the write target.
+                guard let arguments = input as? [String: Any] else { continue }
+                let paths = ["file_path", "path", "notebook_path"].compactMap { arguments[$0] as? String }
+                if paths.contains(where: needles.contains) { return .write }
+                continue
+            }
+            let texts = argumentStrings(input)
+            guard texts.contains(where: { text in needles.contains(where: text.contains) }) else { continue }
+            matched = true
+            let prefixes = ["Add File: ", "Update File: ", "Move to: "] + shellWritePrefixes
+            if texts.contains(where: { text in
+                needles.contains { needle in prefixes.contains { text.contains($0 + needle) } }
+            }) { return .write }
+        }
+        return matched ? .other : nil
     }
 
-    static func timestamp(_ line: String, provider: AgentProvider) -> Date? {
-        guard let record = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { return nil }
+    private static func argumentStrings(_ value: Any) -> [String] {
+        if let text = value as? String { return [text] }
+        if let object = value as? [String: Any] { return object.values.flatMap(argumentStrings) }
+        if let array = value as? [Any] { return array.flatMap(argumentStrings) }
+        return []
+    }
+
+    static func timestamp(_ record: [String: Any], provider: AgentProvider) -> Date? {
         if provider == .kimi, let milliseconds = record["time"] as? Double {
             return Date(timeIntervalSince1970: milliseconds / 1000)
         }

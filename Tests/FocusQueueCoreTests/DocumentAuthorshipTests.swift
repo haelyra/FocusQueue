@@ -49,6 +49,26 @@ struct DocumentAuthorshipTests {
     #expect(author?.sessionID == "session-writer")
   }
 
+  @Test("An unrelated earlier write does not steal the document's source session")
+  func mixedMessageDoesNotStealAuthorship() throws {
+    let document = "/tasks/FOC-1/evidence/report.md"
+    let mixed = try transcript([
+      ["type": "assistant", "timestamp": "2026-10-27T10:00:00Z",
+       "message": ["content": [
+         ["type": "tool_use", "name": "Read", "input": ["file_path": document]],
+         ["type": "tool_use", "name": "Write", "input": ["file_path": "/tasks/other.md"]],
+       ]]],
+    ], in: root, name: "mixed.jsonl")
+    let writer = try transcript([
+      claudeToolUse("Write", path: document, at: "2026-10-27T10:05:00Z"),
+    ], in: root, name: "actual-writer.jsonl")
+    let author = DocumentAuthorship.author(of: document, agents: [
+      (agent("reader", .claude), mixed), (agent("writer", .claude), writer),
+    ])
+    #expect(author?.subtaskID == "writer")
+    #expect(author?.sessionID == "session-writer")
+  }
+
   @Test("Among writers the earliest wins; Codex relative patches and Kimi records count")
   func earliestWriterAcrossProviders() throws {
     let workspace = "/repo/.worktrees/agent"

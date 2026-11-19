@@ -222,7 +222,9 @@ prefilled GitHub issue from `.github/ISSUE_TEMPLATE/feedback.yml`, which labels
 every report `feedback` and `triage`. Destinations live in `QueueHelpLinks`
 (`Sources/ECCFocusQueue/QueueHelpMenu.swift`); an unset link shows as coming soon.
 
-Click a task title to view its associated sessions. Descriptions start collapsed
+Click a task title to view its associated sessions. Right-click the title and choose
+**Copy task ID** to paste its identifier into a terminal command or agent prompt.
+Descriptions start collapsed
 for existing tasks and expanded for new unviewed tasks. A **NEW** badge beside the
 title marks a task created after Focus Queue first loaded its project dashboard
 and clears once you open, expand, or inspect the task. Right-click **View details**

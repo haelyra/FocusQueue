@@ -86,6 +86,24 @@ import Testing
   #expect(TaskTriagePolicy.hardDeadlineIsOverdue(for: overdue, now: now, calendar: calendar))
 }
 
+@Test func deadlineOrderingUsesEachTicketsAgentActivity() {
+  let quiet = DashboardTicket(
+    id: "ECC-a", title: "Quiet", status: "open", summary: "", updatedAt: "2026-10-01")
+  let active = DashboardTicket(
+    id: "ECC-b", title: "Active", status: "open", summary: "", updatedAt: "2026-10-01")
+  // Equal tickets fall back to ID order.
+  #expect(TaskTriagePolicy.deadlineOrdered([active, quiet]).map(\.id) == ["ECC-a", "ECC-b"])
+  // Recent output pushes a relative deadline back, so the quiet task leads.
+  let output = TaskTriagePolicy.date(from: "2026-10-10T12:00:00Z")!
+  let byOutput = TaskTriagePolicy.deadlineOrdered(
+    [quiet, active], lastOutputAtByTicketID: ["ECC-a": output])
+  #expect(byOutput.map(\.id) == ["ECC-b", "ECC-a"])
+  // A prompt counts the same way.
+  let byPrompt = TaskTriagePolicy.deadlineOrdered(
+    [quiet, active], lastPromptAtByTicketID: ["ECC-a": output])
+  #expect(byPrompt.map(\.id) == ["ECC-b", "ECC-a"])
+}
+
 // MARK: - Agent view ordering
 
 @Test func agentViewActivityCountsOutputAndOpenAttentionRequests() {

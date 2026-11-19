@@ -53,7 +53,9 @@ Headless coverage includes first-run and restart behavior, invalid dashboards, r
 
 Final local results: 191 Swift tests and 127 Python tests passed. The optimized 0.3.0 app bundle builds and its ad hoc signature verifies. The real bundle passed isolated install, upgrade and uninstall under a second-user fixture with spaces in its path. The beta ZIP checksum verifies. Version 0.3.0 is installed and running locally; installed app/helper bytes match the release bundle, and configuration and ingestion-file hashes are unchanged. The previous installation is retained under the app's Application Support backups directory.
 
-`Scripts/package-release.sh` creates an architecture-specific ZIP, its SHA-256 checksum and its Ed25519 publisher signature (see below). The bundle includes the session helper, generic configuration example and Ink's license. Default builds are ad hoc signed. Optional Developer ID signing uses `ECC_FOCUS_QUEUE_SIGN_IDENTITY`; notarization, stapling and downloaded-artifact Gatekeeper validation remain release requirements. The new GitHub Actions workflow has not yet run remotely.
+`Scripts/package-release.sh` creates an architecture-specific ZIP, its SHA-256 checksum and its Ed25519 publisher signature (see below). The bundle includes the session helper, generic configuration example and Ink's license. Default builds are ad hoc signed. Optional Developer ID signing uses `ECC_FOCUS_QUEUE_SIGN_IDENTITY`; notarization, stapling and downloaded-artifact Gatekeeper validation remain release requirements.
+
+Main-branch CI exercises packaging without a publisher key and labels its artifact `macOS-ci-smoke-unsigned`. These packages have no publisher signature and the in-app updater refuses them. Tag builds keep the signed packaging path and require a trusted publisher key. The CI timeout includes both headless tests and the optimized package build.
 
 ### Signed releases for the in-app updater
 

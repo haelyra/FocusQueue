@@ -170,37 +170,29 @@ public enum TaskTriagePolicy {
     lastPromptAtByTicketID: [String: Date] = [:],
     lastOutputAtByTicketID: [String: Date] = [:]
   ) -> [DashboardTicket] {
-    tickets.enumerated().sorted { left, right in
-      let leftTicket = left.element
-      let rightTicket = right.element
-      let leftDeadline = effectiveDeadline(
-        for: leftTicket,
-        lastPromptAt: lastPromptAtByTicketID[leftTicket.id],
-        lastOutputAt: lastOutputAtByTicketID[leftTicket.id])
-      let rightDeadline = effectiveDeadline(
-        for: rightTicket,
-        lastPromptAt: lastPromptAtByTicketID[rightTicket.id],
-        lastOutputAt: lastOutputAtByTicketID[rightTicket.id])
-      if leftDeadline != rightDeadline {
-        return (leftDeadline ?? .distantFuture) < (rightDeadline ?? .distantFuture)
+    // Parse each ticket's dates once instead of on every comparison.
+    let keyed = tickets.enumerated().map { offset, ticket in
+      let lastPromptAt = lastPromptAtByTicketID[ticket.id]
+      let lastOutputAt = lastOutputAtByTicketID[ticket.id]
+      return (
+        offset: offset,
+        ticket: ticket,
+        deadline: effectiveDeadline(for: ticket, lastPromptAt: lastPromptAt, lastOutputAt: lastOutputAt),
+        activity: latestActivity(for: ticket, lastPromptAt: lastPromptAt, lastOutputAt: lastOutputAt))
+    }
+    return keyed.sorted { left, right in
+      if left.deadline != right.deadline {
+        return (left.deadline ?? .distantFuture) < (right.deadline ?? .distantFuture)
       }
-      if leftTicket.priorityRank != rightTicket.priorityRank {
-        return leftTicket.priorityRank < rightTicket.priorityRank
+      if left.ticket.priorityRank != right.ticket.priorityRank {
+        return left.ticket.priorityRank < right.ticket.priorityRank
       }
-      let leftActivity = latestActivity(
-        for: leftTicket,
-        lastPromptAt: lastPromptAtByTicketID[leftTicket.id],
-        lastOutputAt: lastOutputAtByTicketID[leftTicket.id])
-      let rightActivity = latestActivity(
-        for: rightTicket,
-        lastPromptAt: lastPromptAtByTicketID[rightTicket.id],
-        lastOutputAt: lastOutputAtByTicketID[rightTicket.id])
-      if leftActivity != rightActivity {
-        return (leftActivity ?? .distantPast) > (rightActivity ?? .distantPast)
+      if left.activity != right.activity {
+        return (left.activity ?? .distantPast) > (right.activity ?? .distantPast)
       }
-      if leftTicket.id != rightTicket.id { return leftTicket.id < rightTicket.id }
+      if left.ticket.id != right.ticket.id { return left.ticket.id < right.ticket.id }
       return left.offset < right.offset
-    }.map(\.element)
+    }.map(\.ticket)
   }
 
   public static func hardDeadlineIsOverdue(for ticket: DashboardTicket, now: Date = Date(), calendar: Calendar = .current) -> Bool {

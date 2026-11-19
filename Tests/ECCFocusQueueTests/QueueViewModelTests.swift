@@ -4422,6 +4422,38 @@ struct QueueViewModelTests {
     #expect(LaunchScheduleStore(supportDirectory: fixture.paths.supportDirectory).load().isEmpty)
   }
 
+  @Test("A refresh picks up and fires a launch another writer registered in the shared schedule file")
+  func refreshFiresExternallyRegisteredLaunch() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let repository = try await creatorRepository(for: fixture)
+    defer { try? FileManager.default.removeItem(at: repository) }
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(),
+      terminalController: DirectViewRecorder(root: fixture.root, failReveal: false),
+      taskAgentLauncher: TaskAgentLauncher(runner: DirectCreationRunner(), candidateSockets: []),
+      taskPlacementSuggester: RecordingPlacementSuggester(.unavailable("unused")))
+    var draft = TaskDraft(
+      description: "Sweep the queue.",
+      agent: AgentLaunchPreset(provider: .codex, useTmux: false))
+    draft.launchesAgent = false
+    let result = await model.submitTaskDraft(draft)
+    guard case .created(let ticketID, _) = result else {
+      Issue.record("Unexpected result \(result)")
+      return
+    }
+    // focus-queue-session schedule add writes straight to the shared file.
+    let launch = ScheduledLaunch(
+      fireAt: Date(), ticketID: ticketID, prompt: "Run the nightly sweep.",
+      title: "Sweep", preset: AgentLaunchPreset(provider: .codex, useTmux: false))
+    try LaunchScheduleStore(supportDirectory: fixture.paths.supportDirectory).save([launch])
+
+    await model.refresh()
+    try await eventually { model.launchingTaskIDs.isEmpty }
+    #expect(model.subtasks(for: ticketID).contains { $0.initialPrompt == "Run the nightly sweep." })
+    #expect(model.scheduledLaunches.isEmpty)
+  }
+
   @Test("Without a prompted agent the creator always creates a task and saves the prompt for the first agent")
   func taskCreatorWithoutAgentSavesPrompt() async throws {
     let fixture = try await Fixture()

@@ -20,9 +20,11 @@ struct TaskCreatorSheet: View {
   @State private var doneWhen = ""
   @State private var includesDueDate = false
   @State private var dueDate = Date()
-  @State private var scheduleMode: TaskScheduleMode = .now
-  @State private var scheduleAmount = 1
-  @State private var scheduleUnit: LaunchScheduleUnit = .hours
+  /// The agent's start time; defaults to now, which launches at once.
+  @State private var startAt = Date()
+  @State private var repeats = false
+  @State private var repeatAmount = 1
+  @State private var repeatUnit: LaunchScheduleUnit = .hours
   @State private var showsAdvanced = false
   @State private var isSubmitting = false
   @State private var match: (ticket: DashboardTicket, suggestion: TaskPlacementSuggestion)?
@@ -92,19 +94,14 @@ struct TaskCreatorSheet: View {
 
         if launchesAgent {
           Section {
-            Picker("Start", selection: $scheduleMode) {
-              Text("Now").tag(TaskScheduleMode.now)
-              Text("Later").tag(TaskScheduleMode.later)
-              Text("Repeating").tag(TaskScheduleMode.repeating)
-            }
-            if scheduleMode != .now {
+            DatePicker("Start", selection: $startAt, displayedComponents: [.date, .hourAndMinute])
+            Toggle("Repeat", isOn: $repeats)
+            if repeats {
               HStack {
-                Stepper(value: $scheduleAmount, in: 1...999) {
-                  Text(scheduleMode == .later
-                    ? "In \(scheduleAmount) \(scheduleUnit.label(scheduleAmount))"
-                    : "Every \(scheduleAmount) \(scheduleUnit.label(scheduleAmount))")
+                Stepper(value: $repeatAmount, in: 1...999) {
+                  Text("Every \(repeatAmount) \(repeatUnit.label(repeatAmount))")
                 }
-                Picker("Unit", selection: $scheduleUnit) {
+                Picker("Unit", selection: $repeatUnit) {
                   ForEach(LaunchScheduleUnit.allCases, id: \.self) { unit in
                     Text(unit.rawValue.capitalized).tag(unit)
                   }
@@ -113,10 +110,10 @@ struct TaskCreatorSheet: View {
               }
             }
           } footer: {
-            if scheduleMode != .now {
-              Text("Scheduled launches fire while Focus Queue is running, on the next refresh after their time. The task is created now; the agent starts later. Nothing here blocks a launch; the capacity panel above is a feel, not a limit.")
-                .font(.caption).foregroundStyle(.secondary)
-            }
+            Text(startsAgent && isScheduled
+              ? "The task is created now; the agent starts at the time above. Scheduled launches fire while Focus Queue is running, on the next refresh after their time. Nothing here blocks a launch; the capacity panel above is a feel, not a limit."
+              : "Starts at the time above; leave it at now to launch at once.")
+              .font(.caption).foregroundStyle(.secondary)
           }
         }
 
@@ -136,7 +133,7 @@ struct TaskCreatorSheet: View {
       HStack {
         Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
         Spacer()
-        Button(isSubmitting ? "Placing…" : startsAgent && scheduleMode != .now ? "Schedule ⌘↩" : startsAgent ? "Launch ⌘↩" : "Create task ⌘↩") {
+        Button(isSubmitting ? "Placing…" : startsAgent && isScheduled ? "Schedule ⌘↩" : startsAgent ? "Launch ⌘↩" : "Create task ⌘↩") {
           submit(.checkForMatch)
         }
         .buttonStyle(.borderedProminent)
@@ -194,15 +191,28 @@ struct TaskCreatorSheet: View {
     .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.accentColor.opacity(0.35)))
   }
 
+  /// The launch schedule the timing fields describe, or nil to launch at
+  /// once. A future start time schedules a one-shot; Repeat makes it the
+  /// anchor of a series whose first fire is that time, or one interval out
+  /// when the time is now.
+  private var launchSchedule: TaskLaunchSchedule? {
+    let delay = startAt.timeIntervalSinceNow
+    if repeats {
+      let interval = LaunchScheduleMath.repeatInterval(amount: repeatAmount, unit: repeatUnit)
+      return TaskLaunchSchedule(fireInSeconds: delay > 0 ? delay : interval,
+                                repeatIntervalSeconds: interval)
+    }
+    guard delay > 0 else { return nil }
+    return TaskLaunchSchedule(fireInSeconds: delay)
+  }
+
+  private var isScheduled: Bool { launchSchedule != nil }
+
   private func submit(_ choice: TaskDraftChoice) {
-    let schedule: TaskLaunchSchedule? = scheduleMode == .now ? nil : TaskLaunchSchedule(
-      fireInSeconds: LaunchScheduleMath.repeatInterval(amount: scheduleAmount, unit: scheduleUnit),
-      repeatIntervalSeconds: scheduleMode == .repeating
-        ? LaunchScheduleMath.repeatInterval(amount: scheduleAmount, unit: scheduleUnit) : nil)
     let draft = TaskDraft(
       description: description, title: title, displayDescription: displayDescription,
       priority: priority, doneWhen: doneWhen, dueDate: includesDueDate ? dueDate : nil,
-      projectID: projectID, launchesAgent: launchesAgent, agent: agent, schedule: schedule)
+      projectID: projectID, launchesAgent: launchesAgent, agent: agent, schedule: launchSchedule)
     isSubmitting = true
     message = nil
     Task {
@@ -219,12 +229,6 @@ struct TaskCreatorSheet: View {
       }
     }
   }
-}
-
-/// The task creator's start choices: immediately, once after a delay, or on a
-/// repeating interval.
-enum TaskScheduleMode: Hashable {
-  case now, later, repeating
 }
 
 /// The card's New Agent sheet: the + task creator's prompt and launch options

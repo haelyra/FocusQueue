@@ -29,7 +29,9 @@ jobs:
         # which swift test does not necessarily produce.
         run: swift build
       - name: Python tests
-        run: python3 -m unittest discover -s Tests -p 'test_*.py'
+        # Installed launchers and the installer use Apple's Python, rather than
+        # whichever Homebrew Python happens to be first on a runner's PATH.
+        run: /usr/bin/python3 -m unittest discover -s Tests -p 'test_*.py'
       - name: Shell syntax
         run: zsh -n Scripts/build-app.sh Scripts/install.sh Scripts/uninstall.sh Scripts/package-release.sh
       - name: Package unsigned CI smoke artifact

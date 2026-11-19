@@ -10,7 +10,7 @@ import WebKit
 @MainActor
 @Suite(.serialized)
 struct ProjectMapViewerTests {
-  private func demoMap() -> ProjectMap {
+  private func demoMap(storageTitle: String = "Storage") -> ProjectMap {
     let plan = """
     ## Phase 1 — Build
 
@@ -26,7 +26,7 @@ struct ProjectMapViewerTests {
     """
     let tickets = [
       DashboardTicket(id: "DEM-1", title: "Core", status: "resolved", summary: ""),
-      DashboardTicket(id: "DEM-2", title: "Storage", status: "in-progress", summary: ""),
+      DashboardTicket(id: "DEM-2", title: storageTitle, status: "in-progress", summary: ""),
     ]
     return ProjectMapBuilder.build(
       projectID: "demo", projectName: "Demo", process: DevelopmentProcess(), tickets: tickets,
@@ -46,6 +46,42 @@ struct ProjectMapViewerTests {
   private func run(_ web: WKWebView, _ script: String) async -> String {
     let value = try? await web.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .defaultClient)
     return value.map { "\($0)" } ?? "nil"
+  }
+
+  @Test("Resting on a card for half a second grows it to show its whole title; leaving shrinks it")
+  func hoverRevealsFullTitle() async throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("fq-map-hover-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let file = folder.appendingPathComponent("project-map.html")
+    let long = "Persist every queue snapshot atomically with checksums, rotate old journals, and recover the last good state after a crash mid-write"
+    try ProjectMapHTML.render(demoMap(storageTitle: long)).write(to: file, atomically: true, encoding: .utf8)
+    let coordinator = ReadOnlyResourceDocument.Coordinator(open: { _ in })
+    let web = ZoomableWebView(frame: CGRect(x: 0, y: 0, width: 900, height: 700),
+                              configuration: ReadOnlyResourceDocument.configuration(coordinator: coordinator))
+    web.navigationDelegate = coordinator
+    defer {
+      web.configuration.userContentController.removeScriptMessageHandler(
+        forName: ProjectMapScript.messageHandler, contentWorld: .defaultClient)
+    }
+    web.loadFileURL(file, allowingReadAccessTo: folder)
+    try await eventually { await run(web, "return document.documentElement.dataset.fqMap || ''") == "ready" }
+    _ = await run(web, "document.querySelector('[data-kind=\"phase\"]').click(); return 1")
+    try await eventually {
+      await run(web, "return document.querySelector('[data-node=\"DEM-2\"]').style.display") == ""
+    }
+    let card = "document.querySelector('[data-node=\"DEM-2\"]')"
+    // At rest the title is clamped: its text overflows the two visible lines.
+    #expect(await run(web, "const t = \(card).querySelector('.title'); return t.scrollHeight > t.clientHeight") == "1")
+    _ = await run(web, "\(card).querySelector('.title').dispatchEvent(new MouseEvent('mouseover', {bubbles: true})); return 1")
+    try await Task.sleep(for: .milliseconds(250))
+    #expect(await run(web, "return \(card).classList.contains('full')") == "0")
+    try await eventually(timeout: .seconds(2)) { await run(web, "return \(card).classList.contains('full')") == "1" }
+    #expect(await run(web, "const t = \(card).querySelector('.title'); return t.scrollHeight <= t.clientHeight") == "1")
+    #expect(Int(await run(web, "return \(card).offsetHeight")) ?? 0 > 74)
+    _ = await run(web, "\(card).dispatchEvent(new MouseEvent('mouseout', {bubbles: true, relatedTarget: document.body})); return 1")
+    #expect(await run(web, "return \(card).classList.contains('full')") == "0")
+    #expect(Int(await run(web, "return \(card).offsetHeight")) == 74)
   }
 
   @Test("Phases start collapsed, a phase click expands it, a task click asks the queue to locate it")

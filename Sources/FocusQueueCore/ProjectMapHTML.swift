@@ -470,6 +470,12 @@ html[data-fq-map] .more { display: inline-block; }
 html[data-fq-map] .actions { display: inline-flex; }
 .actions button { font: inherit; color: var(--ink); background: #26262c; border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; cursor: pointer; }
 .node:has(details[open]) { z-index: 40; }
+/* Hover expansion (script adds .full after 0.5s): unclamp text and grow downward over neighbours. */
+.node.full { height: auto; min-height: 74px; z-index: 35; box-shadow: 0 0 0 2px var(--edge-hi), 0 8px 22px rgba(0,0,0,.55); }
+.node.full .title { display: block; -webkit-line-clamp: unset; overflow: visible; }
+.node.full details { margin-top: 4px; }
+.phase.full { height: auto; min-height: 56px; padding: 8px 10px; z-index: 35; box-shadow: 0 8px 22px rgba(0,0,0,.55); }
+.phase.full b { white-space: normal; overflow: visible; }
 .node.s-done { border-top-color: var(--done); }
 .node.s-active { border-top-color: var(--active); }
 .node.s-review { border-top-color: var(--review); }

@@ -20,6 +20,7 @@ struct ProjectTabView: View {
         if let project {
           bulletinBoardRow
           scheduleRow
+          if model.developmentProcess != nil { projectMapRow(project) }
           processSection(project)
           modulesSection(project)
           filesSection(project)
@@ -95,6 +96,33 @@ struct ProjectTabView: View {
     .help("A timeline of scheduled agent launches, the daily report, and pending auto-decisions. Drag to retime.")
   }
 
+  // MARK: - Project map
+
+  /// Opens the task dependency map in the document viewer. The map is built
+  /// from the development process, so the row shows only while it is on.
+  private func projectMapRow(_ project: ProjectDefinition) -> some View {
+    Button { model.openProjectMap() } label: {
+      HStack(spacing: 8) {
+        Image(systemName: "point.3.connected.trianglepath.dotted")
+          .font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(Color.secondary)
+        VStack(alignment: .leading, spacing: 1) {
+          Text("Project map").font(.system(size: 12, weight: .semibold))
+          Text("Tasks, dependencies, and planned work").font(.caption).foregroundStyle(.secondary)
+        }
+        Spacer()
+        Image(systemName: "arrow.right.to.line.compact")
+          .font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+      }
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .padding(12)
+    .notificationSurface(radius: 16)
+    .accessibilityLabel("Open the project map for \(project.name)")
+    .help("Open the task dependency map: every task with its status and agents, plus dotted ghost tasks for planned work no task covers yet")
+  }
+
   // MARK: - Development process
 
   @ViewBuilder private func processSection(_ project: ProjectDefinition) -> some View {
@@ -104,15 +132,6 @@ struct ProjectTabView: View {
       if let process = model.developmentProcess {
         phaseStepper(process)
         stewardLine(process, projectID: project.id)
-        Button {
-          model.openProjectMap()
-        } label: {
-          Label("Project map", systemImage: "point.3.connected.trianglepath.dotted")
-            .font(.system(size: 11, weight: .semibold))
-        }
-        .buttonStyle(.borderless).controlSize(.small)
-        .help("Open the task dependency map: every task with its status and agents, plus dotted ghost tasks for planned work no task covers yet")
-        .accessibilityLabel("Open the project map for \(project.name)")
         VStack(alignment: .leading, spacing: 6) {
           ForEach(process.currentSteps) { step in
             stepRow(step, status: process.status(of: step), process: process)

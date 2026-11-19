@@ -443,6 +443,27 @@ public enum ProjectMapScript {
     leaveTimer = setTimeout(function () { setPeek([]); }, 260);
   });
 
+  // Resting on a card or phase for half a second grows it to show its full text.
+  var fullTimer = 0, fullEl = null;
+  function setFull(el) {
+    if (fullEl === el) return;
+    if (fullEl) fullEl.classList.remove('full');
+    fullEl = el;
+    if (el) el.classList.add('full');
+  }
+  map.addEventListener('mouseover', function (event) {
+    var el = event.target.closest('.node, .phase');
+    if (!el || el === fullEl) return;
+    clearTimeout(fullTimer);
+    fullTimer = setTimeout(function () { setFull(el); }, 500);
+  });
+  map.addEventListener('mouseout', function (event) {
+    var el = event.target.closest('.node, .phase');
+    if (!el || (event.relatedTarget && el.contains(event.relatedTarget))) return;
+    clearTimeout(fullTimer);
+    if (fullEl === el) setFull(null);
+  });
+
   apply(false);
 })();
 """#

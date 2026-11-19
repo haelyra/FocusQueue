@@ -73,10 +73,14 @@ public struct AgentLaunchConfiguration: Codable, Equatable, Sendable {
     /// Launch role, as the shell entries name it: nil or `coding` is an engineering
     /// agent; `orchestrator` gets the project's orchestrator contract instead.
     public var role: String?
+    /// Opt-in: on provider quota exhaustion the job continues on another
+    /// provider that still has credits, as a fresh session.
+    public var continueOnQuota: Bool?
 
     public init(routeID: String? = nil, model: String? = nil, effort: String? = nil,
                 providerVersion: String? = nil, launchID: String? = nil,
-                pluginOverrides: [String: Bool]? = nil, role: String? = nil) {
+                pluginOverrides: [String: Bool]? = nil, role: String? = nil,
+                continueOnQuota: Bool? = nil) {
         self.routeID = routeID
         self.model = model
         self.effort = effort
@@ -84,6 +88,7 @@ public struct AgentLaunchConfiguration: Codable, Equatable, Sendable {
         self.launchID = launchID
         self.pluginOverrides = pluginOverrides
         self.role = role
+        self.continueOnQuota = continueOnQuota
     }
 
     /// The contract this agent follows.
@@ -135,6 +140,10 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     public var pausedAt: Date?
 
     public var isPaused: Bool { pausedAt != nil && status != .completed }
+
+    /// The agent's launch opted in to automatic continuation on another
+    /// provider when this provider's credits run out.
+    public var continuesOnQuotaExhaustion: Bool { launchConfiguration?.continueOnQuota == true }
 
     public var hasAgent: Bool {
         !isAssignmentOnly && (parentSubtaskID != nil || sessionID != nil || tmux != nil || terminalPaneID != nil || lastHeartbeatAt != nil || status == .completed)

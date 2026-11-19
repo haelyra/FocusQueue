@@ -838,6 +838,9 @@ struct NewTaskAgentView: View {
   // input and even drops the typed work description.
   @State private var includePrompt = true
   @State private var role: AgentContractRole = .engineering
+  @State private var continueOnQuota = false
+  // Orchestrators may resume an interrupted sub-agent instead of launching fresh.
+  @State private var resumeSubtaskID: String?
   @State private var assignmentID = UUID().uuidString
   @State private var workspacePreview = WorkspacePreviewModel()
   @State private var isStarting = false
@@ -863,6 +866,14 @@ struct NewTaskAgentView: View {
     model.config.wezTerm.terminalApp.requiresTmux
   }
   private var name: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
+  /// Sub-agents with a saved session and no live runtime; resumable in place.
+  private var resumableSubtasks: [TaskSubtask] {
+    model.resumableSubtasks(for: ticket.id)
+  }
+  private var resumeSelection: TaskSubtask? {
+    resumableSubtasks.first { $0.id == resumeSubtaskID }
+  }
+  private var isResuming: Bool { role == .orchestrator && resumeSelection != nil }
   private var preview: String {
     guard let context = model.taskContexts[ticket.id] else { return "Task context will be prepared at launch." }
     var subtask = TaskSubtask(id: assignmentID, title: name,
@@ -973,6 +984,25 @@ struct NewTaskAgentView: View {
             ? "Gets the project's signed orchestrator contract instead of the engineering one, and plans, assigns, reviews, and closes work."
             : "Gets the project's signed engineering contract, if the project has one.")
             .font(.caption).foregroundStyle(.secondary)
+          if role == .orchestrator && targetSubtask == nil && !resumableSubtasks.isEmpty {
+            Picker("Resume a sub-agent", selection: $resumeSubtaskID) {
+              Text("Start a new agent").tag(String?.none)
+              ForEach(resumableSubtasks) { subtask in
+                Text("\(subtask.title) · \(subtask.provider.displayName)").tag(String?.some(subtask.id))
+              }
+            }
+            .accessibilityLabel("Resume a sub-agent")
+            Text(resumeSelection == nil
+              ? "Interrupted and stopped sub-agents with a saved session can be resumed instead of launching a new agent."
+              : "Resumes the saved conversation in its workspace. The fields below apply only to a new agent.")
+              .font(.caption).foregroundStyle(.secondary)
+          }
+          Toggle("Continue on another provider if credits run out", isOn: $continueOnQuota)
+            .disabled(isResuming)
+          if continueOnQuota && !isResuming {
+            Text("When this provider's quota is exhausted, Focus Queue starts a fresh agent on the next provider that still has credits, in a similar model tier.")
+              .font(.caption).foregroundStyle(.secondary)
+          }
           Toggle("Include detailed task instructions", isOn: $includePrompt)
           Text("Task identity remains in the launch environment. When this is off, the agent opens at an empty input. Turning it on adds the full assignment and reporting instructions.")
             .font(.caption).foregroundStyle(.secondary)
@@ -1004,7 +1034,12 @@ struct NewTaskAgentView: View {
       HStack {
         Spacer()
         Button("Cancel") { dismiss() }.disabled(isStarting)
-        Button(isStarting ? "Starting…" : "Start agent") {
+        Button(isStarting ? "Starting…" : isResuming ? "Resume agent" : "Start agent") {
+          if let resumeSelection {
+            model.openSubtask(resumeSelection, for: ticket, showResult: false)
+            dismiss()
+            return
+          }
           isStarting = true
           launchError = nil
           model.launchAgent(for: ticket, title: name, provider: provider, repositoryPath: repository,
@@ -1015,7 +1050,8 @@ struct NewTaskAgentView: View {
             allowProjectRepositoryMismatch: allowsOtherRepository,
             parentSubtaskID: nil, createAssignment: false,
             modelName: modelName, effort: effort,
-            workspacePolicy: .isolatedCommittedSnapshot, role: role) { started in
+            workspacePolicy: .isolatedCommittedSnapshot, role: role,
+            continueOnQuota: continueOnQuota) { started in
               isStarting = false
               if started { dismiss() }
               else { launchError = model.actionMessages[ticket.id] ?? "Agent could not start. Check the workspace and try again." }
@@ -1023,15 +1059,16 @@ struct NewTaskAgentView: View {
           model.rememberAgentLaunch(AgentLaunchPreset(
             provider: provider, model: modelName, effort: effort,
             workspacePolicy: .isolatedCommittedSnapshot,
-            useTmux: tmuxAvailable && (requiresTmux || useTmux), includePrompt: includePrompt))
+            useTmux: tmuxAvailable && (requiresTmux || useTmux), includePrompt: includePrompt,
+            continueOnQuota: continueOnQuota))
         }.buttonStyle(.borderedProminent)
-          .disabled(isStarting || name.isEmpty
+          .disabled(isStarting || (!isResuming && (name.isEmpty
             || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || model.launchingTaskIDs.contains(ticket.id) || workspaceBlockReason != nil
             || (requiresTmux && !tmuxAvailable)
             // Only a project with a bound repository can reject a mismatched checkout.
             || (model.project(for: ticket).map { !$0.repositoryPath.isEmpty } == true
-              && repositoryMatchesProject != true && !allowsOtherRepository))
+              && repositoryMatchesProject != true && !allowsOtherRepository))))
       }
     }.padding(24).frame(width: 540, height: 660)
       .interactiveDismissDisabled(isStarting)

@@ -333,6 +333,7 @@ struct AgentLaunchOptions: View {
     selected.model = lastLaunch.model
     selected.effort = lastLaunch.effort
     selected.pluginOverrides = lastLaunch.pluginOverrides
+    selected.continueOnQuota = lastLaunch.continueOnQuota
     return selected
   }
 
@@ -385,6 +386,12 @@ struct AgentLaunchOptions: View {
       get: { agent.useTmux ?? true }, set: { agent.useTmux = $0 }))
     Toggle("Start the agent with this prompt", isOn: Binding(
       get: { agent.includePrompt ?? true }, set: { agent.includePrompt = $0 }))
+    Toggle("Continue on another provider if credits run out", isOn: Binding(
+      get: { agent.continueOnQuota ?? false }, set: { agent.continueOnQuota = $0 }))
+    if agent.continueOnQuota == true {
+      Text("When this provider's quota is exhausted, Focus Queue starts a fresh agent on the next provider that still has credits, in a similar model tier. Cross-provider resume is not possible, so the new agent replays the original prompt.")
+        .font(.caption).foregroundStyle(.secondary)
+    }
   }
 }
 

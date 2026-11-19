@@ -4555,8 +4555,16 @@ struct QueueViewModelTests {
       var subtask = TaskSubtask(id: id, title: "Worker", provider: provider,
         sessionID: UUID().uuidString, status: status)
       subtask.attention = .quotaExhausted
+      subtask.launchConfiguration = AgentLaunchConfiguration(continueOnQuota: true)
       return subtask
     }
+
+    // Agents that did not opt in at launch never fall back.
+    var optedOut = TaskSubtask(id: "agent-opted-out", title: "Worker", provider: .codex,
+      sessionID: UUID().uuidString, status: .blocked)
+    optedOut.attention = .quotaExhausted
+    #expect(model.claimQuotaFallback(ticketID: "ECC-100", subtask: optedOut,
+      executableAvailable: { _ in true }) == nil)
 
     let first = exhausted("agent-one", provider: .codex)
     #expect(model.claimQuotaFallback(ticketID: "ECC-101", subtask: first,
@@ -4596,6 +4604,28 @@ struct QueueViewModelTests {
       executableAvailable: { _ in true }) == nil)
     #expect(QueueViewModel.quotaFallbackProvider(for: .codex, fallbackOrder: [.claude],
       executableAvailable: { $0 == .claude }) == .claude)
+    // Providers without available credits are skipped for the next one.
+    #expect(QueueViewModel.quotaFallbackProvider(for: .codex, fallbackOrder: [.codex, .claude, .kimi],
+      executableAvailable: { _ in true }, creditAvailable: { $0 != .claude }) == .kimi)
+    #expect(QueueViewModel.quotaFallbackProvider(for: .codex, fallbackOrder: [.codex, .claude],
+      executableAvailable: { _ in true }, creditAvailable: { _ in false }) == nil)
+  }
+
+  @Test("Quota fallback picks a model in the same tier as the exhausted one")
+  func quotaFallbackModelTiers() {
+    let choices = AppConfiguration.defaultAgentModelChoices
+    // Flagship to flagship, fast to fast, mid to mid.
+    #expect(QueueViewModel.quotaFallbackModel(from: "claude-opus-5-5", to: .codex, choices: choices) == "gpt-6.1-sol")
+    #expect(QueueViewModel.quotaFallbackModel(from: "gpt-6-luna", to: .claude, choices: choices) == "claude-haiku-5-5")
+    #expect(QueueViewModel.quotaFallbackModel(from: "claude-sonnet-5-5", to: .kimi, choices: choices) == "kimi-code/k3")
+    // No source model or no tier match launches the provider's default.
+    #expect(QueueViewModel.quotaFallbackModel(from: nil, to: .codex, choices: choices) == nil)
+    #expect(QueueViewModel.quotaFallbackModel(from: "claude-haiku-4-5", to: .codex, choices: []) == nil)
+    // Tier classification keywords.
+    #expect(AgentModelTier(model: "claude-opus-5-5") == .flagship)
+    #expect(AgentModelTier(model: "kimi-code/k3.1-pro") == .flagship)
+    #expect(AgentModelTier(model: "gpt-5.6-luna") == .fast)
+    #expect(AgentModelTier(model: "claude-sonnet-5-5") == .mid)
   }
 
   @Test("Escalation provider resolution prefers the request and falls back when its CLI is missing")

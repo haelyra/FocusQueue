@@ -4036,6 +4036,10 @@ private struct TicketCard: View {
       if !newOutputs.isEmpty {
         NewOutputsPanel(ticketID: ticket.id, outputs: newOutputs, model: model) { showsContext = true }
       }
+      let pinnedFiles = model.pinnedFiles(for: ticket.id)
+      if !pinnedFiles.isEmpty {
+        PinnedFilesPanel(ticketID: ticket.id, files: pinnedFiles, model: model)
+      }
       if ticket.isRecurringPullRequestTask {
         RecurringPRProgressSummary(progress: recurringProgress, error: recurringProgressError)
       }

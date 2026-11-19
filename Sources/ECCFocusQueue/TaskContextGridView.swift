@@ -77,12 +77,21 @@ struct TaskContextGridView: View {
         }
         .help("Reopen this session and reach its agent: a fork of the creating agent, otherwise a new agent.")
       }
+      if let url = item.fileURL, Self.isPinnable(item) {
+        PinFileMenuItem(url: url, ticketID: ticket.id, model: model)
+      }
       if let url = item.fileURL {
         Button("Show in Finder", systemImage: "folder") {
           NSWorkspace.shared.activateFileViewerSelecting([url])
         }
       }
     }
+  }
+
+  /// Files pin; the context folder itself does not.
+  private static func isPinnable(_ item: TaskContextItem) -> Bool {
+    if case .folder = item.target { return false }
+    return true
   }
 
   private func open(_ item: TaskContextItem) {

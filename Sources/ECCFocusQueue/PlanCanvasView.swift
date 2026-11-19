@@ -234,7 +234,7 @@ struct PlanCanvasView: View {
       queue: model, scopeLabel: ticket.id, document: url,
       open: openDocument, close: { sideDocuments.close(url) },
       discuss: { discussDocument($0, for: url) },
-      dragStarted: { draggedTab = $0 })
+      dragStarted: { draggedTab = $0 }, pinTaskID: ticket.id)
   }
 
   private var document: some View {

@@ -87,3 +87,30 @@ func taskOutputsSkipWalkthroughDemo() throws {
     try write("evidence/walkthrough/notes.md", in: folder, modified: now)
     #expect(TaskOutputs.scan(folder).map(\.relativePath) == ["evidence/walkthrough/notes.md"])
 }
+
+@Test("Pinned files persist in order, unpin cleanly, and hide deleted files")
+func taskFilePinsPersist() async throws {
+    let root = try outputsFixture(); defer { try? FileManager.default.removeItem(at: root) }
+    let store = TaskContextStore(root: root)
+    let ticket = DashboardTicket(id: "ECC-951", title: "Pin files", status: "in-progress", summary: "Keep files visible.")
+    let context = try await store.ensureContext(ticket: ticket)
+    try write("evidence/report.pdf", in: context.contextDirectory)
+    try write("notes.md", in: context.contextDirectory)
+    let report = context.contextDirectory.appendingPathComponent("evidence/report.pdf")
+    let notes = context.contextDirectory.appendingPathComponent("notes.md")
+    let start = Date()
+    _ = try await store.setFilePinned(ticketID: ticket.id, url: notes, pinned: true, at: start)
+    _ = try await store.setFilePinned(ticketID: ticket.id, url: report, pinned: true, at: start.addingTimeInterval(1))
+    // Re-pinning keeps the original position.
+    _ = try await store.setFilePinned(ticketID: ticket.id, url: notes, pinned: true, at: start.addingTimeInterval(2))
+    let reloaded = try #require(try await store.load(ticketID: ticket.id))
+    #expect(reloaded.pinnedFileURLs().map(\.lastPathComponent) == ["notes.md", "report.pdf"])
+    #expect(reloaded.isFilePinned(URL(fileURLWithPath: notes.path + "/../notes.md")))
+
+    try FileManager.default.removeItem(at: report)
+    #expect(reloaded.pinnedFileURLs().map(\.lastPathComponent) == ["notes.md"])
+    let unpinned = try await store.setFilePinned(ticketID: ticket.id, url: notes, pinned: false)
+    #expect(!unpinned.isFilePinned(notes))
+    _ = try await store.setFilePinned(ticketID: ticket.id, url: report, pinned: false)
+    #expect(try #require(try await store.load(ticketID: ticket.id)).pinnedFiles == nil)
+}

@@ -392,6 +392,9 @@ public struct TaskContext: Codable, Equatable, Sendable {
     /// Context-folder outputs the user opened or dismissed, keyed by relative
     /// path, with the modification date seen. A later edit marks one new again.
     public var reviewedOutputs: [String: Date]? = nil
+    /// Files the user pinned to the task card, keyed by absolute path, with
+    /// the pin date. Any file qualifies: context outputs, worktree docs, plans.
+    public var pinnedFiles: [String: Date]? = nil
     public var removedAgentSessionKeys: [String]?
     /// This task's "bypass permissions" choice for every agent and chat turn
     /// in it; nil follows each provider's setting.
@@ -1903,6 +1906,18 @@ public actor TaskContextStore {
             context.reviewedOutputs = reviewed.filter {
                 files.fileExists(atPath: context.contextDirectory.appendingPathComponent($0.key).path)
             }
+        }
+    }
+
+    /// Pins or unpins `url` on the task card. Pins are keyed by standardized path.
+    @discardableResult public func setFilePinned(
+        ticketID: String, url: URL, pinned: Bool, at date: Date = Date()
+    ) throws -> TaskContext {
+        try mutate(ticketID: ticketID) { context in
+            var pins = context.pinnedFiles ?? [:]
+            let path = url.standardizedFileURL.path
+            if pinned { pins[path] = pins[path] ?? date } else { pins[path] = nil }
+            context.pinnedFiles = pins.isEmpty ? nil : pins
         }
     }
 

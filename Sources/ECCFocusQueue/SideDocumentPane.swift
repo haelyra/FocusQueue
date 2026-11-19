@@ -230,6 +230,8 @@ struct SideDocumentPane: View {
     var dragStarted: (URL) -> Void = { _ in }
     /// Present when the document is a development-process step artifact.
     var artifactReview: DocumentArtifactReview?
+    /// The task a file can be pinned to; nil hides the pin button.
+    var pinTaskID: String?
     @State private var find = DocumentFindState()
 
     private var store: DocumentContentStore { queue.documentContentStore }
@@ -315,6 +317,14 @@ struct SideDocumentPane: View {
                     } label: { Image(systemName: editSession != nil ? "eye" : "pencil") }
                         .help(editSession != nil ? "Stop editing without saving" : "Edit this document")
                         .accessibilityLabel(editSession != nil ? "Stop editing" : "Edit document")
+                }
+                if let pinTaskID, document.isFileURL {
+                    let pinned = queue.isFilePinned(document, ticketID: pinTaskID)
+                    Button {
+                        Task { await queue.setFilePinned(document, ticketID: pinTaskID, pinned: !pinned) }
+                    } label: { Image(systemName: pinned ? "pin.fill" : "pin") }
+                        .help(pinned ? "Unpin from \(pinTaskID)" : "Pin to \(pinTaskID): keep this file on the task card")
+                        .accessibilityLabel(pinned ? "Unpin from task" : "Pin to task")
                 }
                 Button { store.reload(document) } label: { Image(systemName: "arrow.clockwise") }
                     .help("Reload document").disabled(editSession != nil)

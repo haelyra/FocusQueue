@@ -519,7 +519,8 @@ struct DocumentViewerInspector: View {
                 DocumentArtifactReview(stepTitle: review.stepTitle, checked: review.checked) {
                     model.setDevelopmentArtifactChecked($0, review: review)
                 }
-            })
+            },
+            pinTaskID: { if case .task(let id) = model.documentViewerScope { return id } else { return nil } }())
     }
 
     private var tabBar: some View {

@@ -2173,6 +2173,37 @@ final class QueueViewModel {
     }
   }
 
+  /// Files pinned to the task card, in pin order; deleted files drop out.
+  func pinnedFiles(for ticketID: String) -> [URL] {
+    taskContexts[ticketID]?.pinnedFileURLs() ?? []
+  }
+
+  func isFilePinned(_ url: URL, ticketID: String) -> Bool {
+    taskContexts[ticketID]?.isFilePinned(url) ?? false
+  }
+
+  func setFilePinned(_ url: URL, ticketID: String, pinned: Bool) async {
+    guard url.isFileURL else { return }
+    do {
+      if taskContexts[ticketID] == nil, try await taskContextStore.load(ticketID: ticketID) == nil,
+        let ticket = dashboard.tickets.first(where: { $0.id == ticketID }) {
+        _ = try await taskContextStore.ensureContext(ticket: ticket, project: project(for: ticket))
+      }
+      taskContexts[ticketID] = try await taskContextStore.setFilePinned(
+        ticketID: ticketID, url: url, pinned: pinned)
+    } catch {
+      actionMessages[ticketID] = "Could not \(pinned ? "pin" : "unpin") \(url.lastPathComponent): \(error.localizedDescription)"
+    }
+  }
+
+  /// Opens a pinned file: HTML mockups in the UI canvas, documents in the
+  /// task's viewer. Opening never unpins.
+  func openPinnedFile(_ url: URL, ticketID: String) {
+    if ["html", "htm"].contains(url.pathExtension.lowercased()),
+      openUICanvasForArtifact(url, ticketID: ticketID) != nil { return }
+    open(url.path, ticketID: ticketID)
+  }
+
   func isTicketPinned(_ ticketID: String) -> Bool {
     taskContexts[ticketID]?.pinnedAt != nil
   }

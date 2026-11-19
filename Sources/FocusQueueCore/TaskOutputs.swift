@@ -87,3 +87,17 @@ extension TaskContext {
         outputs.filter { TaskOutputs.isNew($0, reviewed: reviewedOutputs, now: now) }
     }
 }
+
+extension TaskContext {
+    /// Pinned files that still exist, oldest pin first so new pins append.
+    public func pinnedFileURLs(files: FileManager = .default) -> [URL] {
+        (pinnedFiles ?? [:])
+            .filter { files.fileExists(atPath: $0.key) }
+            .sorted { ($0.value, $0.key) < ($1.value, $1.key) }
+            .map { URL(fileURLWithPath: $0.key) }
+    }
+
+    public func isFilePinned(_ url: URL) -> Bool {
+        pinnedFiles?[url.standardizedFileURL.path] != nil
+    }
+}

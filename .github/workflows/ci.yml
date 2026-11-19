@@ -10,7 +10,7 @@ permissions:
 jobs:
   verify:
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
     steps:
@@ -32,13 +32,21 @@ jobs:
         run: python3 -m unittest discover -s Tests -p 'test_*.py'
       - name: Shell syntax
         run: zsh -n Scripts/build-app.sh Scripts/install.sh Scripts/uninstall.sh Scripts/package-release.sh
-      - name: Package private beta
-        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+      - name: Package unsigned CI smoke artifact
+        if: github.ref == 'refs/heads/main'
+        env:
+          # Hosted CI has no publisher key. This artifact exercises packaging;
+          # the updater rejects it, and signed release packaging stays required.
+          FOCUS_QUEUE_ALLOW_UNSIGNED_RELEASE: "1"
+        run: zsh Scripts/package-release.sh
+      - name: Package signed private beta
+        if: startsWith(github.ref, 'refs/tags/')
         run: zsh Scripts/package-release.sh
       - uses: actions/upload-artifact@v4
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
         with:
-          name: macOS-private-beta
+          name: ${{ github.ref == 'refs/heads/main' && 'macOS-ci-smoke-unsigned' || 'macOS-private-beta' }}
           path: |
             dist/*-beta-*.zip
             dist/*-beta-*.sha256
+            dist/*-beta-*.zip.sig

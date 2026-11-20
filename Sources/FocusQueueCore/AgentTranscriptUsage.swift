@@ -157,6 +157,7 @@ public enum AgentTranscriptUsage {
     /// output, so only the `usage` object, message ID, and timestamp are decoded.
     static func parseClaude(_ data: Data, timeZone: TimeZone = .current) -> FileUsage {
         var result = FileUsage()
+        let days = DayKeys(timeZone: timeZone)
         var messages = Set<String>()
         forEachLine(in: data, containing: Array(#""usage":{"#.utf8)) { line in
             guard let usage = jsonObject(after: #""usage":"#, in: line),
@@ -167,7 +168,7 @@ public enum AgentTranscriptUsage {
                                         cacheWrite: usage["cache_creation_input_tokens"] as? Int ?? 0,
                                         output: output)
             record(tokens, context: tokens.input,
-                   timestamp: stringValue(after: #""timestamp":""#, in: line), timeZone: timeZone, into: &result)
+                   day: days.key(for: stringValue(after: #""timestamp":""#, in: line)), into: &result)
         }
         return result
     }
@@ -175,6 +176,7 @@ public enum AgentTranscriptUsage {
     /// Codex repeats `token_count` events; only a change in the running total is a new turn.
     static func parseCodex(_ data: Data, timeZone: TimeZone = .current) -> FileUsage {
         var result = FileUsage()
+        let days = DayKeys(timeZone: timeZone)
         var previousTotal: [String: Any]?
         forEachLine(in: data, containing: Array(#""token_count""#.utf8)) { line in
             guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
@@ -190,25 +192,36 @@ public enum AgentTranscriptUsage {
                                         cacheWrite: last["cache_write_input_tokens"] as? Int ?? 0,
                                         output: last["output_tokens"] as? Int ?? 0)
             if let window = info["model_context_window"] as? Int { result.contextWindow = window }
-            record(tokens, context: input, timestamp: object["timestamp"] as? String, timeZone: timeZone, into: &result)
+            record(tokens, context: input, day: days.key(for: object["timestamp"] as? String), into: &result)
         }
         return result
     }
 
-    private static func record(_ tokens: TokenBreakdown, context: Int, timestamp: String?, timeZone: TimeZone,
-                               into result: inout FileUsage) {
+    private static func record(_ tokens: TokenBreakdown, context: Int, day: String, into result: inout FileUsage) {
         result.turns += 1
         if result.firstContext == 0 { result.firstContext = context }
         result.peakContext = max(result.peakContext, context)
         result.totals = result.totals + tokens
-        let day = timestamp.flatMap(parseTimestamp).map { TokenUsageDay.key($0, timeZone: timeZone) } ?? "unknown"
         result.daily[day, default: TokenBreakdown()] = result.daily[day, default: TokenBreakdown()] + tokens
     }
 
-    private static func parseTimestamp(_ text: String) -> Date? {
+    /// Formatters and calendars are costly to create, so one transcript parse
+    /// shares a single set across all of its lines.
+    private struct DayKeys {
         let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return fractional.date(from: text) ?? ISO8601DateFormatter().date(from: text)
+        let plain = ISO8601DateFormatter()
+        let calendar: Calendar
+
+        init(timeZone: TimeZone) {
+            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            calendar = TokenUsageDay.calendar(timeZone: timeZone)
+        }
+
+        func key(for timestamp: String?) -> String {
+            guard let timestamp, let date = fractional.date(from: timestamp) ?? plain.date(from: timestamp)
+            else { return "unknown" }
+            return TokenUsageDay.key(date, calendar: calendar)
+        }
     }
 
     /// Calls `body` with each line holding `needle`, which keeps large transcripts cheap to scan.
@@ -275,10 +288,18 @@ public enum TokenUsageDay {
     }
 
     public static func key(_ date: Date, timeZone: TimeZone) -> String {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = timeZone
+        key(date, calendar: calendar(timeZone: timeZone))
+    }
+
+    static func key(_ date: Date, calendar: Calendar) -> String {
         let parts = calendar.dateComponents([.year, .month, .day], from: date)
         return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+    }
+
+    static func calendar(timeZone: TimeZone) -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        return calendar
     }
 
     /// The last `count` day keys, oldest first, ending today.

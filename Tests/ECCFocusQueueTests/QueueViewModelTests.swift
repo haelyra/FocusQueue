@@ -933,7 +933,8 @@ struct QueueViewModelTests {
         "message": ["content": [["type": "tool_use", "name": "Write", "input": ["file_path": document.path]]]]]
     case .kimi:
       transcript = activity.appendingPathComponent("kimi/sessions/\(sessionID)/agents/main/wire.jsonl")
-      record = ["time": 1_793_131_009_286.0, "type": "tool.call", "name": "Write", "args": ["path": document.path]]
+      record = ["time": 1_793_131_009_286.0, "type": "context.append_loop_event",
+        "event": ["type": "tool.call", "name": "WriteFile", "args": ["path": document.path]]]
     }
     try FileManager.default.createDirectory(at: transcript.deletingLastPathComponent(), withIntermediateDirectories: true)
     try JSONSerialization.data(withJSONObject: record, options: .withoutEscapingSlashes).write(to: transcript)
@@ -4997,6 +4998,7 @@ private struct Fixture {
              identifyManagedAgent: (@Sendable (TaskSubtask, WezTermConfiguration) async throws -> String?)? = nil,
              providerExecutableAvailable: (@Sendable (AgentProvider) -> Bool)? = nil,
              queueAgentFactory: (@Sendable (AgentProvider) -> any QueueAgentChatting)? = nil,
+             dispatchScheduledAgentResume: (@Sendable (ScheduledAgentResume) async throws -> Void)? = nil,
              locateExistingAgent: @escaping @Sendable (AgentProvider, String) async throws -> KnownProviderProcess? = { _, _ in nil }) async -> QueueViewModel {
     let boundary = ForbiddenExternalActions()
     let model = QueueViewModel(paths: paths, programLog: programLog,
@@ -5018,6 +5020,7 @@ private struct Fixture {
       providerExecutableAvailable: providerExecutableAvailable,
       // Real status checks would start each installed provider CLI.
       checkProviderAccount: { _ in .signedIn },
+      dispatchScheduledAgentResume: dispatchScheduledAgentResume,
       locateExistingAgent: locateExistingAgent)
     await model.bootstrap()
     await model.bootstrapTail?.value
@@ -5206,6 +5209,11 @@ private actor DirectCreationRunner: ProcessRunning {
     }
     return .init(exitCode: 0, standardOutput: "42\n", standardError: "", timedOut: false)
   }
+}
+
+private actor ScheduledResumeRecorder {
+  private(set) var actions: [ScheduledAgentResume] = []
+  func record(_ action: ScheduledAgentResume) { actions.append(action) }
 }
 
 private actor ManagedResumeRunner: ProcessRunning {
@@ -5745,6 +5753,75 @@ struct BulletinDragSourceTests {
 }
 
 extension QueueViewModelTests {
+  @Test("A due existing-agent resume dispatches once without launching a new agent")
+  func existingAgentResumeDoesNotLaunch() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let now = Date()
+    let runtime = try #require(TmuxController.decode(
+      "fq-task-ecc-101|1|2|%3|4|/dev/ttys003|0", executable: "/opt/homebrew/bin/tmux").first)
+    let action = ScheduledAgentResume(
+      id: "resume-existing", fireAt: now.addingTimeInterval(-1),
+      expiresAt: now.addingTimeInterval(300), title: "Continue scheduler", prompt: "Continue.",
+      target: ScheduledAgentResumeTarget(
+        taskID: "ECC-101", agentID: "agent-1", provider: .codex,
+        sessionID: "11111111-2222-4333-8444-555555555555",
+        workspacePath: fixture.root.path, runtime: runtime))
+    try ScheduledAgentResumeStore(supportDirectory: fixture.root).add(action)
+    let launcher = DirectCreationRunner()
+    let dispatches = ScheduledResumeRecorder()
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(),
+      taskAgentLauncher: TaskAgentLauncher(runner: launcher, candidateSockets: []),
+      dispatchScheduledAgentResume: { await dispatches.record($0) })
+    let before = model.subtasks(for: "ECC-101").count
+
+    await model.fireDueScheduledAgentResumes(now: now)
+    await model.fireDueScheduledAgentResumes(now: now.addingTimeInterval(1))
+
+    #expect(await dispatches.actions.map(\.id) == ["resume-existing"])
+    #expect(await launcher.spawnCount == 0)
+    #expect(model.subtasks(for: "ECC-101").count == before)
+    #expect(model.scheduledAgentResumes.first?.state == .completed)
+    #expect(model.scheduleRunHistory().contains {
+      $0.ticketID == "ECC-101" && $0.outcome == .completed
+        && $0.detail.contains("Sent the scheduled prompt to existing")
+    })
+  }
+
+  @Test("An uncertain post-paste resume remains claimed, visible, and never retries")
+  func existingAgentResumeUnknownOutcome() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let now = Date()
+    let runtime = try #require(TmuxController.decode(
+      "fq-task-ecc-101|1|2|%3|4|/dev/ttys003|0", executable: "/opt/homebrew/bin/tmux").first)
+    try ScheduledAgentResumeStore(supportDirectory: fixture.root).add(ScheduledAgentResume(
+      id: "unknown-delivery", fireAt: now.addingTimeInterval(-1), expiresAt: now.addingTimeInterval(300),
+      title: "Continue scheduler", prompt: "Continue.",
+      target: ScheduledAgentResumeTarget(
+        taskID: "ECC-101", agentID: "agent-1", provider: .codex,
+        sessionID: "11111111-2222-4333-8444-555555555555",
+        workspacePath: fixture.root.path, runtime: runtime)))
+    let attempts = ScheduledResumeRecorder()
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(),
+      dispatchScheduledAgentResume: {
+        await attempts.record($0)
+        throw ScheduledAgentResumeDispatchError.deliveryUnknown("deadline passed after paste")
+      })
+
+    await model.fireDueScheduledAgentResumes(now: now.addingTimeInterval(1))
+
+    #expect(await attempts.actions.map(\.id) == ["unknown-delivery"])
+    #expect(model.scheduledAgentResumes.first?.state == .claimed)
+    #expect(model.scheduledJobCount == 1)
+    #expect(model.scheduleRunHistory(now: now).contains {
+      $0.id == "scheduled-resume-unknown-delivery" && $0.outcome == .interrupted
+        && $0.detail.contains("unknown") && $0.detail.contains("not retry")
+    })
+  }
+
   @Test("Schedule timeline collects jobs, retimes them by drag, and shares the side panel")
   func scheduleTimelineWorkflow() async throws {
     let fixture = try await Fixture()

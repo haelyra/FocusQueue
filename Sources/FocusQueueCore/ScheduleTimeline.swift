@@ -34,6 +34,7 @@ public enum ScheduleJobKind: String, CaseIterable, Codable, Sendable {
 /// Which record owns a job, so a drag writes back to the right place.
 public enum ScheduleJobSource: Hashable, Sendable {
     case scheduledLaunch(id: String)
+    case scheduledResume(id: String)
     case dailyReport
     case decision(taskID: String, agentID: String, nodeID: String)
     /// A past run drawn from the two-day history; read-only.
@@ -61,6 +62,10 @@ public struct ScheduleJob: Identifiable, Equatable, Sendable {
     public var kind: ScheduleJobKind
     public var title: String
     public var detail: String
+    /// What the schedule does, when the trigger alone is not specific enough.
+    public var actionLabel: String?
+    /// Existing pinned target shown in the detail popover.
+    public var targetLabel: String?
     /// The task the job launches or decides on; nil for app-level jobs.
     public var ticketID: String?
     /// Owning project; nil means the job belongs to the whole app.
@@ -73,12 +78,15 @@ public struct ScheduleJob: Identifiable, Equatable, Sendable {
     public var isMovable: Bool
 
     public init(source: ScheduleJobSource, kind: ScheduleJobKind, title: String, detail: String = "",
+                actionLabel: String? = nil, targetLabel: String? = nil,
                 ticketID: String?, projectID: String?, anchor: Date,
                 repeatInterval: TimeInterval? = nil, expectedDuration: TimeInterval = 0, isMovable: Bool) {
         self.source = source
         self.kind = kind
         self.title = title
         self.detail = detail
+        self.actionLabel = actionLabel
+        self.targetLabel = targetLabel
         self.ticketID = ticketID
         self.projectID = projectID
         self.anchor = anchor
@@ -90,6 +98,7 @@ public struct ScheduleJob: Identifiable, Equatable, Sendable {
     public var id: String {
         switch source {
         case .scheduledLaunch(let id): "launch:\(id)"
+        case .scheduledResume(let id): "resume:\(id)"
         case .dailyReport: "daily-report"
         case .decision(let task, let agent, let node): "decision:\(task)/\(agent)/\(node)"
         case .runRecord(let id): "run:\(id)"
@@ -148,6 +157,7 @@ public enum ScheduleTimeline {
     /// resolves tasks the dashboard does not list (for example by ID prefix).
     public static func jobs(
         launches: [ScheduledLaunch],
+        resumes: [ScheduledAgentResume] = [],
         dailyReport: DailyReportConfiguration?,
         decisions: [DecisionTree],
         automation: DecisionAutomationSettings,
@@ -171,6 +181,18 @@ public enum ScheduleTimeline {
                 anchor: launch.fireAt,
                 repeatInterval: interval,
                 expectedDuration: ScheduleJob.estimatedAgentRun,
+                isMovable: true))
+        }
+        for resume in resumes where resume.state == .pending {
+            let target = resume.target
+            jobs.append(ScheduleJob(
+                source: .scheduledResume(id: resume.id), kind: .timer,
+                title: resume.title.isEmpty ? "Existing-agent resume" : resume.title,
+                detail: resume.prompt,
+                actionLabel: "Resume existing agent",
+                targetLabel: "\(target.agentID) · \(target.provider.displayName) · session \(target.sessionID)",
+                ticketID: target.taskID, projectID: project(target.taskID),
+                anchor: resume.fireAt, expectedDuration: ScheduleJob.estimatedAgentRun,
                 isMovable: true))
         }
         if let report = dailyReport, report.enabled,

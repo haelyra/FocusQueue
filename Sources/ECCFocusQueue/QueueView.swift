@@ -250,7 +250,7 @@ struct QueueView: View {
     VStack(spacing: QueueChromeMetrics.sectionSpacing) {
       header
       if model.config.capacityPanelEnabled {
-        CapacityPanelView(capacity: model.capacityModel, scheduledCount: model.scheduledLaunches.count,
+        CapacityPanelView(capacity: model.capacityModel, scheduledCount: model.scheduledJobCount,
                           openSchedule: { model.toggleSchedule() })
       }
       if model.pendingDailyReportApproval != nil {

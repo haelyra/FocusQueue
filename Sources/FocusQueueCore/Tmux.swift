@@ -37,6 +37,16 @@ public enum TmuxError: Error, LocalizedError {
   }
 }
 
+/// Prompt text may have reached the verified pane, but Focus Queue could not
+/// prove whether it was pasted or submitted. Retrying could duplicate work.
+public struct TmuxPromptDeliveryUnknown: Error, LocalizedError, Sendable {
+  public let detail: String
+  public init(_ detail: String) { self.detail = detail }
+  public var errorDescription: String? {
+    "Prompt delivery is unknown because the prompt may have reached the pane: \(detail)"
+  }
+}
+
 /// One dedicated server, with no user tmux configuration or existing sessions modified.
 public actor TmuxController {
   public static let serverName = "ecc-focus-queue"
@@ -294,12 +304,14 @@ public actor TmuxController {
   /// breaks stay inside one message before submitting it.
   public func submitPrompt(
     _ prompt: String, to reference: TmuxSessionReference,
-    ready: @Sendable (String) -> Bool, timeout: Duration = .seconds(45)
+    ready: @Sendable (String) -> Bool, timeout: Duration = .seconds(45),
+    authorizeSubmission: @Sendable () async throws -> Void = {}
   ) async throws -> Bool {
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: timeout)
     var lastInspectionError: (any Error)?
     while true {
+      try await authorizeSubmission()
       do {
         _ = try await verify(reference)
         let screen = try await run(reference.executable, ["capture-pane", "-p", "-t", reference.paneID])
@@ -329,10 +341,20 @@ public actor TmuxController {
     let file = try Self.writePromptFile(prompt)
     defer { try? FileManager.default.removeItem(at: file) }
     try await checked(reference.executable, ["load-buffer", "-b", buffer, file.path])
-    try await checked(reference.executable, ["paste-buffer", "-p", "-d", "-b", buffer, "-t", reference.paneID])
-    // Let the TUI finish reading the paste before Enter submits it.
-    try await Task.sleep(for: .milliseconds(400))
-    try await checked(reference.executable, ["send-keys", "-t", reference.paneID, "Enter"])
+    try await authorizeSubmission()
+    _ = try await verify(reference)
+    try await authorizeSubmission()
+    do {
+      try await checked(reference.executable, ["paste-buffer", "-p", "-d", "-b", buffer, "-t", reference.paneID])
+      // Let the TUI finish reading the paste before Enter submits it.
+      try await Task.sleep(for: .milliseconds(400))
+      try await authorizeSubmission()
+      _ = try await verify(reference)
+      try await authorizeSubmission()
+      try await checked(reference.executable, ["send-keys", "-t", reference.paneID, "Enter"])
+    } catch {
+      throw TmuxPromptDeliveryUnknown(error.localizedDescription)
+    }
     return true
   }
 

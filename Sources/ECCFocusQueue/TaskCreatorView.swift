@@ -51,7 +51,7 @@ struct TaskCreatorSheet: View {
       }
 
       if model.config.capacityPanelEnabled {
-        CapacityPanelView(capacity: model.capacityModel, scheduledCount: model.scheduledLaunches.count)
+        CapacityPanelView(capacity: model.capacityModel, scheduledCount: model.scheduledJobCount)
       }
 
       Form {

@@ -72,7 +72,7 @@ struct ProjectTabView: View {
 
   /// Opens the schedule timeline beside the queue.
   private var scheduleRow: some View {
-    let count = model.scheduledLaunches.count
+    let count = model.scheduledJobCount
     return Button { model.toggleSchedule() } label: {
       HStack(spacing: 8) {
         Image(systemName: "calendar.day.timeline.left")
@@ -80,7 +80,7 @@ struct ProjectTabView: View {
           .foregroundStyle(model.isSchedulePresented ? Color.accentColor : Color.secondary)
         VStack(alignment: .leading, spacing: 1) {
           Text("Schedule").font(.system(size: 12, weight: .semibold))
-          Text(count == 0 ? "Timers, repeats, and daily jobs" : "\(count) scheduled launch\(count == 1 ? "" : "es")")
+          Text(count == 0 ? "Timers, repeats, and daily jobs" : "\(count) scheduled agent action\(count == 1 ? "" : "s")")
             .font(.caption).foregroundStyle(.secondary)
         }
         Spacer()
@@ -93,7 +93,7 @@ struct ProjectTabView: View {
     .padding(12)
     .notificationSurface(radius: 16)
     .accessibilityLabel(model.isSchedulePresented ? "Close schedule" : "Open schedule, \(count) scheduled")
-    .help("A timeline of scheduled agent launches, the daily report, and pending auto-decisions. Drag to retime.")
+    .help("A timeline of scheduled launches, existing-agent resumes, the daily report, and pending auto-decisions. Drag to retime.")
   }
 
   // MARK: - Project map

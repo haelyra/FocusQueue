@@ -13,7 +13,7 @@ enum SessionRegistrationError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .usage:
-            "Usage: focus-queue-session intake-changed | data ensure | data place <user|project|task> <target-id> <fact> | development <PROJECT-ID> show|modules|map|link <TASK-ID> <step-id|none> [module]|unlink <TASK-ID>|depends <TASK-ID> [<PREREQUISITE-ID> ...]|step <step-id> <pending|inProgress|done|accepted>|phase <planning|phase0|implementation|prerelease|release>|sync|modules parallel|sequential|guidelines on|off|artifact <catalog-file> <project-file|default>|module add <name> [modules/<id>-<slug>.md] | contract show <PROJECT-ID> <engineering|orchestrator> | contract propose <PROJECT-ID> <engineering|orchestrator> <file.md> | contract generate <PROJECT-ID> | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|pin <TASK-ID>|unpin <TASK-ID>|reset | task create <PROJECT-ID> <title> <summary> | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | cleanup <TASK-ID>|--completed|--orphans|--purge [--dry-run] | schedule add <TASK-ID> <title> <prompt> --in <minutes>|--at <yyyy-MM-dd HH:mm|HH:mm> [--every <minutes>] [--provider codex|claude|kimi] | schedule list [<TASK-ID>] | schedule cancel <ID> | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | pause <TASK-ID> <SUBTASK-ID> | resume <TASK-ID> <SUBTASK-ID> | play <TASK-ID> <SUBTASK-ID> [\"text\"] | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path] | decision add|choose|rewind|show|list|due|push (run `decision` alone for its usage)"
+            "Usage: focus-queue-session intake-changed | data ensure | data place <user|project|task> <target-id> <fact> | development <PROJECT-ID> show|modules|map|link <TASK-ID> <step-id|none> [module]|unlink <TASK-ID>|depends <TASK-ID> [<PREREQUISITE-ID> ...]|step <step-id> <pending|inProgress|done|accepted>|phase <planning|phase0|implementation|prerelease|release>|sync|modules parallel|sequential|guidelines on|off|artifact <catalog-file> <project-file|default>|module add <name> [modules/<id>-<slug>.md] | contract show <PROJECT-ID> <engineering|orchestrator> | contract propose <PROJECT-ID> <engineering|orchestrator> <file.md> | contract generate <PROJECT-ID> | placement [--prompt <text>] [--task <TASK-ID>] [--launch <UUID>] [--cwd <path>] [--no-create] | projects list|create --id <id> --name <name> --workspace <absolute-path> --from <project-id> --task <TASK-ID> [--task <TASK-ID> ...]|recover | queue list|move <TASK-ID> top|bottom|before <TARGET-ID>|after <TARGET-ID>|reorder <TASK-ID> [<TASK-ID> ...]|pin <TASK-ID>|unpin <TASK-ID>|reset | task create <PROJECT-ID> <title> <summary> | task rename <TASK-ID> <title...> | task priority <TASK-ID> <critical|high|medium|low> | task status <TASK-ID> <status> | task link <TASK-ID> <url> <label> [type] | review-push <TASK-ID> <SUBTASK-ID> | workspace <TASK-ID> <SUBTASK-ID> <absolute-path> | diagnose <TASK-ID> | cleanup <TASK-ID>|--completed|--orphans|--purge [--dry-run] | schedule add <TASK-ID> <title> <prompt> --in <minutes>|--at <yyyy-MM-dd HH:mm|HH:mm> [--every <minutes>] [--provider codex|claude|kimi] [--resume-agent <AGENT-ID> (--latest-at <time>|--grace-minutes <minutes>)] | schedule list [<TASK-ID>] | schedule cancel <ID> | attach <TASK-ID> | context <TASK-ID> | plan <TASK-ID> | add <TASK-ID> <codex|claude|kimi> <title> <description> | rename <TASK-ID> <SUBTASK-ID> <title> | identify <TASK-ID> <SUBTASK-ID> <title> <description> | archive-agent <TASK-ID> <SUBTASK-ID> | pause <TASK-ID> <SUBTASK-ID> | resume <TASK-ID> <SUBTASK-ID> | play <TASK-ID> <SUBTASK-ID> [\"text\"] | progress <TASK-ID> <SUBTASK-ID> <queued|working|idle|blocked> <summary> | associate <TASK-ID> <AGENT-ID> <SUBTASK-ID> | attention <TASK-ID> <AGENT-ID> <approval|question|interrupted|incomplete|failed> <summary> | result <TASK-ID> <AGENT-ID> <summary> | complete <TASK-ID> <SUBTASK-ID> <summary> | agents clear --all | runtime repair <TASK-ID> <SUBTASK-ID> | library migrate|status|task <TASK-ID>|document <TASK-ID> <markdown-path> [guide|architecture|reference]|export <destination>|restore <source> | architecture <TASK-ID> [repository-path] | decision add|choose|rewind|show|list|due|push (run `decision` alone for its usage)"
         case .missingSessionIdentity:
             "No Codex, Claude, or Kimi session ID was found in the environment or current WezTerm pane."
         case .missingManagedRuntime:
@@ -43,7 +43,7 @@ enum SessionRegistrationError: Error, LocalizedError {
                 print("Agent rules: rules (lifecycle, plan, workspace, and map-scope rules for managed agents)")
                 print("Priority reviews: review propose [<TASK-ID> <AGENT-ID>] <file> \"<why a human must read it>\" [--priority critical|high|medium|low] [--title <text>] [--approve] | review approve|done|dismiss [<TASK-ID>] <REVIEW-ID> | review list [<TASK-ID>] [--all] (the queue shows at most 5 approved reviews at its top)")
                 print("Launch brief preview: brief <TASK-ID> <SUBTASK-ID> (the exact prompt a fresh launch of that agent receives)")
-                print("Scheduling: schedule add <TASK-ID> <title> <prompt> --in <minutes> | --at \"<yyyy-MM-dd HH:mm or HH:mm>\" [--every <minutes>] [--provider codex|claude|kimi] registers a future agent launch the app fires on its refresh loop and shows in the Schedule panel; schedule list [<TASK-ID>]; schedule cancel <ID>")
+                print("Scheduling: schedule add <TASK-ID> <title> <prompt> --in <minutes> | --at \"<yyyy-MM-dd HH:mm or HH:mm>\" [--every <minutes>] [--provider codex|claude|kimi] registers a future launch. Add --resume-agent <AGENT-ID> with --latest-at <time> or --grace-minutes <minutes> to target that exact existing live session instead; it never launches or reopens a replacement. schedule list [<TASK-ID>]; schedule cancel <ID>")
                 print("Maintenance: reconcile <TASK-ID> [--no-cleanup] (repair documents and save a receipt; optional workspace cleanup)")
                 print("Status hooks: status-event --provider claude|codex|kimi (reads one provider hook payload on stdin; exits 0 silently)")
                 print("UI Canvas: canvas open <file.html> [--viewport mobile|desktop|custom|WxH] [--title <text>] | canvas await <file.html> [--reply <msg>] | canvas typing <file.html> [--state thinking|typing|idle] | canvas end <file.html> | canvas list|pending (native ecc-ui-canvas; same JSON)")
@@ -291,15 +291,15 @@ enum SessionRegistrationError: Error, LocalizedError {
         notifyContextChanged()
     }
 
-    /// schedule add|list|cancel: future agent launches, written to the same
-    /// scheduled-launches.json the app fires from on its refresh loop, so a
-    /// job registered here launches and shows in the schedule panel without
-    /// any extra step.
+    /// schedule add|list|cancel: future new-agent launches plus compatibility-
+    /// isolated existing-agent resumes. Resume actions live in their own
+    /// versioned file so an older app can never reinterpret one as a launch.
     private static func scheduleCommand(arguments: [String]) async throws {
         guard arguments.count >= 2 else { throw SessionRegistrationError.usage }
         let environment = ProcessInfo.processInfo.environment
         let root = supportDirectory(environment: environment)
         let store = LaunchScheduleStore(supportDirectory: root)
+        let resumeStore = ScheduledAgentResumeStore(supportDirectory: root)
         func write<T: Encodable>(_ value: T) throws {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -312,11 +312,23 @@ enum SessionRegistrationError: Error, LocalizedError {
         switch arguments[1] {
         case "list" where arguments.count == 2 || arguments.count == 3:
             var launches = store.load()
+            var resumes = try resumeStore.load()
             if arguments.count == 3 {
                 launches = launches.filter { $0.ticketID.caseInsensitiveCompare(arguments[2]) == .orderedSame }
+                resumes = resumes.filter {
+                    $0.target.taskID.caseInsensitiveCompare(arguments[2]) == .orderedSame
+                }
             }
-            try write(["launches": launches])
+            try write(ScheduleListReceipt(launches: launches, resumes: resumes))
         case "cancel" where arguments.count == 3:
+            if let removed = try resumeStore.cancel(id: arguments[2]) {
+                notifyContextChanged()
+                try write([
+                    "status": "cancelled", "id": removed.id,
+                    "taskID": removed.target.taskID, "action": removed.action.rawValue,
+                ])
+                return
+            }
             var launches = store.load()
             guard let index = launches.firstIndex(where: { $0.id == arguments[2] }) else {
                 throw TaskContextError.commandFailed("No scheduled launch has id \(arguments[2]). Run schedule list for ids.")
@@ -334,6 +346,9 @@ enum SessionRegistrationError: Error, LocalizedError {
             var atText: String?
             var everyMinutes: Double?
             var provider: AgentProvider?
+            var resumeAgentID: String?
+            var latestAtText: String?
+            var graceMinutes: Double?
             var index = 5
             while index < arguments.count {
                 guard index + 1 < arguments.count else { throw SessionRegistrationError.usage }
@@ -352,6 +367,16 @@ enum SessionRegistrationError: Error, LocalizedError {
                         throw TaskContextError.commandFailed("Unknown provider \(value); choose codex, claude, or kimi.")
                     }
                     provider = parsed
+                case "--resume-agent" where resumeAgentID == nil:
+                    guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        throw SessionRegistrationError.usage
+                    }
+                    resumeAgentID = value
+                case "--latest-at" where latestAtText == nil:
+                    latestAtText = value
+                case "--grace-minutes" where graceMinutes == nil:
+                    guard let parsed = Double(value), parsed > 0 else { throw SessionRegistrationError.usage }
+                    graceMinutes = parsed
                 default: throw SessionRegistrationError.usage
                 }
                 index += 2
@@ -384,6 +409,57 @@ enum SessionRegistrationError: Error, LocalizedError {
             }
             guard known else {
                 throw TaskContextError.commandFailed("No task named \(ticketID) exists in any dashboard.")
+            }
+            if let resumeAgentID {
+                guard everyMinutes == nil, provider == nil,
+                      (latestAtText == nil) != (graceMinutes == nil) else {
+                    throw TaskContextError.commandFailed(
+                        "Existing-agent resumes are one-shot and require exactly one of --latest-at or --grace-minutes; their provider is pinned automatically.")
+                }
+                let expiresAt: Date
+                if let graceMinutes {
+                    expiresAt = fireAt.addingTimeInterval(graceMinutes * 60)
+                } else if let latestAtText,
+                          let parsed = scheduleFireDate(at: latestAtText, now: now) {
+                    expiresAt = parsed
+                } else {
+                    throw TaskContextError.commandFailed("The latest delivery time must be a future HH:mm, local date/time, or ISO 8601 value.")
+                }
+                guard expiresAt >= fireAt else {
+                    throw TaskContextError.commandFailed("The latest delivery time must be at or after the scheduled fire time.")
+                }
+                let contextStore = TaskContextStore(root: root)
+                guard let context = try await contextStore.load(ticketID: ticketID) else {
+                    throw TaskContextError.commandFailed("Task \(ticketID) has no registered agent context.")
+                }
+                guard let agent = context.subtasks.first(where: {
+                    $0.id.caseInsensitiveCompare(resumeAgentID) == .orderedSame
+                }) else {
+                    throw TaskContextError.commandFailed("Task \(ticketID) has no registered agent named \(resumeAgentID).")
+                }
+                guard agent.status != .completed, agent.pausedAt == nil,
+                      agent.agentRemovedAt == nil, agent.mergedIntoSubtaskID == nil,
+                      !agent.isAssignmentOnly, agent.isAgentVisible else {
+                    throw TaskContextError.commandFailed("Agent \(resumeAgentID) is paused, completed, retired, merged, or hidden.")
+                }
+                guard let sessionID = agent.sessionID, !sessionID.isEmpty,
+                      let runtime = agent.tmux,
+                      let workspace = agent.workspace?.path, !workspace.isEmpty else {
+                    throw TaskContextError.commandFailed(
+                        "Agent \(resumeAgentID) lacks a pinned session, managed tmux pane, or workspace.")
+                }
+                let resume = ScheduledAgentResume(
+                    fireAt: fireAt, expiresAt: expiresAt, title: title, prompt: prompt,
+                    target: ScheduledAgentResumeTarget(
+                        taskID: ticketID, agentID: agent.id, provider: agent.provider,
+                        sessionID: sessionID, workspacePath: workspace, runtime: runtime))
+                try resumeStore.add(resume)
+                notifyContextChanged()
+                try write(ScheduleResumeAddReceipt(resume: resume))
+                return
+            }
+            guard latestAtText == nil, graceMinutes == nil else {
+                throw TaskContextError.commandFailed("--latest-at and --grace-minutes require --resume-agent.")
             }
             let launch = ScheduledLaunch(
                 fireAt: fireAt,
@@ -1939,6 +2015,17 @@ private struct RuntimeLocationResult: Encodable {
 private struct ScheduleAddReceipt: Encodable {
     let status = "scheduled"
     let launch: ScheduledLaunch
+}
+
+private struct ScheduleResumeAddReceipt: Encodable {
+    let status = "scheduled"
+    let action = ScheduledAgentResumeAction.resumeExistingAgent.rawValue
+    let resume: ScheduledAgentResume
+}
+
+private struct ScheduleListReceipt: Encodable {
+    let launches: [ScheduledLaunch]
+    let resumes: [ScheduledAgentResume]
 }
 
 private struct ArchitectureCLIResult: Encodable {

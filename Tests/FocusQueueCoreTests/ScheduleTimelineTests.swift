@@ -58,6 +58,37 @@ struct ScheduleTimelineTests {
     #expect(quiet.isEmpty)
   }
 
+  @Test("Projects a pending existing-agent resume with explicit action and target labels")
+  func existingAgentResumeLabel() throws {
+    let fireAt = date("2026-11-18T20:00:00Z")
+    let runtime = TmuxSessionReference(
+      name: "fq-task-foc-1", serverPID: 1, createdAt: 2,
+      paneID: "%3", panePID: 4, tty: "/dev/ttys003", executable: "/opt/homebrew/bin/tmux")
+    let resume = ScheduledAgentResume(
+      id: "resume-1", fireAt: fireAt, expiresAt: fireAt.addingTimeInterval(900),
+      title: "Continue scheduler", prompt: "Continue the existing queue.",
+      target: ScheduledAgentResumeTarget(
+        taskID: "FOC-1", agentID: "agent-7", provider: .codex,
+        sessionID: "11111111-2222-4333-8444-555555555555",
+        workspacePath: "/tmp/foc-1", runtime: runtime))
+    let jobs = ScheduleTimeline.jobs(
+      launches: [], resumes: [resume], dailyReport: nil, decisions: [],
+      automation: DecisionAutomationSettings(autoDecide: false),
+      tickets: ["FOC-1": ScheduleTicketInfo(title: "Scheduler", projectID: "fq")])
+    let job = try #require(jobs.first)
+    #expect(job.source == .scheduledResume(id: "resume-1"))
+    #expect(job.actionLabel == "Resume existing agent")
+    #expect(job.targetLabel?.contains("agent-7") == true)
+    #expect(job.targetLabel?.contains("11111111-2222-4333-8444-555555555555") == true)
+    #expect(job.projectID == "fq" && job.trackID == "FOC-1" && job.isMovable)
+
+    var terminal = resume
+    terminal.state = .failed
+    #expect(ScheduleTimeline.jobs(
+      launches: [], resumes: [terminal], dailyReport: nil, decisions: [],
+      automation: DecisionAutomationSettings(autoDecide: false), tickets: [:]).isEmpty)
+  }
+
   @Test("Groups tracks by task under each project and filters by scope")
   func groupsTracks() {
     let jobs = sampleJobs(now: date("2026-11-18T16:00:00Z"))

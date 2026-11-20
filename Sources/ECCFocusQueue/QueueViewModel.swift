@@ -366,10 +366,15 @@ final class QueueViewModel {
   /// Deferred and repeating agent launches from the task creator's schedule
   /// fields, persisted in the support directory and fired by the refresh loop.
   private(set) var scheduledLaunches: [ScheduledLaunch] = []
+  /// One-shot prompts pinned to an already-running registered agent session.
+  private(set) var scheduledAgentResumes: [ScheduledAgentResume] = []
   /// The last two days of past scheduled runs, mirrored from the history file.
   private(set) var scheduleRunRecords: [ScheduleRunRecord] = []
   @ObservationIgnored private var launchScheduleStore: LaunchScheduleStore {
     LaunchScheduleStore(supportDirectory: paths.supportDirectory)
+  }
+  @ObservationIgnored private var scheduledAgentResumeStore: ScheduledAgentResumeStore {
+    ScheduledAgentResumeStore(supportDirectory: paths.supportDirectory)
   }
   @ObservationIgnored private var scheduleRunHistoryStore: ScheduleRunHistoryStore {
     ScheduleRunHistoryStore(supportDirectory: paths.supportDirectory)
@@ -463,6 +468,7 @@ final class QueueViewModel {
   @ObservationIgnored private let labelTmuxPane: @Sendable (TmuxSessionReference, String) async -> Void
   @ObservationIgnored private let locateExistingAgent: @Sendable (AgentProvider, String) async throws -> KnownProviderProcess?
   @ObservationIgnored private let identifyManagedAgent: (@Sendable (TaskSubtask, WezTermConfiguration) async throws -> String?)?
+  @ObservationIgnored private let dispatchScheduledAgentResume: @Sendable (ScheduledAgentResume) async throws -> Void
 
   @ObservationIgnored var placementHandler: ((QueueWindowPlacement) -> Void)?
   @ObservationIgnored var monitorSwitchHandler: (() -> Void)?
@@ -523,6 +529,7 @@ final class QueueViewModel {
     fileSignInFailure: @escaping @Sendable (SignInFailureContext) async -> SignInFailureReporter.Delivery = {
       await SignInFailureReporter.file($0)
     },
+    dispatchScheduledAgentResume: (@Sendable (ScheduledAgentResume) async throws -> Void)? = nil,
     locateExistingAgent: @escaping @Sendable (AgentProvider, String) async throws -> KnownProviderProcess? = { provider, sessionID in
       try await WezTermController().locateProviderProcess(provider: provider, sessionID: sessionID)
     }
@@ -545,6 +552,9 @@ final class QueueViewModel {
     self.loadCodexCatalog = loadCodexCatalog
     self.isWezTermInstalled = isWezTermInstalled
     self.fileSignInFailure = fileSignInFailure
+    self.dispatchScheduledAgentResume = dispatchScheduledAgentResume ?? {
+      try await ScheduledAgentResumeDispatcher(root: paths.supportDirectory).dispatch($0)
+    }
     self.taskContextStore = TaskContextStore(root: paths.supportDirectory)
     self.reportHistoryRepository = JSONDailyReportHistoryRepository(runtimeDirectory: paths.ingestionRuntimeDirectory)
     self.conversationStore = QueueConversationStore(root: paths.supportDirectory)
@@ -582,6 +592,7 @@ final class QueueViewModel {
     // An owner's save of a contract in the viewer is the sign-off: edits go live at once.
     documentContentStore.didSave = { [weak self] url, text in self?.agentContractSaved(url, text: text) }
     scheduledLaunches = LaunchScheduleStore(supportDirectory: paths.supportDirectory).load()
+    scheduledAgentResumes = (try? ScheduledAgentResumeStore(supportDirectory: paths.supportDirectory).load()) ?? []
     scheduleRunRecords = ScheduleRunHistoryStore(supportDirectory: paths.supportDirectory).load()
   }
 
@@ -1450,9 +1461,108 @@ final class QueueViewModel {
     persistScheduledLaunches()
   }
 
+  func cancelScheduledAgentResume(id: String) {
+    do {
+      guard try scheduledAgentResumeStore.cancel(id: id) != nil else { return }
+      reloadScheduledAgentResumes()
+    } catch {
+      programLog.record(
+        "Could not cancel scheduled agent resume \(id): \(error.localizedDescription)",
+        level: .error, category: "Tasks")
+    }
+  }
+
   /// Picks up schedules another app instance wrote to the shared file.
   func reloadScheduledLaunches() {
     scheduledLaunches = launchScheduleStore.load()
+  }
+
+  /// Picks up compatibility-isolated existing-agent actions another process wrote.
+  func reloadScheduledAgentResumes() {
+    do {
+      scheduledAgentResumes = try scheduledAgentResumeStore.load()
+    } catch {
+      programLog.record(
+        "Could not read scheduled agent resumes: \(error.localizedDescription)",
+        level: .error, category: "Tasks")
+    }
+  }
+
+  /// Claims due existing-agent actions before any prompt side effect. Claimed
+  /// entries are never eligible again, even if this process exits mid-dispatch.
+  func fireDueScheduledAgentResumes(now: Date = Date()) async {
+    let batch: ScheduledAgentResumeClaimBatch
+    do {
+      batch = try scheduledAgentResumeStore.claimDue(now: now)
+      scheduledAgentResumes = try scheduledAgentResumeStore.load()
+    } catch {
+      programLog.record(
+        "Could not claim scheduled agent resumes: \(error.localizedDescription)",
+        level: .error, category: "Tasks")
+      return
+    }
+    for action in batch.expired {
+      programLog.record(
+        "Expired scheduled existing-agent resume \(action.id) without sending its prompt.",
+        category: "Tasks")
+    }
+    for action in batch.claimed {
+      guard await findTicket(id: action.target.taskID) != nil else {
+        let detail = "Prompt was not sent: task \(action.target.taskID) is no longer in any dashboard."
+        do {
+          _ = try scheduledAgentResumeStore.finishClaim(
+            id: action.id, state: .failed, detail: detail, at: Date())
+        } catch {
+          programLog.record(
+            "Scheduled resume \(action.id) lost its task before delivery, but its outcome receipt could not be saved; it remains claimed and will not retry. \(error.localizedDescription)",
+            level: .error, category: "Tasks")
+        }
+        programLog.record(detail, level: .error, category: "Tasks")
+        continue
+      }
+      do {
+        try await dispatchScheduledAgentResume(action)
+      } catch let error as ScheduledAgentResumeDispatchError {
+        if case .deliveryUnknown = error {
+          programLog.record(error.localizedDescription, level: .error, category: "Tasks")
+          continue
+        }
+        let detail = "Prompt was not sent: \(error.localizedDescription)"
+        do {
+          _ = try scheduledAgentResumeStore.finishClaim(
+            id: action.id, state: .failed, detail: detail, at: Date())
+        } catch {
+          programLog.record(
+            "Scheduled resume \(action.id) failed before delivery, but its outcome receipt could not be saved; it remains claimed and will not retry. \(error.localizedDescription)",
+            level: .error, category: "Tasks")
+        }
+        programLog.record(detail, level: .error, category: "Tasks")
+        continue
+      } catch {
+        let detail = "Prompt was not sent: \(error.localizedDescription)"
+        do {
+          _ = try scheduledAgentResumeStore.finishClaim(
+            id: action.id, state: .failed, detail: detail, at: Date())
+        } catch {
+          programLog.record(
+            "Scheduled resume \(action.id) failed before delivery, but its outcome receipt could not be saved; it remains claimed and will not retry. \(error.localizedDescription)",
+            level: .error, category: "Tasks")
+        }
+        programLog.record(detail, level: .error, category: "Tasks")
+        continue
+      }
+      let detail = "Sent the scheduled prompt to existing \(action.target.provider.displayName) agent \(action.target.agentID)."
+      do {
+        _ = try scheduledAgentResumeStore.finishClaim(
+          id: action.id, state: .completed, detail: detail, at: Date())
+        programLog.record(detail, category: "Tasks")
+      } catch {
+        programLog.record(
+          "The scheduled prompt was sent, but its completion receipt could not be saved; the action remains claimed and will not retry. \(error.localizedDescription)",
+          level: .error, category: "Tasks")
+      }
+    }
+    reloadScheduledAgentResumes()
   }
 
   /// Fires every scheduled launch whose time has passed. Repeating entries
@@ -1831,6 +1941,8 @@ final class QueueViewModel {
       // in the shared file; reload before firing so they run without a panel
       // open or a reschedule.
       reloadScheduledLaunches()
+      reloadScheduledAgentResumes()
+      await fireDueScheduledAgentResumes(now: now)
       await fireDueScheduledLaunches(now: now)
       runDecisionAutomationIfDue(now: now)
       refreshPriorityReviewsIfDue(now: now)
@@ -8415,6 +8527,7 @@ extension QueueViewModel {
   func setSchedulePresented(_ presented: Bool) {
     if presented {
       reloadScheduledLaunches()
+      reloadScheduledAgentResumes()
       reloadScheduleRunHistory()
       isBulletinBoardPresented = false
       isTokenAnalyticsPresented = false
@@ -8464,6 +8577,25 @@ extension QueueViewModel {
   /// declined-report outcomes plus the daily report's own run receipts.
   func scheduleRunHistory(now: Date = Date()) -> [ScheduleRunRecord] {
     let cutoff = now.addingTimeInterval(-ScheduleRunHistoryStore.retention)
+    let resumeRuns = scheduledAgentResumes.compactMap { action -> ScheduleRunRecord? in
+      let outcome: ScheduleRunOutcome
+      switch action.state {
+      case .completed: outcome = .completed
+      case .failed: outcome = .failed
+      case .expired: outcome = .skipped
+      case .claimed: outcome = .interrupted
+      case .pending: return nil
+      }
+      return ScheduleRunRecord(
+        id: "scheduled-resume-\(action.id)", kind: .timer, title: action.title,
+        detail: action.outcomeDetail
+          ?? (action.state == .claimed
+            ? "Delivery was claimed, but the final submission outcome is unknown. It will not retry."
+            : outcome.explanation),
+        ticketID: action.target.taskID, projectID: scheduleProjectID(forTicketID: action.target.taskID),
+        scheduledAt: action.fireAt,
+        recordedAt: action.finishedAt ?? action.claimedAt ?? action.fireAt, outcome: outcome)
+    }
     let reports = reportHistory.runs.compactMap { receipt -> ScheduleRunRecord? in
       guard let outcome = ScheduleRunOutcome(reportPhase: receipt.phase) else { return nil }
       return ScheduleRunRecord(
@@ -8471,7 +8603,7 @@ extension QueueViewModel {
         detail: receipt.message, scheduledAt: receipt.startedAt,
         recordedAt: receipt.updatedAt, outcome: outcome)
     }
-    return (scheduleRunRecords + reports)
+    return (scheduleRunRecords + resumeRuns + reports)
       .filter { $0.recordedAt >= cutoff }
       .sorted { ($0.scheduledAt, $0.id) < ($1.scheduledAt, $1.id) }
   }
@@ -8488,6 +8620,7 @@ extension QueueViewModel {
     let trees = store.taskIDsWithTrees().flatMap { store.trees(taskID: $0) }
     return ScheduleTimeline.jobs(
       launches: scheduledLaunches,
+      resumes: scheduledAgentResumes,
       dailyReport: config.dailyReport,
       decisions: trees,
       automation: config.decisionAutomation,
@@ -8507,6 +8640,10 @@ extension QueueViewModel {
       let fireAt = ScheduleTimeline.movedFireDate(
         of: job, from: from, to: to, snapMinutes: snapMinutes, now: now, calendar: calendar)
       return rescheduleLaunch(id: id, fireAt: fireAt) ? fireAt : nil
+    case .scheduledResume(let id):
+      let fireAt = ScheduleTimeline.movedFireDate(
+        of: job, from: from, to: to, snapMinutes: snapMinutes, now: now, calendar: calendar)
+      return rescheduleAgentResume(id: id, fireAt: fireAt) ? fireAt : nil
     case .dailyReport:
       // Snap in the viewer's zone, but the report runs on this Mac's clock.
       let snapped = ScheduleTimeline.snap(to, minutes: snapMinutes, calendar: calendar)
@@ -8532,6 +8669,28 @@ extension QueueViewModel {
       "Rescheduled the \(scheduledLaunches[index].ticketID) agent launch to \(fireAt) from the schedule.",
       category: "Tasks")
     return true
+  }
+
+  @discardableResult
+  func rescheduleAgentResume(id: String, fireAt: Date) -> Bool {
+    do {
+      guard let moved = try scheduledAgentResumeStore.retime(id: id, fireAt: fireAt) else { return false }
+      reloadScheduledAgentResumes()
+      programLog.record(
+        "Rescheduled the existing \(moved.target.agentID) agent prompt to \(fireAt) from the schedule.",
+        category: "Tasks")
+      return true
+    } catch {
+      programLog.record(
+        "Could not reschedule existing-agent prompt \(id): \(error.localizedDescription)",
+        level: .error, category: "Tasks")
+      return false
+    }
+  }
+
+  var scheduledJobCount: Int {
+    scheduledLaunches.count
+      + scheduledAgentResumes.filter { $0.state == .pending || $0.state == .claimed }.count
   }
 }
 

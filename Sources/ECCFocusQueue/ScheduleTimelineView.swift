@@ -118,6 +118,7 @@ struct ScheduleTimelineView: View {
     }
     .onAppear(perform: reload)
     .onChange(of: model.scheduledLaunches) { _, _ in reload() }
+    .onChange(of: model.scheduledAgentResumes) { _, _ in reload() }
     .onChange(of: model.config.dailyReport) { _, _ in reload() }
   }
 
@@ -502,7 +503,8 @@ struct ScheduleTimelineView: View {
 
   /// Line two (kind and exact time) and line three (estimated run window).
   static func clipLines(_ job: ScheduleJob, start: Date, calendar: Calendar) -> (when: String, run: String) {
-    let when = "\(job.kind.label)\(repeatSuffix(job)) · \(clipTime(start, calendar: calendar))"
+    let action = job.actionLabel.map { " · \($0)" } ?? ""
+    let when = "\(job.kind.label)\(repeatSuffix(job))\(action) · \(clipTime(start, calendar: calendar))"
     let end = start.addingTimeInterval(job.expectedDuration)
     let run = job.expectedDuration > 0
       ? "Run ≈ \(clipTime(start, calendar: calendar, weekday: false, zone: false)) – \(clipTime(end, calendar: calendar, weekday: false, zone: false))"
@@ -663,6 +665,8 @@ private struct ScheduleClipDetail: View {
             : ScheduleTimeline.intervalDescription(interval))
         }
         if let ticketID = job.ticketID { row("Task", ticketID) }
+        if let action = job.actionLabel { row("Action", action) }
+        if let target = job.targetLabel { row("Target", target) }
         row("Zone", zone)
       }
       .font(.system(size: 11))
@@ -682,6 +686,9 @@ private struct ScheduleClipDetail: View {
         Spacer()
         if case .scheduledLaunch(let id) = job.source {
           Button("Cancel schedule", role: .destructive) { dismiss(); model.cancelScheduledLaunch(id: id) }
+        }
+        if case .scheduledResume(let id) = job.source {
+          Button("Cancel schedule", role: .destructive) { dismiss(); model.cancelScheduledAgentResume(id: id) }
         }
       }
       .controlSize(.small)

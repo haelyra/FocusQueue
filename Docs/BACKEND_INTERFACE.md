@@ -196,9 +196,11 @@ The saved sort mode `phase` (*Phase order*, FOC-121) applies only while one proj
 
 **`schedule add <TASK-ID> <title> <prompt> --in <minutes> | --at "<HH:mm|yyyy-MM-dd HH:mm>" [--every <minutes>] [--provider codex|claude|kimi]`** — registers a future agent launch for an existing task. It appends one entry to `scheduled-launches.json` through the shared `LaunchScheduleStore`, so the app shows it in the Schedule panel and fires it on its next refresh after the fire time while it runs; no other registration step is needed. `--at "HH:mm"` means today, or tomorrow once that time has passed; full dates must be in the future. `--every` repeats at that interval. The provider defaults to the caller's `FOCUS_QUEUE_PROVIDER`, then the configured default. Returns `{status:"scheduled", launch:{...}}` with the launch `id`.
 
-**`schedule list [<TASK-ID>]`** — every registered launch, optionally one task's, as ISO-8601 JSON.
+Add **`--resume-agent <AGENT-ID> (--latest-at <time> | --grace-minutes <minutes>)`** to schedule a one-shot prompt for that exact registered task agent, provider session, workspace, and managed tmux pane. The action uses separate versioned `scheduled-agent-resumes.json` persistence, appears as *Resume existing agent* in the Schedule panel, and refuses changed, paused, retired, completed, expired, stopped, or unverifiable targets. It never launches a new agent, reopens a conversation, or repeats. `--latest-at` is an absolute latest-delivery time in the same formats as `--at`; `--grace-minutes` computes it from the fire time. Returns `{status:"scheduled", action:"resumeExistingAgent", resume:{...}}`.
 
-**`schedule cancel <ID>`** — removes one launch by the `id` from `schedule list` or the add receipt.
+**`schedule list [<TASK-ID>]`** — every registered launch and existing-agent resume, optionally one task's, as ISO-8601 JSON. Resume entries retain claimed and terminal outcomes for bounded history.
+
+**`schedule cancel <ID>`** — removes one pending launch or resume by the `id` from `schedule list` or the add receipt. Claimed and terminal resumes cannot be cancelled.
 
 ### 3.6 Subtask (agent) lifecycle
 
@@ -578,6 +580,7 @@ focus-queue-session task status   <TASK-ID> <status>     # ⚠ unvalidated
 
 # Scheduling (future launches; the app fires them on refresh while it runs)
 focus-queue-session schedule add <TASK> <title> <prompt> --in <minutes> | --at "HH:mm"
+focus-queue-session schedule add <TASK> <title> <prompt> --at "HH:mm" --resume-agent <AGENT> --grace-minutes <minutes>
 focus-queue-session schedule list [<TASK>] ; schedule cancel <ID>
 
 # Development process (projects that enable it)

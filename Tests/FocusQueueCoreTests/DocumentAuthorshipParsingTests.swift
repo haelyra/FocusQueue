@@ -87,6 +87,15 @@ struct DocumentAuthorshipParsingTests {
     #expect(touch.toolCalls.count == 1)
   }
 
+  @Test("A bare Kimi tool call writes like a loop-event call")
+  func bareKimiToolCall() throws {
+    let record: [String: Any] = ["time": 1_793_131_009_286.0, "type": "tool.call", "name": "Write",
+                                 "args": ["path": document]]
+    let touch = try scan(record, provider: .kimi)
+    #expect(touch.firstWrite != nil)
+    #expect(touch.toolCalls.count == 1)
+  }
+
   @Test("Tool-shaped data inside a result is not an invocation",
         arguments: [AgentProvider.codex, .kimi])
   func resultIsNotInvocation(provider: AgentProvider) throws {

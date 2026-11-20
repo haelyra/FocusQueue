@@ -93,8 +93,8 @@ struct LocalDateTests {
         : #"{\#(stamp)"payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":\#(index)},"last_token_usage":{"input_tokens":10,"output_tokens":\#(index + 1)}}}}"#
     }
     try Data(lines.joined(separator: "\n").utf8).write(to: url)
-    let usage = try #require(AgentTranscriptUsage.usage(of: url, provider: provider,
-      timeZone: try #require(TimeZone(identifier: "America/Los_Angeles"))))
+    let westZone = try #require(TimeZone(identifier: "America/Los_Angeles"))
+    let usage = try #require(AgentTranscriptUsage.usage(of: url, provider: provider, timeZone: westZone))
     #expect(usage.turns == 4)
     #expect(usage.daily["2026-10-29"]?.output == 1)
     #expect(usage.daily["2026-10-30"]?.output == 2)

@@ -77,4 +77,27 @@ struct LocalDateTests {
     #expect(east.daily["2026-10-30"]?.total == 12)
     #expect(west.totals == east.totals)
   }
+
+  @Test("Each transcript line groups by its own timestamp format",
+        arguments: ["claude", "codex"])
+  func transcriptMixedTimestamps(provider: String) throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("session.jsonl")
+    let stamps = [#""timestamp":"2026-10-30T01:00:00.123Z","#, #""timestamp":"2026-10-31T10:00:00+09:00","#,
+                  #""timestamp":"not-a-date","#, ""]
+    let lines = stamps.enumerated().map { index, stamp in
+      provider == "claude"
+        ? #"{\#(stamp)"message":{"id":"msg_\#(index)","usage":{"input_tokens":10,"output_tokens":\#(index + 1)}}}"#
+        : #"{\#(stamp)"payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":\#(index)},"last_token_usage":{"input_tokens":10,"output_tokens":\#(index + 1)}}}}"#
+    }
+    try Data(lines.joined(separator: "\n").utf8).write(to: url)
+    let westZone = try #require(TimeZone(identifier: "America/Los_Angeles"))
+    let usage = try #require(AgentTranscriptUsage.usage(of: url, provider: provider, timeZone: westZone))
+    #expect(usage.turns == 4)
+    #expect(usage.daily["2026-10-29"]?.output == 1)
+    #expect(usage.daily["2026-10-30"]?.output == 2)
+    #expect(usage.daily["unknown"]?.output == 7)
+  }
 }

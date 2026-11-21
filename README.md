@@ -2,6 +2,8 @@
 
 **One task queue for every coding agent you run on your Mac.**
 
+See a demo: https://x.com/haelyra_/status/2120988117138297044 
+
 Focus Queue is a macOS panel and `focus-queue-session` CLI that organize agent
 work into **projects → tasks → agents**. Each task gets one central plan every
 agent reads. Each agent gets its own git worktree, branch and tmux pane, so

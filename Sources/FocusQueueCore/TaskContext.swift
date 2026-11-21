@@ -1317,11 +1317,27 @@ public actor TaskContextStore {
         }
     }
 
+    /// Severs the agent's managed tmux binding while keeping its session
+    /// identity and workspace, so a failed runtime can be relinked or
+    /// relaunched without a stale saved reference blocking recovery.
+    @discardableResult public func clearManagedRuntime(
+        ticketID: String, subtaskID: String
+    ) throws -> TaskContext {
+        try mutate(ticketID: ticketID, archiveChanges: true) { context in
+            guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else {
+                throw TaskContextError.missingSubtask(subtaskID)
+            }
+            context.subtasks[index].tmux = nil
+            if context.subtasks[index].runtimeMode == .tmux {
+                context.subtasks[index].runtimeMode = nil
+            }
+        }
+    }
+
     @discardableResult public func setDirectRuntime(
         ticketID: String, subtaskID: String, paneID: Int, socketPath: String?,
         status: TaskSubtaskStatus? = nil
-    ) throws -> TaskContext {
-        guard paneID >= 0 else { throw TaskContextError.commandFailed("Terminal returned an invalid pane identity.") }
+    ) throws -> TaskContext {        guard paneID >= 0 else { throw TaskContextError.commandFailed("Terminal returned an invalid pane identity.") }
         return try mutate(ticketID: ticketID, archiveChanges: true) { context in
             guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else {
                 throw TaskContextError.missingSubtask(subtaskID)

@@ -482,8 +482,8 @@ private actor BatchedAttentionRunner: ProcessRunning {
 @Test("Batched attention shares one pane listing and skips captures for fresh heartbeats")
 func batchedRuntimeAttentionSharesListingAndSkipsFreshHeartbeats() async throws {
   let paneListing = """
-  fq-task-ecc-1|123|1000|%0|124|/dev/ttys099|0|@1|0|200|50|0|0|200|50||||1|
-  fq-task-ecc-1|123|1000|%1|125|/dev/ttys100|0|@1|0|200|50|0|0|200|50||||0|
+  fq-task-ecc-1|123|1000|%0|124|/dev/ttys099|0|@1|0|200|50|0|0|200|50||||1|||
+  fq-task-ecc-1|123|1000|%1|125|/dev/ttys100|0|@1|0|200|50|0|0|200|50||||0|||
   """
   let runner = BatchedAttentionRunner(paneListing: paneListing,
     captureText: "Do you want to proceed?\n› 1. Yes\n  2. No (Esc)\n")

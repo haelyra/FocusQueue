@@ -84,15 +84,17 @@ public struct TmuxPaneSnapshot: Identifiable, Equatable, Sendable {
   public let subtaskID: String
   public let restoredSubtaskID: String
   public let completedSubtaskID: String
+  public let detachedSubtaskID: String
+  public let isPlaceholder: Bool
   public let isActive: Bool
   public let automatic: Bool
 
-  static let format = TmuxController.format + "|#{window_id}|#{window_index}|#{window_width}|#{window_height}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{@focus-queue-agent}|#{@focus-queue-restored-agent}|#{@focus-queue-completed-agent}|#{pane_active}|#{@focus-queue-layout}"
+  static let format: String = TmuxController.format + "|#{window_id}|#{window_index}|#{window_width}|#{window_height}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{@focus-queue-agent}|#{@focus-queue-restored-agent}|#{@focus-queue-completed-agent}|#{pane_active}|#{@focus-queue-layout}|#{@focus-queue-detached-agent}|#{@focus-queue-placeholder}"
 
   static func decode(_ output: String, executable: String) throws -> [Self] {
-    try output.split(separator: "\n").map { line in
+    try output.split(separator: "\n").map { line -> Self in
       let f = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-      guard f.count == 20, f[7].range(of: "^@[0-9]+$", options: .regularExpression) != nil,
+      guard f.count == 22, f[7].range(of: "^@[0-9]+$", options: .regularExpression) != nil,
             let index = Int(f[8]), let ww = Int(f[9]), let wh = Int(f[10]),
             let x = Int(f[11]), let y = Int(f[12]), let w = Int(f[13]), let h = Int(f[14]),
             ww > 0, wh > 0, w > 0, h > 0,
@@ -102,6 +104,7 @@ public struct TmuxPaneSnapshot: Identifiable, Equatable, Sendable {
       return Self(reference: reference, windowID: f[7], windowIndex: index,
         windowWidth: ww, windowHeight: wh, left: x, top: y, width: w, height: h,
         subtaskID: f[15], restoredSubtaskID: f[16], completedSubtaskID: f[17],
+        detachedSubtaskID: f[20], isPlaceholder: f[21] == "1",
         isActive: f[18] == "1", automatic: f[19] != "manual")
     }
   }
@@ -206,7 +209,7 @@ extension TmuxController {
     // A retained dead pane should not hide the other running agents.
     let live = result.standardOutput.split(separator: "\n").filter {
       let fields = $0.split(separator: "|", omittingEmptySubsequences: false)
-      return fields.count != 20 || fields[6] == "0"
+      return fields.count != 22 || fields[6] == "0"
     }.joined(separator: "\n")
     return try TmuxPaneSnapshot.decode(live, executable: executable)
   }
@@ -379,6 +382,171 @@ extension TmuxController {
       try await Task.sleep(for: .milliseconds(250))
     }
     throw TmuxError.startedButUnconfirmed(name: name, executable: executable, attempts: 120, lastDetail: detail)
+  }
+
+  /// Creates the task's shared session without any agent: one tagged shell
+  /// pane holds the session open, so environment setup and inspection can
+  /// happen before the first agent launch joins it. Starting an existing
+  /// owned session is idempotent and returns its current reference.
+  public func startTask(taskID: String, taskTitle: String? = nil,
+                        directory: String, command: [String],
+                        executable: String) async throws -> TmuxSessionReference {
+    let name = try Self.taskSessionName(taskID: taskID)
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory), isDirectory.boolValue else {
+      throw ProcessRunnerError.invalidWorkingDirectory(directory)
+    }
+    let lock = try await TmuxOrganizerLock.acquire(name: name)
+    defer { lock.release() }
+    try await configureManagedScrollback(executable: executable)
+    if try await taskSessionExists(name: name, executable: executable) {
+      try await requireTaskSessionOwnership(name: name, taskID: taskID, executable: executable)
+      return try await inspect(name: name, executable: executable)
+    }
+    let managedCommand = [
+      "/usr/bin/env", "FOCUS_QUEUE_MANAGED_TMUX=1",
+      "FOCUS_QUEUE_TASK_ID=\(taskID.uppercased())",
+      "FOCUS_QUEUE_RUNTIME_MODE=tmux",
+      "FOCUS_QUEUE_TMUX_SERVER=\(serverName)",
+    ] + command
+    let base = try Self.startArguments(name: name, directory: directory, command: managedCommand)
+    let arguments = Array(base.prefix(1)) + ["-n", "Shell"] + base.dropFirst()
+    let result = try await run(executable, arguments)
+    guard result.succeeded else {
+      throw TmuxError.unavailable(result.timedOut
+        ? "The tmux launch command timed out; inspect the reserved session before retrying."
+        : String(result.standardError.prefix(800)))
+    }
+    let fields = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+      .split(separator: result.standardOutput.contains("|") ? "|" : "\t", omittingEmptySubsequences: false)
+    guard fields.count == 7, fields[3].range(of: "^%[0-9]+$", options: .regularExpression) != nil else {
+      throw TmuxError.startedButUnconfirmed(name: name, executable: executable, attempts: 1,
+        lastDetail: "No pane ID in the launch receipt.")
+    }
+    let paneID = String(fields[3])
+    do {
+      try await checked(executable, ["set-option", "-t", name, "@focus-queue-task", taskID.uppercased()])
+      if let taskTitle {
+        let readable = Self.readableTaskTitle(taskTitle, fallback: taskID.uppercased())
+        try await checked(executable, ["set-option", "-t", name, "@focus-queue-task-title", readable])
+      }
+      try await checked(executable, ["set-option", "-p", "-t", paneID, "@focus-queue-placeholder", "1"])
+    } catch {
+      throw TmuxError.startedButUnconfirmed(name: name, executable: executable, attempts: 1,
+        lastDetail: "The session started, but ownership was not confirmed. \(error.localizedDescription)")
+    }
+    try await checked(executable, ["set-option", "-t", name, "mouse", "on"])
+    try await checked(executable, ["set-window-option", "-t", paneID, "window-size", "latest"])
+    try? await applyTaskBanner(name: name, paneID: paneID, executable: executable)
+    var previous: TmuxSessionReference?
+    var stable = 0
+    var detail = "The pane process kept changing."
+    for attempt in 0..<confirmationAttempts {
+      do {
+        let current = try await inspectTarget(paneID, name: name, executable: executable)
+        stable = current == previous ? stable + 1 : 1
+        previous = current
+        if stable >= requiredStableObservations {
+          try? await reflowUnlocked(name: name, executable: executable, force: false)
+          return current
+        }
+      } catch TmuxError.stopped {
+        throw TmuxError.exitedAtLaunch
+      } catch {
+        stable = 0; previous = nil; detail = error.localizedDescription
+      }
+      if attempt < confirmationAttempts - 1, confirmationDelayMilliseconds > 0 {
+        try await Task.sleep(for: .milliseconds(confirmationDelayMilliseconds))
+      }
+    }
+    throw TmuxError.startedButUnconfirmed(
+      name: name, executable: executable, attempts: confirmationAttempts, lastDetail: detail)
+  }
+
+  /// Releases the agent's claim on its task pane without touching the pane's
+  /// process: the pane stays alive for inspection, tagged so the layout keeps
+  /// organizing it and relinkAgent can bind the same agent back to it.
+  @discardableResult
+  public func detachAgent(taskID: String, subtaskID: String, executable: String) async throws -> TmuxSessionReference? {
+    let name = try Self.taskSessionName(taskID: taskID)
+    try Self.validateName(subtaskID)
+    let lock = try await TmuxOrganizerLock.acquire(name: name)
+    defer { lock.release() }
+    guard try await taskSessionExists(name: name, executable: executable) else { return nil }
+    try await requireTaskSessionOwnership(name: name, taskID: taskID, executable: executable)
+    let matches = try await panes(name: name, executable: executable).filter { $0.subtaskID == subtaskID }
+    guard matches.count <= 1 else {
+      throw TmuxError.unavailable("More than one pane claims this agent. Check the task panes before retrying.")
+    }
+    guard let match = matches.first else { return nil }
+    try await checked(executable, ["set-option", "-p", "-u", "-t", match.id, "@focus-queue-agent"])
+    try await checked(executable, ["set-option", "-p", "-u", "-t", match.id, "@focus-queue-restored-agent"])
+    try await checked(executable, ["set-option", "-p", "-u", "-t", match.id, "@focus-queue-restored"])
+    try await checked(executable, ["set-option", "-p", "-u", "-t", match.id, "@focus-queue-placeholder"])
+    try await checked(executable, ["set-option", "-p", "-t", match.id, "@focus-queue-detached-agent", subtaskID])
+    try? await reflowUnlocked(name: name, executable: executable, force: false)
+    return match.reference
+  }
+
+  /// Binds an agent to a live pane in its task session: explicitly with
+  /// `paneID`, or implicitly to the one pane that still carries the agent's
+  /// claim or its earlier detach marker. Refuses panes another agent claims
+  /// and completed terminals, which keep their completion evidence.
+  public func relinkAgent(taskID: String, subtaskID: String, paneID: String? = nil,
+                          executable: String) async throws -> TmuxSessionReference {
+    let name = try Self.taskSessionName(taskID: taskID)
+    try Self.validateName(subtaskID)
+    if let paneID {
+      guard paneID.range(of: "^%[0-9]+$", options: .regularExpression) != nil else {
+        throw TmuxError.invalidName
+      }
+    }
+    let lock = try await TmuxOrganizerLock.acquire(name: name)
+    defer { lock.release() }
+    guard try await taskSessionExists(name: name, executable: executable) else {
+      throw TmuxError.unavailable("The task has no tmux session. Start one with tmux start-task or by launching an agent.")
+    }
+    try await requireTaskSessionOwnership(name: name, taskID: taskID, executable: executable)
+    let all = try await panes(name: name, executable: executable)
+    let target: TmuxPaneSnapshot
+    if let paneID {
+      guard let candidate = all.first(where: { $0.id == paneID }) else {
+        throw TmuxError.unavailable("No live pane \(paneID) exists in the task session.")
+      }
+      guard candidate.subtaskID.isEmpty || candidate.subtaskID == subtaskID else {
+        throw TmuxError.unavailable("Pane \(paneID) already belongs to another agent. Detach that agent first.")
+      }
+      guard candidate.completedSubtaskID.isEmpty || candidate.subtaskID == subtaskID else {
+        throw TmuxError.unavailable("Pane \(paneID) is a retained completion terminal and cannot be relinked.")
+      }
+      target = candidate
+    } else {
+      let candidates = all.filter {
+        $0.subtaskID == subtaskID || ($0.subtaskID.isEmpty && $0.detachedSubtaskID == subtaskID)
+      }
+      guard candidates.count <= 1 else {
+        throw TmuxError.unavailable("More than one pane could hold this agent. Pass --pane to choose one.")
+      }
+      guard let found = candidates.first else {
+        throw TmuxError.unavailable("No pane carries this agent's claim. Pass --pane <ID> to claim a specific pane.")
+      }
+      target = found
+    }
+    // Claim only a live, settled pane: two identical identity reads in a row.
+    let settled = try await inspectTarget(target.id, name: name, executable: executable)
+    try await Task.sleep(for: .milliseconds(250))
+    guard try await inspectTarget(target.id, name: name, executable: executable) == settled else {
+      throw TmuxError.changed
+    }
+    try await checked(executable, ["set-option", "-p", "-u", "-t", target.id, "@focus-queue-detached-agent"])
+    try await checked(executable, ["set-option", "-p", "-u", "-t", target.id, "@focus-queue-placeholder"])
+    try await checked(executable, ["set-option", "-p", "-u", "-t", target.id, "@focus-queue-completed-agent"])
+    try await checked(executable, ["set-option", "-p", "-u", "-t", target.id, "@focus-queue-restored-agent"])
+    try await checked(executable, ["set-option", "-p", "-u", "-t", target.id, "@focus-queue-restored"])
+    try await checked(executable, ["set-option", "-p", "-t", target.id, "@focus-queue-agent", subtaskID])
+    try? await applyTaskBanner(name: name, paneID: target.id, executable: executable)
+    try? await reflowUnlocked(name: name, executable: executable, force: false)
+    return settled
   }
 
   private func taskSessionExists(name: String, executable: String) async throws -> Bool {
@@ -627,10 +795,12 @@ extension TmuxController {
     guard let first = all.first, force || first.automatic else { return }
     let tracked = all.filter { !$0.subtaskID.isEmpty }
     let completed = all.filter { $0.subtaskID.isEmpty && !$0.completedSubtaskID.isEmpty }
+    let detached = all.filter { $0.subtaskID.isEmpty && !$0.detachedSubtaskID.isEmpty }
+    let placeholders = all.filter { $0.subtaskID.isEmpty && $0.isPlaceholder }
     // Unregistered/restored shells remain under the user's control. Completion
-    // shells are explicitly tagged and may be organized without claiming them
-    // as active agents.
-    guard tracked.count + completed.count == all.count else { return }
+    // shells, detached agent shells, and placeholder shells are explicitly
+    // tagged and may be organized without claiming them as active agents.
+    guard tracked.count + completed.count + detached.count + placeholders.count == all.count else { return }
     let focused = try await run(executable, ["display-message", "-p", "-t", "=\(name):", "#{pane_id}"])
     let activePane = focused.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
     let sizes = try await run(executable, ["list-clients", "-t", "=\(name)", "-F", "#{client_width}|#{client_height}|#{client_activity}|#{client_control_mode}"])
@@ -647,24 +817,42 @@ extension TmuxController {
     let statusValue = status.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
     let width = client?.0 ?? first.windowWidth
     let height = client.map { TmuxPaneLayout.contentHeight(clientHeight: $0.1, status: statusValue, controlMode: $0.3 == 1) } ?? first.windowHeight
-    let ordered = tracked.sorted { (Int($0.id.dropFirst()) ?? 0) < (Int($1.id.dropFirst()) ?? 0) }
-    let completedOrdered = completed.sorted { (Int($0.id.dropFirst()) ?? 0) < (Int($1.id.dropFirst()) ?? 0) }
-    let signature = "\(width)x\(height):agents=" + ordered.map(\.id).joined(separator: ",")
-      + ":completed=" + completedOrdered.map(\.id).joined(separator: ",")
+    let paneOrder: ([TmuxPaneSnapshot]) -> [TmuxPaneSnapshot] = { panes in
+      panes.sorted { (Int($0.id.dropFirst()) ?? 0) < (Int($1.id.dropFirst()) ?? 0) }
+    }
+    let ordered = paneOrder(tracked)
+    let completedOrdered = paneOrder(completed)
+    let detachedOrdered = paneOrder(detached)
+    let placeholderOrdered = paneOrder(placeholders)
+    var signature = "\(width)x\(height):agents=" + ordered.map(\.id).joined(separator: ",")
+    signature += ":completed=" + completedOrdered.map(\.id).joined(separator: ",")
+    signature += ":detached=" + detachedOrdered.map(\.id).joined(separator: ",")
+    signature += ":placeholders=" + placeholderOrdered.map(\.id).joined(separator: ",")
     let previous = try await run(executable, ["show-options", "-qv", "-t", name, "@focus-queue-size"])
     if !force, previous.succeeded, previous.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines) == signature { return }
+    var groups: [([TmuxPaneSnapshot], String)] = []
     let agentGroups = TmuxPaneLayout.groups(ordered, width: width, height: height)
-    let completedGroups = TmuxPaneLayout.groups(completedOrdered, width: width, height: height)
-    let groups: [([TmuxPaneSnapshot], String)] = agentGroups.enumerated().map { index, group in
+    groups += agentGroups.enumerated().map { index, group in
       (group, agentGroups.count == 1 ? "Agents" : "Agents \(index + 1)")
-    } + completedGroups.enumerated().map { index, group in
+    }
+    let completedGroups = TmuxPaneLayout.groups(completedOrdered, width: width, height: height)
+    groups += completedGroups.enumerated().map { index, group in
       (group, completedGroups.count == 1 ? "Completed" : "Completed \(index + 1)")
+    }
+    let detachedGroups = TmuxPaneLayout.groups(detachedOrdered, width: width, height: height)
+    groups += detachedGroups.enumerated().map { index, group in
+      (group, detachedGroups.count == 1 ? "Detached" : "Detached \(index + 1)")
+    }
+    let placeholderGroups = TmuxPaneLayout.groups(placeholderOrdered, width: width, height: height)
+    groups += placeholderGroups.enumerated().map { index, group in
+      (group, placeholderGroups.count == 1 ? "Shell" : "Shell \(index + 1)")
     }
     try await checked(executable, ["set-option", "-t", name, "status-left", ""])
     try await checked(executable, ["set-option", "-t", name, "status-right", ""])
     // Keep at most `agentsPerWindow` active agents (default four) in each
-    // native tmux window tab. Retained completion shells use their own tab so
-    // they never consume agent capacity.
+    // native tmux window tab. Retained completion shells, detached agent
+    // shells, and placeholder shells use their own tabs so they never consume
+    // agent capacity.
     for (group, label) in groups {
       guard let anchor = group.first else { continue }
       let current = try await panes(name: name, executable: executable)

@@ -54,7 +54,8 @@ enum SessionRegistrationError: Error, LocalizedError {
                 print("Scoped data: data ensure | data show <project-id> | data place <user|project|task> <target-id> <one-or-two-sentence fact>")
                 print("Data hook: data-event --provider claude (reads one provider hook payload on stdin; prints saved project data the session has not seen; exits 0)")
                 print("Completion cleanup: cleanup <TASK-ID> | cleanup --completed | cleanup --orphans | cleanup --purge, each with optional --dry-run (stops tmux, stages worktrees in .worktrees/.trash for 7 days, archives unmerged work under refs/focus-queue/archive/, deletes merged local and remote branches)")
-                print("Persistent terminals: tmux list | tmux start <name> [--cwd <directory>] [-- <command> ...] | tmux start-agent <TASK-ID> <AGENT-ID> [--cwd <directory>] -- <command> ... | tmux attach <name> | tmux ssh-command <user@host> <name>")
+                print("Persistent terminals: tmux list | tmux start <name> [--cwd <directory>] [-- <command> ...] | tmux start-task <TASK-ID> [--cwd <directory>] [--title <text>] [-- <command> ...] | tmux start-agent <TASK-ID> <AGENT-ID> [--cwd <directory>] -- <command> ... | tmux attach <name> | tmux ssh-command <user@host> <name>")
+                print("Agent panes: tmux detach-agent <TASK-ID> <AGENT-ID> releases the agent's claim on its task pane (the pane keeps running, tagged for relink) | tmux relink-agent <TASK-ID> <AGENT-ID> [--pane %N] binds the agent to a live unclaimed pane and restores its record")
                 print("Task layouts: tmux panes <name> | tmux arrange <name> | tmux manual <name> | tmux save | tmux restore | tmux persistence")
             }
             else if arguments.first == "projects" { try projectsCommand(arguments: arguments) }
@@ -833,7 +834,7 @@ enum SessionRegistrationError: Error, LocalizedError {
         guard let executable = configuration.tmuxExecutable ?? SetupEnvironment.executable("tmux") else {
             throw TmuxError.unavailable("Install tmux on this host, then choose its executable in setup.")
         }
-        let persistence = ["start", "start-agent", "save", "restore", "persistence"].contains(arguments[1])
+        let persistence = ["start", "start-task", "start-agent", "save", "restore", "persistence"].contains(arguments[1])
             ? try TmuxPersistence.prepare(executable: executable, supportDirectory: supportDirectory(environment: environment)) : nil
         let serverName: String
         if arguments[1] == "reflow", arguments.count == 5, arguments[3] == "--server" {
@@ -909,6 +910,111 @@ enum SessionRegistrationError: Error, LocalizedError {
                 throw TmuxError.unavailable("Attach needs an interactive terminal. Use ssh -t when connecting remotely.")
             }
             try TmuxController.exec(TmuxController.attachCommand(name: arguments[2], executable: executable))
+        case "start-task" where arguments.count >= 3:
+            let taskID = arguments[2]
+            var remaining = Array(arguments.dropFirst(3))
+            var directory = FileManager.default.currentDirectoryPath
+            var title: String?
+            while let option = remaining.first, option != "--" {
+                guard remaining.count >= 2 else { throw SessionRegistrationError.usage }
+                switch option {
+                case "--cwd" where directory == FileManager.default.currentDirectoryPath:
+                    directory = remaining[1]
+                case "--title" where title == nil:
+                    title = remaining[1]
+                default: throw SessionRegistrationError.usage
+                }
+                remaining.removeFirst(2)
+            }
+            if remaining.first == "--" { remaining.removeFirst() }
+            let command = remaining.isEmpty ? [InteractiveAgentShell.executable(), "-l"] : remaining
+            if title == nil {
+                title = try await TaskContextStore(root: supportDirectory(environment: environment))
+                    .load(ticketID: taskID)?.title
+            }
+            let reference = try await controller.startTask(
+                taskID: taskID, taskTitle: title, directory: directory,
+                command: command, executable: executable)
+            var warnings: [String] = []
+            do { try await persistence!.enable() }
+            catch { warnings.append("persistence: \(error.localizedDescription)") }
+            let rawHelper = CommandLine.arguments[0]
+            let helper = rawHelper.hasPrefix("/") ? rawHelper
+                : URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                    .appendingPathComponent(rawHelper).standardizedFileURL.path
+            do {
+                try await controller.configureTask(
+                    name: reference.name, executable: executable, helper: helper,
+                    supportDirectory: supportDirectory(environment: environment))
+            } catch { warnings.append("layout hooks: \(error.localizedDescription)") }
+            do { try await controller.reflow(name: reference.name, executable: executable) }
+            catch { warnings.append("initial layout: \(error.localizedDescription)") }
+            try emit(reference)
+            if !warnings.isEmpty {
+                FileHandle.standardError.write(Data(
+                    "Task session started; optional tmux setup needs attention: \(warnings.joined(separator: "; "))\n".utf8))
+            }
+        case "detach-agent" where arguments.count == 4:
+            let taskID = arguments[2]
+            let agentID = arguments[3]
+            let root = supportDirectory(environment: environment)
+            let store = TaskContextStore(root: root)
+            guard let context = try await store.load(ticketID: taskID),
+                  let subtask = context.subtasks.first(where: { $0.id == agentID }) else {
+                throw TaskContextError.missingSubtask(agentID)
+            }
+            guard subtask.runtimeMode == nil || subtask.runtimeMode == .tmux else {
+                throw TaskContextError.commandFailed(
+                    "This subtask runs as a direct terminal session, so it has no tmux pane to detach.")
+            }
+            let detached = try await controller.detachAgent(
+                taskID: taskID, subtaskID: agentID, executable: executable)
+            guard detached != nil || subtask.tmux != nil else {
+                throw TaskContextError.commandFailed(
+                    "Agent \(agentID) has no claimed pane or saved tmux runtime to detach.")
+            }
+            if subtask.tmux != nil {
+                let updated = try await store.clearManagedRuntime(ticketID: taskID, subtaskID: agentID)
+                await mirrorContext(updated, root: root)
+            }
+            notifyContextChanged()
+            var output: [String: String] = ["status": "detached", "taskID": context.ticketID, "subtaskID": agentID]
+            output["pane"] = detached?.paneID
+            try emit(output)
+        case "relink-agent" where arguments.count == 4
+            || (arguments.count == 6 && arguments[4] == "--pane"):
+            let taskID = arguments[2]
+            let agentID = arguments[3]
+            let paneID = arguments.count == 6 ? arguments[5] : nil
+            if let paneID, paneID.range(of: "^%[0-9]+$", options: .regularExpression) == nil {
+                throw SessionRegistrationError.usage
+            }
+            let root = supportDirectory(environment: environment)
+            let store = TaskContextStore(root: root)
+            guard let context = try await store.load(ticketID: taskID),
+                  let subtask = context.subtasks.first(where: { $0.id == agentID }) else {
+                throw TaskContextError.missingSubtask(agentID)
+            }
+            guard subtask.runtimeMode == nil || subtask.runtimeMode == .tmux else {
+                throw TaskContextError.commandFailed(
+                    "This subtask runs as a direct terminal session, so it has no tmux pane to relink.")
+            }
+            // A still-live saved pane on a different ID means the agent never
+            // failed: refuse the second claim rather than splitting its record.
+            if let saved = subtask.tmux, let paneID,
+               let live = try? await controller.verify(saved), live.paneID != paneID {
+                throw TaskContextError.commandFailed(
+                    "Agent \(agentID) still has its live pane \(live.paneID). Detach it before claiming another pane.")
+            }
+            let reference = try await controller.relinkAgent(
+                taskID: taskID, subtaskID: agentID, paneID: paneID, executable: executable)
+            let updated = try await store.setManagedRuntime(
+                ticketID: taskID, subtaskID: agentID, tmux: reference)
+            await mirrorContext(updated, root: root)
+            notifyContextChanged()
+            try emit(RuntimeRepairResult(
+                status: "relinked", taskID: context.ticketID,
+                subtaskID: agentID, runtime: reference))
         case "start-agent" where arguments.count >= 6:
             let taskID = arguments[2]
             let agentID = arguments[3]

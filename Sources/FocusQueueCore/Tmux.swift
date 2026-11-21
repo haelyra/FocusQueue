@@ -56,9 +56,9 @@ public actor TmuxController {
   public static let format = "#{session_name}|#{pid}|#{session_created}|#{pane_id}|#{pane_pid}|#{pane_tty}|#{pane_dead}"
   private let runner: any ProcessRunning
   let serverName: String
-  private let confirmationAttempts: Int
-  private let confirmationDelayMilliseconds: Int
-  private let requiredStableObservations: Int
+  let confirmationAttempts: Int
+  let confirmationDelayMilliseconds: Int
+  let requiredStableObservations: Int
   private let configurationPath: String
   public init(
     runner: any ProcessRunning = FoundationProcessRunner(),
@@ -230,6 +230,10 @@ public actor TmuxController {
       try await checked(saved.executable, [
         "set-option", "-p", "-u", "-t", saved.paneID,
         "@focus-queue-restored-agent",
+      ])
+      try await checked(saved.executable, [
+        "set-option", "-p", "-u", "-t", saved.paneID,
+        "@focus-queue-detached-agent",
       ])
       // The completion terminal is already durable. A layout warning must not
       // make completion retryable or respawn the provider.

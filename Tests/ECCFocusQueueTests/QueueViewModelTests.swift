@@ -5242,7 +5242,7 @@ private actor ManagedResumeRunner: ProcessRunning {
     }
     if arguments.contains("list-panes") {
       guard started else { return result(exit: 1, error: "no server running") }
-      return result("fq-task-\(taskID.lowercased())|123|1000|%9|456|/dev/ttys099|0|@1|0|160|50|0|0|80|24|\(agentID)|||1|auto\n")
+      return result("fq-task-\(taskID.lowercased())|123|1000|%9|456|/dev/ttys099|0|@1|0|160|50|0|0|80|24|\(agentID)|||1|auto||\n")
     }
     if arguments.contains("show-options"), arguments.contains("status") {
       return result("off\n")
@@ -5278,7 +5278,7 @@ private actor EscalationLaunchRunner: ProcessRunning {
     }
     if arguments.contains("list-panes") {
       guard started else { return result(exit: 1, error: "no server running") }
-      return result("\(name)|123|1000|%9|456|/dev/ttys099|0|@1|0|160|50|0|0|80|24|\(UUID().uuidString)|||1|auto\n")
+      return result("\(name)|123|1000|%9|456|/dev/ttys099|0|@1|0|160|50|0|0|80|24|\(UUID().uuidString)|||1|auto||\n")
     }
     if arguments.contains("show-options"), arguments.contains("status") {
       return result("off\n")
@@ -5308,7 +5308,7 @@ private actor PresentationRepairRunner: ProcessRunning {
     }
     if arguments.contains("@focus-queue-task") { return result("\(taskID)\n") }
     if arguments.contains("list-panes") {
-      return result("fq-task-\(taskID.lowercased())|123|1000|%9|456|/dev/ttys099|0|@1|0|160|50|0|0|160|49|stored-agent|||1|auto\n")
+      return result("fq-task-\(taskID.lowercased())|123|1000|%9|456|/dev/ttys099|0|@1|0|160|50|0|0|160|49|stored-agent|||1|auto||\n")
     }
     if arguments.contains("display-message") { return result("%9\n") }
     if arguments.contains("@focus-queue-task-title") {

@@ -499,6 +499,120 @@ struct TmuxOrganizerTests {
     #expect(Dictionary(grouping: afterResume, by: \.windowID).values.map(\.count).sorted(by: >) == [4, 4])
   }
 
+  @Test("An empty task session takes an agent, then releases and relinks it",
+    .enabled(if: SetupEnvironment.executable("tmux") != nil))
+  func emptySessionDetachRelink() async throws {
+    let executable = try #require(SetupEnvironment.executable("tmux"))
+    let server = "fq-detach-test-" + UUID().uuidString.lowercased()
+    let controller = TmuxController(serverName: server)
+    let runner = FoundationProcessRunner()
+    let taskID = "TEST-" + UUID().uuidString
+    let name = try TmuxController.taskSessionName(taskID: taskID)
+    defer {
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: executable)
+      process.arguments = ["-L", server, "kill-server"]
+      process.environment = ["TMUX_TMPDIR": "/tmp", "PATH": "/usr/bin:/bin"]
+      process.standardError = FileHandle.nullDevice
+      try? process.run(); process.waitUntilExit()
+    }
+    func command(_ arguments: [String]) async throws -> String {
+      let result = try await runner.run(.init(executable: executable, arguments: ["-L", server] + arguments,
+        environment: ["TMUX_TMPDIR": "/tmp"]))
+      #expect(result.succeeded, "\(arguments): \(result.standardError)")
+      return result.standardOutput
+    }
+    // The session exists with one tagged placeholder shell and no agent.
+    let placeholder = try await controller.startTask(
+      taskID: taskID, taskTitle: "Empty session", directory: "/tmp",
+      command: ["/bin/sleep", "600"], executable: executable)
+    #expect(placeholder.name == name)
+    var panes = try await controller.panes(name: name, executable: executable)
+    #expect(panes.count == 1)
+    #expect(panes[0].isPlaceholder)
+    #expect(panes[0].subtaskID.isEmpty)
+    #expect(try await controller.verify(placeholder) == placeholder)
+    // Starting it again is idempotent and spawns no second pane.
+    _ = try await controller.startTask(taskID: taskID, directory: "/tmp",
+      command: ["/bin/sleep", "600"], executable: executable)
+    #expect(try await controller.panes(name: name, executable: executable).count == 1)
+    // A session that merely shares the reserved name is never adopted.
+    let conflictServer = "fq-detach-conflict-" + UUID().uuidString.lowercased()
+    let conflictController = TmuxController(serverName: conflictServer)
+    defer {
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: executable)
+      process.arguments = ["-L", conflictServer, "kill-server"]
+      process.environment = ["TMUX_TMPDIR": "/tmp", "PATH": "/usr/bin:/bin"]
+      process.standardError = FileHandle.nullDevice
+      try? process.run(); process.waitUntilExit()
+    }
+    let conflictName = try TmuxController.taskSessionName(taskID: "TEST-" + UUID().uuidString)
+    _ = try await runner.run(.init(executable: executable, arguments: [
+      "-L", conflictServer, "-f", "/dev/null", "new-session", "-d", "-s", conflictName, "/bin/sleep", "600"],
+      environment: ["TMUX_TMPDIR": "/tmp"]))
+    await #expect(throws: TmuxError.self) {
+      try await conflictController.startTask(taskID: String(conflictName.dropFirst("fq-task-".count)),
+        directory: "/tmp", command: ["/bin/sleep", "600"], executable: executable)
+    }
+    // The first agent joins the existing session; the placeholder survives and
+    // the layout puts it on its own window tab.
+    let agent = try await controller.startAgent(taskID: taskID, subtaskID: "agent-1",
+      directory: "/tmp", command: ["/bin/sleep", "600"], executable: executable)
+    #expect(agent.name == name)
+    try await controller.reflow(name: name, executable: executable, force: true)
+    panes = try await controller.panes(name: name, executable: executable)
+    #expect(panes.count == 2)
+    let agentPane = try #require(panes.first { $0.id == agent.paneID })
+    let shellPane = try #require(panes.first { $0.id == placeholder.paneID })
+    #expect(agentPane.subtaskID == "agent-1")
+    #expect(shellPane.isPlaceholder)
+    #expect(agentPane.windowID != shellPane.windowID)
+    // Detach releases the claim and keeps the pane alive and organized.
+    let detached = try await controller.detachAgent(taskID: taskID, subtaskID: "agent-1", executable: executable)
+    #expect(detached == agent)
+    panes = try await controller.panes(name: name, executable: executable)
+    let detachedPane = try #require(panes.first { $0.id == agent.paneID })
+    #expect(detachedPane.subtaskID.isEmpty)
+    #expect(detachedPane.detachedSubtaskID == "agent-1")
+    try await controller.reflow(name: name, executable: executable, force: true)
+    #expect(try await controller.verify(agent) == agent)
+    // Relink without a pane reclaims the pane carrying the detach marker.
+    let relinked = try await controller.relinkAgent(taskID: taskID, subtaskID: "agent-1", executable: executable)
+    #expect(relinked == agent)
+    panes = try await controller.panes(name: name, executable: executable)
+    #expect(panes.first { $0.id == agent.paneID }?.subtaskID == "agent-1")
+    #expect(panes.allSatisfy { $0.detachedSubtaskID.isEmpty })
+    // Explicit relink works after a second detach; a foreign pane is refused.
+    _ = try await controller.detachAgent(taskID: taskID, subtaskID: "agent-1", executable: executable)
+    let relinkedExplicit = try await controller.relinkAgent(
+      taskID: taskID, subtaskID: "agent-1", paneID: agent.paneID, executable: executable)
+    #expect(relinkedExplicit == agent)
+    let other = try await controller.startAgent(taskID: taskID, subtaskID: "agent-2",
+      directory: "/tmp", command: ["/bin/sleep", "600"], executable: executable)
+    await #expect(throws: TmuxError.self) {
+      try await controller.relinkAgent(taskID: taskID, subtaskID: "agent-1",
+        paneID: other.paneID, executable: executable)
+    }
+    await #expect(throws: TmuxError.self) {
+      try await controller.relinkAgent(taskID: taskID, subtaskID: "agent-1",
+        paneID: "%999999", executable: executable)
+    }
+    // Detaching an unknown agent and relinking with no candidate both fail closed.
+    #expect(try await controller.detachAgent(taskID: taskID, subtaskID: "agent-9", executable: executable) == nil)
+    await #expect(throws: TmuxError.self) {
+      try await controller.relinkAgent(taskID: taskID, subtaskID: "agent-9", executable: executable)
+    }
+    // The placeholder can host an agent explicitly when the user asks for it.
+    let hosted = try await controller.relinkAgent(taskID: taskID, subtaskID: "agent-3",
+      paneID: placeholder.paneID, executable: executable)
+    #expect(try await controller.verify(hosted) == hosted)
+    panes = try await controller.panes(name: name, executable: executable)
+    let hostedPane = try #require(panes.first { $0.id == placeholder.paneID })
+    #expect(hostedPane.subtaskID == "agent-3")
+    #expect(!hostedPane.isPlaceholder)
+  }
+
   @Test("A lost ownership-tag response cannot launch a second agent",
     .enabled(if: SetupEnvironment.executable("tmux") != nil))
   func uncertainLaunch() async throws {

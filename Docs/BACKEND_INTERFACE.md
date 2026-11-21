@@ -296,7 +296,11 @@ Role-scoped agent contracts (FOC-117), beside the project plan: `agent-contract.
 
 ### 3.10 tmux
 
-`tmux list | panes <name> | save | restore | persistence | arrange <name> | manual <name> | reflow <name> [--server s] | start <name> [--cwd dir] [-- cmd...] | start-agent <TASK> <AGENT> [--cwd dir] -- cmd... | attach <name> [--pane %N] | attach-reference <json> [--task T --agent A] | reference <name> <%pane> [--task T --agent A] --server s | ssh-command <user@host> <name>`
+`tmux list | panes <name> | save | restore | persistence | arrange <name> | manual <name> | reflow <name> [--server s] | start <name> [--cwd dir] [-- cmd...] | start-task <TASK> [--cwd dir] [--title text] [-- cmd...] | start-agent <TASK> <AGENT> [--cwd dir] -- cmd... | detach-agent <TASK> <AGENT> | relink-agent <TASK> <AGENT> [--pane %N] | attach <name> [--pane %N] | attach-reference <json> [--task T --agent A] | reference <name> <%pane> [--task T --agent A] --server s | ssh-command <user@host> <name>`
+
+`tmux start-task` creates the task's shared session (`fq-task-<task-id>`) without any agent: one shell pane, tagged `@focus-queue-placeholder`, holds the session open so environment setup and inspection can happen first. It is idempotent on an existing owned session. A later `tmux start-agent` joins the same session; the layout keeps the placeholder in its own *Shell* window tab so it never consumes agent capacity.
+
+`tmux detach-agent` releases the agent's claim on its task pane and clears the pane's `@focus-queue-agent` marker and the record's saved tmux runtime, without touching the pane's process: the pane stays alive, tagged `@focus-queue-detached-agent` and organized under a *Detached* tab. `tmux relink-agent` binds the agent back to a live pane — explicitly with `--pane %N`, or implicitly to the one pane still carrying its claim or detach marker — and restores the saved runtime via `setManagedRuntime`. It refuses panes another agent claims, retained completion terminals, and claiming a different pane while the agent's saved pane is still live (detach first). This is the agent-failure recovery path: detach the failed binding, restart or locate the process in a pane, then relink.
 
 `tmux start-agent` without `--cwd` starts in the agent's recorded `workspace.path` (set by `workspace <TASK> <AGENT> <path>` or by the launch). It refuses when none is recorded rather than using the caller's directory: agents sharing one directory share one Claude project, and their sessions can no longer be told apart.
 

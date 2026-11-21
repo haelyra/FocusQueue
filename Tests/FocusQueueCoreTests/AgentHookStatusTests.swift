@@ -180,7 +180,7 @@ struct AgentHookStatusTests {
     func codexSpinner() throws {
         func pane(_ id: String) throws -> TmuxPaneSnapshot {
             try #require(try TmuxPaneSnapshot.decode(
-                "fq-task-ecc-910|10|1|\(id)|20|/dev/ttys001|0|@1|0|100|40|0|0|100|40|x|||1|auto",
+                "fq-task-ecc-910|10|1|\(id)|20|/dev/ttys001|0|@1|0|100|40|0|0|100|40|x|||1|auto||",
                 executable: "/usr/bin/true").first)
         }
         let panes = try [pane("%1"), pane("%2"), pane("%3")]

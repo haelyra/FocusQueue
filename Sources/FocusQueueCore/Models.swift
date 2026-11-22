@@ -397,11 +397,14 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var claudeChatExecutable: String?
   public var kimiChatExecutable: String?
 
-  /// Newest models first within each provider group. Mirrors the current
-  /// Codex catalog (`~/.codex/models_cache.json` entries with `list`
-  /// visibility), the Claude Code model lineup and aliases, and the Kimi Code
-  /// aliases from the managed `kimi provider list --json` entries.
+  /// Newest models first within each provider group. Tracks the published
+  /// Codex and Claude Code lineups and the managed `kimi provider list --json`
+  /// aliases. CodexCatalog additionally filters choices for the installed CLI
+  /// and signed-in account.
   public static let defaultAgentModelChoices: [AgentModelChoice] = [
+    AgentModelChoice(provider: .codex, label: "gpt-6.2-astra", model: "gpt-6.2-astra"),
+    AgentModelChoice(provider: .codex, label: "gpt-6.2-sol", model: "gpt-6.2-sol"),
+    AgentModelChoice(provider: .codex, label: "gpt-6.1-terra", model: "gpt-6.1-terra"),
     AgentModelChoice(provider: .codex, label: "gpt-6.1-sol", model: "gpt-6.1-sol"),
     AgentModelChoice(provider: .codex, label: "gpt-6-astra", model: "gpt-6-astra"),
     AgentModelChoice(provider: .codex, label: "gpt-6-sol", model: "gpt-6-sol"),
@@ -409,6 +412,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     AgentModelChoice(provider: .codex, label: "gpt-5.6-sol", model: "gpt-5.6-sol"),
     AgentModelChoice(provider: .codex, label: "gpt-5.6-terra", model: "gpt-5.6-terra"),
     AgentModelChoice(provider: .codex, label: "gpt-5.6-luna", model: "gpt-5.6-luna"),
+    AgentModelChoice(provider: .claude, label: "fable-5.2", model: "claude-fable-5-2"),
     AgentModelChoice(provider: .claude, label: "fable-5.1", model: "claude-fable-5-1"),
     AgentModelChoice(provider: .claude, label: "opus-5.5", model: "claude-opus-5-5"),
     AgentModelChoice(provider: .claude, label: "sonnet-5.5", model: "claude-sonnet-5-5"),

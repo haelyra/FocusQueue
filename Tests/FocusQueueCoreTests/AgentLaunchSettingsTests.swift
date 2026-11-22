@@ -62,7 +62,8 @@ struct AgentLaunchSettingsTests {
         #expect(!models.contains("gpt-5.5"))
         #expect(!models.contains("gpt-5.2"))
         #expect(models.contains("gpt-5.4-custom"))
-        for model in ["gpt-6.1-sol", "claude-fable-5-1", "claude-haiku-5-5", "fable",
+        for model in ["gpt-6.2-astra", "gpt-6.2-sol", "gpt-6.1-terra", "gpt-6.1-sol",
+                      "claude-fable-5-2", "claude-fable-5-1", "claude-haiku-5-5", "fable",
                       "kimi-code/k3.1-pro", "kimi-code/k3.1-pro-highspeed"] {
             #expect(models.contains(model))
         }

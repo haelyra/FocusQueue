@@ -3,8 +3,8 @@ import Foundation
 /// The prompt block of `Config/contract-generator-prompt.md`, compiled in so the app
 /// and `focus-queue-session` share it without a resource lookup. A test keeps the
 /// two identical: edit the Config file, then paste its `text` block here.
-enum AgentContractGeneratorPrompt {
-    static let template = #"""
+public enum AgentContractGeneratorPrompt {
+    public static let template = #"""
 You draft two system-prompt contracts for {{PROJECT}}: agent-contract.md for engineering agents and orchestration.md for orchestrator agents (agents that plan, assign, review, and close tasks). {{OWNER}} signs them off, and every agent of that role then receives the Essentials section in every session, so each line costs attention on every task.
 
 Read the documents in {{AUTHORITY_DOCS}}. Open only the parts that state authority, decisions, gates, roles, decision rights, and recurring risks. Do not read code.

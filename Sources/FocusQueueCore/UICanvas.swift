@@ -753,6 +753,14 @@ public enum UICanvasEditSummary {
 /// The turn the app sends a reconnected agent: queued canvas feedback plus the
 /// next step, without the `await` loop a terminal agent runs.
 public enum UICanvasRelayPrompt {
+    public static var displayText: String {
+        let session = UICanvasSession(key: "<canvas>", file: "<canvas file>", taskID: "<task>", title: "<title>",
+            viewport: "desktop", status: "open", createdAt: "", updatedAt: "", chat: [], pendingFeedback: [], feedbackCounter: 0)
+        return build(session: session, items: [], recap: true)
+            + "\n\n## Applied edits\n" + nextStep([.init(kind: "edits")])
+            + "\n\n## Save and finish\n" + nextStep([.init(kind: "finish")])
+    }
+
     /// `recap` adds recent canvas chat for an agent with no saved conversation.
     public static func build(session: UICanvasSession, items: [UICanvasFeedbackItem], recap: Bool) -> String {
         var lines = [

@@ -40,4 +40,26 @@ struct BuiltInContractViewerTests {
     #expect(model.builtInContractError?.contains("Kimi") == true)
     #expect(!model.documentViewer.tabs.map(\.lastPathComponent).contains("kimi-agent-contract.md"))
   }
+  @Test("Settings opens every built-in prompt read-only and reports missing payloads")
+  func promptSettingsFlow() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("prompt-viewer-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = QueueViewModel(paths: AppPaths.live(environment: ["FOCUS_QUEUE_SUPPORT_DIR": root.path]))
+    model.builtInContractResources = Self.config.deletingLastPathComponent()
+    await model.bootstrap()
+    await model.bootstrapTail?.value
+    for prompt in BuiltInAgentPrompt.allCases {
+      #expect(model.builtInPromptAvailable(prompt))
+      model.openBuiltInPrompt(prompt)
+      #expect(model.documentViewer.tabs.contains(prompt.url(root: root)))
+      #expect(model.isBuildOwnedDocument(prompt.url(root: root)))
+      #expect(model.builtInContractError == nil)
+    }
+    #expect(model.isBuildOwnedDocument(BuiltInAgentContract.orchestrator.url(root: root)))
+    #expect(!model.isBuildOwnedDocument(root.appendingPathComponent("orchestration.md")))
+    model.builtInContractResources = nil
+    model.openBuiltInPrompt(.dataExtraction)
+    #expect(model.builtInContractError?.contains("Data extraction") == true)
+  }
+
 }

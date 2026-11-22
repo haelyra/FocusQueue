@@ -582,11 +582,28 @@ struct QueueSettingsView: View {
 
     settingsSection(
       title: "Agent contracts",
-      detail: "The rules Focus Queue itself gives agents. Every agent gets its provider's global contract; orchestrators, including QChat, also get the orchestrator rules. A project's signed contracts are in its Project tab."
+      detail: "The rules Focus Queue itself gives agents, immutable and the same in every project: each provider's global contract, plus the orchestrator rules that ride beside a project's signed orchestration contract. Orchestrators, including QChat, get those rules. A project's own signed contracts (agent-contract.md, orchestration.md) are in its Project tab and add to these."
     ) {
       VStack(alignment: .leading, spacing: 10) {
         builtInContractRow("Global contract", contracts: [.claude, .codex, .kimi])
         builtInContractRow("Orchestrator rules", contracts: [.orchestrator])
+        if let error = model.builtInContractError {
+          Text(error).font(.caption).foregroundStyle(.orange)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+    }
+
+    settingsSection(
+      title: "Built-in agent prompts",
+      detail: "Build-owned prompts for task placement, extraction, chat, document editing, daily reports, reviews, canvas feedback, and planning. Open a prompt to read its instructions and when it runs. Runtime fields use placeholders."
+    ) {
+      VStack(alignment: .leading, spacing: 6) {
+        Text("Project creation saves your project settings directly; it does not send a model prompt.")
+          .font(.caption).foregroundStyle(.secondary)
+        ForEach(BuiltInAgentPrompt.allCases) { prompt in
+          builtInPromptRow(prompt)
+        }
         if let error = model.builtInContractError {
           Text(error).font(.caption).foregroundStyle(.orange)
             .fixedSize(horizontal: false, vertical: true)
@@ -822,6 +839,25 @@ struct QueueSettingsView: View {
           .help(available ? "Read the full file. \(contract.delivery)" : "Only the installed app includes this contract.")
           .accessibilityLabel(contract == .orchestrator ? "Open the orchestrator rules" : "Open the \(contract.title) agent contract")
       }
+    }
+  }
+
+  /// One built-in prompt: title, when it runs, and a button that opens the full
+  /// text in the document viewer.
+  private func builtInPromptRow(_ prompt: BuiltInAgentPrompt) -> some View {
+    let available = model.builtInPromptAvailable(prompt)
+    return HStack(alignment: .firstTextBaseline, spacing: 6) {
+      VStack(alignment: .leading, spacing: 1) {
+        Text(prompt.title).font(.system(size: 12, weight: .semibold))
+        Text(prompt.delivery).font(.caption).foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      Spacer(minLength: 8)
+      Button("Open") { model.openBuiltInPrompt(prompt) }
+        .buttonStyle(.bordered).controlSize(.small)
+        .disabled(!available)
+        .help(available ? "Read the full prompt. \(prompt.delivery)" : "Only the installed app includes this prompt.")
+        .accessibilityLabel("Open the \(prompt.title)")
     }
   }
 

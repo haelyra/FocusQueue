@@ -2725,8 +2725,35 @@ public enum QueueAgentPrompt {
         return String(message[marker.upperBound...])
     }
 
+    /// The prompt as the Settings viewer shows it: placeholder values for the
+    /// runtime parts, the provider identity line generic. Connector evidence
+    /// contracts ride along only when a request needs them; both conditional
+    /// blocks are shown below the base prompt.
+    public static var displayText: String {
+        build(providerLabel: "<the chat's provider>",
+              message: "(the user's message, with the task snapshot the host prepared for this turn)",
+              dashboardPath: "(the selected project's dashboard path)",
+              workspace: "(the selected project's workspace)",
+              visibleOrder: [], deferredTicketIDs: [])
+            .replacingOccurrences(of: "\nUser message follows",
+                                  with: "\nWhen the request involves email or Discord, the matching connector evidence contract is appended here.\n\nUser message follows")
+            + "\n\n## Conditional email evidence contract\n\(mailContract)\n\n## Conditional Discord evidence contract\n\(discordContract)"
+    }
+
     public static func build(
         provider: AgentProvider,
+        message: String,
+        dashboardPath: String,
+        workspace: String,
+        visibleOrder: [String],
+        deferredTicketIDs: [String]
+    ) -> String {
+        build(providerLabel: provider.displayName, message: message, dashboardPath: dashboardPath,
+              workspace: workspace, visibleOrder: visibleOrder, deferredTicketIDs: deferredTicketIDs)
+    }
+
+    private static func build(
+        providerLabel: String,
         message: String,
         dashboardPath: String,
         workspace: String,
@@ -2742,7 +2769,7 @@ public enum QueueAgentPrompt {
         let mailContract = QueueAgentEvidenceVerifier.requiresMailEvidence(request) ? Self.mailContract : ""
         let discordContract = QueueAgentEvidenceVerifier.requiresDiscordEvidence(request) ? Self.discordContract : ""
         return """
-        You are the \(provider.displayName) Queue agent for Focus Queue.
+        You are the \(providerLabel) Queue agent for Focus Queue.
 
         The user controls the local queue order. You are authorized to reorder tasks when the user requests it, including choosing an order when they ask you to prioritize the queue. Use `focus-queue-session queue list` to read the current order, then apply your chosen order with a single `focus-queue-session queue reorder <TASK-ID> [<TASK-ID> ...]` listing every visible task in the new order (omitted open tasks keep their relative order at the end), or make individual adjustments with `focus-queue-session queue move <TASK-ID> top|bottom` or `focus-queue-session queue move <TASK-ID> before|after <TARGET-ID>`. Moves and reorders are temporary adjustments to the current automatic sequence: the selected recent-activity, recent-interaction, recent-output, or triage mode remains active, and the adjustment expires when that automatic order changes. Pinned tasks always remain in their newest-pin-first top tier. Use `focus-queue-session queue pin <TASK-ID>` only when the user explicitly wants a task to stay at the top until it closes, and `focus-queue-session queue unpin <TASK-ID>` to remove that durable preference. Use `focus-queue-session queue reset` only when asked to discard a temporary adjustment. Run queue list afterward to verify the resulting order matches what you report; if it does not, fix it before replying. These commands save local presentation state on this Mac and the app refreshes automatically. New tasks enter according to the active automatic mode. Do not edit state.json, task context JSON, or the canonical dashboard to reorder or pin tasks.
 

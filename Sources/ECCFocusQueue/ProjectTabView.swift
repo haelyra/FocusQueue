@@ -11,6 +11,7 @@ struct ProjectTabView: View {
   @State private var showsModuleComposer = false
   @State private var showsModuleFiles = false
   @State private var showsStepModuleFiles = false
+  @State private var statusMenuModuleID: String?
 
   private var project: ProjectDefinition? { model.selectedProject }
 
@@ -22,7 +23,6 @@ struct ProjectTabView: View {
           scheduleRow
           if model.developmentProcess != nil { projectMapRow(project) }
           processSection(project)
-          modulesSection(project)
           filesSection(project)
           progressSection(project)
         } else {
@@ -136,6 +136,11 @@ struct ProjectTabView: View {
           ForEach(process.currentSteps) { step in
             stepRow(step, status: process.status(of: step), process: process)
           }
+        }
+        // Module tracking and review live in their own phase tab.
+        if process.currentPhase == .implementation {
+          Divider()
+          modulesContent(process)
         }
         contractsRow(projectID: project.id)
         if let error = model.developmentProcessError {
@@ -317,28 +322,54 @@ struct ProjectTabView: View {
         let url = model.developmentArtifactURL(artifact)
         let file = process.fileName(forArtifact: artifact)
         let exists = url.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
-        Button {
-          if let url, exists, let projectID = project?.id {
-            model.openDocumentViewer(url, scope: .project(projectID))
+        HStack(spacing: 4) {
+          Button {
+            if let url, exists, let projectID = project?.id {
+              model.openDocumentViewer(url, scope: .project(projectID))
+            }
+          } label: {
+            Label(artifact, systemImage: checked ? "checkmark.circle.fill" : exists ? "doc.fill" : "doc")
+              .labelStyle(.titleAndIcon)
+              .font(.system(size: 10, weight: .semibold, design: .monospaced))
+              .padding(.horizontal, 6).padding(.vertical, 3)
+              .background(checked ? Color.green.opacity(0.14) : Color.primary.opacity(exists ? 0.08 : 0.03),
+                          in: Capsule())
+              .foregroundStyle(checked ? Color.green : exists ? Color.accentColor : Color.secondary)
           }
-        } label: {
-          Label(artifact, systemImage: checked ? "checkmark.circle.fill" : exists ? "doc.fill" : "doc")
-            .labelStyle(.titleAndIcon)
-            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-            .padding(.horizontal, 6).padding(.vertical, 3)
-            .background(checked ? Color.green.opacity(0.14) : Color.primary.opacity(exists ? 0.08 : 0.03),
-                        in: Capsule())
-            .foregroundStyle(checked ? Color.green : exists ? Color.accentColor : Color.secondary)
+          .buttonStyle(.plain)
+          .disabled(!exists)
+          .bulletinDraggable(exists ? url.map { BulletinDragItem.file($0) } : nil)
+          .help((checked ? "Reviewed. Click to open."
+                : exists ? "Click to open, then mark it reviewed in the viewer."
+                : "Not created yet.") + (file == artifact ? "" : " This project keeps it as \(file)."))
+          .accessibilityLabel("\(artifact), \(checked ? "reviewed" : exists ? "not reviewed" : "missing")")
+          documentInformationMenu(
+            description: Self.artifactDescription(artifact, step: step),
+            taskIDs: process.linkedTaskIDs(step: step.id),
+            guidelines: DevelopmentGuidelines.artifactGuidelines[artifact].map { [$0] } ?? [],
+            url: exists ? url : nil)
         }
-        .buttonStyle(.plain)
-        .disabled(!exists)
-        .bulletinDraggable(exists ? url.map { BulletinDragItem.file($0) } : nil)
-        .help((checked ? "Reviewed. Click to open."
-              : exists ? "Click to open, then mark it reviewed in the viewer."
-              : "Not created yet.") + (file == artifact ? "" : " This project keeps it as \(file)."))
-        .accessibilityLabel("\(artifact), \(checked ? "reviewed" : exists ? "not reviewed" : "missing")")
       }
     }
+  }
+
+  static func artifactDescription(_ artifact: String, step: DevelopmentStep) -> String {
+    let descriptions = [
+      "concept.md": "The problem, intended users, desired outcome, and boundaries of the project.",
+      "research.md": "Evidence, alternatives, unknowns, and findings that inform the project design.",
+      "design.md": "The system's components, responsibilities, and how they interact.",
+      "prd.md": "Product requirements, user behavior, scope, and measurable success criteria.",
+      "technical-design.md": "Implementation interfaces, data flows, constraints, and verification approach.",
+      "devplan.md": "The work breakdown, dependencies, acceptance gates, and delivery sequence."
+    ]
+    return descriptions[artifact] ?? step.summary
+  }
+
+  /// Information remains accessible even before the document exists.
+  private func documentInformationMenu(description: String, taskIDs: [String],
+                                       guidelines: [String], url: URL?) -> some View {
+    PlanningDocumentInformationMenu(model: model, description: description,
+      taskIDs: taskIDs, guidelines: guidelines, url: url)
   }
 
   /// Experimental: the planning guideline for each of the step's files, opened
@@ -436,36 +467,44 @@ struct ProjectTabView: View {
     case .missing: (status.hasDraft ? "draft only" : "missing", status.hasDraft ? "doc.badge.ellipsis" : "doc", .secondary)
     }
     let openable = status.hasDraft || FileManager.default.fileExists(atPath: status.fileURL.path)
-    return Button {
-      model.openAgentContract(status)
-    } label: {
-      HStack(spacing: 4) {
-        Image(systemName: image)
-        Text(status.role.fileName).font(.system(size: 10, weight: .semibold, design: .monospaced))
-        Text("· \(label)").font(.system(size: 10, weight: .medium))
-        if status.hasDraft, status.state != .missing {
-          Text("· draft").font(.system(size: 10, weight: .medium)).foregroundStyle(Color.accentColor)
+    return HStack(spacing: 2) {
+      Button {
+        model.openAgentContract(status)
+      } label: {
+        HStack(spacing: 4) {
+          Image(systemName: image)
+          Text(status.role.fileName).font(.system(size: 10, weight: .semibold, design: .monospaced))
+          Text("· \(label)").font(.system(size: 10, weight: .medium))
+          if status.hasDraft, status.state != .missing {
+            Text("· draft").font(.system(size: 10, weight: .medium)).foregroundStyle(Color.accentColor)
+          }
+          if !status.lint.isEmpty {
+            Text("· \(status.lint.count) lint").font(.system(size: 10, weight: .medium)).foregroundStyle(.orange)
+          }
         }
-        if !status.lint.isEmpty {
-          Text("· \(status.lint.count) lint").font(.system(size: 10, weight: .medium)).foregroundStyle(.orange)
+        .padding(.horizontal, 6).padding(.vertical, 3)
+        .background(color.opacity(status.state == .missing ? 0.04 : 0.12), in: Capsule())
+        .foregroundStyle(color)
+      }
+      .buttonStyle(.plain)
+      .disabled(!openable)
+      .contextMenu {
+        if status.hasDraft {
+          Button("Discard draft", systemImage: "trash") { model.discardAgentContractDraft(status) }
+        }
+        if status.signoff != nil {
+          Button("Revoke sign-off", systemImage: "xmark.seal") { model.revokeAgentContract(status.role) }
         }
       }
-      .padding(.horizontal, 6).padding(.vertical, 3)
-      .background(color.opacity(status.state == .missing ? 0.04 : 0.12), in: Capsule())
-      .foregroundStyle(color)
+      .help(contractHelp(status))
+      .accessibilityLabel("\(status.role.title) contract, \(label)\(status.hasDraft ? ", draft waiting" : "")")
+      documentInformationMenu(
+        description: status.role == .engineering
+          ? "Project-specific engineering instructions. Signed Essentials reach engineering agents, alongside their provider's built-in contract."
+          : "Project-specific orchestration instructions. Signed Essentials reach orchestrators and chat, alongside the built-in orchestrator rules.",
+        taskIDs: model.developmentProcess?.linkedTaskIDs(step: "contract") ?? [],
+        guidelines: [], url: openable ? (status.hasDraft ? status.draftURL : status.fileURL) : nil)
     }
-    .buttonStyle(.plain)
-    .disabled(!openable)
-    .contextMenu {
-      if status.hasDraft {
-        Button("Discard draft", systemImage: "trash") { model.discardAgentContractDraft(status) }
-      }
-      if status.signoff != nil {
-        Button("Revoke sign-off", systemImage: "xmark.seal") { model.revokeAgentContract(status.role) }
-      }
-    }
-    .help(contractHelp(status))
-    .accessibilityLabel("\(status.role.title) contract, \(label)\(status.hasDraft ? ", draft waiting" : "")")
   }
 
   private func contractHelp(_ status: AgentContractStatus) -> String {
@@ -484,60 +523,52 @@ struct ProjectTabView: View {
 
   // MARK: - Modules
 
-  @ViewBuilder private func modulesSection(_ project: ProjectDefinition) -> some View {
-    if let process = model.developmentProcess {
-      let files = model.developmentModuleFiles
-      let untracked = files.filter { $0.isModule && DevelopmentModuleFiles.module(for: $0, in: process.modules) == nil }
-      VStack(alignment: .leading, spacing: 8) {
-        ProjectTabHeading(
-          title: "Modules",
-          detail: "\(process.modules.filter(\.criteriaAccepted).count)/\(process.modules.count) accepted")
-        moduleFolderButton(files)
-        moduleReviewOrderPicker(process)
-        if process.modules.isEmpty && untracked.isEmpty {
-          Text("No modules yet. Optional and experimental: add a module when its design file starts, even as a stub. Success criteria never block a phase.")
-            .font(.caption).foregroundStyle(.secondary)
-        }
-        ForEach(process.modules) { module in
-          moduleRow(module, modules: process.modules)
-        }
-        if !untracked.isEmpty {
-          VStack(alignment: .leading, spacing: 4) {
-            Text("Not tracked yet").font(.caption.bold()).foregroundStyle(.secondary)
-            ForEach(untracked) { file in untrackedModuleRow(file) }
-            Text(process.effectiveModuleReviewOrder == .sequential
-              ? "Track modules in dependency order: success criteria are accepted in the order tracked."
-              : "Track modules in any order; each module's success criteria can be accepted on its own.")
-              .font(.caption2).foregroundStyle(.secondary)
-              .fixedSize(horizontal: false, vertical: true)
-          }
-          .padding(.top, process.modules.isEmpty ? 0 : 4)
-        }
-        if showsModuleComposer {
-          HStack(spacing: 6) {
-            TextField("Module name", text: $newModuleName)
-              .textFieldStyle(.roundedBorder)
-              .font(.system(size: 12))
-              .onSubmit { addModule() }
-            Button("Add") { addModule() }
-              .buttonStyle(.bordered).controlSize(.small)
-              .disabled(newModuleName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            Button("Cancel") { showsModuleComposer = false; newModuleName = "" }
-              .buttonStyle(.borderless).controlSize(.small)
-          }
-        } else {
-          Button {
-            showsModuleComposer = true
-          } label: {
-            Label("Add module", systemImage: "plus")
-              .font(.system(size: 11, weight: .semibold))
-          }
-          .buttonStyle(.borderless).controlSize(.small)
-          .accessibilityLabel("Add a module to \(project.name)")
-        }
+  /// The Modules tab: folder browser, review order, module rows, and composer.
+  @ViewBuilder private func modulesContent(_ process: DevelopmentProcess) -> some View {
+    let files = model.developmentModuleFiles
+    let untracked = files.filter { $0.isModule && DevelopmentModuleFiles.module(for: $0, in: process.modules) == nil }
+    moduleFolderButton(files)
+    moduleReviewOrderPicker(process)
+    if process.modules.isEmpty && untracked.isEmpty {
+      Text("No modules yet. Optional and experimental: add a module when its design file starts, even as a stub. Success criteria never block a phase.")
+        .font(.caption).foregroundStyle(.secondary)
+    }
+    ForEach(process.modules) { module in
+      moduleRow(module, modules: process.modules)
+    }
+    if !untracked.isEmpty {
+      VStack(alignment: .leading, spacing: 4) {
+        Text("Not tracked yet").font(.caption.bold()).foregroundStyle(.secondary)
+        ForEach(untracked) { file in untrackedModuleRow(file) }
+        Text(process.effectiveModuleReviewOrder == .sequential
+          ? "Track modules in dependency order: success criteria are accepted in the order tracked."
+          : "Track modules in any order; each module's success criteria can be accepted on its own.")
+          .font(.caption2).foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
       }
-      .padding(12)
-      .notificationSurface(radius: 16)
+      .padding(.top, process.modules.isEmpty ? 0 : 4)
+    }
+    if showsModuleComposer {
+      HStack(spacing: 6) {
+        TextField("Module name", text: $newModuleName)
+          .textFieldStyle(.roundedBorder)
+          .font(.system(size: 12))
+          .onSubmit { addModule() }
+        Button("Add") { addModule() }
+          .buttonStyle(.bordered).controlSize(.small)
+          .disabled(newModuleName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        Button("Cancel") { showsModuleComposer = false; newModuleName = "" }
+          .buttonStyle(.borderless).controlSize(.small)
+      }
+    } else {
+      Button {
+        showsModuleComposer = true
+      } label: {
+        Label("Add module", systemImage: "plus")
+          .font(.system(size: 11, weight: .semibold))
+      }
+      .buttonStyle(.borderless).controlSize(.small)
+      .accessibilityLabel("Add a module")
     }
   }
 
@@ -608,6 +639,9 @@ struct ProjectTabView: View {
       .buttonStyle(.plain)
       .help(file.url.path)
       .accessibilityLabel("Open \(file.displayTitle)")
+      documentInformationMenu(description: file.oneLine.isEmpty
+        ? "The module's responsibilities, design, interfaces, and success criteria." : file.oneLine,
+        taskIDs: [], guidelines: [DevelopmentGuidelines.moduleGuideline], url: file.url)
       Button("Track") { model.trackDevelopmentModuleFile(file) }
         .buttonStyle(.bordered).controlSize(.mini)
         .help("Add \(file.displayTitle) to the success-criteria review")
@@ -633,55 +667,102 @@ struct ProjectTabView: View {
   }
 
   private func moduleRow(_ module: DevelopmentModule, modules: [DevelopmentModule]) -> some View {
+    let status = model.developmentModuleStatus(module)
     let sequential = model.developmentProcess?.effectiveModuleReviewOrder == .sequential
     let blockedBy = sequential
       ? modules.prefix(while: { $0.id != module.id }).first { !$0.criteriaAccepted } : nil
     return VStack(alignment: .leading, spacing: 4) {
       HStack(spacing: 8) {
-        Image(systemName: module.criteriaAccepted ? "checkmark.seal.fill" : "seal")
-          .foregroundStyle(module.criteriaAccepted ? Color.green : Color.secondary)
         Text(Self.moduleTitle(module)).font(.system(size: 12, weight: .semibold))
         Spacer()
-        if !module.criteriaAccepted {
-          Button("Accept criteria") {
-            model.acceptDevelopmentModuleCriteria(moduleID: module.id)
-          }
-          .buttonStyle(.bordered).controlSize(.mini)
-          .disabled(blockedBy != nil)
-          .help(blockedBy.map { "Accept \($0.name) first; reviews are sequential." }
-            ?? "Accept this module's success criteria")
-          .accessibilityLabel("Accept success criteria for \(module.name)")
-        }
+        moduleStatusMenu(module, status: status, blockedBy: blockedBy)
       }
-      HStack(spacing: 12) {
-        Toggle("Implemented", isOn: Binding(
-          get: { module.implemented },
-          set: { model.setDevelopmentModuleImplemented($0, moduleID: module.id) }))
-        Toggle("QA verified", isOn: Binding(
-          get: { module.qaAccepted },
-          set: { model.setDevelopmentModuleQAAccepted($0, moduleID: module.id) }))
-        .disabled(!module.implemented)
-      }
-      .toggleStyle(.checkbox)
-      .font(.caption)
-      .controlSize(.small)
       if let file = module.file, !file.isEmpty {
         let url = model.developmentModuleFileURL(module)
-        Button { url.map(model.openDevelopmentModuleFile) } label: {
-          Label(url.map { (Self.moduleFileLabel($0)) } ?? file,
-                systemImage: url == nil ? "doc" : "doc.text")
-            .labelStyle(.titleAndIcon)
-            .font(.system(size: 10, design: .monospaced))
-            .foregroundStyle(url == nil ? Color.secondary.opacity(0.6) : Color.accentColor)
-            .lineLimit(1).truncationMode(.middle)
+        HStack(spacing: 4) {
+          Button { url.map(model.openDevelopmentModuleFile) } label: {
+            Label(url.map { (Self.moduleFileLabel($0)) } ?? file,
+                  systemImage: url == nil ? "doc" : "doc.text")
+              .labelStyle(.titleAndIcon)
+              .font(.system(size: 10, design: .monospaced))
+              .foregroundStyle(url == nil ? Color.secondary.opacity(0.6) : Color.accentColor)
+              .lineLimit(1).truncationMode(.middle)
+          }
+          .buttonStyle(.plain)
+          .disabled(url == nil)
+          .help(url.map { "Open \($0.path)" } ?? "Not written yet: \(file)")
+          .accessibilityLabel(url == nil ? "\(file), not written yet" : "Open \(file)")
+          documentInformationMenu(
+            description: "The module's responsibilities, interfaces, design, and success criteria. Criteria review is separate from implementation and QA.",
+            taskIDs: model.developmentProcess?.linkedTaskIDs(module: module.id) ?? [],
+            guidelines: [DevelopmentGuidelines.moduleGuideline], url: url)
         }
-        .buttonStyle(.plain)
-        .disabled(url == nil)
-        .help(url.map { "Open \($0.path)" } ?? "Not written yet: \(file)")
-        .accessibilityLabel(url == nil ? "\(file), not written yet" : "Open \(file)")
       }
     }
     .padding(.vertical, 2)
+  }
+
+  /// The module's place in the structured-output task cycle, as a colored
+  /// indicator that drops the options down on click. Picking an earlier state
+  /// undoes the later ones; criteria acceptance keeps the sequential gate.
+  private func moduleStatusMenu(_ module: DevelopmentModule, status: DevelopmentModuleStatus,
+                                blockedBy: DevelopmentModule?) -> some View {
+    Button {
+      statusMenuModuleID = module.id
+    } label: {
+      HStack(spacing: 5) {
+        Image(systemName: status.systemImage)
+        Text(status.title).font(.system(size: 10, weight: .semibold))
+        Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
+      }
+      .padding(.horizontal, 7).padding(.vertical, 3)
+      .background(Self.moduleStatusColor(status).opacity(0.14), in: Capsule())
+      .foregroundStyle(Self.moduleStatusColor(status))
+      .contentShape(Capsule())
+    }
+    .buttonStyle(.plain)
+    .popover(isPresented: Binding(
+      get: { statusMenuModuleID == module.id },
+      set: { statusMenuModuleID = $0 ? module.id : nil }), arrowEdge: .top) {
+      VStack(alignment: .leading, spacing: 4) {
+        Text("Module status").font(.caption.bold()).foregroundStyle(.secondary)
+        ForEach(DevelopmentModuleStatus.allCases, id: \.self) { option in
+          Button {
+            model.setDevelopmentModuleStatus(option, moduleID: module.id)
+            statusMenuModuleID = nil
+          } label: {
+            HStack(spacing: 8) {
+              Image(systemName: option.systemImage).foregroundStyle(Self.moduleStatusColor(option))
+              Text(option.title)
+              Spacer()
+              if option == status { Image(systemName: "checkmark") }
+            }
+            .padding(.horizontal, 6).padding(.vertical, 4)
+            .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .disabled(option == .criteriaAccepted && blockedBy != nil)
+        }
+        Divider()
+        Text(blockedBy.map { "Accept \($0.name)'s criteria first; reviews are sequential." }
+          ?? "Choose an earlier state to undo. Criteria acceptance does not verify implementation or QA.")
+          .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+      }
+      .padding(10).frame(width: 240)
+    }
+    .fixedSize()
+    .help("Module status. Click to choose a state; an earlier state undoes completion.")
+    .accessibilityLabel("Status of \(module.name): \(status.title)")
+  }
+
+  static func moduleStatusColor(_ status: DevelopmentModuleStatus) -> Color {
+    switch status {
+    case .planned: .secondary
+    case .inProgress: .orange
+    case .implemented: .blue
+    case .qaVerified: .purple
+    case .criteriaAccepted: .green
+    }
   }
 
   /// `M6 · Context storage` for catalog IDs; app-added modules keep their name.

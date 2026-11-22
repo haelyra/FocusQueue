@@ -1137,7 +1137,9 @@ struct QueueView: View {
         ? "\(model.chatAgentProvider.displayName) working"
         : "\(model.chatAgentProvider.displayName) ready"
     case .project:
-      model.developmentProcess.map { "\($0.currentPhase.title) phase" } ?? "Project"
+      model.developmentProcess.map {
+        $0.currentPhase == .implementation ? "Modules" : "\($0.currentPhase.title) phase"
+      } ?? "Project"
     case .board: "\(model.visibleBulletinPins.count) pinned"
     }
   }

@@ -30,13 +30,9 @@ public actor PushReviewer {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let id = UUID().uuidString
         let promptURL = directory.appendingPathComponent("\(id).prompt.txt")
-        let prompt = """
-        Perform a brief read-only pre-push review of task \(context.ticketID), assignment \(subtask.title).
-        Initial request: \(subtask.initialPrompt ?? subtask.title)
-        Read the central plan at \(context.planPath). Inspect git diff \(base)..\(head) in \(workspace.path), including the file list and relevant contents.
-        Find accidental additions, unrelated edits, generated files, local context or logs, and changes outside the assignment. Preserve legitimate user and other-agent work. Do not edit, commit, push, reset, or change task status.
-        Start the final response with exactly ACCEPT or REJECT on its own line, followed by a concise explanation and specific corrections. ACCEPT only after actually inspecting the diff. On REJECT, tell the calling agent precisely what to fix and ask it to run review-push again before pushing.
-        """
+        let prompt = Self.prompt(taskID: context.ticketID, assignment: subtask.title,
+            request: subtask.initialPrompt ?? subtask.title, planPath: context.planPath,
+            base: base, head: head, workspacePath: workspace.path)
         try Data(prompt.utf8).write(to: promptURL, options: .atomic)
         PromptUsageMetrics.record(PromptUsageEvent(source: "push_review", component: "app_context",
             provider: subtask.provider.rawValue, taskID: context.ticketID,
@@ -61,6 +57,17 @@ public actor PushReviewer {
                 : "The checkout changed during review. Review the new commit before pushing.", reviewedAt: Date())
         try JSONEncoder().encode(receipt).write(to: directory.appendingPathComponent("\(id).json"), options: .atomic)
         return receipt
+    }
+
+    public static func prompt(taskID: String, assignment: String, request: String, planPath: String,
+                              base: String, head: String, workspacePath: String) -> String {
+        """
+        Perform a brief read-only pre-push review of task \(taskID), assignment \(assignment).
+        Initial request: \(request)
+        Read the central plan at \(planPath). Inspect git diff \(base)..\(head) in \(workspacePath), including the file list and relevant contents.
+        Find accidental additions, unrelated edits, generated files, local context or logs, and changes outside the assignment. Preserve legitimate user and other-agent work. Do not edit, commit, push, reset, or change task status.
+        Start the final response with exactly ACCEPT or REJECT on its own line, followed by a concise explanation and specific corrections. ACCEPT only after actually inspecting the diff. On REJECT, tell the calling agent precisely what to fix and ask it to run review-push again before pushing.
+        """
     }
 
     private func git(_ arguments: [String], path: String) async throws -> String {

@@ -467,7 +467,7 @@ public enum ProjectMapBuilder {
 
 /// Maps phase names onto the development plan's own sections. The plan
 /// (`## Phase 1 — …`) and the development process (Planning, Phase 0,
-/// Phase 1+, Phase N−1, Phase N) name phases differently; the map shows only
+/// Modules, Phase N−1, Phase N) name phases differently; the map shows only
 /// the plan's sections, so process phases are translated here.
 struct PlanPhaseSections {
     let outline: DevelopmentPlanOutline
@@ -511,7 +511,7 @@ struct PlanPhaseSections {
         case .phase0:
             return section(named: "0")
         case .implementation:
-            // "Phase 1+" is every build phase: use the earliest one with open work.
+            // The Modules phase is every build phase: use the earliest one with open work.
             let open = build.first { entry in
                 outline.leaves.contains { $0.sectionIndex == entry.index && isOpen($0.id) }
             }

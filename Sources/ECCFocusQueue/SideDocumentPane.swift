@@ -306,10 +306,10 @@ struct SideDocumentPane: View {
                               ? "Save this draft, replace the live contract with it, and sign it off"
                               : "Save and sign off: the next launch or chat turn gets this version")
                 }
-                if document.isFileURL, queue.isBundledGuideline(document) {
+                if document.isFileURL, queue.isBuildOwnedDocument(document) {
                     Label("Bundled · read-only", systemImage: "lock")
                         .font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
-                        .help("A bundled planning guideline. Owner edits and sign-off for guidelines are not built yet.")
+                        .help("This build owns this document. Project-specific contracts can be edited in the Project tab.")
                 } else if document.isFileURL, store.loadedText(for: document) != nil {
                     Button {
                         if editSession != nil { store.discardEdit(document) }
@@ -560,14 +560,15 @@ struct DocumentConversationView: View {
                 get: { model.route.kind }, set: { model.setRecipient($0) })) {
                 Text("Ephemeral reader").tag(DocumentChatRoute.Kind.ephemeralReader)
                 Text("Creating agent fork").tag(DocumentChatRoute.Kind.creatorFork)
-                    .disabled(model.creator == nil && model.route.kind != .creatorFork)
+                    .disabled(model.isBuildOwnedDocument || (model.creator == nil && model.route.kind != .creatorFork))
                 Text(model.isEditableDocument ? "Document editor" : "New agent").tag(DocumentChatRoute.Kind.newAgent)
+                    .disabled(model.isBuildOwnedDocument)
             }
             .font(.caption)
             .disabled(!model.canChooseProvider || model.isResponding)
             .help("Choose who answers. Clear Chat to change a started conversation's recipient.")
             recipient
-            if model.lockedRoute == nil, model.route.kind != .creatorFork {
+            if model.lockedRoute == nil, model.route.kind != .creatorFork, !model.isBuildOwnedDocument {
                 Button {
                     Task { await model.reconnectToCreator() }
                 } label: {

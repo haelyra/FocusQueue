@@ -1042,8 +1042,9 @@ final class QueueViewModel {
   }
 
   private func finishBootstrap() async {
-    // Readable copies of the contracts this build gives agents, for Settings and links.
+    // Readable copies of the contracts and prompts this build gives agents, for Settings and links.
     BuiltInAgentContract.writeAll(root: paths.supportDirectory, resources: builtInContractResources)
+    BuiltInAgentPrompt.writeAll(root: paths.supportDirectory, resources: builtInContractResources)
     // Task and agent menus show whether each item is already on the bulletin board.
     loadBulletinPinsIfNeeded()
     do {
@@ -3548,6 +3549,22 @@ final class QueueViewModel {
     }
   }
 
+  /// The module's place in the lifecycle, derived from its flags plus whether a
+  /// linked task is still open.
+  func developmentModuleStatus(_ module: DevelopmentModule) -> DevelopmentModuleStatus {
+    let linked = developmentProcess?.linkedTaskIDs(module: module.id) ?? []
+    let hasOpen = linked.contains { id in
+      dashboard.tickets.first { $0.id == id }?.isOpen ?? false
+    }
+    return DevelopmentModuleStatus(of: module, hasOpenLinkedWork: hasOpen)
+  }
+
+  /// One status move; picking an earlier state is the undo. Sequential review
+  /// still gates criteria acceptance and reports the rejection in the tab.
+  func setDevelopmentModuleStatus(_ status: DevelopmentModuleStatus, moduleID: String) {
+    mutateDevelopmentProcess { try $0.setModuleStatus(status, moduleID: moduleID, projectID: $1) }
+  }
+
   func dismissDevelopmentProcessError() { developmentProcessError = nil }
 
   /// The development-process artifact a viewer document belongs to, so the
@@ -3601,6 +3618,10 @@ final class QueueViewModel {
     } catch {
       developmentProcessError = "Planning guideline: \(error.localizedDescription)"
     }
+  }
+
+  func isBuildOwnedDocument(_ url: URL) -> Bool {
+    isBundledGuideline(url) || BuiltInAgentPrompt.isReadOnlyCopy(url, root: paths.supportDirectory)
   }
 
   /// Bundled guidelines are read-only: owner overrides and sign-off are not built yet.
@@ -8536,6 +8557,25 @@ extension QueueViewModel {
 
   func builtInContractAvailable(_ contract: BuiltInAgentContract) -> Bool {
     contract.isAvailable(resources: builtInContractResources)
+  }
+
+  func builtInPromptAvailable(_ prompt: BuiltInAgentPrompt) -> Bool {
+    prompt.isAvailable(resources: builtInContractResources)
+  }
+
+  /// Opens a prompt Focus Queue sends to a model, refreshed from this build, in
+  /// the document viewer.
+  func openBuiltInPrompt(_ prompt: BuiltInAgentPrompt) {
+    do {
+      guard let url = try prompt.write(root: paths.supportDirectory, resources: builtInContractResources) else {
+        builtInContractError = "This build does not include the \(prompt.title)."
+        return
+      }
+      builtInContractError = nil
+      openDocumentViewer(url, scope: nil)
+    } catch {
+      builtInContractError = "Could not write the \(prompt.title): \(error.localizedDescription)"
+    }
   }
 
   /// Opens a contract Focus Queue gives agents, refreshed from this build, in

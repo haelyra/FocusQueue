@@ -82,6 +82,29 @@ struct WalkthroughTests {
     #expect(model.agentModelChoices(for: .claude).isEmpty == false)
   }
 
+  @Test("Current provider models can be selected after loading a saved workspace")
+  func currentModelPickerWorkflow() async throws {
+    let codexModels = ["gpt-6.2-astra", "gpt-6.2-sol", "gpt-6.1-terra"]
+    let (model, _, root) = try await model(catalog: CodexCatalog(models: codexModels))
+    defer { try? FileManager.default.removeItem(at: root) }
+    await model.refreshProviderAccounts()
+    for name in codexModels {
+      #expect(model.agentModelChoices(for: .codex).contains { $0.model == name })
+      #expect(model.placementModelChoices(for: .codex).contains { $0.model == name })
+      model.setChatModel(name, for: .codex)
+      #expect(model.effectiveChatModel(for: .codex) == name)
+      model.setDefaultAgentModel(name, for: .codex)
+      #expect(model.defaultAgentModel(for: .codex) == name)
+    }
+    let fable = "claude-fable-5-2"
+    #expect(model.agentModelChoices(for: .claude).first?.model == fable)
+    #expect(model.placementModelChoices(for: .claude).contains { $0.model == fable })
+    model.setChatModel(fable, for: .claude)
+    #expect(model.effectiveChatModel(for: .claude) == fable)
+    model.setDefaultAgentModel(fable, for: .claude)
+    #expect(model.defaultAgentModel(for: .claude) == fable)
+  }
+
   @Test("Skipping ends the tour for good and completes first-run setup")
   func skipPersists() async throws {
     let (model, paths, root) = await freshModel()

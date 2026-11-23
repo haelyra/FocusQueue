@@ -173,8 +173,8 @@ func agentModelChoiceConfiguration() throws {
     AppConfiguration.self, from: JSONEncoder().encode(config))
   #expect(roundTripped.agentModelChoices == config.agentModelChoices)
   #expect(AppConfiguration.defaultAgentModelChoices.map(\.provider)
-    == Array(repeating: .codex, count: 7)
-      + Array(repeating: .claude, count: 12)
+    == Array(repeating: .codex, count: 10)
+      + Array(repeating: .claude, count: 13)
       + Array(repeating: .kimi, count: 6))
   // Every built-in choice names a real model, and each provider's standard model is listed.
   #expect(!AppConfiguration.defaultAgentModelChoices.contains { $0.model == nil })

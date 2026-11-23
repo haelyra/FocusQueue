@@ -4735,7 +4735,7 @@ struct QueueViewModelTests {
   func quotaFallbackModelTiers() {
     let choices = AppConfiguration.defaultAgentModelChoices
     // Flagship to flagship, fast to fast, mid to mid.
-    #expect(QueueViewModel.quotaFallbackModel(from: "claude-opus-5-5", to: .codex, choices: choices) == "gpt-6.1-sol")
+    #expect(QueueViewModel.quotaFallbackModel(from: "claude-opus-5-5", to: .codex, choices: choices) == "gpt-6.2-sol")
     #expect(QueueViewModel.quotaFallbackModel(from: "gpt-6-luna", to: .claude, choices: choices) == "claude-haiku-5-5")
     #expect(QueueViewModel.quotaFallbackModel(from: "claude-sonnet-5-5", to: .kimi, choices: choices) == "kimi-code/k3")
     // No source model or no tier match launches the provider's default.

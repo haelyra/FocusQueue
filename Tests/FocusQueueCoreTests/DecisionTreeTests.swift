@@ -288,9 +288,12 @@ func decisionClaudeSnapshotAndFork() async throws {
 
     // A finished reply is kept when the decision is recorded from outside the agent's turn.
     let finished = fixture.root.appendingPathComponent("finished.jsonl")
-    try Data((#"{"type":"user","sessionId":"s","message":{"role":"user","content":"hi"}}"# + "\n"
-        + #"{"type":"assistant","sessionId":"s","message":{"role":"assistant","content":[{"type":"text","text":"noted"}]}}"# + "\n"
-        + #"{"type":"api-request","sessionId":"s"}"# + "\n").utf8).write(to: finished)
+    let finishedLines: [String] = [
+        #"{"type":"user","sessionId":"s","message":{"role":"user","content":"hi"}}"#,
+        #"{"type":"assistant","sessionId":"s","message":{"role":"assistant","content":[{"type":"text","text":"noted"}]}}"#,
+        #"{"type":"api-request","sessionId":"s"}"#,
+    ]
+    try Data((finishedLines.joined(separator: "\n") + "\n").utf8).write(to: finished)
     #expect(try DecisionConversations.snapshotClaude(transcript: finished, destination: snapshot) == 2)
 }
 

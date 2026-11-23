@@ -37,7 +37,7 @@ struct UICanvasRadioTests {
     let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 800, height: 600),
                         configuration: UICanvasWebStage.configuration(coordinator: coordinator))
     view.navigationDelegate = coordinator
-    defer { UICanvasWebStage.dismantleNSView(view, coordinator: coordinator) }
+    defer { UICanvasWebStage.teardown(view, coordinator: coordinator) }
     model.attach(view)
     try await eventually { model.renderedViewport.width > 0 }
     model.setMode(.interact)

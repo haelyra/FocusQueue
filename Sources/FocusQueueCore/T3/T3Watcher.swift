@@ -36,6 +36,19 @@ public actor T3Watcher {
     private var lastRows: [String: RowState] = [:]
     private(set) public var isRunning = false
 
+    public static let heartbeatTouchSeconds: Double = 60
+    private var heartbeatTouchedAt: [String: Date] = [:]
+
+    private func touchHeartbeat(_ location: T3SubtaskLocation, threadId: String) async {
+        let now = clock.now()
+        if let last = heartbeatTouchedAt[threadId], now.timeIntervalSince(last) < Self.heartbeatTouchSeconds { return }
+        heartbeatTouchedAt[threadId] = now
+        _ = try? await store.mutate(location) { subtask in
+            guard subtask.status == .working else { return }
+            subtask.lastHeartbeatAt = now
+        }
+    }
+
     private struct RowState: Equatable {
         var status: String
         var latestRunId: String?
@@ -183,11 +196,13 @@ public actor T3Watcher {
 
     private func pollOnce(generation: Int) async {
         guard !projectIds.isEmpty else { return }
-        let known = Set(((try? await store.t3Subtasks()) ?? []).compactMap { record -> String? in
+        var locations: [String: T3SubtaskLocation] = [:]
+        for record in (try? await store.t3Subtasks()) ?? [] {
             guard let reference = record.subtask.t3, reference.environmentId == environmentId,
-                  record.subtask.status != .completed else { return nil }
-            return reference.threadId
-        })
+                  record.subtask.status != .completed else { continue }
+            locations[reference.threadId] = record.location
+        }
+        let known = Set(locations.keys)
         for projectId in projectIds {
             let rows: [T3ThreadRow]
             do { rows = try await tools.list(projectId: projectId) }
@@ -206,7 +221,13 @@ public actor T3Watcher {
                 if let previous, previous != state, known.contains(row.threadId) {
                     await target.markDirty(row.threadId)
                 }
+                // A long turn can run silently. Its row still says running, so keep
+                // the agent's heartbeat fresh without reading the thread.
+                if T3RunStatus.active.contains(row.status), let location = locations[row.threadId] {
+                    await touchHeartbeat(location, threadId: row.threadId)
+                }
             }
         }
     }
 }
+extension T3Refresher: T3RefreshTarget {}

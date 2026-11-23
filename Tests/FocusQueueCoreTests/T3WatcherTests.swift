@@ -139,3 +139,17 @@ private actor RowBox {
     init(_ value: [T3ThreadRow]) { self.value = value }
     func set(_ value: [T3ThreadRow]) { self.value = value }
 }
+
+@Suite("T3 watcher heartbeat")
+struct T3WatcherHeartbeatTests {
+    @Test("A running row keeps a working agent's heartbeat fresh")
+    func heartbeat() async throws {
+        let h = WatcherHarness()
+        await h.tools.set { $0.onList = { _ in [T3ThreadRow(threadId: "THREAD_1", title: "t", status: "running")] } }
+        await h.watcher.start(environmentId: T3Samples.env, projectIds: ["PROJECT_1"])
+        let location = T3SubtaskLocation(ticketID: "FOC-1", subtaskID: "SUB_1")
+        #expect(await eventually { (try? await h.store.subtask(location))??.lastHeartbeatAt == h.clock.now() })
+        await h.watcher.stop()
+    }
+}
+

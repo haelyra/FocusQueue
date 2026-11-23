@@ -1,14 +1,7 @@
 import Foundation
 
 /// The provider, model, and options a T3 agent launches with.
-public struct T3LaunchChoice: Equatable, Sendable {
-    public var instanceId: String
-    public var model: String
-    public var options: [String: JSONValue]
-    public init(instanceId: String, model: String, options: [String: JSONValue] = [:]) {
-        self.instanceId = instanceId; self.model = model; self.options = options
-    }
-}
+public typealias T3LaunchChoice = T3ModelChoice
 
 /// Validates a launch choice against what T3 Code currently offers. `T3ProviderCatalog` conforms.
 public protocol T3ModelSelecting: Sendable {
@@ -500,3 +493,6 @@ public actor T3Runtime {
         }.compactMap { $0.subtask.workspace?.path })
     }
 }
+
+extension T3ProjectResolver: T3ProjectResolving {}
+extension T3ProviderCatalog: T3ModelSelecting {}

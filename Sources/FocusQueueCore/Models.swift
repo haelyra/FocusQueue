@@ -2011,6 +2011,16 @@ public struct AgentLaunchPreset: Codable, Equatable, Sendable {
   /// Opt-in: when this agent's provider runs out of credits, continue the job
   /// as a fresh session on the next provider that has credits available.
   public var continueOnQuota: Bool?
+  /// The T3 Code provider instance, model, and options, when the T3 runtime launches this agent.
+  public var t3InstanceId: String?
+  public var t3Model: String?
+  public var t3Options: [String: JSONValue]?
+
+  /// The T3 launch choice this preset names, if any.
+  public var t3Choice: T3LaunchChoice? {
+    guard let t3InstanceId, let t3Model else { return nil }
+    return T3LaunchChoice(instanceId: t3InstanceId, model: t3Model, options: t3Options ?? [:])
+  }
 
   public init(provider: AgentProvider, model: String? = nil, effort: String? = nil,
               workspacePolicy: AgentWorkspacePolicy? = nil, useTmux: Bool? = nil,

@@ -408,6 +408,16 @@ final class QueueViewModel {
   @ObservationIgnored private let taskContextStore: TaskContextStore
   @ObservationIgnored private let taskWorktreeManager = TaskWorktreeManager()
   @ObservationIgnored private let taskAgentLauncher: TaskAgentLauncher
+  /// T3 Code services, created on first use so terminal-only setups never touch the Keychain.
+  @ObservationIgnored private var t3Services: T3Services?
+  @ObservationIgnored private var t3StatusTask: Task<Void, Never>?
+  @ObservationIgnored private var t3SignInTask: Task<Void, Never>?
+  private(set) var t3Status: T3ConnectionStatus = .disconnected
+  private(set) var t3ConnectionState: T3ConnectionState?
+  private(set) var t3Providers: [T3ProviderInfo] = []
+  private(set) var t3Message: String?
+  /// Open questions loaded for a T3 agent, keyed by subtask key.
+  private(set) var t3Questions: [String: T3PendingRequest] = [:]
   @ObservationIgnored private let taskPlacementSuggester: any TaskPlacementSuggesting
   @ObservationIgnored private let agentLaunchLogger: AgentLaunchLogger
   @ObservationIgnored private let reportHistoryRepository: JSONDailyReportHistoryRepository
@@ -947,6 +957,7 @@ final class QueueViewModel {
     // seconds. Reconcile them after the panel already renders the saved queue.
     bootstrapTail = Task { @MainActor [weak self] in
       await self?.finishBootstrap()
+      self?.startT3IfConfigured()
     }
     // Checked at every launch so the sign-in gate covers installs that finished the tour without one.
     if walkthrough == nil {
@@ -1661,7 +1672,8 @@ final class QueueViewModel {
       initialPrompt: prompt, modelName: preset.model, effort: preset.effort,
       workspacePolicy: preset.workspacePolicy ?? .isolatedCommittedSnapshot,
       pluginOverrides: preset.pluginOverrides ?? [:],
-      continueOnQuota: preset.continueOnQuota ?? false)
+      continueOnQuota: preset.continueOnQuota ?? false,
+      t3Choice: preset.t3Choice)
     rememberAgentLaunch(preset)
   }
 
@@ -3266,8 +3278,9 @@ final class QueueViewModel {
     }
     if panelVisible, lastIdentityRefresh == nil || Date().timeIntervalSince(lastIdentityRefresh!) >= 15 {
       lastIdentityRefresh = Date()
+      // T3 agents report through T3 Code, never through terminal panes.
       let observed = tickets.flatMap { ticket in
-        visibleAgents(for: ticket.id).map { (ticketID: ticket.id, subtask: $0) }
+        visibleAgents(for: ticket.id).filter { !$0.isT3 }.map { (ticketID: ticket.id, subtask: $0) }
       }
       // A finished agent keeps running and can be prompted again; only its
       // transcript shows that it went back to work. Older builds archived it
@@ -5097,6 +5110,10 @@ final class QueueViewModel {
   }
 
   func openSubtask(_ subtask: TaskSubtask, for ticket: DashboardTicket, showResult: Bool = true) {
+    if subtask.isT3, !(showResult && subtask.status == .completed && subtask.agentRemovedAt != nil) {
+      openT3Thread(subtask, for: ticket)
+      return
+    }
     guard !subtask.isAssignmentOnly else {
       actionMessages[ticket.id] = "Choose an agent below this subtask, or use New agent to start one."
       return
@@ -5369,6 +5386,7 @@ final class QueueViewModel {
     role: AgentContractRole = .engineering,
     continueOnQuota: Bool = false,
     opensTerminal: Bool = true,
+    t3Choice: T3LaunchChoice? = nil,
     completion: (@MainActor (Bool) -> Void)? = nil
   ) {
     let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5377,6 +5395,16 @@ final class QueueViewModel {
     let workDescription = String((suppliedDescription.isEmpty
       ? (promptDescription.isEmpty ? (includePrompt ? title : "") : promptDescription)
       : suppliedDescription).prefix(2_000))
+    // The global runtime choice decides where new agents run; existing agents keep theirs.
+    if config.agentRuntime == .t3 {
+      guard !title.isEmpty else { completion?(false); return }
+      launchT3Agent(
+        for: ticket, title: title, provider: provider, repositoryPath: repositoryPath,
+        workDescription: workDescription, includePrompt: includePrompt, initialPrompt: initialPrompt,
+        tracksCompletion: tracksCompletion, subtaskID: subtaskID, parentSubtaskID: parentSubtaskID,
+        choice: t3Choice, modelName: modelName, effort: effort, role: role, completion: completion)
+      return
+    }
     guard useTmux || !config.wezTerm.terminalApp.requiresTmux else {
       actionMessages[ticket.id] = "Agents run in tmux, which is not installed. Install it with brew install tmux, then try again."
       completion?(false)
@@ -6080,10 +6108,12 @@ final class QueueViewModel {
       }
       guard let completedAt, Date().timeIntervalSince(completedAt) < 24 * 60 * 60 else { return }
     }
+    // T3 agents stop first; a checkout is touched only once T3 Code confirms its agent stopped.
+    let retainedT3Checkouts = await finishT3Agents(ticketID: ticket.id)
     let cleanup = TaskCompletionCleanup(root: paths.supportDirectory,
       projectRepositories: config.projects.flatMap { [$0.repositoryPath, $0.workspacePath] },
       tmuxExecutable: config.tmuxExecutable)
-    let report = await cleanup.run(ticketID: ticket.id)
+    let report = await cleanup.run(ticketID: ticket.id, retaining: retainedT3Checkouts)
     closureMessages[ticket.id] = report.isClean ? nil : report.summary
     actionMessages[ticket.id] = report.summary
     if let context = try? await taskContextStore.load(ticketID: ticket.id) {
@@ -6619,8 +6649,10 @@ final class QueueViewModel {
       persistLocalState()
       actionMessages[ticket.id] = "Agent archived. Its assignment, conversation, and workspace history are retained."
       // List removal is independent of process cleanup and completion approval.
-      do { try await taskAgentLauncher.closeRuntime(subtask: subtask, configuration: config.wezTerm) }
-      catch { actionMessages[ticket.id] = "Agent archived. \(error.localizedDescription)" }
+      if !subtask.isT3 {
+        do { try await taskAgentLauncher.closeRuntime(subtask: subtask, configuration: config.wezTerm) }
+        catch { actionMessages[ticket.id] = "Agent archived. \(error.localizedDescription)" }
+      }
       if subtask.status == .completed {
         let removed = taskContexts[ticket.id]?.subtasks.first { $0.id == subtask.id } ?? subtask
         try await TaskMaintenance(root: paths.supportDirectory).requireInactive(removed)
@@ -6725,7 +6757,10 @@ final class QueueViewModel {
   /// Pause and Resume drive the provider TUI through its managed tmux pane;
   /// WezTerm-only and external agents keep their own terminal controls.
   func canPause(_ subtask: TaskSubtask) -> Bool {
-    subtask.tmux != nil && subtask.hasAgent && subtask.status != .completed && subtask.agentRemovedAt == nil
+    if let reference = subtask.t3 {
+      return reference.reachability == .reachable && subtask.status != .completed && subtask.agentRemovedAt == nil
+    }
+    return subtask.tmux != nil && subtask.hasAgent && subtask.status != .completed && subtask.agentRemovedAt == nil
   }
 
   func isChangingPause(_ subtask: TaskSubtask, ticketID: String) -> Bool {
@@ -6744,6 +6779,24 @@ final class QueueViewModel {
     let key = Self.subtaskKey(ticketID: ticket.id, subtaskID: subtask.id)
     guard pauseChangingSubtaskIDs.insert(key).inserted else { return }
     agentSessionErrors[key] = nil
+    if subtask.t3 != nil {
+      Task { @MainActor in
+        defer { pauseChangingSubtaskIDs.remove(key) }
+        let runtime = await t3().runtime
+        let location = T3SubtaskLocation(ticketID: ticket.id, subtaskID: subtask.id)
+        do {
+          if pause { try await runtime.pause(location) } else { try await runtime.resume(location) }
+          actionMessages[ticket.id] = pause
+            ? "Paused \(subtask.title). Press Resume to continue the same conversation."
+            : "Resumed \(subtask.title)."
+        } catch {
+          agentSessionErrors[key] = error.localizedDescription
+          actionMessages[ticket.id] = error.localizedDescription
+        }
+        if let context = try? await taskContextStore.load(ticketID: ticket.id) { taskContexts[ticket.id] = context }
+      }
+      return
+    }
     Task {
       defer { pauseChangingSubtaskIDs.remove(key) }
       let controller = AgentPauseController(store: taskContextStore)
@@ -8710,4 +8763,352 @@ struct BulletinPinFeedback: Equatable {
   let id = UUID()
   let state: State
   let message: String
+}
+
+// MARK: - T3 Code runtime
+
+extension QueueViewModel {
+  /// The T3 Code services, created and started on first use.
+  func t3() async -> T3Services {
+    if let t3Services { return t3Services }
+    let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+    let logURL = paths.supportDirectory.appendingPathComponent("logs/t3-runtime.log")
+    let services = T3Services.live(
+      serverURL: config.t3ServerURL, supportDirectory: paths.supportDirectory,
+      contextStore: taskContextStore, worktreeManager: taskWorktreeManager, clientVersion: version,
+      log: { line in Self.appendT3Log(line, to: logURL) })
+    t3Services = services
+    observeT3(services)
+    await services.start()
+    return services
+  }
+
+  private nonisolated static func appendT3Log(_ line: String, to url: URL) {
+    let entry = "\(ISO8601DateFormatter().string(from: Date())) \(line)\n"
+    try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    if let handle = try? FileHandle(forWritingTo: url) {
+      _ = try? handle.seekToEnd(); try? handle.write(contentsOf: Data(entry.utf8)); try? handle.close()
+    } else {
+      try? Data(entry.utf8).write(to: url)
+    }
+  }
+
+  private func observeT3(_ services: T3Services) {
+    t3StatusTask?.cancel()
+    t3StatusTask = Task { @MainActor [weak self] in
+      let transitions = await services.connection.transitions()
+      for await status in transitions {
+        guard let self else { return }
+        self.t3Status = status
+        self.t3ConnectionState = await services.connection.currentState()
+        if status.connectedEnvironmentId != nil, self.t3Providers.isEmpty { await self.loadT3Providers() }
+        self.lastContextRefresh = nil
+      }
+    }
+  }
+
+  /// Starts T3 services at launch when they could matter: the T3 runtime is
+  /// chosen, a connection was saved, or T3 agents exist.
+  func startT3IfConfigured() {
+    let saved = FileManager.default.fileExists(
+      atPath: paths.supportDirectory.appendingPathComponent(T3ConnectionStateStore.fileName).path)
+    let hasAgents = taskContexts.values.contains { $0.subtasks.contains(where: \.isT3) }
+    guard config.agentRuntime == .t3 || saved || hasAgents else { return }
+    Task { @MainActor [weak self] in _ = await self?.t3() }
+  }
+
+  var t3StatusText: String {
+    T3StatusText.text(for: t3Status, state: t3ConnectionState, now: Date())
+  }
+
+  /// New agents may launch in T3 Code only when connected with Full access.
+  var t3RuntimeAvailable: Bool {
+    t3Status.connectedEnvironmentId != nil && t3ConnectionState?.accessLevel == .fullAccess
+  }
+
+  var isT3SigningIn: Bool { t3SignInTask != nil }
+
+  func connectT3() {
+    guard t3SignInTask == nil else { return }
+    t3Message = "Approve Focus Queue in T3 Code"
+    t3SignInTask = Task { @MainActor [weak self] in
+      guard let self else { return }
+      defer { self.t3SignInTask = nil }
+      let services = await self.t3()
+      do {
+        _ = try await services.connection.signIn(openURL: { url in
+          await MainActor.run { _ = NSWorkspace.shared.open(url) }
+        })
+        self.t3ConnectionState = await services.connection.currentState()
+        self.t3Message = nil
+      } catch {
+        self.t3Message = error.localizedDescription
+      }
+    }
+  }
+
+  func cancelT3SignIn() {
+    t3SignInTask?.cancel()
+    t3SignInTask = nil
+    t3Message = T3Error.signInCancelled.localizedDescription
+  }
+
+  func disconnectT3() {
+    Task { @MainActor [weak self] in
+      guard let self, let services = self.t3Services else { return }
+      do { try await services.connection.signOut() } catch { self.t3Message = error.localizedDescription }
+      self.t3ConnectionState = await services.connection.currentState()
+      self.t3Providers = []
+    }
+  }
+
+  /// Changing the server signs out and rebuilds every T3 component for the new address.
+  @discardableResult
+  func setT3ServerURL(_ value: String) async -> Bool {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    let normalized = trimmed.isEmpty || trimmed == T3Defaults.serverURL ? nil : trimmed
+    guard normalized.map(T3StatusText.isAcceptableServerURL) ?? true else {
+      t3Message = T3StatusText.insecureURLMessage
+      return false
+    }
+    guard normalized != config.t3ServerURL else { return true }
+    if let services = t3Services {
+      try? await services.connection.signOut()
+      await services.stop()
+      t3StatusTask?.cancel()
+      t3Services = nil
+    }
+    var next = config
+    next.t3ServerURL = normalized
+    do {
+      try await configurationRepository.save(next)
+      config = next
+      t3Status = .disconnected
+      t3Providers = []
+      t3Message = nil
+      return true
+    } catch {
+      t3Message = error.localizedDescription
+      return false
+    }
+  }
+
+  func setAgentRuntime(_ choice: AgentRuntimeChoice) {
+    guard choice != (config.agentRuntime ?? .terminal) else { return }
+    guard choice == .terminal || t3RuntimeAvailable else {
+      t3Message = "Connect T3 Code with Full access before choosing it."
+      return
+    }
+    var next = config
+    next.agentRuntime = choice == .terminal ? nil : .t3
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      do {
+        try await self.configurationRepository.save(next)
+        self.config = next
+      } catch { self.t3Message = error.localizedDescription }
+    }
+  }
+
+  func loadT3Providers(force: Bool = false) async {
+    let services = await t3()
+    do {
+      t3Providers = force ? try await services.catalog.refresh() : try await services.catalog.available()
+    } catch {
+      t3Message = error.localizedDescription
+    }
+  }
+
+  /// The T3 provider, model, and options a launch uses when the picker made no choice.
+  func defaultT3Choice(for provider: AgentProvider, model: String?) async -> T3LaunchChoice? {
+    let services = await t3()
+    guard var choice = try? await services.catalog.defaultSelection(for: provider) else { return nil }
+    if let model, let providers = try? await services.catalog.available(),
+       providers.first(where: { $0.providerInstanceId == choice.instanceId })?.models.contains(where: { $0.id == model }) == true {
+      choice.model = model
+      choice.options = [:]
+    }
+    return choice
+  }
+
+  private func t3Project(for ticket: DashboardTicket, repositoryPath: String) -> ProjectConfiguration {
+    if let project = project(for: ticket), !project.repositoryPath.isEmpty { return project }
+    let name = URL(fileURLWithPath: repositoryPath).lastPathComponent
+    return ProjectConfiguration(id: "path:\(repositoryPath)", name: name, dashboardPath: config.dashboardPath,
+                                workspacePath: repositoryPath, repositoryPath: repositoryPath)
+  }
+
+  /// Launches an agent in a T3 Code thread. Focus Queue still creates and owns
+  /// the checkout; nothing is created unless T3 Code accepts the preflight.
+  func launchT3Agent(
+    for ticket: DashboardTicket, title: String, provider: AgentProvider, repositoryPath: String,
+    workDescription: String, includePrompt: Bool, initialPrompt: String?, tracksCompletion: Bool,
+    subtaskID: String, parentSubtaskID: String?, choice: T3LaunchChoice?, modelName: String?,
+    effort: String?, role: AgentContractRole, completion: (@MainActor (Bool) -> Void)?
+  ) {
+    guard launchingTaskIDs.insert(ticket.id).inserted else { completion?(false); return }
+    recordTaskInteraction(for: ticket)
+    actionMessages[ticket.id] = "Starting \(title) in T3 Code…"
+    Task { @MainActor in
+      var started = false
+      defer {
+        launchingTaskIDs.remove(ticket.id)
+        completion?(started)
+      }
+      do {
+        let services = await t3()
+        var resolved = choice
+        if resolved == nil { resolved = await defaultT3Choice(for: provider, model: modelName) }
+        guard let choice = resolved else {
+          throw TaskContextError.commandFailed(
+            "Choose a T3 Code provider and model for this agent. T3 Code has no \(provider.displayName) provider enabled.")
+        }
+        let context = try await taskContextStore.ensureContext(ticket: ticket, project: project(for: ticket))
+        var subtask = TaskSubtask(id: subtaskID, title: title, assignmentDescription: workDescription,
+                                  provider: provider, includeInitializationPrompt: includePrompt, runtimeMode: .t3)
+        subtask.initialPrompt = initialPrompt
+        subtask.tracksCompletion = tracksCompletion
+        if let parentSubtaskID {
+          guard let parent = context.subtasks.first(where: { $0.id == parentSubtaskID }), parent.status != .completed else {
+            throw TaskContextError.commandFailed("This subtask is already completed or no longer exists.")
+          }
+          subtask.parentSubtaskID = context.canonicalSubtaskID(parentSubtaskID)
+          subtask.tracksCompletion = false
+        }
+        subtask.launchConfiguration = AgentLaunchConfiguration(
+          model: choice.model, effort: effort?.isEmpty == false ? effort : nil,
+          role: role == .orchestrator ? AgentContractRole.orchestrator.rawValue : nil)
+        let prompt = TaskAgentLauncher.initialPrompt(context: context, subtask: subtask, includePrompt: true)
+          ?? context.agentPrompt(subtask: subtask)
+        let lease = try await TaskMaintenance.lease(ticketID: ticket.id, root: paths.supportDirectory)
+        defer { lease.release() }
+        let saved = try await services.runtime.launch(T3LaunchInput(
+          ticketID: ticket.id, subtask: subtask, prompt: prompt,
+          project: t3Project(for: ticket, repositoryPath: repositoryPath),
+          repositoryPath: repositoryPath, choice: choice))
+        started = true
+        await services.watchProjectsAgain()
+        if let context = try? await taskContextStore.load(ticketID: ticket.id) { taskContexts[ticket.id] = context }
+        await recordAgentLaunch(saved, ticketID: ticket.id, phase: "t3-launch", outcome: "succeeded",
+          message: "T3 Code created the thread in Focus Queue's checkout.",
+          details: ["thread": saved.t3?.threadId ?? "", "worktree": saved.workspace?.path ?? ""])
+        actionMessages[ticket.id] = "Started \(title) in T3 Code."
+      } catch T3Error.outcomeUnknown {
+        started = true
+        if let context = try? await taskContextStore.load(ticketID: ticket.id) { taskContexts[ticket.id] = context }
+        actionMessages[ticket.id] = "Launch status unknown, reconciling. The checkout is kept."
+      } catch {
+        if let context = try? await taskContextStore.load(ticketID: ticket.id) { taskContexts[ticket.id] = context }
+        actionMessages[ticket.id] = error.localizedDescription
+      }
+    }
+  }
+
+  private func t3Location(_ subtask: TaskSubtask, _ ticket: DashboardTicket) -> T3SubtaskLocation {
+    T3SubtaskLocation(ticketID: ticket.id, subtaskID: subtask.id)
+  }
+
+  /// Runs one T3 control action and reports its error on the task.
+  private func runT3(_ subtask: TaskSubtask, _ ticket: DashboardTicket, success: String?,
+                     _ body: @escaping @MainActor (T3Runtime, T3SubtaskLocation) async throws -> Void) {
+    let key = Self.subtaskKey(ticketID: ticket.id, subtaskID: subtask.id)
+    agentSessionErrors[key] = nil
+    Task { @MainActor in
+      let services = await t3()
+      do {
+        try await body(services.runtime, t3Location(subtask, ticket))
+        if let success { actionMessages[ticket.id] = success }
+      } catch {
+        agentSessionErrors[key] = error.localizedDescription
+        actionMessages[ticket.id] = error.localizedDescription
+      }
+      if let context = try? await taskContextStore.load(ticketID: ticket.id) { taskContexts[ticket.id] = context }
+    }
+  }
+
+  func sendT3Prompt(_ subtask: TaskSubtask, for ticket: DashboardTicket, text: String) {
+    let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else { return }
+    runT3(subtask, ticket, success: "Sent to \(subtask.title).") { try await $0.sendPrompt($1, text: text) }
+  }
+
+  func stopT3Agent(_ subtask: TaskSubtask, for ticket: DashboardTicket) {
+    runT3(subtask, ticket, success: "Stopped \(subtask.title). Queued prompts are held.") { try await $0.stop($1) }
+  }
+
+  func openT3Thread(_ subtask: TaskSubtask, for ticket: DashboardTicket) {
+    recordTaskInteraction(for: ticket)
+    guard let link = subtask.t3?.link, let url = URL(string: link) else {
+      actionMessages[ticket.id] = "This agent has no T3 Code thread yet."
+      return
+    }
+    NSWorkspace.shared.open(url)
+    if subtask.completionUnread { runT3(subtask, ticket, success: nil) { try await $0.acknowledge($1) } }
+  }
+
+  func acknowledgeT3(_ subtask: TaskSubtask, for ticket: DashboardTicket) {
+    guard subtask.completionUnread, subtask.t3 != nil else { return }
+    runT3(subtask, ticket, success: nil) { try await $0.acknowledge($1) }
+  }
+
+  func removeMissingT3Agent(_ subtask: TaskSubtask, for ticket: DashboardTicket) {
+    Task { @MainActor in
+      do {
+        taskContexts[ticket.id] = try await taskContextStore.removeAgent(ticketID: ticket.id, subtaskID: subtask.id)
+      } catch { actionMessages[ticket.id] = error.localizedDescription }
+    }
+  }
+
+  func t3Question(for subtask: TaskSubtask, ticketID: String) -> T3PendingRequest? {
+    t3Questions[Self.subtaskKey(ticketID: ticketID, subtaskID: subtask.id)]
+  }
+
+  func loadT3Question(_ subtask: TaskSubtask, for ticket: DashboardTicket) {
+    guard let reference = subtask.t3, let requestId = reference.openQuestionIds.first else { return }
+    let key = Self.subtaskKey(ticketID: ticket.id, subtaskID: subtask.id)
+    Task { @MainActor in
+      let services = await t3()
+      do {
+        t3Questions[key] = try await services.tools.question(threadId: reference.threadId, requestId: requestId)
+      } catch {
+        t3Questions[key] = nil
+        agentSessionErrors[key] = error.localizedDescription
+        await services.refresher.markDirty(reference.threadId)
+      }
+    }
+  }
+
+  /// Sends an answer. A question answered elsewhere says so and refreshes the row.
+  func answerT3Question(_ subtask: TaskSubtask, for ticket: DashboardTicket, request: T3PendingRequest,
+                        selections: [String: String], freeText: [String: String]) {
+    guard let reference = subtask.t3 else { return }
+    let key = Self.subtaskKey(ticketID: ticket.id, subtaskID: subtask.id)
+    let answers = T3AnswerBuilder.answers(for: request, selections: selections, freeText: freeText)
+    Task { @MainActor in
+      let services = await t3()
+      do {
+        try await services.tools.answer(threadId: reference.threadId, requestId: request.requestId, answers: answers)
+        t3Questions[key] = nil
+        actionMessages[ticket.id] = "Answer sent to \(subtask.title)."
+      } catch T3Error.requestNotOpen {
+        t3Questions[key] = nil
+        actionMessages[ticket.id] = T3Error.requestNotOpen(request.requestId).localizedDescription
+      } catch {
+        agentSessionErrors[key] = error.localizedDescription
+      }
+      await services.refresher.markDirty(reference.threadId)
+    }
+  }
+
+  /// Stops every T3 agent on a completed task and cleans up the ones T3 Code
+  /// confirms stopped. Returns checkouts that must stay until then.
+  private func finishT3Agents(ticketID: String) async -> Set<String> {
+    let agents = taskContexts[ticketID]?.subtasks.filter { $0.t3 != nil || $0.t3Launch != nil } ?? []
+    guard !agents.isEmpty else { return [] }
+    let services = await t3()
+    for agent in agents where agent.t3 != nil {
+      _ = await services.runtime.finish(T3SubtaskLocation(ticketID: ticketID, subtaskID: agent.id))
+    }
+    return await services.runtime.protectedCheckouts(ticketID: ticketID)
+  }
 }

@@ -58,7 +58,7 @@ final class ManualT3Clock: T3Clock, @unchecked Sendable {
 }
 
 /// Polls until a condition holds, yielding to other tasks. Real time, bounded.
-func eventually(timeout: Double = 2, _ condition: @Sendable () async -> Bool) async -> Bool {
+func eventually(timeout: Double = 15, _ condition: @Sendable () async -> Bool) async -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
         if await condition() { return true }

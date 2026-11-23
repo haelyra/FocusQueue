@@ -30,9 +30,9 @@ enum QueueSettingsTab: String, CaseIterable, Identifiable {
 
   var help: String {
     switch self {
-    case .agents: "Sign-in, permissions, lifecycle, decisions, and terminals for the agents you launch"
+    case .agents: "Sign-in, permissions, lifecycle, and decisions for the agents you launch"
     case .appearance: "Light or dark, accent colors, and where the queue sits on screen"
-    case .general: "Updates, projects, shortcuts, the bulletin board, reports, and diagnostics"
+    case .general: "Updates, projects, shortcuts, the bulletin board, terminals, capacity, reports, and diagnostics"
     case .harness: "The default agent and Focus Queue's own core agents: QChat, task placement, and data placement"
     }
   }
@@ -199,50 +199,6 @@ struct QueueSettingsView: View {
             set: { model.setDecisionAutoRewind($0) }))
       }
     }
-    settingsSection(
-      title: "Agent terminals",
-      detail: "Each task runs its agents as panes in one shared tmux session."
-    ) {
-      VStack(alignment: .leading, spacing: 12) {
-        TerminalAppSetting(model: model)
-        Divider()
-        Stepper(value: Binding(
-          get: { model.agentsPerWindow },
-          set: { model.setAgentsPerWindow($0) }
-        ), in: 1...12) {
-          HStack {
-            Text("Agent panes per window tab")
-            Spacer()
-            Text("\(model.agentsPerWindow)").monospacedDigit().foregroundStyle(.secondary)
-          }
-        }
-        VStack(alignment: .leading, spacing: 3) {
-          HStack {
-            Text("Agent usage bar")
-            Spacer()
-            featureBadge("Coming soon")
-          }
-          Text("Live quota and context rows below each managed task window.")
-            .font(.caption).foregroundStyle(.secondary)
-        }
-        Button(action: openSessions) {
-          Label("Browse sessions", systemImage: "rectangle.stack")
-        }
-        .buttonStyle(.bordered)
-        .help("Active task sessions and saved sessions you can recall")
-      }
-    }
-    settingsSection(
-      title: "Capacity and scheduling",
-      detail: "A live read of this Mac's CPU, memory, and token use above the queue and in the new task window, with a rough launch recommendation. It is an estimate for orientation only and never blocks a launch."
-    ) {
-      settingToggle(
-        "Capacity panel",
-        detail: "Show live CPU, memory, and 5-hour token estimates plus a cycling launch recommendation above the queue and in the new task window.",
-        isOn: Binding(
-          get: { model.config.capacityPanelEnabled },
-          set: { model.setCapacityPanelEnabled($0) }))
-    }
   }
 
   // MARK: Appearance
@@ -356,6 +312,51 @@ struct QueueSettingsView: View {
             get: { model.bulletinBoardTabEnabled },
             set: { model.setBulletinBoardTabEnabled($0) }))
       }
+    }
+
+    settingsSection(
+      title: "Terminals",
+      detail: "Each task runs its agents as panes in one shared tmux session."
+    ) {
+      VStack(alignment: .leading, spacing: 12) {
+        TerminalAppSetting(model: model)
+        Divider()
+        Stepper(value: Binding(
+          get: { model.agentsPerWindow },
+          set: { model.setAgentsPerWindow($0) }
+        ), in: 1...12) {
+          HStack {
+            Text("Agent panes per window tab")
+            Spacer()
+            Text("\(model.agentsPerWindow)").monospacedDigit().foregroundStyle(.secondary)
+          }
+        }
+        VStack(alignment: .leading, spacing: 3) {
+          HStack {
+            Text("Agent usage bar")
+            Spacer()
+            featureBadge("Coming soon")
+          }
+          Text("Live quota and context rows below each managed task window.")
+            .font(.caption).foregroundStyle(.secondary)
+        }
+        Button(action: openSessions) {
+          Label("Browse sessions", systemImage: "rectangle.stack")
+        }
+        .buttonStyle(.bordered)
+        .help("Active task sessions and saved sessions you can recall")
+      }
+    }
+    settingsSection(
+      title: "Capacity and scheduling",
+      detail: "A live read of this Mac's CPU, memory, and token use above the queue and in the new task window, with a rough launch recommendation. It is an estimate for orientation only and never blocks a launch."
+    ) {
+      settingToggle(
+        "Capacity panel",
+        detail: "Show live CPU, memory, and 5-hour token estimates plus a cycling launch recommendation above the queue and in the new task window.",
+        isOn: Binding(
+          get: { model.config.capacityPanelEnabled },
+          set: { model.setCapacityPanelEnabled($0) }))
     }
 
     groupHeading("Daily reports")

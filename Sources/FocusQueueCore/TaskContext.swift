@@ -1990,6 +1990,21 @@ public actor TaskContextStore {
         }
     }
 
+    /// Changes one subtask under the task lock and returns its saved value.
+    @discardableResult public func mutateSubtask(ticketID: String, subtaskID: String,
+                                                 _ change: (inout TaskSubtask) throws -> Void) throws -> TaskSubtask {
+        let context = try mutate(ticketID: ticketID) { context in
+            guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else {
+                throw TaskContextError.missingSubtask(subtaskID)
+            }
+            try change(&context.subtasks[index])
+        }
+        guard let saved = context.subtasks.first(where: { $0.id == subtaskID }) else {
+            throw TaskContextError.missingSubtask(subtaskID)
+        }
+        return saved
+    }
+
     private func mutate(
         ticketID: String,
         archiveChanges: Bool = false,

@@ -17,15 +17,16 @@ final class ManualT3Clock: T3Clock, @unchecked Sendable {
         let id = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-                let ready: Bool = lock.withLock {
+                // Decided under the lock: once the sleeper is registered, only `onCancel` or `advance` resumes it.
+                let outcome: Int = lock.withLock {
                     sleepRequests.append(seconds)
-                    if Task.isCancelled { return false }
-                    if seconds <= 0 { return true }
+                    if Task.isCancelled { return -1 }
+                    if seconds <= 0 { return 1 }
                     sleepers.append((id, current.addingTimeInterval(seconds), continuation))
-                    return false
+                    return 0
                 }
-                if Task.isCancelled { continuation.resume(throwing: CancellationError()) }
-                else if ready { continuation.resume() }
+                if outcome < 0 { continuation.resume(throwing: CancellationError()) }
+                else if outcome > 0 { continuation.resume() }
             }
         } onCancel: {
             let removed = lock.withLock { () -> CheckedContinuation<Void, any Error>? in

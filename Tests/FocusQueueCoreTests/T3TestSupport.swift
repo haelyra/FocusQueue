@@ -215,6 +215,12 @@ actor FakeT3Store: T3SubtaskStoring {
             .sorted { $0.location.subtaskID < $1.location.subtaskID }
     }
     func subtask(_ location: T3SubtaskLocation) async throws -> TaskSubtask? { records[location] }
+    func insert(_ subtask: TaskSubtask, ticketID: String) async throws {
+        if let error = failSave?(subtask) { throw error }
+        let location = T3SubtaskLocation(ticketID: ticketID, subtaskID: subtask.id)
+        records[location] = subtask
+        writes.append((location, subtask))
+    }
     @discardableResult
     func mutate(_ location: T3SubtaskLocation, _ change: @Sendable (inout TaskSubtask) throws -> Void) async throws -> TaskSubtask {
         guard var value = records[location] else { throw TaskContextError.missingSubtask(location.subtaskID) }

@@ -59,6 +59,8 @@ public protocol T3SubtaskStoring: Sendable {
     /// Every subtask that runs on T3 (`t3` or `t3Launch` set) in open and recently completed tasks.
     func t3Subtasks() async throws -> [T3SubtaskRecord]
     func subtask(_ location: T3SubtaskLocation) async throws -> TaskSubtask?
+    /// Saves a new subtask, or replaces one with the same id.
+    func insert(_ subtask: TaskSubtask, ticketID: String) async throws
     @discardableResult
     func mutate(_ location: T3SubtaskLocation, _ change: @Sendable (inout TaskSubtask) throws -> Void) async throws -> TaskSubtask
 }
@@ -78,6 +80,10 @@ extension TaskContextStore: T3SubtaskStoring {
 
     public func subtask(_ location: T3SubtaskLocation) async throws -> TaskSubtask? {
         try load(ticketID: location.ticketID)?.subtasks.first { $0.id == location.subtaskID }
+    }
+
+    public func insert(_ subtask: TaskSubtask, ticketID: String) async throws {
+        try upsertSubtask(ticketID: ticketID, subtask: subtask)
     }
 
     @discardableResult

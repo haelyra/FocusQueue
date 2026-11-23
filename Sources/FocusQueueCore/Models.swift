@@ -368,6 +368,10 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var decisionAutoDecideMinutes: Int?
   /// Lets agents rewind to a decision on their own when the chosen path fails; nil is on.
   public var decisionAutoRewind: Bool?
+  /// Runtime for new agents; nil is the terminal runtime.
+  public var agentRuntime: AgentRuntimeChoice?
+  /// T3 Code server; nil is `T3Defaults.serverURL`.
+  public var t3ServerURL: String?
 
   /// Decision automation with defaults applied.
   public var decisionAutomation: DecisionAutomationSettings {
@@ -568,6 +572,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.decisionAutoDecide = nil
     self.decisionAutoDecideMinutes = nil
     self.decisionAutoRewind = nil
+    self.agentRuntime = nil
+    self.t3ServerURL = nil
     self.agentModelChoices = Self.defaultAgentModelChoices
     self.autoArchiveStaleAgents = false
     self.defaultAgentProvider = nil
@@ -600,6 +606,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case placementConfidenceThreshold, placementTimeoutSeconds
     case dataPlacementEnabled
     case decisionAutoDecide, decisionAutoDecideMinutes, decisionAutoRewind
+    case agentRuntime, t3ServerURL
     case agentModelChoices
     case autoArchiveStaleAgents
     case defaultAgentProvider, defaultAgentModels, defaultAgentEfforts
@@ -647,6 +654,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     decisionAutoDecide = try container.decodeIfPresent(Bool.self, forKey: .decisionAutoDecide)
     decisionAutoDecideMinutes = try container.decodeIfPresent(Int.self, forKey: .decisionAutoDecideMinutes)
     decisionAutoRewind = try container.decodeIfPresent(Bool.self, forKey: .decisionAutoRewind)
+    agentRuntime = try? container.decodeIfPresent(AgentRuntimeChoice.self, forKey: .agentRuntime)
+    t3ServerURL = try container.decodeIfPresent(String.self, forKey: .t3ServerURL)
     agentModelChoices = Self.mergedAgentModelChoices(
       (try container.decodeIfPresent([AgentModelChoice].self, forKey: .agentModelChoices)) ?? [])
     autoArchiveStaleAgents = try container.decodeIfPresent(Bool.self, forKey: .autoArchiveStaleAgents) ?? false
@@ -742,6 +751,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encodeIfPresent(decisionAutoDecide, forKey: .decisionAutoDecide)
     try container.encodeIfPresent(decisionAutoDecideMinutes, forKey: .decisionAutoDecideMinutes)
     try container.encodeIfPresent(decisionAutoRewind, forKey: .decisionAutoRewind)
+    try container.encodeIfPresent(agentRuntime, forKey: .agentRuntime)
+    try container.encodeIfPresent(t3ServerURL, forKey: .t3ServerURL)
     try container.encode(agentModelChoices, forKey: .agentModelChoices)
     try container.encode(autoArchiveStaleAgents, forKey: .autoArchiveStaleAgents)
     try container.encodeIfPresent(defaultAgentProvider, forKey: .defaultAgentProvider)

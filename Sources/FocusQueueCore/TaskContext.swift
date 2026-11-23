@@ -8,6 +8,8 @@ public enum TaskSubtaskStatus: String, Codable, CaseIterable, Sendable {
 
 public enum AgentRuntimeMode: String, Codable, CaseIterable, Sendable {
     case tmux, terminal
+    /// Runs in a T3 Code thread; `TaskSubtask.t3` or `t3Launch` holds the link.
+    case t3
 }
 
 public enum TaskSessionBinding {
@@ -138,6 +140,11 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     /// When the person interrupted this agent from Focus Queue. Cleared by
     /// Resume or by any later prompt, so a pause never outlives new work.
     public var pausedAt: Date?
+    /// The T3 Code thread this agent runs in, when `runtimeMode == .t3`.
+    public var t3: T3ThreadReference?
+    /// A T3 launch whose outcome is not yet linked to a thread. Cleared in the
+    /// same save that sets `t3`.
+    public var t3Launch: T3LaunchIntent?
 
     public var isPaused: Bool { pausedAt != nil && status != .completed }
 
@@ -146,7 +153,8 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     public var continuesOnQuotaExhaustion: Bool { launchConfiguration?.continueOnQuota == true }
 
     public var hasAgent: Bool {
-        !isAssignmentOnly && (parentSubtaskID != nil || sessionID != nil || tmux != nil || terminalPaneID != nil || lastHeartbeatAt != nil || status == .completed)
+        !isAssignmentOnly && (parentSubtaskID != nil || sessionID != nil || tmux != nil || terminalPaneID != nil
+            || t3 != nil || t3Launch != nil || lastHeartbeatAt != nil || status == .completed)
     }
 
     public var hasManagedWorkspaces: Bool {
@@ -279,6 +287,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         case completionTerminalRetained
         case isAssignmentOnly, parentSubtaskID, associatedSubtaskIDs, mergedIntoSubtaskID, attention, resultID, resultSummary, resultAt, observedEventID, observedEventAt, completedRuntimeOpenedAt
         case lastHookEventAt, launchConfiguration, pausedAt
+        case t3, t3Launch
     }
 
     public init(from decoder: any Decoder) throws {
@@ -323,6 +332,8 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         completedRuntimeOpenedAt = try values.decodeIfPresent(Date.self, forKey: .completedRuntimeOpenedAt)
         launchConfiguration = try values.decodeIfPresent(AgentLaunchConfiguration.self, forKey: .launchConfiguration)
         pausedAt = try values.decodeIfPresent(Date.self, forKey: .pausedAt)
+        t3 = try values.decodeIfPresent(T3ThreadReference.self, forKey: .t3)
+        t3Launch = try values.decodeIfPresent(T3LaunchIntent.self, forKey: .t3Launch)
     }
 
     /// A live terminal is not proof of activity. Only a recent explicit heartbeat is.

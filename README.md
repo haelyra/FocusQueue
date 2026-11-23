@@ -517,6 +517,52 @@ until you open it. Once seen, it moves to **Completed items**. A new prompt type
 into its terminal returns it to Work items as Working. Task progress counts
 also wait until every result is seen.
 
+## T3 Code runtime (beta)
+
+Agents can run in [T3 Code](https://github.com/pingdotgg/t3code) instead of a
+terminal pane. Focus Queue still owns tasks, plans, checkouts and cleanup. T3
+Code owns the conversations: each agent becomes a T3 Code thread that works in
+the agent's Focus Queue checkout, and its questions, approvals and results show
+up on the agent row.
+
+### Requirements
+
+- T3 Code 0.1.12 or later. This is currently the Nightly track; stable 0.1.11
+  lacks the live updates Focus Queue needs.
+- The T3 Code app running on the same Mac as Focus Queue.
+
+### Connecting
+
+Open **Settings > T3 Code > Connect**. T3 Code opens its approval page in your
+browser. Choose **Full access** and approve Focus Queue. Full access is
+required because Focus Queue:
+
+- creates T3 Code projects for your Focus Queue projects,
+- runs agents without permission prompts, and
+- changes T3 Code environment preferences.
+
+With a lower level, the status reads "Access too low" and agents cannot launch.
+Access lasts 30 days. After that, Focus Queue shows **Reconnect** and you approve
+it again. The status line warns "Reconnect soon" in the last 3 days. To revoke
+access, open T3 Code **Settings > Sharing & access** and remove Focus Queue.
+**Disconnect** in Focus Queue deletes its stored credential.
+
+Once connected, choose **T3 Code** as the runtime in the same section. New
+agents then launch in T3 Code; existing terminal agents keep running where they
+are.
+
+### Limitations
+
+- Focus Queue cannot approve or deny permission requests, because T3 Code does
+  not allow outside apps to. Agents waiting on approval show "Needs approval";
+  use **Open in T3 Code** to answer them there.
+- Focus Queue checkouts must not live inside T3 Code's worktree location (its
+  default worktree folder or its **Worktree location** setting). T3 Code's
+  storage cleanup could otherwise remove them.
+- A turn started in the archived thread of a completed task runs without its
+  removed checkout.
+- Remote T3 Code servers are not supported.
+
 ## Build and install
 
 ```bash

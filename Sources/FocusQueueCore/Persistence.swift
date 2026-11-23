@@ -186,6 +186,9 @@ public actor JSONConfigurationRepository: ConfigurationLoading {
         "focusQueueSelectedProjectID", "projects", "selectedProjectID",
         // Completion review was removed; listing its key drops it on the next save.
         "completionReviewEnabled",
+        // Optional choices where nil means "follow another setting". Listing
+        // them lets a reset to nil remove the saved value instead of keeping it.
+        "placementProvider", "extractorProvider", "chatProvider", "chatAutoClearMinutes",
     ]
 
     private enum LegacyProjectMetadata: Equatable {

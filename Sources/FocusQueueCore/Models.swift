@@ -362,6 +362,12 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var placementTimeoutSeconds: Int?
   /// Opts native prompt hooks into automatic durable-data placement; nil is off.
   public var dataPlacementEnabled: Bool?
+  /// Provider that runs durable-data extraction; nil uses the prompting agent's provider.
+  public var extractorProvider: AgentProvider?
+  /// Per-provider extraction models; a missing value uses the placement model.
+  public var extractorModels: [AgentProvider: String]
+  /// Per-provider extraction efforts; a missing value uses the placement effort.
+  public var extractorEfforts: [AgentProvider: String]
   /// Settles an unanswered decision with its recommended option; nil is on.
   public var decisionAutoDecide: Bool?
   /// Minutes a decision waits for the user before auto-decide; nil is 60.
@@ -388,6 +394,10 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var defaultAgentEfforts: [AgentProvider: String]
   /// Per-provider QChat models, separate from agent launches; a missing value uses `defaultChatModels`.
   public var chatModels: [AgentProvider: String]
+  /// Provider that answers QChat and task chat; nil follows the default agent provider.
+  public var chatProvider: AgentProvider?
+  /// Minutes a QChat tab may sit idle before it is cleared; nil or 0 never clears.
+  public var chatAutoClearMinutes: Int?
   /// Per-provider "bypass permissions" choice for agents and chat turns Focus
   /// Queue starts. A missing provider bypasses, matching earlier releases.
   public var agentPermissionBypass: [AgentProvider: Bool]
@@ -504,6 +514,17 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     return placementEfforts[provider] ?? Self.defaultPlacementEfforts[provider]
   }
 
+  /// The extraction model `focus_queue_extractor.py` resolves: its own, then placement's.
+  public func extractorModel(for provider: AgentProvider) -> String? {
+    extractorModels[provider] ?? placementModel(for: provider)
+  }
+
+  /// Kimi has no effort flag, so it never reports one.
+  public func extractorEffort(for provider: AgentProvider) -> String? {
+    guard provider != .kimi else { return nil }
+    return extractorEfforts[provider] ?? placementEffort(for: provider)
+  }
+
   public func chatModel(for provider: AgentProvider) -> String? {
     chatModels[provider] ?? Self.defaultChatModels[provider]
   }
@@ -565,6 +586,9 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.placementConfidenceThreshold = nil
     self.placementTimeoutSeconds = nil
     self.dataPlacementEnabled = nil
+    self.extractorProvider = nil
+    self.extractorModels = [:]
+    self.extractorEfforts = [:]
     self.decisionAutoDecide = nil
     self.decisionAutoDecideMinutes = nil
     self.decisionAutoRewind = nil
@@ -574,6 +598,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.defaultAgentModels = [:]
     self.defaultAgentEfforts = [:]
     self.chatModels = [:]
+    self.chatProvider = nil
+    self.chatAutoClearMinutes = nil
     self.agentPermissionBypass = [:]
     self.chatEfforts = [:]
     self.claudeChatExecutable = nil
@@ -598,12 +624,12 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case agentsPerWindow
     case placementModelEnabled, placementProvider, placementModels, placementEfforts
     case placementConfidenceThreshold, placementTimeoutSeconds
-    case dataPlacementEnabled
+    case dataPlacementEnabled, extractorProvider, extractorModels, extractorEfforts
     case decisionAutoDecide, decisionAutoDecideMinutes, decisionAutoRewind
     case agentModelChoices
     case autoArchiveStaleAgents
     case defaultAgentProvider, defaultAgentModels, defaultAgentEfforts
-    case chatModels, chatEfforts
+    case chatModels, chatEfforts, chatProvider, chatAutoClearMinutes
     case agentPermissionBypass
     case claudeChatExecutable, kimiChatExecutable
     case focusQueueProjects, focusQueueSelectedProjectID, projects, selectedProjectID
@@ -644,6 +670,12 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
       try container.decodeIfPresent(Double.self, forKey: .placementConfidenceThreshold)
     placementTimeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .placementTimeoutSeconds)
     dataPlacementEnabled = try container.decodeIfPresent(Bool.self, forKey: .dataPlacementEnabled)
+    extractorProvider = try container.decodeIfPresent(String.self, forKey: .extractorProvider)
+      .flatMap { AgentProvider(rawValue: $0.lowercased()) }
+    extractorModels = Self.providerValues(
+      try container.decodeIfPresent([String: String].self, forKey: .extractorModels))
+    extractorEfforts = Self.providerValues(
+      try container.decodeIfPresent([String: String].self, forKey: .extractorEfforts))
     decisionAutoDecide = try container.decodeIfPresent(Bool.self, forKey: .decisionAutoDecide)
     decisionAutoDecideMinutes = try container.decodeIfPresent(Int.self, forKey: .decisionAutoDecideMinutes)
     decisionAutoRewind = try container.decodeIfPresent(Bool.self, forKey: .decisionAutoRewind)
@@ -664,6 +696,10 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
       }
     chatEfforts = Self.providerValues(
       try container.decodeIfPresent([String: String].self, forKey: .chatEfforts))
+    chatProvider = try container.decodeIfPresent(String.self, forKey: .chatProvider)
+      .flatMap { AgentProvider(rawValue: $0.lowercased()) }
+    chatAutoClearMinutes = try container.decodeIfPresent(Int.self, forKey: .chatAutoClearMinutes)
+      .flatMap { $0 > 0 ? $0 : nil }
     claudeChatExecutable = try container.decodeIfPresent(String.self, forKey: .claudeChatExecutable)
     kimiChatExecutable = try container.decodeIfPresent(String.self, forKey: .kimiChatExecutable)
     dailyReport =
@@ -739,6 +775,9 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encodeIfPresent(placementConfidenceThreshold, forKey: .placementConfidenceThreshold)
     try container.encodeIfPresent(placementTimeoutSeconds, forKey: .placementTimeoutSeconds)
     try container.encodeIfPresent(dataPlacementEnabled, forKey: .dataPlacementEnabled)
+    try container.encodeIfPresent(extractorProvider, forKey: .extractorProvider)
+    try container.encode(Self.rawProviderValues(extractorModels), forKey: .extractorModels)
+    try container.encode(Self.rawProviderValues(extractorEfforts), forKey: .extractorEfforts)
     try container.encodeIfPresent(decisionAutoDecide, forKey: .decisionAutoDecide)
     try container.encodeIfPresent(decisionAutoDecideMinutes, forKey: .decisionAutoDecideMinutes)
     try container.encodeIfPresent(decisionAutoRewind, forKey: .decisionAutoRewind)
@@ -754,6 +793,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         forKey: .agentPermissionBypass)
     }
     try container.encode(Self.rawProviderValues(chatEfforts), forKey: .chatEfforts)
+    try container.encodeIfPresent(chatProvider, forKey: .chatProvider)
+    try container.encodeIfPresent(chatAutoClearMinutes, forKey: .chatAutoClearMinutes)
     try container.encodeIfPresent(claudeChatExecutable, forKey: .claudeChatExecutable)
     try container.encodeIfPresent(kimiChatExecutable, forKey: .kimiChatExecutable)
   }

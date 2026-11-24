@@ -207,6 +207,9 @@ final class QueueViewModel {
   ]
   /// The active QChat tab's transcript.
   var queueChatMessages: [QueueChatMessage] { queueChatTabMessages[activeQueueChatTabID] ?? [] }
+  /// When each QChat tab last gained a message, for idle auto-clear. Loaded
+  /// from the transcript's save time, then updated as messages arrive.
+  @ObservationIgnored private var queueChatLastActivity: [String: Date] = [:]
   /// Conversations with a turn in flight. Tabs and task chats run in parallel.
   private(set) var respondingConversations: Set<QueueChatConversation> = []
   /// True while any chat turn runs; app-wide work such as the daily report waits for it.
@@ -1050,8 +1053,9 @@ final class QueueViewModel {
   }
 
   private func finishBootstrap() async {
-    // Readable copies of the contracts this build gives agents, for Settings and links.
+    // Readable copies of the contracts and prompts this build gives agents, for Settings and links.
     BuiltInAgentContract.writeAll(root: paths.supportDirectory, resources: builtInContractResources)
+    BuiltInAgentPrompt.writeAll(root: paths.supportDirectory, resources: builtInContractResources)
     // Task and agent menus show whether each item is already on the bulletin board.
     loadBulletinPinsIfNeeded()
     do {
@@ -1928,6 +1932,7 @@ final class QueueViewModel {
   func refresh(forceRecurringPRProgress: Bool = false, userInitiated: Bool = false) async {
     guard !refreshInFlight else { return }
     refreshInFlight = true
+    clearIdleQueueChats()
     let showsActivity = userInitiated || lastSync == nil
     if showsActivity { isRefreshing = true }
     defer {
@@ -2552,7 +2557,7 @@ final class QueueViewModel {
       ?? config.workspacePath
     let deferredTicketIDs = localState.deferredTicketIDs.filter { scopedTaskIDs.contains($0) }
     let scopedMessage: String
-    let provider = defaultAgentProvider
+    let provider = chatAgentProvider
     let chatModel = effectiveChatModel(for: provider)
     let chatEffort = Self.normalizedChatOption(config.chatEffort(for: provider))
     var agentConfiguration = config.verifier
@@ -2718,7 +2723,7 @@ final class QueueViewModel {
     chatTasks[conversation]?.cancel()
     setMessages([], in: conversation)
     let closeSession = closeChatSession(conversation)
-    let provider = defaultAgentProvider
+    let provider = chatAgentProvider
     let resets = AgentProvider.allCases.map { candidate in
       var resetConfiguration = config.verifier
       resetConfiguration.executable = config.chatExecutable(for: candidate)
@@ -2876,6 +2881,7 @@ final class QueueViewModel {
       let saved = try await conversationStore.load(tabID: tab.id)
       if let saved, !saved.isEmpty {
         messages[tab.id] = saved
+        queueChatLastActivity[tab.id] = await conversationStore.lastModified(tabID: tab.id)
       } else {
         messages[tab.id] = tab.id == QueueChatTab.mainID ? [Self.queueChatGreeting] : []
       }
@@ -2885,6 +2891,26 @@ final class QueueViewModel {
     let savedActive = UserDefaults.standard.string(forKey: Self.activeQueueChatTabKey)
     activeQueueChatTabID = tabs.first { $0.id == savedActive }?.id ?? tabs[0].id
     recoverQueueChatTurns()
+    clearIdleQueueChats()
+  }
+
+  /// Clears every QChat tab idle longer than the auto-clear setting. A tab
+  /// with a running reply, or with no message from the user, is left alone.
+  func clearIdleQueueChats(now: Date = Date()) {
+    guard let minutes = config.chatAutoClearMinutes, minutes > 0 else { return }
+    for tab in queueChatTabs {
+      let conversation = QueueChatConversation.tab(tab.id)
+      guard !respondingConversations.contains(conversation),
+        (queueChatTabMessages[tab.id] ?? []).contains(where: { $0.role == .user }),
+        let lastActivity = queueChatLastActivity[tab.id],
+        QueueChatAutoClear.isDue(lastActivity: lastActivity, now: now, minutes: minutes)
+      else { continue }
+      queueChatLastActivity[tab.id] = nil
+      recordProgramLogChange(
+        "Cleared idle QChat tab \"\(tab.title)\" after \(QueueChatAutoClear(minutes: minutes).summary).",
+        level: .info, category: "qchat")
+      clearQueueChat(ticketID: nil, tabID: tab.id)
+    }
   }
 
   private func recoverQueueChatTurns() {
@@ -3224,6 +3250,7 @@ final class QueueViewModel {
     var updated = messages(in: conversation)
     updated.append(message)
     setMessages(updated, in: conversation)
+    if case .tab(let id) = conversation { queueChatLastActivity[id] = Date() }
     let scope = durableScope(conversation)
     Task {
       do {
@@ -3535,6 +3562,22 @@ final class QueueViewModel {
     }
   }
 
+  /// The module's place in the lifecycle, derived from its flags plus whether a
+  /// linked task is still open.
+  func developmentModuleStatus(_ module: DevelopmentModule) -> DevelopmentModuleStatus {
+    let linked = developmentProcess?.linkedTaskIDs(module: module.id) ?? []
+    let hasOpen = linked.contains { id in
+      dashboard.tickets.first { $0.id == id }?.isOpen ?? false
+    }
+    return DevelopmentModuleStatus(of: module, hasOpenLinkedWork: hasOpen)
+  }
+
+  /// One status move; picking an earlier state is the undo. Sequential review
+  /// still gates criteria acceptance and reports the rejection in the tab.
+  func setDevelopmentModuleStatus(_ status: DevelopmentModuleStatus, moduleID: String) {
+    mutateDevelopmentProcess { try $0.setModuleStatus(status, moduleID: moduleID, projectID: $1) }
+  }
+
   func dismissDevelopmentProcessError() { developmentProcessError = nil }
 
   /// The development-process artifact a viewer document belongs to, so the
@@ -3590,6 +3633,10 @@ final class QueueViewModel {
     }
   }
 
+  func isBuildOwnedDocument(_ url: URL) -> Bool {
+    isBundledGuideline(url) || BuiltInAgentPrompt.isReadOnlyCopy(url, root: paths.supportDirectory)
+  }
+
   /// Bundled guidelines are read-only: owner overrides and sign-off are not built yet.
   func isBundledGuideline(_ url: URL) -> Bool {
     DevelopmentGuidelines.isInstalledGuideline(url, root: paths.supportDirectory)
@@ -3639,7 +3686,7 @@ final class QueueViewModel {
   /// QChat provider, then opens the drafts with the lint and review notes beside them.
   func generateAgentContracts() {
     guard let project = selectedProject, developmentProcess != nil, contractGenerationProjectID == nil else { return }
-    let provider = defaultAgentProvider
+    let provider = chatAgentProvider
     let model = effectiveChatModel(for: provider)
     let effort = Self.normalizedChatOption(config.chatEffort(for: provider))
     let generator = AgentContractGenerator(root: paths.supportDirectory, agent: queueAgentFactory(provider))
@@ -5743,6 +5790,46 @@ final class QueueViewModel {
       subtaskID: subtaskID, modelName: model, effort: effort,
       workspacePolicy: .isolatedCommittedSnapshot,
       completion: completion)
+  }
+
+  /// The provider QChat and task chat run on: its own choice, else the default agent.
+  var chatAgentProvider: AgentProvider { config.chatProvider ?? defaultAgentProvider }
+
+  /// nil makes QChat follow the default agent provider.
+  func setChatProvider(_ provider: AgentProvider?) {
+    guard config.chatProvider != provider else { return }
+    config.chatProvider = provider
+    persistConfiguration()
+  }
+
+  var chatAutoClear: QueueChatAutoClear { QueueChatAutoClear(minutes: config.chatAutoClearMinutes) }
+
+  func setChatAutoClear(_ value: QueueChatAutoClear) {
+    guard config.chatAutoClearMinutes != value.minutes else { return }
+    config.chatAutoClearMinutes = value.minutes
+    persistConfiguration()
+    clearIdleQueueChats()
+  }
+
+  /// nil runs durable-data extraction on the prompting agent's provider.
+  func setExtractorProvider(_ provider: AgentProvider?) {
+    guard config.extractorProvider != provider else { return }
+    config.extractorProvider = provider
+    persistConfiguration()
+  }
+
+  func setExtractorModel(_ model: String?, for provider: AgentProvider) {
+    let normalized = Self.normalizedChatOption(model)
+    guard config.extractorModels[provider] != normalized else { return }
+    config.extractorModels[provider] = normalized
+    persistConfiguration()
+  }
+
+  func setExtractorEffort(_ effort: String?, for provider: AgentProvider) {
+    let normalized = Self.normalizedChatOption(effort)
+    guard config.extractorEfforts[provider] != normalized else { return }
+    config.extractorEfforts[provider] = normalized
+    persistConfiguration()
   }
 
   var defaultAgentProvider: AgentProvider {
@@ -8523,6 +8610,25 @@ extension QueueViewModel {
 
   func builtInContractAvailable(_ contract: BuiltInAgentContract) -> Bool {
     contract.isAvailable(resources: builtInContractResources)
+  }
+
+  func builtInPromptAvailable(_ prompt: BuiltInAgentPrompt) -> Bool {
+    prompt.isAvailable(resources: builtInContractResources)
+  }
+
+  /// Opens a prompt Focus Queue sends to a model, refreshed from this build, in
+  /// the document viewer.
+  func openBuiltInPrompt(_ prompt: BuiltInAgentPrompt) {
+    do {
+      guard let url = try prompt.write(root: paths.supportDirectory, resources: builtInContractResources) else {
+        builtInContractError = "This build does not include the \(prompt.title)."
+        return
+      }
+      builtInContractError = nil
+      openDocumentViewer(url, scope: nil)
+    } catch {
+      builtInContractError = "Could not write the \(prompt.title): \(error.localizedDescription)"
+    }
   }
 
   /// Opens a contract Focus Queue gives agents, refreshed from this build, in

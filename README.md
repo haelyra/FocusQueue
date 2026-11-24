@@ -533,9 +533,9 @@ up on the agent row.
 
 ### Connecting
 
-Open **Settings > T3 Code > Connect**. T3 Code opens its approval page in your
-browser. Choose **Full access** and approve Focus Queue. Full access is
-required because Focus Queue:
+Open **Settings > Agent Configs > T3 Code > Connect**. T3 Code opens its approval
+page in your browser. Choose **Full access** and approve Focus Queue. Full access
+is required because Focus Queue:
 
 - creates T3 Code projects for your Focus Queue projects,
 - runs agents without permission prompts, and

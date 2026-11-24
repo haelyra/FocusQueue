@@ -516,6 +516,25 @@ struct DocumentPaneTests {
         #expect(prompt.contains("First 47 of 60 lines of the document"))
     }
 
+
+    @Test("Build-owned prompts and contracts cannot enter editor or creator routes")
+    func builtInDocumentsStayReadOnly() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("document-read-only-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        for name in ["contracts/built-in/task-placement-prompt.md", "contracts/built-in/orchestrator-rules.md", "development-guidelines/prd-guideline.md"] {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(name).deletingLastPathComponent(), withIntermediateDirectories: true)
+            let (chat, _, agent) = try await editorChat(root, name: name, text: "Built-in instructions", replies: ["Read-only answer"])
+            #expect(chat.isBuildOwnedDocument && !chat.isEditableDocument && !chat.usesEditor)
+            #expect(chat.route.kind == .ephemeralReader)
+            chat.setRecipient(.newAgent)
+            #expect(chat.route.kind == .ephemeralReader)
+            #expect(!chat.editorHandles("Replace all the text"))
+            try await sendAndWait(chat, "Explain these instructions")
+            #expect(await agent.requests.first?.configuration.documentReader == true)
+            #expect(await agent.requests.first?.configuration.documentEditor != true)
+        }
+    }
+
     @Test("A PDF keeps a full agent because it has no lines to edit")
     func pdfSkipsTheEditor() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("document-editor-\(UUID().uuidString)")

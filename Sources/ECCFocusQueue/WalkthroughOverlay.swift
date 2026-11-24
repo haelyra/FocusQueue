@@ -552,16 +552,17 @@ private struct WalkthroughAgentsContent: View {
           WalkthroughAccountBadge(state: model.providerAccounts[option])
         }
       }
+      let chatProvider = model.chatAgentProvider
       Picker("QChat model", selection: Binding(
-        get: { model.effectiveChatModel(for: provider) ?? "" },
-        set: { model.setChatModel($0, for: provider) }
+        get: { model.effectiveChatModel(for: chatProvider) ?? "" },
+        set: { model.setChatModel($0, for: chatProvider) }
       )) {
-        ForEach(model.agentModelChoices(for: provider)) { choice in
+        ForEach(model.agentModelChoices(for: chatProvider)) { choice in
           Text(choice.label).tag(choice.model ?? "")
         }
       }
       .font(.system(size: 12))
-      Text("Change this later in Settings → Agents or from the menus above any chat.")
+      Text("Change this later in Settings → Harness Configs or from the menus above any chat.")
         .font(.system(size: 11)).foregroundStyle(.tertiary)
     }
     .task { if model.providerAccounts.isEmpty { await model.refreshProviderAccounts() } }

@@ -444,6 +444,93 @@ struct QueueViewModelTests {
     try await eventually { !model.isQueueAgentResponding }
   }
 
+  @Test("A QChat provider choice overrides the default agent and resets to follow it")
+  func queueChatProviderOverridesDefault() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let codexAgent = ControlledQueueAgent()
+    let kimiAgent = ControlledQueueAgent()
+    let model = await fixture.model(agent: codexAgent, queueAgentFactory: { provider in
+      provider == .kimi ? kimiAgent : codexAgent
+    })
+    model.setDefaultAgentProvider(.codex)
+    model.setChatProvider(.kimi)
+    #expect(model.chatAgentProvider == .kimi)
+    #expect(model.defaultAgentProvider == .codex)
+
+    #expect(model.sendQueueAgentMessage("Which task is next?"))
+    try await eventually { await kimiAgent.hasPendingReply }
+    #expect(await codexAgent.messages.isEmpty)
+    await kimiAgent.reply("ECC-101.")
+    try await eventually { !model.isQueueAgentResponding }
+
+    model.setChatProvider(nil)
+    #expect(model.chatAgentProvider == .codex)
+    #expect(model.sendQueueAgentMessage("And with the default?"))
+    try await eventually { await codexAgent.hasPendingReply }
+    await codexAgent.reply("Still ECC-101.")
+    try await eventually { !model.isQueueAgentResponding }
+  }
+
+  @Test("Idle QChat tabs clear after the auto-clear time; recent or never-set ones stay")
+  func idleQueueChatAutoClears() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let agent = ControlledQueueAgent()
+    let model = await fixture.model(agent: agent)
+
+    #expect(model.sendQueueAgentMessage("Remember this exchange."))
+    try await eventually { await agent.hasPendingReply }
+    await agent.reply("Noted.")
+    try await eventually { !model.isQueueAgentResponding }
+    let count = model.chatMessages(ticketID: nil).count
+    #expect(count > 1)
+
+    // Never: nothing clears, however long the tab sits.
+    model.clearIdleQueueChats(now: Date().addingTimeInterval(400 * 86_400))
+    #expect(model.chatMessages(ticketID: nil).count == count)
+
+    model.setChatAutoClear(QueueChatAutoClear(unit: .hours, amount: 2))
+    #expect(model.config.chatAutoClearMinutes == 120)
+    // Turning it on checks at once; the exchange is seconds old, so it stays.
+    #expect(model.chatMessages(ticketID: nil).count == count)
+    model.clearIdleQueueChats(now: Date().addingTimeInterval(119 * 60))
+    #expect(model.chatMessages(ticketID: nil).count == count)
+
+    model.clearIdleQueueChats(now: Date().addingTimeInterval(121 * 60))
+    #expect(model.chatMessages(ticketID: nil).isEmpty)
+    try await eventually { await !agent.resetSessionNames.isEmpty }
+    #expect(model.loadError == nil)
+  }
+
+  @Test("Each settings tab renders headlessly with its own sections")
+  func settingsTabsRender() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(agent: ControlledQueueAgent())
+    let previous = UserDefaults.standard.string(forKey: QueueSettingsTab.defaultsKey)
+    defer { UserDefaults.standard.set(previous, forKey: QueueSettingsTab.defaultsKey) }
+    for tab in QueueSettingsTab.allCases {
+      UserDefaults.standard.set(tab.rawValue, forKey: QueueSettingsTab.defaultsKey)
+      // An offscreen hosting view draws scroll content and AppKit controls,
+      // which ImageRenderer leaves blank.
+      let size = NSSize(width: 460, height: 2_200)
+      let host = NSHostingView(rootView: QueueSettingsView(
+        model: model, focusedSection: nil, openSessions: {}, openAnalytics: {}, close: {})
+        .padding(12).frame(width: size.width, height: size.height).environment(\.colorScheme, .dark))
+      host.frame = NSRect(origin: .zero, size: size)
+      host.appearance = NSAppearance(named: .darkAqua)
+      host.layoutSubtreeIfNeeded()
+      let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+      host.cacheDisplay(in: host.bounds, to: bitmap)
+      #expect(bitmap.size.width == size.width)
+      if let output = ProcessInfo.processInfo.environment["FOCUS_QUEUE_RENDER_DIR"] {
+        try bitmap.representation(using: .png, properties: [:])?.write(to:
+          URL(fileURLWithPath: output).appendingPathComponent("settings-\(tab.rawValue).png"))
+      }
+    }
+  }
+
   @Test("Cancelling a queue chat stops without an error bubble")
   func queueChatCancellationIsSilent() async throws {
     let fixture = try await Fixture()
@@ -4648,7 +4735,7 @@ struct QueueViewModelTests {
   func quotaFallbackModelTiers() {
     let choices = AppConfiguration.defaultAgentModelChoices
     // Flagship to flagship, fast to fast, mid to mid.
-    #expect(QueueViewModel.quotaFallbackModel(from: "claude-opus-5-5", to: .codex, choices: choices) == "gpt-6.1-sol")
+    #expect(QueueViewModel.quotaFallbackModel(from: "claude-opus-5-5", to: .codex, choices: choices) == "gpt-6.2-sol")
     #expect(QueueViewModel.quotaFallbackModel(from: "gpt-6-luna", to: .claude, choices: choices) == "claude-haiku-5-5")
     #expect(QueueViewModel.quotaFallbackModel(from: "claude-sonnet-5-5", to: .kimi, choices: choices) == "kimi-code/k3")
     // No source model or no tier match launches the provider's default.

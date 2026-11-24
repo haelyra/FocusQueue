@@ -94,6 +94,16 @@ struct ModuleFilesGridView: View {
           .help("Add it to the in-order success-criteria review in the Modules list.")
       }
     }
+    .overlay(alignment: .topTrailing) {
+      PlanningDocumentInformationMenu(model: model,
+        description: file.oneLine.isEmpty
+          ? (file.isModule ? "The module's responsibilities, design, interfaces, and success criteria."
+              : "Shared project context used by module agents.") : file.oneLine,
+        taskIDs: tracked.flatMap { model.developmentProcess?.linkedTaskIDs(module: $0.id) } ?? [],
+        guidelines: file.isModule ? [DevelopmentGuidelines.moduleGuideline]
+          : DevelopmentGuidelines.artifactGuidelines[file.fileName].map { [$0] } ?? [],
+        url: file.url)
+    }
   }
 
   /// `M2 Reminder scheduler`: no separator, so two lines wrap at a word.

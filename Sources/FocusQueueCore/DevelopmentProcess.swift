@@ -1,6 +1,6 @@
 import Foundation
 
-/// A project's development process: Planning → Phase 0 → Phase 1+ → Phase N−1 → Phase N.
+/// A project's development process: Planning → Phase 0 → Modules → Phase N−1 → Phase N.
 /// The state lives in `development.json` beside the project's plan; a file with
 /// `enabled == true` is the feature flag, so launch briefs read it straight from the
 /// project folder without a config round-trip.
@@ -15,7 +15,7 @@ public enum DevelopmentPhase: String, Codable, CaseIterable, Sendable {
         switch self {
         case .planning: "Planning"
         case .phase0: "Phase 0"
-        case .implementation: "Phase 1+"
+        case .implementation: "Modules"
         case .prerelease: "Phase N−1"
         case .release: "Phase N"
         }
@@ -184,11 +184,75 @@ public struct DevelopmentModule: Codable, Equatable, Sendable, Identifiable {
     public var implemented: Bool
     /// Human QA verified the module.
     public var qaAccepted: Bool
+    /// Explicit human lifecycle choice. Nil retains legacy task-derived progress.
+    public var selectedStatus: DevelopmentModuleStatus?
 
     public init(id: String = UUID().uuidString.lowercased(), name: String, file: String? = nil,
-                criteriaAccepted: Bool = false, implemented: Bool = false, qaAccepted: Bool = false) {
+                criteriaAccepted: Bool = false, implemented: Bool = false, qaAccepted: Bool = false, selectedStatus: DevelopmentModuleStatus? = nil) {
         self.id = id; self.name = name; self.file = file
         self.criteriaAccepted = criteriaAccepted; self.implemented = implemented; self.qaAccepted = qaAccepted
+        self.selectedStatus = selectedStatus
+    }
+}
+
+/// A module's place in the structured-output task cycle: the single colored
+/// status the Project tab shows. Human choices persist; untouched modules derive
+/// progress from existing flags and linked work. Earlier choices undo completion.
+public enum DevelopmentModuleStatus: String, Codable, CaseIterable, Sendable {
+    /// Planned explicitly, or no completion justification and no open linked task.
+    case planned
+    /// Work started explicitly, or an open task is linked to the module.
+    case inProgress
+    /// Completion was justified (or every linked task closed).
+    case implemented
+    /// Human QA verified the module.
+    case qaVerified
+    /// The owner accepted the module's success criteria.
+    case criteriaAccepted
+
+    public var title: String {
+        switch self {
+        case .planned: "Planned"
+        case .inProgress: "In progress"
+        case .implemented: "Implemented"
+        case .qaVerified: "QA verified"
+        case .criteriaAccepted: "Criteria accepted"
+        }
+    }
+
+    /// SF Symbol for the status dot; the Project tab colors it.
+    public var systemImage: String {
+        switch self {
+        case .planned: "circle"
+        case .inProgress: "circle.lefthalf.filled"
+        case .implemented: "checkmark.circle.fill"
+        case .qaVerified: "checkmark.shield.fill"
+        case .criteriaAccepted: "checkmark.seal.fill"
+        }
+    }
+
+    public init(of module: DevelopmentModule, hasOpenLinkedWork: Bool) {
+        if let selected = module.selectedStatus { self = selected }
+        else if module.criteriaAccepted { self = .criteriaAccepted } else if module.qaAccepted { self = .qaVerified }
+        else if module.implemented { self = .implemented }
+        else { self = hasOpenLinkedWork ? .inProgress : .planned }
+    }
+
+    /// Earlier progress states clear later flags. Criteria review is independent
+    /// and never fabricates implementation or human QA.
+    public func applying(to module: inout DevelopmentModule) {
+        module.selectedStatus = self
+        switch self {
+        case .planned, .inProgress:
+            module.criteriaAccepted = false; module.qaAccepted = false; module.implemented = false
+        case .implemented:
+            module.criteriaAccepted = false; module.qaAccepted = false; module.implemented = true
+        case .qaVerified:
+            module.criteriaAccepted = false; module.qaAccepted = true; module.implemented = true
+        case .criteriaAccepted:
+            // Criteria review is independent of completion and human QA.
+            module.criteriaAccepted = true
+        }
     }
 }
 
@@ -405,7 +469,7 @@ public struct DevelopmentProcess: Codable, Equatable, Sendable {
                 : "Linked tasks open: \(open.map(\.id).joined(separator: ", "))."
             if raise(stepID: step.id, to: target, source: .tasks, note: evidence, now: now) { changed = true }
         }
-        for index in modules.indices where !modules[index].implemented {
+        for index in modules.indices where !modules[index].implemented && modules[index].selectedStatus == nil {
             let linked = linkedTaskIDs(module: modules[index].id).compactMap { byID[$0] }
             if !linked.isEmpty, linked.allSatisfy({ !$0.isOpen }) {
                 modules[index].implemented = true; changed = true
@@ -745,6 +809,25 @@ public struct DevelopmentProcessStore: Sendable {
         }
     }
 
+    /// Sets a module's status in one move. Criteria acceptance keeps the
+    /// sequential-review gate; every other state is reachable at any time, and
+    /// picking an earlier state undoes the later flags.
+    public func setModuleStatus(_ status: DevelopmentModuleStatus, moduleID: String,
+                                projectID: String) throws -> DevelopmentProcess {
+        try mutate(projectID: projectID) { process in
+            guard let index = process.modules.firstIndex(where: { $0.id == moduleID }) else {
+                throw DevelopmentProcessError.unknownModule(moduleID)
+            }
+            if status == .criteriaAccepted,
+               process.effectiveModuleReviewOrder == .sequential,
+               let blocker = process.modules[..<index].first(where: { !$0.criteriaAccepted }) {
+                throw DevelopmentProcessError.outOfOrderAcceptance(
+                    module: process.modules[index].name, blockedBy: blocker.name)
+            }
+            status.applying(to: &process.modules[index])
+        }
+    }
+
     /// Accepts a module's criteria. Parallel review (the default) accepts any
     /// module at any time; sequential review requires every module listed before it.
     public func acceptCriteria(moduleID: String, projectID: String) throws -> DevelopmentProcess {
@@ -757,6 +840,7 @@ public struct DevelopmentProcessStore: Sendable {
                 throw DevelopmentProcessError.outOfOrderAcceptance(
                     module: process.modules[index].name, blockedBy: blocker.name)
             }
+            process.modules[index].selectedStatus = nil
             process.modules[index].criteriaAccepted = true
         }
     }
@@ -773,6 +857,7 @@ public struct DevelopmentProcessStore: Sendable {
             guard let index = process.modules.firstIndex(where: { $0.id == moduleID }) else {
                 throw DevelopmentProcessError.unknownModule(moduleID)
             }
+            process.modules[index].selectedStatus = nil
             process.modules[index].implemented = implemented
         }
     }
@@ -783,6 +868,7 @@ public struct DevelopmentProcessStore: Sendable {
             guard let index = process.modules.firstIndex(where: { $0.id == moduleID }) else {
                 throw DevelopmentProcessError.unknownModule(moduleID)
             }
+            process.modules[index].selectedStatus = nil
             process.modules[index].qaAccepted = accepted
         }
     }

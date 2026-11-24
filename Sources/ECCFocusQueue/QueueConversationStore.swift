@@ -90,6 +90,13 @@ actor QueueConversationStore {
     }
   }
 
+  /// When the tab's transcript was last written; nil before its first save.
+  func lastModified(tabID: String) -> Date? {
+    let url = tabID == QueueChatTab.mainID ? try? location(nil) : try? tabLocation(tabID)
+    guard let url else { return nil }
+    return (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+  }
+
   private var tabsURL: URL { root.appendingPathComponent("qchat").appendingPathComponent("tabs.json") }
 
   private func tabLocation(_ tabID: String) throws -> URL {

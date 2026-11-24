@@ -144,6 +144,33 @@ struct ProjectTabTests {
     #expect(queue.fittingSize.width > 0)
   }
 
+
+  @Test("Module selector persists undo and Modules renders with planning document information")
+  func lifecycleWorkflow() async throws {
+    let (model, root) = try await bootstrappedModel()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let project = try #require(model.selectedProject)
+    model.setDevelopmentProcessEnabled(true)
+    model.addDevelopmentModule(name: "Search", file: "modules/search.md")
+    let id = try #require(model.developmentProcess?.modules.first?.id)
+    for status in DevelopmentModuleStatus.allCases.reversed() {
+      model.setDevelopmentModuleStatus(status, moduleID: id)
+      let saved = try #require(try DevelopmentProcessStore(root: root).load(projectID: project.id)?.modules.first)
+      #expect(model.developmentModuleStatus(saved) == status)
+      #expect(model.developmentProcessError == nil)
+    }
+    model.setDevelopmentModuleStatus(.implemented, moduleID: id)
+    model.setDevelopmentPhase(.implementation)
+    let tab = render(ProjectTabView(model: model), size: NSSize(width: 520, height: 900), name: "modules-lifecycle")
+    #expect(tab.fittingSize.width > 0)
+    model.setDevelopmentPhase(.planning)
+    let step = try #require(DevelopmentProcessCatalog.step(id: "prd", in: .planning))
+    #expect(ProjectTabView.artifactDescription("prd.md", step: step).contains("measurable success criteria"))
+    #expect(ProjectTabView.artifactDescription("custom.md", step: step) == step.summary)
+    let planning = render(ProjectTabView(model: model), size: NSSize(width: 520, height: 1000), name: "planning-document-info")
+    #expect(planning.fittingSize.width > 0)
+  }
+
   private func render<Content: View>(_ view: Content, size: NSSize, name: String) -> NSHostingView<Content> {
     let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless],
       backing: .buffered, defer: false)

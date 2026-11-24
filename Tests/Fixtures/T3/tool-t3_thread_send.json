@@ -1,0 +1,24 @@
+{
+  "_meta": {
+    "io.modelcontextprotocol/serverInfo": {
+      "name": "T3 Code",
+      "version": "0.1.12-nightly.20261123.5124"
+    }
+  },
+  "resultType": "complete",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"threadId\":\"THREAD_4\",\"link\":\"https://app.t3.codes/threads/ENVIRONMENT_1/mcp%3Alaunch%3A9e82b8f6b1151cc208ae09e4c1cb9370d6bca95a82a237135a5f581a934f812c\",\"messageId\":\"message:mcp:client%3Ad744ba55-2c60-4d67-bd52-2da815b1d31a:thread-send:UUID_2\",\"runId\":\"RUN_6\",\"status\":\"starting\",\"delivery\":\"started\"}"
+    }
+  ],
+  "structuredContent": {
+    "threadId": "THREAD_4",
+    "link": "https://app.t3.codes/threads/ENVIRONMENT_1/mcp%3Alaunch%3A9e82b8f6b1151cc208ae09e4c1cb9370d6bca95a82a237135a5f581a934f812c",
+    "messageId": "message:mcp:client%3Ad744ba55-2c60-4d67-bd52-2da815b1d31a:thread-send:UUID_2",
+    "runId": "RUN_6",
+    "status": "starting",
+    "delivery": "started"
+  },
+  "isError": false
+}

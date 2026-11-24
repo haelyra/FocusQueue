@@ -1,0 +1,40 @@
+{
+  "_meta": {
+    "io.modelcontextprotocol/serverInfo": {
+      "name": "T3 Code",
+      "version": "0.1.12-nightly.20261123.5124"
+    }
+  },
+  "resultType": "complete",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"environmentId\":\"ENVIRONMENT_1\",\"label\":\"Test Mac\",\"serverVersion\":\"0.1.12-nightly.20261123.5124\",\"platform\":{\"os\":\"darwin\",\"arch\":\"arm64\",\"machine\":\"mac-studio\"},\"preferences\":{\"defaultThreadEnvMode\":\"local\",\"newWorktreesStartFromOrigin\":true,\"enableProviderUpdateChecks\":true,\"backgroundActivity\":{\"profile\":\"balanced\"},\"sourceControlWritingStyle\":{\"mode\":\"repo_conventions\",\"followChangeRequestTemplates\":true,\"customInstructions\":\"\",\"truncated\":false}}}"
+    }
+  ],
+  "structuredContent": {
+    "environmentId": "ENVIRONMENT_1",
+    "label": "Test Mac",
+    "serverVersion": "0.1.12-nightly.20261123.5124",
+    "platform": {
+      "os": "darwin",
+      "arch": "arm64",
+      "machine": "mac-studio"
+    },
+    "preferences": {
+      "defaultThreadEnvMode": "local",
+      "newWorktreesStartFromOrigin": true,
+      "enableProviderUpdateChecks": true,
+      "backgroundActivity": {
+        "profile": "balanced"
+      },
+      "sourceControlWritingStyle": {
+        "mode": "repo_conventions",
+        "followChangeRequestTemplates": true,
+        "customInstructions": "",
+        "truncated": false
+      }
+    }
+  },
+  "isError": false
+}

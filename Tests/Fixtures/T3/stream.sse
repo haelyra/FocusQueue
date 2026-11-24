@@ -1,0 +1,32 @@
+data: {"jsonrpc":"2.0","method":"notifications/events/active","params":{"_meta":{"io.modelcontextprotocol/subscriptionId":23},"cursor":"mwsp6cxs.126","truncated":false,"heartbeatMs":15000}}
+
+data: {"jsonrpc":"2.0","method":"notifications/events/event","params":{"eventId":"EVENT_1","name":"thread.run_settled","timestamp":"2026-11-24T19:19:19.770Z","data":{"id":"EVENT_1","occurredAt":"2026-11-24T19:19:19.770Z","projectId":"PROJECT_1","threadId":"THREAD_5","parentThreadId":null,"actor":{"type":"agent","id":"claudeAgent"},"isSubagentChild":false,"type":"thread.run_settled","runId":"RUN_5","outcome":"completed"},"cursor":"mwsp6cxs.129","_meta":{"io.modelcontextprotocol/subscriptionId":23}}}
+
+: keepalive
+
+data: {"jsonrpc":"2.0","method":"notifications/events/event","params":{"eventId":"EVENT_2","name":"thread.run_settled","timestamp":"2026-11-24T19:19:31.852Z","data":{"id":"EVENT_2","occurredAt":"2026-11-24T19:19:31.852Z","projectId":"PROJECT_1","threadId":"THREAD_3","parentThreadId":null,"actor":{"type":"agent","id":"claudeAgent"},"isSubagentChild":false,"type":"thread.run_settled","runId":"RUN_3","outcome":"interrupted"},"cursor":"mwsp6cxs.132","_meta":{"io.modelcontextprotocol/subscriptionId":23}}}
+
+: keepalive
+
+data: {"jsonrpc":"2.0","method":"notifications/events/event","params":{"eventId":"EVENT_3","name":"thread.run_settled","timestamp":"2026-11-24T19:19:41.607Z","data":{"id":"EVENT_3","occurredAt":"2026-11-24T19:19:41.607Z","projectId":"PROJECT_1","threadId":"THREAD_4","parentThreadId":null,"actor":{"type":"agent","id":"claudeAgent"},"isSubagentChild":false,"type":"thread.run_settled","runId":"RUN_4","outcome":"completed"},"cursor":"mwsp6cxs.133","_meta":{"io.modelcontextprotocol/subscriptionId":23}}}
+
+: keepalive
+
+data: {"jsonrpc":"2.0","method":"notifications/events/heartbeat","params":{"_meta":{"io.modelcontextprotocol/subscriptionId":23},"cursor":"mwsp6cxs.133"}}
+
+data: {"jsonrpc":"2.0","method":"notifications/events/event","params":{"eventId":"EVENT_4","name":"thread.run_settled","timestamp":"2026-11-24T19:20:04.893Z","data":{"id":"EVENT_4","occurredAt":"2026-11-24T19:20:04.893Z","projectId":"PROJECT_1","threadId":"THREAD_4","parentThreadId":null,"actor":{"type":"agent","id":"claudeAgent"},"isSubagentChild":false,"type":"thread.run_settled","runId":"RUN_6","outcome":"completed"},"cursor":"mwsp6cxs.134","_meta":{"io.modelcontextprotocol/subscriptionId":23}}}
+
+: keepalive
+
+data: {"jsonrpc":"2.0","method":"notifications/events/event","params":{"eventId":"EVENT_5","name":"thread.run_settled","timestamp":"2026-11-24T19:20:18.200Z","data":{"id":"EVENT_5","occurredAt":"2026-11-24T19:20:18.200Z","projectId":"PROJECT_1","threadId":"THREAD_6","parentThreadId":null,"actor":{"type":"agent","id":"claudeAgent"},"isSubagentChild":false,"type":"thread.run_settled","runId":"RUN_7","outcome":"interrupted"},"cursor":"mwsp6cxs.135","_meta":{"io.modelcontextprotocol/subscriptionId":23}}}
+
+data: {"jsonrpc":"2.0","method":"notifications/events/event","params":{"eventId":"EVENT_6","name":"thread.run_settled","timestamp":"2026-11-24T19:20:24.921Z","data":{"id":"EVENT_6","occurredAt":"2026-11-24T19:20:24.921Z","projectId":"PROJECT_1","threadId":"THREAD_7","parentThreadId":null,"actor":{"type":"agent","id":"claudeAgent"},"isSubagentChild":false,"type":"thread.run_settled","runId":"RUN_8","outcome":"interrupted"},"cursor":"mwsp6cxs.136","_meta":{"io.modelcontextprotocol/subscriptionId":23}}}
+
+: keepalive
+
+data: {"jsonrpc":"2.0","method":"notifications/events/heartbeat","params":{"_meta":{"io.modelcontextprotocol/subscriptionId":23},"cursor":"mwsp6cxs.136"}}
+
+: keepalive
+
+data: {"jsonrpc":"2.0","method":"notifications/events/event","params":{"eventId":"EVENT_7","name":"thread.run_settled","timestamp":"2026-11-24T19:20:46.334Z","data":{"id":"EVENT_7","occurredAt":"2026-11-24T19:20:46.334Z","projectId":"PROJECT_1","threadId":"THREAD_8","parentThreadId":null,"actor":{"type":"agent","id":"claudeAgent"},"isSubagentChild":false,"type":"thread.run_settled","runId":"RUN_10","outcome":"completed"},"cursor":"mwsp6cxs.137","_meta":{"io.modelcontextprotocol/subscriptionId":23}}}
+

@@ -6,8 +6,8 @@
 // Each file holds one `tools/call` `result` exactly as captured: an object with
 // `structuredContent` and/or `content: [{type: "text", text}]`. A file holding only the bare
 // structured payload is also accepted. For `t3_pending_request` the variant names the action
-// (`list` or `read`); other tools ignore the variant. Error results (`isError: true`) are not
-// fixtures for this test.
+// (`list` or `read`); other tools ignore the variant. Error results (`isError: true`) must be
+// listed in `expectedFixtureErrors` with the error they map to.
 
 import Foundation
 import Testing
@@ -500,6 +500,16 @@ struct T3ToolClientTests {
             let variant = stem.split(separator: "-", maxSplits: 1).dropFirst().first.map(String.init)
             let (client, transport) = makeClient()
             await transport.script(tool, .result(result))
+            if let expected = Self.expectedFixtureErrors[file] {
+                do {
+                    try await decodeFixture(client: client, tool: tool, variant: variant)
+                    Issue.record("\(file) is an error result but decoded")
+                } catch let error as T3Error {
+                    #expect(error == expected, "\(file)")
+                }
+                continue
+            }
+            #expect(result["isError"]?.boolValue != true, "\(file) is an error result without an expected error")
             do {
                 try await decodeFixture(client: client, tool: tool, variant: variant)
             } catch {
@@ -507,6 +517,17 @@ struct T3ToolClientTests {
             }
         }
     }
+
+    /// Error results captured from T3 Code and the error each must map to.
+    private static let expectedFixtureErrors: [String: T3Error] = [
+        "tool-t3_project_create-duplicate.json": .projectAlreadyRegistered,
+        "tool-t3_project_create-error.json": .rejected(
+            code: "capability_denied",
+            message: "Changing projects or environment settings needs a live full-access/default calling thread or a full-access client."),
+        "tool-t3_thread_launch-rejected.json": .rejected(
+            code: "invalid_request",
+            message: "worktreePath must be one of the project's git worktrees. t3_worktree_list shows them."),
+    ]
 
     private func decodeFixture(client: T3ToolClient, tool: String, variant: String?) async throws {
         let launch = T3LaunchRequest(title: "t", projectId: "p", message: "m", instanceId: "i", model: "m",

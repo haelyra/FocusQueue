@@ -299,7 +299,7 @@ struct T3ConnectionTests {
         #expect(t3Query(authorize, "client_id") == "CLIENT_1")
         #expect(t3Query(authorize, "redirect_uri") == redirect)
         #expect(t3Query(authorize, "code_challenge_method") == "S256")
-        #expect(t3Query(authorize, "scope") == "orchestration:read orchestration:operate")
+        #expect(t3Query(authorize, "scope") == "orchestration:read orchestration:operate settings:write")
         #expect(t3Query(authorize, "resource") == harness.server + "/mcp")
         #expect((t3Query(authorize, "state") ?? "").count >= 32)
 

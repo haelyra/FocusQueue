@@ -8,7 +8,7 @@ public typealias T3TransportFactory = @Sendable (URL, @escaping @Sendable () asy
 /// OAuth sign-in, Keychain credential, discovery, identity, and the connection state machine
 /// in `.spec/plan.md` ("Connection state machine").
 public actor T3Connection: T3ConnectionProviding {
-    public static let requestedScope = "orchestration:read orchestration:operate"
+    public static let requestedScope = "orchestration:read orchestration:operate settings:write"
     public static let signInTimeout: Double = 600
     /// Probe delays after the connection drops; the last one repeats.
     public static let backoff: [Double] = [1, 2, 4, 8, 16, 30]

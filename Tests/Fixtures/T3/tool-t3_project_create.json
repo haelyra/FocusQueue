@@ -1,0 +1,34 @@
+{
+  "_meta": {
+    "io.modelcontextprotocol/serverInfo": {
+      "name": "T3 Code",
+      "version": "0.1.12-nightly.20261123.5124"
+    }
+  },
+  "resultType": "complete",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"id\":\"PROJECT_1\",\"title\":\"fq-contract-probe\",\"workspaceRoot\":\"/REPO\",\"repositoryIdentity\":null,\"faviconPath\":null,\"projectIcon\":null,\"defaultModelSelection\":null,\"defaultThreadEnvMode\":null,\"autoPull\":false,\"scripts\":[],\"trackedFolders\":[],\"pinnedAt\":null,\"archivedAt\":null,\"createdAt\":\"2026-11-24T19:18:50.368Z\",\"updatedAt\":\"2026-11-24T19:18:50.368Z\",\"deletedAt\":null}"
+    }
+  ],
+  "structuredContent": {
+    "id": "PROJECT_1",
+    "title": "fq-contract-probe",
+    "workspaceRoot": "/REPO",
+    "repositoryIdentity": null,
+    "faviconPath": null,
+    "projectIcon": null,
+    "defaultModelSelection": null,
+    "defaultThreadEnvMode": null,
+    "autoPull": false,
+    "scripts": [],
+    "trackedFolders": [],
+    "pinnedAt": null,
+    "archivedAt": null,
+    "createdAt": "2026-11-24T19:18:50.368Z",
+    "updatedAt": "2026-11-24T19:18:50.368Z",
+    "deletedAt": null
+  },
+  "isError": false
+}

@@ -40,7 +40,7 @@ from typing import Any, Callable, Iterable, Optional
 PROTOCOL_VERSION = "2026-07-28"
 DEFAULT_SERVER = "http://127.0.0.1:3773"
 EVENTS_EXTENSION = "io.modelcontextprotocol/events"
-SCOPE = "orchestration:read orchestration:operate"
+SCOPE = "orchestration:read orchestration:operate settings:write"
 PROJECT_TITLE = "fq-contract-probe"
 TEMP_PREFIX = "fq-contract-probe-"
 MODEL = "claude-haiku-5-5"
@@ -1279,6 +1279,8 @@ class Probe:
             raw["discover"] = self.extra["discover"]
         if self.extra.get("capabilities") is not None:
             raw["capabilities"] = self.extra["capabilities"]
+        for name in [n for n in raw if n.startswith("tool-t3_project_list")]:
+            raw[name] = only_probe_projects(raw[name])
         stream_text = ""
         if self.streams:
             ranked = sorted(self.streams.raw.items(),
@@ -1293,6 +1295,35 @@ class Probe:
         if stream_text:
             files["stream.sse"] = self.sanitizer.text(stream_text)
         return files
+
+
+def only_probe_projects(result: Any) -> Any:
+    """A t3_project_list result reduced to the probe's own project. The user's other projects
+    (names, paths, remotes) never belong in a fixture."""
+    def keep(project: Any) -> bool:
+        return isinstance(project, dict) and project.get("title") == PROJECT_TITLE
+
+    def reduce(payload: Any) -> Any:
+        if isinstance(payload, dict) and isinstance(payload.get("projects"), list):
+            return {**payload, "projects": [p for p in payload["projects"] if keep(p)]}
+        return payload
+
+    if not isinstance(result, dict):
+        return result
+    result = dict(result)
+    if "structuredContent" in result:
+        result["structuredContent"] = reduce(result["structuredContent"])
+    content = []
+    for item in result.get("content") or []:
+        if isinstance(item, dict) and item.get("type") == "text":
+            try:
+                item = {**item, "text": json.dumps(reduce(json.loads(item["text"])), separators=(",", ":"))}
+            except (ValueError, TypeError):
+                pass
+        content.append(item)
+    if "content" in result:
+        result["content"] = content
+    return result
 
 
 def write_fixtures(files: dict[str, str], directory: Path) -> list[str]:

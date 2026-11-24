@@ -251,5 +251,17 @@ class HelperTests(unittest.TestCase):
         self.assertIn("--only", output.getvalue())
 
 
+class ProjectListPrivacyTests(unittest.TestCase):
+    def test_project_list_keeps_only_the_probe_project(self):
+        probe = {"title": MODULE.PROJECT_TITLE, "id": PROJECT}
+        private = {"title": "Private", "workspaceRoot": HOME_REPO}
+        result = {"structuredContent": {"projects": [probe, private]},
+                  "content": [{"type": "text", "text": json.dumps({"projects": [private, probe]})}]}
+        reduced = MODULE.only_probe_projects(result)
+        self.assertEqual(reduced["structuredContent"]["projects"], [probe])
+        self.assertEqual(json.loads(reduced["content"][0]["text"])["projects"], [probe])
+        self.assertNotIn("Private", json.dumps(reduced))
+
+
 if __name__ == "__main__":
     unittest.main()

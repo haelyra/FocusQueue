@@ -41,13 +41,23 @@ public enum ScheduleJobSource: Hashable, Sendable {
     case runRecord(id: String)
 }
 
-/// The window lengths the viewer offers.
+/// The window lengths the viewer offers, in hours ahead of now.
 public enum ScheduleRange: Int, CaseIterable, Identifiable, Sendable {
-    case day = 1, threeDays = 3, week = 7, twoWeeks = 14
+    case twoHours = 2, day = 24, threeDays = 72, week = 168, twoWeeks = 336
 
     public var id: Int { rawValue }
-    public var days: Int { rawValue }
-    public var label: String { rawValue == 1 ? "1 day" : "\(rawValue) days" }
+    public var hours: Int { rawValue }
+    public var span: TimeInterval { TimeInterval(rawValue) * 3_600 }
+    public var label: String {
+        switch self {
+        case .twoHours: "2 hours"
+        case .day: "1 day"
+        default: "\(rawValue / 24) days"
+        }
+    }
+
+    /// The range for a value saved by builds that stored whole days.
+    public static func migrating(legacyDays: Int) -> ScheduleRange? { ScheduleRange(rawValue: legacyDays * 24) }
 }
 
 /// One scheduled job, independent of how many times it fires in a window.
@@ -375,22 +385,19 @@ public enum ScheduleTimeline {
     // MARK: Window
 
     /// The drawable span: from the start of the day `pastSpan` before `now`,
-    /// so past runs stay reachable by scrolling back, to `days` after `now`.
+    /// so past runs stay reachable by scrolling back, to `span` after `now`.
     /// The view opens on `now`, so the past is off screen by default.
-    public static func window(now: Date, days: Int, pastSpan: TimeInterval,
+    public static func window(now: Date, span: TimeInterval, pastSpan: TimeInterval,
                               calendar: Calendar = .current) -> DateInterval {
         let start = calendar.startOfDay(for: now.addingTimeInterval(-max(0, pastSpan)))
-        return DateInterval(start: start, end: now.addingTimeInterval(forwardSpan(days: days)))
+        return DateInterval(start: start, end: now.addingTimeInterval(max(60, span)))
     }
 
-    /// The time ahead of now that one screen shows at 1x zoom.
-    public static func forwardSpan(days: Int) -> TimeInterval { TimeInterval(max(1, days)) * 86_400 }
-
-    /// Points per second so the forward span fills `width` at `zoom` 1x,
-    /// after `leadIn` points of the past kept left of the playhead so the
-    /// "now" marker stays readable at the leading edge.
-    public static func scale(width: Double, days: Int, zoom: Double, leadIn: Double = 0) -> Double {
-        max(1, width - leadIn) * max(1, zoom) / forwardSpan(days: days)
+    /// Points per second so `span` fills `width` at `zoom` 1x, after
+    /// `leadIn` points of the past kept left of the playhead so the "now"
+    /// marker stays readable at the leading edge.
+    public static func scale(width: Double, span: TimeInterval, zoom: Double, leadIn: Double = 0) -> Double {
+        max(1, width - leadIn) * max(1, zoom) / max(60, span)
     }
 
     // MARK: Zoom
@@ -405,9 +412,10 @@ public enum ScheduleTimeline {
         }
     }
 
-    /// Hours between labeled ruler ticks so labels stay at least `minimumSpacing` apart.
-    public static func tickHours(pointsPerHour: Double, minimumSpacing: Double = 64) -> Int {
-        [1, 2, 3, 6, 12].first { Double($0) * pointsPerHour >= minimumSpacing } ?? 24
+    /// Minutes between labeled ruler ticks so labels stay at least
+    /// `minimumSpacing` apart. Each step divides a day evenly.
+    public static func tickMinutes(pointsPerHour: Double, minimumSpacing: Double = 64) -> Int {
+        [5, 10, 15, 30, 60, 120, 180, 360, 720].first { Double($0) / 60 * pointsPerHour >= minimumSpacing } ?? 1_440
     }
 
     /// The zoom factor for a slider position in 0...1: exponential from 1x

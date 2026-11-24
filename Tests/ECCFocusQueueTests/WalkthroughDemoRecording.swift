@@ -278,16 +278,26 @@ extension WalkthroughDemoRecording {
 extension WalkthroughDemoRecording {
   /// Like `snapshot`, but yields the main actor for `settle` seconds first so
   /// deferred main-queue work (such as a scroll view's initial offset) lands.
+  /// `openingWidth` first lays the view out narrower, then widens it, the way
+  /// a side panel animates open.
   static func settledSnapshot(_ view: some View, size: NSSize, to url: URL,
-                              settle: Duration = .milliseconds(500)) async throws {
+                              settle: Duration = .milliseconds(500), openingWidth: CGFloat? = nil) async throws {
     let window = NSWindow(contentRect: NSRect(x: -9000, y: -9000, width: size.width, height: size.height),
       styleMask: [.borderless], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
-    let hosting = NSHostingView(rootView: view.frame(width: size.width, height: size.height)
+    let hosting = NSHostingView(rootView: view.frame(maxWidth: .infinity, maxHeight: .infinity)
       .background(Color(nsColor: .windowBackgroundColor)))
-    hosting.frame = NSRect(origin: .zero, size: size)
+    hosting.frame = NSRect(origin: .zero, size: NSSize(width: openingWidth ?? size.width, height: size.height))
     window.contentView = hosting
     hosting.layoutSubtreeIfNeeded()
+    if openingWidth != nil {
+      for step in 1...6 {
+        try await Task.sleep(for: .milliseconds(40))
+        let width = (openingWidth ?? size.width) + (size.width - (openingWidth ?? size.width)) * CGFloat(step) / 6
+        window.setContentSize(NSSize(width: width, height: size.height))
+        hosting.layoutSubtreeIfNeeded()
+      }
+    }
     try await Task.sleep(for: settle)
     hosting.layoutSubtreeIfNeeded()
     let rep = try #require(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))

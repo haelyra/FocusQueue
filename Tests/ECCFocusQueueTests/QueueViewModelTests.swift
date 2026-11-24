@@ -5977,15 +5977,24 @@ extension QueueViewModelTests {
     if let output = ProcessInfo.processInfo.environment["FOCUS_QUEUE_RENDER_DIR"] {
       let size = NSSize(width: 820, height: 360)
       let defaults = UserDefaults.standard
-      let savedRange = defaults.object(forKey: "scheduleTimelineRangeDays")
-      defer { defaults.set(savedRange, forKey: "scheduleTimelineRangeDays") }
-      for (name, days, zoom) in [("schedule-timeline.png", 3, 0.0), ("schedule-timeline-zoomed.png", 3, 0.75),
-                                 ("schedule-timeline-1day.png", 1, 0.0)] {
-        defaults.set(days, forKey: "scheduleTimelineRangeDays")
+      let key = ScheduleTimelineView.rangeKey
+      let savedRange = defaults.object(forKey: key)
+      defer { defaults.set(savedRange, forKey: key) }
+      for (name, range, zoom) in [("schedule-timeline.png", ScheduleRange.threeDays, 0.0),
+                                  ("schedule-timeline-zoomed.png", .threeDays, 0.75),
+                                  ("schedule-timeline-1day.png", .day, 0.0),
+                                  ("schedule-timeline-2hours.png", .twoHours, 0.0)] {
+        defaults.set(range.rawValue, forKey: key)
         try await WalkthroughDemoRecording.settledSnapshot(
           ScheduleTimelineView(model: model, initialZoom: zoom).padding(12).environment(\.colorScheme, .dark),
           size: size, to: URL(fileURLWithPath: output).appendingPathComponent(name))
       }
+      // The side panel widens as it opens; the view must still land on now.
+      defaults.set(ScheduleRange.day.rawValue, forKey: key)
+      try await WalkthroughDemoRecording.settledSnapshot(
+        ScheduleTimelineView(model: model).padding(12).environment(\.colorScheme, .dark),
+        size: size, to: URL(fileURLWithPath: output).appendingPathComponent("schedule-timeline-opening.png"),
+        openingWidth: 300)
     }
     let renderer = ImageRenderer(content: ScheduleTimelineView(model: model).frame(width: 760, height: 320))
     #expect(renderer.nsImage != nil)

@@ -14,7 +14,7 @@ enum ScheduleTimelineMetrics {
   /// Past kept left of now when the view opens on now, so the marker reads.
   static let nowLeadIn: CGFloat = 16
   /// The most an hour may stretch at full zoom.
-  static let maximumPointsPerHour: Double = 240
+  static let maximumPointsPerHour: Double = 960
 
   static func laneHeight(rows: Int) -> CGFloat {
     CGFloat(max(1, rows)) * rowHeight + 2 * lanePadding
@@ -79,7 +79,7 @@ extension ScheduleRunOutcome {
 /// the leading edge; the past is reachable by scrolling back.
 struct ScheduleTimelineView: View {
   let model: QueueViewModel
-  @AppStorage("scheduleTimelineRangeDays") private var rangeDays = ScheduleRange.threeDays.rawValue
+  @AppStorage(Self.rangeKey) private var rangeHours = ScheduleRange.threeDays.rawValue
   @AppStorage("scheduleTimelineAllProjects") private var showsAllProjects = false
   /// Empty means this Mac's zone.
   @AppStorage("scheduleTimelineTimeZone") private var timeZoneID = ""
@@ -95,12 +95,21 @@ struct ScheduleTimelineView: View {
   /// Starts pending so the first layout opens on the focus date.
   @State private var scrollRequest = HorizontalScrollTarget.Request()
 
+  static let rangeKey = "scheduleTimelineRangeHours"
+  private static let legacyRangeKey = "scheduleTimelineRangeDays"
+
   init(model: QueueViewModel, initialZoom: Double = 0) {
     self.model = model
+    // Carry over a range saved in days by earlier builds.
+    let defaults = UserDefaults.standard
+    if defaults.object(forKey: Self.rangeKey) == nil,
+       let range = ScheduleRange.migrating(legacyDays: defaults.integer(forKey: Self.legacyRangeKey)) {
+      defaults.set(range.rawValue, forKey: Self.rangeKey)
+    }
     _zoomSlider = State(initialValue: initialZoom)
   }
 
-  private var range: ScheduleRange { ScheduleRange(rawValue: rangeDays) ?? .threeDays }
+  private var range: ScheduleRange { ScheduleRange(rawValue: rangeHours) ?? .threeDays }
   private var timeZone: TimeZone { timeZoneID.isEmpty ? .current : TimeZone(identifier: timeZoneID) ?? .current }
   private var calendar: Calendar {
     var calendar = Calendar.current
@@ -176,13 +185,13 @@ struct ScheduleTimelineView: View {
   }
 
   private var rangePicker: some View {
-    Picker("Range", selection: $rangeDays) {
+    Picker("Range", selection: $rangeHours) {
       ForEach(ScheduleRange.allCases) { Text($0.label).tag($0.rawValue) }
     }
     .labelsHidden()
     .pickerStyle(.segmented)
     .fixedSize()
-    .help("How many days the timeline covers")
+    .help("How far ahead of now the timeline shows")
   }
 
   private var zoomControl: some View {
@@ -239,7 +248,7 @@ struct ScheduleTimelineView: View {
 
   private func window(now: Date) -> DateInterval {
     // Past runs stay reachable by scrolling back; the view opens on now.
-    ScheduleTimeline.window(now: now, days: range.days,
+    ScheduleTimeline.window(now: now, span: range.span,
                             pastSpan: ScheduleRunHistoryStore.retention, calendar: calendar)
   }
 
@@ -274,7 +283,7 @@ struct ScheduleTimelineView: View {
         let fitWidth = max(120, geometry.size.width - ScheduleTimelineMetrics.headerWidth)
         // 1x fits the chosen range ahead of now into one screen; the past
         // extends off screen to the left.
-        let fitScale = ScheduleTimeline.scale(width: Double(fitWidth), days: range.days, zoom: 1,
+        let fitScale = ScheduleTimeline.scale(width: Double(fitWidth), span: range.span, zoom: 1,
                                               leadIn: Double(ScheduleTimelineMetrics.nowLeadIn))
         let maximumZoom = ScheduleTimelineMetrics.maximumPointsPerHour / 3_600 / fitScale
         let scale = fitScale * ScheduleTimeline.zoomFactor(slider: zoomSlider, maximum: maximumZoom)
@@ -327,7 +336,7 @@ struct ScheduleTimelineView: View {
             }
             .scrollIndicators(.automatic)
             .onChange(of: zoomSlider) { _, _ in scrollRequest.bump(animated: false) }
-            .onChange(of: rangeDays) { _, _ in scrollRequest.bump(animated: false) }
+            .onChange(of: rangeHours) { _, _ in scrollRequest.bump(animated: false) }
             .onChange(of: showsAllProjects) { _, _ in scrollRequest.bump(animated: false) }
             .onChange(of: selectedClipID) { _, id in if id != nil { scrollRequest.bump(animated: true) } }
           }
@@ -745,18 +754,19 @@ private struct ScheduleGrid: View {
   let calendar: Calendar
   let scale: Double
 
-  /// Midnights plus hour ticks spaced so their labels never collide.
+  /// Midnights plus time ticks spaced so their labels never collide.
   static func marks(window: DateInterval, calendar: Calendar, scale: Double) -> [Mark] {
-    let step = ScheduleTimeline.tickHours(pointsPerHour: scale * 3_600)
+    let step = ScheduleTimeline.tickMinutes(pointsPerHour: scale * 3_600)
     var marks: [Mark] = []
     var date = calendar.dateInterval(of: .hour, for: window.start)?.start ?? window.start
     while date <= window.end {
-      let hour = calendar.component(.hour, from: date)
+      let parts = calendar.dateComponents([.hour, .minute], from: date)
+      let minuteOfDay = (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
       if date >= window.start {
-        if hour == 0 { marks.append(Mark(date: date, isDay: true)) }
-        else if step < 24, hour % step == 0 { marks.append(Mark(date: date, isDay: false)) }
+        if minuteOfDay == 0 { marks.append(Mark(date: date, isDay: true)) }
+        else if step < 1_440, minuteOfDay % step == 0 { marks.append(Mark(date: date, isDay: false)) }
       }
-      guard let next = calendar.date(byAdding: .hour, value: 1, to: date) else { break }
+      guard let next = calendar.date(byAdding: .minute, value: min(step, 60), to: date) else { break }
       date = next
     }
     return marks
@@ -776,9 +786,12 @@ private struct ScheduleGrid: View {
 }
 
 /// Scrolls the enclosing horizontal `NSScrollView` so content x `x` sits at
-/// `anchor` (0 leading, 0.5 center) of the visible width. It acts once per
-/// new `request`, after layout, so the user's own scrolling is left alone.
-/// `ScrollViewReader.scrollTo` proved unreliable for this nested scroll view.
+/// `anchor` (0 leading, 0.5 center) of the visible width. Each new `request`
+/// applies the latest target, then re-applies it for a short settle period
+/// whenever the content or visible width changes, since the panel's first
+/// layout passes run before its final width is known. Outside that period the
+/// user's own scrolling is left alone. `ScrollViewReader.scrollTo` proved
+/// unreliable for this nested scroll view.
 struct HorizontalScrollTarget: NSViewRepresentable {
   struct Request: Equatable {
     var serial = 1
@@ -789,35 +802,72 @@ struct HorizontalScrollTarget: NSViewRepresentable {
     }
   }
 
+  static let settlePeriod: TimeInterval = 1.0
+  static let settleTick: TimeInterval = 0.05
+
   let x: CGFloat
   let anchor: CGFloat
   let request: Request
 
-  final class Coordinator { var handled = 0 }
+  @MainActor final class Coordinator {
+    var handled = 0
+    var x: CGFloat = 0
+    var anchor: CGFloat = 0
+    weak var view: NSView?
+    var deadline = Date.distantPast
+    var applied: (x: CGFloat, document: CGFloat, visible: CGFloat)?
+
+    func start(animated: Bool) {
+      let fresh = Date() >= deadline
+      deadline = Date().addingTimeInterval(HorizontalScrollTarget.settlePeriod)
+      applied = nil
+      tick(animated: animated, schedule: fresh)
+    }
+
+    /// Applies the target when anything changed since the last pass, and
+    /// keeps checking until the settle period ends.
+    private func tick(animated: Bool, schedule: Bool) {
+      if let scrollView = view?.enclosingScrollView, view?.window != nil {
+        let clip = scrollView.contentView
+        let visible = clip.bounds.width
+        let document = scrollView.documentView?.frame.width ?? 0
+        if visible > 0, document > 0,
+           applied.map({ $0.x != x || $0.document != document || $0.visible != visible }) ?? true {
+          applied = (x, document, visible)
+          let limit = max(0, document - visible)
+          let origin = NSPoint(x: min(max(0, x - visible * anchor), limit), y: clip.bounds.origin.y)
+          if animated {
+            NSAnimationContext.runAnimationGroup { context in
+              context.duration = 0.25
+              clip.animator().setBoundsOrigin(origin)
+            }
+          } else {
+            clip.setBoundsOrigin(origin)
+          }
+          scrollView.reflectScrolledClipView(clip)
+        }
+      }
+      guard schedule || Date() < deadline else { return }
+      DispatchQueue.main.asyncAfter(deadline: .now() + HorizontalScrollTarget.settleTick) { [weak self] in
+        guard let self, Date() < self.deadline else { return }
+        self.tick(animated: false, schedule: true)
+      }
+    }
+  }
 
   func makeCoordinator() -> Coordinator { Coordinator() }
   func makeNSView(context: Context) -> NSView { NSView() }
 
   func updateNSView(_ view: NSView, context: Context) {
-    guard context.coordinator.handled != request.serial else { return }
-    context.coordinator.handled = request.serial
-    let x = x, anchor = anchor, animated = request.animated
+    let coordinator = context.coordinator
+    coordinator.view = view
+    // Keep the newest target so settle passes use the final layout's numbers.
+    coordinator.x = x
+    coordinator.anchor = anchor
+    guard coordinator.handled != request.serial else { return }
+    coordinator.handled = request.serial
+    let animated = request.animated
     // Wait one turn so the new content width is laid out before scrolling.
-    DispatchQueue.main.async {
-      guard let scrollView = view.enclosingScrollView else { return }
-      let clip = scrollView.contentView
-      let visible = clip.bounds.width
-      let limit = max(0, (scrollView.documentView?.frame.width ?? 0) - visible)
-      let origin = NSPoint(x: min(max(0, x - visible * anchor), limit), y: clip.bounds.origin.y)
-      if animated {
-        NSAnimationContext.runAnimationGroup { context in
-          context.duration = 0.25
-          clip.animator().setBoundsOrigin(origin)
-        }
-      } else {
-        clip.setBoundsOrigin(origin)
-      }
-      scrollView.reflectScrolledClipView(clip)
-    }
+    DispatchQueue.main.async { coordinator.start(animated: animated) }
   }
 }

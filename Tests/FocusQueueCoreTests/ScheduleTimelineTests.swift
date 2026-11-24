@@ -166,13 +166,19 @@ struct ScheduleTimelineTests {
     #expect(time.hour == 9 && time.minute == 50)
     #expect(ScheduleTimeline.intervalDescription(6 * 3_600) == "every 6 hours")
     #expect(ScheduleTimeline.intervalDescription(90 * 60) == "every 90 minutes")
-    #expect(ScheduleRange.allCases.map(\.days) == [1, 3, 7, 14])
+    #expect(ScheduleRange.allCases.map(\.label) == ["2 hours", "1 day", "3 days", "7 days", "14 days"])
+    #expect(ScheduleRange.twoHours.span == 7_200)
+    // Ranges saved in days by earlier builds carry over.
+    #expect(ScheduleRange.migrating(legacyDays: 7) == .week)
+    #expect(ScheduleRange.migrating(legacyDays: 0) == nil)
     // Zoom: snapping and ruler ticks follow how wide an hour is.
     #expect(ScheduleTimeline.snapMinutes(pointsPerHour: 200) == 5)
     #expect(ScheduleTimeline.snapMinutes(pointsPerHour: 8) == 60)
-    #expect(ScheduleTimeline.tickHours(pointsPerHour: 70) == 1)
-    #expect(ScheduleTimeline.tickHours(pointsPerHour: 12) == 6)
-    #expect(ScheduleTimeline.tickHours(pointsPerHour: 2) == 24)
+    #expect(ScheduleTimeline.tickMinutes(pointsPerHour: 70) == 60)
+    #expect(ScheduleTimeline.tickMinutes(pointsPerHour: 12) == 360)
+    #expect(ScheduleTimeline.tickMinutes(pointsPerHour: 2) == 1_440)
+    // Two hours across a panel gets quarter-hour labels.
+    #expect(ScheduleTimeline.tickMinutes(pointsPerHour: 300) == 15)
     #expect(ScheduleTimeline.zoomFactor(slider: 0, maximum: 16) == 1)
     #expect(ScheduleTimeline.zoomFactor(slider: 0.5, maximum: 16) == 4)
     #expect(ScheduleTimeline.zoomFactor(slider: 1, maximum: 16) == 16)
@@ -180,20 +186,20 @@ struct ScheduleTimelineTests {
 
   @Test func oneDayRangeFillsOneScreenFromNow() {
     let now = date("2026-11-24T15:20:00Z")
-    let window = ScheduleTimeline.window(now: now, days: 1, pastSpan: 2 * 86_400, calendar: calendar)
+    let window = ScheduleTimeline.window(now: now, span: 86_400, pastSpan: 2 * 86_400, calendar: calendar)
     // Past runs stay reachable: the window reaches back to the start of that day.
     #expect(window.start == calendar.startOfDay(for: now.addingTimeInterval(-2 * 86_400)))
     // The future ends exactly one day ahead, not three.
     #expect(window.end == now.addingTimeInterval(86_400))
     // At 1x, one screen spans a 16-point lead-in plus exactly one day ahead.
     let width = 800.0
-    let scale = ScheduleTimeline.scale(width: width, days: 1, zoom: 1, leadIn: 16)
+    let scale = ScheduleTimeline.scale(width: width, span: 86_400, zoom: 1, leadIn: 16)
     #expect(abs(86_400 * scale - (width - 16)) < 1e-6)
     // The past sits off screen to the left of the opening position.
     #expect(now.timeIntervalSince(window.start) * scale - 16 > width)
     // Zoom scales the same span narrower.
-    #expect(abs(ScheduleTimeline.scale(width: width, days: 1, zoom: 4, leadIn: 16) - 4 * scale) < 1e-9)
-    #expect(ScheduleTimeline.window(now: now, days: 7, pastSpan: 0, calendar: calendar).end
-      == now.addingTimeInterval(7 * 86_400))
+    #expect(abs(ScheduleTimeline.scale(width: width, span: 86_400, zoom: 4, leadIn: 16) - 4 * scale) < 1e-9)
+    #expect(ScheduleTimeline.window(now: now, span: ScheduleRange.twoHours.span, pastSpan: 0, calendar: calendar).end
+      == now.addingTimeInterval(7_200))
   }
 }

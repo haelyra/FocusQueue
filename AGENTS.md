@@ -16,19 +16,24 @@
 
 ## Task session association
 
-- Terminal agents (tmux or WezTerm): as soon as the task ID is known, run
-  `focus-queue-session attach <TASK-ID>` from the agent's pane, and again after
-  switching tasks. Inside a managed pane the task and agent IDs come from
-  `$FOCUS_QUEUE_TASK_ID` and `$FOCUS_QUEUE_SUBTASK_ID` and may be omitted.
+- As soon as the relevant ECC ticket ID is known, run
+  `/Users/hira/.local/bin/focus-queue-session attach <TICKET-ID>` from the
+  agent's WezTerm pane. Repeat this when switching to a different ticket.
+- Registration reads the provider session ID and WezTerm pane directly from
+  the agent environment. Do not search transcript history unless direct
+  registration is unavailable.
+- After association, ECC Focus Queue owns the terminal labels. Keep the window
+  title exactly equal to the task name. A shared task tmux session uses one
+  stable WezTerm tab label, `<Task name> · tmux`. Keep tmux pane presentation
+  plain: no Focus Queue pane-border label row or status padding beyond the
+  managed usage bar and native tmux window tabs. A direct terminal without
+  shared tmux may use `<Task name> · <Provider> · <last 6 session UUID characters>`.
+  When the task name is unknown, the ticket ID takes its place in every label.
+  Do not run `tabname` again or otherwise overwrite those labels after attachment.
 - T3 Code agents do not attach. Focus Queue binds each one to its T3 thread at
   launch, and its brief names the task and agent IDs to pass to every
   `focus-queue-session` command. The CLI also finds the agent from
   `$T3CODE_THREAD_ID`; an attach from a T3 agent is a no-op, never a second agent.
-- Report with `progress`, `log`, `result` and `complete`. `focus-queue-session
-  rules` prints the full agent procedure. Never edit `state.json` or task
-  `context.json` by hand.
-- After association, Focus Queue owns terminal labels. Do not run `tabname` or
-  otherwise overwrite them.
 
 ## T3 Code runtime
 

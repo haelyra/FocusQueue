@@ -8,10 +8,3 @@ dist/
 # Experiment state
 Experiments/DataExtractor/results/*.sqlite
 __pycache__/
-
-# Local planning specs and agent settings
-.spec/
-.claude/
-
-# Scratch files
-tmp/

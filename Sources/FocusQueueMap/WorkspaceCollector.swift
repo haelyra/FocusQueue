@@ -192,14 +192,11 @@ public actor WorkspaceCollector {
         let scopes: [MapScope]
         do { scopes = try MapScope.load(context: context) }
         catch { scopes = []; warnings.append("Input/output scope unavailable: \(error.localizedDescription)") }
-        // Swift 6.4 region isolation rejects the captured cache even though every
-        // use stays on this actor; the box is never shared beyond this call.
-        final class CanonicalCache: @unchecked Sendable { var values: [String: String] = [:] }
-        let canonicalCache = CanonicalCache()
+        var canonicalCache: [String: String] = [:]
         func canonical(_ path: String) -> String {
-            if let cached = canonicalCache.values[path] { return cached }
+            if let cached = canonicalCache[path] { return cached }
             let resolved = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
-            canonicalCache.values[path] = resolved
+            canonicalCache[path] = resolved
             return resolved
         }
         var fileIDs = Dictionary(nodes.filter { [.file, .document].contains($0.kind) }.compactMap { node in

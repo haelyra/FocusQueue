@@ -935,3 +935,4 @@ private struct TerminalAppSetting: View {
     }
   }
 }
+

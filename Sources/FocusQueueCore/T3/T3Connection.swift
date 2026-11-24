@@ -72,6 +72,14 @@ public actor T3Connection: T3ConnectionProviding {
     public var grantedScope: String? { currentState()?.grantedScope }
     public var tokenExpiresAt: Date? { currentState()?.tokenExpiresAt }
 
+    public func readableEnvironmentId() async -> String? {
+        switch status {
+        case .connected(let environmentId, _): return environmentId
+        case .accessTooLow: return currentState()?.environmentId.flatMap { $0.isEmpty ? nil : $0 }
+        default: return nil
+        }
+    }
+
     public func currentAccessLevel() async -> T3AccessLevel? {
         guard let state = currentState(), !state.clientId.isEmpty else { return nil }
         return state.accessLevel
@@ -307,6 +315,21 @@ public actor T3Connection: T3ConnectionProviding {
         default:
             return
         }
+    }
+
+    /// Makes the server now answering at `serverURL` Focus Queue's T3 Code server, after
+    /// `otherServer`. Agents started on the previous server stay listed as on another server.
+    @discardableResult
+    public func useCurrentServer() async throws -> T3ConnectionStatus {
+        guard case .otherServer(_, let actual) = status else { return status }
+        epoch += 1
+        let myEpoch = epoch
+        stopProbing()
+        let server = serverURL
+        try stateStore.update(serverURL: server) { $0.environmentId = actual }
+        let next = await evaluate(epoch: myEpoch)
+        if epoch == myEpoch { apply(next) }
+        return status
     }
 
     /// Cancels every request and stream, deletes the credential, and clears the token.

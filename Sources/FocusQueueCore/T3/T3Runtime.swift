@@ -368,6 +368,7 @@ public actor T3Runtime {
             }
             return reference
         case .unauthorized: throw T3Error.unauthorized
+        case .accessTooLow: throw T3Error.accessTooLow
         case .otherServer(let expected, let actual): throw T3Error.otherServer(expected: expected, actual: actual)
         default: throw T3Error.notRunning
         }
@@ -449,6 +450,8 @@ public actor T3Runtime {
             confirmation = .failed("the agent is on another T3 Code server")
         case .unauthorized:
             confirmation = .failed("T3 Code access expired or was revoked")
+        case .accessTooLow:
+            confirmation = .failed("T3 Code access is below Full access")
         default:
             confirmation = .failed("T3 Code is unreachable")
         }

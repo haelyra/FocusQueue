@@ -31,6 +31,7 @@ enum SessionRegistrationError: Error, LocalizedError {
 @main enum FocusQueueSessionCLI {
     static func main() async {
         do {
+            await adoptT3AgentIdentity()
             let arguments = withEnvironmentIdentity(Array(CommandLine.arguments.dropFirst()),
                 environment: ProcessInfo.processInfo.environment)
             if arguments.first == "tmux" { try await tmuxCommand(arguments: arguments) }
@@ -39,7 +40,7 @@ enum SessionRegistrationError: Error, LocalizedError {
                 print("Agent log: log <TASK-ID> <AGENT-ID> <entry> (append-only, task-locked)")
                 print("Pause and resume: pause <TASK-ID> <SUBTASK-ID> presses Esc in the agent's managed tmux pane to stop its turn; resume <TASK-ID> <SUBTASK-ID> pastes a continue prompt into the same conversation")
                 print("Play: play <TASK-ID> <SUBTASK-ID> [\"text\"] sends continue, or the quoted text, to the agent; a closed pane reopens on its saved conversation first")
-                print("Inside a managed pane, omit <TASK-ID> <SUBTASK-ID> from attach, context, plan, log, progress, attention, result, complete, identify, review-push, and workspace; they default to $FOCUS_QUEUE_TASK_ID and $FOCUS_QUEUE_SUBTASK_ID.")
+                print("Inside a managed pane, omit <TASK-ID> <SUBTASK-ID> from attach, context, plan, log, progress, attention, result, complete, identify, review-push, and workspace; they default to $FOCUS_QUEUE_TASK_ID and $FOCUS_QUEUE_SUBTASK_ID. Inside a T3 Code thread Focus Queue launched, they default to that agent's IDs, and attach is not needed.")
                 print("Agent rules: rules (lifecycle, plan, workspace, and map-scope rules for managed agents)")
                 print("Priority reviews: review propose [<TASK-ID> <AGENT-ID>] <file> \"<why a human must read it>\" [--priority critical|high|medium|low] [--title <text>] [--approve] | review approve|done|dismiss [<TASK-ID>] <REVIEW-ID> | review list [<TASK-ID>] [--all] (the queue shows at most 5 approved reviews at its top)")
                 print("Launch brief preview: brief <TASK-ID> <SUBTASK-ID> (the exact prompt a fresh launch of that agent receives)")
@@ -1239,9 +1240,33 @@ enum SessionRegistrationError: Error, LocalizedError {
         return arguments
     }
 
+    /// T3 Code exports only its thread id. When that thread is a Focus Queue T3 agent, export the
+    /// agent's task and agent IDs for this process, so every verb can omit them as in a managed pane.
+    private static func adoptT3AgentIdentity() async {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment[T3AgentIdentity.threadEnvironmentKey]?.isEmpty == false,
+              environment["FOCUS_QUEUE_TASK_ID"]?.isEmpty != false,
+              let records = try? await TaskContextStore(root: supportDirectory(environment: environment)).t3Subtasks()
+        else { return }
+        let resolved = T3AgentIdentity.environment(environment, cwd: FileManager.default.currentDirectoryPath,
+                                                   records: records)
+        for key in ["FOCUS_QUEUE_TASK_ID", "FOCUS_QUEUE_SUBTASK_ID", "FOCUS_QUEUE_RUNTIME"] {
+            if let value = resolved[key], value != environment[key] { setenv(key, value, 1) }
+        }
+    }
+
     private static func register(arguments: [String]) async throws {
         guard arguments.count == 2 else { throw SessionRegistrationError.usage }
         let environment = ProcessInfo.processInfo.environment
+        // A T3 agent is already bound to its thread. Registering its provider session would add a
+        // second agent for the same work.
+        if environment["FOCUS_QUEUE_RUNTIME"] == AgentRuntimeMode.t3.rawValue,
+           let task = environment["FOCUS_QUEUE_TASK_ID"], task.caseInsensitiveCompare(arguments[1]) == .orderedSame,
+           let agent = environment["FOCUS_QUEUE_SUBTASK_ID"] {
+            try emit(["status": "t3", "taskID": task, "subtaskID": agent,
+                      "reason": "Focus Queue already tracks this T3 Code thread; no attach is needed."])
+            return
+        }
         // Kimi exports no session ID, so its managed pane names the session.
         if environment["FOCUS_QUEUE_PROVIDER"] == AgentProvider.kimi.rawValue {
             try await attachManagedKimi(ticketID: arguments[1], environment: environment)
@@ -2042,10 +2067,11 @@ enum SessionRegistrationError: Error, LocalizedError {
         } else { throw SessionRegistrationError.usage }
         let identity = TaskSessionBinding.providerSession(environment: environment)
         let context = try await store.load(ticketID: arguments[1])
-        let assignedProvider = context?.subtasks.first(where: { $0.id == arguments[2] })?.provider
+        let assigned = context?.subtasks.first(where: { $0.id == arguments[2] })
         // An orchestrator can report reviewed completion for another provider without taking its identity.
         let isAssignedAgent = TaskSessionBinding.subtaskID(ticketID: arguments[1], environment: environment) == arguments[2]
-        let sessionID = isAssignedAgent && identity?.0 == assignedProvider ? identity?.1 : nil
+        // A T3 agent is identified by its thread, never by a provider session.
+        let sessionID = isAssignedAgent && identity?.0 == assigned?.provider && assigned?.isT3 != true ? identity?.1 : nil
         let updated = try await store.updateProgress(ticketID: arguments[1], subtaskID: arguments[2], status: status, summary: summary, sessionID: sessionID)
         await mirrorContext(updated, root: root)
         notifyContextChanged()

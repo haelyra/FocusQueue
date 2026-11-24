@@ -134,7 +134,7 @@ public actor T3Refresher {
     private func refresh(_ threadId: String, generation: Int) async {
         guard isCurrent(threadId, generation),
               let (location, reference) = await locate(threadId) else { return }
-        guard let environmentId = await connection.currentStatus().connectedEnvironmentId else { return }
+        guard let environmentId = await connection.readableEnvironmentId() else { return }
         guard reference.environmentId == environmentId else {
             guard reference.reachability != .otherServer else { return }
             await save(location, environmentId: reference.environmentId) { $0.t3?.reachability = .otherServer }

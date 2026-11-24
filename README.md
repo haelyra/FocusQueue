@@ -541,7 +541,19 @@ required because Focus Queue:
 - runs agents without permission prompts, and
 - changes T3 Code environment preferences.
 
-With a lower level, the status reads "Access too low" and agents cannot launch.
+With a lower level, the status reads "Access too low": existing T3 agents stay
+visible and update live, but new agents cannot launch and existing ones cannot be
+prompted or stopped from Focus Queue.
+
+If the address now answers with a different T3 Code server than your existing
+agents use (for example after reinstalling T3 Code), Settings shows "Use this
+server". Choosing it moves new agents to that server; earlier agents stay listed
+as "On another T3 Code server".
+
+T3 Code does not pass Focus Queue's task and agent IDs to its agents, so a T3
+agent's launch prompt names them, and `focus-queue-session` recognizes the agent
+from T3 Code's thread ID. T3 agents do not run `focus-queue-session attach`; if
+one does, it is a no-op.
 Access lasts 30 days. After that, Focus Queue shows **Reconnect** and you approve
 it again. The status line warns "Reconnect soon" in the last 3 days. To revoke
 access, open T3 Code **Settings > Sharing & access** and remove Focus Queue.

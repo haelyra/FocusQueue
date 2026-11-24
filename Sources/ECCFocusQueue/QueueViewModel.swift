@@ -8862,6 +8862,16 @@ extension QueueViewModel {
     }
   }
 
+  /// After `otherServer`: adopt the T3 Code server now answering. Agents from the previous
+  /// server stay listed as on another server.
+  func useThisT3Server() {
+    Task { @MainActor [weak self] in
+      guard let self, let services = self.t3Services else { return }
+      do { try await services.connection.useCurrentServer() } catch { self.t3Message = error.localizedDescription }
+      self.t3ConnectionState = await services.connection.currentState()
+    }
+  }
+
   /// Changing the server signs out and rebuilds every T3 component for the new address.
   @discardableResult
   func setT3ServerURL(_ value: String) async -> Bool {

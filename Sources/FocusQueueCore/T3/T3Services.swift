@@ -94,7 +94,14 @@ public actor T3Services {
         case .otherServer(_, let actual):
             await stopLiveUpdates()
             await refresher.markReachability(.otherServer, forEnvironmentOtherThan: actual)
-        case .unreachable, .unauthorized, .disconnected, .serverTooOld, .accessTooLow:
+        case .accessTooLow:
+            // The token can still read: keep existing agents live, but launch and controls refuse.
+            await stopLiveUpdates()
+            if let environmentId = await connection.readableEnvironmentId() {
+                await watcher.start(environmentId: environmentId, projectIds: await watchedProjects(environmentId))
+                await refresher.markReachability(.otherServer, forEnvironmentOtherThan: environmentId)
+            }
+        case .unreachable, .unauthorized, .disconnected, .serverTooOld:
             await stopLiveUpdates()
             if let environmentId = await connection.currentState()?.environmentId {
                 await refresher.markUnreachable(environmentId: environmentId)

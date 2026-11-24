@@ -38,6 +38,13 @@ public protocol T3ConnectionProviding: Sendable {
     func currentAccessLevel() async -> T3AccessLevel?
     /// A call failed with a connectivity or authorization error; the connection decides the transition.
     func report(_ error: T3Error) async
+    /// The server whose agents may be read: the connected one, or the saved one when the
+    /// approved access is below Full access. Agents are then shown live but cannot be controlled.
+    func readableEnvironmentId() async -> String?
+}
+
+extension T3ConnectionProviding {
+    public func readableEnvironmentId() async -> String? { await currentStatus().connectedEnvironmentId }
 }
 
 /// Where a subtask lives.

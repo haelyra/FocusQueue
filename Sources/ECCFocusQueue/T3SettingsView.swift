@@ -48,6 +48,14 @@ struct T3SettingsView: View {
           Button(model.t3Status == .unauthorized ? "Reconnect" : "Connect") { model.connectT3() }
         }
       }
+      if case .otherServer = model.t3Status {
+        HStack(spacing: 8) {
+          Text("This server is not the one your existing T3 Code agents run on. Use it for new agents? Existing agents stay listed but can only be controlled from their own server.")
+            .font(.caption).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+          Button("Use this server") { model.useThisT3Server() }
+        }
+      }
       if model.t3Status.connectedEnvironmentId == nil {
         Text(T3StatusText.fullAccessNote).font(.caption).foregroundStyle(.secondary)
       }

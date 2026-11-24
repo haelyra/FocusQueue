@@ -1,0 +1,237 @@
+{
+  "agentEscalationAutoLaunch" : true,
+  "agentModelChoices" : [
+    {
+      "label" : "gpt-6.2-astra",
+      "model" : "gpt-6.2-astra",
+      "provider" : "codex"
+    },
+    {
+      "label" : "gpt-6.2-sol",
+      "model" : "gpt-6.2-sol",
+      "provider" : "codex"
+    },
+    {
+      "label" : "gpt-6.1-terra",
+      "model" : "gpt-6.1-terra",
+      "provider" : "codex"
+    },
+    {
+      "label" : "gpt-6.1-sol",
+      "model" : "gpt-6.1-sol",
+      "provider" : "codex"
+    },
+    {
+      "label" : "gpt-6-astra",
+      "model" : "gpt-6-astra",
+      "provider" : "codex"
+    },
+    {
+      "label" : "gpt-6-sol",
+      "model" : "gpt-6-sol",
+      "provider" : "codex"
+    },
+    {
+      "label" : "gpt-6-luna",
+      "model" : "gpt-6-luna",
+      "provider" : "codex"
+    },
+    {
+      "label" : "gpt-5.6-sol",
+      "model" : "gpt-5.6-sol",
+      "provider" : "codex"
+    },
+    {
+      "label" : "gpt-5.6-terra",
+      "model" : "gpt-5.6-terra",
+      "provider" : "codex"
+    },
+    {
+      "label" : "gpt-5.6-luna",
+      "model" : "gpt-5.6-luna",
+      "provider" : "codex"
+    },
+    {
+      "label" : "fable-5.2",
+      "model" : "claude-fable-5-2",
+      "provider" : "claude"
+    },
+    {
+      "label" : "fable-5.1",
+      "model" : "claude-fable-5-1",
+      "provider" : "claude"
+    },
+    {
+      "label" : "opus-5.5",
+      "model" : "claude-opus-5-5",
+      "provider" : "claude"
+    },
+    {
+      "label" : "sonnet-5.5",
+      "model" : "claude-sonnet-5-5",
+      "provider" : "claude"
+    },
+    {
+      "label" : "haiku-5.5",
+      "model" : "claude-haiku-5-5",
+      "provider" : "claude"
+    },
+    {
+      "label" : "fable-5",
+      "model" : "claude-fable-5",
+      "provider" : "claude"
+    },
+    {
+      "label" : "opus-5",
+      "model" : "claude-opus-5",
+      "provider" : "claude"
+    },
+    {
+      "label" : "sonnet-5",
+      "model" : "claude-sonnet-5",
+      "provider" : "claude"
+    },
+    {
+      "label" : "haiku-4.5",
+      "model" : "claude-haiku-4-5",
+      "provider" : "claude"
+    },
+    {
+      "label" : "fable",
+      "model" : "fable",
+      "provider" : "claude"
+    },
+    {
+      "label" : "opus",
+      "model" : "opus",
+      "provider" : "claude"
+    },
+    {
+      "label" : "sonnet",
+      "model" : "sonnet",
+      "provider" : "claude"
+    },
+    {
+      "label" : "haiku",
+      "model" : "haiku",
+      "provider" : "claude"
+    },
+    {
+      "label" : "K3.1 Pro",
+      "model" : "kimi-code/k3.1-pro",
+      "provider" : "kimi"
+    },
+    {
+      "label" : "K3.1 Pro Highspeed",
+      "model" : "kimi-code/k3.1-pro-highspeed",
+      "provider" : "kimi"
+    },
+    {
+      "label" : "K3",
+      "model" : "kimi-code/k3",
+      "provider" : "kimi"
+    },
+    {
+      "label" : "K3-256k",
+      "model" : "kimi-code/k3-256k",
+      "provider" : "kimi"
+    },
+    {
+      "label" : "K2.8 Preview",
+      "model" : "kimi-code/kimi-for-coding",
+      "provider" : "kimi"
+    },
+    {
+      "label" : "K2.7 Code Highspeed",
+      "model" : "kimi-code/kimi-for-coding-highspeed",
+      "provider" : "kimi"
+    }
+  ],
+  "agentProviderFallbackOrder" : [
+    "codex",
+    "claude"
+  ],
+  "agentUsageBarEnabled" : true,
+  "appName" : "Focus Queue",
+  "autoArchiveStaleAgents" : false,
+  "capacityPanelEnabled" : true,
+  "chatEfforts" : {
+
+  },
+  "chatModels" : {
+
+  },
+  "dailyReport" : {
+    "enabled" : false,
+    "enabledPlatforms" : [
+      "discord",
+      "telegram",
+      "email",
+      "github"
+    ],
+    "maximumTokens" : 75000,
+    "scheduleHour" : 8,
+    "scheduleMinute" : 0
+  },
+  "dailyRoutines" : [
+    {
+      "id" : "review-prs",
+      "title" : "Review the open pull-request queue",
+      "url" : "https://github.com/affaan-m/ECC/pulls"
+    },
+    {
+      "id" : "triage-issues",
+      "title" : "Triage the open issue queue",
+      "url" : "https://github.com/affaan-m/ECC/issues"
+    },
+    {
+      "id" : "respond-discord",
+      "title" : "Check and respond in Discord"
+    },
+    {
+      "id" : "agent-followups",
+      "title" : "Review agent and maintainer follow-ups"
+    }
+  ],
+  "dashboardPath" : "/HOME/dashboard.json",
+  "defaultAgentEfforts" : {
+
+  },
+  "defaultAgentModels" : {
+
+  },
+  "defaultPlacement" : "upper-left",
+  "focusQueueProjects" : [
+    {
+      "dashboardPath" : "/HOME/dashboard.json",
+      "id" : "ecc",
+      "name" : "ECC",
+      "remoteAliases" : [
+
+      ],
+      "repositoryPath" : "",
+      "taskPrefix" : "ECC",
+      "workspacePath" : "/HOME/workspace"
+    }
+  ],
+  "focusQueueSelectedProjectID" : "ecc",
+  "placementEfforts" : {
+
+  },
+  "placementModels" : {
+
+  },
+  "refreshIntervalSeconds" : 2,
+  "verifier" : {
+    "enabled" : true,
+    "executable" : "/HOME/.local/bin/focus-queue-codex",
+    "maxTurns" : 24,
+    "sessionName" : "ecc-focus-queue-codex-verifier",
+    "timeoutSeconds" : 120
+  },
+  "wezTerm" : {
+    "applicationName" : "WezTerm",
+    "executable" : "/HOME/.local/bin/wezterm"
+  },
+  "workspacePath" : "/HOME/workspace"
+}

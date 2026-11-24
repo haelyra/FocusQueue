@@ -517,6 +517,88 @@ until you open it. Once seen, it moves to **Completed items**. A new prompt type
 into its terminal returns it to Work items as Working. Task progress counts
 also wait until every result is seen.
 
+## T3 Code runtime (beta)
+
+Agents can run in [T3 Code](https://github.com/pingdotgg/t3code) instead of a
+terminal pane. Focus Queue still owns tasks, plans, checkouts and cleanup. T3
+Code owns the conversations: each agent becomes a T3 Code thread that works in
+the agent's Focus Queue checkout, and its questions, approvals and results show
+up on the agent row.
+
+### Requirements
+
+- T3 Code 0.1.12 or later. This is currently the Nightly track; stable 0.1.11
+  lacks the live updates Focus Queue needs.
+- The T3 Code app running on the same Mac as Focus Queue.
+
+### Connecting
+
+Open **Settings > Agent Configs > T3 Code > Connect**. T3 Code opens its approval
+page in your browser. Choose **Full access** and approve Focus Queue. Full access
+is required because Focus Queue:
+
+- creates T3 Code projects for your Focus Queue projects,
+- runs agents without permission prompts, and
+- changes T3 Code environment preferences.
+
+With a lower level, the status reads "Access too low": existing T3 agents stay
+visible and update live, but new agents cannot launch and existing ones cannot be
+prompted or stopped from Focus Queue.
+
+If the address now answers with a different T3 Code server than your existing
+agents use (for example after reinstalling T3 Code), Settings shows "Use this
+server". Choosing it moves new agents to that server; earlier agents stay listed
+as "On another T3 Code server".
+
+Access lasts 30 days. After that, Focus Queue shows **Reconnect** and you approve
+it again. The status line warns "Reconnect soon" in the last 3 days. To revoke
+access, open T3 Code **Settings > Sharing & access** and remove Focus Queue.
+**Disconnect** in Focus Queue deletes its stored credential.
+
+Once connected, choose **T3 Code** as the runtime in the same section. New
+agents then launch in T3 Code; existing terminal agents keep running where they
+are.
+
+### Limitations
+
+- Focus Queue cannot approve or deny permission requests, because T3 Code does
+  not allow outside apps to. Agents waiting on approval show "Needs approval";
+  use **Open in T3 Code** to answer them there.
+- Focus Queue checkouts must not live inside T3 Code's worktree location (its
+  default worktree folder or its **Worktree location** setting). T3 Code's
+  storage cleanup could otherwise remove them.
+- A turn started in the archived thread of a completed task runs without its
+  removed checkout.
+- Remote T3 Code servers are not supported.
+
+### How T3 agents report back
+
+T3 Code does not pass Focus Queue's task and agent IDs to its agents. A T3
+agent's launch prompt names them instead, and `focus-queue-session` also
+recognizes the agent from the `T3CODE_THREAD_ID` that T3 Code exports, so ID-less
+commands such as `focus-queue-session progress working "…"` still work. T3 agents
+skip `focus-queue-session attach`; if one runs it anyway, it is a no-op rather
+than a second agent row. Questions and approvals go through T3 Code itself.
+
+### Verifying against a live T3 Code server
+
+Unit tests never contact T3 Code. Two opt-in checks do, with a token approved at
+Full access:
+
+```bash
+# Sign in once (opens T3 Code's approval page), then run the 15 contract checks.
+python3 Scripts/t3_contract_probe.py --login --token-file ~/.config/focusqueue-probe/t3-token.json
+python3 Scripts/t3_contract_probe.py --token-file ~/.config/focusqueue-probe/t3-token.json
+
+# End-to-end tests with real agents in a scratch repository (about two minutes).
+ECC_FOCUS_QUEUE_LIVE_T3_TESTS=1 \
+ECC_FOCUS_QUEUE_T3_TOKEN_FILE=~/.config/focusqueue-probe/t3-token.json \
+swift test --filter T3LiveIntegration
+```
+
+The probe rewrites the sanitized fixtures in `Tests/Fixtures/T3/`, which the unit
+tests decode. Review the diff before committing it.
+
 ## Build and install
 
 ```bash

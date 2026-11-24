@@ -1,0 +1,2273 @@
+{
+  "_meta": {
+    "io.modelcontextprotocol/serverInfo": {
+      "name": "T3 Code",
+      "version": "0.1.12-nightly.20261123.5124"
+    }
+  },
+  "resultType": "complete",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"parentThreadId\":null,\"inheritedProviderInstanceId\":null,\"inheritedModel\":null,\"inheritedOptions\":[],\"runtimeMode\":\"full-access\",\"interactionMode\":\"default\",\"providers\":[{\"providerInstanceId\":\"codex_53edd51f-9cc7-41f5-a458-37a8c1dadc8e\",\"driverKind\":\"codex\",\"displayName\":\"ChatGPT - Personal\",\"models\":[{\"id\":\"gpt-6.2-sol\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultra\"],\"default\":\"low\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"gpt-6.2-astra\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultra\"],\"default\":\"low\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"gpt-6.1-terra\",\"label\":\"GPT-6.1 Terra\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultra\"],\"default\":\"low\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"gpt-6.1-sol\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultra\"],\"default\":\"low\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"gpt-6-astra\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultra\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"gpt-6-sol\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultra\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"gpt-6-luna\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"gpt-5.6-sol\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultra\"],\"default\":\"low\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"gpt-5.6-terra\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultra\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"gpt-5.6-luna\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]}],\"canRunChildTask\":true,\"canRunCrossProviderChildTask\":true,\"constraints\":[]},{\"providerInstanceId\":\"codex\",\"driverKind\":\"codex\",\"displayName\":\"Codex\",\"models\":[{\"id\":\"gpt-6.2-sol\",\"label\":\"GPT 6.2 Sol · OpenAI\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultra\"],\"default\":\"low\"},{\"id\":\"serviceTier\",\"values\":[\"default\",\"priority\",\"ultrafast\"],\"default\":\"default\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"gpt-6.2-astra\",\"label\":\"GPT 6.2 Astra · OpenAI\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultra\"],\"default\":\"low\"},{\"id\":\"serviceTier\",\"values\":[\"default\",\"priority\"],\"default\":\"default\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"gpt-6.1-terra\",\"label\":\"GPT 6.1 Terra\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultra\"],\"default\":\"low\"},{\"id\":\"serviceTier\",\"values\":[\"default\",\"priority\"],\"default\":\"default\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"personal-gpt-6.1-terra\",\"label\":\"GPT 6.1 Terra - Personal\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultra\"],\"default\":\"low\"},{\"id\":\"serviceTier\",\"values\":[\"default\",\"priority\"],\"default\":\"default\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"personal-gpt-6.1-sol\",\"label\":\"GPT 6.1 Sol - Personal\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultra\"],\"default\":\"low\"},{\"id\":\"serviceTier\",\"values\":[\"default\",\"priority\"],\"default\":\"default\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"gpt-6.1-sol\",\"label\":\"GPT 6.1 Sol\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultra\"],\"default\":\"low\"},{\"id\":\"serviceTier\",\"values\":[\"default\",\"priority\"],\"default\":\"default\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"personal-gpt-6-astra\",\"label\":\"GPT 6.0 Astra - Personal\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultra\"],\"default\":\"medium\"},{\"id\":\"serviceTier\",\"values\":[\"default\",\"priority\"],\"default\":\"default\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"gpt-6-astra\",\"label\":\"GPT 6.0 Astra\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultra\"],\"default\":\"medium\"},{\"id\":\"serviceTier\",\"values\":[\"default\",\"priority\"],\"default\":\"default\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"claude-fable-5\",\"label\":\"Claude Fable 5\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"claude-fable-5-1\",\"label\":\"Claude Fable 5.1\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"claude-fable-5-2\",\"label\":\"Claude Fable 5.2\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"claude-haiku-5-5\",\"label\":\"Claude Haiku 5.5\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"claude-opus-5-5\",\"label\":\"Claude Opus 5.5\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"personal-claude-opus-5-5\",\"label\":\"Claude Opus 5.5 - Personal\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"claude-sonnet-5-5\",\"label\":\"Claude Sonnet 5.5\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"personal-claude-sonnet-5-5\",\"label\":\"Claude Sonnet 5.5 - Personal\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"cursor/deepseek-v41-flash-1017\",\"label\":\"DeepSeek V4.1 Flash 1017\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"gemini-3.5-flash-lite\",\"label\":\"Gemini 3.5 Flash Lite - Personal\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"minimal\",\"low\",\"medium\",\"high\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"cursor/gemini-3.8-flash\",\"label\":\"Gemini 3.8 Flash\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"gemini-3.8-flash-high\",\"label\":\"Gemini 3.8 Flash - Personal\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"gemini-3.8-flash-tiered\",\"label\":\"Gemini 3.8 Flash (Tiered) · Antigravity\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"cursor/gemini-4-argon\",\"label\":\"Gemini 4 Argon\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"gemini-4-argon-high\",\"label\":\"Gemini 4 Argon - Personal\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"gemini-4-carbon-high\",\"label\":\"Gemini 4 Carbon · Antigravity\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"gemini-4-hydrogen-xhigh\",\"label\":\"Gemini 4 Hydrogen · Antigravity\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"gemini-4-neon-xhigh\",\"label\":\"Gemini 4 Neon · Antigravity\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"cursor/grok-4.7\",\"label\":\"Grok 4.7\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"grok-4.7\",\"label\":\"Grok 4.7 - Personal\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"cursor/kimi-k3\",\"label\":\"Kimi K3\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"minimax/MiniMax-M3.1-Flash\",\"label\":\"MiniMax-M3.1-Flash\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"muse-ember-1.0\",\"label\":\"Muse Ember 1.0 · Meta\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"minimal\",\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"muse-spark-1.3\",\"label\":\"Muse Spark 1.3 - Personal\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"minimal\",\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"cursor/muse-wonder-1.0\",\"label\":\"Muse Wonder\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"muse-wonder-1.0\",\"label\":\"Muse Wonder 1.0 - Personal\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"minimal\",\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"muse-wonder-full-1.0-contributor\",\"label\":\"Muse Wonder Full 1.0 Contributor · Meta\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"minimal\",\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]}],\"omittedModels\":1,\"canRunChildTask\":true,\"canRunCrossProviderChildTask\":true,\"constraints\":[]},{\"providerInstanceId\":\"codex_daybreak\",\"driverKind\":\"codex\",\"displayName\":\"daybreak\",\"models\":[{\"id\":\"gpt-6.2-sol\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultra\"],\"default\":\"medium\"},{\"id\":\"serviceTier\",\"values\":[\"default\",\"priority\"],\"default\":\"default\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]},{\"id\":\"gpt-6.2-astra\",\"options\":[{\"id\":\"reasoningEffort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultra\"],\"default\":\"low\"},{\"id\":\"serviceTier\",\"values\":[\"default\",\"priority\"],\"default\":\"priority\"},{\"id\":\"cyberAccessProgram\",\"values\":[\"standard\"],\"default\":\"standard\"}]}],\"omittedModels\":1,\"canRunChildTask\":true,\"canRunCrossProviderChildTask\":true,\"constraints\":[]},{\"providerInstanceId\":\"router_antigravity\",\"driverKind\":\"codex\",\"displayName\":\"Router · Antigravity\",\"models\":[{\"id\":\"gemini-4-argon-high\",\"label\":\"Gemini 4 Argon via Antigravity\"},{\"id\":\"gemini-3.8-flash-high\",\"label\":\"Gemini 3.8 Flash via Antigravity\"}],\"canRunChildTask\":false,\"canRunCrossProviderChildTask\":false,\"constraints\":[\"Provider instance is disabled.\"]},{\"providerInstanceId\":\"router_cursor\",\"driverKind\":\"codex\",\"displayName\":\"Router · Cursor\",\"models\":[{\"id\":\"cursor/composer-2.5\",\"label\":\"Composer 2.5 via Cursor\"},{\"id\":\"cursor/grok-4.7\",\"label\":\"Grok 4.7 via Cursor\"},{\"id\":\"cursor/grok-4.6\",\"label\":\"Grok 4.6 via Cursor\"}],\"canRunChildTask\":false,\"canRunCrossProviderChildTask\":false,\"constraints\":[\"Provider instance is disabled.\"]},{\"providerInstanceId\":\"router_grok\",\"driverKind\":\"codex\",\"displayName\":\"Router · Grok\",\"models\":[{\"id\":\"grok-4.7-build-fast\",\"label\":\"Grok 4.7 Build Fast\"},{\"id\":\"grok-4.7\"},{\"id\":\"grok-build-0.1\"},{\"id\":\"grok-3-mini\"},{\"id\":\"grok-3-mini-fast\"},{\"id\":\"grok-4.20-0309-non-reasoning\"},{\"id\":\"grok-4.20-0309-reasoning\"},{\"id\":\"grok-4.20-multi-agent-0309\"},{\"id\":\"grok-4.3\"},{\"id\":\"grok-4.5\"},{\"id\":\"grok-4.6\"},{\"id\":\"grok-composer-2.5-fast\"}],\"canRunChildTask\":false,\"canRunCrossProviderChildTask\":false,\"constraints\":[\"Provider instance is disabled.\"]},{\"providerInstanceId\":\"router_minimax\",\"driverKind\":\"codex\",\"displayName\":\"Router · MiniMax\",\"models\":[{\"id\":\"minimax/MiniMax-M3.1-Flash\",\"label\":\"MiniMax M3.1 Flash\"}],\"canRunChildTask\":false,\"canRunCrossProviderChildTask\":false,\"constraints\":[\"Provider instance is disabled.\"]},{\"providerInstanceId\":\"router_muse\",\"driverKind\":\"codex\",\"displayName\":\"Router · Muse\",\"models\":[{\"id\":\"muse-wonder-1.0\",\"label\":\"Muse Wonder 1.0\"},{\"id\":\"muse-spark-1.3\",\"label\":\"Muse Spark 1.3\"}],\"canRunChildTask\":false,\"canRunCrossProviderChildTask\":false,\"constraints\":[\"Provider instance is disabled.\"]},{\"providerInstanceId\":\"claudeAgent\",\"driverKind\":\"claudeAgent\",\"displayName\":\"Claude\",\"models\":[{\"id\":\"claude-opus-5-5\",\"label\":\"Claude Opus 5.5\",\"options\":[{\"id\":\"effort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultrathink\"],\"default\":\"medium\"},{\"id\":\"ultracode\",\"values\":[false,true]},{\"id\":\"fastMode\",\"values\":[false,true]}]},{\"id\":\"claude-sonnet-5-5\",\"label\":\"Claude Sonnet 5.5\",\"options\":[{\"id\":\"effort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultrathink\"],\"default\":\"high\"},{\"id\":\"ultracode\",\"values\":[false,true]}]},{\"id\":\"claude-fable-5-2\",\"label\":\"Claude Fable 5.2\",\"options\":[{\"id\":\"effort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultrathink\"],\"default\":\"medium\"},{\"id\":\"ultracode\",\"values\":[false,true]},{\"id\":\"fastMode\",\"values\":[false,true]}]},{\"id\":\"claude-haiku-5-5\",\"label\":\"Claude Haiku 5.5\",\"options\":[{\"id\":\"effort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultrathink\"],\"default\":\"medium\"},{\"id\":\"ultracode\",\"values\":[false,true]}]},{\"id\":\"personal-claude-opus-5-5\",\"label\":\"Claude Opus 5.5 - Personal\"},{\"id\":\"personal-claude-sonnet-5-5\",\"label\":\"Claude Sonnet 5.5 - Personal\"}],\"omittedModels\":10,\"canRunChildTask\":true,\"canRunCrossProviderChildTask\":true,\"constraints\":[]},{\"providerInstanceId\":\"claude_Verge\",\"driverKind\":\"claudeAgent\",\"displayName\":\"Claude_Verge\",\"models\":[{\"id\":\"claude-opus-5-5\",\"label\":\"Claude Opus 5.5\",\"options\":[{\"id\":\"effort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultrathink\"],\"default\":\"medium\"},{\"id\":\"ultracode\",\"values\":[false,true]},{\"id\":\"fastMode\",\"values\":[false,true]}]},{\"id\":\"claude-sonnet-5-5\",\"label\":\"Claude Sonnet 5.5\",\"options\":[{\"id\":\"effort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultrathink\"],\"default\":\"high\"},{\"id\":\"ultracode\",\"values\":[false,true]}]},{\"id\":\"claude-fable-5-2\",\"label\":\"Claude Fable 5.2\",\"options\":[{\"id\":\"effort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultrathink\"],\"default\":\"medium\"},{\"id\":\"ultracode\",\"values\":[false,true]},{\"id\":\"fastMode\",\"values\":[false,true]}]},{\"id\":\"claude-haiku-5-5\",\"label\":\"Claude Haiku 5.5\",\"options\":[{\"id\":\"effort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultrathink\"],\"default\":\"medium\"},{\"id\":\"ultracode\",\"values\":[false,true]}]}],\"omittedModels\":10,\"canRunChildTask\":false,\"canRunCrossProviderChildTask\":false,\"constraints\":[\"Provider instance is disabled.\"]},{\"providerInstanceId\":\"strata_ds\",\"driverKind\":\"claudeAgent\",\"displayName\":\"Strata · DeepSeek\",\"models\":[{\"id\":\"claude-opus-5-5\",\"label\":\"Claude Opus 5.5\",\"options\":[{\"id\":\"effort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultrathink\"],\"default\":\"medium\"},{\"id\":\"ultracode\",\"values\":[false,true]},{\"id\":\"fastMode\",\"values\":[false,true]}]},{\"id\":\"claude-sonnet-5-5\",\"label\":\"Claude Sonnet 5.5\",\"options\":[{\"id\":\"effort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultrathink\"],\"default\":\"high\"},{\"id\":\"ultracode\",\"values\":[false,true]}]},{\"id\":\"claude-fable-5-2\",\"label\":\"Claude Fable 5.2\",\"options\":[{\"id\":\"effort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultrathink\"],\"default\":\"medium\"},{\"id\":\"ultracode\",\"values\":[false,true]},{\"id\":\"fastMode\",\"values\":[false,true]}]},{\"id\":\"claude-haiku-5-5\",\"label\":\"Claude Haiku 5.5\",\"options\":[{\"id\":\"effort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultrathink\"],\"default\":\"medium\"},{\"id\":\"ultracode\",\"values\":[false,true]}]},{\"id\":\"deepseek-v4.1-flash\",\"label\":\"DeepSeek V4.1 Flash (llm01, 512K)\"}],\"omittedModels\":10,\"canRunChildTask\":true,\"canRunCrossProviderChildTask\":true,\"constraints\":[]},{\"providerInstanceId\":\"strata_llm01\",\"driverKind\":\"claudeAgent\",\"displayName\":\"Strata · Qwen\",\"models\":[{\"id\":\"claude-opus-5-5\",\"label\":\"Claude Opus 5.5\",\"options\":[{\"id\":\"effort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultrathink\"],\"default\":\"medium\"},{\"id\":\"ultracode\",\"values\":[false,true]},{\"id\":\"fastMode\",\"values\":[false,true]}]},{\"id\":\"claude-sonnet-5-5\",\"label\":\"Claude Sonnet 5.5\",\"options\":[{\"id\":\"effort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultrathink\"],\"default\":\"high\"},{\"id\":\"ultracode\",\"values\":[false,true]}]},{\"id\":\"claude-fable-5-2\",\"label\":\"Claude Fable 5.2\",\"options\":[{\"id\":\"effort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultrathink\"],\"default\":\"medium\"},{\"id\":\"ultracode\",\"values\":[false,true]},{\"id\":\"fastMode\",\"values\":[false,true]}]},{\"id\":\"claude-haiku-5-5\",\"label\":\"Claude Haiku 5.5\",\"options\":[{\"id\":\"effort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultrathink\"],\"default\":\"medium\"},{\"id\":\"ultracode\",\"values\":[false,true]}]},{\"id\":\"qwen3.8-flash-next-unsloth-q8_0\",\"label\":\"Qwen3.8 Flash Next Q8 (llm01, 256K)\"}],\"omittedModels\":10,\"canRunChildTask\":true,\"canRunCrossProviderChildTask\":true,\"constraints\":[]},{\"providerInstanceId\":\"cursor\",\"driverKind\":\"cursor\",\"displayName\":\"Cursor\",\"models\":[{\"id\":\"auto-smart\",\"label\":\"Auto\",\"options\":[{\"id\":\"optimize_for\",\"values\":[\"intelligence\",\"balanced\",\"cost\"],\"default\":\"balanced\"}]},{\"id\":\"default\",\"label\":\"Auto\"},{\"id\":\"grok-4.7\",\"label\":\"Grok 4.7\",\"options\":[{\"id\":\"contextWindow\",\"values\":[\"256k\",\"500k\"],\"default\":\"500k\"},{\"id\":\"fastMode\",\"values\":[false,true],\"default\":true},{\"id\":\"reasoning_effort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\"],\"default\":\"high\"}]},{\"id\":\"grok-4.6\",\"label\":\"Grok 4.6\",\"options\":[{\"id\":\"effort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\"],\"default\":\"high\"},{\"id\":\"fastMode\",\"values\":[false,true],\"default\":true}]},{\"id\":\"composer-2.5\",\"label\":\"Composer 2.5\",\"options\":[{\"id\":\"fastMode\",\"values\":[false,true],\"default\":true}]},{\"id\":\"claude-opus-5-5\",\"label\":\"Claude Opus 5.5\",\"options\":[{\"id\":\"effort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"},{\"id\":\"contextWindow\",\"values\":[\"300k\",\"1m\"],\"default\":\"1m\"},{\"id\":\"fastMode\",\"values\":[false,true],\"default\":false}]},{\"id\":\"claude-opus-5\",\"label\":\"Claude Opus 5\",\"options\":[{\"id\":\"effort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"high\"},{\"id\":\"contextWindow\",\"values\":[\"300k\",\"1m\"],\"default\":\"1m\"},{\"id\":\"fastMode\",\"values\":[false,true],\"default\":false},{\"id\":\"thinking\",\"values\":[false,true],\"default\":true}]},{\"id\":\"claude-opus-4-8\",\"label\":\"Claude Opus 4.8\",\"options\":[{\"id\":\"effort\",\"values\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"high\"},{\"id\":\"contextWindow\",\"values\":[\"300k\",\"1m\"],\"default\":\"1m\"},{\"id\":\"fastMode\",\"values\":[false,true],\"default\":false},{\"id\":\"thinking\",\"values\":[false,true],\"default\":true}]}],\"omittedModels\":42,\"canRunChildTask\":true,\"canRunCrossProviderChildTask\":true,\"constraints\":[]},{\"providerInstanceId\":\"grok\",\"driverKind\":\"grok\",\"displayName\":\"Grok\",\"models\":[{\"id\":\"grok-build\",\"label\":\"Grok Build\"}],\"runtimeModes\":[\"approval-required\",\"auto\",\"full-access\"],\"canRunChildTask\":false,\"canRunCrossProviderChildTask\":false,\"constraints\":[\"Provider instance is disabled.\"]},{\"providerInstanceId\":\"opencode\",\"driverKind\":\"opencode\",\"displayName\":\"OpenCode\",\"models\":[],\"canRunChildTask\":false,\"canRunCrossProviderChildTask\":false,\"constraints\":[\"Provider instance is disabled.\"]},{\"providerInstanceId\":\"antigravity\",\"driverKind\":\"antigravity\",\"displayName\":\"Antigravity\",\"models\":[],\"runtimeModes\":[\"approval-required\",\"auto-accept-edits\",\"full-access\"],\"canRunChildTask\":false,\"canRunCrossProviderChildTask\":false,\"constraints\":[\"Provider instance is disabled.\"]},{\"providerInstanceId\":\"fx\",\"driverKind\":\"fx\",\"displayName\":\"fx\",\"models\":[{\"id\":\"default\",\"options\":[{\"id\":\"effort\",\"values\":[\"auto\",\"low\",\"medium\",\"high\",\"xhigh\",\"max\"],\"default\":\"medium\"}]}],\"runtimeModes\":[\"approval-required\",\"auto\"],\"canRunChildTask\":false,\"canRunCrossProviderChildTask\":false,\"constraints\":[\"Provider instance is disabled.\"]},{\"providerInstanceId\":\"kiro\",\"driverKind\":\"kiro\",\"displayName\":\"Kiro\",\"models\":[{\"id\":\"default\",\"label\":\"Kiro default\"}],\"runtimeModes\":[\"approval-required\",\"full-access\"],\"canRunChildTask\":false,\"canRunCrossProviderChildTask\":false,\"constraints\":[\"Provider instance is disabled.\"]},{\"providerInstanceId\":\"muse\",\"driverKind\":\"muse\",\"displayName\":\"Muse Code\",\"models\":[],\"runtimeModes\":[\"approval-required\",\"full-access\"],\"canRunChildTask\":false,\"canRunCrossProviderChildTask\":false,\"constraints\":[\"Provider instance is disabled.\"]},{\"providerInstanceId\":\"pi\",\"driverKind\":\"pi\",\"displayName\":\"Pi\",\"models\":[{\"id\":\"default\",\"label\":\"Pi default\"}],\"runtimeModes\":[\"approval-required\",\"auto-accept-edits\",\"full-access\"],\"canRunChildTask\":false,\"canRunCrossProviderChildTask\":false,\"constraints\":[\"Provider instance is disabled.\"]}],\"features\":{\"appOwnedSubagents\":true,\"asyncPolling\":true,\"cancellation\":true,\"batchThreadCreation\":true,\"threadManagement\":true,\"incrementalThreadRead\":true,\"scheduledTasks\":true,\"maxBatchThreads\":20}}"
+    }
+  ],
+  "structuredContent": {
+    "parentThreadId": null,
+    "inheritedProviderInstanceId": null,
+    "inheritedModel": null,
+    "inheritedOptions": [],
+    "runtimeMode": "full-access",
+    "interactionMode": "default",
+    "providers": [
+      {
+        "providerInstanceId": "codex_53edd51f-9cc7-41f5-a458-37a8c1dadc8e",
+        "driverKind": "codex",
+        "displayName": "ChatGPT - Personal",
+        "models": [
+          {
+            "id": "gpt-6.2-sol",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ],
+                "default": "low"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "gpt-6.2-astra",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ],
+                "default": "low"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "gpt-6.1-terra",
+            "label": "GPT-6.1 Terra",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ],
+                "default": "low"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "gpt-6.1-sol",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ],
+                "default": "low"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "gpt-6-astra",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "gpt-6-sol",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "gpt-6-luna",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "gpt-5.6-sol",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ],
+                "default": "low"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "gpt-5.6-terra",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "gpt-5.6-luna",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          }
+        ],
+        "canRunChildTask": true,
+        "canRunCrossProviderChildTask": true,
+        "constraints": []
+      },
+      {
+        "providerInstanceId": "codex",
+        "driverKind": "codex",
+        "displayName": "Codex",
+        "models": [
+          {
+            "id": "gpt-6.2-sol",
+            "label": "GPT 6.2 Sol · OpenAI",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ],
+                "default": "low"
+              },
+              {
+                "id": "serviceTier",
+                "values": [
+                  "default",
+                  "priority",
+                  "ultrafast"
+                ],
+                "default": "default"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "gpt-6.2-astra",
+            "label": "GPT 6.2 Astra · OpenAI",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ],
+                "default": "low"
+              },
+              {
+                "id": "serviceTier",
+                "values": [
+                  "default",
+                  "priority"
+                ],
+                "default": "default"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "gpt-6.1-terra",
+            "label": "GPT 6.1 Terra",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ],
+                "default": "low"
+              },
+              {
+                "id": "serviceTier",
+                "values": [
+                  "default",
+                  "priority"
+                ],
+                "default": "default"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "personal-gpt-6.1-terra",
+            "label": "GPT 6.1 Terra - Personal",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ],
+                "default": "low"
+              },
+              {
+                "id": "serviceTier",
+                "values": [
+                  "default",
+                  "priority"
+                ],
+                "default": "default"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "personal-gpt-6.1-sol",
+            "label": "GPT 6.1 Sol - Personal",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ],
+                "default": "low"
+              },
+              {
+                "id": "serviceTier",
+                "values": [
+                  "default",
+                  "priority"
+                ],
+                "default": "default"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "gpt-6.1-sol",
+            "label": "GPT 6.1 Sol",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ],
+                "default": "low"
+              },
+              {
+                "id": "serviceTier",
+                "values": [
+                  "default",
+                  "priority"
+                ],
+                "default": "default"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "personal-gpt-6-astra",
+            "label": "GPT 6.0 Astra - Personal",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "serviceTier",
+                "values": [
+                  "default",
+                  "priority"
+                ],
+                "default": "default"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "gpt-6-astra",
+            "label": "GPT 6.0 Astra",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "serviceTier",
+                "values": [
+                  "default",
+                  "priority"
+                ],
+                "default": "default"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "claude-fable-5",
+            "label": "Claude Fable 5",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "claude-fable-5-1",
+            "label": "Claude Fable 5.1",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "claude-fable-5-2",
+            "label": "Claude Fable 5.2",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "claude-haiku-5-5",
+            "label": "Claude Haiku 5.5",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "claude-opus-5-5",
+            "label": "Claude Opus 5.5",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "personal-claude-opus-5-5",
+            "label": "Claude Opus 5.5 - Personal",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "claude-sonnet-5-5",
+            "label": "Claude Sonnet 5.5",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "personal-claude-sonnet-5-5",
+            "label": "Claude Sonnet 5.5 - Personal",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "cursor/deepseek-v41-flash-1017",
+            "label": "DeepSeek V4.1 Flash 1017",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "gemini-3.5-flash-lite",
+            "label": "Gemini 3.5 Flash Lite - Personal",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "minimal",
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "cursor/gemini-3.8-flash",
+            "label": "Gemini 3.8 Flash",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "gemini-3.8-flash-high",
+            "label": "Gemini 3.8 Flash - Personal",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "gemini-3.8-flash-tiered",
+            "label": "Gemini 3.8 Flash (Tiered) · Antigravity",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "cursor/gemini-4-argon",
+            "label": "Gemini 4 Argon",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "gemini-4-argon-high",
+            "label": "Gemini 4 Argon - Personal",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "gemini-4-carbon-high",
+            "label": "Gemini 4 Carbon · Antigravity",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "gemini-4-hydrogen-xhigh",
+            "label": "Gemini 4 Hydrogen · Antigravity",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "gemini-4-neon-xhigh",
+            "label": "Gemini 4 Neon · Antigravity",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "cursor/grok-4.7",
+            "label": "Grok 4.7",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "grok-4.7",
+            "label": "Grok 4.7 - Personal",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "cursor/kimi-k3",
+            "label": "Kimi K3",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "minimax/MiniMax-M3.1-Flash",
+            "label": "MiniMax-M3.1-Flash",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "muse-ember-1.0",
+            "label": "Muse Ember 1.0 · Meta",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "minimal",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "muse-spark-1.3",
+            "label": "Muse Spark 1.3 - Personal",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "minimal",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "cursor/muse-wonder-1.0",
+            "label": "Muse Wonder",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "muse-wonder-1.0",
+            "label": "Muse Wonder 1.0 - Personal",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "minimal",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "muse-wonder-full-1.0-contributor",
+            "label": "Muse Wonder Full 1.0 Contributor · Meta",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "minimal",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          }
+        ],
+        "omittedModels": 1,
+        "canRunChildTask": true,
+        "canRunCrossProviderChildTask": true,
+        "constraints": []
+      },
+      {
+        "providerInstanceId": "codex_daybreak",
+        "driverKind": "codex",
+        "displayName": "daybreak",
+        "models": [
+          {
+            "id": "gpt-6.2-sol",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "serviceTier",
+                "values": [
+                  "default",
+                  "priority"
+                ],
+                "default": "default"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          },
+          {
+            "id": "gpt-6.2-astra",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ],
+                "default": "low"
+              },
+              {
+                "id": "serviceTier",
+                "values": [
+                  "default",
+                  "priority"
+                ],
+                "default": "priority"
+              },
+              {
+                "id": "cyberAccessProgram",
+                "values": [
+                  "standard"
+                ],
+                "default": "standard"
+              }
+            ]
+          }
+        ],
+        "omittedModels": 1,
+        "canRunChildTask": true,
+        "canRunCrossProviderChildTask": true,
+        "constraints": []
+      },
+      {
+        "providerInstanceId": "router_antigravity",
+        "driverKind": "codex",
+        "displayName": "Router · Antigravity",
+        "models": [
+          {
+            "id": "gemini-4-argon-high",
+            "label": "Gemini 4 Argon via Antigravity"
+          },
+          {
+            "id": "gemini-3.8-flash-high",
+            "label": "Gemini 3.8 Flash via Antigravity"
+          }
+        ],
+        "canRunChildTask": false,
+        "canRunCrossProviderChildTask": false,
+        "constraints": [
+          "Provider instance is disabled."
+        ]
+      },
+      {
+        "providerInstanceId": "router_cursor",
+        "driverKind": "codex",
+        "displayName": "Router · Cursor",
+        "models": [
+          {
+            "id": "cursor/composer-2.5",
+            "label": "Composer 2.5 via Cursor"
+          },
+          {
+            "id": "cursor/grok-4.7",
+            "label": "Grok 4.7 via Cursor"
+          },
+          {
+            "id": "cursor/grok-4.6",
+            "label": "Grok 4.6 via Cursor"
+          }
+        ],
+        "canRunChildTask": false,
+        "canRunCrossProviderChildTask": false,
+        "constraints": [
+          "Provider instance is disabled."
+        ]
+      },
+      {
+        "providerInstanceId": "router_grok",
+        "driverKind": "codex",
+        "displayName": "Router · Grok",
+        "models": [
+          {
+            "id": "grok-4.7-build-fast",
+            "label": "Grok 4.7 Build Fast"
+          },
+          {
+            "id": "grok-4.7"
+          },
+          {
+            "id": "grok-build-0.1"
+          },
+          {
+            "id": "grok-3-mini"
+          },
+          {
+            "id": "grok-3-mini-fast"
+          },
+          {
+            "id": "grok-4.20-0309-non-reasoning"
+          },
+          {
+            "id": "grok-4.20-0309-reasoning"
+          },
+          {
+            "id": "grok-4.20-multi-agent-0309"
+          },
+          {
+            "id": "grok-4.3"
+          },
+          {
+            "id": "grok-4.5"
+          },
+          {
+            "id": "grok-4.6"
+          },
+          {
+            "id": "grok-composer-2.5-fast"
+          }
+        ],
+        "canRunChildTask": false,
+        "canRunCrossProviderChildTask": false,
+        "constraints": [
+          "Provider instance is disabled."
+        ]
+      },
+      {
+        "providerInstanceId": "router_minimax",
+        "driverKind": "codex",
+        "displayName": "Router · MiniMax",
+        "models": [
+          {
+            "id": "minimax/MiniMax-M3.1-Flash",
+            "label": "MiniMax M3.1 Flash"
+          }
+        ],
+        "canRunChildTask": false,
+        "canRunCrossProviderChildTask": false,
+        "constraints": [
+          "Provider instance is disabled."
+        ]
+      },
+      {
+        "providerInstanceId": "router_muse",
+        "driverKind": "codex",
+        "displayName": "Router · Muse",
+        "models": [
+          {
+            "id": "muse-wonder-1.0",
+            "label": "Muse Wonder 1.0"
+          },
+          {
+            "id": "muse-spark-1.3",
+            "label": "Muse Spark 1.3"
+          }
+        ],
+        "canRunChildTask": false,
+        "canRunCrossProviderChildTask": false,
+        "constraints": [
+          "Provider instance is disabled."
+        ]
+      },
+      {
+        "providerInstanceId": "claudeAgent",
+        "driverKind": "claudeAgent",
+        "displayName": "Claude",
+        "models": [
+          {
+            "id": "claude-opus-5-5",
+            "label": "Claude Opus 5.5",
+            "options": [
+              {
+                "id": "effort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultrathink"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "ultracode",
+                "values": [
+                  false,
+                  true
+                ]
+              },
+              {
+                "id": "fastMode",
+                "values": [
+                  false,
+                  true
+                ]
+              }
+            ]
+          },
+          {
+            "id": "claude-sonnet-5-5",
+            "label": "Claude Sonnet 5.5",
+            "options": [
+              {
+                "id": "effort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultrathink"
+                ],
+                "default": "high"
+              },
+              {
+                "id": "ultracode",
+                "values": [
+                  false,
+                  true
+                ]
+              }
+            ]
+          },
+          {
+            "id": "claude-fable-5-2",
+            "label": "Claude Fable 5.2",
+            "options": [
+              {
+                "id": "effort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultrathink"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "ultracode",
+                "values": [
+                  false,
+                  true
+                ]
+              },
+              {
+                "id": "fastMode",
+                "values": [
+                  false,
+                  true
+                ]
+              }
+            ]
+          },
+          {
+            "id": "claude-haiku-5-5",
+            "label": "Claude Haiku 5.5",
+            "options": [
+              {
+                "id": "effort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultrathink"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "ultracode",
+                "values": [
+                  false,
+                  true
+                ]
+              }
+            ]
+          },
+          {
+            "id": "personal-claude-opus-5-5",
+            "label": "Claude Opus 5.5 - Personal"
+          },
+          {
+            "id": "personal-claude-sonnet-5-5",
+            "label": "Claude Sonnet 5.5 - Personal"
+          }
+        ],
+        "omittedModels": 10,
+        "canRunChildTask": true,
+        "canRunCrossProviderChildTask": true,
+        "constraints": []
+      },
+      {
+        "providerInstanceId": "claude_Verge",
+        "driverKind": "claudeAgent",
+        "displayName": "Claude_Verge",
+        "models": [
+          {
+            "id": "claude-opus-5-5",
+            "label": "Claude Opus 5.5",
+            "options": [
+              {
+                "id": "effort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultrathink"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "ultracode",
+                "values": [
+                  false,
+                  true
+                ]
+              },
+              {
+                "id": "fastMode",
+                "values": [
+                  false,
+                  true
+                ]
+              }
+            ]
+          },
+          {
+            "id": "claude-sonnet-5-5",
+            "label": "Claude Sonnet 5.5",
+            "options": [
+              {
+                "id": "effort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultrathink"
+                ],
+                "default": "high"
+              },
+              {
+                "id": "ultracode",
+                "values": [
+                  false,
+                  true
+                ]
+              }
+            ]
+          },
+          {
+            "id": "claude-fable-5-2",
+            "label": "Claude Fable 5.2",
+            "options": [
+              {
+                "id": "effort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultrathink"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "ultracode",
+                "values": [
+                  false,
+                  true
+                ]
+              },
+              {
+                "id": "fastMode",
+                "values": [
+                  false,
+                  true
+                ]
+              }
+            ]
+          },
+          {
+            "id": "claude-haiku-5-5",
+            "label": "Claude Haiku 5.5",
+            "options": [
+              {
+                "id": "effort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultrathink"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "ultracode",
+                "values": [
+                  false,
+                  true
+                ]
+              }
+            ]
+          }
+        ],
+        "omittedModels": 10,
+        "canRunChildTask": false,
+        "canRunCrossProviderChildTask": false,
+        "constraints": [
+          "Provider instance is disabled."
+        ]
+      },
+      {
+        "providerInstanceId": "strata_ds",
+        "driverKind": "claudeAgent",
+        "displayName": "Strata · DeepSeek",
+        "models": [
+          {
+            "id": "claude-opus-5-5",
+            "label": "Claude Opus 5.5",
+            "options": [
+              {
+                "id": "effort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultrathink"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "ultracode",
+                "values": [
+                  false,
+                  true
+                ]
+              },
+              {
+                "id": "fastMode",
+                "values": [
+                  false,
+                  true
+                ]
+              }
+            ]
+          },
+          {
+            "id": "claude-sonnet-5-5",
+            "label": "Claude Sonnet 5.5",
+            "options": [
+              {
+                "id": "effort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultrathink"
+                ],
+                "default": "high"
+              },
+              {
+                "id": "ultracode",
+                "values": [
+                  false,
+                  true
+                ]
+              }
+            ]
+          },
+          {
+            "id": "claude-fable-5-2",
+            "label": "Claude Fable 5.2",
+            "options": [
+              {
+                "id": "effort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultrathink"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "ultracode",
+                "values": [
+                  false,
+                  true
+                ]
+              },
+              {
+                "id": "fastMode",
+                "values": [
+                  false,
+                  true
+                ]
+              }
+            ]
+          },
+          {
+            "id": "claude-haiku-5-5",
+            "label": "Claude Haiku 5.5",
+            "options": [
+              {
+                "id": "effort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultrathink"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "ultracode",
+                "values": [
+                  false,
+                  true
+                ]
+              }
+            ]
+          },
+          {
+            "id": "deepseek-v4.1-flash",
+            "label": "DeepSeek V4.1 Flash (llm01, 512K)"
+          }
+        ],
+        "omittedModels": 10,
+        "canRunChildTask": true,
+        "canRunCrossProviderChildTask": true,
+        "constraints": []
+      },
+      {
+        "providerInstanceId": "strata_llm01",
+        "driverKind": "claudeAgent",
+        "displayName": "Strata · Qwen",
+        "models": [
+          {
+            "id": "claude-opus-5-5",
+            "label": "Claude Opus 5.5",
+            "options": [
+              {
+                "id": "effort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultrathink"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "ultracode",
+                "values": [
+                  false,
+                  true
+                ]
+              },
+              {
+                "id": "fastMode",
+                "values": [
+                  false,
+                  true
+                ]
+              }
+            ]
+          },
+          {
+            "id": "claude-sonnet-5-5",
+            "label": "Claude Sonnet 5.5",
+            "options": [
+              {
+                "id": "effort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultrathink"
+                ],
+                "default": "high"
+              },
+              {
+                "id": "ultracode",
+                "values": [
+                  false,
+                  true
+                ]
+              }
+            ]
+          },
+          {
+            "id": "claude-fable-5-2",
+            "label": "Claude Fable 5.2",
+            "options": [
+              {
+                "id": "effort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultrathink"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "ultracode",
+                "values": [
+                  false,
+                  true
+                ]
+              },
+              {
+                "id": "fastMode",
+                "values": [
+                  false,
+                  true
+                ]
+              }
+            ]
+          },
+          {
+            "id": "claude-haiku-5-5",
+            "label": "Claude Haiku 5.5",
+            "options": [
+              {
+                "id": "effort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultrathink"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "ultracode",
+                "values": [
+                  false,
+                  true
+                ]
+              }
+            ]
+          },
+          {
+            "id": "qwen3.8-flash-next-unsloth-q8_0",
+            "label": "Qwen3.8 Flash Next Q8 (llm01, 256K)"
+          }
+        ],
+        "omittedModels": 10,
+        "canRunChildTask": true,
+        "canRunCrossProviderChildTask": true,
+        "constraints": []
+      },
+      {
+        "providerInstanceId": "cursor",
+        "driverKind": "cursor",
+        "displayName": "Cursor",
+        "models": [
+          {
+            "id": "auto-smart",
+            "label": "Auto",
+            "options": [
+              {
+                "id": "optimize_for",
+                "values": [
+                  "intelligence",
+                  "balanced",
+                  "cost"
+                ],
+                "default": "balanced"
+              }
+            ]
+          },
+          {
+            "id": "default",
+            "label": "Auto"
+          },
+          {
+            "id": "grok-4.7",
+            "label": "Grok 4.7",
+            "options": [
+              {
+                "id": "contextWindow",
+                "values": [
+                  "256k",
+                  "500k"
+                ],
+                "default": "500k"
+              },
+              {
+                "id": "fastMode",
+                "values": [
+                  false,
+                  true
+                ],
+                "default": true
+              },
+              {
+                "id": "reasoning_effort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh"
+                ],
+                "default": "high"
+              }
+            ]
+          },
+          {
+            "id": "grok-4.6",
+            "label": "Grok 4.6",
+            "options": [
+              {
+                "id": "effort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh"
+                ],
+                "default": "high"
+              },
+              {
+                "id": "fastMode",
+                "values": [
+                  false,
+                  true
+                ],
+                "default": true
+              }
+            ]
+          },
+          {
+            "id": "composer-2.5",
+            "label": "Composer 2.5",
+            "options": [
+              {
+                "id": "fastMode",
+                "values": [
+                  false,
+                  true
+                ],
+                "default": true
+              }
+            ]
+          },
+          {
+            "id": "claude-opus-5-5",
+            "label": "Claude Opus 5.5",
+            "options": [
+              {
+                "id": "effort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              },
+              {
+                "id": "contextWindow",
+                "values": [
+                  "300k",
+                  "1m"
+                ],
+                "default": "1m"
+              },
+              {
+                "id": "fastMode",
+                "values": [
+                  false,
+                  true
+                ],
+                "default": false
+              }
+            ]
+          },
+          {
+            "id": "claude-opus-5",
+            "label": "Claude Opus 5",
+            "options": [
+              {
+                "id": "effort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "high"
+              },
+              {
+                "id": "contextWindow",
+                "values": [
+                  "300k",
+                  "1m"
+                ],
+                "default": "1m"
+              },
+              {
+                "id": "fastMode",
+                "values": [
+                  false,
+                  true
+                ],
+                "default": false
+              },
+              {
+                "id": "thinking",
+                "values": [
+                  false,
+                  true
+                ],
+                "default": true
+              }
+            ]
+          },
+          {
+            "id": "claude-opus-4-8",
+            "label": "Claude Opus 4.8",
+            "options": [
+              {
+                "id": "effort",
+                "values": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "high"
+              },
+              {
+                "id": "contextWindow",
+                "values": [
+                  "300k",
+                  "1m"
+                ],
+                "default": "1m"
+              },
+              {
+                "id": "fastMode",
+                "values": [
+                  false,
+                  true
+                ],
+                "default": false
+              },
+              {
+                "id": "thinking",
+                "values": [
+                  false,
+                  true
+                ],
+                "default": true
+              }
+            ]
+          }
+        ],
+        "omittedModels": 42,
+        "canRunChildTask": true,
+        "canRunCrossProviderChildTask": true,
+        "constraints": []
+      },
+      {
+        "providerInstanceId": "grok",
+        "driverKind": "grok",
+        "displayName": "Grok",
+        "models": [
+          {
+            "id": "grok-build",
+            "label": "Grok Build"
+          }
+        ],
+        "runtimeModes": [
+          "approval-required",
+          "auto",
+          "full-access"
+        ],
+        "canRunChildTask": false,
+        "canRunCrossProviderChildTask": false,
+        "constraints": [
+          "Provider instance is disabled."
+        ]
+      },
+      {
+        "providerInstanceId": "opencode",
+        "driverKind": "opencode",
+        "displayName": "OpenCode",
+        "models": [],
+        "canRunChildTask": false,
+        "canRunCrossProviderChildTask": false,
+        "constraints": [
+          "Provider instance is disabled."
+        ]
+      },
+      {
+        "providerInstanceId": "antigravity",
+        "driverKind": "antigravity",
+        "displayName": "Antigravity",
+        "models": [],
+        "runtimeModes": [
+          "approval-required",
+          "auto-accept-edits",
+          "full-access"
+        ],
+        "canRunChildTask": false,
+        "canRunCrossProviderChildTask": false,
+        "constraints": [
+          "Provider instance is disabled."
+        ]
+      },
+      {
+        "providerInstanceId": "fx",
+        "driverKind": "fx",
+        "displayName": "fx",
+        "models": [
+          {
+            "id": "default",
+            "options": [
+              {
+                "id": "effort",
+                "values": [
+                  "auto",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "default": "medium"
+              }
+            ]
+          }
+        ],
+        "runtimeModes": [
+          "approval-required",
+          "auto"
+        ],
+        "canRunChildTask": false,
+        "canRunCrossProviderChildTask": false,
+        "constraints": [
+          "Provider instance is disabled."
+        ]
+      },
+      {
+        "providerInstanceId": "kiro",
+        "driverKind": "kiro",
+        "displayName": "Kiro",
+        "models": [
+          {
+            "id": "default",
+            "label": "Kiro default"
+          }
+        ],
+        "runtimeModes": [
+          "approval-required",
+          "full-access"
+        ],
+        "canRunChildTask": false,
+        "canRunCrossProviderChildTask": false,
+        "constraints": [
+          "Provider instance is disabled."
+        ]
+      },
+      {
+        "providerInstanceId": "muse",
+        "driverKind": "muse",
+        "displayName": "Muse Code",
+        "models": [],
+        "runtimeModes": [
+          "approval-required",
+          "full-access"
+        ],
+        "canRunChildTask": false,
+        "canRunCrossProviderChildTask": false,
+        "constraints": [
+          "Provider instance is disabled."
+        ]
+      },
+      {
+        "providerInstanceId": "pi",
+        "driverKind": "pi",
+        "displayName": "Pi",
+        "models": [
+          {
+            "id": "default",
+            "label": "Pi default"
+          }
+        ],
+        "runtimeModes": [
+          "approval-required",
+          "auto-accept-edits",
+          "full-access"
+        ],
+        "canRunChildTask": false,
+        "canRunCrossProviderChildTask": false,
+        "constraints": [
+          "Provider instance is disabled."
+        ]
+      }
+    ],
+    "features": {
+      "appOwnedSubagents": true,
+      "asyncPolling": true,
+      "cancellation": true,
+      "batchThreadCreation": true,
+      "threadManagement": true,
+      "incrementalThreadRead": true,
+      "scheduledTasks": true,
+      "maxBatchThreads": 20
+    }
+  },
+  "isError": false
+}

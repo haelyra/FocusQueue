@@ -90,6 +90,7 @@ Agents receive and consume identity through environment variables. These are the
 | `CLAUDE_CODE_SESSION_ID` (or an explicit `CLAUDE_SESSION_ID`) | Claude Code runtime | Provider session UUID; managed panes strip both |
 | `WEZTERM_PANE`, `WEZTERM_UNIX_SOCKET` | WezTerm | Terminal pane identity |
 | `TMUX`, `TMUX_PANE` | tmux | tmux identity |
+| `T3CODE_THREAD_ID` | T3 Code | The T3 thread running the agent; `focus-queue-session` maps it to a T3 agent's task and agent IDs |
 
 **Kimi:** Kimi exports no session variable. In a managed Kimi pane (`FOCUS_QUEUE_PROVIDER=kimi`), `attach` reads the session from the Kimi process on the pane's TTY, records it on `$FOCUS_QUEUE_SUBTASK_ID`, and emits `status: "registered"`. It refuses outside a managed pane, when the pane belongs to another task, or when the live session differs from the saved one. Kimi opens its session file on its first prompt, so attach before then asks for a retry.
 
@@ -99,7 +100,7 @@ Agents receive and consume identity through environment variables. These are the
 
 Canonical usage string lives at `Sources/FocusQueueSession/main.swift:16`. Every command below emits JSON.
 
-Inside a managed pane, `attach`, `context`, and `plan` may omit `<TASK>`; `progress`, `complete`, `attention`, `result`, `log`, `identify`, `review-push`, and `workspace` may omit `<TASK> <SUBTASK>`. Omitted IDs default to `$FOCUS_QUEUE_TASK_ID` and `$FOCUS_QUEUE_SUBTASK_ID`. `focus-queue-session rules` prints the agent rules that launch briefs no longer repeat (plain text, not JSON).
+Inside a managed pane, `attach`, `context`, and `plan` may omit `<TASK>`; `progress`, `complete`, `attention`, `result`, `log`, `identify`, `review-push`, and `workspace` may omit `<TASK> <SUBTASK>`. Omitted IDs default to `$FOCUS_QUEUE_TASK_ID` and `$FOCUS_QUEUE_SUBTASK_ID`. T3 Code exports neither, so inside a T3 thread Focus Queue launched, the CLI fills both from the agent bound to `$T3CODE_THREAD_ID` (or, before the launch is recorded, the only pending T3 launch whose checkout contains the working directory). `focus-queue-session rules` prints the agent rules that launch briefs no longer repeat (plain text, not JSON).
 
 ### 3.1 Session registration (use these, in this order)
 
@@ -112,6 +113,7 @@ Pitfalls:
 - Fails with `missingSessionIdentity` if the env session ID is absent **or not a UUID** (Kimi ULIDs fail here — use `register-event` instead).
 - Correctly ignores a stale inherited `FOCUS_QUEUE_SUBTASK_ID` — re-attach after switching tickets, every time.
 - **Does not validate that the ticket exists on a dashboard.** Attaching to a typo'd ticket registers a session for a task that doesn't exist.
+- Inside a T3 Code agent, attach registers nothing and returns `status: "t3"` with the agent's `taskID`/`subtaskID`: the T3 thread already identifies the agent, and registering its provider session would add a duplicate agent row. Progress reports from a T3 agent never bind a provider session to it.
 - A Codex sub-agent thread (rollout `session_meta` marks `source.subagent`, `thread_source: subagent`, or `parent_thread_id`) registers nothing: attach returns `status: "subagent"` with `parentSessionID` and the inherited `taskID`/`subtaskID`, and exits 0. `register-event` and app process discovery likewise never add an agent row for a Codex sub-agent, so one Codex session stays one agent.
 
 **`focus-queue-session register-event --provider codex|claude|kimi [--task <TASK-ID>]`**
@@ -425,7 +427,7 @@ Decode is lenient on missing fields but **strict on types**: `"prs": "x"` or `"s
 
 `TaskContext` (`schemaVersion: 2`): `ticketID, title, summary, successCriteria, planPath, worktreePath?, repositoryPath?, branch?, baseBranch?, managedWorktree, subtasks[], projectID?, projectName?, updatedAt`.
 
-Each `TaskSubtask`: `id (uuid), title, assignmentDescription, provider, sessionID?, status (queued|working|idle|blocked|completed), progressSummary, workspace?{path, repositoryPath, branch?, baseBranch?, baseCommit?, managed, ...}, tmux?, runtimeMode? (tmux|terminal), initialPrompt?, attention?, resultSummary?, launchConfiguration?{launchID?, routeID? (legacy), model?, effort?, pluginOverrides?}, ...`.
+Each `TaskSubtask`: `id (uuid), title, assignmentDescription, provider, sessionID?, status (queued|working|idle|blocked|completed), progressSummary, workspace?{path, repositoryPath, branch?, baseBranch?, baseCommit?, managed, ...}, tmux?, runtimeMode? (tmux|terminal|t3), t3?{environmentId, threadId, projectId, link, reachability, cleanup, ...}, t3Launch?{requestId, environmentId, projectId, worktreePath, phase, ...}, initialPrompt?, attention?, resultSummary?, launchConfiguration?{launchID?, routeID? (legacy), model?, effort?, pluginOverrides?}, ...`.
 
 **Closed vocabularies throw on unknown values:** a hand-edited `status: "done"` or `provider: "gpt"` in `context.json` makes the *whole context file fail to load*. Missing fields are repaired with defaults on read — which is exactly why hand-written tasks "sort of work" but lack crucial pieces.
 
@@ -451,7 +453,7 @@ If you must write `dashboard.json` directly (you shouldn't — see §8): take `.
 
 ### 7.2 Registering an agent on a task
 
-1. **Immediately at startup:** `focus-queue-session attach "$FOCUS_QUEUE_TASK_ID"` (or the known ticket ID). Repeat after switching tickets. Never run `tabname` or overwrite labels afterward.
+1. **Immediately at startup:** `focus-queue-session attach "$FOCUS_QUEUE_TASK_ID"` (or the known ticket ID). Repeat after switching tickets. Never run `tabname` or overwrite labels afterward. T3 Code agents skip this step: Focus Queue binds them to their thread at launch, and their brief names the task and agent IDs to pass to every command.
 2. If no ticket is known: `focus-queue-session placement --prompt "<initial prompt>"` from the intended repo, then follow the capsule; `identify` once IDs exist.
 3. Read `$FOCUS_QUEUE_AGENT_CONTEXT` (placement capsule) before editing source. Stop on `blocked-conflict`.
 4. The registration record must name: task, provider session UUID, tmux session (managed panes), and worktree + branch (isolated workspaces). The first recorded workspace is immutable; resuming reuses the exact workspace and provider UUID.

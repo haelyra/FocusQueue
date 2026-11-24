@@ -1,0 +1,37 @@
+{
+  "_meta": {
+    "io.modelcontextprotocol/serverInfo": {
+      "name": "T3 Code",
+      "version": "0.1.12-nightly.20261123.5124"
+    }
+  },
+  "resultType": "complete",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"requestId\":\"REQUEST_1\",\"questions\":[{\"id\":\"Pick one\",\"header\":\"Probe\",\"question\":\"Pick one\",\"options\":[{\"label\":\"Option A\",\"description\":\"Choose Option A\"},{\"label\":\"Option B\",\"description\":\"Choose Option B\"}],\"multiSelect\":false}]}"
+    }
+  ],
+  "structuredContent": {
+    "requestId": "REQUEST_1",
+    "questions": [
+      {
+        "id": "Pick one",
+        "header": "Probe",
+        "question": "Pick one",
+        "options": [
+          {
+            "label": "Option A",
+            "description": "Choose Option A"
+          },
+          {
+            "label": "Option B",
+            "description": "Choose Option B"
+          }
+        ],
+        "multiSelect": false
+      }
+    ]
+  },
+  "isError": false
+}

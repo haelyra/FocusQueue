@@ -1,0 +1,91 @@
+{
+  "_meta": {
+    "io.modelcontextprotocol/serverInfo": {
+      "name": "T3 Code",
+      "version": "0.1.12-nightly.20261123.5124"
+    }
+  },
+  "resultType": "complete",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"thread\":{\"threadId\":\"THREAD_1\",\"projectId\":\"PROJECT_1\",\"title\":\"fq-probe launch\",\"link\":\"https://app.t3.codes/threads/ENVIRONMENT_1/mcp%3Alaunch%3Acd4faf895cdef267ed82394bc49d620b00f35f1a273e9094811430dde99998bc\",\"createdBy\":\"agent\",\"creationSource\":\"mcp\",\"status\":\"preparing\",\"latestRunId\":\"RUN_1\",\"activeRunId\":\"RUN_1\",\"providerInstanceId\":\"claudeAgent\",\"model\":\"claude-haiku-5-5\",\"runtimeMode\":\"full-access\",\"interactionMode\":\"default\",\"linkedPullRequest\":null,\"pullRequests\":[],\"pullRequestCount\":0,\"openPullRequestCount\":0,\"titleRegeneration\":null,\"lastTitleRegeneration\":null,\"branch\":null,\"worktreePath\":\"/REPO/.worktrees/foc-1/agents/a1\",\"parentThreadId\":null,\"relationshipToParent\":null,\"runCount\":1,\"itemCount\":2,\"pendingRequestCount\":0,\"archived\":false,\"settled\":false,\"settledAt\":null,\"snoozed\":false,\"snoozedUntil\":null,\"pinned\":false,\"blockedOnThreadWait\":false,\"pendingBackgroundTasks\":[],\"createdAt\":\"2026-11-24T19:18:50.442Z\",\"updatedAt\":\"2026-11-24T19:18:50.474Z\"},\"recentRuns\":[{\"runId\":\"RUN_1\",\"ordinal\":1,\"status\":\"preparing\",\"providerInstanceId\":\"claudeAgent\",\"model\":\"claude-haiku-5-5\",\"executedModel\":null,\"requestedAt\":\"2026-11-24T19:18:50.442Z\",\"startedAt\":null,\"completedAt\":null}],\"items\":[{\"position\":0,\"visibility\":\"local\",\"sourceThreadId\":\"THREAD_1\",\"itemId\":\"turn-item:message:mcp%3Alaunch%3Acd4faf895cdef267ed82394bc49d620b00f35f1a273e9094811430dde99998bc\",\"runId\":\"RUN_1\",\"messageId\":\"THREAD_1\",\"createdBy\":\"agent\",\"creationSource\":\"mcp\",\"type\":\"user_message\",\"status\":\"completed\",\"title\":null,\"text\":\"In the current directory, create a file named probe.txt containing the word ok, then run `git add probe.txt && git commit -m 'probe commit'`. Reply with only: done\",\"textTruncated\":false,\"nextTextOffset\":null,\"updatedAt\":\"2026-11-24T19:18:50.442Z\"}],\"nextPosition\":0,\"hasMore\":false,\"earlierPosition\":null}"
+    }
+  ],
+  "structuredContent": {
+    "thread": {
+      "threadId": "THREAD_1",
+      "projectId": "PROJECT_1",
+      "title": "fq-probe launch",
+      "link": "https://app.t3.codes/threads/ENVIRONMENT_1/mcp%3Alaunch%3Acd4faf895cdef267ed82394bc49d620b00f35f1a273e9094811430dde99998bc",
+      "createdBy": "agent",
+      "creationSource": "mcp",
+      "status": "preparing",
+      "latestRunId": "RUN_1",
+      "activeRunId": "RUN_1",
+      "providerInstanceId": "claudeAgent",
+      "model": "claude-haiku-5-5",
+      "runtimeMode": "full-access",
+      "interactionMode": "default",
+      "linkedPullRequest": null,
+      "pullRequests": [],
+      "pullRequestCount": 0,
+      "openPullRequestCount": 0,
+      "titleRegeneration": null,
+      "lastTitleRegeneration": null,
+      "branch": null,
+      "worktreePath": "/REPO/.worktrees/foc-1/agents/a1",
+      "parentThreadId": null,
+      "relationshipToParent": null,
+      "runCount": 1,
+      "itemCount": 2,
+      "pendingRequestCount": 0,
+      "archived": false,
+      "settled": false,
+      "settledAt": null,
+      "snoozed": false,
+      "snoozedUntil": null,
+      "pinned": false,
+      "blockedOnThreadWait": false,
+      "pendingBackgroundTasks": [],
+      "createdAt": "2026-11-24T19:18:50.442Z",
+      "updatedAt": "2026-11-24T19:18:50.474Z"
+    },
+    "recentRuns": [
+      {
+        "runId": "RUN_1",
+        "ordinal": 1,
+        "status": "preparing",
+        "providerInstanceId": "claudeAgent",
+        "model": "claude-haiku-5-5",
+        "executedModel": null,
+        "requestedAt": "2026-11-24T19:18:50.442Z",
+        "startedAt": null,
+        "completedAt": null
+      }
+    ],
+    "items": [
+      {
+        "position": 0,
+        "visibility": "local",
+        "sourceThreadId": "THREAD_1",
+        "itemId": "turn-item:message:mcp%3Alaunch%3Acd4faf895cdef267ed82394bc49d620b00f35f1a273e9094811430dde99998bc",
+        "runId": "RUN_1",
+        "messageId": "THREAD_1",
+        "createdBy": "agent",
+        "creationSource": "mcp",
+        "type": "user_message",
+        "status": "completed",
+        "title": null,
+        "text": "In the current directory, create a file named probe.txt containing the word ok, then run `git add probe.txt && git commit -m 'probe commit'`. Reply with only: done",
+        "textTruncated": false,
+        "nextTextOffset": null,
+        "updatedAt": "2026-11-24T19:18:50.442Z"
+      }
+    ],
+    "nextPosition": 0,
+    "hasMore": false,
+    "earlierPosition": null
+  },
+  "isError": false
+}

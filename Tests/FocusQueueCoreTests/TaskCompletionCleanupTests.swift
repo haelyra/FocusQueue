@@ -414,3 +414,20 @@ func completionCleanupKeepsOpenTaskClaims() async throws {
     #expect(branches.contains("focus-queue/agent-claimed"))
     #expect(branches.contains(try #require(orphan.workspace?.branch)))
 }
+
+@Test("Completion leaves a T3 agent's checkout and branch alone until its stop is confirmed")
+func completionRetainsUnconfirmedT3Checkouts() async throws {
+    let fixture = try await CleanupFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    _ = try await fixture.store.ensureContext(ticket: ticket("FOC-905"))
+    let (running, runningPath) = try await fixture.agent("FOC-905", "Still running in T3 Code")
+    let (_, finishedPath) = try await fixture.agent("FOC-905", "Stopped")
+    let branch = try #require(running.workspace?.branch)
+
+    let report = await fixture.cleanup().run(ticketID: "FOC-905", retaining: [runningPath.path])
+
+    #expect(FileManager.default.fileExists(atPath: runningPath.path))
+    #expect(!FileManager.default.fileExists(atPath: finishedPath.path))
+    #expect(report.notes.contains { $0.contains("not yet confirmed stopped") })
+    #expect(try await fixture.git(["branch", "--list", branch]).contains(branch))
+}

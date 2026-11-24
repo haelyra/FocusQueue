@@ -1,0 +1,22 @@
+{
+  "_meta": {
+    "io.modelcontextprotocol/serverInfo": {
+      "name": "T3 Code",
+      "version": "0.1.12-nightly.20261123.5124"
+    }
+  },
+  "resultType": "complete",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"threadId\":\"THREAD_6\",\"runId\":\"RUN_7\",\"status\":\"interrupted\",\"timedOut\":false}"
+    }
+  ],
+  "structuredContent": {
+    "threadId": "THREAD_6",
+    "runId": "RUN_7",
+    "status": "interrupted",
+    "timedOut": false
+  },
+  "isError": false
+}

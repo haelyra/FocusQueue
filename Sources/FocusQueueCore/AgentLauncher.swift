@@ -253,7 +253,7 @@ public actor TaskAgentLauncher {
   }
 
   /// The text a fresh launch starts with; a resumed conversation gets none.
-  static func initialPrompt(context: TaskContext, subtask: TaskSubtask, includePrompt: Bool,
+  public static func initialPrompt(context: TaskContext, subtask: TaskSubtask, includePrompt: Bool,
                             home: URL = FileManager.default.homeDirectoryForCurrentUser) -> String? {
     guard subtask.sessionID == nil, includePrompt else { return nil }
     let brief = subtask.includeInitializationPrompt

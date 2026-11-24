@@ -1,0 +1,102 @@
+{
+  "_meta": {
+    "io.modelcontextprotocol/serverInfo": {
+      "name": "T3 Code",
+      "version": "0.1.12-nightly.20261123.5124"
+    }
+  },
+  "resultType": "complete",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"thread\":{\"threadId\":\"THREAD_7\",\"projectId\":\"PROJECT_1\",\"title\":\"fq-probe stop\",\"link\":\"https://app.t3.codes/threads/ENVIRONMENT_1/mcp%3Alaunch%3A9e8a3b643b2847a1ae5b8cf2f0ac8d6a0a394caa3ff352a0ad5337a142214c1e\",\"createdBy\":\"agent\",\"creationSource\":\"mcp\",\"status\":\"queued\",\"latestRunId\":\"RUN_9\",\"activeRunId\":null,\"providerInstanceId\":\"claudeAgent\",\"model\":\"claude-haiku-5-5\",\"runtimeMode\":\"full-access\",\"interactionMode\":\"default\",\"linkedPullRequest\":null,\"pullRequests\":[],\"pullRequestCount\":0,\"openPullRequestCount\":0,\"titleRegeneration\":null,\"lastTitleRegeneration\":null,\"branch\":\"focus-queue/foc-1-a7\",\"worktreePath\":\"/REPO/.worktrees/foc-1/agents/a7\",\"parentThreadId\":null,\"relationshipToParent\":null,\"runCount\":2,\"itemCount\":5,\"pendingRequestCount\":0,\"archived\":false,\"settled\":false,\"settledAt\":null,\"snoozed\":false,\"snoozedUntil\":null,\"pinned\":false,\"blockedOnThreadWait\":false,\"pendingBackgroundTasks\":[],\"createdAt\":\"2026-11-24T19:20:22.267Z\",\"updatedAt\":\"2026-11-24T19:20:24.951Z\"},\"recentRuns\":[{\"runId\":\"RUN_9\",\"ordinal\":2,\"status\":\"queued\",\"providerInstanceId\":\"claudeAgent\",\"model\":\"claude-haiku-5-5\",\"executedModel\":null,\"requestedAt\":\"2026-11-24T19:20:22.301Z\",\"startedAt\":null,\"completedAt\":null},{\"runId\":\"RUN_8\",\"ordinal\":1,\"status\":\"interrupted\",\"providerInstanceId\":\"claudeAgent\",\"model\":\"claude-haiku-5-5\",\"executedModel\":null,\"requestedAt\":\"2026-11-24T19:20:22.267Z\",\"startedAt\":\"2026-11-24T19:20:22.310Z\",\"completedAt\":\"2026-11-24T19:20:24.921Z\"}],\"items\":[{\"position\":0,\"visibility\":\"local\",\"sourceThreadId\":\"THREAD_7\",\"itemId\":\"turn-item:message:mcp%3Alaunch%3A9e8a3b643b2847a1ae5b8cf2f0ac8d6a0a394caa3ff352a0ad5337a142214c1e\",\"runId\":\"RUN_8\",\"messageId\":\"THREAD_7\",\"createdBy\":\"agent\",\"creationSource\":\"mcp\",\"type\":\"user_message\",\"status\":\"completed\",\"title\":null,\"text\":\"Run `sleep 45` with your Bash tool, then reply with only: done\",\"textTruncated\":false,\"nextTextOffset\":null,\"updatedAt\":\"2026-11-24T19:20:22.267Z\"}],\"nextPosition\":0,\"hasMore\":false,\"earlierPosition\":null}"
+    }
+  ],
+  "structuredContent": {
+    "thread": {
+      "threadId": "THREAD_7",
+      "projectId": "PROJECT_1",
+      "title": "fq-probe stop",
+      "link": "https://app.t3.codes/threads/ENVIRONMENT_1/mcp%3Alaunch%3A9e8a3b643b2847a1ae5b8cf2f0ac8d6a0a394caa3ff352a0ad5337a142214c1e",
+      "createdBy": "agent",
+      "creationSource": "mcp",
+      "status": "queued",
+      "latestRunId": "RUN_9",
+      "activeRunId": null,
+      "providerInstanceId": "claudeAgent",
+      "model": "claude-haiku-5-5",
+      "runtimeMode": "full-access",
+      "interactionMode": "default",
+      "linkedPullRequest": null,
+      "pullRequests": [],
+      "pullRequestCount": 0,
+      "openPullRequestCount": 0,
+      "titleRegeneration": null,
+      "lastTitleRegeneration": null,
+      "branch": "focus-queue/foc-1-a7",
+      "worktreePath": "/REPO/.worktrees/foc-1/agents/a7",
+      "parentThreadId": null,
+      "relationshipToParent": null,
+      "runCount": 2,
+      "itemCount": 5,
+      "pendingRequestCount": 0,
+      "archived": false,
+      "settled": false,
+      "settledAt": null,
+      "snoozed": false,
+      "snoozedUntil": null,
+      "pinned": false,
+      "blockedOnThreadWait": false,
+      "pendingBackgroundTasks": [],
+      "createdAt": "2026-11-24T19:20:22.267Z",
+      "updatedAt": "2026-11-24T19:20:24.951Z"
+    },
+    "recentRuns": [
+      {
+        "runId": "RUN_9",
+        "ordinal": 2,
+        "status": "queued",
+        "providerInstanceId": "claudeAgent",
+        "model": "claude-haiku-5-5",
+        "executedModel": null,
+        "requestedAt": "2026-11-24T19:20:22.301Z",
+        "startedAt": null,
+        "completedAt": null
+      },
+      {
+        "runId": "RUN_8",
+        "ordinal": 1,
+        "status": "interrupted",
+        "providerInstanceId": "claudeAgent",
+        "model": "claude-haiku-5-5",
+        "executedModel": null,
+        "requestedAt": "2026-11-24T19:20:22.267Z",
+        "startedAt": "2026-11-24T19:20:22.310Z",
+        "completedAt": "2026-11-24T19:20:24.921Z"
+      }
+    ],
+    "items": [
+      {
+        "position": 0,
+        "visibility": "local",
+        "sourceThreadId": "THREAD_7",
+        "itemId": "turn-item:message:mcp%3Alaunch%3A9e8a3b643b2847a1ae5b8cf2f0ac8d6a0a394caa3ff352a0ad5337a142214c1e",
+        "runId": "RUN_8",
+        "messageId": "THREAD_7",
+        "createdBy": "agent",
+        "creationSource": "mcp",
+        "type": "user_message",
+        "status": "completed",
+        "title": null,
+        "text": "Run `sleep 45` with your Bash tool, then reply with only: done",
+        "textTruncated": false,
+        "nextTextOffset": null,
+        "updatedAt": "2026-11-24T19:20:22.267Z"
+      }
+    ],
+    "nextPosition": 0,
+    "hasMore": false,
+    "earlierPosition": null
+  },
+  "isError": false
+}

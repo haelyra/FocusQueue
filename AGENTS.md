@@ -30,6 +30,27 @@
   shared tmux may use `<Task name> · <Provider> · <last 6 session UUID characters>`.
   When the task name is unknown, the ticket ID takes its place in every label.
   Do not run `tabname` again or otherwise overwrite those labels after attachment.
+- T3 Code agents do not attach. Focus Queue binds each one to its T3 thread at
+  launch, and its brief names the task and agent IDs to pass to every
+  `focus-queue-session` command. The CLI also finds the agent from
+  `$T3CODE_THREAD_ID`; an attach from a T3 agent is a no-op, never a second agent.
+
+## T3 Code runtime
+
+- The design lives in `Docs/Architecture/t3-runtime.md`; user-facing behavior is
+  in the README's "T3 Code runtime (beta)" section.
+- Unit tests must never contact T3 Code. Use the fakes in
+  `Tests/FocusQueueCoreTests/T3TestSupport.swift` and the captured fixtures in
+  `Tests/Fixtures/T3/`.
+- Contacting a real T3 Code server is opt-in: `Scripts/t3_contract_probe.py`
+  and `ECC_FOCUS_QUEUE_LIVE_T3_TESTS=1` for `T3LiveIntegrationTests`. Both need
+  the user to approve Full access in T3 Code first; never approve it for them.
+- Re-running the probe rewrites the fixtures. Review the diff for personal data
+  (names, paths, remotes, other projects) before committing it.
+- A branch build of the app crashes under `swift run` because it is not an app
+  bundle. To try one by hand, build it with `Scripts/build-app.sh` and open
+  `dist/Focus Queue.app` with `FOCUS_QUEUE_SUPPORT_DIR` pointing at a scratch
+  folder. That is not an install; the installation rules below still apply.
 
 ## Delivery checkpoints
 

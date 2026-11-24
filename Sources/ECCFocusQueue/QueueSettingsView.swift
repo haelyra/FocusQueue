@@ -30,7 +30,7 @@ enum QueueSettingsTab: String, CaseIterable, Identifiable {
 
   var help: String {
     switch self {
-    case .agents: "Sign-in, permissions, lifecycle, and decisions for the agents you launch"
+    case .agents: "Sign-in, permissions, T3 Code, lifecycle, and decisions for the agents you launch"
     case .appearance: "Light or dark, accent colors, and where the queue sits on screen"
     case .general: "Updates, projects, shortcuts, the bulletin board, terminals, capacity, reports, and diagnostics"
     case .harness: "The default agent and Focus Queue's own core agents: QChat, task placement, and data placement"
@@ -149,6 +149,12 @@ struct QueueSettingsView: View {
           .font(.caption).foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
+    }
+    settingsSection(
+      title: "T3 Code",
+      detail: "Run agents in T3 Code threads instead of terminal panes. Focus Queue keeps tasks, plans, and checkouts; T3 Code runs the conversations. Requires T3 Code 0.1.12 or later on this Mac."
+    ) {
+      T3SettingsView(model: model)
     }
     settingsSection(
       title: "Agent lifecycle",

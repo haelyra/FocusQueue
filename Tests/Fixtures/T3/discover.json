@@ -1,0 +1,25 @@
+{
+  "_meta": {
+    "io.modelcontextprotocol/serverInfo": {
+      "name": "T3 Code",
+      "version": "0.1.12-nightly.20261123.5124"
+    }
+  },
+  "resultType": "complete",
+  "ttlMs": 0,
+  "cacheScope": "private",
+  "supportedVersions": [
+    "2025-06-18",
+    "2026-07-28"
+  ],
+  "capabilities": {
+    "logging": {},
+    "completions": {},
+    "tools": {
+      "listChanged": true
+    },
+    "extensions": {
+      "io.modelcontextprotocol/events": {}
+    }
+  }
+}

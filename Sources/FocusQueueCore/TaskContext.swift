@@ -8,6 +8,8 @@ public enum TaskSubtaskStatus: String, Codable, CaseIterable, Sendable {
 
 public enum AgentRuntimeMode: String, Codable, CaseIterable, Sendable {
     case tmux, terminal
+    /// Runs in a T3 Code thread; `TaskSubtask.t3` or `t3Launch` holds the link.
+    case t3
 }
 
 public enum TaskSessionBinding {
@@ -138,6 +140,11 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     /// When the person interrupted this agent from Focus Queue. Cleared by
     /// Resume or by any later prompt, so a pause never outlives new work.
     public var pausedAt: Date?
+    /// The T3 Code thread this agent runs in, when `runtimeMode == .t3`.
+    public var t3: T3ThreadReference?
+    /// A T3 launch whose outcome is not yet linked to a thread. Cleared in the
+    /// same save that sets `t3`.
+    public var t3Launch: T3LaunchIntent?
 
     public var isPaused: Bool { pausedAt != nil && status != .completed }
 
@@ -146,7 +153,8 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
     public var continuesOnQuotaExhaustion: Bool { launchConfiguration?.continueOnQuota == true }
 
     public var hasAgent: Bool {
-        !isAssignmentOnly && (parentSubtaskID != nil || sessionID != nil || tmux != nil || terminalPaneID != nil || lastHeartbeatAt != nil || status == .completed)
+        !isAssignmentOnly && (parentSubtaskID != nil || sessionID != nil || tmux != nil || terminalPaneID != nil
+            || t3 != nil || t3Launch != nil || lastHeartbeatAt != nil || status == .completed)
     }
 
     public var hasManagedWorkspaces: Bool {
@@ -279,6 +287,7 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         case completionTerminalRetained
         case isAssignmentOnly, parentSubtaskID, associatedSubtaskIDs, mergedIntoSubtaskID, attention, resultID, resultSummary, resultAt, observedEventID, observedEventAt, completedRuntimeOpenedAt
         case lastHookEventAt, launchConfiguration, pausedAt
+        case t3, t3Launch
     }
 
     public init(from decoder: any Decoder) throws {
@@ -323,6 +332,8 @@ public struct TaskSubtask: Codable, Identifiable, Equatable, Sendable {
         completedRuntimeOpenedAt = try values.decodeIfPresent(Date.self, forKey: .completedRuntimeOpenedAt)
         launchConfiguration = try values.decodeIfPresent(AgentLaunchConfiguration.self, forKey: .launchConfiguration)
         pausedAt = try values.decodeIfPresent(Date.self, forKey: .pausedAt)
+        t3 = try values.decodeIfPresent(T3ThreadReference.self, forKey: .t3)
+        t3Launch = try values.decodeIfPresent(T3LaunchIntent.self, forKey: .t3Launch)
     }
 
     /// A live terminal is not proof of activity. Only a recent explicit heartbeat is.
@@ -492,7 +503,11 @@ public struct TaskContext: Codable, Equatable, Sendable {
         lines += developmentProcessLines()
         lines += planningGuidelineLines()
         lines.append(artifactInstruction)
-        lines.append("Register with `focus-queue-session attach`, then report with `focus-queue-session progress|complete`. Rules: `focus-queue-session rules`.")
+        if subtask.isT3 {
+            lines.append("\(Self.t3TrackingNote) Report with `focus-queue-session progress|complete \(ticketID) \(subtask.id) ...`. Rules: `focus-queue-session rules`.")
+        } else {
+            lines.append("Register with `focus-queue-session attach`, then report with `focus-queue-session progress|complete`. Rules: `focus-queue-session rules`.")
+        }
         return lines.joined(separator: "\n")
     }
 
@@ -506,7 +521,7 @@ public struct TaskContext: Codable, Equatable, Sendable {
             Resume \(ticketID): \(title). Your subtask \(subtask.title) (\(subtask.id)) is already completed.
             Task plan: \(planPath)
             Review the completed handoff and await new user instructions. Keep the subtask completed; do not restart implementation or report working merely because the terminal was reopened.
-            Register this pane with `focus-queue-session attach`.
+            \(subtask.isT3 ? Self.t3TrackingNote : "Register this pane with `focus-queue-session attach`.")
             """
         }
         var lines = [prompt, ""] + briefHeader(subtask: subtask, prompt: trimmed ?? "")
@@ -528,14 +543,28 @@ public struct TaskContext: Codable, Equatable, Sendable {
             lines.append("Task data: \(dataURL.path).")
         }
         lines += [Self.dataWritingRule, artifactInstruction]
-        lines += [
-            "Before anything else run `focus-queue-session attach`.",
-            "Report with `focus-queue-session <verb>`; task and agent IDs come from the environment: progress working|idle|blocked \"summary\" · attention approval|question \"summary\" · result \"summary\" · complete \"what changed and how it was verified\".",
-            "Before reporting result or complete, update the task plan: fill empty What/Why/How lines and tick or add Progress items. Log decisions and evidence with `focus-queue-session log \"entry\"`.",
-            "More rules: `focus-queue-session rules`.",
-        ]
+        if subtask.isT3 {
+            let ids = "\(ticketID) \(subtask.id)"
+            lines += [
+                Self.t3TrackingNote,
+                "Report with `focus-queue-session <verb> \(ids) ...`: progress working|idle|blocked \"summary\" · result \"summary\" · complete \"what changed and how it was verified\". Questions and approvals reach the user through T3 Code, so ask them there.",
+                "Before reporting result or complete, update the task plan: fill empty What/Why/How lines and tick or add Progress items. Log decisions and evidence with `focus-queue-session log \(ids) \"entry\"`.",
+                "More rules: `focus-queue-session rules`.",
+            ]
+        } else {
+            lines += [
+                "Before anything else run `focus-queue-session attach`.",
+                "Report with `focus-queue-session <verb>`; task and agent IDs come from the environment: progress working|idle|blocked \"summary\" · attention approval|question \"summary\" · result \"summary\" · complete \"what changed and how it was verified\".",
+                "Before reporting result or complete, update the task plan: fill empty What/Why/How lines and tick or add Progress items. Log decisions and evidence with `focus-queue-session log \"entry\"`.",
+                "More rules: `focus-queue-session rules`.",
+            ]
+        }
         return lines.joined(separator: "\n")
     }
+
+    /// T3 Code threads carry no Focus Queue environment, and the thread itself is the agent's
+    /// identity, so a T3 agent neither attaches nor relies on environment IDs.
+    static let t3TrackingNote = "This agent runs in a T3 Code thread that Focus Queue already tracks: do not run `focus-queue-session attach`, and pass the task and agent IDs to every `focus-queue-session` command."
 
     /// Every provider gets this line: the task card shows new files from the
     /// context folder, so a file saved only in the worktree never reaches the user.
@@ -1977,6 +2006,21 @@ public actor TaskContextStore {
                 "canonicalPlan": context.planPath], options: [.prettyPrinted, .sortedKeys])
             try data.write(to: pointer, options: .atomic)
         }
+    }
+
+    /// Changes one subtask under the task lock and returns its saved value.
+    @discardableResult public func mutateSubtask(ticketID: String, subtaskID: String,
+                                                 _ change: (inout TaskSubtask) throws -> Void) throws -> TaskSubtask {
+        let context = try mutate(ticketID: ticketID) { context in
+            guard let index = context.subtasks.firstIndex(where: { $0.id == subtaskID }) else {
+                throw TaskContextError.missingSubtask(subtaskID)
+            }
+            try change(&context.subtasks[index])
+        }
+        guard let saved = context.subtasks.first(where: { $0.id == subtaskID }) else {
+            throw TaskContextError.missingSubtask(subtaskID)
+        }
+        return saved
     }
 
     private func mutate(

@@ -3786,6 +3786,7 @@ private struct TaskAgentRow: View {
   }
 
   var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
     HStack(spacing: 7) {
       Button { model.openSubtask(agent, for: ticket) } label: {
         AgentRowLabel(agent: agent, ticket: ticket, model: model, isOpening: isOpening)
@@ -3810,10 +3811,13 @@ private struct TaskAgentRow: View {
       }
 
       Menu {
-        Button("Open agent", systemImage: "terminal") {
+        Button(agent.isT3 ? "Open in T3 Code" : "Open agent", systemImage: agent.isT3 ? "arrow.up.forward.app" : "terminal") {
           model.openSubtask(agent, for: ticket)
         }
         .disabled(isOpening)
+        if agent.t3 != nil, agent.status != .completed {
+          Button("Stop", systemImage: "stop.circle") { model.stopT3Agent(agent, for: ticket) }
+        }
         Button("Edit title and description", systemImage: "pencil") {
           isEditing = true
         }
@@ -3845,6 +3849,10 @@ private struct TaskAgentRow: View {
       .minimumHitTarget()
       .accessibilityLabel("More options for agent \(agent.title)")
       .help("Open, edit, complete, inspect, view the decision tree of, pin to the bulletin board, close the window of, or archive this agent")
+    }
+    if agent.isT3 {
+      T3AgentRowDetails(agent: agent, ticket: ticket, model: model)
+    }
     }
     .padding(9)
     .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))

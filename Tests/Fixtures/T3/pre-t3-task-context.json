@@ -1,0 +1,39 @@
+{
+  "managedWorktree" : false,
+  "planPath" : "/HOME/plan.md",
+  "schemaVersion" : 2,
+  "subtasks" : [
+    {
+      "assignmentDescription" : "",
+      "associatedSubtaskIDs" : [
+
+      ],
+      "completionUnread" : false,
+      "id" : "SUB-1",
+      "includeInitializationPrompt" : true,
+      "isAssignmentOnly" : false,
+      "progressSummary" : "",
+      "provider" : "claude",
+      "runtimeMode" : "tmux",
+      "sessionID" : "SESSION-1",
+      "status" : "working",
+      "title" : "Add a README",
+      "tracksCompletion" : true,
+      "workspace" : {
+        "branch" : "focus-queue/foc-1-SUB-1",
+        "managed" : true,
+        "path" : "/REPO/.worktrees/foc-1/agents/SUB-1",
+        "repositoryPath" : "/REPO"
+      },
+      "workspaceHistory" : [
+
+      ]
+    }
+  ],
+  "successCriteria" : "",
+  "summary" : "",
+  "ticketID" : "FOC-1",
+  "title" : "Fixture",
+  "updatedAt" : 821692800,
+  "worktreePath" : "/REPO"
+}

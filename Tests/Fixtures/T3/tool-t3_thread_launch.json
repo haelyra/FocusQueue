@@ -1,0 +1,27 @@
+{
+  "_meta": {
+    "io.modelcontextprotocol/serverInfo": {
+      "name": "T3 Code",
+      "version": "0.1.12-nightly.20261123.5124"
+    }
+  },
+  "resultType": "complete",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"threadId\":\"THREAD_1\",\"link\":\"https://app.t3.codes/threads/ENVIRONMENT_1/mcp%3Alaunch%3Acd4faf895cdef267ed82394bc49d620b00f35f1a273e9094811430dde99998bc\",\"projectId\":\"PROJECT_1\",\"modelSelection\":{\"instanceId\":\"claudeAgent\",\"model\":\"claude-haiku-5-5\"},\"runId\":\"RUN_1\",\"status\":\"preparing\"}"
+    }
+  ],
+  "structuredContent": {
+    "threadId": "THREAD_1",
+    "link": "https://app.t3.codes/threads/ENVIRONMENT_1/mcp%3Alaunch%3Acd4faf895cdef267ed82394bc49d620b00f35f1a273e9094811430dde99998bc",
+    "projectId": "PROJECT_1",
+    "modelSelection": {
+      "instanceId": "claudeAgent",
+      "model": "claude-haiku-5-5"
+    },
+    "runId": "RUN_1",
+    "status": "preparing"
+  },
+  "isError": false
+}

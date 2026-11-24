@@ -1,0 +1,91 @@
+{
+  "_meta": {
+    "io.modelcontextprotocol/serverInfo": {
+      "name": "T3 Code",
+      "version": "0.1.12-nightly.20261123.5124"
+    }
+  },
+  "resultType": "complete",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"thread\":{\"threadId\":\"THREAD_8\",\"projectId\":\"PROJECT_1\",\"title\":\"fq-probe archive\",\"link\":\"https://app.t3.codes/threads/ENVIRONMENT_1/mcp%3Alaunch%3A1f787b92df56dc385e2bc33279fd67912b2740cf0be43561a55d88ed031b288a\",\"createdBy\":\"agent\",\"creationSource\":\"mcp\",\"status\":\"completed\",\"latestRunId\":\"RUN_10\",\"activeRunId\":null,\"providerInstanceId\":\"claudeAgent\",\"model\":\"claude-haiku-5-5\",\"runtimeMode\":\"full-access\",\"interactionMode\":\"default\",\"linkedPullRequest\":null,\"pullRequests\":[],\"pullRequestCount\":0,\"openPullRequestCount\":0,\"titleRegeneration\":null,\"lastTitleRegeneration\":null,\"branch\":\"focus-queue/foc-1-a8\",\"worktreePath\":\"/REPO/.worktrees/foc-1/agents/a8\",\"parentThreadId\":null,\"relationshipToParent\":null,\"runCount\":1,\"itemCount\":6,\"pendingRequestCount\":0,\"archived\":true,\"settled\":true,\"settledAt\":\"2026-11-24T19:20:46.517Z\",\"snoozed\":false,\"snoozedUntil\":null,\"pinned\":false,\"blockedOnThreadWait\":false,\"pendingBackgroundTasks\":[],\"createdAt\":\"2026-11-24T19:20:36.418Z\",\"updatedAt\":\"2026-11-24T19:20:46.542Z\"},\"recentRuns\":[{\"runId\":\"RUN_10\",\"ordinal\":1,\"status\":\"completed\",\"providerInstanceId\":\"claudeAgent\",\"model\":\"claude-haiku-5-5\",\"executedModel\":\"claude-haiku-5-5\",\"requestedAt\":\"2026-11-24T19:20:36.418Z\",\"startedAt\":\"2026-11-24T19:20:36.461Z\",\"completedAt\":\"2026-11-24T19:20:46.334Z\"}],\"items\":[{\"position\":0,\"visibility\":\"local\",\"sourceThreadId\":\"THREAD_8\",\"itemId\":\"turn-item:message:mcp%3Alaunch%3A1f787b92df56dc385e2bc33279fd67912b2740cf0be43561a55d88ed031b288a\",\"runId\":\"RUN_10\",\"messageId\":\"THREAD_8\",\"createdBy\":\"agent\",\"creationSource\":\"mcp\",\"type\":\"user_message\",\"status\":\"completed\",\"title\":null,\"text\":\"Reply with the single word ok. Do not use any tools.\",\"textTruncated\":false,\"nextTextOffset\":null,\"updatedAt\":\"2026-11-24T19:20:36.418Z\"}],\"nextPosition\":0,\"hasMore\":true,\"earlierPosition\":null}"
+    }
+  ],
+  "structuredContent": {
+    "thread": {
+      "threadId": "THREAD_8",
+      "projectId": "PROJECT_1",
+      "title": "fq-probe archive",
+      "link": "https://app.t3.codes/threads/ENVIRONMENT_1/mcp%3Alaunch%3A1f787b92df56dc385e2bc33279fd67912b2740cf0be43561a55d88ed031b288a",
+      "createdBy": "agent",
+      "creationSource": "mcp",
+      "status": "completed",
+      "latestRunId": "RUN_10",
+      "activeRunId": null,
+      "providerInstanceId": "claudeAgent",
+      "model": "claude-haiku-5-5",
+      "runtimeMode": "full-access",
+      "interactionMode": "default",
+      "linkedPullRequest": null,
+      "pullRequests": [],
+      "pullRequestCount": 0,
+      "openPullRequestCount": 0,
+      "titleRegeneration": null,
+      "lastTitleRegeneration": null,
+      "branch": "focus-queue/foc-1-a8",
+      "worktreePath": "/REPO/.worktrees/foc-1/agents/a8",
+      "parentThreadId": null,
+      "relationshipToParent": null,
+      "runCount": 1,
+      "itemCount": 6,
+      "pendingRequestCount": 0,
+      "archived": true,
+      "settled": true,
+      "settledAt": "2026-11-24T19:20:46.517Z",
+      "snoozed": false,
+      "snoozedUntil": null,
+      "pinned": false,
+      "blockedOnThreadWait": false,
+      "pendingBackgroundTasks": [],
+      "createdAt": "2026-11-24T19:20:36.418Z",
+      "updatedAt": "2026-11-24T19:20:46.542Z"
+    },
+    "recentRuns": [
+      {
+        "runId": "RUN_10",
+        "ordinal": 1,
+        "status": "completed",
+        "providerInstanceId": "claudeAgent",
+        "model": "claude-haiku-5-5",
+        "executedModel": "claude-haiku-5-5",
+        "requestedAt": "2026-11-24T19:20:36.418Z",
+        "startedAt": "2026-11-24T19:20:36.461Z",
+        "completedAt": "2026-11-24T19:20:46.334Z"
+      }
+    ],
+    "items": [
+      {
+        "position": 0,
+        "visibility": "local",
+        "sourceThreadId": "THREAD_8",
+        "itemId": "turn-item:message:mcp%3Alaunch%3A1f787b92df56dc385e2bc33279fd67912b2740cf0be43561a55d88ed031b288a",
+        "runId": "RUN_10",
+        "messageId": "THREAD_8",
+        "createdBy": "agent",
+        "creationSource": "mcp",
+        "type": "user_message",
+        "status": "completed",
+        "title": null,
+        "text": "Reply with the single word ok. Do not use any tools.",
+        "textTruncated": false,
+        "nextTextOffset": null,
+        "updatedAt": "2026-11-24T19:20:36.418Z"
+      }
+    ],
+    "nextPosition": 0,
+    "hasMore": true,
+    "earlierPosition": null
+  },
+  "isError": false
+}

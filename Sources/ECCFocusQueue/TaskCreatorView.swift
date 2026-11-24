@@ -356,6 +356,16 @@ struct AgentLaunchOptions: View {
         provider.label().tag(provider)
       }
     }.pickerStyle(.segmented)
+    if model.config.agentRuntime == .t3 {
+      T3LaunchPickerSection(model: model, agent: $agent)
+      Toggle("Start the agent with this prompt", isOn: Binding(
+        get: { agent.includePrompt ?? true }, set: { agent.includePrompt = $0 }))
+    } else {
+      terminalOptions
+    }
+  }
+
+  @ViewBuilder private var terminalOptions: some View {
     Picker("Model", selection: Binding(
       get: { agent.model ?? "" },
       set: { agent.model = $0.isEmpty ? nil : $0 }
@@ -434,3 +444,95 @@ struct AgentPluginOptions: View {
       })
   }
 }
+
+/// T3 Code provider, model, and option pickers, offered from what T3 Code
+/// reports as enabled. The choice is stored on the launch preset.
+private struct T3LaunchPickerSection: View {
+  let model: QueueViewModel
+  @Binding var agent: AgentLaunchPreset
+  @State private var picker: T3LaunchPickerModel?
+
+  var body: some View {
+    Group {
+      if let picker {
+        Picker("T3 provider", selection: Binding(
+          get: { picker.instanceId ?? "" },
+          set: { update { $0.selectProvider($1) }($0) }
+        )) {
+          if picker.instanceId == nil { Text("Choose a provider").tag("") }
+          ForEach(picker.providers, id: \.providerInstanceId) { provider in
+            Text(provider.displayName).tag(provider.providerInstanceId)
+          }
+        }
+        if !picker.models.isEmpty {
+          Picker("Model", selection: Binding(
+            get: { picker.model ?? "" },
+            set: { update { $0.selectModel($1) }($0) }
+          )) {
+            ForEach(picker.models, id: \.id) { Text($0.label).tag($0.id) }
+          }
+        }
+        ForEach(picker.selectedModel?.options ?? [], id: \.id) { option in
+          if !option.values.isEmpty {
+            Picker(option.id.capitalized, selection: Binding(
+              get: { picker.options[option.id] ?? option.default ?? .null },
+              set: { value in update { model, _ in model.setOption(option.id, value) }("") }
+            )) {
+              ForEach(option.values, id: \.self) { value in
+                Text(Self.label(value)).tag(value)
+              }
+            }
+          }
+        }
+        if !picker.isValid {
+          Text("Choose a T3 Code provider and model to launch.").font(.caption).foregroundStyle(.orange)
+        }
+      } else {
+        HStack(spacing: 6) {
+          ProgressView().controlSize(.small)
+          Text("Loading T3 Code providers…").font(.caption).foregroundStyle(.secondary)
+        }
+      }
+    }
+    .task(id: agent.provider) {
+      await model.loadT3Providers()
+      var next = T3LaunchPickerModel(providers: model.t3Providers, agentProvider: agent.provider,
+                                     preferredModel: agent.t3Model ?? agent.model)
+      if let instance = agent.t3InstanceId, next.providers.contains(where: { $0.providerInstanceId == instance }),
+         agent.provider == lastProvider {
+        next.selectProvider(instance)
+        if let saved = agent.t3Model { next.selectModel(saved) }
+        for (key, value) in agent.t3Options ?? [:] { next.setOption(key, value) }
+      }
+      lastProvider = agent.provider
+      apply(next)
+    }
+  }
+
+  @State private var lastProvider: AgentProvider?
+
+  private func update(_ change: @escaping (inout T3LaunchPickerModel, String) -> Void) -> (String) -> Void {
+    { value in
+      guard var next = picker else { return }
+      change(&next, value)
+      apply(next)
+    }
+  }
+
+  private func apply(_ next: T3LaunchPickerModel) {
+    picker = next
+    agent.t3InstanceId = next.choice?.instanceId
+    agent.t3Model = next.choice?.model
+    agent.t3Options = next.choice.map { $0.options.isEmpty ? nil : $0.options } ?? nil
+  }
+
+  private static func label(_ value: JSONValue) -> String {
+    switch value {
+    case .string(let text): text
+    case .bool(let flag): flag ? "On" : "Off"
+    case .number(let number): number.rounded() == number ? String(Int(number)) : String(number)
+    default: "Default"
+    }
+  }
+}
+

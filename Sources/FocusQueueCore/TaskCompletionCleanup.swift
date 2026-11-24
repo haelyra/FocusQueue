@@ -151,8 +151,11 @@ public actor TaskCompletionCleanup {
 
     /// `openTicketIDs` limits which other tasks' recorded workspaces are
     /// protected; without it every other task's records are protected.
+    /// `retaining` names checkouts that must stay untouched, such as T3 Code
+    /// agents not yet confirmed stopped.
     public func run(ticketID rawTicketID: String, dryRun: Bool = false, now: Date = Date(),
-                    protecting openTicketIDs: Set<String>? = nil) async -> TaskCleanupReport {
+                    protecting openTicketIDs: Set<String>? = nil,
+                    retaining retainedPaths: Set<String> = []) async -> TaskCleanupReport {
         let ticketID = rawTicketID.uppercased()
         var report = TaskCleanupReport(ticketID: ticketID, dryRun: dryRun, finishedAt: now)
         let lease: TaskMaintenance.Lease
@@ -178,6 +181,7 @@ public actor TaskCompletionCleanup {
         let claims = await claims(excluding: ticketID, limitedTo: openTicketIDs)
         for repository in await repositories(for: context) {
             await retire(ticketID: ticketID, repository: repository, context: context, claims: claims,
+                retaining: Set(retainedPaths.map { URL(fileURLWithPath: $0).standardizedFileURL.path }),
                 dryRun: dryRun, now: now, report: &report)
         }
 
@@ -447,18 +451,25 @@ public actor TaskCompletionCleanup {
     // MARK: - Per repository
 
     private func retire(ticketID: String, repository: String, context: TaskContext?, claims: Claims,
+                        retaining retainedPaths: Set<String> = [],
                         dryRun: Bool, now: Date, report: inout TaskCleanupReport) async {
         let targets = await integrationTargets(repository: repository, context: context, report: &report)
         let entries = await worktreeEntries(repository: repository)
         let folders = TaskWorktreeManager.managedRoots(repositoryPath: repository)
             .map { $0.appendingPathComponent(ticketID.lowercased(), isDirectory: true).path }
         var retiredBranches = Set<String>()
+        var retainedBranchNames = Set<String>()
         for entry in entries {
             let managed = folders.contains { entry.path.hasPrefix($0 + "/") }
             let owned = entry.branch.map { TaskWorktreeManager.ownsBranch($0, ticketID: ticketID) } ?? false
             guard managed || owned, !entry.prunable else { continue }
             guard managed else {
                 report.problems.append("Branch \(entry.branch ?? "") is checked out at \(entry.path), outside Focus Queue's managed folder; left in place.")
+                continue
+            }
+            if retainedPaths.contains(entry.path) {
+                report.notes.append("Kept \(entry.path): its T3 Code agent is not yet confirmed stopped.")
+                if let branch = entry.branch { retainedBranchNames.insert(branch) }
                 continue
             }
             if let owner = claims.owner(ofWorktree: entry.path, branch: entry.branch) {
@@ -486,7 +497,7 @@ public actor TaskCompletionCleanup {
         let remoteHeads = await remoteBranches(repository: repository, report: &report)
         let local = await localBranches(repository: repository)
         let candidates = Set((local + Array(remoteHeads.keys)).filter {
-            !protected.contains($0) && claims.branches[$0] == nil
+            !protected.contains($0) && claims.branches[$0] == nil && !retainedBranchNames.contains($0)
                 && (TaskWorktreeManager.ownsBranch($0, ticketID: ticketID) || retiredBranches.contains($0))
         })
         for name in candidates.sorted() {

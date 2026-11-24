@@ -1,0 +1,91 @@
+{
+  "_meta": {
+    "io.modelcontextprotocol/serverInfo": {
+      "name": "T3 Code",
+      "version": "0.1.12-nightly.20261123.5124"
+    }
+  },
+  "resultType": "complete",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"thread\":{\"threadId\":\"THREAD_3\",\"projectId\":\"PROJECT_1\",\"title\":\"fq-probe approval\",\"link\":\"https://app.t3.codes/threads/ENVIRONMENT_1/mcp%3Alaunch%3Af5635499e973dd04158457e8c1f3084f239120a4c74b5e993711adffadd28d05\",\"createdBy\":\"agent\",\"creationSource\":\"mcp\",\"status\":\"running\",\"latestRunId\":\"RUN_3\",\"activeRunId\":\"RUN_3\",\"providerInstanceId\":\"claudeAgent\",\"model\":\"claude-haiku-5-5\",\"runtimeMode\":\"approval-required\",\"interactionMode\":\"default\",\"linkedPullRequest\":null,\"pullRequests\":[],\"pullRequestCount\":0,\"openPullRequestCount\":0,\"titleRegeneration\":null,\"lastTitleRegeneration\":null,\"branch\":\"focus-queue/foc-1-a4\",\"worktreePath\":\"/REPO/.worktrees/foc-1/agents/a4\",\"parentThreadId\":null,\"relationshipToParent\":null,\"runCount\":1,\"itemCount\":6,\"pendingRequestCount\":1,\"archived\":false,\"settled\":false,\"settledAt\":null,\"snoozed\":false,\"snoozedUntil\":null,\"pinned\":false,\"blockedOnThreadWait\":false,\"pendingBackgroundTasks\":[],\"createdAt\":\"2026-11-24T19:19:21.402Z\",\"updatedAt\":\"2026-11-24T19:19:31.786Z\"},\"recentRuns\":[{\"runId\":\"RUN_3\",\"ordinal\":1,\"status\":\"running\",\"providerInstanceId\":\"claudeAgent\",\"model\":\"claude-haiku-5-5\",\"executedModel\":\"claude-haiku-5-5\",\"requestedAt\":\"2026-11-24T19:19:21.402Z\",\"startedAt\":\"2026-11-24T19:19:21.435Z\",\"completedAt\":null}],\"items\":[{\"position\":0,\"visibility\":\"local\",\"sourceThreadId\":\"THREAD_3\",\"itemId\":\"turn-item:message:mcp%3Alaunch%3Af5635499e973dd04158457e8c1f3084f239120a4c74b5e993711adffadd28d05\",\"runId\":\"RUN_3\",\"messageId\":\"THREAD_3\",\"createdBy\":\"agent\",\"creationSource\":\"mcp\",\"type\":\"user_message\",\"status\":\"completed\",\"title\":null,\"text\":\"Run the shell command `touch approval-probe.txt` in the current directory with your Bash tool. Reply with only: done\",\"textTruncated\":false,\"nextTextOffset\":null,\"updatedAt\":\"2026-11-24T19:19:21.402Z\"}],\"nextPosition\":0,\"hasMore\":false,\"earlierPosition\":null}"
+    }
+  ],
+  "structuredContent": {
+    "thread": {
+      "threadId": "THREAD_3",
+      "projectId": "PROJECT_1",
+      "title": "fq-probe approval",
+      "link": "https://app.t3.codes/threads/ENVIRONMENT_1/mcp%3Alaunch%3Af5635499e973dd04158457e8c1f3084f239120a4c74b5e993711adffadd28d05",
+      "createdBy": "agent",
+      "creationSource": "mcp",
+      "status": "running",
+      "latestRunId": "RUN_3",
+      "activeRunId": "RUN_3",
+      "providerInstanceId": "claudeAgent",
+      "model": "claude-haiku-5-5",
+      "runtimeMode": "approval-required",
+      "interactionMode": "default",
+      "linkedPullRequest": null,
+      "pullRequests": [],
+      "pullRequestCount": 0,
+      "openPullRequestCount": 0,
+      "titleRegeneration": null,
+      "lastTitleRegeneration": null,
+      "branch": "focus-queue/foc-1-a4",
+      "worktreePath": "/REPO/.worktrees/foc-1/agents/a4",
+      "parentThreadId": null,
+      "relationshipToParent": null,
+      "runCount": 1,
+      "itemCount": 6,
+      "pendingRequestCount": 1,
+      "archived": false,
+      "settled": false,
+      "settledAt": null,
+      "snoozed": false,
+      "snoozedUntil": null,
+      "pinned": false,
+      "blockedOnThreadWait": false,
+      "pendingBackgroundTasks": [],
+      "createdAt": "2026-11-24T19:19:21.402Z",
+      "updatedAt": "2026-11-24T19:19:31.786Z"
+    },
+    "recentRuns": [
+      {
+        "runId": "RUN_3",
+        "ordinal": 1,
+        "status": "running",
+        "providerInstanceId": "claudeAgent",
+        "model": "claude-haiku-5-5",
+        "executedModel": "claude-haiku-5-5",
+        "requestedAt": "2026-11-24T19:19:21.402Z",
+        "startedAt": "2026-11-24T19:19:21.435Z",
+        "completedAt": null
+      }
+    ],
+    "items": [
+      {
+        "position": 0,
+        "visibility": "local",
+        "sourceThreadId": "THREAD_3",
+        "itemId": "turn-item:message:mcp%3Alaunch%3Af5635499e973dd04158457e8c1f3084f239120a4c74b5e993711adffadd28d05",
+        "runId": "RUN_3",
+        "messageId": "THREAD_3",
+        "createdBy": "agent",
+        "creationSource": "mcp",
+        "type": "user_message",
+        "status": "completed",
+        "title": null,
+        "text": "Run the shell command `touch approval-probe.txt` in the current directory with your Bash tool. Reply with only: done",
+        "textTruncated": false,
+        "nextTextOffset": null,
+        "updatedAt": "2026-11-24T19:19:21.402Z"
+      }
+    ],
+    "nextPosition": 0,
+    "hasMore": false,
+    "earlierPosition": null
+  },
+  "isError": false
+}

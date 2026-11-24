@@ -5,10 +5,11 @@ Start with the module matching the task, then follow its concrete source entry p
 | Module | Start here when changing |
 | --- | --- |
 | [Managed agent sessions](recall.md) | tmux identity, terminal clients, provider startup, or exact reattachment. |
+| [T3 Code runtime](t3-runtime.md) | Agents that run as T3 Code threads: connection, launch, live state, controls, or cleanup. |
 | [Persistence](persistence.md) | Operational state, durable identities, document revisions, or conversation retention. |
 | [Task context](task-context.md) | Central plans, subtask progress, agent registration, or worktree references. |
 | [User interface](ui.md) | Inspectors, notifications, document tabs, or actual window geometry. |
 
 The primary path is UI action → observable model → core operation → local persistence or verified terminal action → presented result. Central plans retain task decisions. The durable library retains longer-lived identities and revisions. tmux owns the live process; a terminal is a replaceable client view.
 
-See the [card format and generation workflow](../ARCHITECTURE_CONTEXT.md) for budgets, exclusions, and baseline review rules. This index and the four module cards are authored documents; the generator does not overwrite them.
+See the [card format and generation workflow](../ARCHITECTURE_CONTEXT.md) for budgets, exclusions, and baseline review rules. This index and the five module cards are authored documents; the generator does not overwrite them.

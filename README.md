@@ -550,10 +550,6 @@ agents use (for example after reinstalling T3 Code), Settings shows "Use this
 server". Choosing it moves new agents to that server; earlier agents stay listed
 as "On another T3 Code server".
 
-T3 Code does not pass Focus Queue's task and agent IDs to its agents, so a T3
-agent's launch prompt names them, and `focus-queue-session` recognizes the agent
-from T3 Code's thread ID. T3 agents do not run `focus-queue-session attach`; if
-one does, it is a no-op.
 Access lasts 30 days. After that, Focus Queue shows **Reconnect** and you approve
 it again. The status line warns "Reconnect soon" in the last 3 days. To revoke
 access, open T3 Code **Settings > Sharing & access** and remove Focus Queue.
@@ -574,6 +570,34 @@ are.
 - A turn started in the archived thread of a completed task runs without its
   removed checkout.
 - Remote T3 Code servers are not supported.
+
+### How T3 agents report back
+
+T3 Code does not pass Focus Queue's task and agent IDs to its agents. A T3
+agent's launch prompt names them instead, and `focus-queue-session` also
+recognizes the agent from the `T3CODE_THREAD_ID` that T3 Code exports, so ID-less
+commands such as `focus-queue-session progress working "…"` still work. T3 agents
+skip `focus-queue-session attach`; if one runs it anyway, it is a no-op rather
+than a second agent row. Questions and approvals go through T3 Code itself.
+
+### Verifying against a live T3 Code server
+
+Unit tests never contact T3 Code. Two opt-in checks do, with a token approved at
+Full access:
+
+```bash
+# Sign in once (opens T3 Code's approval page), then run the 15 contract checks.
+python3 Scripts/t3_contract_probe.py --login --token-file ~/.config/focusqueue-probe/t3-token.json
+python3 Scripts/t3_contract_probe.py --token-file ~/.config/focusqueue-probe/t3-token.json
+
+# End-to-end tests with real agents in a scratch repository (about two minutes).
+ECC_FOCUS_QUEUE_LIVE_T3_TESTS=1 \
+ECC_FOCUS_QUEUE_T3_TOKEN_FILE=~/.config/focusqueue-probe/t3-token.json \
+swift test --filter T3LiveIntegration
+```
+
+The probe rewrites the sanitized fixtures in `Tests/Fixtures/T3/`, which the unit
+tests decode. Review the diff before committing it.
 
 ## Build and install
 

@@ -275,6 +275,27 @@ extension WalkthroughDemoRecording {
   }
 }
 
+extension WalkthroughDemoRecording {
+  /// Like `snapshot`, but yields the main actor for `settle` seconds first so
+  /// deferred main-queue work (such as a scroll view's initial offset) lands.
+  static func settledSnapshot(_ view: some View, size: NSSize, to url: URL,
+                              settle: Duration = .milliseconds(500)) async throws {
+    let window = NSWindow(contentRect: NSRect(x: -9000, y: -9000, width: size.width, height: size.height),
+      styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    let hosting = NSHostingView(rootView: view.frame(width: size.width, height: size.height)
+      .background(Color(nsColor: .windowBackgroundColor)))
+    hosting.frame = NSRect(origin: .zero, size: size)
+    window.contentView = hosting
+    hosting.layoutSubtreeIfNeeded()
+    try await Task.sleep(for: settle)
+    hosting.layoutSubtreeIfNeeded()
+    let rep = try #require(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
+    hosting.cacheDisplay(in: hosting.bounds, to: rep)
+    try #require(rep.representation(using: .png, properties: [:])).write(to: url)
+  }
+}
+
 /// A scratch support directory with a booted queue and its frame folder.
 @MainActor
 private struct DemoEnvironment {

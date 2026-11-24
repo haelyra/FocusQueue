@@ -372,6 +372,27 @@ public enum ScheduleTimeline {
         return placed
     }
 
+    // MARK: Window
+
+    /// The drawable span: from the start of the day `pastSpan` before `now`,
+    /// so past runs stay reachable by scrolling back, to `days` after `now`.
+    /// The view opens on `now`, so the past is off screen by default.
+    public static func window(now: Date, days: Int, pastSpan: TimeInterval,
+                              calendar: Calendar = .current) -> DateInterval {
+        let start = calendar.startOfDay(for: now.addingTimeInterval(-max(0, pastSpan)))
+        return DateInterval(start: start, end: now.addingTimeInterval(forwardSpan(days: days)))
+    }
+
+    /// The time ahead of now that one screen shows at 1x zoom.
+    public static func forwardSpan(days: Int) -> TimeInterval { TimeInterval(max(1, days)) * 86_400 }
+
+    /// Points per second so the forward span fills `width` at `zoom` 1x,
+    /// after `leadIn` points of the past kept left of the playhead so the
+    /// "now" marker stays readable at the leading edge.
+    public static func scale(width: Double, days: Int, zoom: Double, leadIn: Double = 0) -> Double {
+        max(1, width - leadIn) * max(1, zoom) / forwardSpan(days: days)
+    }
+
     // MARK: Zoom
 
     /// Drag resolution for a zoom level: finer as an hour gets wider.

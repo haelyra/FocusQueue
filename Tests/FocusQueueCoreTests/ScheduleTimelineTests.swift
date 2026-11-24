@@ -177,4 +177,23 @@ struct ScheduleTimelineTests {
     #expect(ScheduleTimeline.zoomFactor(slider: 0.5, maximum: 16) == 4)
     #expect(ScheduleTimeline.zoomFactor(slider: 1, maximum: 16) == 16)
   }
+
+  @Test func oneDayRangeFillsOneScreenFromNow() {
+    let now = date("2026-11-24T15:20:00Z")
+    let window = ScheduleTimeline.window(now: now, days: 1, pastSpan: 2 * 86_400, calendar: calendar)
+    // Past runs stay reachable: the window reaches back to the start of that day.
+    #expect(window.start == calendar.startOfDay(for: now.addingTimeInterval(-2 * 86_400)))
+    // The future ends exactly one day ahead, not three.
+    #expect(window.end == now.addingTimeInterval(86_400))
+    // At 1x, one screen spans a 16-point lead-in plus exactly one day ahead.
+    let width = 800.0
+    let scale = ScheduleTimeline.scale(width: width, days: 1, zoom: 1, leadIn: 16)
+    #expect(abs(86_400 * scale - (width - 16)) < 1e-6)
+    // The past sits off screen to the left of the opening position.
+    #expect(now.timeIntervalSince(window.start) * scale - 16 > width)
+    // Zoom scales the same span narrower.
+    #expect(abs(ScheduleTimeline.scale(width: width, days: 1, zoom: 4, leadIn: 16) - 4 * scale) < 1e-9)
+    #expect(ScheduleTimeline.window(now: now, days: 7, pastSpan: 0, calendar: calendar).end
+      == now.addingTimeInterval(7 * 86_400))
+  }
 }

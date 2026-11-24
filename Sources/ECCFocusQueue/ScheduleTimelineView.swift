@@ -11,6 +11,8 @@ enum ScheduleTimelineMetrics {
   static let lanePadding: CGFloat = 4
   /// A fire closer than this to the previous one in its row moves to a new row.
   static let minimumClipGap: CGFloat = 26
+  /// Past kept left of now when the view opens on now, so the marker reads.
+  static let nowLeadIn: CGFloat = 16
   /// The most an hour may stretch at full zoom.
   static let maximumPointsPerHour: Double = 240
 
@@ -73,7 +75,8 @@ extension ScheduleRunOutcome {
 /// row is the task a job acts on (app-wide jobs share one row). A clip is as
 /// wide as its label, or as its expected run once zoomed in far enough, and
 /// stops before the next fire. Drag a clip to retime it; click it to select
-/// it and see details. Zooming keeps the selected clip (or now) centered.
+/// it and see details. Zooming keeps the selected clip centered, or now at
+/// the leading edge; the past is reachable by scrolling back.
 struct ScheduleTimelineView: View {
   let model: QueueViewModel
   @AppStorage("scheduleTimelineRangeDays") private var rangeDays = ScheduleRange.threeDays.rawValue
@@ -86,9 +89,11 @@ struct ScheduleTimelineView: View {
   @State private var selectedClipID: String?
   @State private var detailClipID: String?
   @State private var hoveredClipID: String?
-  /// The date zooming keeps centered: the selected clip's start, else now.
+  /// The selected clip's start, which zooming keeps centered; nil keeps now at the leading edge.
   @State private var focusDate: Date?
   @State private var status: String?
+  /// Starts pending so the first layout opens on the focus date.
+  @State private var scrollRequest = HorizontalScrollTarget.Request()
 
   init(model: QueueViewModel, initialZoom: Double = 0) {
     self.model = model
@@ -189,7 +194,7 @@ struct ScheduleTimelineView: View {
         .accessibilityLabel("Zoom")
       Image(systemName: "plus.magnifyingglass").font(.system(size: 10)).foregroundStyle(.secondary)
     }
-    .help("Zoom in on the timeline. Keeps the selected clip, or now, centered.")
+    .help("Zoom in on the timeline. Keeps the selected clip centered, or now at the left edge.")
   }
 
   private static let zoneChoices = [
@@ -233,14 +238,9 @@ struct ScheduleTimelineView: View {
   // MARK: Arrangement
 
   private func window(now: Date) -> DateInterval {
-    // Start two days back so past runs show their outcomes behind the
-    // playhead; the range picker covers the time ahead of now.
-    let hour = calendar.dateInterval(of: .hour, for: now)?.start ?? now
-    let historyStart = calendar.dateInterval(
-      of: .hour, for: now.addingTimeInterval(-ScheduleRunHistoryStore.retention)
-    )?.start ?? now.addingTimeInterval(-ScheduleRunHistoryStore.retention)
-    return DateInterval(start: historyStart,
-                        end: hour.addingTimeInterval(TimeInterval(range.days) * 86_400 - 2 * 3_600))
+    // Past runs stay reachable by scrolling back; the view opens on now.
+    ScheduleTimeline.window(now: now, days: range.days,
+                            pastSpan: ScheduleRunHistoryStore.retention, calendar: calendar)
   }
 
   private struct LaidOutTrack: Identifiable {
@@ -272,9 +272,13 @@ struct ScheduleTimelineView: View {
     } else {
       GeometryReader { geometry in
         let fitWidth = max(120, geometry.size.width - ScheduleTimelineMetrics.headerWidth)
-        let maximumZoom = ScheduleTimelineMetrics.maximumPointsPerHour * window.duration / 3_600 / fitWidth
-        let contentWidth = fitWidth * ScheduleTimeline.zoomFactor(slider: zoomSlider, maximum: maximumZoom)
-        let scale = contentWidth / window.duration
+        // 1x fits the chosen range ahead of now into one screen; the past
+        // extends off screen to the left.
+        let fitScale = ScheduleTimeline.scale(width: Double(fitWidth), days: range.days, zoom: 1,
+                                              leadIn: Double(ScheduleTimelineMetrics.nowLeadIn))
+        let maximumZoom = ScheduleTimelineMetrics.maximumPointsPerHour / 3_600 / fitScale
+        let scale = fitScale * ScheduleTimeline.zoomFactor(slider: zoomSlider, maximum: maximumZoom)
+        let contentWidth = CGFloat(window.duration * scale)
         let laidOut = groups.map { group in
           LaidOutGroup(group: group, tracks: group.tracks.map { track in
             LaidOutTrack(track: track, clips: ScheduleTimeline.clips(
@@ -285,7 +289,9 @@ struct ScheduleTimelineView: View {
           })
         }
         let showsGroupTitles = groups.count > 1 || groups.first?.id != "~app"
-        let focusX = CGFloat((focusDate ?? now).timeIntervalSince(window.start) * scale)
+        // A selected clip is centered; otherwise now sits at the leading edge.
+        let focusX = focusDate.map { CGFloat($0.timeIntervalSince(window.start) * scale) }
+          ?? CGFloat(now.timeIntervalSince(window.start) * scale) - ScheduleTimelineMetrics.nowLeadIn
         ScrollView(.vertical) {
           HStack(alignment: .top, spacing: 0) {
             VStack(spacing: 0) {
@@ -301,34 +307,29 @@ struct ScheduleTimelineView: View {
             }
             .frame(width: ScheduleTimelineMetrics.headerWidth)
             .overlay(alignment: .trailing) { Divider() }
-            ScrollViewReader { proxy in
-              ScrollView(.horizontal) {
-                VStack(alignment: .leading, spacing: 0) {
-                  ZStack(alignment: .topLeading) {
-                    ScheduleRuler(window: window, calendar: calendar, scale: scale, now: now)
-                    // An invisible marker at the focus date; zooming scrolls it to the center.
-                    Color.clear.frame(width: 1, height: 1)
-                      .id(Self.focusAnchorID)
-                      .padding(.leading, max(0, focusX))
-                  }
+            ScrollView(.horizontal) {
+              VStack(alignment: .leading, spacing: 0) {
+                ScheduleRuler(window: window, calendar: calendar, scale: scale, now: now)
                   .frame(width: contentWidth, height: ScheduleTimelineMetrics.rulerHeight, alignment: .topLeading)
-                  Divider()
-                  ForEach(laidOut) { group in
-                    if showsGroupTitles { groupTitle("") }
-                    ForEach(group.tracks) { item in
-                      lane(item, window: window, scale: scale, width: contentWidth, now: now)
-                      Divider()
-                    }
+                  // Scrolls the focus date into place whenever a request is made.
+                  .background(HorizontalScrollTarget(
+                    x: focusX, anchor: focusDate == nil ? 0 : 0.5, request: scrollRequest))
+                Divider()
+                ForEach(laidOut) { group in
+                  if showsGroupTitles { groupTitle("") }
+                  ForEach(group.tracks) { item in
+                    lane(item, window: window, scale: scale, width: contentWidth, now: now)
+                    Divider()
                   }
                 }
-                .frame(width: contentWidth, alignment: .leading)
               }
-              .scrollIndicators(.automatic)
-              .onAppear { center(proxy, animated: false) }
-              .onChange(of: zoomSlider) { _, _ in center(proxy, animated: false) }
-              .onChange(of: rangeDays) { _, _ in center(proxy, animated: false) }
-              .onChange(of: selectedClipID) { _, id in if id != nil { center(proxy, animated: true) } }
+              .frame(width: contentWidth, alignment: .leading)
             }
+            .scrollIndicators(.automatic)
+            .onChange(of: zoomSlider) { _, _ in scrollRequest.bump(animated: false) }
+            .onChange(of: rangeDays) { _, _ in scrollRequest.bump(animated: false) }
+            .onChange(of: showsAllProjects) { _, _ in scrollRequest.bump(animated: false) }
+            .onChange(of: selectedClipID) { _, id in if id != nil { scrollRequest.bump(animated: true) } }
           }
         }
         .scrollIndicators(.automatic)
@@ -336,19 +337,6 @@ struct ScheduleTimelineView: View {
       .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .textBackgroundColor).opacity(0.55)))
       .clipShape(RoundedRectangle(cornerRadius: 10))
       .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.secondary.opacity(0.18)))
-    }
-  }
-
-  private static let focusAnchorID = "schedule-focus-anchor"
-
-  private func center(_ proxy: ScrollViewProxy, animated: Bool) {
-    // Wait one turn so the new content width is laid out before scrolling.
-    DispatchQueue.main.async {
-      if animated {
-        withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(Self.focusAnchorID, anchor: .center) }
-      } else {
-        proxy.scrollTo(Self.focusAnchorID, anchor: .center)
-      }
     }
   }
 
@@ -722,6 +710,14 @@ private struct ScheduleRuler: View {
           .font(.system(size: 10, weight: .semibold)).fixedSize()
           .padding(.leading, 3).offset(y: 3)
       }
+      // The view opens on now, so today's date rides on the playhead unless
+      // a day label already sits close on either side.
+      let nowX = now.timeIntervalSince(window.start) * scale
+      if !marks.contains(where: { $0.isDay && abs($0.date.timeIntervalSince(window.start) * scale - nowX) < 90 }) {
+        Text(now.formatted(Date.FormatStyle(timeZone: calendar.timeZone).weekday(.abbreviated).month(.abbreviated).day()))
+          .font(.system(size: 10, weight: .semibold)).fixedSize()
+          .offset(x: CGFloat(nowX) - 7, y: 3)
+      }
       ForEach(marks, id: \.date) { mark in
         Text(mark.isDay ? mark.date.formatted(Date.FormatStyle(timeZone: calendar.timeZone).weekday(.abbreviated).month(.abbreviated).day())
              : mark.date.formatted(Date.FormatStyle(date: .omitted, time: .shortened, timeZone: calendar.timeZone)))
@@ -775,6 +771,53 @@ private struct ScheduleGrid: View {
         path.addLine(to: CGPoint(x: x, y: size.height))
         context.stroke(path, with: .color(.secondary.opacity(mark.isDay ? 0.35 : 0.12)), lineWidth: mark.isDay ? 1 : 0.5)
       }
+    }
+  }
+}
+
+/// Scrolls the enclosing horizontal `NSScrollView` so content x `x` sits at
+/// `anchor` (0 leading, 0.5 center) of the visible width. It acts once per
+/// new `request`, after layout, so the user's own scrolling is left alone.
+/// `ScrollViewReader.scrollTo` proved unreliable for this nested scroll view.
+struct HorizontalScrollTarget: NSViewRepresentable {
+  struct Request: Equatable {
+    var serial = 1
+    var animated = false
+    mutating func bump(animated: Bool) {
+      serial += 1
+      self.animated = animated
+    }
+  }
+
+  let x: CGFloat
+  let anchor: CGFloat
+  let request: Request
+
+  final class Coordinator { var handled = 0 }
+
+  func makeCoordinator() -> Coordinator { Coordinator() }
+  func makeNSView(context: Context) -> NSView { NSView() }
+
+  func updateNSView(_ view: NSView, context: Context) {
+    guard context.coordinator.handled != request.serial else { return }
+    context.coordinator.handled = request.serial
+    let x = x, anchor = anchor, animated = request.animated
+    // Wait one turn so the new content width is laid out before scrolling.
+    DispatchQueue.main.async {
+      guard let scrollView = view.enclosingScrollView else { return }
+      let clip = scrollView.contentView
+      let visible = clip.bounds.width
+      let limit = max(0, (scrollView.documentView?.frame.width ?? 0) - visible)
+      let origin = NSPoint(x: min(max(0, x - visible * anchor), limit), y: clip.bounds.origin.y)
+      if animated {
+        NSAnimationContext.runAnimationGroup { context in
+          context.duration = 0.25
+          clip.animator().setBoundsOrigin(origin)
+        }
+      } else {
+        clip.setBoundsOrigin(origin)
+      }
+      scrollView.reflectScrolledClipView(clip)
     }
   }
 }

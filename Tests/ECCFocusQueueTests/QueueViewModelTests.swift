@@ -5976,8 +5976,13 @@ extension QueueViewModelTests {
 
     if let output = ProcessInfo.processInfo.environment["FOCUS_QUEUE_RENDER_DIR"] {
       let size = NSSize(width: 820, height: 360)
-      for (name, zoom) in [("schedule-timeline.png", 0.0), ("schedule-timeline-zoomed.png", 0.75)] {
-        try WalkthroughDemoRecording.snapshot(
+      let defaults = UserDefaults.standard
+      let savedRange = defaults.object(forKey: "scheduleTimelineRangeDays")
+      defer { defaults.set(savedRange, forKey: "scheduleTimelineRangeDays") }
+      for (name, days, zoom) in [("schedule-timeline.png", 3, 0.0), ("schedule-timeline-zoomed.png", 3, 0.75),
+                                 ("schedule-timeline-1day.png", 1, 0.0)] {
+        defaults.set(days, forKey: "scheduleTimelineRangeDays")
+        try await WalkthroughDemoRecording.settledSnapshot(
           ScheduleTimelineView(model: model, initialZoom: zoom).padding(12).environment(\.colorScheme, .dark),
           size: size, to: URL(fileURLWithPath: output).appendingPathComponent(name))
       }
@@ -6062,7 +6067,7 @@ extension QueueViewModelTests {
     #expect(!model.scheduleRunHistory(now: now).contains { $0.title == "Ancient" })
 
     if let output = ProcessInfo.processInfo.environment["FOCUS_QUEUE_RENDER_DIR"] {
-      try WalkthroughDemoRecording.snapshot(
+      try await WalkthroughDemoRecording.settledSnapshot(
         ScheduleTimelineView(model: model).padding(12).environment(\.colorScheme, .dark),
         size: NSSize(width: 820, height: 420),
         to: URL(fileURLWithPath: output).appendingPathComponent("schedule-timeline-history.png"))

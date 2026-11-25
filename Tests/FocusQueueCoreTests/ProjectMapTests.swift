@@ -87,7 +87,8 @@ func mapCoversLeaves() {
     let map = demoMap(tickets: demoTickets)
     let node = { (id: String) in map.nodes.first { $0.id == id } }
     #expect(node("DEM-1")?.leaves == ["1.1"])     // Task: field
-    #expect(node("DEM-3") == nil)                 // "DEM-3 covers A2": planning work stays off the map
+    #expect(node("DEM-3")?.leaves == ["A2"])      // "DEM-3 covers A2"
+    #expect(node("DEM-3").map { map.lanes[$0.lane].title } == "Planning")
     #expect(node("DEM-4")?.leaves == ["1.2"])     // task-set table row
     #expect(node("DEM-6")?.leaves == ["1.3"])     // title label "Phase 1 1.3:"
     #expect(node("DEM-5")?.leaves == [])          // a mere mention claims nothing
@@ -102,10 +103,9 @@ func mapCoversLeaves() {
 func mapGhosts() {
     let map = demoMap(tickets: demoTickets)
     let ghosts = Set(map.nodes.filter { $0.kind == .ghost }.map(\.id))
-    // 1.3's only task was cancelled; 1.4 has none; C2 is a gated track.
-    // Planning leaves (A1) stay off the map, C1 is a gate-less track, and
-    // covered leaves need no ghost.
-    #expect(ghosts == ["ghost:1.3", "ghost:1.4", "ghost:C2"])
+    // A1 has no task; 1.3's only task was cancelled; 1.4 has none; C2 is a gated track.
+    // A3 is ticked, C1 is a gate-less track, and covered leaves need no ghost.
+    #expect(ghosts == ["ghost:A1", "ghost:1.3", "ghost:1.4", "ghost:C2"])
     #expect(map.nodes.first { $0.id == "ghost:1.3" }?.reason == "Its only tasks were cancelled.")
 }
 
@@ -115,7 +115,7 @@ func mapEdges() throws {
     try process.setDependencies(taskID: "DEM-5", prerequisites: ["DEM-4"])
     let map = demoMap(tickets: demoTickets, process: process)
     let edges = Set(map.edges.map { "\($0.from)>\($0.to)" })
-    #expect(!edges.contains("ghost:A1>DEM-1"))      // planning leaves are off the map
+    #expect(edges.contains("ghost:A1>DEM-1"))       // leaf dependency onto a ghost
     #expect(edges.contains("DEM-2>DEM-1"))           // a task ID in a Deps line
     #expect(edges.contains("DEM-1>DEM-4"))           // 1.2 depends on 1.1
     #expect(edges.contains("DEM-4>DEM-6") && edges.contains("DEM-4>ghost:1.3"))
@@ -137,7 +137,10 @@ func mapModuleGhosts() {
     let modules = try! #require(map.lanes.firstIndex { $0.role == "modules" })
     #expect(map.lanes[modules].title == "Modules")
     let cards = map.nodes.filter { $0.lane == modules }
-    #expect(Set(cards.map(\.id)) == ["ghost:module:m9", "module:m4", "ghost:module:m7", "module:m1"])
+    #expect(Set(cards.filter { $0.parent == nil }.map(\.id)) == ["ghost:module:m9", "module:m4", "ghost:module:m7", "module:m1"])
+    // DEM-1 claims leaf 1.1, whose Modules line names M4: a copy hangs under the module.
+    let copy = cards.first { $0.id == "module:m4>DEM-1" }
+    #expect(copy?.parent == "module:m4" && copy?.taskID == "DEM-1" && copy?.kind == .task)
     #expect(cards.first { $0.id == "module:m4" }.map { "\($0.kind.rawValue) \($0.status)" } == "module resolved")
     #expect(cards.first { $0.id == "module:m1" }?.kind == .module)   // named in leaf A1
 }
@@ -203,7 +206,7 @@ func dashboardWriteRebuildsMap() async throws {
     #expect(built.nodes.first { $0.id == "DEM-7" }?.leaves == ["1.4"])
 }
 
-@Test("Tree ranks: root, phases, then tasks one rank below their tree parent")
+@Test("Tree ranks: the root, then each milestone's tasks one rank below their tree parent")
 func mapTreeRanks() {
     let map = demoMap(tickets: demoTickets)
     let html = ProjectMapHTML.render(map)
@@ -219,7 +222,7 @@ func mapTreeRanks() {
     #expect(top("DEM-4") == one + rank)
     #expect(top("DEM-6") == one + 2 * rank)
     #expect(top("ghost:1.4") == one + 3 * rank)
-    #expect(one == ProjectMapHTML.top + 2 * rank)
+    #expect(one == ProjectMapHTML.top + rank)   // rank 1: right under the root
 }
 
 @Test("Percent complete weighs status and estimates unplanned phases")
@@ -265,11 +268,12 @@ func unclaimedTasksJoinPlanPhases() {
     func lane(_ id: String) -> String? { map.nodes.first { $0.id == id }.map { map.lanes[$0.lane].title } }
     #expect(lane("DEM-20") == "Build")                       // title names Phase 1
     #expect(lane("DEM-21") == "Build")                       // "Phase 1+" → earliest build phase with open work
-    #expect(lane("DEM-22") == nil)                           // process Planning: off the map
+    #expect(lane("DEM-22") == "Planning")                    // process Planning → the planning section
     #expect(lane("DEM-23") == "Other work")
     #expect(lane("DEM-24") == "Other work")
     #expect(map.lanes.last?.fullTitle == "Outside the development process or not linked to a milestone")
-    #expect(!map.lanes.contains { $0.title.localizedCaseInsensitiveContains("phase") || $0.title.contains("Planning") })
+    #expect(!map.lanes.contains { $0.title.localizedCaseInsensitiveContains("phase") })
+    #expect(map.lanes.first?.role == "planning")
     #expect(map.nodes.allSatisfy { $0.phase == nil })        // process phase names never show
 }
 
@@ -309,7 +313,7 @@ func milestoneTitles() {
     #expect(t("Workbench") == "Workbench")
 }
 
-@Test("The Modules milestone follows Phase 0, and the planning section is left out")
+@Test("Milestones run Planning, Phase 0, Modules, then the build phases; the map opens on the current one")
 func milestoneOrder() {
     let outline = DevelopmentPlanOutline.parse("""
     ## A. Planning completion
@@ -327,9 +331,59 @@ func milestoneOrder() {
     - [ ] **1.1. Core.**
       Gate: works.
     """)
-    let process = DevelopmentProcess(modules: [DevelopmentModule(id: "m1", name: "M1 Core")])
-    let map = ProjectMapBuilder.build(projectID: "d", projectName: "D", process: process, tickets: [],
-                                      outline: outline, planFile: nil, agents: [:])
-    #expect(map.lanes.map(\.title) == ["Feasibility", "Modules", "Usable slice"])
-    #expect(map.nodes.map { "\($0.id)@\($0.lane)" } == ["ghost:0.1@0", "ghost:module:m1@1", "ghost:1.1@2"])
+    var process = DevelopmentProcess(modules: [DevelopmentModule(id: "m1", name: "M1 Core")])
+    let documents = [ProjectMap.Document(id: "doc:prd.md", title: "PRD", status: "accepted", path: "prd.md"),
+                     ProjectMap.Document(id: ProjectMapGenerator.devplanDocumentID, title: "Development plan",
+                                         status: "draft", path: "devplan.md")]
+    var map = ProjectMapBuilder.build(projectID: "d", projectName: "D", process: process, tickets: [],
+                                      outline: outline, planFile: nil, agents: [:], documents: documents)
+    #expect(map.lanes.map(\.title) == ["Planning", "Feasibility", "Modules", "Usable slice"])
+    // Documents lead Planning; its leaves hang under the development plan.
+    #expect(map.nodes.map { "\($0.id)@\($0.lane)" }
+            == ["doc:prd.md@0", "doc:devplan.md@0", "ghost:A1@0", "ghost:0.1@1", "ghost:module:m1@2", "ghost:1.1@3"])
+    #expect(map.lanes[0].defaultParent == "doc:devplan.md")
+    #expect(map.currentLane == 0)                       // a new process is in Planning
+    process.currentPhase = .phase0
+    map = ProjectMapBuilder.build(projectID: "d", projectName: "D", process: process, tickets: [],
+                                  outline: outline, planFile: nil, agents: [:], documents: documents)
+    #expect(map.currentLane == 1)
+    let html = ProjectMapHTML.render(map)
+    #expect(html.contains(#"data-current="lane1""#))
+    #expect(html.contains(#"<span class="sel">Feasibility</span>"#))
+    // Only the current milestone is laid out; the others wait hidden for the picker.
+    #expect(html.contains(#"data-id="doc:prd.md""#) && html.range(of: #"data-id="doc:prd.md"[^>]*display:none"#, options: .regularExpression) != nil)
+    #expect(html.range(of: #"data-id="ghost:0.1"[^>]*display:none"#, options: .regularExpression) == nil)
+    #expect(html.contains(#"<a class="open" href="prd.md">"#))
+}
+
+@Test("Planning documents: catalog files by state, module designs, and other notes under Research")
+func planningDocuments() throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("fq-docs-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: folder.appendingPathComponent("archive"), withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    for name in ["prd.md", "concept.md", "usage notes.md", "plan.md", "data.md", "archive/old-evidence.md"] {
+        try "# x".write(to: folder.appendingPathComponent(name), atomically: true, encoding: .utf8)
+    }
+    var process = DevelopmentProcess()
+    process.steps["prd"] = DevelopmentStepState(status: .done, checkedArtifacts: ["prd.md"])
+    let documents = ProjectMapGenerator.planningDocuments(directory: folder, process: process, moduleFiles: [])
+    let byID = Dictionary(uniqueKeysWithValues: documents.map { ($0.id, $0) })
+    #expect(byID["doc:prd.md"]?.status == "accepted")
+    #expect(byID["doc:concept.md"]?.status == "draft")
+    #expect(byID["doc:devplan.md"].map { ($0.status, $0.path) } ?? ("", "x") == ("missing", nil))
+    #expect(byID["doc:modules"]?.status == "missing")
+    // Focus Queue's own records are not planning documents.
+    #expect(byID["doc:note:plan.md"] == nil && byID["doc:note:data.md"] == nil)
+    #expect(byID["doc:note:usage notes.md"].map { ($0.parent, $0.path, $0.title) } ?? (nil, nil, "")
+            == ("doc:research.md", "usage%20notes.md", "Usage notes"))
+    #expect(byID["doc:note:archive/old-evidence.md"]?.parent == "doc:research.md")
+}
+
+@Test("A rebuild that changes only the generated time leaves the map file alone")
+func mapWriteSkipsStampOnlyChanges() throws {
+    let html = ProjectMapHTML.render(demoMap(tickets: demoTickets))
+    let later = html.replacingOccurrences(of: #"generated \d{4}-\d{2}-\d{2} \d{2}:\d{2}"#,
+                                          with: "generated 2099-01-01 00:00", options: .regularExpression)
+    #expect(html != later)
+    #expect(ProjectMapHTML.withoutStamp(html) == ProjectMapHTML.withoutStamp(later))
 }

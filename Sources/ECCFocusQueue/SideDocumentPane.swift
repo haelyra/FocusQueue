@@ -424,7 +424,7 @@ struct SideDocumentPane: View {
                         findRequest: find.request, findSearchesBackwards: find.searchesBackwards)
                 case .rendered(let resource):
                     ReadOnlyResourceDocument(
-                        url: resource, open: openLink, liveMap: { [queue] in await queue.projectMapLivePayload() },
+                        url: resource, open: openLink, liveMap: { [queue] tasks in await queue.projectMapLivePayload(tasks: tasks) },
                         revision: entry.revision, findQuery: find.query,
                         findRequest: find.request, findSearchesBackwards: find.searchesBackwards)
                 }
@@ -688,7 +688,8 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
     let url: URL
     let open: (URL) -> Void
     /// Live agent data for a project map page, pushed every few seconds.
-    var liveMap: (@MainActor () async -> [String: Any])? = nil
+    /// Takes the task IDs on the map, so only their agents are read.
+    var liveMap: (@MainActor (Set<String>) async -> [String: Any])? = nil
     /// The store's content generation; a new one means the file changed on
     /// disk (an in-app save or an agent's write), so the page reloads.
     var revision = 0
@@ -780,7 +781,11 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
         }
 
         /// Pushes live agents into an open project map every 3 seconds.
-        var liveMap: (@MainActor () async -> [String: Any])?
+        var liveMap: (@MainActor (Set<String>) async -> [String: Any])?
+        /// The map's task IDs, read once per load; nil until read.
+        private var liveTasks: Set<String>?
+        /// The last payload sent; an identical one is not pushed again.
+        private var lastLiveJSON = ""
         private var liveTimer: Timer?
         private var livePushing = false
         private weak var liveView: WKWebView?
@@ -788,6 +793,8 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
         func startLiveMap(in webView: WKWebView) {
             stopLiveMap()
             liveView = webView
+            liveTasks = nil
+            lastLiveJSON = ""
             pushLiveMap()
             liveTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.pushLiveMap() }
@@ -796,14 +803,24 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
 
         func stopLiveMap() { liveTimer?.invalidate(); liveTimer = nil }
 
+        /// Each push reads only the map's own tasks' agents, skips a hidden
+        /// view, and sends nothing when the agents have not changed.
         private func pushLiveMap() {
-            guard !livePushing, let liveMap, let view = liveView else { return }
+            guard !livePushing, let liveMap, let view = liveView,
+                  view.window?.isVisible == true, !view.isHiddenOrHasHiddenAncestor else { return }
             livePushing = true
             Task { @MainActor [weak self] in
-                let payload = await liveMap()
                 defer { self?.livePushing = false }
-                guard let data = try? JSONSerialization.data(withJSONObject: payload),
-                      let json = String(data: data, encoding: .utf8) else { return }
+                if self?.liveTasks == nil {
+                    let ids = try? await view.callAsyncJavaScript(
+                        "return [...new Set([...document.querySelectorAll('[data-task]')].map(e => e.dataset.task))]",
+                        arguments: [:], in: nil, contentWorld: .defaultClient) as? [String]
+                    self?.liveTasks = Set(ids ?? [])
+                }
+                let payload = await liveMap(self?.liveTasks ?? [])
+                guard let data = try? JSONSerialization.data(withJSONObject: payload, options: .sortedKeys),
+                      let json = String(data: data, encoding: .utf8), json != self?.lastLiveJSON else { return }
+                self?.lastLiveJSON = json
                 _ = try? await view.callAsyncJavaScript(
                     "if (window.fqMapLive) window.fqMapLive(JSON.parse(json))",
                     arguments: ["json": json], in: nil, contentWorld: .defaultClient)

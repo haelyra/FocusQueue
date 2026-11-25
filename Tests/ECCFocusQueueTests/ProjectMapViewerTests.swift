@@ -33,14 +33,15 @@ struct ProjectMapViewerTests {
       outline: DevelopmentPlanOutline.parse(plan), planFile: "devplan.md", agents: [:])
   }
 
-  private func eventually(timeout: Duration = .seconds(10), _ condition: @MainActor () async -> Bool) async throws {
+  private func eventually(timeout: Duration = .seconds(10), sourceLocation: SourceLocation = #_sourceLocation,
+                          _ condition: @MainActor () async -> Bool) async throws {
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: timeout)
     while clock.now < deadline {
       if await condition() { return }
       try await Task.sleep(for: .milliseconds(50))
     }
-    Issue.record("Timed out")
+    Issue.record("Timed out", sourceLocation: sourceLocation)
   }
 
   private func run(_ web: WKWebView, _ script: String) async -> String {
@@ -66,7 +67,6 @@ struct ProjectMapViewerTests {
     }
     web.loadFileURL(file, allowingReadAccessTo: folder)
     try await eventually { await run(web, "return document.documentElement.dataset.fqMap || ''") == "ready" }
-    _ = await run(web, "document.querySelector('[data-kind=\"phase\"]').click(); return 1")
     _ = await run(web, "document.querySelector('[data-node=\"DEM-1\"]').click(); return 1")
     try await eventually {
       await run(web, "return document.querySelector('[data-node=\"DEM-2\"]').style.display") == ""
@@ -85,7 +85,7 @@ struct ProjectMapViewerTests {
     #expect(Int(await run(web, "return \(card).offsetHeight")) == 74)
   }
 
-  @Test("Milestones and dependents start collapsed, a click expands and zooms, a leaf task click locates it")
+  @Test("The map opens on the current milestone, the root picks another, cards expand and zoom, leaf tasks locate")
   func mapInteractions() async throws {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("fq-map-viewer-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -105,34 +105,39 @@ struct ProjectMapViewerTests {
     #expect(ProjectMapPage.isMap(file))
     web.loadFileURL(file, allowingReadAccessTo: folder)
 
-    // The injected script ran although page scripts are off, and collapsed both phases.
+    // The injected script ran although page scripts are off. The root shows
+    // the current milestone (Build); its task's dependents start collapsed and
+    // the other milestone is hidden.
     try await eventually { await run(web, "return document.documentElement.dataset.fqMap || ''") == "ready" }
+    // A web view outside a window gets no animation frames; timers stand in.
+    _ = await run(web, "window.requestAnimationFrame = cb => setTimeout(() => cb(performance.now()), 16); return 1")
+    #expect(await run(web, "return document.querySelector('#root .sel').textContent") == "Build")
+    #expect(await run(web, "return document.querySelector('[data-node=\"DEM-1\"]').style.display") == "")
     try await eventually {
-      await run(web, "return document.querySelector('[data-node=\"DEM-1\"]').style.display") == "none"
+      await run(web, "return document.querySelector('[data-node=\"DEM-2\"]').style.display") == "none"
     }
-    #expect(await run(web, "return document.querySelector('[data-node=\"ghost:2.1\"]').style.display") == "none")
-
-    // Clicking the first milestone expands it with an animation and zooms in
-    // on it; its task's dependents and the second milestone stay collapsed.
-    #expect(await run(web, "return document.querySelector('[data-kind=\"phase\"] b').textContent") == "Build")
-    let before = web.magnification
-    _ = await run(web, "document.querySelector('[data-kind=\"phase\"]').click(); return 1")
-    try await eventually {
-      await run(web, "return document.querySelector('[data-node=\"DEM-1\"]').style.display") == ""
-    }
-    #expect(await run(web, "return document.querySelector('[data-node=\"DEM-2\"]').style.display") == "none")
     #expect(await run(web, "return document.querySelector('[data-node=\"ghost:2.1\"]').style.display") == "none")
     #expect(await run(web, "return document.querySelector('[data-node=\"DEM-1\"] .kids').textContent") == "▸ 1")
-    try await eventually { abs(web.magnification - before) > 0.01 }
-    #expect(ZoomableWebView.focusRange.contains(web.magnification))
 
-    // Clicking a task with dependents opens them instead of locating it.
+    // Clicking a task with dependents opens them instead of locating it, and
+    // zooms to fit what opened.
+    let before = web.magnification
     _ = await run(web, "document.querySelector('[data-node=\"DEM-1\"] .title').click(); return 1")
     try await eventually {
       await run(web, "return document.querySelector('[data-node=\"DEM-2\"]').style.display") == ""
     }
     #expect(await run(web, "return document.querySelector('[data-node=\"DEM-1\"] .kids').textContent") == "▾ 1")
     #expect(!opened.contains(URL(string: "focusqueue://task/DEM-1")!))
+    try await eventually { abs(web.magnification - before) > 0.01 }
+    #expect(ZoomableWebView.focusRange.contains(web.magnification))
+
+    // Hovering a card highlights it and its dependency neighbours, nothing else.
+    _ = await run(web, "document.querySelector('[data-node=\"DEM-2\"] .title').dispatchEvent(new MouseEvent('mouseover', {bubbles: true})); return 1")
+    #expect(await run(web, "return document.getElementById('map').classList.contains('dim')") == "1")
+    #expect(await run(web, "return [...document.querySelectorAll('.node.hi')].map(e => e.dataset.node).sort().join(',')") == "DEM-1,DEM-2,ghost:2.1")
+    _ = await run(web, "document.querySelector('[data-node=\"DEM-2\"]').dispatchEvent(new MouseEvent('mouseout', {bubbles: true, relatedTarget: document.body})); return 1")
+    #expect(await run(web, "return document.querySelectorAll('.hi').length") == "0")
+
     // Dependency lines carry arrowheads.
     #expect(await run(web, "return getComputedStyle(document.querySelector('line.dep')).markerEnd") .contains("#a"))
 
@@ -166,8 +171,34 @@ struct ProjectMapViewerTests {
     #expect(await run(web, "return [...document.querySelectorAll('[data-node=\"DEM-2\"] .agents .pv')].map(e => e.className).join(',')")
             == "pv working,pv attention,pv interrupted,pv idle")
     #expect(await run(web, "return document.querySelector('[data-node=\"DEM-2\"] .act').textContent") == "editing Core/Map.swift")
-    #expect(await run(web, "return [...document.querySelector('[data-kind=\"phase\"] .live').children].map(e => e.className).join(',')")
+    #expect(await run(web, "return [...document.querySelector('.opt[data-lane=\"lane0\"] .live').children].map(e => e.className).join(',')")
             == "pv attention,pv interrupted,pv working")
+    #expect(await run(web, "return document.querySelector('#root .live').children.length") == "3")
+    // The same push again rebuilds nothing.
+    _ = await run(web, "window.__strip = document.querySelector('[data-node=\"DEM-2\"] .agents').firstChild; return 1")
+    #expect(await run(web, """
+      window.fqMapLive({tasks: {"DEM-2": [
+          {p: "claude", t: "Builder", s: "working", k: "editing", d: "Core/Map.swift"},
+          {p: "codex", t: "Reviewer", s: "idle", a: "Needs approval", ak: "approval"},
+          {p: "kimi", t: "Old", s: "blocked", a: "Interrupted", ak: "interrupted"},
+          {p: "claude", t: "Spare", s: "idle"},
+          {p: "claude", t: "Done", s: "completed"}]}});
+      return document.querySelector('[data-node="DEM-2"] .agents').firstChild === window.__strip
+      """) == "1")
+
+    // The root opens the milestone picker; choosing Harden shows its tree.
+    _ = await run(web, "document.getElementById('root').click(); return 1")
+    #expect(await run(web, "return document.getElementById('phases').hidden") == "0")
+    #expect(await run(web, "return [...document.querySelectorAll('.opt b')].map(b => b.firstChild.textContent).join(',')") == "Build,Harden")
+    _ = await run(web, "document.querySelector('.opt[data-lane=\"lane1\"]').click(); return 1")
+    try await eventually {
+      await run(web, "return document.querySelector('[data-node=\"ghost:2.1\"]').style.display") == ""
+    }
+    try await eventually {
+      await run(web, "return document.querySelector('[data-node=\"DEM-1\"]').style.display") == "none"
+    }
+    #expect(await run(web, "return document.getElementById('phases').hidden") == "1")
+    #expect(await run(web, "return document.querySelector('#root .sel').textContent") == "Harden")
 
     #expect(ProjectMapPage.taskID(from: URL(string: "focusqueue://task/dem-2")!) == "DEM-2")
     let launch = ProjectMapPage.request(from: URL(string: "focusqueue://task/DEM-2?action=launch&provider=kimi")!)

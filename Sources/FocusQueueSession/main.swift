@@ -1557,9 +1557,11 @@ enum SessionRegistrationError: Error, LocalizedError {
                 throw TaskContextError.commandFailed("\(project.name) has no enabled development process, so it has no project map.")
             }
             let url = try generator.write(map, projectID: project.id)
-            let taskCount: Int = map.nodes.filter { $0.kind == .task }.count
+            // Module task copies repeat a task shown in its own milestone.
+            let taskCount: Int = map.nodes.filter { $0.kind == .task && $0.ref == nil }.count
             let summary: [String: String] = ["status": "written", "path": url.path, "tasks": String(taskCount),
-                                             "ghosts": String(map.nodes.count - taskCount),
+                                             "ghosts": String(map.nodes.filter { $0.kind == .ghost }.count),
+                                             "documents": String(map.nodes.filter { $0.kind == .file }.count),
                                              "edges": String(map.edges.count)]
             try emit(summary)
             return

@@ -7179,11 +7179,13 @@ final class QueueViewModel {
   /// and attention, plus a rough activity (the newest tool call in its
   /// transcript) for agents that are working. Transcript tails are read off
   /// the main actor; only working agents are read.
-  func projectMapLivePayload() async -> [String: Any] {
+  /// Live agents for an open project map, limited to the tasks on it.
+  func projectMapLivePayload(tasks wanted: Set<String>) async -> [String: Any] {
     var tasks: [String: [[String: String]]] = [:]
     var reads: [(task: String, index: Int, url: URL, provider: AgentProvider)] = []
     for (taskID, context) in taskContexts {
       let key = taskID.uppercased()
+      guard wanted.contains(key) else { continue }
       for agent in context.subtasks
       where agent.agentRemovedAt == nil && agent.mergedIntoSubtaskID == nil && !agent.isAssignmentOnly {
         var entry = ["p": agent.provider.rawValue, "t": agent.title, "s": agent.status.rawValue]

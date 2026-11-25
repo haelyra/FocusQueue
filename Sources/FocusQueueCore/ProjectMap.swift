@@ -253,7 +253,8 @@ public struct ProjectMap: Codable, Equatable, Sendable {
     }
 
     public struct Node: Codable, Equatable, Sendable {
-        public enum Kind: String, Codable, Sendable { case task, ghost, module }
+        /// `file` is a planning document; `module` a tracked module.
+        public enum Kind: String, Codable, Sendable { case task, ghost, module, file }
         public var id: String
         public var kind: Kind
         public var title: String
@@ -267,6 +268,31 @@ public struct ProjectMap: Codable, Equatable, Sendable {
         public var agents: [Agent]
         /// Why a ghost exists, in plain words.
         public var reason: String?
+        /// The tree parent when it is not a dependency: a document's folder
+        /// card, or the module a task copy hangs under.
+        public var parent: String? = nil
+        /// A document's link, relative to the map file or absolute.
+        public var path: String? = nil
+        /// The task a copy stands for (a module's task shown under it).
+        public var ref: String? = nil
+
+        /// The dashboard task this card acts on, if any.
+        public var taskID: String? { kind == .task ? (ref ?? id) : nil }
+    }
+
+    /// A planning document the generator found (or expects) on disk.
+    public struct Document: Equatable, Sendable {
+        public var id: String
+        public var title: String
+        /// `accepted`, `draft`, or `missing`.
+        public var status: String
+        public var path: String?
+        public var parent: String?
+        public var reason: String?
+
+        public init(id: String, title: String, status: String, path: String?, parent: String? = nil, reason: String? = nil) {
+            self.id = id; self.title = title; self.status = status; self.path = path; self.parent = parent; self.reason = reason
+        }
     }
 
     public struct Edge: Codable, Equatable, Sendable {
@@ -283,11 +309,16 @@ public struct ProjectMap: Codable, Equatable, Sendable {
         public var isTrack: Bool
         /// The heading as written ("Phase 0 — Feasibility"), for the tooltip.
         public var fullTitle: String?
-        /// `modules` for the Modules milestone; nil for phases and other work.
+        /// `planning` or `modules` for those milestones; nil for build phases and other work.
         public var role: String?
+        /// Where tasks without an in-milestone prerequisite hang: the
+        /// development plan's card in Planning. Nil hangs them under the root.
+        public var defaultParent: String?
 
-        public init(title: String, isTrack: Bool, fullTitle: String? = nil, role: String? = nil) {
+        public init(title: String, isTrack: Bool, fullTitle: String? = nil, role: String? = nil,
+                    defaultParent: String? = nil) {
             self.title = title; self.isTrack = isTrack; self.fullTitle = fullTitle; self.role = role
+            self.defaultParent = defaultParent
         }
     }
 
@@ -299,6 +330,8 @@ public struct ProjectMap: Codable, Equatable, Sendable {
     public var lanes: [Lane]
     public var nodes: [Node]
     public var edges: [Edge]
+    /// The milestone the project is in now; the map opens on it.
+    public var currentLane: Int? = nil
 }
 
 public enum ProjectMapBuilder {
@@ -308,7 +341,7 @@ public enum ProjectMapBuilder {
     public static func build(projectID: String, projectName: String, process: DevelopmentProcess,
                              tickets: [DashboardTicket], outline: DevelopmentPlanOutline?, planFile: String?,
                              agents: [String: [ProjectMap.Agent]], moduleIDs: [String] = [],
-                             now: Date = Date()) -> ProjectMap {
+                             documents: [ProjectMap.Document] = [], now: Date = Date()) -> ProjectMap {
         let outline = outline ?? DevelopmentPlanOutline(sections: [], leaves: [], coverageText: [])
         let ticketIDs = Set(tickets.map { $0.id.uppercased() })
         func taskIDs(in text: String) -> [String] {
@@ -355,6 +388,13 @@ public enum ProjectMapBuilder {
         // development-process phase. Only a task with none of these signals is
         // left in a "Not linked to a phase" lane.
         var unlinkedLane: Int?
+        // Planning: the plan's own planning section, or a lane of its own
+        // when the plan has none but planning documents exist.
+        var planningLane = outline.sections.indices.first { outline.sections[$0].isPlanning }
+        if planningLane == nil, !documents.isEmpty {
+            lanes.append(ProjectMap.Lane(title: "Planning", isTrack: false))
+            planningLane = lanes.count - 1
+        }
         let phaseSection = PlanPhaseSections(outline: outline) { leafID in
             // A leaf still has open work unless it is ticked or a finished task covers it.
             guard let leaf = outline.leaves.first(where: { $0.id == leafID }), !leaf.isChecked else { return false }
@@ -372,7 +412,8 @@ public enum ProjectMapBuilder {
             } else if let section = phaseSection.section(titled: ticket.title)
                         ?? outline.leafIDs(in: ticket.title).compactMap({ leafID in
                             outline.leaves.first { $0.id == leafID }?.sectionIndex }).first
-                        ?? process.phase(ofTask: id).flatMap(phaseSection.section(for:)) {
+                        ?? process.phase(ofTask: id).flatMap({ phase in
+                            phase == .planning ? planningLane : phaseSection.section(for: phase) }) {
                 lane = section
                 reason = "Supports this milestone; it does not claim a plan leaf."
             } else {
@@ -391,8 +432,6 @@ public enum ProjectMapBuilder {
                     ? "Marked outside the development process (a side question or chore)."
                     : "No plan leaf, phase in its title, or process phase places it."
             }
-            // The map leaves the planning milestone out, with its tasks.
-            if isPlanning(lane) { continue }
             nodeIndex[id] = nodes.count
             nodes.append(ProjectMap.Node(
                 id: id, kind: .task, title: ticket.title, status: ticket.status.lowercased(), lane: lane,
@@ -405,7 +444,7 @@ public enum ProjectMapBuilder {
         // Ghosts: planned leaves with an unmet gate and no live covering task.
         for leaf in outline.leaves {
             let live = (leafNodes[leaf.id] ?? []).filter { !abandoned.contains(byID[$0]?.status.lowercased() ?? "") }
-            guard live.isEmpty, !leaf.isChecked, !isPlanning(leaf.sectionIndex) else { continue }
+            guard live.isEmpty, !leaf.isChecked else { continue }
             let section = outline.sections.indices.contains(leaf.sectionIndex) ? outline.sections[leaf.sectionIndex] : nil
             guard leaf.gate != nil || section?.isTrack == false else { continue }
             let id = "ghost:\(leaf.id)"
@@ -419,11 +458,24 @@ public enum ProjectMapBuilder {
             leafNodes[leaf.id, default: []].append(id)
         }
 
+        // Planning documents: one card per catalog file, with research notes
+        // and module designs under their folder cards.
+        if let planningLane {
+            for document in documents {
+                nodeIndex[document.id] = nodes.count
+                nodes.append(ProjectMap.Node(
+                    id: document.id, kind: .file, title: document.title, status: document.status, lane: planningLane,
+                    leaves: [], gate: nil, phase: nil, agents: [], reason: document.reason,
+                    parent: document.parent, path: document.path))
+            }
+        }
+
         // The Modules milestone: one card per tracked module or module file,
         // colored by its progress. A module nothing links or names is a ghost.
         let mentionText = (tickets.map(\.title) + outline.leaves.map { $0.moduleText + " " + $0.title }).joined(separator: " ")
         let mentioned = Set(DevelopmentPlanOutline.tokens(in: mentionText).map { $0.uppercased() })
         var moduleLane: Int?
+        var moduleKeys: [(node: String, key: String, linked: [String])] = []
         func moduleNode(id: String, kind: ProjectMap.Node.Kind, title: String, status: String, reason: String) {
             if moduleLane == nil {
                 lanes.append(ProjectMap.Lane(title: "Modules", isTrack: false, fullTitle: "Modules", role: "modules"))
@@ -438,6 +490,9 @@ public enum ProjectMapBuilder {
             let named = mentioned.contains(module.name.uppercased()) || mentioned.contains(module.id.uppercased())
                 || tickets.contains { $0.title.localizedCaseInsensitiveContains(module.name) }
             let title = ProjectMapBuilder.milestoneTitle(module.name)
+            moduleKeys.append((module.qaAccepted || module.implemented || !linked.isEmpty || named
+                                   ? "module:\(module.id)" : "ghost:module:\(module.id)",
+                               module.id.uppercased(), linked.map { $0.id.uppercased() }))
             guard module.qaAccepted || module.implemented || !linked.isEmpty || named else {
                 moduleNode(id: "ghost:module:\(module.id)", kind: .ghost, title: title, status: "missing",
                            reason: "Tracked module with unaccepted criteria and no linked task.")
@@ -458,12 +513,46 @@ public enum ProjectMapBuilder {
                 module.id.lowercased() == key || module.name.uppercased().hasPrefix(moduleID.uppercased())
                     || (module.file.map { ($0 as NSString).lastPathComponent.lowercased().hasPrefix(key + "-") } ?? false)
             }), nodeIndex["module:\(key)"] == nil, nodeIndex["ghost:module:\(key)"] == nil else { continue }
+            moduleKeys.append((mentioned.contains(moduleID.uppercased()) ? "module:\(key)" : "ghost:module:\(key)",
+                               moduleID.uppercased(), []))
             if mentioned.contains(moduleID.uppercased()) {
                 moduleNode(id: "module:\(moduleID.lowercased())", kind: .module, title: moduleID.uppercased(),
                            status: "backlog", reason: "Module design file, named in the plan or a task.")
             } else {
                 moduleNode(id: "ghost:module:\(moduleID.lowercased())", kind: .ghost, title: moduleID.uppercased(),
                            status: "missing", reason: "Module design file exists, but no task or plan leaf names it.")
+            }
+        }
+
+        // Under each module, the tasks that build it: linked in the process, or
+        // claiming a plan leaf whose Modules line names it. These are copies:
+        // the task's own card stays in its build milestone.
+        if let moduleLane {
+            var leafModules: [String: Set<String>] = [:]
+            for leaf in outline.leaves {
+                leafModules[leaf.id] = Set(DevelopmentPlanOutline.tokens(in: leaf.moduleText).map { $0.uppercased() })
+            }
+            for (moduleNodeID, key, linked) in moduleKeys where nodeIndex[moduleNodeID] != nil {
+                var related = linked
+                for ticket in tickets {
+                    let id = ticket.id.uppercased()
+                    if !related.contains(id), (taskLeaves[id] ?? []).contains(where: { leafModules[$0]?.contains(key) ?? false }) {
+                        related.append(id)
+                    }
+                }
+                for id in related {
+                    guard let ticket = byID[id] else { continue }
+                    let copy = "\(moduleNodeID)>\(id)"
+                    nodeIndex[copy] = nodes.count
+                    nodes.append(ProjectMap.Node(
+                        id: copy, kind: .task, title: ticket.title, status: ticket.status.lowercased(), lane: moduleLane,
+                        leaves: taskLeaves[id] ?? [], gate: nil, phase: nil, agents: agents[id] ?? [],
+                        reason: "Builds this module.", parent: moduleNodeID, ref: id))
+                }
+                if nodes[nodeIndex[moduleNodeID]!].kind == .ghost, !related.isEmpty {
+                    nodes[nodeIndex[moduleNodeID]!].kind = .module
+                    nodes[nodeIndex[moduleNodeID]!].status = "backlog"
+                }
             }
         }
 
@@ -485,19 +574,34 @@ public enum ProjectMapBuilder {
             for prerequisite in prerequisites { connect(prerequisite.uppercased(), task.uppercased(), "task") }
         }
 
-        // Milestones in build order: plan phases without planning, the Modules
-        // milestone after Phase 0 (the development process's own order), then
-        // other work. Titles drop "Phase N —" numbering and asides.
-        var order = outline.sections.indices.filter { !outline.sections[$0].isPlanning }
+        // Milestones in process order: Planning, the plan's phases with the
+        // Modules milestone after Phase 0, then other work. Titles drop
+        // "Phase N —" numbering and asides.
+        var order = outline.sections.indices.filter { $0 != planningLane }
         if let moduleLane {
             let after = phaseSection.section(named: "0").flatMap { order.firstIndex(of: $0) }
             order.insert(moduleLane, at: after.map { $0 + 1 } ?? 0)
         }
         if let unlinkedLane { order.append(unlinkedLane) }
+        if let planningLane {
+            order.insert(planningLane, at: 0)
+            lanes[planningLane].role = "planning"
+            if documents.contains(where: { $0.id == ProjectMapGenerator.devplanDocumentID }) {
+                lanes[planningLane].defaultParent = ProjectMapGenerator.devplanDocumentID
+            }
+        }
+        // The project's current phase, in the plan's terms.
+        let currentSection: Int? = switch process.currentPhase {
+        case .planning: planningLane
+        default: phaseSection.section(for: process.currentPhase)
+        }
         let remap = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
         lanes = order.map { index in
             var lane = lanes[index]
-            if index < outline.sections.count {
+            if index == planningLane {
+                lane.fullTitle = lane.title
+                lane.title = "Planning"
+            } else if index < outline.sections.count {
                 lane.fullTitle = lane.title
                 lane.title = milestoneTitle(lane.title)
             }
@@ -512,15 +616,16 @@ public enum ProjectMapBuilder {
 
         // Plan order inside each lane; tasks outside the plan keep dashboard order.
         let ticketOrder = Dictionary(tickets.enumerated().map { ($1.id.uppercased(), $0) }, uniquingKeysWith: { a, _ in a })
+        // Documents lead Planning, in catalog order.
         let ranked = nodes.enumerated().map { offset, node in
-            (node, (node.lane, node.leaves.first.flatMap { leafOrder[$0] } ?? Int.max,
-                    ticketOrder[node.id] ?? Int.max, offset))
+            (node, (node.lane, node.kind == .file ? 0 : 1, node.leaves.first.flatMap { leafOrder[$0] } ?? Int.max,
+                    ticketOrder[node.ref ?? node.id] ?? Int.max, offset))
         }
         nodes = ranked.sorted { $0.1 < $1.1 }.map(\.0)
 
         return ProjectMap(projectID: projectID, projectName: projectName, planFile: planFile,
                           currentPhase: process.currentPhase.title, generatedAt: now,
-                          lanes: lanes, nodes: nodes, edges: edges)
+                          lanes: lanes, nodes: nodes, edges: edges, currentLane: currentSection.flatMap { remap[$0] })
     }
 
     /// A short milestone name: "Phase 0 — Feasibility" → "Feasibility",
@@ -633,14 +738,84 @@ public struct ProjectMapGenerator: Sendable {
         let tickets = (try? JSONDecoder().decode(DashboardDocument.self, from: Data(contentsOf: dashboardURL)))?.tickets ?? []
         let planURL = try store.artifactURL(projectID: projectID, artifact: "devplan.md", process: process)
         let outline = (try? String(contentsOf: planURL, encoding: .utf8)).map(DevelopmentPlanOutline.parse)
-        let moduleIDs = DevelopmentModuleFiles.discover(projectDirectory: directory, repositoryPath: project.repositoryPath)
-            .compactMap(\.moduleID)
+        let moduleFiles = DevelopmentModuleFiles.discover(projectDirectory: directory, repositoryPath: project.repositoryPath)
+        let moduleIDs = moduleFiles.compactMap(\.moduleID)
+        let documents = Self.planningDocuments(directory: directory, process: process, moduleFiles: moduleFiles)
         var agents: [String: [ProjectMap.Agent]] = [:]
         for ticket in tickets { agents[ticket.id.uppercased()] = taskAgents(ticket.id) }
         return ProjectMapBuilder.build(projectID: projectID, projectName: project.name ?? projectID,
                                        process: process, tickets: tickets, outline: outline,
                                        planFile: outline == nil ? nil : planURL.lastPathComponent,
-                                       agents: agents, moduleIDs: moduleIDs, now: now)
+                                       agents: agents, moduleIDs: moduleIDs, documents: documents, now: now)
+    }
+
+    public static let devplanDocumentID = "doc:devplan.md"
+    static let documentTitles = [
+        "concept.md": "Concept", "research.md": "Research", "design.md": "System design", "prd.md": "PRD",
+        "technical-design.md": "Technical design", "devplan.md": "Development plan",
+        "agent-contract.md": "Agent contract", "orchestration.md": "Orchestration",
+    ]
+    /// Project files that are Focus Queue's own records, not planning documents.
+    static let recordFiles: Set<String> = ["plan.md", "data.md", "evidence.md", "agent-log.md"]
+
+    /// The Planning milestone's cards: each planning step's files (accepted,
+    /// draft, or not written yet), module designs under one folder card, and
+    /// any other Markdown notes in the project folder or its `archive/` under
+    /// Research.
+    static func planningDocuments(directory: URL, process: DevelopmentProcess,
+                                  moduleFiles: [DevelopmentModuleFile]) -> [ProjectMap.Document] {
+        let files = FileManager.default
+        func href(_ relative: String) -> String {
+            relative.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? relative
+        }
+        func humanized(_ name: String) -> String {
+            let base = (name as NSString).deletingPathExtension
+                .replacingOccurrences(of: "-", with: " ").replacingOccurrences(of: "_", with: " ")
+            return base.prefix(1).uppercased() + base.dropFirst()
+        }
+        var documents: [ProjectMap.Document] = []
+        var catalogNames = Set<String>()
+        for step in DevelopmentProcessCatalog.steps(in: .planning) {
+            if step.id == "modules" {
+                let folder = "doc:modules"
+                documents.append(ProjectMap.Document(
+                    id: folder, title: "Module designs", status: moduleFiles.isEmpty ? "missing" : "draft", path: nil,
+                    reason: moduleFiles.isEmpty ? "No module design files yet."
+                        : "\(moduleFiles.count) module design file\(moduleFiles.count == 1 ? "" : "s")."))
+                for file in moduleFiles {
+                    documents.append(ProjectMap.Document(
+                        id: "doc:module:\(file.fileName)", title: file.displayTitle, status: "draft",
+                        path: file.url.absoluteString, parent: folder, reason: file.oneLine.isEmpty ? nil : file.oneLine))
+                }
+                continue
+            }
+            let accepted = Set(process.steps[step.id]?.checkedArtifacts ?? [])
+            for artifact in process.artifacts(of: step) {
+                let name = process.fileName(forArtifact: artifact)
+                catalogNames.insert(name.lowercased())
+                let exists = files.fileExists(atPath: directory.appendingPathComponent(name).path)
+                documents.append(ProjectMap.Document(
+                    id: "doc:\(artifact)", title: documentTitles[artifact] ?? humanized(name),
+                    status: !exists ? "missing" : accepted.contains(artifact) ? "accepted" : "draft",
+                    path: exists ? href(name) : nil,
+                    reason: exists ? step.title : "\(step.title): not written yet."))
+            }
+        }
+        // Everything else written during planning reads as research.
+        var notes: [String] = []
+        for folder in ["", "archive/"] {
+            let names = (try? files.contentsOfDirectory(atPath: directory.appendingPathComponent(folder).path)) ?? []
+            notes += names.sorted()
+                .filter { $0.lowercased().hasSuffix(".md") && !recordFiles.contains($0.lowercased())
+                    && !catalogNames.contains($0.lowercased()) }
+                .map { folder + $0 }
+        }
+        for note in notes {
+            documents.append(ProjectMap.Document(
+                id: "doc:note:\(note)", title: humanized((note as NSString).lastPathComponent), status: "draft",
+                path: href(note), parent: "doc:research.md", reason: "Research or reference note: \(note)."))
+        }
+        return documents
     }
 
     /// Regenerates the map file. Returns its URL, or nil when the project has no
@@ -654,7 +829,14 @@ public struct ProjectMapGenerator: Sendable {
     @discardableResult
     public func write(_ map: ProjectMap, projectID: String) throws -> URL {
         let url = try mapURL(projectID: projectID)
-        try Data(ProjectMapHTML.render(map).utf8).write(to: url, options: .atomic)
+        let html = ProjectMapHTML.render(map)
+        // An open map reloads whenever its file changes, so a rebuild that only
+        // moves the "generated" time leaves the file alone.
+        if let existing = try? String(contentsOf: url, encoding: .utf8),
+           ProjectMapHTML.withoutStamp(existing) == ProjectMapHTML.withoutStamp(html) {
+            return url
+        }
+        try Data(html.utf8).write(to: url, options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         return url
     }

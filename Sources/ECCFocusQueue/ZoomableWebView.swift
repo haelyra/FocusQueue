@@ -102,36 +102,25 @@ final class ZoomableWebView: WKWebView {
         return (value, CGPoint(x: x, y: y))
     }
 
-    /// Centers the view on `box` and zooms to fit it, in a short animation.
-    /// Any user zoom during the animation stops it.
-    func focus(box: CGRect, node: CGRect, duration: TimeInterval = 0.28) {
+    /// Centers the view on `box` and zooms to fit it. The zoom lands in one
+    /// step: each magnification change re-rasterizes the whole page, so an
+    /// animated zoom stuttered on large maps. Only a small change, where no
+    /// zoom is needed, scrolls smoothly on WebKit's scrolling thread.
+    func focus(box: CGRect, node: CGRect) {
         focusGeneration += 1
         let generation = focusGeneration
         let goal = Self.focusTarget(box: box, node: node, viewSize: bounds.size)
-        callAsyncJavaScript("return [window.scrollX, window.scrollY]", arguments: [:], in: nil, in: .defaultClient) { [weak self] result in
+        let rezoom = abs(goal.magnification - magnification) > 0.04
+        let value = rezoom ? goal.magnification : magnification
+        if rezoom { setMagnification(value, centeredAt: .zero) }
+        callAsyncJavaScript(
+            "window.scrollTo({left: x, top: y, behavior: smooth ? 'smooth' : 'instant'})",
+            arguments: ["x": goal.center.x - bounds.width / value / 2, "y": goal.center.y - bounds.height / value / 2,
+                        "smooth": !rezoom],
+            in: nil, in: .defaultClient
+        ) { [weak self] _ in
             guard let self, generation == self.focusGeneration else { return }
-            let offset = (((try? result.get()) as? [Double]) ?? [0, 0]).map { CGFloat($0) }
-            let startMagnification = self.magnification
-            let start = CGPoint(x: offset[0] + self.bounds.width / startMagnification / 2,
-                                y: offset[1] + self.bounds.height / startMagnification / 2)
-            let began = CACurrentMediaTime()
-            func step() {
-                guard generation == self.focusGeneration else { return }
-                let k = CGFloat(duration > 0 ? min(1, (CACurrentMediaTime() - began) / duration) : 1)
-                let e = 1 - pow(1 - k, 3)
-                let value = startMagnification + (goal.magnification - startMagnification) * e
-                let center = CGPoint(x: start.x + (goal.center.x - start.x) * e, y: start.y + (goal.center.y - start.y) * e)
-                self.setMagnification(value, centeredAt: .zero)
-                self.callAsyncJavaScript(
-                    "window.scrollTo(x, y)",
-                    arguments: ["x": center.x - self.bounds.width / value / 2, "y": center.y - self.bounds.height / value / 2],
-                    in: nil, in: .defaultClient
-                ) { _ in
-                    guard generation == self.focusGeneration else { return }
-                    if k < 1 { step() } else { self.onMagnificationChange?(self.magnification) }
-                }
-            }
-            step()
+            if rezoom { self.onMagnificationChange?(self.magnification) }
         }
     }
 

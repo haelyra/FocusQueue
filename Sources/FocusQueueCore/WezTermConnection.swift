@@ -81,7 +81,26 @@ public enum WezTermConnection {
     configuration.socketPath == nil ? paneArguments : pinnedPaneArguments
   }
 
+  /// Listing the socket directory costs about 0.2 s once WezTerm's per-launch
+  /// logs pile up there, and the refresh loop asks often. Reuse the last list
+  /// for a short while, unless its first socket has disappeared.
+  static let candidateCacheSeconds: TimeInterval = 30
+  private static let candidateCache = NSLock()
+  nonisolated(unsafe) private static var cachedCandidates: (paths: [String], at: Date)?
+
   public static func defaultCandidateSockets() -> [String] {
+    candidateCache.lock()
+    defer { candidateCache.unlock() }
+    if let cached = cachedCandidates, Date().timeIntervalSince(cached.at) < candidateCacheSeconds,
+       cached.paths.first.map(isOwnedSocket) ?? true {
+      return cached.paths
+    }
+    let paths = scanCandidateSockets()
+    cachedCandidates = (paths, Date())
+    return paths
+  }
+
+  static func scanCandidateSockets() -> [String] {
     let files = FileManager.default
     var directories = [files.homeDirectoryForCurrentUser.appendingPathComponent(".local/share/wezterm")]
     if let runtime = ProcessInfo.processInfo.environment["XDG_RUNTIME_DIR"], runtime.hasPrefix("/") {
@@ -90,10 +109,15 @@ public enum WezTermConnection {
     var candidates: [(path: String, modified: Date)] = []
     var seen = Set<String>()
     for directory in directories {
-      let entries = (try? files.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
-      for entry in entries where seen.insert(entry.path).inserted && isOwnedSocket(entry.path) {
-        let attributes = try? files.attributesOfItem(atPath: entry.path)
-        candidates.append((entry.path, attributes?[.modificationDate] as? Date ?? .distantPast))
+      // WezTerm leaves a `wezterm-gui-log-<pid>.txt` per launch beside its
+      // sockets; tens of thousands accumulate. Only extensionless names can be
+      // sockets, so skip the rest by name before touching the file system.
+      let names = (try? files.contentsOfDirectory(atPath: directory.path)) ?? []
+      for name in names where !name.contains(".") {
+        let path = directory.appendingPathComponent(name).path
+        guard seen.insert(path).inserted, isOwnedSocket(path) else { continue }
+        let attributes = try? files.attributesOfItem(atPath: path)
+        candidates.append((path, attributes?[.modificationDate] as? Date ?? .distantPast))
       }
     }
     return candidates.sorted {

@@ -1622,8 +1622,10 @@ struct QueueViewModelTests {
     model.handleMapTaskAction("ECC-102", action: .prompt, provider: nil)
     #expect(model.requestedAgentCreatorTaskID == "ECC-102")
     #expect(model.mapLocatedTaskID == "ECC-102")
-    let payload = await model.projectMapLivePayload()
+    let payload = await model.projectMapLivePayload(tasks: ["ECC-102"])
     #expect(payload["defaultProvider"] as? String == model.defaultAgentProvider.rawValue)
+    // Only the map's own tasks are read.
+    #expect(((payload["tasks"] as? [String: Any]) ?? [:]).keys.allSatisfy { $0 == "ECC-102" })
     #expect((payload["providers"] as? [String])?.count == AgentProvider.allCases.count)
   }
 

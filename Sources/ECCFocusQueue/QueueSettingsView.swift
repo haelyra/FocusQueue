@@ -357,6 +357,7 @@ struct QueueSettingsView: View {
         isOn: Binding(
           get: { model.config.capacityPanelEnabled },
           set: { model.setCapacityPanelEnabled($0) }))
+      weeklyCleanupControls
     }
 
     groupHeading("Daily reports")
@@ -386,6 +387,57 @@ struct QueueSettingsView: View {
         }.buttonStyle(.bordered)
       }
     }
+  }
+
+  private var weeklyCleanupControls: some View {
+    let settings = model.config.weeklyCleanup
+    let symbols = Calendar.current.weekdaySymbols
+    return VStack(alignment: .leading, spacing: 8) {
+      settingToggle(
+        "Weekly data cleanup",
+        detail: "Once a week, opens a cleanup task and launches a \(settings.model.isEmpty ? settings.provider.displayName : settings.model) agent. It makes minimal edits: prunes outdated or duplicate entries in collected data files, and uses the queue's cleanup commands to release finished tasks' worktrees and sessions. It reports every change in the task's evidence.",
+        isOn: Binding(
+          get: { model.config.weeklyCleanup.enabled },
+          set: { model.setWeeklyCleanupEnabled($0) }))
+      HStack(spacing: 12) {
+        Picker("Day", selection: Binding(
+          get: { model.config.weeklyCleanup.weekday },
+          set: { model.setWeeklyCleanupSchedule(weekday: $0, hour: model.config.weeklyCleanup.hour) }
+        )) {
+          ForEach(1...7, id: \.self) { day in Text(symbols[day - 1]).tag(day) }
+        }
+        .fixedSize()
+        Picker("Hour", selection: Binding(
+          get: { model.config.weeklyCleanup.hour },
+          set: { model.setWeeklyCleanupSchedule(weekday: model.config.weeklyCleanup.weekday, hour: $0) }
+        )) {
+          ForEach(0..<24, id: \.self) { hour in Text(String(format: "%02d:00", hour)).tag(hour) }
+        }
+        .fixedSize()
+        Spacer()
+        Button("Run now", systemImage: "sparkles") { model.runWeeklyCleanupNow() }
+          .buttonStyle(.bordered)
+          .disabled(model.isWeeklyCleanupRunning)
+          .help("Launch the cleanup agent now; this counts as this week's run.")
+      }
+      .disabled(!settings.enabled)
+      Text(weeklyCleanupCaption(settings))
+        .font(.caption).foregroundStyle(.secondary)
+    }
+  }
+
+  private func weeklyCleanupCaption(_ settings: WeeklyCleanupSettings) -> String {
+    guard settings.enabled else { return "Off. Turn it on to schedule a weekly run." }
+    let formatter = DateFormatter()
+    formatter.dateFormat = "EEE MMM d, HH:mm"
+    var parts: [String] = []
+    if let next = WeeklyCleanupPolicy.nextSlot(after: Date(), weekday: settings.weekday, hour: settings.hour) {
+      parts.append("Next run \(formatter.string(from: next)).")
+    }
+    if let state = model.weeklyCleanupState, let last = state.lastRunAt {
+      parts.append("Last \(state.lastTicketID == nil ? "baseline" : "run") \(formatter.string(from: last))\(state.lastTicketID.map { " (\($0))" } ?? "").")
+    }
+    return parts.joined(separator: " ")
   }
 
   private var dailyReportSection: some View {

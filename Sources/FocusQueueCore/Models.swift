@@ -374,6 +374,29 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public var decisionAutoDecideMinutes: Int?
   /// Lets agents rewind to a decision on their own when the chosen path fails; nil is on.
   public var decisionAutoRewind: Bool?
+  /// Weekly cleanup agent; nil is on. Weekday is 1 (Sunday) through 7.
+  public var weeklyCleanupEnabled: Bool?
+  public var weeklyCleanupWeekday: Int?
+  public var weeklyCleanupHour: Int?
+  /// Provider and model for the cleanup agent; nil uses a mid-sized Claude model.
+  public var weeklyCleanupProvider: AgentProvider?
+  public var weeklyCleanupModel: String?
+
+  /// Weekly cleanup with defaults applied.
+  public var weeklyCleanup: WeeklyCleanupSettings {
+    let provider = weeklyCleanupProvider ?? WeeklyCleanupSettings.defaultProvider
+    let model = weeklyCleanupModel.flatMap { $0.isEmpty ? nil : $0 }
+      ?? (provider == WeeklyCleanupSettings.defaultProvider
+        ? WeeklyCleanupSettings.defaultModel
+        : agentModelChoices.first {
+          $0.provider == provider && AgentModelTier(model: $0.model ?? "", label: $0.label) == .mid
+        }?.model ?? "")
+    return WeeklyCleanupSettings(
+      enabled: weeklyCleanupEnabled ?? true,
+      weekday: weeklyCleanupWeekday ?? WeeklyCleanupSettings.defaultWeekday,
+      hour: weeklyCleanupHour ?? WeeklyCleanupSettings.defaultHour,
+      provider: provider, model: model, useTmux: persistentTerminals != false)
+  }
 
   /// Decision automation with defaults applied.
   public var decisionAutomation: DecisionAutomationSettings {
@@ -592,6 +615,11 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.decisionAutoDecide = nil
     self.decisionAutoDecideMinutes = nil
     self.decisionAutoRewind = nil
+    self.weeklyCleanupEnabled = nil
+    self.weeklyCleanupWeekday = nil
+    self.weeklyCleanupHour = nil
+    self.weeklyCleanupProvider = nil
+    self.weeklyCleanupModel = nil
     self.agentModelChoices = Self.defaultAgentModelChoices
     self.autoArchiveStaleAgents = false
     self.defaultAgentProvider = nil
@@ -626,6 +654,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case placementConfidenceThreshold, placementTimeoutSeconds
     case dataPlacementEnabled, extractorProvider, extractorModels, extractorEfforts
     case decisionAutoDecide, decisionAutoDecideMinutes, decisionAutoRewind
+    case weeklyCleanupEnabled, weeklyCleanupWeekday, weeklyCleanupHour
+    case weeklyCleanupProvider, weeklyCleanupModel
     case agentModelChoices
     case autoArchiveStaleAgents
     case defaultAgentProvider, defaultAgentModels, defaultAgentEfforts
@@ -679,6 +709,12 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     decisionAutoDecide = try container.decodeIfPresent(Bool.self, forKey: .decisionAutoDecide)
     decisionAutoDecideMinutes = try container.decodeIfPresent(Int.self, forKey: .decisionAutoDecideMinutes)
     decisionAutoRewind = try container.decodeIfPresent(Bool.self, forKey: .decisionAutoRewind)
+    weeklyCleanupEnabled = try container.decodeIfPresent(Bool.self, forKey: .weeklyCleanupEnabled)
+    weeklyCleanupWeekday = try container.decodeIfPresent(Int.self, forKey: .weeklyCleanupWeekday)
+    weeklyCleanupHour = try container.decodeIfPresent(Int.self, forKey: .weeklyCleanupHour)
+    weeklyCleanupProvider = try container.decodeIfPresent(String.self, forKey: .weeklyCleanupProvider)
+      .flatMap { AgentProvider(rawValue: $0.lowercased()) }
+    weeklyCleanupModel = try container.decodeIfPresent(String.self, forKey: .weeklyCleanupModel)
     agentModelChoices = Self.mergedAgentModelChoices(
       (try container.decodeIfPresent([AgentModelChoice].self, forKey: .agentModelChoices)) ?? [])
     autoArchiveStaleAgents = try container.decodeIfPresent(Bool.self, forKey: .autoArchiveStaleAgents) ?? false
@@ -781,6 +817,11 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encodeIfPresent(decisionAutoDecide, forKey: .decisionAutoDecide)
     try container.encodeIfPresent(decisionAutoDecideMinutes, forKey: .decisionAutoDecideMinutes)
     try container.encodeIfPresent(decisionAutoRewind, forKey: .decisionAutoRewind)
+    try container.encodeIfPresent(weeklyCleanupEnabled, forKey: .weeklyCleanupEnabled)
+    try container.encodeIfPresent(weeklyCleanupWeekday, forKey: .weeklyCleanupWeekday)
+    try container.encodeIfPresent(weeklyCleanupHour, forKey: .weeklyCleanupHour)
+    try container.encodeIfPresent(weeklyCleanupProvider, forKey: .weeklyCleanupProvider)
+    try container.encodeIfPresent(weeklyCleanupModel, forKey: .weeklyCleanupModel)
     try container.encode(agentModelChoices, forKey: .agentModelChoices)
     try container.encode(autoArchiveStaleAgents, forKey: .autoArchiveStaleAgents)
     try container.encodeIfPresent(defaultAgentProvider, forKey: .defaultAgentProvider)

@@ -2034,6 +2034,7 @@ final class QueueViewModel {
         }
       }
       await runStaleAgentSweepIfDue()
+      await runWeeklyCleanupIfDue(now: now)
       runDevelopmentStewardIfDue()
       if userInitiated || lastReportRefresh == nil || Date().timeIntervalSince(lastReportRefresh!) >= 30 {
         lastReportRefresh = Date()
@@ -6761,6 +6762,101 @@ final class QueueViewModel {
     return total
   }
 
+  // MARK: Weekly cleanup
+
+  @ObservationIgnored private var weeklyCleanupStore: WeeklyCleanupStateStore {
+    WeeklyCleanupStateStore(supportDirectory: paths.supportDirectory)
+  }
+  private var isWeeklyCleanupLaunching = false
+  private(set) var weeklyCleanupState: WeeklyCleanupState?
+
+  /// Due once per configured weekday and hour. The first check only records a
+  /// baseline so an update or a fresh toggle never launches an agent at once.
+  func runWeeklyCleanupIfDue(now: Date = Date()) async {
+    let settings = config.weeklyCleanup
+    guard settings.enabled, !isWeeklyCleanupLaunching else { return }
+    let store = weeklyCleanupStore
+    guard let state = store.load() else {
+      saveWeeklyCleanupState(WeeklyCleanupState(lastRunAt: now))
+      return
+    }
+    if weeklyCleanupState != state { weeklyCleanupState = state }
+    guard WeeklyCleanupPolicy.isDue(now: now, lastRunAt: state.lastRunAt,
+                                    weekday: settings.weekday, hour: settings.hour) else { return }
+    let slot = WeeklyCleanupPolicy.mostRecentSlot(before: now, weekday: settings.weekday, hour: settings.hour)
+    await launchWeeklyCleanup(now: now, scheduledAt: slot ?? now, trigger: "scheduled")
+  }
+
+  /// Settings' Run now button; it also counts as this week's run.
+  func runWeeklyCleanupNow() {
+    guard !isWeeklyCleanupLaunching else { return }
+    Task { @MainActor [weak self] in
+      await self?.launchWeeklyCleanup(now: Date(), scheduledAt: Date(), trigger: "manual")
+    }
+  }
+
+  var isWeeklyCleanupRunning: Bool { isWeeklyCleanupLaunching }
+
+  private func launchWeeklyCleanup(now: Date, scheduledAt: Date, trigger: String) async {
+    isWeeklyCleanupLaunching = true
+    defer { isWeeklyCleanupLaunching = false }
+    // Record the run before the launch so a slow or failed launch never repeats this week.
+    saveWeeklyCleanupState(WeeklyCleanupState(lastRunAt: now, lastTicketID: weeklyCleanupState?.lastTicketID))
+    let settings = config.weeklyCleanup
+    let projectID = config.projects.contains(where: { $0.id == ProjectCatalog.otherID })
+      ? ProjectCatalog.otherID : config.selectedProjectID
+    guard let ticket = await createTicket(
+      title: WeeklyCleanupPrompt.taskTitle, summary: WeeklyCleanupPrompt.taskSummary(date: now),
+      doneWhen: "The cleanup report is saved in evidence and the task is resolved.",
+      priority: "low", projectID: projectID)
+    else {
+      programLog.record("Weekly cleanup could not create its task: \(loadError ?? "unknown error")",
+        level: .error, category: "Tasks")
+      recordScheduleRun(ScheduleRunRecord(
+        kind: .interval, title: WeeklyCleanupPrompt.taskTitle,
+        detail: "The cleanup task could not be created.", ticketID: nil, projectID: projectID,
+        scheduledAt: scheduledAt, recordedAt: now, outcome: .failed))
+      return
+    }
+    launchPromptedAgent(
+      for: ticket, prompt: WeeklyCleanupPrompt.text(supportDirectory: paths.supportDirectory),
+      title: WeeklyCleanupPrompt.taskTitle, preset: settings.preset)
+    saveWeeklyCleanupState(WeeklyCleanupState(lastRunAt: now, lastTicketID: ticket.id))
+    programLog.record("Launched the \(trigger) weekly cleanup agent on \(ticket.id).", category: "Tasks")
+    recordScheduleRun(ScheduleRunRecord(
+      kind: .interval, title: WeeklyCleanupPrompt.taskTitle,
+      detail: "Launched the \(settings.provider.displayName) cleanup agent for \(ticket.id).",
+      ticketID: ticket.id, projectID: ticket.projectID ?? projectID,
+      scheduledAt: scheduledAt, recordedAt: now, outcome: .completed))
+  }
+
+  private func saveWeeklyCleanupState(_ state: WeeklyCleanupState) {
+    weeklyCleanupState = state
+    do { try weeklyCleanupStore.save(state) } catch {
+      programLog.record("Could not save the weekly cleanup state: \(error.localizedDescription)",
+        level: .error, category: "Tasks")
+    }
+  }
+
+  func setWeeklyCleanupEnabled(_ enabled: Bool) {
+    guard config.weeklyCleanup.enabled != enabled else { return }
+    config.weeklyCleanupEnabled = enabled
+    persistConfiguration()
+    // Turning it on starts counting from now, so a slot already past this week never fires at once.
+    if enabled {
+      saveWeeklyCleanupState(WeeklyCleanupState(
+        lastRunAt: Date(), lastTicketID: weeklyCleanupStore.load()?.lastTicketID))
+    }
+  }
+
+  func setWeeklyCleanupSchedule(weekday: Int, hour: Int) {
+    let current = config.weeklyCleanup
+    guard current.weekday != weekday || current.hour != hour else { return }
+    config.weeklyCleanupWeekday = min(max(weekday, 1), 7)
+    config.weeklyCleanupHour = min(max(hour, 0), 23)
+    persistConfiguration()
+  }
+
   private func runStaleAgentSweepIfDue() async {
     guard config.autoArchiveStaleAgents else { return }
     let now = Date()
@@ -8730,6 +8826,7 @@ extension QueueViewModel {
       launches: scheduledLaunches,
       resumes: scheduledAgentResumes,
       dailyReport: config.dailyReport,
+      weeklyCleanup: config.weeklyCleanup,
       decisions: trees,
       automation: config.decisionAutomation,
       tickets: scheduleTicketInfo,
@@ -8760,6 +8857,13 @@ extension QueueViewModel {
       programLog.record(
         "Moved the daily report to \(String(format: "%02d:%02d", time.hour, time.minute)) from the schedule.",
         category: "Tasks")
+      return snapped
+    case .weeklyCleanup:
+      // Whole hours: the cleanup slot is a weekday and an hour on this Mac's clock.
+      let snapped = ScheduleTimeline.snap(to, minutes: 60, calendar: calendar)
+      setWeeklyCleanupSchedule(weekday: calendar.component(.weekday, from: snapped),
+                               hour: calendar.component(.hour, from: snapped))
+      programLog.record("Moved the weekly cleanup to \(snapped) from the schedule.", category: "Tasks")
       return snapped
     case .decision, .runRecord:
       return nil

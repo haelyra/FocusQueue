@@ -53,6 +53,7 @@ final class ZoomableWebView: WKWebView {
     private var isZooming = false
 
     func zoom(to value: CGFloat, keeping viewPoint: NSPoint) {
+        focusGeneration += 1
         zoomTarget = min(Self.zoomRange.upperBound, max(Self.zoomRange.lowerBound, value))
         zoomAnchor = viewPoint
         if !isZooming { applyPendingZoom() }
@@ -79,6 +80,58 @@ final class ZoomableWebView: WKWebView {
                 self.onMagnificationChange?(self.magnification)
                 self.applyPendingZoom()
             }
+        }
+    }
+
+    /// Magnification a focus request zooms to: never so far out that cards
+    /// are unreadable, never past a comfortable close-up.
+    static let focusRange: ClosedRange<CGFloat> = 0.5...1.25
+    private var focusGeneration = 0
+
+    /// Where a focus request lands: the magnification that fits `box` (page
+    /// points) with a margin, and the page point to put at the view's center.
+    /// When the box cannot fit even at the smallest focus zoom, the node itself
+    /// leads: centered across, near the top.
+    static func focusTarget(box: CGRect, node: CGRect, viewSize: CGSize, margin: CGFloat = 48)
+        -> (magnification: CGFloat, center: CGPoint) {
+        let fit = min(viewSize.width / max(1, box.width + 2 * margin), viewSize.height / max(1, box.height + 2 * margin))
+        let value = min(focusRange.upperBound, max(focusRange.lowerBound, fit))
+        let visible = CGSize(width: viewSize.width / value, height: viewSize.height / value)
+        let x = box.width + 2 * margin / value <= visible.width ? box.midX : node.midX
+        let y = box.height + 2 * margin / value <= visible.height ? box.midY : node.minY - margin / value + visible.height / 2
+        return (value, CGPoint(x: x, y: y))
+    }
+
+    /// Centers the view on `box` and zooms to fit it, in a short animation.
+    /// Any user zoom during the animation stops it.
+    func focus(box: CGRect, node: CGRect, duration: TimeInterval = 0.28) {
+        focusGeneration += 1
+        let generation = focusGeneration
+        let goal = Self.focusTarget(box: box, node: node, viewSize: bounds.size)
+        callAsyncJavaScript("return [window.scrollX, window.scrollY]", arguments: [:], in: nil, in: .defaultClient) { [weak self] result in
+            guard let self, generation == self.focusGeneration else { return }
+            let offset = (((try? result.get()) as? [Double]) ?? [0, 0]).map { CGFloat($0) }
+            let startMagnification = self.magnification
+            let start = CGPoint(x: offset[0] + self.bounds.width / startMagnification / 2,
+                                y: offset[1] + self.bounds.height / startMagnification / 2)
+            let began = CACurrentMediaTime()
+            func step() {
+                guard generation == self.focusGeneration else { return }
+                let k = CGFloat(duration > 0 ? min(1, (CACurrentMediaTime() - began) / duration) : 1)
+                let e = 1 - pow(1 - k, 3)
+                let value = startMagnification + (goal.magnification - startMagnification) * e
+                let center = CGPoint(x: start.x + (goal.center.x - start.x) * e, y: start.y + (goal.center.y - start.y) * e)
+                self.setMagnification(value, centeredAt: .zero)
+                self.callAsyncJavaScript(
+                    "window.scrollTo(x, y)",
+                    arguments: ["x": center.x - self.bounds.width / value / 2, "y": center.y - self.bounds.height / value / 2],
+                    in: nil, in: .defaultClient
+                ) { _ in
+                    guard generation == self.focusGeneration else { return }
+                    if k < 1 { step() } else { self.onMagnificationChange?(self.magnification) }
+                }
+            }
+            step()
         }
     }
 
@@ -232,6 +285,14 @@ enum ProjectMapPage {
         let action = items.first { $0.name == "action" }?.value.flatMap(Action.init(rawValue:)) ?? .locate
         let provider = items.first { $0.name == "provider" }?.value.flatMap(AgentProvider.init(rawValue:))
         return (id.uppercased(), action, provider)
+    }
+
+    /// `[x, y, width, height]` from a page message, when finite and sane.
+    static func rect(_ value: Any?) -> CGRect? {
+        guard let numbers = value as? [NSNumber], numbers.count == 4 else { return nil }
+        let v = numbers.map { CGFloat($0.doubleValue) }
+        guard v.allSatisfy({ $0.isFinite && abs($0) < 1_000_000 }), v[2] >= 0, v[3] >= 0 else { return nil }
+        return CGRect(x: v[0], y: v[1], width: v[2], height: v[3])
     }
 
     static func isMap(_ url: URL) -> Bool {

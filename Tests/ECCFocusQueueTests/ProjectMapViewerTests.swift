@@ -67,6 +67,7 @@ struct ProjectMapViewerTests {
     web.loadFileURL(file, allowingReadAccessTo: folder)
     try await eventually { await run(web, "return document.documentElement.dataset.fqMap || ''") == "ready" }
     _ = await run(web, "document.querySelector('[data-kind=\"phase\"]').click(); return 1")
+    _ = await run(web, "document.querySelector('[data-node=\"DEM-1\"]').click(); return 1")
     try await eventually {
       await run(web, "return document.querySelector('[data-node=\"DEM-2\"]').style.display") == ""
     }
@@ -84,7 +85,7 @@ struct ProjectMapViewerTests {
     #expect(Int(await run(web, "return \(card).offsetHeight")) == 74)
   }
 
-  @Test("Phases start collapsed, a phase click expands it, a task click asks the queue to locate it")
+  @Test("Milestones and dependents start collapsed, a click expands and zooms, a leaf task click locates it")
   func mapInteractions() async throws {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("fq-map-viewer-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -111,12 +112,27 @@ struct ProjectMapViewerTests {
     }
     #expect(await run(web, "return document.querySelector('[data-node=\"ghost:2.1\"]').style.display") == "none")
 
-    // Clicking Phase 1 expands it with an animation; Phase 2 stays collapsed.
+    // Clicking the first milestone expands it with an animation and zooms in
+    // on it; its task's dependents and the second milestone stay collapsed.
+    #expect(await run(web, "return document.querySelector('[data-kind=\"phase\"] b').textContent") == "Build")
+    let before = web.magnification
     _ = await run(web, "document.querySelector('[data-kind=\"phase\"]').click(); return 1")
+    try await eventually {
+      await run(web, "return document.querySelector('[data-node=\"DEM-1\"]').style.display") == ""
+    }
+    #expect(await run(web, "return document.querySelector('[data-node=\"DEM-2\"]').style.display") == "none")
+    #expect(await run(web, "return document.querySelector('[data-node=\"ghost:2.1\"]').style.display") == "none")
+    #expect(await run(web, "return document.querySelector('[data-node=\"DEM-1\"] .kids').textContent") == "▸ 1")
+    try await eventually { abs(web.magnification - before) > 0.01 }
+    #expect(ZoomableWebView.focusRange.contains(web.magnification))
+
+    // Clicking a task with dependents opens them instead of locating it.
+    _ = await run(web, "document.querySelector('[data-node=\"DEM-1\"] .title').click(); return 1")
     try await eventually {
       await run(web, "return document.querySelector('[data-node=\"DEM-2\"]').style.display") == ""
     }
-    #expect(await run(web, "return document.querySelector('[data-node=\"ghost:2.1\"]').style.display") == "none")
+    #expect(await run(web, "return document.querySelector('[data-node=\"DEM-1\"] .kids').textContent") == "▾ 1")
+    #expect(!opened.contains(URL(string: "focusqueue://task/DEM-1")!))
     // Dependency lines carry arrowheads.
     #expect(await run(web, "return getComputedStyle(document.querySelector('line.dep')).markerEnd") .contains("#a"))
 
@@ -159,4 +175,18 @@ struct ProjectMapViewerTests {
     #expect(ProjectMapPage.request(from: URL(string: "focusqueue://task/DEM-2?action=rm&provider=evil")!)?.action == .locate)
     #expect(ProjectMapPage.taskID(from: URL(string: "focusqueue://task/../etc")!) == nil)
   }
+}
+
+@Test("A focus request fits the opened box, or leads with the node when the box is too big")
+func focusTargetFits() {
+  let view = CGSize(width: 800, height: 600)
+  let small = ZoomableWebView.focusTarget(
+    box: CGRect(x: 100, y: 200, width: 400, height: 300), node: CGRect(x: 200, y: 200, width: 176, height: 74), viewSize: view)
+  #expect(small.magnification == 1.25)   // a small box zooms to the close-up cap
+  #expect(small.center == CGPoint(x: 300, y: 350))
+  let huge = ZoomableWebView.focusTarget(
+    box: CGRect(x: 0, y: 100, width: 5000, height: 3000), node: CGRect(x: 2000, y: 100, width: 200, height: 56), viewSize: view)
+  #expect(huge.magnification == 0.5)
+  #expect(huge.center.x == 2100)         // centered across on the node
+  #expect(abs(huge.center.y - 604) < 0.001)   // the node sits near the top
 }

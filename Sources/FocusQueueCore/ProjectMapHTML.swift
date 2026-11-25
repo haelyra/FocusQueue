@@ -3,7 +3,7 @@ import Foundation
 /// Renders a `ProjectMap` as a textbook-style tree on one self-contained,
 /// script-free, dark HTML page.
 ///
-/// - Rank 0 is the project, rank 1 its phases (plan sections), and ranks 2+
+/// - Rank 0 is the project, rank 1 its milestones (plan phases and Modules), and ranks 2+
 ///   its tasks by dependency depth inside their phase. Each task hangs under
 ///   its deepest in-phase prerequisite, so a child is always one rank below its
 ///   parent. Every parent is centered over its children; edges are straight.
@@ -119,7 +119,7 @@ public enum ProjectMapHTML {
         var bands: [String] = []
         for rank in 0...maxRank {
             let y = top + Double(rank) * rankHeight - 34
-            let name = rank == 0 ? "project" : rank == 1 ? "phases" : rank == 2 ? "first tasks" : "depends on rank \(rank - 1)"
+            let name = rank == 0 ? "project" : rank == 1 ? "milestones" : rank == 2 ? "first tasks" : "depends on rank \(rank - 1)"
             bands.append(#"<div class="band\#(rank % 2 == 0 ? " even" : "")" data-rank="\#(rank)" style="top:\#(f(y))px;height:\#(f(rankHeight))px;width:\#(f(width))px"><div class="ranklabel" title="\#(name)">R\#(rank)</div></div>"#)
         }
 
@@ -161,16 +161,19 @@ public enum ProjectMapHTML {
         for node in all {
             switch node.kind {
             case .root:
-                cards.append(#"<div class="root" id="root" data-node="root" data-kind="root" data-rank="0" style="left:\#(f(node.x))px;top:\#(f(node.y))px" title="Click to expand or collapse every phase"><b>\#(escape(map.projectName))</b><span>\#(percent(progress.project)) complete</span>\#(bar(progress.project))</div>"#)
+                cards.append(#"<div class="root" id="root" data-node="root" data-kind="root" data-rank="0" style="left:\#(f(node.x))px;top:\#(f(node.y))px" title="Click to expand or collapse every milestone"><b>\#(escape(map.projectName))</b><span>\#(percent(progress.project)) complete</span>\#(bar(progress.project))</div>"#)
             case .phase(let isTrack):
                 let index = Int(node.id.dropFirst(4)) ?? 0
-                let title = map.lanes.indices.contains(index) ? map.lanes[index].title : node.id
+                let lane = map.lanes.indices.contains(index) ? map.lanes[index] : nil
+                let title = lane?.title ?? node.id
+                let full = lane?.fullTitle ?? title
                 let count = map.nodes.filter { $0.lane == index }.count
                 let share = progress.lanes[index]
+                let noun = lane?.role == "modules" ? "module" : "node"
                 let detail = count == 0
                     ? "not planned yet · ≈\(Int(progress.estimatedSize.rounded())) tasks"
-                    : "\(count) node\(count == 1 ? "" : "s") · \(percent(share ?? 0))\(isTrack ? " · not gating" : "")"
-                cards.append(#"<div class="phase\#(isTrack ? " track" : "")\#(count == 0 ? " unplanned" : "")" data-node="\#(node.id)" data-kind="phase" data-parent="root" data-rank="1" style="left:\#(f(node.x))px;top:\#(f(node.y))px" title="\#(escape(title)) — click to expand or collapse"><b>\#(escape(title))</b><span>\#(escape(detail))<span class="live"></span></span>\#(bar(share ?? 0))</div>"#)
+                    : "\(count) \(noun)\(count == 1 ? "" : "s") · \(percent(share ?? 0))\(isTrack ? " · not gating" : "")"
+                cards.append(#"<div class="phase\#(isTrack ? " track" : "")\#(count == 0 ? " unplanned" : "")" data-node="\#(node.id)" data-kind="phase" data-parent="root" data-rank="1" style="left:\#(f(node.x))px;top:\#(f(node.y))px" title="\#(escape(full)) · click to expand or collapse"><b>\#(escape(title))</b><span>\#(escape(detail))<span class="live"></span></span>\#(bar(share ?? 0))</div>"#)
             case .item(let item, let i):
                 hoverCSS.append("#map:has(#n\(i):hover) .node:not(.k\(i)){opacity:.28}")
                 hoverCSS.append("#map:has(#n\(i):hover) .e\(i){stroke:var(--edge-hi);stroke-width:2.2;opacity:1;visibility:visible;marker-end:url(#ahi)}")
@@ -215,8 +218,8 @@ public enum ProjectMapHTML {
         classes += neighbours.sorted().map { "k\($0)" }
         if isFinished(node) { classes.append("fin") }
         if node.kind == .ghost { classes.append("gh") }
-        let label = node.kind == .ghost
-            ? (node.leaves.isEmpty ? "module" : "leaf " + node.leaves.joined(separator: ", "))
+        let label = node.kind == .module ? "module"
+            : node.kind == .ghost ? (node.leaves.isEmpty ? "module" : "leaf " + node.leaves.joined(separator: ", "))
             : node.id
         let pill = node.status == "missing" ? "no task" : node.status.replacingOccurrences(of: "-", with: " ")
         let title = node.kind == .ghost
@@ -241,7 +244,7 @@ public enum ProjectMapHTML {
                 details.append(row + "</div>")
             }
         } else {
-            summary = "Planned work"
+            summary = node.kind == .module ? "Module" : "Planned work"
         }
         let tooltip = escape(([title] + (node.gate.map { ["Gate: \($0)"] } ?? [])).joined(separator: "\n"))
         let task = node.kind == .task ? #" data-task="\#(escape(node.id))""# : ""
@@ -313,6 +316,9 @@ public enum ProjectMapHTML {
                 }
                 let sum = credits.reduce(0, +)
                 lanes[index] = sum / Double(credits.count)
+                // Modules summarize the same work the phases hold; counting
+                // them again would skew the project total.
+                if lane.role == "modules" { continue }
                 done += sum; size += Double(credits.count)
                 if !lane.isTrack { plannedSizes.append(Double(credits.count)) }
             }
@@ -482,6 +488,11 @@ html[data-fq-map] .actions { display: inline-flex; }
 .node.s-blocked { border-top-color: var(--blocked); }
 .node.s-cancel { border-top-color: var(--cancel); }
 .node.s-cancel .title { text-decoration: line-through; }
+/* Dependents badge: shown by the script on tasks whose dependents can fold away. */
+.kids { position: absolute; right: 6px; bottom: 3px; font-size: 10px; font-weight: 600; color: var(--muted);
+  background: #303038; border-radius: 7px; padding: 0 5px; cursor: pointer; }
+.node.open .kids { color: var(--accent); }
+.node:has(.kids) { cursor: pointer; }
 .node.ghost { background: transparent; border: 1.5px dashed var(--ghost); color: var(--ghost); }
 .top { display: flex; gap: 5px; align-items: center; }
 .id { font: 10.5px ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); white-space: nowrap; flex: none; }
@@ -535,7 +546,7 @@ details[open] summary::before { content: "▾"; }
       <span><i class="pv idle"><svg viewBox="0 0 24 24"><use href="#pv-claude"/></svg></i>Idle</span>
     </span>
     <span class="actions"><button type="button" data-action="expand">Expand all</button><button type="button" data-action="collapse">Collapse all</button></span>
-    <span class="hint">Arrows point from a task to the work that waits on it · click a phase to open it · click a task to find it in the queue · scroll to zoom · right-drag to move</span>
+    <span class="hint">Arrows point from a task to the work that waits on it · click a milestone or a task with a ▸ badge to open it · click any other task to find it in the queue · scroll to zoom · right-drag to move</span>
   </div>
 </header>
 <div id="map" data-layout="{{LAYOUT}}" style="width:{{WIDTH}}px;height:{{HEIGHT}}px">

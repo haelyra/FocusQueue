@@ -763,8 +763,16 @@ struct ReadOnlyResourceDocument: NSViewRepresentable {
         /// on it, or open its prompt sheet. Only these shapes are accepted.
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
             guard message.name == ProjectMapScript.messageHandler, message.frameInfo.isMainFrame,
-                  let body = message.body as? [String: Any],
-                  let action = (body["type"] as? String).flatMap(ProjectMapPage.Action.init(rawValue:)),
+                  let body = message.body as? [String: Any] else { return }
+            // Opening a milestone or task: center on it and zoom to fit.
+            if body["type"] as? String == "focus" {
+                if let box = ProjectMapPage.rect(body["box"]), let node = ProjectMapPage.rect(body["node"]),
+                   let view = message.webView as? ZoomableWebView {
+                    view.focus(box: box, node: node)
+                }
+                return
+            }
+            guard let action = (body["type"] as? String).flatMap(ProjectMapPage.Action.init(rawValue:)),
                   let task = body["task"] as? String,
                   let url = ProjectMapPage.taskURL(task, action: action, provider: body["provider"] as? String)
             else { return }

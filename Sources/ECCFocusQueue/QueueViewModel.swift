@@ -6780,7 +6780,7 @@ final class QueueViewModel {
       saveWeeklyCleanupState(WeeklyCleanupState(lastRunAt: now))
       return
     }
-    weeklyCleanupState = state
+    if weeklyCleanupState != state { weeklyCleanupState = state }
     guard WeeklyCleanupPolicy.isDue(now: now, lastRunAt: state.lastRunAt,
                                     weekday: settings.weekday, hour: settings.hour) else { return }
     let slot = WeeklyCleanupPolicy.mostRecentSlot(before: now, weekday: settings.weekday, hour: settings.hour)

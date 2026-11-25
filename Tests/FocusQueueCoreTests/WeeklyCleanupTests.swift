@@ -52,6 +52,10 @@ struct WeeklyCleanupTests {
         #expect(settings.provider == .claude && settings.model == "claude-sonnet-5-5")
         #expect(AgentModelTier(model: settings.model) == .mid)
         #expect(settings.preset.workspacePolicy == .existingCheckout)
+        #expect(settings.preset.useTmux == true)
+        var noTmux = config
+        noTmux.persistentTerminals = false
+        #expect(noTmux.weeklyCleanup.preset.useTmux == false)
 
         var changed = config
         changed.weeklyCleanupEnabled = false

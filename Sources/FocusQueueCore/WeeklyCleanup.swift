@@ -17,20 +17,24 @@ public struct WeeklyCleanupSettings: Equatable, Sendable {
     public var hour: Int
     public var provider: AgentProvider
     public var model: String
+    /// Managed tmux pane; off only when the Mac has no tmux configured.
+    public var useTmux: Bool
 
     public init(enabled: Bool = true, weekday: Int = Self.defaultWeekday, hour: Int = Self.defaultHour,
-                provider: AgentProvider = Self.defaultProvider, model: String = Self.defaultModel) {
+                provider: AgentProvider = Self.defaultProvider, model: String = Self.defaultModel,
+                useTmux: Bool = true) {
         self.enabled = enabled
         self.weekday = min(max(weekday, 1), 7)
         self.hour = min(max(hour, 0), 23)
         self.provider = provider
         self.model = model
+        self.useTmux = useTmux
     }
 
     public var preset: AgentLaunchPreset {
         AgentLaunchPreset(provider: provider, model: model.isEmpty ? nil : model,
                           effort: provider == .claude ? Self.defaultEffort : nil,
-                          workspacePolicy: .existingCheckout, useTmux: true, includePrompt: true)
+                          workspacePolicy: .existingCheckout, useTmux: useTmux, includePrompt: true)
     }
 }
 

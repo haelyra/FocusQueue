@@ -395,7 +395,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
       enabled: weeklyCleanupEnabled ?? true,
       weekday: weeklyCleanupWeekday ?? WeeklyCleanupSettings.defaultWeekday,
       hour: weeklyCleanupHour ?? WeeklyCleanupSettings.defaultHour,
-      provider: provider, model: model)
+      provider: provider, model: model, useTmux: persistentTerminals != false)
   }
 
   /// Decision automation with defaults applied.

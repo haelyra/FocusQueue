@@ -4448,6 +4448,11 @@ struct QueueViewModelTests {
   func weeklyCleanupLaunchesOncePerSlot() async throws {
     let fixture = try await Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
+    // No tmux here: a managed-pane launch would add pane polling to a concurrent suite.
+    let configRepository = JSONConfigurationRepository(url: fixture.paths.configurationFile)
+    var config = try await configRepository.loadOrCreate(default: AppConfiguration.eccDefault())
+    config.persistentTerminals = false
+    try await configRepository.save(config)
     let model = await fixture.model(
       agent: ControlledQueueAgent(),
       terminalController: DirectViewRecorder(root: fixture.root, failReveal: false),
@@ -4476,6 +4481,7 @@ struct QueueViewModelTests {
     let agent = try #require(model.subtasks(for: ticketID).first)
     #expect(agent.initialPrompt?.contains("weekly Focus Queue cleanup agent") == true)
     #expect(agent.provider == .claude)
+    #expect(model.config.weeklyCleanup.useTmux == false)
 
     // Same slot again: nothing new.
     let count = model.projectTickets.count

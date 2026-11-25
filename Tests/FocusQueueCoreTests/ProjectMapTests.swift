@@ -87,23 +87,25 @@ func mapCoversLeaves() {
     let map = demoMap(tickets: demoTickets)
     let node = { (id: String) in map.nodes.first { $0.id == id } }
     #expect(node("DEM-1")?.leaves == ["1.1"])     // Task: field
-    #expect(node("DEM-3")?.leaves == ["A2"])      // "DEM-3 covers A2"
+    #expect(node("DEM-3") == nil)                 // "DEM-3 covers A2": planning work stays off the map
     #expect(node("DEM-4")?.leaves == ["1.2"])     // task-set table row
     #expect(node("DEM-6")?.leaves == ["1.3"])     // title label "Phase 1 1.3:"
     #expect(node("DEM-5")?.leaves == [])          // a mere mention claims nothing
     #expect(node("DEM-1")?.agents.count == 1)
     // "Decide starting 1.3 alongside 1.2" claims no leaf but mentions Phase 1 leaves.
-    #expect(node("DEM-5").map { map.lanes[$0.lane].title } == "Phase 1 — Build")
-    #expect(node("DEM-5")?.reason == "Supports this phase; it does not claim a plan leaf.")
+    #expect(node("DEM-5").map { map.lanes[$0.lane].title } == "Build")
+    #expect(node("DEM-5").flatMap { map.lanes[$0.lane].fullTitle } == "Phase 1 — Build")
+    #expect(node("DEM-5")?.reason == "Supports this milestone; it does not claim a plan leaf.")
 }
 
 @Test("Ghosts mark unmet, uncovered leaves only")
 func mapGhosts() {
     let map = demoMap(tickets: demoTickets)
     let ghosts = Set(map.nodes.filter { $0.kind == .ghost }.map(\.id))
-    // A1 has no task; 1.3's only task was cancelled; 1.4 has none; C2 is a gated track.
-    // A3 is ticked, C1 is a gate-less track, and covered leaves need no ghost.
-    #expect(ghosts == ["ghost:A1", "ghost:1.3", "ghost:1.4", "ghost:C2"])
+    // 1.3's only task was cancelled; 1.4 has none; C2 is a gated track.
+    // Planning leaves (A1) stay off the map, C1 is a gate-less track, and
+    // covered leaves need no ghost.
+    #expect(ghosts == ["ghost:1.3", "ghost:1.4", "ghost:C2"])
     #expect(map.nodes.first { $0.id == "ghost:1.3" }?.reason == "Its only tasks were cancelled.")
 }
 
@@ -113,7 +115,7 @@ func mapEdges() throws {
     try process.setDependencies(taskID: "DEM-5", prerequisites: ["DEM-4"])
     let map = demoMap(tickets: demoTickets, process: process)
     let edges = Set(map.edges.map { "\($0.from)>\($0.to)" })
-    #expect(edges.contains("ghost:A1>DEM-1"))       // leaf dependency onto a ghost
+    #expect(!edges.contains("ghost:A1>DEM-1"))      // planning leaves are off the map
     #expect(edges.contains("DEM-2>DEM-1"))           // a task ID in a Deps line
     #expect(edges.contains("DEM-1>DEM-4"))           // 1.2 depends on 1.1
     #expect(edges.contains("DEM-4>DEM-6") && edges.contains("DEM-4>ghost:1.3"))
@@ -131,6 +133,13 @@ func mapModuleGhosts() {
                                       moduleIDs: ["m1", "m7"])
     let ghosts = map.nodes.filter { $0.id.hasPrefix("ghost:module:") }.map(\.id)
     #expect(ghosts == ["ghost:module:m9", "ghost:module:m7"])
+    // Every module is a card in the Modules milestone, colored by its progress.
+    let modules = try! #require(map.lanes.firstIndex { $0.role == "modules" })
+    #expect(map.lanes[modules].title == "Modules")
+    let cards = map.nodes.filter { $0.lane == modules }
+    #expect(Set(cards.map(\.id)) == ["ghost:module:m9", "module:m4", "ghost:module:m7", "module:m1"])
+    #expect(cards.first { $0.id == "module:m4" }.map { "\($0.kind.rawValue) \($0.status)" } == "module resolved")
+    #expect(cards.first { $0.id == "module:m1" }?.kind == .module)   // named in leaf A1
 }
 
 @Test("The HTML embeds the map without letting task text close the script")
@@ -254,12 +263,13 @@ func unclaimedTasksJoinPlanPhases() {
     ]
     let map = demoMap(tickets: tickets, process: process)
     func lane(_ id: String) -> String? { map.nodes.first { $0.id == id }.map { map.lanes[$0.lane].title } }
-    #expect(lane("DEM-20") == "Phase 1 — Build")             // title names Phase 1
-    #expect(lane("DEM-21") == "Phase 1 — Build")             // "Phase 1+" → earliest build phase with open work
-    #expect(lane("DEM-22") == "A. Planning completion")      // process Planning → the planning section
-    #expect(lane("DEM-23") == "Outside the development process or unlinked")
-    #expect(lane("DEM-24") == "Outside the development process or unlinked")
-    #expect(!map.lanes.contains { $0.title.hasPrefix("Not in the plan") })
+    #expect(lane("DEM-20") == "Build")                       // title names Phase 1
+    #expect(lane("DEM-21") == "Build")                       // "Phase 1+" → earliest build phase with open work
+    #expect(lane("DEM-22") == nil)                           // process Planning: off the map
+    #expect(lane("DEM-23") == "Other work")
+    #expect(lane("DEM-24") == "Other work")
+    #expect(map.lanes.last?.fullTitle == "Outside the development process or not linked to a milestone")
+    #expect(!map.lanes.contains { $0.title.localizedCaseInsensitiveContains("phase") || $0.title.contains("Planning") })
     #expect(map.nodes.allSatisfy { $0.phase == nil })        // process phase names never show
 }
 
@@ -285,4 +295,41 @@ func agentStates() {
     #expect(S(status: "blocked", attention: nil) == .blocked)
     #expect(S(status: "queued", attention: nil) == .idle)
     #expect(S(status: "completed", attention: nil) == nil)
+}
+
+@Test("Milestone titles drop phase numbering, asides, and the word phase")
+func milestoneTitles() {
+    let t = ProjectMapBuilder.milestoneTitle
+    #expect(t("Phase 0 — Feasibility") == "Feasibility")
+    #expect(t("Phase P — Cross-platform validation (pre-launch, unscheduled)") == "Cross-platform validation")
+    #expect(t("Phase 4: Reports and remote") == "Reports and remote")
+    #expect(t("B. Hardening phase") == "Hardening")
+    #expect(t("Coordinator daemon (`kairosd`)") == "Coordinator daemon")
+    #expect(t("Phase 2") == "Milestone 2")
+    #expect(t("Workbench") == "Workbench")
+}
+
+@Test("The Modules milestone follows Phase 0, and the planning section is left out")
+func milestoneOrder() {
+    let outline = DevelopmentPlanOutline.parse("""
+    ## A. Planning completion
+
+    - **A1. Files.**
+      Gate: written.
+
+    ## Phase 0 — Feasibility
+
+    - [ ] **0.1. Spike.**
+      Gate: runs.
+
+    ## Phase 1 — Usable slice
+
+    - [ ] **1.1. Core.**
+      Gate: works.
+    """)
+    let process = DevelopmentProcess(modules: [DevelopmentModule(id: "m1", name: "M1 Core")])
+    let map = ProjectMapBuilder.build(projectID: "d", projectName: "D", process: process, tickets: [],
+                                      outline: outline, planFile: nil, agents: [:])
+    #expect(map.lanes.map(\.title) == ["Feasibility", "Modules", "Usable slice"])
+    #expect(map.nodes.map { "\($0.id)@\($0.lane)" } == ["ghost:0.1@0", "ghost:module:m1@1", "ghost:1.1@2"])
 }

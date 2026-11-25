@@ -16,6 +16,12 @@ public struct DevelopmentPlanOutline: Equatable, Sendable {
         /// Cross-cutting tracks, out-of-scope lists, and other non-gating
         /// sections: their gate-less items never become ghost tasks.
         public var isTrack: Bool
+
+        /// The planning section ("A. Planning completion"): the map leaves it
+        /// out, since it shows the milestones that build the product.
+        public var isPlanning: Bool {
+            !isTrack && title.range(of: #"\bplanning\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+        }
     }
 
     public struct Leaf: Equatable, Sendable {
@@ -247,7 +253,7 @@ public struct ProjectMap: Codable, Equatable, Sendable {
     }
 
     public struct Node: Codable, Equatable, Sendable {
-        public enum Kind: String, Codable, Sendable { case task, ghost }
+        public enum Kind: String, Codable, Sendable { case task, ghost, module }
         public var id: String
         public var kind: Kind
         public var title: String
@@ -270,9 +276,19 @@ public struct ProjectMap: Codable, Equatable, Sendable {
         public var source: String
     }
 
+    /// A milestone: a plan phase, the Modules group, or other work.
     public struct Lane: Codable, Equatable, Sendable {
+        /// The short milestone name the map shows ("Feasibility").
         public var title: String
         public var isTrack: Bool
+        /// The heading as written ("Phase 0 — Feasibility"), for the tooltip.
+        public var fullTitle: String?
+        /// `modules` for the Modules milestone; nil for phases and other work.
+        public var role: String?
+
+        public init(title: String, isTrack: Bool, fullTitle: String? = nil, role: String? = nil) {
+            self.title = title; self.isTrack = isTrack; self.fullTitle = fullTitle; self.role = role
+        }
     }
 
     public var projectID: String
@@ -300,6 +316,10 @@ public enum ProjectMapBuilder {
             return DevelopmentPlanOutline.taskIDPattern.matches(in: text, range: range).compactMap {
                 Range($0.range, in: text).map { text[$0].uppercased() }
             }.filter { ticketIDs.contains($0) }
+        }
+
+        func isPlanning(_ section: Int) -> Bool {
+            outline.sections.indices.contains(section) && outline.sections[section].isPlanning
         }
 
         // Leaf → tasks that claim it.
@@ -346,30 +366,33 @@ public enum ProjectMapBuilder {
             let leaves = taskLeaves[id] ?? []
             var lane: Int
             var reason: String?
-            if let first = leaves.first, let leaf = outline.leaves.first(where: { $0.id == first }) {
+            let placed = leaves.compactMap { id in outline.leaves.first { $0.id == id } }
+            if let leaf = placed.first(where: { !isPlanning($0.sectionIndex) }) ?? placed.first {
                 lane = leaf.sectionIndex
             } else if let section = phaseSection.section(titled: ticket.title)
                         ?? outline.leafIDs(in: ticket.title).compactMap({ leafID in
                             outline.leaves.first { $0.id == leafID }?.sectionIndex }).first
                         ?? process.phase(ofTask: id).flatMap(phaseSection.section(for:)) {
                 lane = section
-                reason = "Supports this phase; it does not claim a plan leaf."
+                reason = "Supports this milestone; it does not claim a plan leaf."
             } else {
                 // A link without a step is the process's own "outside the
                 // process" marker (side questions, chores); say so plainly.
                 let outside = process.links[id] != nil
-                let title = outside ? "Outside the development process" : "Not linked to a phase"
+                let full = outside ? "Outside the development process" : "Not linked to a milestone"
                 if unlinkedLane == nil {
-                    lanes.append(ProjectMap.Lane(title: title, isTrack: true))
+                    lanes.append(ProjectMap.Lane(title: "Other work", isTrack: true, fullTitle: full))
                     unlinkedLane = lanes.count - 1
-                } else if lanes[unlinkedLane!].title != title {
-                    lanes[unlinkedLane!].title = "Outside the development process or unlinked"
+                } else if lanes[unlinkedLane!].fullTitle != full {
+                    lanes[unlinkedLane!].fullTitle = "Outside the development process or not linked to a milestone"
                 }
                 lane = unlinkedLane!
                 reason = outside
                     ? "Marked outside the development process (a side question or chore)."
                     : "No plan leaf, phase in its title, or process phase places it."
             }
+            // The map leaves the planning milestone out, with its tasks.
+            if isPlanning(lane) { continue }
             nodeIndex[id] = nodes.count
             nodes.append(ProjectMap.Node(
                 id: id, kind: .task, title: ticket.title, status: ticket.status.lowercased(), lane: lane,
@@ -382,7 +405,7 @@ public enum ProjectMapBuilder {
         // Ghosts: planned leaves with an unmet gate and no live covering task.
         for leaf in outline.leaves {
             let live = (leafNodes[leaf.id] ?? []).filter { !abandoned.contains(byID[$0]?.status.lowercased() ?? "") }
-            guard live.isEmpty, !leaf.isChecked else { continue }
+            guard live.isEmpty, !leaf.isChecked, !isPlanning(leaf.sectionIndex) else { continue }
             let section = outline.sections.indices.contains(leaf.sectionIndex) ? outline.sections[leaf.sectionIndex] : nil
             guard leaf.gate != nil || section?.isTrack == false else { continue }
             let id = "ghost:\(leaf.id)"
@@ -396,31 +419,52 @@ public enum ProjectMapBuilder {
             leafNodes[leaf.id, default: []].append(id)
         }
 
-        // Module ghosts: tracked modules or module files no task or leaf mentions.
+        // The Modules milestone: one card per tracked module or module file,
+        // colored by its progress. A module nothing links or names is a ghost.
         let mentionText = (tickets.map(\.title) + outline.leaves.map { $0.moduleText + " " + $0.title }).joined(separator: " ")
         let mentioned = Set(DevelopmentPlanOutline.tokens(in: mentionText).map { $0.uppercased() })
         var moduleLane: Int?
-        func moduleGhost(id: String, title: String, reason: String) {
+        func moduleNode(id: String, kind: ProjectMap.Node.Kind, title: String, status: String, reason: String) {
             if moduleLane == nil {
-                lanes.append(ProjectMap.Lane(title: "Modules without planned work", isTrack: false))
+                lanes.append(ProjectMap.Lane(title: "Modules", isTrack: false, fullTitle: "Modules", role: "modules"))
                 moduleLane = lanes.count - 1
             }
             nodeIndex[id] = nodes.count
-            nodes.append(ProjectMap.Node(id: id, kind: .ghost, title: title, status: "missing", lane: moduleLane!,
+            nodes.append(ProjectMap.Node(id: id, kind: kind, title: title, status: status, lane: moduleLane!,
                                          leaves: [], gate: nil, phase: nil, agents: [], reason: reason))
         }
-        for module in process.modules where !module.qaAccepted {
-            let linked = process.linkedTaskIDs(module: module.id).contains { byID[$0] != nil }
-            let named = mentioned.contains(module.name.uppercased())
+        for module in process.modules {
+            let linked = process.linkedTaskIDs(module: module.id).compactMap { byID[$0] }
+            let named = mentioned.contains(module.name.uppercased()) || mentioned.contains(module.id.uppercased())
                 || tickets.contains { $0.title.localizedCaseInsensitiveContains(module.name) }
-            guard !linked, !named else { continue }
-            moduleGhost(id: "ghost:module:\(module.id)", title: "Module: \(module.name)",
-                        reason: "Tracked module with unaccepted criteria and no linked task.")
+            let title = ProjectMapBuilder.milestoneTitle(module.name)
+            guard module.qaAccepted || module.implemented || !linked.isEmpty || named else {
+                moduleNode(id: "ghost:module:\(module.id)", kind: .ghost, title: title, status: "missing",
+                           reason: "Tracked module with unaccepted criteria and no linked task.")
+                continue
+            }
+            let open = linked.contains { $0.isOpen }
+            let status = module.qaAccepted ? "resolved" : module.implemented ? "qa"
+                : (open || module.selectedStatus == .inProgress) ? "in-progress" : "backlog"
+            let count = linked.count
+            moduleNode(id: "module:\(module.id)", kind: .module, title: title, status: status,
+                       reason: count == 0 ? "Named in the plan; no task is linked yet."
+                           : "\(count) linked task\(count == 1 ? "" : "s").")
         }
-        for moduleID in moduleIDs where !mentioned.contains(moduleID.uppercased()) {
-            guard !process.modules.contains(where: { $0.name.uppercased().hasPrefix(moduleID.uppercased()) }) else { continue }
-            moduleGhost(id: "ghost:module:\(moduleID.lowercased())", title: "Module \(moduleID.uppercased())",
-                        reason: "Module design file exists, but no task or plan leaf names it.")
+        for moduleID in moduleIDs {
+            // A module file a tracked module already stands for adds no card.
+            let key = moduleID.lowercased()
+            guard !process.modules.contains(where: { module in
+                module.id.lowercased() == key || module.name.uppercased().hasPrefix(moduleID.uppercased())
+                    || (module.file.map { ($0 as NSString).lastPathComponent.lowercased().hasPrefix(key + "-") } ?? false)
+            }), nodeIndex["module:\(key)"] == nil, nodeIndex["ghost:module:\(key)"] == nil else { continue }
+            if mentioned.contains(moduleID.uppercased()) {
+                moduleNode(id: "module:\(moduleID.lowercased())", kind: .module, title: moduleID.uppercased(),
+                           status: "backlog", reason: "Module design file, named in the plan or a task.")
+            } else {
+                moduleNode(id: "ghost:module:\(moduleID.lowercased())", kind: .ghost, title: moduleID.uppercased(),
+                           status: "missing", reason: "Module design file exists, but no task or plan leaf names it.")
+            }
         }
 
         // Edges: plan Deps through leaf → node, then explicit task dependencies.
@@ -441,6 +485,31 @@ public enum ProjectMapBuilder {
             for prerequisite in prerequisites { connect(prerequisite.uppercased(), task.uppercased(), "task") }
         }
 
+        // Milestones in build order: plan phases without planning, the Modules
+        // milestone after Phase 0 (the development process's own order), then
+        // other work. Titles drop "Phase N —" numbering and asides.
+        var order = outline.sections.indices.filter { !outline.sections[$0].isPlanning }
+        if let moduleLane {
+            let after = phaseSection.section(named: "0").flatMap { order.firstIndex(of: $0) }
+            order.insert(moduleLane, at: after.map { $0 + 1 } ?? 0)
+        }
+        if let unlinkedLane { order.append(unlinkedLane) }
+        let remap = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        lanes = order.map { index in
+            var lane = lanes[index]
+            if index < outline.sections.count {
+                lane.fullTitle = lane.title
+                lane.title = milestoneTitle(lane.title)
+            }
+            return lane
+        }
+        nodes = nodes.compactMap { node in
+            guard let lane = remap[node.lane] else { return nil }
+            var moved = node
+            moved.lane = lane
+            return moved
+        }
+
         // Plan order inside each lane; tasks outside the plan keep dashboard order.
         let ticketOrder = Dictionary(tickets.enumerated().map { ($1.id.uppercased(), $0) }, uniquingKeysWith: { a, _ in a })
         let ranked = nodes.enumerated().map { offset, node in
@@ -452,6 +521,23 @@ public enum ProjectMapBuilder {
         return ProjectMap(projectID: projectID, projectName: projectName, planFile: planFile,
                           currentPhase: process.currentPhase.title, generatedAt: now,
                           lanes: lanes, nodes: nodes, edges: edges)
+    }
+
+    /// A short milestone name: "Phase 0 — Feasibility" → "Feasibility",
+    /// "Phase P — Cross-platform validation (pre-launch)" → "Cross-platform
+    /// validation", "Coordinator daemon (`kairosd`)" → "Coordinator daemon".
+    /// The word "phase" never appears; a bare "Phase 2" becomes "Milestone 2".
+    public static func milestoneTitle(_ raw: String) -> String {
+        var title = raw.replacingOccurrences(of: "`", with: "")
+        let numbered = title.range(of: #"^\s*phase\s+([0-9]+|[A-Za-z])\b"#, options: [.regularExpression, .caseInsensitive])
+            .map { title[$0].split(whereSeparator: \.isWhitespace).last.map(String.init) ?? "" }
+        title = title.replacingOccurrences(of: #"^\s*(?:phase\s+(?:[0-9]+|[A-Za-z])\b|[A-Z0-9]{1,2}\.(?=\s))\s*[—–:.\-]?\s*"#,
+                                           with: "", options: [.regularExpression, .caseInsensitive])
+        title = title.replacingOccurrences(of: #"\s*\([^)]*\)\s*$"#, with: "", options: .regularExpression)
+        title = title.replacingOccurrences(of: #"\s*\bphases?\b\s*"#, with: " ", options: [.regularExpression, .caseInsensitive])
+            .trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: "—–:-.")))
+        guard let first = title.first else { return numbered.map { "Milestone \($0)" } ?? raw }
+        return first.uppercased() + title.dropFirst()
     }
 
     /// The part of a title that names its leaf: before the first colon, or the

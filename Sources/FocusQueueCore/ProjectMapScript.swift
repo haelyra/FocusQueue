@@ -1,8 +1,9 @@
 import Foundation
 
-/// The project map's interaction script: collapsible phases with animated
-/// layout, temporary "peek" of dependencies hidden in collapsed phases, and
-/// click-to-locate. It reads only the static markup `ProjectMapHTML` writes
+/// The project map's interaction script: collapsible milestones and tasks
+/// (all collapsed at first) with animated layout, centering and zooming on what
+/// a click opens, temporary "peek" of dependencies hidden in collapsed parts,
+/// and click-to-locate. It reads only the static markup `ProjectMapHTML` writes
 /// (`data-node`, `data-parent`, `data-lane`, `data-rank`, `data-from/to`).
 ///
 /// Focus Queue's document viewer keeps page scripts off and injects this source
@@ -34,6 +35,24 @@ public enum ProjectMapScript {
     nodes[n.id] = n; list.push(n);
   });
   list.forEach(function (n) { if (n.parent && nodes[n.parent]) nodes[n.parent].children.push(n); });
+  // Milestones and tasks with dependents start collapsed; a badge on a task
+  // card counts the dependents it hides.
+  function collapsible(n) { return n.kind !== 'root' && n.children.length > 0; }
+  list.forEach(function (n) {
+    if (n.kind !== 'item' || !n.children.length) return;
+    var kids = document.createElement('span');
+    kids.className = 'kids';
+    kids.title = n.children.length + ' dependent task' + (n.children.length === 1 ? '' : 's') + ': click the card to show or hide';
+    n.el.appendChild(kids);
+    n.kids = kids;
+  });
+  // Hidden because a milestone or task above it is collapsed.
+  function folded(n) {
+    for (var p = n.parent && nodes[n.parent]; p; p = p.parent && nodes[p.parent]) {
+      if (collapsible(p) && !expanded.has(p.id)) return true;
+    }
+    return false;
+  }
   var lines = [].map.call(map.querySelectorAll('line[data-from]'), function (el) {
     return { el: el, from: el.dataset.from, to: el.dataset.to };
   });
@@ -66,11 +85,13 @@ public enum ProjectMapScript {
     frames = [];
     list.forEach(function (n) { n.frame = null; n.extra = stripExtra(n); n.off = 0; });
     function measure(n) {
-      n.vis = (n.kind === 'phase' && !expanded.has(n.id)) ? [] : n.children;
+      n.vis = (collapsible(n) && !expanded.has(n.id)) ? [] : n.children;
       n.vis.forEach(measure);
       n.grid = null;
       var leaves = n.vis.filter(function (k) { return !k.vis.length; });
-      if (n.vis.length > WRAP && leaves.length > 1) {
+      // Milestones stay in one row in plan order, so opening one never
+      // reshuffles the others.
+      if (n.kind !== 'root' && n.vis.length > WRAP && leaves.length > 1) {
         var branches = n.vis.filter(function (k) { return k.vis.length; });
         var cols = Math.min(WRAP, leaves.length), rowCount = Math.ceil(leaves.length / cols);
         // Rows in a wrapped group sit one card apart, plus any extra mark rows above them.
@@ -114,13 +135,17 @@ public enum ProjectMapScript {
     }
     place(root, 0);
     var stacks = {};
+    // A peeked task stacks under its nearest shown ancestor, which is
+    // collapsed, so the space below it is free.
     peek.forEach(function (id) {
       var n = nodes[id];
-      if (!n || target[id] || !n.lane || !target[n.lane]) return;
-      var phase = target[n.lane], phaseNode = nodes[n.lane];
-      var i = stacks[n.lane] = (stacks[n.lane] || 0);
-      stacks[n.lane] = i + 1;
-      target[id] = { cx: phase.cx, y: phase.y + phaseNode.h + 44 + i * C.sub, peek: true };
+      if (!n || target[id]) return;
+      var host = shownAncestor(n, target);
+      if (!host || host.id === 'root') return;
+      var at = target[host.id];
+      var i = stacks[host.id] = (stacks[host.id] || 0);
+      stacks[host.id] = i + 1;
+      target[id] = { cx: at.cx, y: at.y + host.h + 44 + i * C.sub, peek: true };
     });
     return target;
   }
@@ -141,14 +166,27 @@ public enum ProjectMapScript {
     });
   }
 
+  function shownAncestor(n, target) {
+    for (var p = n.parent && nodes[n.parent]; p; p = p.parent && nodes[p.parent]) {
+      if (target[p.id] && !target[p.id].peek) return p;
+    }
+    return nodes.root;
+  }
+  // Cards grow out of, and fold back into, the nearest card still shown.
   function anchor(n, target) {
-    var a = (n.lane && target[n.lane]) || (n.parent && target[n.parent]) || target.root;
+    var a = target[shownAncestor(n, target).id] || target.root;
     return { cx: a.cx, y: a.y };
   }
 
-  var frameID = 0;
+  var frameID = 0, lastTarget = {};
   function apply(animate) {
-    var target = layout();
+    var target = lastTarget = layout();
+    list.forEach(function (n) {
+      if (!n.kids) return;
+      var open = expanded.has(n.id);
+      n.kids.textContent = (open ? '▾ ' : '▸ ') + n.children.length;
+      n.el.classList.toggle('open', open);
+    });
     var maxX = 0, maxY = 0, maxRank = 0;
     list.forEach(function (n) {
       var to = target[n.id];
@@ -239,7 +277,8 @@ public enum ProjectMapScript {
     });
   }
 
-  // Phases and the root toggle; tasks locate themselves in the queue.
+  // Milestones and tasks with dependents toggle; the root toggles every
+  // milestone; other tasks locate themselves in the queue.
   map.addEventListener('click', function (event) {
     if (event.target.closest('details') || event.target.closest('.menu')) return;
     var more = event.target.closest('.more');
@@ -253,12 +292,16 @@ public enum ProjectMapScript {
     var el = event.target.closest('[data-node]');
     if (!el) return;
     var n = nodes[el.dataset.node];
-    if (n.kind === 'phase') {
-      if (expanded.has(n.id)) expanded.delete(n.id); else expanded.add(n.id);
+    if (collapsible(n)) {
+      // Opening a milestone or task centers the view on it and zooms to fit
+      // what opened; closing leaves the view where it is.
+      var opening = !expanded.has(n.id);
+      if (opening) expanded.add(n.id); else expanded.delete(n.id);
       save(); peek = []; apply(true);
+      if (opening) focus(n);
     } else if (n.kind === 'root') {
       var phases = list.filter(function (p) { return p.kind === 'phase' && p.children.length; });
-      var anyOpen = phases.some(function (p) { return expanded.has(p.id); });
+      var anyOpen = list.some(function (p) { return collapsible(p) && expanded.has(p.id); });
       expanded = new Set(anyOpen ? [] : phases.map(function (p) { return p.id; }));
       save(); peek = []; apply(true);
     } else if (el.dataset.task) {
@@ -268,11 +311,35 @@ public enum ProjectMapScript {
   });
   document.querySelectorAll('[data-action]').forEach(function (button) {
     button.addEventListener('click', function () {
-      var phases = list.filter(function (p) { return p.kind === 'phase' && p.children.length; });
-      expanded = new Set(button.dataset.action === 'expand' ? phases.map(function (p) { return p.id; }) : []);
+      var all = list.filter(collapsible);
+      expanded = new Set(button.dataset.action === 'expand' ? all.map(function (p) { return p.id; }) : []);
       save(); peek = []; apply(true);
     });
   });
+
+  // The box around a node and its shown descendants, in page coordinates
+  // (the map sits below the header). The app zooms to fit it; a browser
+  // just scrolls it to the middle.
+  function focus(n) {
+    var t = lastTarget, box = null;
+    (function grow(k) {
+      var at = t[k.id];
+      if (!at || at.peek) return;
+      var x = at.cx - k.w / 2, y = at.y, r = x + k.w, b = y + k.h + k.extra;
+      box = box ? { x: Math.min(box.x, x), y: Math.min(box.y, y), r: Math.max(box.r, r), b: Math.max(box.b, b) }
+                : { x: x, y: y, r: r, b: b };
+      k.vis.forEach(grow);
+    })(n);
+    if (!box) return;
+    var ox = map.offsetLeft, oy = map.offsetTop, at = t[n.id];
+    var rect = [box.x + ox, box.y + oy, box.r - box.x, box.b - box.y];
+    var node = [at.cx - n.w / 2 + ox, at.y + oy, n.w, n.h];
+    var handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.focusQueueMap;
+    if (handler) { handler.postMessage({ type: 'focus', box: rect, node: node }); return; }
+    var wide = rect[2] > innerWidth, tall = rect[3] > innerHeight;
+    window.scrollTo({ left: (wide ? node[0] + node[2] / 2 : rect[0] + rect[2] / 2) - innerWidth / 2,
+                      top: tall ? node[1] - 40 : rect[1] + rect[3] / 2 - innerHeight / 2, behavior: 'smooth' });
+  }
 
   function send(message) {
     var handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.focusQueueMap;
@@ -417,7 +484,7 @@ public enum ProjectMapScript {
     lines.forEach(function (l) {
       if (!l.el.classList.contains('dep')) return;
       var other = l.from === id ? l.to : l.to === id ? l.from : null;
-      if (other && nodes[other] && nodes[other].kind === 'item' && !expanded.has(nodes[other].lane)) out.push(other);
+      if (other && nodes[other] && nodes[other].kind === 'item' && folded(nodes[other])) out.push(other);
     });
     return out;
   }

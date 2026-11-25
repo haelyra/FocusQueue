@@ -36,6 +36,7 @@ public enum ScheduleJobSource: Hashable, Sendable {
     case scheduledLaunch(id: String)
     case scheduledResume(id: String)
     case dailyReport
+    case weeklyCleanup
     case decision(taskID: String, agentID: String, nodeID: String)
     /// A past run drawn from the two-day history; read-only.
     case runRecord(id: String)
@@ -110,6 +111,7 @@ public struct ScheduleJob: Identifiable, Equatable, Sendable {
         case .scheduledLaunch(let id): "launch:\(id)"
         case .scheduledResume(let id): "resume:\(id)"
         case .dailyReport: "daily-report"
+        case .weeklyCleanup: "weekly-cleanup"
         case .decision(let task, let agent, let node): "decision:\(task)/\(agent)/\(node)"
         case .runRecord(let id): "run:\(id)"
         }
@@ -169,6 +171,7 @@ public enum ScheduleTimeline {
         launches: [ScheduledLaunch],
         resumes: [ScheduledAgentResume] = [],
         dailyReport: DailyReportConfiguration?,
+        weeklyCleanup: WeeklyCleanupSettings? = nil,
         decisions: [DecisionTree],
         automation: DecisionAutomationSettings,
         tickets: [String: ScheduleTicketInfo],
@@ -213,6 +216,16 @@ public enum ScheduleTimeline {
                 detail: "Morning sweep of connected inboxes and agent results.",
                 ticketID: nil, projectID: nil, anchor: anchor,
                 repeatInterval: 86_400, expectedDuration: ScheduleJob.estimatedDailyReportRun,
+                isMovable: true))
+        }
+        if let cleanup = weeklyCleanup, cleanup.enabled,
+           let anchor = WeeklyCleanupPolicy.nextSlot(after: now, weekday: cleanup.weekday,
+                                                     hour: cleanup.hour, calendar: calendar) {
+            jobs.append(ScheduleJob(
+                source: .weeklyCleanup, kind: .interval, title: WeeklyCleanupPrompt.taskTitle,
+                detail: "Opens a cleanup task and launches a mid-sized agent that prunes stale data and checks finished work was cleaned up.",
+                ticketID: nil, projectID: nil, anchor: anchor,
+                repeatInterval: 7 * 86_400, expectedDuration: ScheduleJob.estimatedAgentRun,
                 isMovable: true))
         }
         for tree in decisions {

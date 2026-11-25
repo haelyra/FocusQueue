@@ -4444,6 +4444,51 @@ struct QueueViewModelTests {
     #expect(await suggester.queries.count == 1, "Creating anyway reuses the first suggestion")
   }
 
+  @Test("Weekly cleanup records a baseline, then opens a cleanup task and launches its agent once per slot")
+  func weeklyCleanupLaunchesOncePerSlot() async throws {
+    let fixture = try await Fixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let model = await fixture.model(
+      agent: ControlledQueueAgent(),
+      terminalController: DirectViewRecorder(root: fixture.root, failReveal: false),
+      taskAgentLauncher: TaskAgentLauncher(runner: DirectCreationRunner(), candidateSockets: []))
+    let store = WeeklyCleanupStateStore(supportDirectory: fixture.paths.supportDirectory)
+    let settings = model.config.weeklyCleanup
+    let now = Date()
+    let slot = try #require(WeeklyCleanupPolicy.mostRecentSlot(
+      before: now, weekday: settings.weekday, hour: settings.hour))
+
+    // First check: baseline only, no task.
+    let before = model.projectTickets.count
+    await model.runWeeklyCleanupIfDue(now: now)
+    #expect(store.load()?.lastRunAt != nil, "The refresh loop or this call records a baseline")
+    #expect(store.load()?.lastTicketID == nil)
+    #expect(model.projectTickets.count == before)
+
+    // Last run before this week's slot: due now.
+    try store.save(WeeklyCleanupState(lastRunAt: slot.addingTimeInterval(-60)))
+    await model.runWeeklyCleanupIfDue(now: now)
+    try await eventually { model.launchingTaskIDs.isEmpty }
+    let ticketID = try #require(store.load()?.lastTicketID)
+    let ticket = try #require(model.projectTickets.first { $0.id == ticketID })
+    #expect(ticket.title == WeeklyCleanupPrompt.taskTitle)
+    #expect(ticket.priority == "low")
+    let agent = try #require(model.subtasks(for: ticketID).first)
+    #expect(agent.initialPrompt?.contains("weekly Focus Queue cleanup agent") == true)
+    #expect(agent.provider == .claude)
+
+    // Same slot again: nothing new.
+    let count = model.projectTickets.count
+    await model.runWeeklyCleanupIfDue(now: now.addingTimeInterval(600))
+    #expect(model.projectTickets.count == count)
+
+    // Turned off: never runs even when due.
+    model.setWeeklyCleanupEnabled(false)
+    try store.save(WeeklyCleanupState(lastRunAt: slot.addingTimeInterval(-60)))
+    await model.runWeeklyCleanupIfDue(now: now)
+    #expect(model.projectTickets.count == count)
+  }
+
   @Test("A scheduled draft creates the task now, launches the agent when due, and reschedules repeats")
   func taskCreatorSchedulesLaunch() async throws {
     let fixture = try await Fixture()

@@ -45,6 +45,8 @@ import UserNotifications
     url: paths.dailyReportApprovalFile
   )
   private var panel: FocusPanel?
+  private var hasBootstrapped = false
+  private var pendingOpenURLs: [URL] = []
   private var programLogWindow: NSWindow?
   private var bulletinBoardWindowController: BulletinBoardWindowController?
   private var statusItem: NSStatusItem?
@@ -239,6 +241,12 @@ import UserNotifications
         )
       }
       panel?.orderFrontRegardless()
+      hasBootstrapped = true
+      if !pendingOpenURLs.isEmpty {
+        let urls = pendingOpenURLs
+        pendingOpenURLs = []
+        application(NSApplication.shared, open: urls)
+      }
       isModelReady = model.configurationIsLoaded
       setProgramLogWindowVisible(model.isProgramLogWindowVisible)
       if isModelReady, let decision = pendingDailyReportDecision {
@@ -255,10 +263,13 @@ import UserNotifications
   }
 
   /// `focusqueue://ref/<TASK>/<CODE>` links, clicked in a terminal or any
-  /// other app, open the reference card in the task's split view.
+  /// other app, open the reference card in the task's split view. Markdown
+  /// files Finder hands over open in the document viewer. A launch caused by
+  /// an open waits for bootstrap so the file lands under its task or project.
   func application(_ application: NSApplication, open urls: [URL]) {
+    guard hasBootstrapped else { pendingOpenURLs += urls; return }
     var opened = false
-    for url in urls where model.openReference(url) { opened = true }
+    for url in urls where model.openReference(url) || model.openExternalDocument(url) { opened = true }
     if opened { showPanel() }
   }
 

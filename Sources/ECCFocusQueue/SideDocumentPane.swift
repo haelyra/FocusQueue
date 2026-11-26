@@ -329,8 +329,8 @@ struct SideDocumentPane: View {
                 Button { store.reload(document) } label: { Image(systemName: "arrow.clockwise") }
                     .help("Reload document").disabled(editSession != nil)
                 if document.isFileURL {
-                    Button { NSWorkspace.shared.open(document) } label: { Image(systemName: "arrow.up.forward.app") }
-                        .help("Open in the default app")
+                    Button { MarkdownDefaultApplication.openOutside(document) } label: { Image(systemName: "arrow.up.forward.app") }
+                        .help("Open in another app")
                 }
                 Button {
                     // Pending edits are saved on close; a refused save keeps the pane open with its error.

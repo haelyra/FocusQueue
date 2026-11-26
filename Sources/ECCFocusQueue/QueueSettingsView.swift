@@ -261,6 +261,13 @@ struct QueueSettingsView: View {
     }
 
     settingsSection(
+      title: "Markdown files",
+      detail: "Open .md files from Finder and other apps in Focus Queue's document viewer, under their task or project."
+    ) {
+      MarkdownDefaultSection()
+    }
+
+    settingsSection(
       title: "Projects",
       detail: "Choose a project to see its settings and files. Open a file to read it beside settings with its project chat."
     ) {
@@ -982,3 +989,50 @@ private struct TerminalAppSetting: View {
   }
 }
 
+
+/// Shows which app opens Markdown files and offers to make Focus Queue the default.
+private struct MarkdownDefaultSection: View {
+  @State private var isDefault = MarkdownDefaultApplication.isFocusQueueDefault
+  @State private var handlerName = MarkdownDefaultApplication.currentHandlerName
+  @State private var isWorking = false
+  @State private var errorMessage: String?
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      if isDefault {
+        Label("Focus Queue opens Markdown files", systemImage: "checkmark.circle.fill")
+          .foregroundStyle(.green)
+      } else {
+        if let handlerName {
+          Text("Markdown files open in \(handlerName) today.").font(.system(size: 13)).foregroundStyle(.secondary)
+        }
+        Button("Make Focus Queue the default", systemImage: "doc.richtext") { makeDefault() }
+          .buttonStyle(.bordered)
+          .disabled(isWorking || !MarkdownDefaultApplication.canBecomeDefault)
+          .help(MarkdownDefaultApplication.canBecomeDefault
+            ? "Open .md files from Finder in Focus Queue"
+            : "Only the installed app can open Markdown files")
+      }
+      if let errorMessage {
+        Text(errorMessage).font(.system(size: 12)).foregroundStyle(.red)
+      }
+    }
+    .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refresh() }
+  }
+
+  private func refresh() {
+    isDefault = MarkdownDefaultApplication.isFocusQueueDefault
+    handlerName = MarkdownDefaultApplication.currentHandlerName
+  }
+
+  private func makeDefault() {
+    isWorking = true
+    errorMessage = nil
+    Task { @MainActor in
+      do { try await MarkdownDefaultApplication.makeFocusQueueDefault() }
+      catch { errorMessage = "Could not change the default: \(error.localizedDescription)" }
+      isWorking = false
+      refresh()
+    }
+  }
+}

@@ -66,6 +66,10 @@ info_plist="$bundle_path/Contents/Info.plist"
 # focusqueue://ref/<TASK>/<CODE> links from agent terminals open reference cards.
 /usr/bin/plutil -insert CFBundleURLTypes -json \
   '[{"CFBundleURLName":"com.haelyra.ecc-focus-queue.reference","CFBundleURLSchemes":["focusqueue"]}]' "$info_plist"
+# Finder hands Markdown files to Focus Queue's document viewer once the user
+# makes it the default app (Settings > General > Markdown files).
+/usr/bin/plutil -insert CFBundleDocumentTypes -json \
+  '[{"CFBundleTypeName":"Markdown document","CFBundleTypeRole":"Editor","LSHandlerRank":"Default","LSItemContentTypes":["net.daringfireball.markdown"]}]' "$info_plist"
 
 integration_ref="${ECC_FOCUS_QUEUE_INTEGRATION_REF:-origin/main}"
 /usr/bin/python3 "$project_dir/Scripts/focus_queue_install.py" \

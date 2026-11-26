@@ -8486,6 +8486,17 @@ extension QueueViewModel {
     return true
   }
 
+  /// A file another app handed over, such as a Markdown file opened from
+  /// Finder: it opens in the document viewer under its project, or beside
+  /// the plan of the task whose folder holds it.
+  /// Returns false for links the viewer does not render.
+  func openExternalDocument(_ url: URL) -> Bool {
+    guard url.isFileURL, let file = InAppDocument.fileURL(for: url) else { return false }
+    if panelMode != .expanded { setPanelMode(.expanded) }
+    open(file.path)
+    return true
+  }
+
   func consumeReferenceRequest(_ request: ReferenceRequest) {
     if requestedReference == request { requestedReference = nil }
   }

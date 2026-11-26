@@ -107,6 +107,37 @@ struct ProjectFilesSectionTests {
     #expect(model.documentScope(for: root.appendingPathComponent("tasks/\(ticket.id)/evidence.md")) == .task(ticket.id))
   }
 
+  @Test("Markdown files Finder hands over open in the viewer under their owner")
+  func externalMarkdownOpen() async throws {
+    let (model, root) = try await bootstrappedModel()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let project = try #require(model.activeProjects.first)
+    let directory = try model.projectContextStore.ensurePlan(for: project).deletingLastPathComponent()
+    let notes = directory.appendingPathComponent("Design notes.md")
+    try Data("# Notes".utf8).write(to: notes)
+
+    #expect(model.openExternalDocument(URL(fileURLWithPath: notes.path)))
+    #expect(model.panelMode == .expanded)
+    #expect(model.isDocumentViewerPresented)
+    #expect(model.documentViewerScope == .project(project.id))
+    #expect(model.documentViewer.selected == notes.standardizedFileURL)
+
+    // A Markdown file inside a task folder opens beside that task's plan.
+    #expect(await model.createTask(title: "Finder routing", summary: "Routes Finder opens", projectID: project.id))
+    let ticket = try #require(model.dashboard.tickets.first { $0.title == "Finder routing" })
+    let taskFolder = root.appendingPathComponent("tasks/\(ticket.id)", isDirectory: true)
+    try FileManager.default.createDirectory(at: taskFolder, withIntermediateDirectories: true)
+    let evidence = taskFolder.appendingPathComponent("evidence.md")
+    try Data("evidence".utf8).write(to: evidence)
+    #expect(model.openExternalDocument(evidence))
+    #expect(model.presentedPlanTicketID == ticket.id)
+    #expect(model.presentedPlanURL == evidence.standardizedFileURL)
+
+    // Files the viewer does not render, and non-file URLs, stay out.
+    #expect(!model.openExternalDocument(URL(fileURLWithPath: "/tmp/app.zip")))
+    #expect(!model.openExternalDocument(URL(string: "https://example.com/a.md")!))
+  }
+
   @Test("PDFs load into the native viewer")
   func pdfContent() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("pdf-\(UUID().uuidString)")

@@ -111,8 +111,9 @@ public enum DocumentAuthorship {
             inputKey = type == "function_call" ? "arguments" : "input"
             writeTools = []
         case .kimi:
-            guard let event = record["event"] as? [String: Any],
-                  event["type"] as? String == "tool.call" else { return nil }
+            // Wire logs nest the call in a loop event; a bare `tool.call` record is the same call.
+            let event = record["event"] as? [String: Any] ?? record
+            guard event["type"] as? String == "tool.call" else { return nil }
             calls = [event]
             inputKey = "args"
             writeTools = ["Write", "Edit", "WriteFile", "StrReplaceFile"]

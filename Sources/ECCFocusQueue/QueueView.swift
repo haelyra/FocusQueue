@@ -469,7 +469,7 @@ struct QueueView: View {
       TaskSearchField(
         query: $taskSearchQuery, isFocused: $taskSearchIsFocused,
         prompt: (model.showsAllProjects ? "Search all tasks" : "Search \(model.projectScopeName) tasks")
-          + " · code, status, priority, file",
+          + " · code, status, priority, category, file",
         resultCount: resultCount, endEditing: endTaskSearchEditing, close: closeTaskSearch)
     } else if agentViewEnabled {
       focusHeadingButton(title: "Today's focus", detail: "\(agentViewAgentCount(for: focusTickets)) agents")
@@ -502,7 +502,7 @@ struct QueueView: View {
   ) -> String? {
     var parts: [String] = []
     if !search.filters.isEmpty {
-      let fields = [TaskSearchFilter.Field.priority, .status].compactMap { field -> String? in
+      let fields = [TaskSearchFilter.Field.priority, .status, .category].compactMap { field -> String? in
         let values = search.filters.filter { $0.field == field }.map(\.label)
         return values.isEmpty ? nil : "\(field.rawValue.capitalized) \(values.joined(separator: " or "))"
       }

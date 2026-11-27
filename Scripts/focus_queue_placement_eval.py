@@ -44,7 +44,7 @@ def load_placement():
 
 def clean_prompt(text):
     # Drop generated label lines: "Codex · 57a656", "Agent 6", "Blank Codex agent".
-    label = re.compile(r"\s*((codex|claude|kimi)\s·\s\w+|agent\s+\d+|(blank\s+)?(codex|claude|kimi)\s+agent)\s*",
+    label = re.compile(r"\s*((codex|claude|kimi|copilot)\s·\s\w+|agent\s+\d+|(blank\s+)?(codex|claude|kimi|copilot)\s+agent)\s*",
                        re.IGNORECASE)
     return "\n".join(line for line in str(text or "").splitlines() if not label.fullmatch(line)).strip()
 
@@ -181,7 +181,7 @@ def main(argv=None):
     build.add_argument("--out", type=Path, required=True)
     run = commands.add_parser("run", help="Replay cases and print accuracy and latency.")
     run.add_argument("--cases", type=Path, action="append", required=True)
-    run.add_argument("--provider", choices=("claude", "codex", "kimi"), required=True)
+    run.add_argument("--provider", choices=("claude", "codex", "kimi", "copilot"), required=True)
     run.add_argument("--out", type=Path, help="Write per-case results as JSON lines.")
     run.add_argument("--workers", type=int, default=4)
     run.add_argument("--timeout", type=int, help="Override placementTimeoutSeconds for this run.")

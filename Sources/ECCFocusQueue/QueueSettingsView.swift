@@ -644,7 +644,7 @@ struct QueueSettingsView: View {
       detail: "The rules Focus Queue itself gives agents, immutable and the same in every project: each provider's global contract, plus the orchestrator rules that ride beside a project's signed orchestration contract. Orchestrators, including QChat, get those rules. A project's own signed contracts (agent-contract.md, orchestration.md) are in its Project tab and add to these."
     ) {
       VStack(alignment: .leading, spacing: 10) {
-        builtInContractRow("Global contract", contracts: [.claude, .codex, .kimi])
+        builtInContractRow("Global contract", contracts: [.claude, .codex, .kimi, .copilot])
         builtInContractRow("Orchestrator rules", contracts: [.orchestrator])
         if let error = model.builtInContractError {
           Text(error).font(.caption).foregroundStyle(.orange)

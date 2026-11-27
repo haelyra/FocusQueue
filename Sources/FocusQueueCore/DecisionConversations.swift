@@ -58,7 +58,7 @@ public enum DecisionConversations {
             } catch {
                 conversation.note = "The conversation could not be saved: \(error.localizedDescription)"
             }
-        case .codex, .kimi:
+        case .codex, .kimi, .copilot:
             conversation.note = "\(provider.displayName) panes cannot resume mid-conversation yet: a rewind restores the code and tells the same session to drop the turns after this decision."
         }
         return conversation

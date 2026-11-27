@@ -2594,7 +2594,7 @@ def default_deep_pass_model(provider: str = "codex") -> str | None:
         return "gpt-5.5"
 
 
-AGENT_PROVIDERS = ("codex", "claude", "kimi")
+AGENT_PROVIDERS = ("codex", "claude", "kimi", "copilot")
 
 
 def agent_provider(config: dict[str, Any]) -> str:

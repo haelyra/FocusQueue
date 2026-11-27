@@ -65,12 +65,13 @@ CREATE TABLE IF NOT EXISTS placements(
 # Columns added after phase 1; older ledgers gain them in place.
 LEDGER_ADDED_COLUMNS = (("model", "TEXT"), ("title", "TEXT"), ("error", "TEXT"))
 
-PROVIDERS = ("claude", "codex", "kimi")
+PROVIDERS = ("claude", "codex", "kimi", "copilot")
 # The fastest subscription model per provider. Keep in sync with
 # AppConfiguration.defaultPlacementModels in Sources/FocusQueueCore/Models.swift.
 DEFAULT_MODELS = {"claude": "haiku", "codex": "gpt-6-luna",
-                  "kimi": "kimi-code/kimi-for-coding-highspeed"}
-DEFAULT_EFFORTS = {"claude": "low", "codex": "low"}
+                  "kimi": "kimi-code/kimi-for-coding-highspeed",
+                  "copilot": "claude-haiku-4.5"}
+DEFAULT_EFFORTS = {"claude": "low", "codex": "low", "copilot": "low"}
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 # Joining the wrong task costs more than a duplicate; 0.85 scored best in the eval.
 DEFAULT_CONFIDENCE_THRESHOLD = 0.85
@@ -389,6 +390,14 @@ def model_command(settings, executable, workdir, message, *, schema=None, system
                     "--ignore-user-config", "--color", "never", "--output-schema", str(schema_path),
                     "-o", str(workdir / "answer.json"), "-C", str(workdir), "-"]
         return command, message
+    if provider == "copilot":
+        # `--available-tools` with no names turns every tool off;
+        # --no-custom-instructions keeps user AGENTS.md out of the call.
+        command = [executable, "-p", message, "-s", "--no-color", "--model", model,
+                   "--available-tools", "--no-custom-instructions"]
+        if effort:
+            command += ["--reasoning-effort", effort]
+        return command, None
     return [executable, "-m", model, "-p", message], None
 
 

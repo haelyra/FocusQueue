@@ -506,6 +506,7 @@ public actor WezTermController: WezTermControlling {
     private let claudeRootOverride: URL?
     private let codexRootOverride: URL?
     private let kimiRootOverride: URL?
+    private let copilotRootOverride: URL?
     private let supportDirectory: URL
     private static let processSnapshotTTL: TimeInterval = 3
     private var processSnapshots: [String: (fetchedAt: Date, result: ProcessResult)] = [:]
@@ -516,7 +517,7 @@ public actor WezTermController: WezTermControlling {
                 verificationAttempts: Int = 10, startupAttempts: Int = 20,
                 startupPollInterval: Duration = .milliseconds(500),
                 claudeRoot: URL? = nil, codexRoot: URL? = nil,
-                kimiRoot: URL? = nil, supportDirectory: URL? = nil) {
+                kimiRoot: URL? = nil, copilotRoot: URL? = nil, supportDirectory: URL? = nil) {
         self.runner = runner
         self.supportDirectory = supportDirectory ?? TmuxPersistence.defaultSupportDirectory()
         self.candidateSockets = candidateSockets
@@ -526,6 +527,7 @@ public actor WezTermController: WezTermControlling {
         self.claudeRootOverride = claudeRoot
         self.codexRootOverride = codexRoot
         self.kimiRootOverride = kimiRoot
+        self.copilotRootOverride = copilotRoot
     }
 
     private var claudeRoot: URL {
@@ -544,6 +546,12 @@ public actor WezTermController: WezTermControlling {
         kimiRootOverride
             ?? ProcessInfo.processInfo.environment["KIMI_CODE_HOME"].map { URL(fileURLWithPath: $0) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".kimi-code", isDirectory: true)
+    }
+
+    private var copilotRoot: URL {
+        copilotRootOverride
+            ?? ProcessInfo.processInfo.environment["COPILOT_HOME"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".copilot", isDirectory: true)
     }
 
     /// Reuses a socket that already answered this controller so refresh passes
@@ -1185,14 +1193,16 @@ public actor WezTermController: WezTermControlling {
                 path.contains("/.claude/projects/")
             case .kimi:
                 path.contains("/.kimi-code/sessions/")
+            case .copilot:
+                path.contains("/.copilot/session-state/")
             }
             guard isProviderTranscript else { continue }
-            if provider == .kimi {
-                // A running kimi keeps its per-session files open; the session
-                // directory name is the provider session ID.
+            if provider == .kimi || provider == .copilot {
+                // A running kimi or copilot keeps its per-session files open;
+                // the session directory name is the provider session ID.
                 guard let component = path.split(separator: "/")
                     .map(String.init)
-                    .first(where: { AgentProvider.kimi.isValidSessionID($0) })
+                    .first(where: { provider.isValidSessionID($0) })
                 else { continue }
                 if !candidates.contains(where: { $0.sessionID == component }) {
                     candidates.append(AgentSessionCandidate(
@@ -1407,7 +1417,45 @@ public actor WezTermController: WezTermControlling {
             guard let recorded = kimiWorkingDirectory(sessionID: sessionID) else { return true }
             return Self.standardizedPath(cwd, resolvingSymlinks: true)
                 == Self.standardizedPath(recorded, resolvingSymlinks: true)
+        case .copilot:
+            guard let recorded = copilotWorkingDirectory(sessionID: sessionID) else { return true }
+            return Self.standardizedPath(cwd, resolvingSymlinks: true)
+                == Self.standardizedPath(recorded, resolvingSymlinks: true)
         }
+    }
+
+    /// Every Copilot session whose `workspace.yaml` names this directory. Two
+    /// sessions in one directory cannot be told apart, so callers only trust a
+    /// single match.
+    private func copilotSessions(in cwd: String) -> [String] {
+        let root = copilotRoot.appendingPathComponent("session-state", isDirectory: true)
+        let entries = (try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+        let normalized = Self.standardizedPath(cwd, resolvingSymlinks: true)
+        return entries.filter {
+            (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+                && AgentProvider.copilot.isValidSessionID($0.lastPathComponent)
+                && copilotWorkingDirectory(sessionID: $0.lastPathComponent)
+                    .map { Self.standardizedPath($0, resolvingSymlinks: true) == normalized } == true
+        }.map { $0.lastPathComponent.lowercased() }.sorted()
+    }
+
+    /// A Copilot session records its launch directory in `workspace.yaml`
+    /// beside its event log; a plain `cwd:` line is enough to scope ownership.
+    private func copilotWorkingDirectory(sessionID: String) -> String? {
+        guard AgentProvider.copilot.isValidSessionID(sessionID) else { return nil }
+        let workspace = copilotRoot.appendingPathComponent("session-state", isDirectory: true)
+            .appendingPathComponent(sessionID.lowercased(), isDirectory: true)
+            .appendingPathComponent("workspace.yaml")
+        guard let data = try? Data(contentsOf: workspace), data.count <= 100_000,
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        for line in text.split(separator: "\n") {
+            let parts = line.split(separator: ":", maxSplits: 1)
+            guard parts.count == 2, parts[0].trimmingCharacters(in: .whitespaces) == "cwd" else { continue }
+            let cwd = parts[1].trimmingCharacters(in: .whitespaces)
+            return cwd.isEmpty ? nil : cwd
+        }
+        return nil
     }
 
     /// Kimi Code closes its session files between turns. Its index maps a
@@ -1523,6 +1571,7 @@ public actor WezTermController: WezTermControlling {
         var seen = Set<String>()
         var claudeDiskFallback: [(process: AgentProcess, cwd: String)] = []
         var kimiDiskFallback: [(process: AgentProcess, cwd: String)] = []
+        var copilotDiskFallback: [(process: AgentProcess, cwd: String)] = []
         for process in providers {
             let tty = process.tty == "??" ? nil : "/dev/" + process.tty
             guard let cwd = directories[process.pid], cwd.hasPrefix("/") else {
@@ -1548,6 +1597,8 @@ public actor WezTermController: WezTermControlling {
                     claudeDiskFallback.append((process, cwd))
                 } else if process.provider == .kimi, candidates.isEmpty {
                     kimiDiskFallback.append((process, cwd))
+                } else if process.provider == .copilot, candidates.isEmpty {
+                    copilotDiskFallback.append((process, cwd))
                 } else {
                     unresolved.append(UnresolvedProviderProcess(
                         provider: process.provider, processID: process.pid, tty: tty, cwd: cwd))
@@ -1621,6 +1672,23 @@ public actor WezTermController: WezTermControlling {
             }
             if seen.insert("kimi:" + sessionID).inserted {
                 result.append(KnownProviderProcess(provider: .kimi, sessionID: sessionID,
+                    processID: entry.process.pid,
+                    tty: entry.process.tty == "??" ? nil : "/dev/" + entry.process.tty,
+                    cwd: entry.cwd))
+            }
+        }
+        for (cwd, group) in Dictionary(grouping: copilotDiskFallback, by: { $0.cwd }) {
+            let sessions = copilotSessions(in: cwd)
+            guard group.count == 1, sessions.count == 1,
+                  let entry = group.first, let sessionID = sessions.first else {
+                unresolved += group.map { UnresolvedProviderProcess(provider: .copilot,
+                    processID: $0.process.pid,
+                    tty: $0.process.tty == "??" ? nil : "/dev/" + $0.process.tty,
+                    cwd: $0.cwd) }
+                continue
+            }
+            if seen.insert("copilot:" + sessionID).inserted {
+                result.append(KnownProviderProcess(provider: .copilot, sessionID: sessionID,
                     processID: entry.process.pid,
                     tty: entry.process.tty == "??" ? nil : "/dev/" + entry.process.tty,
                     cwd: entry.cwd))
@@ -1834,10 +1902,10 @@ public actor WezTermController: WezTermControlling {
         // guard uses, restricted to processes in this pane listing; the
         // shared scan keeps multi-process projects ambiguous.
         let unidentified = paneProcesses.filter {
-            ($0.provider == .claude || $0.provider == .kimi)
+            ($0.provider == .claude || $0.provider == .kimi || $0.provider == .copilot)
                 && (sessionsByPID[$0.pid] ?? []).isEmpty
         }
-        for provider in [AgentProvider.claude, .kimi]
+        for provider in [AgentProvider.claude, .kimi, .copilot]
         where unidentified.contains(where: { $0.provider == provider }) {
             guard let scan = try? await knownProviderProcesses(provider: provider) else { continue }
             let diskIdentityByPID = Dictionary(
@@ -1875,6 +1943,7 @@ public actor WezTermController: WezTermControlling {
             case "codex": provider = .codex
             case "claude": provider = .claude
             case "kimi", "kimi-code": provider = .kimi
+            case "copilot": provider = .copilot
             default: return nil
             }
             let arguments = invocation.dropFirst().map(String.init)
@@ -3263,6 +3332,50 @@ public actor KimiQueueAgent: QueueAgentChatting {
         files: any FileAccessing = SystemFileAccessor()
     ) {
         harness = HarnessQueueAgent(provider: .kimi, runner: runner, files: files)
+    }
+
+
+    public func send(
+        message: String,
+        dashboardPath: String,
+        workspace: String,
+        visibleOrder: [String],
+        deferredTicketIDs: [String],
+        configuration: VerifierConfiguration,
+        model: String? = nil,
+        effort: String? = nil
+    ) async throws -> QueueAgentReply {
+        try await harness.send(
+            message: message,
+            dashboardPath: dashboardPath,
+            workspace: workspace,
+            visibleOrder: visibleOrder,
+            deferredTicketIDs: deferredTicketIDs,
+            configuration: configuration,
+            model: model,
+            effort: effort
+        )
+    }
+
+    public func reset(configuration: VerifierConfiguration) async throws {
+        try await harness.reset(configuration: configuration)
+    }
+
+    public func resume(_ turn: QueueChatTurn) async throws -> QueueAgentReply {
+        try await harness.resume(turn)
+    }
+}
+
+public actor CopilotQueueAgent: QueueAgentChatting {
+    public static let sessionName = HarnessQueueAgent.sessionName(for: .copilot)
+
+    private let harness: HarnessQueueAgent
+
+    public init(
+        runner: any ProcessRunning = FoundationProcessRunner(),
+        files: any FileAccessing = SystemFileAccessor()
+    ) {
+        harness = HarnessQueueAgent(provider: .copilot, runner: runner, files: files)
     }
 
     public func send(

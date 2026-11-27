@@ -175,7 +175,8 @@ func agentModelChoiceConfiguration() throws {
   #expect(AppConfiguration.defaultAgentModelChoices.map(\.provider)
     == Array(repeating: .codex, count: 10)
       + Array(repeating: .claude, count: 13)
-      + Array(repeating: .kimi, count: 6))
+      + Array(repeating: .kimi, count: 6)
+      + Array(repeating: .copilot, count: 5))
   // Every built-in choice names a real model, and each provider's standard model is listed.
   #expect(!AppConfiguration.defaultAgentModelChoices.contains { $0.model == nil })
   for provider in AgentProvider.allCases {

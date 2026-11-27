@@ -27,10 +27,19 @@ public enum ProviderAccounts {
   /// add launch flags (for example `--yolo`) never reach these subcommands.
   public static func statusScript(for provider: AgentProvider) -> String {
     let name = provider.executableName
+    if provider == .copilot {
+      // Copilot has no status subcommand; it signs in with a GitHub token from
+      // the environment, its own OAuth login, or the GitHub CLI's OAuth token.
+      return "command -v copilot >/dev/null 2>&1 || exit 127; "
+        + "if [ -n \"${COPILOT_GITHUB_TOKEN}${GH_TOKEN}${GITHUB_TOKEN}\" ]; then exit 0; fi; "
+        + "command gh auth status >/dev/null 2>&1 && exit 0; "
+        + "/usr/bin/security find-generic-password -s copilot-cli >/dev/null 2>&1"
+    }
     let check = switch provider {
     case .claude: "auth status"
     case .codex: "login status"
     case .kimi: "provider list"
+    case .copilot: ""
     }
     return "command -v \(name) >/dev/null 2>&1 || exit 127; command \(name) \(check)"
   }
@@ -42,7 +51,7 @@ public enum ProviderAccounts {
     let name = provider.executableName
     let login = switch provider {
     case .claude: "auth login"
-    case .codex, .kimi: "login"
+    case .codex, .kimi, .copilot: "login"
     }
     let display = provider.displayName.replacingOccurrences(of: "'", with: "")
     let quote = TerminalCommandLauncher.shellQuote
@@ -62,11 +71,22 @@ public enum ProviderAccounts {
   /// Signs out through the provider's own CLI, so the sign-out applies to its
   /// terminals too. Kimi has no logout command, but its ACP server has a logout
   /// request; stdin stays open long enough for the server to finish it.
+  /// Copilot has no logout command either; its stored OAuth token is removed
+  /// from the system credential store when present, and a token it borrowed
+  /// from the GitHub CLI or the environment is reported instead of touched.
   public static func logoutScript(for provider: AgentProvider) -> String {
     let name = provider.executableName
+    if provider == .copilot {
+      return "command -v copilot >/dev/null 2>&1 || exit 127; "
+        + "if /usr/bin/security find-generic-password -s copilot-cli >/dev/null 2>&1; then "
+        + "/usr/bin/security delete-generic-password -s copilot-cli >/dev/null && "
+        + "printf 'Removed the stored Copilot token.\\n'; "
+        + "else printf 'Copilot has no stored token of its own; it signs in with the GitHub CLI or an environment token, which were left untouched.\\n'; fi"
+    }
     let logout = switch provider {
     case .claude: "command claude auth logout"
     case .codex: "command codex logout"
+    case .copilot: ""
     case .kimi:
       "{ printf '%s\\n' "
         + "'{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":1,\"clientCapabilities\":{}}}' "
@@ -96,6 +116,7 @@ public enum ProviderAccounts {
     case .claude: URL(string: "https://code.claude.com/docs/en/setup")
     case .codex: URL(string: "https://github.com/openai/codex")
     case .kimi: URL(string: "https://github.com/MoonshotAI/kimi-cli")
+    case .copilot: URL(string: "https://github.com/github/copilot-cli")
     }
   }
 
@@ -104,6 +125,7 @@ public enum ProviderAccounts {
     case .claude: "Claude Pro or Max"
     case .codex: "ChatGPT"
     case .kimi: "Kimi"
+    case .copilot: "GitHub Copilot"
     }
   }
 
@@ -130,6 +152,8 @@ public enum ProviderAccounts {
         }
         return configured ? .signedIn : .signedOut
       }
+    case .copilot:
+      return result.succeeded ? .signedIn : .signedOut
     }
     return .failed(failureDetail(result))
   }

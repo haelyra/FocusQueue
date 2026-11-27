@@ -1022,7 +1022,7 @@ struct NewTaskAgentView: View {
             Text("macOS Terminal uses tmux for reliable launch and recall.")
               .font(.caption).foregroundStyle(.secondary)
           }
-          Text("Uses your login shell's codex, claude, or kimi alias, function, or command and custom flags.")
+          Text("Uses your login shell's codex, claude, kimi, or copilot alias, function, or command and custom flags.")
             .font(.caption).foregroundStyle(.secondary)
         }.padding(2).disabled(isStarting)
       }

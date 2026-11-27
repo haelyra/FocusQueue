@@ -38,6 +38,7 @@ import Testing
   alias codex='focus_capture alias'
   claude() { focus_capture function "$@"; }
   kimi() { focus_capture function "$@"; }
+  copilot() { focus_capture function "$@"; }
   """
   let zshrc = root.appendingPathComponent(".zshrc")
   let bashrc = root.appendingPathComponent("bashrc")

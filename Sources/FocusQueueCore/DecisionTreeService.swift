@@ -314,9 +314,9 @@ public struct DecisionTreeService: Sendable {
             } else {
                 sessionID = agent.sessionID
             }
-        case .codex, .kimi:
-            // Managed Codex and Kimi panes cannot resume mid-conversation yet: the
-            // same session hears that the turns after the decision are abandoned.
+        case .codex, .kimi, .copilot:
+            // Managed Codex, Kimi, and Copilot panes cannot resume mid-conversation
+            // yet: the same session hears that the turns after the decision are abandoned.
             sessionID = agent.sessionID
         }
         let prompt = DecisionConversations.rewindPrompt(

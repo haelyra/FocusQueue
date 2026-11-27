@@ -405,7 +405,7 @@ public enum ProjectMapScript {
   }
 
   // Task menu: right-click a task card, or its ⋯ button.
-  var menu = null, live = { providers: ['claude', 'codex', 'kimi'], defaultProvider: null, names: {} };
+  var menu = null, live = { providers: ['claude', 'codex', 'kimi', 'copilot'], defaultProvider: null, names: {} };
   function closeMenu() { if (menu) { menu.remove(); menu = null; } }
   function icon(id) {
     var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');

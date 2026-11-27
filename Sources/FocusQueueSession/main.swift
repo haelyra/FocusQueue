@@ -1728,6 +1728,7 @@ enum SessionRegistrationError: Error, LocalizedError {
             case .codex: CodexQueueAgent()
             case .claude: ClaudeQueueAgent()
             case .kimi: KimiQueueAgent()
+            case .copilot: CopilotQueueAgent()
             }
             let model = configuration.chatModel(for: provider)?.trimmingCharacters(in: .whitespacesAndNewlines)
             let effort = configuration.chatEffort(for: provider)?.trimmingCharacters(in: .whitespacesAndNewlines)

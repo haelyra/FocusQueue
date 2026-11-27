@@ -25,8 +25,8 @@
   "agentEscalationAutoLaunch": true,
   "agentsPerWindow": 4,
   "placementModelEnabled": true,
-  "placementModels": {"claude": "haiku", "codex": "gpt-6-luna", "kimi": "kimi-code/kimi-for-coding-highspeed"},
-  "placementEfforts": {"claude": "low", "codex": "low"},
+  "placementModels": {"claude": "haiku", "codex": "gpt-6-luna", "kimi": "kimi-code/kimi-for-coding-highspeed", "copilot": "claude-haiku-4.5"},
+  "placementEfforts": {"claude": "low", "codex": "low", "copilot": "low"},
   "placementConfidenceThreshold": 0.85,
   "placementTimeoutSeconds": 20,
   "agentModelChoices": [
@@ -57,7 +57,13 @@
     {"provider": "kimi", "label": "K3", "model": "kimi-code/k3"},
     {"provider": "kimi", "label": "K3-256k", "model": "kimi-code/k3-256k"},
     {"provider": "kimi", "label": "K2.8 Preview", "model": "kimi-code/kimi-for-coding"},
-    {"provider": "kimi", "label": "K2.7 Code Highspeed", "model": "kimi-code/kimi-for-coding-highspeed"}
+    {"provider": "kimi", "label": "K2.7 Code Highspeed", "model": "kimi-code/kimi-for-coding-highspeed"},
+    {"provider": "copilot", "label": "Default"},
+    {"provider": "copilot", "label": "sonnet-5.5", "model": "claude-sonnet-5.5"},
+    {"provider": "copilot", "label": "sonnet-4.5", "model": "claude-sonnet-4.5"},
+    {"provider": "copilot", "label": "sonnet-4", "model": "claude-sonnet-4"},
+    {"provider": "copilot", "label": "haiku-4.5", "model": "claude-haiku-4.5"},
+    {"provider": "copilot", "label": "gpt-5", "model": "gpt-5"}
   ],
   "dailyRoutines": [
     {

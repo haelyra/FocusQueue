@@ -67,7 +67,7 @@ struct DocumentAuthorshipParsingTests {
   }
 
   @Test("Provider records accept JSON whitespace and escaped slashes",
-        arguments: [AgentProvider.claude, .codex, .kimi], [false, true])
+        arguments: [AgentProvider.claude, .codex, .kimi, .copilot], [false, true])
   func serializedRecords(provider: AgentProvider, escaped: Bool) throws {
     let record: [String: Any]
     switch provider {
@@ -80,6 +80,9 @@ struct DocumentAuthorshipParsingTests {
     case .kimi:
       record = ["type": "context.append_loop_event", "time": 1_793_131_009_286.0,
                 "event": ["type": "tool.call", "name": "WriteFile", "args": ["path": document]]]
+    case .copilot:
+      record = ["type": "tool.execution_start", "timestamp": timestamp,
+                "data": ["toolName": "create", "arguments": ["path": document]]]
     }
     let options: JSONSerialization.WritingOptions = escaped ? [.prettyPrinted] : [.prettyPrinted, .withoutEscapingSlashes]
     let touch = try scan(record, provider: provider, options: options)

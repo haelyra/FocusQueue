@@ -16,11 +16,11 @@ public enum TaskSessionBinding {
         // Claude Code exports CLAUDE_CODE_SESSION_ID; CLAUDE_SESSION_ID stays as an explicit override.
         let claude = (environment["CLAUDE_SESSION_ID"] ?? environment["CLAUDE_CODE_SESSION_ID"]).flatMap { $0.isEmpty ? nil : $0 }
         if let hint = environment["FOCUS_QUEUE_PROVIDER"].flatMap(AgentProvider.init(rawValue:)) {
-            // Kimi exports no session ID; never label another provider's as Kimi's.
+            // Kimi and Copilot export no session ID; never label another provider's as theirs.
             switch hint {
             case .codex: return codex.map { (hint, $0) }
             case .claude: return claude.map { (hint, $0) }
-            case .kimi: return nil
+            case .kimi, .copilot: return nil
             }
         }
         // Nested agents can inherit both providers' identities. Pane discovery resolves ambiguity.

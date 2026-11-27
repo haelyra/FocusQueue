@@ -582,6 +582,7 @@ final class QueueViewModel {
       case .codex: CodexQueueAgent()
       case .claude: ClaudeQueueAgent()
       case .kimi: KimiQueueAgent()
+      case .copilot: CopilotQueueAgent()
       }
     }
     self.pullRequestQueueLoader = pullRequestQueueLoader

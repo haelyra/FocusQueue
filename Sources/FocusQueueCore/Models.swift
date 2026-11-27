@@ -429,6 +429,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   /// Chat harness executable overrides; Codex chat keeps using `verifier.executable`.
   public var claudeChatExecutable: String?
   public var kimiChatExecutable: String?
+  public var copilotChatExecutable: String?
 
   /// Newest models first within each provider group. Tracks the published
   /// Codex and Claude Code lineups and the managed `kimi provider list --json`
@@ -464,6 +465,11 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     AgentModelChoice(provider: .kimi, label: "K3-256k", model: "kimi-code/k3-256k"),
     AgentModelChoice(provider: .kimi, label: "K2.8 Preview", model: "kimi-code/kimi-for-coding"),
     AgentModelChoice(provider: .kimi, label: "K2.7 Code Highspeed", model: "kimi-code/kimi-for-coding-highspeed"),
+    AgentModelChoice(provider: .copilot, label: "sonnet-5.5", model: "claude-sonnet-5.5"),
+    AgentModelChoice(provider: .copilot, label: "sonnet-4.5", model: "claude-sonnet-4.5"),
+    AgentModelChoice(provider: .copilot, label: "sonnet-4", model: "claude-sonnet-4"),
+    AgentModelChoice(provider: .copilot, label: "haiku-4.5", model: "claude-haiku-4.5"),
+    AgentModelChoice(provider: .copilot, label: "gpt-5", model: "gpt-5"),
   ]
 
   /// Former built-in choices the provider no longer lists. Older configs saved
@@ -491,9 +497,10 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   /// launch names both, so the app always shows the model that actually runs.
   public static let standardAgentModels: [AgentProvider: String] = [
     .claude: "claude-opus-5-5", .codex: "gpt-6.1-sol", .kimi: "kimi-code/k3.1-pro",
+    .copilot: "claude-sonnet-5.5",
   ]
   public static let standardAgentEfforts: [AgentProvider: String] = [
-    .claude: "high", .codex: "medium", .kimi: "high",
+    .claude: "high", .codex: "medium", .kimi: "high", .copilot: "medium",
   ]
 
   public func agentModel(for provider: AgentProvider) -> String? {
@@ -518,12 +525,13 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   /// `DEFAULT_MODELS` in Scripts/focus_queue_placement.py.
   public static let defaultPlacementModels: [AgentProvider: String] = [
     .claude: "haiku", .codex: "gpt-6-luna", .kimi: "kimi-code/kimi-for-coding-highspeed",
+    .copilot: "claude-haiku-4.5",
   ]
-  public static let defaultPlacementEfforts: [AgentProvider: String] = [.claude: "low", .codex: "low"]
+  public static let defaultPlacementEfforts: [AgentProvider: String] = [.claude: "low", .codex: "low", .copilot: "low"]
   /// QChat answers short queue questions, so it defaults to a mid-size model at
   /// low effort instead of inheriting the agent-launch model (FOC-075).
-  public static let defaultChatModels: [AgentProvider: String] = [.claude: "claude-sonnet-5"]
-  public static let defaultChatEfforts: [AgentProvider: String] = [.claude: "low"]
+  public static let defaultChatModels: [AgentProvider: String] = [.claude: "claude-sonnet-5", .copilot: "claude-sonnet-4.5"]
+  public static let defaultChatEfforts: [AgentProvider: String] = [.claude: "low", .copilot: "low"]
   public static let defaultPlacementConfidenceThreshold = 0.85
   public static let defaultPlacementTimeoutSeconds = 20
 
@@ -565,13 +573,14 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   }
 
   /// The chat harness for a provider. Codex reuses the verifier harness;
-  /// Claude and Kimi fall back to their managed `~/.local/bin` launchers.
+  /// Claude, Kimi, and Copilot fall back to their managed `~/.local/bin` launchers.
   public func chatExecutable(for provider: AgentProvider) -> String {
     let home = FileManager.default.homeDirectoryForCurrentUser.path
     switch provider {
     case .codex: return verifier.executable
     case .claude: return claudeChatExecutable ?? "\(home)/.local/bin/focus-queue-claude"
     case .kimi: return kimiChatExecutable ?? "\(home)/.local/bin/focus-queue-kimi"
+    case .copilot: return copilotChatExecutable ?? "\(home)/.local/bin/focus-queue-copilot"
     }
   }
 
@@ -632,6 +641,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     self.chatEfforts = [:]
     self.claudeChatExecutable = nil
     self.kimiChatExecutable = nil
+    self.copilotChatExecutable = nil
     let effectiveProjects = projects ?? [Self.legacyProject(
       appName: appName,
       dashboardPath: dashboardPath,
@@ -661,7 +671,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     case defaultAgentProvider, defaultAgentModels, defaultAgentEfforts
     case chatModels, chatEfforts, chatProvider, chatAutoClearMinutes
     case agentPermissionBypass
-    case claudeChatExecutable, kimiChatExecutable
+    case claudeChatExecutable, kimiChatExecutable, copilotChatExecutable
     case focusQueueProjects, focusQueueSelectedProjectID, projects, selectedProjectID
   }
 
@@ -738,6 +748,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
       .flatMap { $0 > 0 ? $0 : nil }
     claudeChatExecutable = try container.decodeIfPresent(String.self, forKey: .claudeChatExecutable)
     kimiChatExecutable = try container.decodeIfPresent(String.self, forKey: .kimiChatExecutable)
+    copilotChatExecutable = try container.decodeIfPresent(String.self, forKey: .copilotChatExecutable)
     dailyReport =
       try container.decodeIfPresent(DailyReportConfiguration.self, forKey: .dailyReport)
       ?? DailyReportConfiguration()
@@ -838,6 +849,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     try container.encodeIfPresent(chatAutoClearMinutes, forKey: .chatAutoClearMinutes)
     try container.encodeIfPresent(claudeChatExecutable, forKey: .claudeChatExecutable)
     try container.encodeIfPresent(kimiChatExecutable, forKey: .kimiChatExecutable)
+    try container.encodeIfPresent(copilotChatExecutable, forKey: .copilotChatExecutable)
   }
 
   /// Unknown providers (for example from a newer build) and blank values are skipped.
@@ -1789,12 +1801,14 @@ public enum AgentProvider: String, Codable, CaseIterable, Equatable, Sendable {
   case codex
   case claude
   case kimi
+  case copilot
 
   public var displayName: String {
     switch self {
     case .codex: "Codex"
     case .claude: "Claude"
     case .kimi: "Kimi"
+    case .copilot: "Copilot"
     }
   }
 
@@ -1806,6 +1820,7 @@ public enum AgentProvider: String, Codable, CaseIterable, Equatable, Sendable {
     case .codex: "chevron.left.forwardslash.chevron.right"
     case .claude: "sparkles"
     case .kimi: "moon.stars"
+    case .copilot: "paperplane"
     }
   }
 
@@ -1814,14 +1829,15 @@ public enum AgentProvider: String, Codable, CaseIterable, Equatable, Sendable {
     case .codex: ["resume", sessionID]
     case .claude: ["--resume", sessionID]
     case .kimi: ["--session", sessionID]
+    case .copilot: ["--resume", sessionID]
     }
   }
 
-  /// Codex and Claude thread IDs are UUIDs. Kimi sessions are ULIDs or, in
-  /// current releases, `session_`-prefixed UUID directory names.
+  /// Codex, Claude, and Copilot thread IDs are UUIDs. Kimi sessions are ULIDs
+  /// or, in current releases, `session_`-prefixed UUID directory names.
   public func isValidSessionID(_ sessionID: String) -> Bool {
     switch self {
-    case .codex, .claude:
+    case .codex, .claude, .copilot:
       return UUID(uuidString: sessionID) != nil
     case .kimi:
       if sessionID.hasPrefix("session_"),
@@ -1840,6 +1856,7 @@ public enum AgentProvider: String, Codable, CaseIterable, Equatable, Sendable {
     case .codex: ["-c", "model_reasoning_effort=\(effort)"]
     case .claude: ["--effort", effort]
     case .kimi: []
+    case .copilot: ["--reasoning-effort", effort]
     }
   }
 
@@ -1876,7 +1893,7 @@ public enum AgentProvider: String, Codable, CaseIterable, Equatable, Sendable {
           CharacterSet.alphanumerics.contains($0) || "@_-".unicodeScalars.contains($0)
         }
       }.flatMap { ["-c", "plugins.\($0).enabled=\(overrides[$0]! ? "true" : "false")"] }
-    case .kimi:
+    case .kimi, .copilot:
       return []
     }
   }
@@ -1893,6 +1910,7 @@ extension AgentProvider {
     case .claude: return ["--permission-mode", "bypassPermissions"]
     case .codex: return []
     case .kimi: return ["--yolo"]
+    case .copilot: return ["--allow-all"]
     }
   }
 }

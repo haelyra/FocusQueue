@@ -15,7 +15,7 @@ from typing import Any, Iterable
 PRODUCT = "Focus Queue"
 SUPPORT_DIRECTORY_NAME = "ECC Focus Queue"
 SYSTEM_BIN_DIRECTORIES = (Path("/opt/homebrew/bin"), Path("/usr/local/bin"), Path("/usr/bin"))
-TOOL_NAMES = ("codex", "claude", "kimi", "wezterm", "ghostty", "kitty", "python3", "gh", "tmux", "tailscale", "code", "cursor")
+TOOL_NAMES = ("codex", "claude", "kimi", "copilot", "wezterm", "ghostty", "kitty", "python3", "gh", "tmux", "tailscale", "code", "cursor")
 APP_EXECUTABLES = {
     "wezterm": "WezTerm.app/Contents/MacOS/wezterm",
     "ghostty": "Ghostty.app/Contents/MacOS/ghostty",
@@ -33,7 +33,7 @@ CAPABILITIES = {
     "persistent_sessions": ("Keep new sessions in tmux", (("tmux",),), "Implemented on the local Mac; sessions survive client disconnects while the host and server remain alive."),
     "remote_reconnect": ("Reconnect over SSH and Tailscale", (("tmux",), ("tailscale",)), "Command generation is implemented. SSH server access, known host keys and cross-device reachability require separate configuration."),
     "agent_chat": ("Answer queue questions with Codex", (("codex",), ("python3",)), "Agent execution can spend tokens; budgets require separate configuration."),
-    "agent_launch": ("Launch task agents", (("tmux", "wezterm"), ("codex", "claude", "kimi")), "Provider sign-in and installed versions remain unverified."),
+    "agent_launch": ("Launch task agents", (("tmux", "wezterm"), ("codex", "claude", "kimi", "copilot")), "Provider sign-in and installed versions remain unverified."),
     "daily_reports": ("Schedule source reviews", (("codex",), ("python3",)), "Requires explicit source scopes, schedule, and token budget."),
     "mail_connector": ("Read a selected Apple Mail or Gmail account", (("python3",),), "Requires provider configuration and explicit account authorization; no inbox access in this preview."),
     "discord_connector": ("Read selected Discord server channels", (("python3",),), "Requires an authorized bot account and verified channel scope."),
@@ -126,6 +126,7 @@ def planned_paths(home: Path, selected: set[str]) -> list[dict[str, Any]]:
         (home / ".local/bin/focus-queue-codex", "agent_helper", ("agent_chat", "daily_reports")),
         (home / ".local/bin/focus-queue-claude", "agent_helper", ("agent_chat", "daily_reports")),
         (home / ".local/bin/focus-queue-kimi", "agent_helper", ("agent_chat", "daily_reports")),
+        (home / ".local/bin/focus-queue-copilot", "agent_helper", ("agent_chat", "daily_reports")),
         (support / "ingestion.json", "source_configuration", ("daily_reports", "mail_connector", "discord_connector", "telegram_connector", "github_connector")),
         (support / "ingestion", "source_cache", "daily_reports"),
         (home / ".local/bin/focus-queue-report", "report_helper", "daily_reports"),

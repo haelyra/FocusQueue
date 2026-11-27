@@ -90,12 +90,19 @@ struct ProviderAccountsTests {
     for provider in AgentProvider.allCases {
       let script = ProviderAccounts.statusScript(for: provider)
       #expect(script.hasPrefix("command -v \(provider.executableName) "))
-      #expect(script.contains("|| exit 127; command \(provider.executableName) "))
+      // Copilot has no status subcommand; its token sources are probed instead.
+      if provider != .copilot {
+        #expect(script.contains("|| exit 127; command \(provider.executableName) "))
+      }
       #expect(ProviderAccounts.loginScript(for: provider).contains("else command \(provider.executableName) "))
       #expect(ProviderAccounts.state(for: provider, result: result(127)) == .notInstalled)
     }
     #expect(ProviderAccounts.loginScript(for: .claude).contains("else command claude auth login; fq_status=$?"))
     #expect(ProviderAccounts.loginScript(for: .codex).contains("else command codex login; fq_status=$?"))
+    #expect(ProviderAccounts.loginScript(for: .copilot).contains("else command copilot login; fq_status=$?"))
+    #expect(ProviderAccounts.statusScript(for: .copilot).contains("gh auth status"))
+    #expect(ProviderAccounts.state(for: .copilot, result: result(0)) == .signedIn)
+    #expect(ProviderAccounts.state(for: .copilot, result: result(1)) == .signedOut)
   }
 
   @Test("Sign-out uses each provider's own CLI and bypasses shell wrappers")
@@ -229,7 +236,7 @@ struct ProviderAccountsTests {
 
   @Test("The queue stays gated until one provider is signed in")
   func gate() {
-    var states: [AgentProvider: ProviderAccountState] = [.claude: .signedOut, .codex: .notInstalled]
+    var states: [AgentProvider: ProviderAccountState] = [.claude: .signedOut, .codex: .notInstalled, .copilot: .signedOut]
     #expect(!ProviderAccounts.signInRequired(states), "Kimi has not been checked yet")
     states[.kimi] = .checking
     #expect(!ProviderAccounts.signInRequired(states))

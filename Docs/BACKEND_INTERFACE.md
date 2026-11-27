@@ -1,6 +1,6 @@
 # ECC Focus Queue — Backend Interface Guide for Agents
 
-**Audience:** AI agents (Codex, Claude, Kimi), the orchestrator, and any external program that needs to interact with ECC Focus Queue without the UI.
+**Audience:** AI agents (Codex, Claude, Kimi, Copilot), the orchestrator, and any external program that needs to interact with ECC Focus Queue without the UI.
 
 **Purpose:** This is the complete command-level contract for the app's backend interface: every CLI command, every data file, every environment variable, and — critically — the *correct* way to register tasks, agents, and sessions so the app stays consistent. It ends with a failure analysis and a list of missing commands and hardening proposals.
 
@@ -93,6 +93,8 @@ Agents receive and consume identity through environment variables. These are the
 
 **Kimi:** Kimi exports no session variable. In a managed Kimi pane (`FOCUS_QUEUE_PROVIDER=kimi`), `attach` reads the session from the Kimi process on the pane's TTY, records it on `$FOCUS_QUEUE_SUBTASK_ID`, and emits `status: "registered"`. It refuses outside a managed pane, when the pane belongs to another task, or when the live session differs from the saved one. Kimi opens its session file on its first prompt, so attach before then asks for a retry.
 
+**Copilot:** Copilot exports no session variable either. In a managed Copilot pane (`FOCUS_QUEUE_PROVIDER=copilot`), `attach` reads the session the same way as Kimi's: from the Copilot process on the pane's TTY, whose session identity is the `~/.copilot/session-state/<uuid>/` directory it holds open. A saved conversation resumes with `copilot --resume <uuid>`; the queue chat harness (`focus-queue-copilot`) runs headless turns with `copilot -p`.
+
 ---
 
 ## 3. `focus-queue-session` — command reference
@@ -144,7 +146,7 @@ The status-hook path; reads one provider hook payload from stdin (≤1 MB), prin
 | `StopFailure` | Failed, or quota exhausted for `rate_limit`/`billing_error` |
 | `Interrupt` (Codex, Kimi) | Interrupted |
 
-App-launched Claude agents receive these hooks through the launch's single `--settings` value (Claude reads only the last one), which also carries `disableAllHooks: false` so the agent reports status even when the user's settings turn hooks off. The user's settings files are not changed. Codex and Kimi keep transcript tracking: Codex hooks require a trust review this integration does not bypass, and Kimi's `wire.jsonl` already records turns, approvals, and interrupts. A live Codex pane whose tmux title starts with Codex's braille spinner counts as a running turn.
+App-launched Claude agents receive these hooks through the launch's single `--settings` value (Claude reads only the last one), which also carries `disableAllHooks: false` so the agent reports status even when the user's settings turn hooks off. The user's settings files are not changed. Codex, Kimi, and Copilot keep transcript tracking: Codex hooks require a trust review this integration does not bypass, Kimi's `wire.jsonl` already records turns, approvals, and interrupts, and Copilot's `events.jsonl` under `~/.copilot/session-state/<uuid>/` records prompts, tool executions, and turn ends. A live Codex pane whose tmux title starts with Codex's braille spinner counts as a running turn.
 
 While the latest status came from a hook and the pane is live, Working lasts until a turn end is reported (up to four hours), instead of the one-hour live-pane limit for transcript-only agents. Claude sends no hook for Esc or for answering an approval: the transcript's interrupt marker covers Esc, and an approval dialog that disappears from the pane returns the agent to Working.
 
@@ -364,7 +366,7 @@ Dependencies hold work back only when one piece consumes another's output, inter
 Installed at `~/.local/bin/focus-queue-codex|claude|kimi`. All three share one contract: global `--runtime <dir>`, subcommands `chat | run | reset`, timeout validated to 0 (no limit, used by QChat turns) or 10–900 s (exit 2 on invalid), failures exit 1 with `<Provider> Queue harness failed: ...`.
 
 **`chat --session <name> --workspace <dir> --prompt-file <path> [--timeout 120] [--model M] [--effort E] [--context-dir D] [--writable-dir D]*`**
-Persistent per-session conversation. Session map at `<runtime>/sessions.json` under `sessions.lock`; stale sessions auto-retry with a fresh session. `--fresh`, `--reader`, and `--editor` turns never touch the map, so they release the lock before running and parallel QChat tabs do not queue behind each other. Default runtimes: `agent-claude/`, `agent/`, `agent-kimi/` under the support dir.
+Persistent per-session conversation. Session map at `<runtime>/sessions.json` under `sessions.lock`; stale sessions auto-retry with a fresh session. `--fresh`, `--reader`, and `--editor` turns never touch the map, so they release the lock before running and parallel QChat tabs do not queue behind each other. Default runtimes: `agent-claude/`, `agent/`, `agent-kimi/`, `agent-copilot/` under the support dir.
 
 **`run --workspace <dir> --prompt-file <path> [--sandbox read-only|workspace-write] [--output-schema <json>] [--usage-file <path>] [--disable-tools] [--model M] [--effort E] [--label L]`**
 One-shot headless run. With `--output-schema`, the reply is validated against the schema with one correction retry; the validated JSON is printed. `--usage-file` receives token counts. Every run writes prompt-free `<runtime>/latest-run.json` diagnostics.
@@ -374,6 +376,7 @@ One-shot headless run. With `--output-schema`, the reply is validated against th
 Harness-specific sharp edges:
 
 - **Kimi:** `--effort` is parsed and silently dropped; `--disable-tools` cannot actually disable Kimi tools (prompt contract only).
+- **Copilot:** new sessions are named up front with `--session-id <uuid>` and resumed with `--resume <uuid>`; token usage comes from `--usage-output-file`, not the reply. `--disable-tools` and `--editor` pass `--available-tools` with no names, which turns every tool off. A fork (`--fork-from`) continues the source conversation in place because Copilot has no fork flag.
 - **Claude:** `--sandbox read-only` without `--disable-tools` still runs with tools enabled (`--permission-mode bypassPermissions`). "read-only" is only the sandbox flag.
 - **`--label`** is parsed but never used in both Codex and Claude harnesses — silent no-op.
 - Several scripts hardcode `/Users/hira/...` defaults — not portable.
@@ -635,6 +638,7 @@ Output JSON: `{status, taskID?, projectID?, confidence, rationale, backend: "heu
 | Claude | `claude -p --model <m> --effort <e> --tools "" --strict-mcp-config --setting-sources "" --no-session-persistence --output-format json --json-schema <schema>`; prompt on stdin | No tools, MCP, settings, hooks, or transcript |
 | Codex | `codex exec -m <m> -c model_reasoning_effort=<e> --sandbox read-only --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check --output-schema <file> -o <file> -`; prompt on stdin | No plugins, hooks, rules, or session file |
 | Kimi | `kimi -m <m> -p <prompt>`; the last JSON object in the reply is used | No effort flag; Kimi keeps a session record |
+| Copilot | `copilot -p <prompt> -s --model <m> --reasoning-effort <e> --available-tools --no-custom-instructions`; the last JSON object in the reply is used | No tools or user instructions; Copilot keeps a session record |
 
 Measured on this machine (2026-10-19), 51 labeled launches (31 from real history, 20 synthetic) against about 72 open tasks:
 
@@ -655,9 +659,9 @@ Kimi highspeed placed a single live follow-up correctly in 6.2 s; it was not run
 | Key | Default | Meaning |
 |---|---|---|
 | `placementModelEnabled` | `true` | `false` restores phase-1 heuristics for `fq` |
-| `placementProvider` | launched provider | Run every placement call on `claude`, `codex`, or `kimi` |
-| `placementModels` | `{"claude": "haiku", "codex": "gpt-6-luna", "kimi": "kimi-code/kimi-for-coding-highspeed"}` | Per-provider model; a missing provider uses its default |
-| `placementEfforts` | `{"claude": "low", "codex": "low"}` | Per-provider effort (`low`…`max`); Kimi ignores it |
+| `placementProvider` | launched provider | Run every placement call on `claude`, `codex`, `kimi`, or `copilot` |
+| `placementModels` | `{"claude": "haiku", "codex": "gpt-6-luna", "kimi": "kimi-code/kimi-for-coding-highspeed", "copilot": "claude-haiku-4.5"}` | Per-provider model; a missing provider uses its default |
+| `placementEfforts` | `{"claude": "low", "codex": "low", "copilot": "low"}` | Per-provider effort (`low`…`max`); Kimi ignores it |
 | `placementConfidenceThreshold` | `0.85` | Minimum confidence to join an existing task; lower confidence creates a new task |
 | `placementTimeoutSeconds` | `20` | Model call budget (1–120) before falling back |
 | `agentsPerWindow` | `4` | Task-window pane capacity (`TmuxPaneLayout.maximumPanes`, clamped to 1–12) |

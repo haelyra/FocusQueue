@@ -28,7 +28,8 @@ public enum ProviderPluginCatalog {
     switch provider {
     case .claude: plugins = claudePlugins(home: home)
     case .codex: plugins = codexPlugins(home: home)
-    case .kimi: plugins = []
+    // Copilot loads every installed plugin; it has no per-launch enable flags.
+    case .kimi, .copilot: plugins = []
     }
     return plugins.sorted {
       $0.isECC != $1.isECC ? $0.isECC : $0.name.localizedStandardCompare($1.name) == .orderedAscending

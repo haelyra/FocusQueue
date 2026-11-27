@@ -5,7 +5,7 @@ import Foundation
 /// The app writes each one out in full so people can read it in the document
 /// viewer; agents never read these copies.
 public enum BuiltInAgentContract: String, CaseIterable, Identifiable, Sendable {
-    case claude, codex, kimi, orchestrator
+    case claude, codex, kimi, copilot, orchestrator
 
     public var id: String { rawValue }
 
@@ -14,6 +14,7 @@ public enum BuiltInAgentContract: String, CaseIterable, Identifiable, Sendable {
         case .claude: "Claude"
         case .codex: "Codex"
         case .kimi: "Kimi"
+        case .copilot: "Copilot"
         case .orchestrator: "Orchestrator rules"
         }
     }
@@ -24,6 +25,7 @@ public enum BuiltInAgentContract: String, CaseIterable, Identifiable, Sendable {
         case .claude: "CLAUDE_GLOBAL_INSTRUCTIONS.md"
         case .codex: "CODEX_GLOBAL_INSTRUCTIONS.md"
         case .kimi: "KIMI_GLOBAL_INSTRUCTIONS.md"
+        case .copilot: "COPILOT_GLOBAL_INSTRUCTIONS.md"
         case .orchestrator: nil
         }
     }
@@ -39,6 +41,8 @@ public enum BuiltInAgentContract: String, CaseIterable, Identifiable, Sendable {
         case .codex: "Focus Queue installs this contract into `~/.codex/AGENTS.md`, which every Codex agent reads."
         case .kimi:
             "Focus Queue installs this contract into `~/.kimi-code/AGENTS.md` (or `$KIMI_CODE_HOME/AGENTS.md`), which every Kimi agent reads."
+        case .copilot:
+            "Focus Queue installs this contract into `~/.copilot/copilot-instructions.md`, which every Copilot agent reads as its personal instructions."
         case .orchestrator:
             "Focus Queue adds these rules to every orchestrator's launch brief, prompt hook, task chat, and project QChat, beside the project's signed orchestrator contract."
         }

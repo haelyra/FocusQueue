@@ -1006,7 +1006,8 @@ struct QueueViewModelTests {
     _ = try await store.upsertSubtask(ticketID: ticket.id, subtask: saved)
     let activity = fixture.root.appendingPathComponent("activity")
     let observer = AgentActivityObserver(codexRoot: activity.appendingPathComponent("codex"),
-      claudeRoot: activity.appendingPathComponent("claude"), kimiRoot: activity.appendingPathComponent("kimi"))
+      claudeRoot: activity.appendingPathComponent("claude"), kimiRoot: activity.appendingPathComponent("kimi"),
+      copilotRoot: activity.appendingPathComponent("copilot"))
     let transcript: URL
     let record: [String: Any]
     switch provider {
@@ -1022,6 +1023,10 @@ struct QueueViewModelTests {
       transcript = activity.appendingPathComponent("kimi/sessions/\(sessionID)/agents/main/wire.jsonl")
       record = ["time": 1_793_131_009_286.0, "type": "context.append_loop_event",
         "event": ["type": "tool.call", "name": "WriteFile", "args": ["path": document.path]]]
+    case .copilot:
+      transcript = activity.appendingPathComponent("copilot/session-state/\(sessionID)/events.jsonl")
+      record = ["timestamp": "2026-10-27T10:00:00Z", "type": "tool.execution_start",
+        "data": ["toolName": "create", "arguments": ["path": document.path]]]
     }
     try FileManager.default.createDirectory(at: transcript.deletingLastPathComponent(), withIntermediateDirectories: true)
     try JSONSerialization.data(withJSONObject: record, options: .withoutEscapingSlashes).write(to: transcript)

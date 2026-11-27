@@ -150,7 +150,7 @@ struct ProjectMapViewerTests {
       card.dispatchEvent(new MouseEvent('contextmenu', {bubbles: true, cancelable: true, clientX: 50, clientY: 50}));
       return 1
       """)
-    try await eventually { await run(web, "return document.querySelectorAll('.menu button').length") == "5" }
+    try await eventually { await run(web, "return document.querySelectorAll('.menu button').length") == "6" }
     _ = await run(web, "[...document.querySelectorAll('.menu button')].find(b => b.textContent === 'Launch Codex agent').click(); return 1")
     try await eventually { opened.contains(URL(string: "focusqueue://task/DEM-2?action=launch&provider=codex")!) }
     #expect(await run(web, "return document.querySelectorAll('.menu').length") == "0")

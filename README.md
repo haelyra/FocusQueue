@@ -7,7 +7,7 @@ See a demo: https://x.com/haelyra_/status/2120988117138297044
 Focus Queue is a macOS panel and `focus-queue-session` CLI that organize agent
 work into **projects → tasks → agents**. Each task gets one central plan every
 agent reads. Each agent gets its own git worktree, branch and tmux pane, so
-Claude Code, Codex and Kimi can work in parallel without colliding. It runs on
+Claude Code, Codex, Kimi and Copilot can work in parallel without colliding. It runs on
 your existing subscriptions, with no API keys.
 
 <p align="center">
@@ -57,7 +57,7 @@ These steps were tested on a clean macOS 26.6 Apple silicon Mac.
   `python3`) are missing, the installer opens Apple's installer; run it again afterwards.
 - Nothing extra for your terminal. Focus Queue uses macOS Terminal by default. Ghostty and
   WezTerm also work if you already have them.
-- At least one agent CLI on your own subscription with Claude, Codex, or Kimi. You can sign in from the app's walkthrough.
+- At least one agent CLI on your own subscription with Claude, Codex, Kimi, or GitHub Copilot. You can sign in from the app's walkthrough.
 
 ### 2. Download and install
 

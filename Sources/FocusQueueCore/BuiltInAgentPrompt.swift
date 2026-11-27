@@ -8,7 +8,7 @@ import Foundation
 public enum BuiltInAgentPrompt: String, CaseIterable, Identifiable, Sendable {
     case queueAgent, taskPlacement, dataExtraction, developmentSteward, contractGenerator
     case documentEditor, documentReader, documentFork, pushReview
-    case dailyClassification, dailyAnalysis, claudeEditor, kimiProfiles, canvasRelay
+    case dailyClassification, dailyAnalysis, claudeEditor, kimiProfiles, copilotInstructions, canvasRelay
     case conceptGuideline, researchGuideline, designGuideline, prdGuideline
     case technicalDesignGuideline, moduleGuideline, devplanGuideline
 
@@ -24,6 +24,7 @@ public enum BuiltInAgentPrompt: String, CaseIterable, Identifiable, Sendable {
         case .dailyAnalysis: "Customer concern analysis prompt"
         case .claudeEditor: "Claude document editor system prompt"
         case .kimiProfiles: "Kimi chat and document profiles"
+        case .copilotInstructions: "Copilot editor and tool-free instructions"
         case .canvasRelay: "Canvas feedback prompt"
         case .queueAgent: "Queue agent prompt"
         case .taskPlacement: "Task placement prompt"
@@ -51,6 +52,7 @@ public enum BuiltInAgentPrompt: String, CaseIterable, Identifiable, Sendable {
         case .dailyAnalysis: "A deep daily-report pass analyzes customer concerns. Braced fields below are runtime placeholders."
         case .claudeEditor: "Claude's tool-free document editor receives this system prompt alongside the document editor instructions."
         case .kimiProfiles: "The Kimi harness selects a built-in profile for chat, read-only chat, document reading, editing, or tool-free requests."
+        case .copilotInstructions: "The Copilot harness prepends these instructions to tool-free document edits and tool-free requests; Copilot has no system-prompt flag."
         case .canvasRelay: "Canvas feedback reaches its agent with these instructions. Runtime feedback, paths, and conversation fill the placeholders."
         case .queueAgent:
             "Every QChat and task-chat reply runs on this prompt, wrapped around the user's message; the identity line names the chat's provider."
@@ -78,6 +80,7 @@ public enum BuiltInAgentPrompt: String, CaseIterable, Identifiable, Sendable {
         case .dailyAnalysis: "daily-analysis-prompt.md"
         case .claudeEditor: "claude-editor-prompt.md"
         case .kimiProfiles: "kimi-profiles.md"
+        case .copilotInstructions: "copilot-instructions.md"
         case .canvasRelay: "canvas-feedback-prompt.md"
         case .queueAgent: "queue-agent-prompt.md"
         case .taskPlacement: "task-placement-prompt.md"
@@ -117,6 +120,7 @@ public enum BuiltInAgentPrompt: String, CaseIterable, Identifiable, Sendable {
         case .dailyClassification, .dailyAnalysis: "focus_queue_morning.py"
         case .claudeEditor: "focus_queue_claude.py"
         case .kimiProfiles: "focus_queue_kimi.py"
+        case .copilotInstructions: "focus_queue_copilot.py"
         default: nil
         }
     }
@@ -129,6 +133,7 @@ public enum BuiltInAgentPrompt: String, CaseIterable, Identifiable, Sendable {
         case .developmentSteward: ["DEVELOPMENT_SYSTEM_PROMPT"]
         case .claudeEditor: ["EDITOR_SYSTEM_PROMPT"]
         case .kimiProfiles: ["LEAN_CHAT_AGENT", "LEAN_CHAT_READ_ONLY_AGENT", "READER_AGENT", "EDITOR_AGENT", "TOOL_FREE_AGENT"]
+        case .copilotInstructions: ["EDITOR_INSTRUCTION", "TOOL_FREE_INSTRUCTION"]
         default: []
         }
     }

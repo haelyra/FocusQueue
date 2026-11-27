@@ -39,6 +39,9 @@ public struct AgentActivityEvent: Sendable, Equatable {
         var events: [(offset: Int, event: Self)] = []
         // Kimi names a turn's reply only in its earlier assistant message records.
         var kimiReply = ""
+        // Copilot's `assistant.message` records carry the reply; its turn edge
+        // records do not.
+        var copilotReply = ""
         for (offset, line) in data.split(separator: 10).enumerated() {
             guard let record = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
             let timestamp: String
@@ -86,6 +89,8 @@ public struct AgentActivityEvent: Sendable, Equatable {
                         kind = .working
                     }
                 }
+            } else if provider == .copilot {
+                (kind, summary) = Self.copilotKind(record, reply: &copilotReply)
             } else if provider == .claude {
                 guard (record["sessionId"] as? String)?.lowercased() == sessionID.lowercased(),
                       record["isSidechain"] as? Bool != true else { continue }
@@ -140,6 +145,33 @@ public struct AgentActivityEvent: Sendable, Equatable {
     private static let codexWorkingItems: Set<String> = [
         "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output", "reasoning",
     ]
+
+    /// Copilot's `events.jsonl`: `user.message` opens a turn, tool executions
+    /// mark work, and `assistant.turn_end` closes the turn with the reply the
+    /// earlier `assistant.message` records carried.
+    private static func copilotKind(_ record: [String: Any], reply: inout String) -> (Kind?, String) {
+        guard let data = record["data"] as? [String: Any] else { return (nil, "") }
+        switch record["type"] as? String {
+        case "user.message":
+            reply = ""
+            return (.prompt, "")
+        case "assistant.turn_start", "tool.execution_start", "tool.execution_complete":
+            return (.working, "")
+        case "assistant.message":
+            let text = (data["content"] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { reply = text }
+            return (.working, "")
+        case "assistant.turn_end":
+            return (.result, reply.isEmpty ? "New agent response" : reply)
+        case "session.error":
+            let message = data["message"] as? String ?? ""
+            return (Self.isQuotaError(message) ? .attention(.quotaExhausted) : .attention(.failed),
+                message.isEmpty ? "The agent reported a problem." : message)
+        default:
+            return (nil, "")
+        }
+    }
 
     /// Kimi's `agents/main/wire.jsonl`: `turn.prompt` and `turn.ended` bound each
     /// turn, and loop, model, and tool records arrive while it runs.
@@ -225,6 +257,7 @@ public actor AgentActivityObserver {
     private let codexRoot: URL
     private let claudeRoot: URL
     private let kimiRoot: URL
+    private let copilotRoot: URL
     private var locations: [String: URL] = [:]
     private var searchedAt: [String: Date] = [:]
     private var scans: [String: (stamp: String, files: [URL])] = [:]
@@ -237,12 +270,15 @@ public actor AgentActivityObserver {
             ?? home.appendingPathComponent(".claude")
         kimiRoot = ProcessInfo.processInfo.environment["KIMI_CODE_HOME"].map { URL(fileURLWithPath: $0) }
             ?? home.appendingPathComponent(".kimi-code")
+        copilotRoot = ProcessInfo.processInfo.environment["COPILOT_HOME"].map { URL(fileURLWithPath: $0) }
+            ?? home.appendingPathComponent(".copilot")
     }
 
-    public init(codexRoot: URL, claudeRoot: URL, kimiRoot: URL? = nil) {
+    public init(codexRoot: URL, claudeRoot: URL, kimiRoot: URL? = nil, copilotRoot: URL? = nil) {
         self.codexRoot = codexRoot
         self.claudeRoot = claudeRoot
         self.kimiRoot = kimiRoot ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".kimi-code")
+        self.copilotRoot = copilotRoot ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".copilot")
     }
 
     /// The provider transcript that records this agent's saved conversation.
@@ -258,6 +294,7 @@ public actor AgentActivityObserver {
         case .codex: ["sessions", "archived_sessions"].map { codexRoot.appendingPathComponent($0) }
         case .claude: [claudeRoot.appendingPathComponent("projects")]
         case .kimi: [kimiRoot.appendingPathComponent("sessions")]
+        case .copilot: [copilotRoot.appendingPathComponent("session-state")]
         }
         if let location = locations[key], !FileManager.default.fileExists(atPath: location.path) {
             locations[key] = nil
@@ -270,6 +307,15 @@ public actor AgentActivityObserver {
             // A Kimi session is a `session_<id>` directory; its main agent writes `agents/main/wire.jsonl`.
             let kimiDirectories = Set([sessionID, "session_" + sessionID].map { $0.lowercased() })
             for root in roots where locations[key] == nil {
+                if agent.provider == .copilot {
+                    // A Copilot session is a `<uuid>` directory with one `events.jsonl`.
+                    for directory in [sessionID, sessionID.lowercased()] where locations[key] == nil {
+                        let events = root.appendingPathComponent(directory, isDirectory: true)
+                            .appendingPathComponent("events.jsonl")
+                        locations[key] = FileManager.default.fileExists(atPath: events.path) ? events : nil
+                    }
+                    continue
+                }
                 locations[key] = sessionFiles(root: root).first {
                     agent.provider == .kimi
                         ? $0.path.hasSuffix("/agents/main/wire.jsonl")

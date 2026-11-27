@@ -24,6 +24,7 @@ class InstallerTests(unittest.TestCase):
         "Scripts/focus_queue_codex.py",
         "Scripts/focus_queue_claude.py",
         "Scripts/focus_queue_kimi.py",
+        "Scripts/focus_queue_copilot.py",
         "Scripts/focus_queue_lock.py",
         "Scripts/focus_queue_mail.py",
         "Scripts/focus_queue_gmail.py",
@@ -74,6 +75,8 @@ class InstallerTests(unittest.TestCase):
                      path / "Contents/Resources/CLAUDE_GLOBAL_INSTRUCTIONS.md")
         shutil.copy2(Path(__file__).parents[1] / "Config/KIMI_GLOBAL_INSTRUCTIONS.md",
                      path / "Contents/Resources/KIMI_GLOBAL_INSTRUCTIONS.md")
+        shutil.copy2(Path(__file__).parents[1] / "Config/COPILOT_GLOBAL_INSTRUCTIONS.md",
+                     path / "Contents/Resources/COPILOT_GLOBAL_INSTRUCTIONS.md")
         shell = path / "Contents/Resources/shell"
         shell.mkdir()
         (shell / "focus_queue_codex_entry.py").write_bytes(b"entry:" + content)
@@ -344,6 +347,7 @@ class InstallerTests(unittest.TestCase):
             "Config/CODEX_GLOBAL_INSTRUCTIONS.md",
             "Config/CLAUDE_GLOBAL_INSTRUCTIONS.md",
             "Config/KIMI_GLOBAL_INSTRUCTIONS.md",
+            "Config/COPILOT_GLOBAL_INSTRUCTIONS.md",
         ):
             with self.subTest(name=name):
                 payload = (repository / name).read_text()
@@ -358,6 +362,7 @@ class InstallerTests(unittest.TestCase):
             "Config/CODEX_GLOBAL_INSTRUCTIONS.md",
             "Config/CLAUDE_GLOBAL_INSTRUCTIONS.md",
             "Config/KIMI_GLOBAL_INSTRUCTIONS.md",
+            "Config/COPILOT_GLOBAL_INSTRUCTIONS.md",
         ):
             with self.subTest(name=name):
                 payload = (repository / name).read_text()
@@ -372,6 +377,7 @@ class InstallerTests(unittest.TestCase):
             "Config/CODEX_GLOBAL_INSTRUCTIONS.md",
             "Config/CLAUDE_GLOBAL_INSTRUCTIONS.md",
             "Config/KIMI_GLOBAL_INSTRUCTIONS.md",
+            "Config/COPILOT_GLOBAL_INSTRUCTIONS.md",
         ):
             with self.subTest(name=name):
                 payload = (repository / name).read_text()
@@ -385,6 +391,7 @@ class InstallerTests(unittest.TestCase):
             "Config/CODEX_GLOBAL_INSTRUCTIONS.md",
             "Config/CLAUDE_GLOBAL_INSTRUCTIONS.md",
             "Config/KIMI_GLOBAL_INSTRUCTIONS.md",
+            "Config/COPILOT_GLOBAL_INSTRUCTIONS.md",
         ):
             with self.subTest(name=name):
                 payload = (repository / name).read_text()
@@ -399,6 +406,7 @@ class InstallerTests(unittest.TestCase):
             "Config/CODEX_GLOBAL_INSTRUCTIONS.md",
             "Config/CLAUDE_GLOBAL_INSTRUCTIONS.md",
             "Config/KIMI_GLOBAL_INSTRUCTIONS.md",
+            "Config/COPILOT_GLOBAL_INSTRUCTIONS.md",
         ):
             with self.subTest(name=name):
                 payload = (repository / name).read_text()
@@ -423,6 +431,7 @@ class InstallerTests(unittest.TestCase):
             "Config/CODEX_GLOBAL_INSTRUCTIONS.md",
             "Config/CLAUDE_GLOBAL_INSTRUCTIONS.md",
             "Config/KIMI_GLOBAL_INSTRUCTIONS.md",
+            "Config/COPILOT_GLOBAL_INSTRUCTIONS.md",
         ):
             with self.subTest(name=name):
                 payload = (repository / name).read_text()
@@ -584,6 +593,34 @@ class InstallerTests(unittest.TestCase):
         self.assertIn({"path": str(prompt), "ownership": "delimited-block-only"}, manifest["managedSettings"])
         self.installer.install()
         self.assertEqual(prompt.read_text(), once)
+
+    def test_copilot_global_prompt_merges_into_copilot_home_and_keeps_personal_text(self):
+        prompt = self.home / ".copilot/copilot-instructions.md"
+        prompt.parent.mkdir(parents=True)
+        personal = "# Scoped instruction pointer\n\n- Read my COPILOT.md first.\n"
+        prompt.write_text(personal)
+        self.installer.install()
+        once = prompt.read_text()
+        self.assertTrue(once.startswith(personal))
+        self.assertEqual(once.count(MODULE.PROMPT_START), 1)
+        self.assertIn("Copilot exports no session ID", once)
+        self.assertIn('`play <TASK> <AGENT> ["<text>"]`', once)
+        manifest = json.loads(self.installer.manifest.read_text())
+        self.assertIn({"path": str(prompt), "ownership": "delimited-block-only"}, manifest["managedSettings"])
+        self.installer.install()
+        self.assertEqual(prompt.read_text(), once)
+
+    def test_copilot_contract_matches_kimi_except_provider_specific_lines(self):
+        config = Path(__file__).parents[1] / "Config"
+        kimi = (config / "KIMI_GLOBAL_INSTRUCTIONS.md").read_text().splitlines()
+        copilot = (config / "COPILOT_GLOBAL_INSTRUCTIONS.md").read_text().splitlines()
+        self.assertEqual(len(kimi), len(copilot))
+        differing = [(a, b) for a, b in zip(kimi, copilot) if a != b]
+        self.assertEqual(len(differing), 2, "only the start-entry and session-ID lines differ")
+        self.assertTrue(differing[0][1].startswith("- Start Copilot agents from Focus Queue"))
+        self.assertTrue(differing[1][1].startswith("- Copilot exports no session ID"))
+        self.assertNotIn("kimi", "\n".join(copilot).lower())
+        self.assertNotIn("claude", "\n".join(copilot).lower())
 
     def test_kimi_contract_matches_claude_except_provider_specific_lines(self):
         config = Path(__file__).parents[1] / "Config"
@@ -1049,7 +1086,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_install_creates_the_q_chat_launchers_the_app_runs(self):
         result = self.installer.install()
-        self.assertEqual(len(result["chatLaunchers"]["installed"]), 3)
+        self.assertEqual(len(result["chatLaunchers"]["installed"]), len(MODULE.CHAT_HARNESSES))
         for name, script in MODULE.CHAT_HARNESSES:
             launcher = self.launcher(name)
             self.assertTrue(os.access(launcher, os.X_OK), launcher)
@@ -1078,7 +1115,8 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(sorted(result["chatLaunchers"]["preserved"]), sorted([str(personal), str(linked)]))
         manifest = json.loads(self.installer.manifest.read_text())
         self.assertEqual([item["path"] for item in manifest["chatLaunchers"]],
-                         [str(self.launcher("focus-queue-claude"))])
+                         [str(self.launcher("focus-queue-claude")),
+                          str(self.launcher("focus-queue-copilot"))])
 
     def test_a_failed_install_removes_the_launchers_it_added(self):
         self.installer.start = True

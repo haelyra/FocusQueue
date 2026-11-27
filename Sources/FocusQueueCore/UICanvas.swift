@@ -815,6 +815,7 @@ public enum UICanvasAgentIdentity {
         case "claude": return "Claude Code"
         case "codex": return "Codex"
         case "kimi": return "Kimi"
+        case "copilot": return "Copilot"
         default: break
         }
         if environment["CLAUDECODE"] == "1" || environment["CLAUDE_CODE_SESSION_ID"] != nil { return "Claude Code" }

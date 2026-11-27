@@ -303,7 +303,8 @@ public actor TaskAgentLauncher {
     }
   }
 
-  /// Codex takes a positional prompt, Claude one after `--`; Kimi only accepts
+  /// Codex takes a positional prompt, Claude one after `--`, and Copilot one
+  /// after `-i`, which runs it and stays interactive; Kimi only accepts
   /// prompts through `--prompt` (non-interactive mode, exits when done), so
   /// managed tmux launches paste Kimi's prompt into its TUI instead.
   private static func promptArguments(for provider: AgentProvider, prompt: String) -> [String] {
@@ -311,6 +312,7 @@ public actor TaskAgentLauncher {
     case .codex: [prompt]
     case .claude: ["--", prompt]
     case .kimi: ["--prompt", prompt]
+    case .copilot: ["-i", prompt]
     }
   }
 

@@ -39,6 +39,7 @@
   "agentProvider": "codex",
   "claudeAgentExecutable": "/absolute/path/to/focus-queue-claude",
   "kimiAgentExecutable": "/absolute/path/to/focus-queue-kimi",
+  "copilotAgentExecutable": "/absolute/path/to/focus-queue-copilot",
   "agentModel": "gpt-5.5",
   "agentEffort": "high",
   "telegramBotUsername": "your_bot"

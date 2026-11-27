@@ -116,6 +116,13 @@ public enum DocumentAuthorship {
             calls = [event]
             inputKey = "args"
             writeTools = ["Write", "Edit", "WriteFile", "StrReplaceFile"]
+        case .copilot:
+            guard record["type"] as? String == "tool.execution_start",
+                  let data = record["data"] as? [String: Any],
+                  let toolName = data["toolName"] as? String else { return nil }
+            calls = [["name": toolName, "arguments": data["arguments"] as Any]]
+            inputKey = "arguments"
+            writeTools = ["create", "edit"]
         }
         var matched = false
         for call in calls {

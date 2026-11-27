@@ -291,6 +291,7 @@ AUTOMATION_FILES = (
     "Scripts/focus_queue_codex.py",
     "Scripts/focus_queue_claude.py",
     "Scripts/focus_queue_kimi.py",
+    "Scripts/focus_queue_copilot.py",
     "Scripts/focus_queue_lock.py",
     "Scripts/focus_queue_mail.py",
     "Scripts/focus_queue_gmail.py",
@@ -309,6 +310,7 @@ CHAT_HARNESSES = (
     ("focus-queue-codex", "focus_queue_codex.py"),
     ("focus-queue-claude", "focus_queue_claude.py"),
     ("focus-queue-kimi", "focus_queue_kimi.py"),
+    ("focus-queue-copilot", "focus_queue_copilot.py"),
 )
 
 
@@ -529,6 +531,10 @@ class Installer:
         kimi_home = os.environ.get("KIMI_CODE_HOME", "")
         self.kimi_prompt = (Path(kimi_home) if kimi_home.startswith("/") and self.home == Path.home().absolute()
                             else self.home / ".kimi-code") / "AGENTS.md"
+        # Copilot reads its personal instructions from $COPILOT_HOME/copilot-instructions.md.
+        copilot_home = os.environ.get("COPILOT_HOME", "")
+        self.copilot_prompt = (Path(copilot_home) if copilot_home.startswith("/") and self.home == Path.home().absolute()
+                               else self.home / ".copilot") / "copilot-instructions.md"
         # Earlier releases wrote the block under ~/Documents, which only agents started
         # there read. Installation moves it out, leaving the rest of these files alone.
         self.legacy_codex_prompt = self.home / "Documents/AGENTS.md"
@@ -558,7 +564,8 @@ class Installer:
                  "CODEX_GLOBAL_INSTRUCTIONS.md", "Codex"),
                 (self.claude_prompt, None if self.unattended else self.legacy_claude_prompt,
                  "CLAUDE_GLOBAL_INSTRUCTIONS.md", "Claude"),
-                (self.kimi_prompt, None, "KIMI_GLOBAL_INSTRUCTIONS.md", "Kimi"))
+                (self.kimi_prompt, None, "KIMI_GLOBAL_INSTRUCTIONS.md", "Kimi"),
+                (self.copilot_prompt, None, "COPILOT_GLOBAL_INSTRUCTIONS.md", "Copilot"))
 
     def owns_chat_launcher(self, launcher, script):
         """True when the path is free or already holds exactly what this installer writes.
@@ -878,6 +885,7 @@ class Installer:
                 "Contents/Resources/CODEX_GLOBAL_INSTRUCTIONS.md",
                 "Contents/Resources/CLAUDE_GLOBAL_INSTRUCTIONS.md",
                 "Contents/Resources/KIMI_GLOBAL_INSTRUCTIONS.md",
+                "Contents/Resources/COPILOT_GLOBAL_INSTRUCTIONS.md",
                 "Contents/Resources/shell/focus_queue_codex_entry.py",
                 "Contents/Resources/shell/focus_queue_claude_entry.py",
                 "Contents/Resources/shell/focus_queue_usage_wrapper.sh",
@@ -1012,6 +1020,7 @@ class Installer:
                 "managedSettings": [{"path": str(self.codex_prompt), "ownership": "delimited-block-only"},
                     {"path": str(self.claude_prompt), "ownership": "delimited-block-only"},
                     {"path": str(self.kimi_prompt), "ownership": "delimited-block-only"},
+                    {"path": str(self.copilot_prompt), "ownership": "delimited-block-only"},
                     # Only the app's block was ever removed here; the rest stays the user's.
                     {"path": str(self.legacy_codex_prompt), "ownership": "legacy-delimited-block-removed"},
                     {"path": str(self.legacy_claude_prompt), "ownership": "legacy-delimited-block-removed"},
@@ -1046,7 +1055,7 @@ class Installer:
                     target.read_bytes() if target.exists() else b""
                 ) != original_prompts[target]:
                     label = {self.codex_prompt: "Codex", self.claude_prompt: "Claude",
-                             self.kimi_prompt: "Kimi"}.get(target, "Agent")
+                             self.kimi_prompt: "Kimi", self.copilot_prompt: "Copilot"}.get(target, "Agent")
                     raise ValueError(f"{label} instructions changed during installation ({target}); "
                                      "retry to preserve the newer edit.")
                 if target == self.codex_entry and (target.read_bytes() if target.exists() else None) != original_entry:

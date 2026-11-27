@@ -417,6 +417,7 @@ final class DocumentConversation {
         case .codex: "gpt-6-luna"
         case .claude: "haiku"
         case .kimi: "kimi-code/k3.1-pro-highspeed"
+        case .copilot: "claude-haiku-4.5"
         }
     }
 

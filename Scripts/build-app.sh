@@ -23,6 +23,7 @@ bundle_path="$staging_dir/$product_name.app"
 /bin/cp "$project_dir/Config/CODEX_GLOBAL_INSTRUCTIONS.md" "$bundle_path/Contents/Resources/CODEX_GLOBAL_INSTRUCTIONS.md"
 /bin/cp "$project_dir/Config/CLAUDE_GLOBAL_INSTRUCTIONS.md" "$bundle_path/Contents/Resources/CLAUDE_GLOBAL_INSTRUCTIONS.md"
 /bin/cp "$project_dir/Config/KIMI_GLOBAL_INSTRUCTIONS.md" "$bundle_path/Contents/Resources/KIMI_GLOBAL_INSTRUCTIONS.md"
+/bin/cp "$project_dir/Config/COPILOT_GLOBAL_INSTRUCTIONS.md" "$bundle_path/Contents/Resources/COPILOT_GLOBAL_INSTRUCTIONS.md"
 # SwiftPM checkouts are read-only; a read-only file makes the testers' `xattr -dr` step fail.
 /usr/bin/install -m 0644 "$build_dir/checkouts/Ink/LICENSE" "$bundle_path/Contents/Resources/Ink-LICENSE.txt"
 /usr/bin/ditto "$project_dir/Vendor/Tmux" "$bundle_path/Contents/Resources/tmux"
@@ -38,6 +39,7 @@ automation_resources="$bundle_path/Contents/Resources/automation"
 /bin/mkdir -p "$automation_resources/Scripts" "$automation_resources/Config"
 for script in \
   focus_queue_morning.py focus_queue_codex.py focus_queue_claude.py focus_queue_kimi.py \
+  focus_queue_copilot.py \
   focus_queue_lock.py focus_queue_mail.py focus_queue_gmail.py \
   focus_queue_discord.py focus_queue_slack.py focus_queue_connectors.py focus_queue_triage.py \
   focus_queue_extractor.py focus_queue_prompt_usage.py focus_queue_provider_cli.py \

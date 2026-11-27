@@ -110,12 +110,15 @@ func queueAgentPromptNeutrality() {
   let codex = lines(for: .codex)
   let claude = lines(for: .claude)
   let kimi = lines(for: .kimi)
+  let copilot = lines(for: .copilot)
 
   #expect(codex.first == "You are the Codex Queue agent for Focus Queue.")
   #expect(claude.first == "You are the Claude Queue agent for Focus Queue.")
   #expect(kimi.first == "You are the Kimi Queue agent for Focus Queue.")
+  #expect(copilot.first == "You are the Copilot Queue agent for Focus Queue.")
   #expect(Array(codex.dropFirst()) == Array(claude.dropFirst()))
   #expect(Array(codex.dropFirst()) == Array(kimi.dropFirst()))
+  #expect(Array(codex.dropFirst()) == Array(copilot.dropFirst()))
 }
 
 @Test("Codex queue agent forwards model and effort flags to its harness")
@@ -163,17 +166,16 @@ func queueAgentOmitsEmptyModelEffort() async throws {
   #expect(!invocation.arguments.contains("--effort"))
 }
 
-@Test("Claude and Kimi queue agents share the codex harness argument structure")
-func claudeKimiQueueAgentArguments() async throws {
-  let cases: [(String, String)] = [
-    ("/mock/focus-queue-claude", ClaudeQueueAgent.sessionName),
-    ("/mock/focus-queue-kimi", KimiQueueAgent.sessionName),
+@Test("Claude, Kimi, and Copilot queue agents share the codex harness argument structure")
+func claudeKimiCopilotQueueAgentArguments() async throws {
+  let cases: [(String, (QueueAgentRecordingRunner) -> any QueueAgentChatting, String)] = [
+    ("/mock/focus-queue-claude", { ClaudeQueueAgent(runner: $0) }, ClaudeQueueAgent.sessionName),
+    ("/mock/focus-queue-kimi", { KimiQueueAgent(runner: $0) }, KimiQueueAgent.sessionName),
+    ("/mock/focus-queue-copilot", { CopilotQueueAgent(runner: $0) }, CopilotQueueAgent.sessionName),
   ]
-  for (executable, sessionName) in cases {
+  for (executable, makeAgent, sessionName) in cases {
     let runner = QueueAgentRecordingRunner()
-    let agent: any QueueAgentChatting = executable.contains("claude")
-      ? ClaudeQueueAgent(runner: runner)
-      : KimiQueueAgent(runner: runner)
+    let agent = makeAgent(runner)
     _ = try await agent.send(
       message: "Why is ECC-002 second?",
       dashboardPath: "/tmp/dashboard.json",
@@ -253,6 +255,8 @@ func queueChatModelDefaults() throws {
   #expect(config.chatModel(for: .claude) == "claude-sonnet-5")
   #expect(config.chatEffort(for: .claude) == "low")
   #expect(config.chatEffort(for: .kimi) == nil)
+  #expect(config.chatModel(for: .copilot) == "claude-sonnet-4.5")
+  #expect(config.chatEffort(for: .copilot) == "low")
   config.chatModels[.claude] = "claude-haiku-5-5"
   let decoded = try JSONDecoder().decode(AppConfiguration.self, from: JSONEncoder().encode(config))
   #expect(decoded.chatModel(for: .claude) == "claude-haiku-5-5")
@@ -355,9 +359,12 @@ func chatExecutableDefaults() {
   #expect(config.chatExecutable(for: .codex) == "/mock/focus-queue-codex")
   #expect(config.chatExecutable(for: .claude).hasSuffix("/.local/bin/focus-queue-claude"))
   #expect(config.chatExecutable(for: .kimi).hasSuffix("/.local/bin/focus-queue-kimi"))
+  #expect(config.chatExecutable(for: .copilot).hasSuffix("/.local/bin/focus-queue-copilot"))
 
   config.claudeChatExecutable = "/custom/focus-queue-claude"
   config.kimiChatExecutable = "/custom/focus-queue-kimi"
+  config.copilotChatExecutable = "/custom/focus-queue-copilot"
   #expect(config.chatExecutable(for: .claude) == "/custom/focus-queue-claude")
   #expect(config.chatExecutable(for: .kimi) == "/custom/focus-queue-kimi")
+  #expect(config.chatExecutable(for: .copilot) == "/custom/focus-queue-copilot")
 }

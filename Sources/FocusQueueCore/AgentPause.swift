@@ -129,12 +129,12 @@ public struct AgentPauseController: Sendable {
       .contains { text.contains($0) }
   }
 
-  /// Claude and Codex accept typed input mid-turn, so only Kimi's input box
-  /// must be visible before a paste.
+  /// Claude, Codex, and Copilot accept typed input mid-turn, so only Kimi's
+  /// input box must be visible before a paste.
   static func inputIsReady(for provider: AgentProvider) -> @Sendable (String) -> Bool {
     switch provider {
     case .kimi: TaskAgentLauncher.kimiInputIsReady
-    case .claude, .codex: { _ in true }
+    case .claude, .codex, .copilot: { _ in true }
     }
   }
 

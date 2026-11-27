@@ -66,11 +66,16 @@
     {"provider": "kimi", "label": "K2.8 Preview", "model": "kimi-code/kimi-for-coding"},
     {"provider": "kimi", "label": "K2.7 Code Highspeed", "model": "kimi-code/kimi-for-coding-highspeed"},
     {"provider": "copilot", "label": "Default"},
+    {"provider": "copilot", "label": "opus-5.5", "model": "claude-opus-5.5"},
     {"provider": "copilot", "label": "sonnet-5.5", "model": "claude-sonnet-5.5"},
-    {"provider": "copilot", "label": "sonnet-4.5", "model": "claude-sonnet-4.5"},
-    {"provider": "copilot", "label": "sonnet-4", "model": "claude-sonnet-4"},
+    {"provider": "copilot", "label": "sonnet-5", "model": "claude-sonnet-5"},
+    {"provider": "copilot", "label": "haiku-5.5", "model": "claude-haiku-5.5"},
+    {"provider": "copilot", "label": "fable-5.2", "model": "claude-fable-5.2"},
     {"provider": "copilot", "label": "haiku-4.5", "model": "claude-haiku-4.5"},
-    {"provider": "copilot", "label": "gpt-5", "model": "gpt-5"}
+    {"provider": "copilot", "label": "gpt-6.2-sol", "model": "gpt-6.2-sol"},
+    {"provider": "copilot", "label": "gpt-6.2-astra", "model": "gpt-6.2-astra"},
+    {"provider": "copilot", "label": "gpt-5.3-codex", "model": "gpt-5.3-codex"},
+    {"provider": "copilot", "label": "gemini-4-argon", "model": "gemini-4-argon"}
   ],
   "dailyRoutines": [
     {

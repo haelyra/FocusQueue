@@ -465,11 +465,16 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     AgentModelChoice(provider: .kimi, label: "K3-256k", model: "kimi-code/k3-256k"),
     AgentModelChoice(provider: .kimi, label: "K2.8 Preview", model: "kimi-code/kimi-for-coding"),
     AgentModelChoice(provider: .kimi, label: "K2.7 Code Highspeed", model: "kimi-code/kimi-for-coding-highspeed"),
+    AgentModelChoice(provider: .copilot, label: "opus-5.5", model: "claude-opus-5.5"),
     AgentModelChoice(provider: .copilot, label: "sonnet-5.5", model: "claude-sonnet-5.5"),
-    AgentModelChoice(provider: .copilot, label: "sonnet-4.5", model: "claude-sonnet-4.5"),
-    AgentModelChoice(provider: .copilot, label: "sonnet-4", model: "claude-sonnet-4"),
+    AgentModelChoice(provider: .copilot, label: "sonnet-5", model: "claude-sonnet-5"),
+    AgentModelChoice(provider: .copilot, label: "haiku-5.5", model: "claude-haiku-5.5"),
+    AgentModelChoice(provider: .copilot, label: "fable-5.2", model: "claude-fable-5.2"),
     AgentModelChoice(provider: .copilot, label: "haiku-4.5", model: "claude-haiku-4.5"),
-    AgentModelChoice(provider: .copilot, label: "gpt-5", model: "gpt-5"),
+    AgentModelChoice(provider: .copilot, label: "gpt-6.2-sol", model: "gpt-6.2-sol"),
+    AgentModelChoice(provider: .copilot, label: "gpt-6.2-astra", model: "gpt-6.2-astra"),
+    AgentModelChoice(provider: .copilot, label: "gpt-5.3-codex", model: "gpt-5.3-codex"),
+    AgentModelChoice(provider: .copilot, label: "gemini-4-argon", model: "gemini-4-argon"),
   ]
 
   /// Former built-in choices the provider no longer lists. Older configs saved
@@ -530,7 +535,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
   public static let defaultPlacementEfforts: [AgentProvider: String] = [.claude: "low", .codex: "low", .copilot: "low"]
   /// QChat answers short queue questions, so it defaults to a mid-size model at
   /// low effort instead of inheriting the agent-launch model (FOC-075).
-  public static let defaultChatModels: [AgentProvider: String] = [.claude: "claude-sonnet-5", .copilot: "claude-sonnet-4.5"]
+  public static let defaultChatModels: [AgentProvider: String] = [.claude: "claude-sonnet-5", .copilot: "claude-sonnet-5"]
   public static let defaultChatEfforts: [AgentProvider: String] = [.claude: "low", .copilot: "low"]
   public static let defaultPlacementConfidenceThreshold = 0.85
   public static let defaultPlacementTimeoutSeconds = 20

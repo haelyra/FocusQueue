@@ -255,7 +255,7 @@ func queueChatModelDefaults() throws {
   #expect(config.chatModel(for: .claude) == "claude-sonnet-5")
   #expect(config.chatEffort(for: .claude) == "low")
   #expect(config.chatEffort(for: .kimi) == nil)
-  #expect(config.chatModel(for: .copilot) == "claude-sonnet-4.5")
+  #expect(config.chatModel(for: .copilot) == "claude-sonnet-5")
   #expect(config.chatEffort(for: .copilot) == "low")
   config.chatModels[.claude] = "claude-haiku-5-5"
   let decoded = try JSONDecoder().decode(AppConfiguration.self, from: JSONEncoder().encode(config))
